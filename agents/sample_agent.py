@@ -10,7 +10,7 @@ def run_agent():
 
     task = Task(
         description="Say hello to the visitor",
-        expected_output="A friendly greeting with a smile :)",
+        expected_output="A friendly greeting with a smile :).",
         agent=agent
     )
 

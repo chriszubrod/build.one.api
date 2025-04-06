@@ -20,7 +20,7 @@ def agent():
         return render_template('index.html', result=response)
     except Exception as e:
         return jsonify(
-            {"error": str(e)}
+            {"err": str(e)}
         ), 500
 
 if __name__ == '__main__':

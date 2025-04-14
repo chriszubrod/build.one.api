@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html class="h-full">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Document</title>
+
+        <!-- Tailwind CDN -->
+        <script src="https://cdn.tailwindcss.com"></script>
+
+        <!-- Custom styles -->
+        <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+
+        <!-- PDF.js -->
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.min.js"></script>
+    </head>
+</html>
+<body class="h-screen w-screen overflow-hidden">
+    <div class="grid grid-cols-1 lg:grid-cols-5 gap-6 min-h-screen p-6">
+        <!-- Sidebar -->
+        <div class="lg:col-span-1 bg-white shadow rounded p-4 flex flex-col" style="height: calc(100vh - 3rem);">
+            <h3 class="font-semibold mb-4">Uploaded Files</h3>
+            <div id="file-list" class="space-y-2 overflow-y-auto overflow-x-hidden flex-1">
+                <!-- File items will be added here -->
+            </div>
+        </div>
+
+        <!-- Main Content Area -->
+        <div class="lg:col-span-4 flex flex-col" style="height: calc(100vh - 3rem);">
+            <!-- Upload Area -->
+            <div id="upload-area"
+                class="flex items-center justify-center p-6 border-2 border-dashed border-gray-300 rounded bg-white hover:bg-gray-100 transition-colors duration-150 h-full cursor-pointer"
+                onclick="document.getElementById('file-upload').click()">
+                <form id="file-upload-form" class="w-full text-center">
+                    <input type="file"
+                        id="file-upload"
+                        name="file-upload"
+                        accept=".pdf"
+                        multiple
+                        class="hidden" />
+                    <label for="file-upload" class="w-full h-full flex items-center justify-center text-blue-600 font-semibold">
+                    Drag and drop your file here or click to select
+                    </label>
+                </form>
+            </div>
+
+            <!-- File Info and Preview Container -->
+            <div id="file-container" class="hidden h-full flex flex-col">
+                <!-- File Info -->
+                <div id="file-info" class="bg-white p-4 rounded shadow space-y-2 text-sm text-gray-700 mb-4 flex-shrink-0">
+                    <p id="file-name"></p>
+                    <p id="file-type"></p>
+                    <p id="file-size"></p>
+                    <p id="document-type" class="text-blue-600"></p>
+                </div>
+
+                <!-- Action Buttons -->
+                <div id="action-buttons"
+                    class="flex justify-end gap-4 mb-4 flex-shrink-0">
+                    <button id="delete-button"
+                            class="bg-red-100 text-red-600 hover:bg-red-200 font-medium px-4 py-2 rounded">
+                        Delete
+                    </button>
+                    <button id="submit-button"
+                            class="bg-blue-600 text-white hover:bg-blue-700 font-medium px-4 py-2 rounded">
+                        Submit
+                    </button>
+                </div>
+
+                <!-- File Preview -->
+                <div id="file-preview"
+                    class="bg-white p-4 rounded shadow overflow-y-auto overflow-x-hidden flex flex-col items-center flex-1 min-h-0">
+                    <!-- Canvas previews will appear here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+<!-- JavaScript -->
+    <script>
+    const uploadArea = document.getElementById('upload-area');
+    const fileInput = document.getElementById('file-upload');
+    const fileLabel = document.querySelector('label[for="file-upload"]');
+    const filePreview = document.getElementById('file-preview');
+    const fileInfo = document.getElementById('file-info');
+    const fileName = document.getElementById('file-name');
+    const fileType = document.getElementById('file-type');
+    const fileSize = document.getElementById('file-size');
+    const actionButtons = document.getElementById('action-buttons');
+    const deleteButton = document.getElementById('delete-button');
+    const submitButton = document.getElementById('submit-button');
+
+    let uploadedFiles = [];
+    let currentFile = null;
+    let isProcessing = false;
+
+    function updateFilePreview(file) {
+        currentFile = file;
+        uploadArea.classList.add('hidden');
+        document.getElementById('file-container').classList.remove('hidden');
+        filePreview.innerHTML = '';
+
+        // Display file information
+        fileName.textContent = `Name: ${file.name}`;
+        fileType.textContent = `Type: ${file.type}`;
+        fileSize.textContent = `Size: ${(file.size / 1024).toFixed(2)} KB`;
+        document.getElementById('document-type').textContent = 'Document Type: Processing...';
+
+        const fileReader = new FileReader();
+        fileReader.onload = function() {
+            const typedArray = new Uint8Array(this.result);
+            pdfjsLib.getDocument(typedArray).promise.then(pdf => {
+                for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+                    pdf.getPage(pageNum).then(page => {
+                        const viewport = page.getViewport({ scale: 1.5 });
+                        const canvas = document.createElement('canvas');
+                        const context = canvas.getContext('2d');
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+                        canvas.className = 'mb-4 max-w-full'; // Add max width constraint
+                        filePreview.appendChild(canvas);
+
+                        const renderContext = {
+                            canvasContext: context,
+                            viewport: viewport
+                        };
+                        page.render(renderContext);
+                    });
+                }
+            });
+        };
+        fileReader.readAsArrayBuffer(file);
+    }
+
+    function handleFileInput(event) {
+        if (isProcessing) return;
+        isProcessing = true;
+        
+        const files = event.target.files;
+        if (files.length > 0) {
+            for (const file of files) {
+                processSingleFile(file);
+            }
+        }
+        isProcessing = false;
+    }
+
+    fileInput.addEventListener('change', handleFileInput);
+
+    function processSingleFile(file) {
+        if (file.type === 'application/pdf') {
+            uploadedFiles.push(file);
+            uploadArea.classList.add('hidden'); // Hide upload area
+            
+            // Add file to sidebar
+            const fileList = document.getElementById('file-list');
+            const fileItem = document.createElement('div');
+            fileItem.className = 'p-2 rounded hover:bg-gray-100 cursor-pointer group relative';
+            fileItem.innerHTML = `
+                <span class="truncate block">File ${fileList.children.length + 1}</span>
+            `;
+            
+            // Add click handler to show file preview
+            fileItem.addEventListener('click', () => {
+                // Remove active class from all items
+                document.querySelectorAll('#file-list > div').forEach(item => {
+                    item.classList.remove('bg-blue-50', 'border', 'border-blue-200');
+                });
+                // Add active class to clicked item
+                fileItem.classList.add('bg-blue-50', 'border', 'border-blue-200');
+                
+                updateFilePreview(file);
+            });
+            
+            fileList.appendChild(fileItem);
+            
+            // If this is the first file, show its preview
+            if (uploadedFiles.length === 1) {
+                fileItem.click();
+            }
+        } else {
+            alert('Please upload a PDF file.');
+        }
+    }
+
+    uploadArea.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        uploadArea.classList.add('bg-gray-200');
+    });
+
+    uploadArea.addEventListener('dragleave', () => {
+        uploadArea.classList.remove('bg-gray-200');
+    });
+
+    uploadArea.addEventListener('drop', (event) => {
+        event.preventDefault();
+        uploadArea.classList.remove('bg-gray-200');
+        const files = event.dataTransfer.files;
+        handleFiles(files);
+    });
+
+    function handleFiles(files) {
+        if (files.length > 0) {
+            for (const file of files) {
+                processSingleFile(file);
+            }
+        }
+    }
+
+    deleteButton.addEventListener('click', () => {
+        if (currentFile) {
+            const index = uploadedFiles.indexOf(currentFile);
+            if (index > -1) {
+                uploadedFiles.splice(index, 1);
+                const fileList = document.getElementById('file-list');
+                fileList.children[index].remove();
+                
+                // Update remaining file numbers
+                Array.from(fileList.children).forEach((item, i) => {
+                    item.querySelector('span:first-child').textContent = `File ${i + 1}`;
+                });
+                
+                // If there are remaining files, show the first one
+                if (uploadedFiles.length > 0) {
+                    fileList.children[0].click();
+                } else {
+                    fileInput.value = '';
+                    uploadArea.classList.remove('hidden');
+                    document.getElementById('file-container').classList.add('hidden');
+                    filePreview.innerHTML = '';
+                    currentFile = null;
+                }
+            }
+        }
+    });
+
+    submitButton.addEventListener('click', () => {
+        if (currentFile) {
+            const fileReader = new FileReader();
+            fileReader.onload = function() {
+                const base64String = fileReader.result; // Get the base64 string
+                const jsonPayload = JSON.stringify({
+                    filename: currentFile.name,
+                    filetype: currentFile.type,
+                    filesize: currentFile.size,
+                    filedata: base64String
+                });
+
+                fetch('/document', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: jsonPayload
+                })
+                .then(response => response.json())
+                .then(data => {
+                    alert('File submitted successfully!');
+                    console.log(data);
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                });
+            };
+            fileReader.readAsDataURL(currentFile); // Read the file as a data URL
+        } else {
+            alert('No file to submit.');
+        }
+    });
+    </script>
+</body>
+</html>

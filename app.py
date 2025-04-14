@@ -5,12 +5,19 @@ from flask import (
 )
 from agents import sample_agent
 
+from web import (
+    web_vendor,
+    web_document
+)
+
 app = Flask(__name__)
+app.register_blueprint(web_vendor.web_vendor_bp)
+app.register_blueprint(web_document.web_document_bp)
 
 
 @app.route('/')
 def index():
-    return "Hello from Docker!"
+    return "Hello from Flask!"
 
 
 @app.route('/agent')

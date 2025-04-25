@@ -1,0 +1,20 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block content %}
+
+    <h1>Entry Type</h1>
+
+    <span>{{ entry_type.guid }}</span>
+
+    <div>
+
+        {% with readonly=True %}
+            {% include "entry_type/_form.html" %}
+        {% endwith %}
+
+        <a href="{{ url_for('entry_type_web.edit_entry_type_route', entry_type_guid=entry_type.guid) }}" 
+           class="edit-button">Edit</a>
+
+    </div>
+
+{% endblock %}

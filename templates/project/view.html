@@ -1,0 +1,27 @@
+{% extends 'shared/components/body.html' %}
+
+{% block title %}Project{% endblock %}
+
+{% block content %}
+
+    <div class="list-header">
+        <h1>Project</h1>
+    </div>
+
+    <div class="info-item">
+        <label>GUID</label>
+        <span>{{ project.guid[:8] }}</span>
+    </div>
+
+    <div>
+
+        {% with readonly=True %}
+            {% include "project/_form.html" %}
+        {% endwith %}
+
+        <a href="{{ url_for('project_web.edit_project_route', project_guid=project.guid) }}" 
+           class="edit-button">Edit</a>
+
+    </div>
+
+{% endblock %}

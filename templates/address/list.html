@@ -1,0 +1,20 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block content %}
+
+    {% for address in addresses %}
+
+        <div>
+            <div>
+                <span>{{ address.guid }}</span>
+                <span>{{ address.street_one }}</span>
+                <span>{{ address.street_two }}</span>
+                <span>{{ address.city }}</span>
+                <span>{{ address.state }}</span>
+                <span>{{ address.zip_code }}</span>
+            </div>
+        </div>
+
+    {% endfor %}
+
+{% endblock %}

@@ -1,0 +1,17 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block content %}
+
+    {% for entry_line_item in entry_line_items %}
+
+        <div>
+            <div>
+                <span>{{ entry_line_item.guid }}</span>
+                <span>{{ entry_line_item.number }}</span>
+                <span>{{ entry_line_item.date }}</span>
+            </div>
+        </div>
+
+    {% endfor %}
+
+{% endblock %}

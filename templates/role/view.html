@@ -1,0 +1,20 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block content %}
+
+    <h1>Role</h1>
+
+    <span>{{ role.guid }}</span>
+
+    <div>
+
+        {% with readonly=True %}
+            {% include "role/_form.html" %}
+        {% endwith %}
+
+        <a href="{{ url_for('role_web.edit_role_route', role_guid=role.guid) }}" 
+           class="edit-button">Edit</a>
+
+    </div>
+
+{% endblock %}

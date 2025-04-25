@@ -1,0 +1,20 @@
+<label for="number">Number:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ cost_code.number }}</span>
+{% else %}
+    <input type="text" id="number" name="number" value="{{ cost_code.number if cost_code else '' }}" required>
+{% endif %}
+
+<label for="name">Name:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ cost_code.name }}</span>
+{% else %}
+    <input type="text" id="name" name="name" value="{{ cost_code.name if cost_code else '' }}" required>
+{% endif %}
+
+<label for="desc">Description:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ cost_code.desc }}</span>
+{% else %}
+    <input type="text" id="desc" name="desc" value="{{ cost_code.desc if cost_code else '' }}" required>
+{% endif %}

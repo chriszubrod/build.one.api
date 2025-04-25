@@ -1,0 +1,34 @@
+<label for="streetOne">Street One:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ address.street_one }}</span>
+{% else %}
+    <input type="text" id="streetOne" name="streetOne" value="{{ address.street_one if address else '' }}" required>
+{% endif %}
+
+<label for="streetTwo">Street Two:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ address.street_two }}</span>
+{% else %}
+    <input type="text" id="streetTwo" name="streetTwo" value="{{ address.street_two if address else '' }}">
+{% endif %}
+
+<label for="city">City:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ address.city }}</span>
+{% else %}
+    <input type="text" id="city" name="city" value="{{ address.city if address else '' }}" required>
+{% endif %}
+
+<label for="state">State:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ address.state }}</span>
+{% else %}
+    <input type="text" id="state" name="state" value="{{ address.state if address else '' }}" required>
+{% endif %}
+
+<label for="zipCode">Zip Code:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ address.zip_code }}</span>
+{% else %}
+    <input type="text" id="zipCode" name="zipCode" value="{{ address.zip_code if address else '' }}" required>
+{% endif %}

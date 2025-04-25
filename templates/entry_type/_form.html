@@ -1,0 +1,13 @@
+<label for="name">Entry Type Name:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ entry_type.name }}</span>
+{% else %}
+    <input type="text" id="name" name="name" value="{{ entry_type.name if entry_type else '' }}" required>
+{% endif %}
+
+<label for="description">Description:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ entry_type.description }}</span>
+{% else %}
+    <input type="text" id="description" name="description" value="{{ entry_type.description if entry_type else '' }}" required>
+{% endif %}

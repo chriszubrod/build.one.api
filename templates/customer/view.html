@@ -1,0 +1,20 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block content %}
+
+    <h1>Customer</h1>
+
+    <span>{{ customer.guid }}</span>
+
+    <div>
+
+        {% with readonly=True %}
+            {% include "customer/_form.html" %}
+        {% endwith %}
+
+        <a href="{{ url_for('customer_web.edit_customer_route', customer_guid=customer.guid) }}" 
+           class="edit-button">Edit</a>
+
+    </div>
+
+{% endblock %}

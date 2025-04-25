@@ -1,0 +1,23 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block content %}
+
+    <h1>Create Payment Term</h1>
+
+    <form id="paymentTermForm" autocomplete="off" onsubmit="return false;">
+
+        {% include 'payment_term/_form.html' %}
+
+        <button type="submitButton" id="submitButton" >Submit</button>
+
+    </form>
+
+{% endblock %}
+
+<script src="{{ url_for('static', filename='js/form-handler.js') }}" defer></script>
+
+<script defer>
+    document.addEventListener('DOMContentLoaded', function() {
+        FormHandler.init('paymentTermForm', '/api/post/payment-term', 'POST');
+    });
+</script>

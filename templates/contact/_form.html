@@ -1,0 +1,27 @@
+<label for="firstname">First Name:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ contact.first_name }}</span>
+{% else %}
+    <input type="text" id="firstname" name="firstname" value="{{ contact.first_name if contact else '' }}">
+{% endif %}
+
+<label for="lastname">Last Name:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ contact.last_name }}</span>
+{% else %}
+    <input type="text" id="lastname" name="lastname" value="{{ contact.last_name if contact else '' }}">
+{% endif %}
+
+<label for="email">Email:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ contact.email }}</span>
+{% else %}
+    <input type="email" id="email" name="email" required value="{{ contact.email if contact else '' }}">
+{% endif %}
+
+<label for="phone">Phone:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ contact.phone }}</span>
+{% else %}
+    <input id="phone" name="phone" value="{{ contact.phone if contact else '' }}">
+{% endif %}

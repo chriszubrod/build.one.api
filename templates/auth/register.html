@@ -1,0 +1,39 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Register{% endblock %}
+
+{% block body %}
+
+    <body class="site-layout">
+
+        <!-- Main Content -->
+        <main class="main-content">
+
+            <h1>Register</h1>
+
+            <form id="registerForm" autocomplete="off" onsubmit="return false;">
+                {% with register=True %}
+                    {% include 'auth/_form.html' %}
+                {% endwith %}
+                <button type="button" id="submitButton">Register</button>
+            </form>
+
+            <p>Already have an account? <a href="{{ url_for('auth_web.login_route') }}">Login here</a></p>
+
+        </main>
+    
+    </body>
+
+{% endblock %}
+
+{% block scripts %}
+
+    <script src="{{ url_for('static', filename='js/form-handler.js') }}" defer></script>
+
+    <script defer>
+        document.addEventListener('DOMContentLoaded', function() {
+            FormHandler.init('registerForm', '/api/post/auth/register', 'POST');
+        });
+    </script>
+
+{% endblock %}

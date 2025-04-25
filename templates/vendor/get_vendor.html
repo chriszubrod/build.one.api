@@ -1,0 +1,32 @@
+{% extends 'shared/layout/base.html' %}
+
+<form id="vendorForm">
+    
+    {% with messages = get_flashed_messages() %}
+        {% if messages %}
+            <ul class="messages">
+                {% for message in messages %}
+                    <li{% if message.tags %} class="{{ message.tags }}"{% endif %}>{{ message }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+    {% endwith %}
+
+    <!-- Vendor -->
+    {% if vendor %}
+        {% if vendor.data %}
+            <h2>Vendor</h2>
+            <p>Transaction: {{ vendor.data.transaction_id | default('Transaction not provided') }}</p>    
+            <p>GUID: {{ vendor.data.vendor_guid | default('GUID not provided') }}</p>
+            <p>Name: {{ vendor.data.vendor_name | default('Name not provided') }}</p>
+            <p>Intuit Id: {{ vendor.data.intuit_vendor_id | default('Intuit Id not provided') }}</p>
+        {% else %}
+            <p>Vendor not found</p>
+        {% endif %}
+    {% else %}
+        <p>Vendor not found</p>
+    {% endif %}
+
+    <a href="/vendors">Back to Vendors</a>
+</form>
+

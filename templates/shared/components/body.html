@@ -1,0 +1,27 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block body %}
+
+    <body class="site-layout">
+
+        <!-- Header -->
+        {% include 'shared/components/header.html' %}
+
+        <!-- Left Navigator -->
+        {% include 'shared/components/navigator.html' %}
+
+        <!-- Main Content -->
+        <main class="main-content">
+            {% block content %}
+            {% endblock %}
+        </main>
+
+        <!-- Right Sidebar -->
+        {% include 'shared/components/sidebar.html' %}
+
+        <!-- Footer -->
+        {% include 'shared/components/footer.html' %}
+
+    </body>
+
+{% endblock %}

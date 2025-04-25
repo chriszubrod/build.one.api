@@ -1,0 +1,13 @@
+<label for="name">Payment Term Name:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ payment_term.name }}</span>
+{% else %}
+    <input type="text" id="name" name="name" value="{{ payment_term.name if payment_term else '' }}" required>
+{% endif %}
+
+<label for="value">Value:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ payment_term.value }}</span>
+{% else %}
+    <input type="text" id="value" name="value" value="{{ payment_term.value if payment_term else '' }}" required>
+{% endif %}

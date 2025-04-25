@@ -1,0 +1,20 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block content %}
+
+    <h1>Contact</h1>
+
+    <span>{{ contact.guid }}</span>
+
+    <div>
+
+        {% with readonly=True %}
+            {% include "contact/_form.html" %}
+        {% endwith %}
+
+        <a href="{{ url_for('contact_web.edit_contact_route', contact_guid=contact.guid) }}" 
+           class="edit-button">Edit</a>
+
+    </div>
+
+{% endblock %}

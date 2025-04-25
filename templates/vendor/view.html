@@ -1,0 +1,20 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block content %}
+
+    <h1>Vendor</h1>
+
+    <span>{{ vendor.guid }}</span>
+
+    <div>
+
+        {% with readonly=True %}
+            {% include "vendor/_form.html" %}
+        {% endwith %}
+
+        <a href="{{ url_for('vendor_web.edit_vendor_route', vendor_guid=vendor.guid) }}" 
+           class="edit-button">Edit</a>
+
+    </div>
+
+{% endblock %}

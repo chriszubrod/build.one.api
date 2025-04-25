@@ -1,0 +1,53 @@
+{% extends 'shared/components/body.html' %}
+
+{% block title %}{{ entry_type.capitalize() + 's' if entry_type[-1] != 's' else entry_type.capitalize() }}{% endblock %}
+
+{% block content %}
+
+    <div class="list-header">
+        <h1>{{ entry_type.capitalize() + 's' if entry_type[-1] != 's' else entry_type.capitalize() }}</h1>
+        <div class="list-actions">
+            <a href="{{ url_for('entry_web.create_entry_route', entry_type=entry_type) }}" class="btn btn-primary">
+                <i class="fas fa-plus"></i>
+                New {{ entry_type.capitalize() }}
+            </a>
+        </div>
+    </div>
+
+    <div class="list-grid">
+        {% for entry in entries %}
+            <a href="{{ url_for('entry_web.view_entry_route', entry_type=entry_type, entry_guid=entry.guid) }}" class="list-card">
+                <div class="list-card-header">
+                    <h3 class="item-name">{{ entry.number }}</h3>
+                </div>
+                <div class="list-card-body">
+                    <div class="item-info">
+                        <div class="info-item">
+                            <label>ID</label>
+                            <span>{{ entry.guid[:8] }}</span>
+                        </div>
+                        <div class="info-item">
+                            <label>Date</label>
+                            <span>{{ entry.date }}</span>
+                        </div>
+                        <div class="info-item">
+                            <label>Amount</label>
+                            <span>${{ "{:,.2f}".format(entry.amount | float) }}</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- <div class="list-card-footer"> -->
+                <!--     <span><i class="fas fa-calendar-alt"></i> Created {{ entry.created_datetime }}</span> -->
+                <!-- </div> -->
+            </a>
+        {% else %}
+            <div class="list-empty-state">
+                <i class="fas fa-list"></i>
+                <h3>No {{ entry_type.capitalize() + 's' if entry_type[-1] != 's' else entry_type.capitalize() }} Yet</h3>
+                <p>Create your first {{ entry_type.lower() }} to get started</p>
+                <a href="{{ url_for('entry_web.create_entry_route', entry_type=entry_type) }}" class="btn btn-primary">Create New</a>
+            </div>
+        {% endfor %}
+    </div>
+
+{% endblock %}

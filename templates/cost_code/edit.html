@@ -1,0 +1,25 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block content %}
+
+    <h1>Edit Cost Code</h1>
+
+    <span>{{ cost_code.guid }}</span>
+
+    <form id="costCodeForm" autocomplete="off" onsubmit="return false;">
+
+        {% include 'cost_code/_form.html' %}
+
+        <button type="submitButton" id="submitButton" >Submit</button>
+
+    </form>
+
+{% endblock %}
+
+<script src="{{ url_for('static', filename='js/form-handler.js') }}" defer></script>
+
+<script defer>
+    document.addEventListener('DOMContentLoaded', function() {
+        FormHandler.init('costCodeForm', '/api/put/cost-code', 'PUT');
+    });
+</script>

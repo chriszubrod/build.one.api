@@ -1,0 +1,795 @@
+<form id="entryForm" autocomplete="off">
+    <div class="entry-container">
+        <!-- Header Section -->
+        <div class="header-section">
+            <select id="vendor" name="vendor" required>
+                <option value="">Select Vendor</option>
+                {% for vendor in vendors %}
+                    <option value="{{ vendor.vendor_guid }}">{{ vendor.vendor_name }}</option>
+                {% endfor %}
+            </select>
+            <input type="text" id="number" name="number" placeholder="Number" required>
+            <input type="date" id="date" name="date" required>
+        </div>
+
+        <!-- Line Items Section -->
+        <div class="line-items-container">
+            <!-- Additional line items will be added here -->
+        </div>
+
+        <!-- Total Section -->
+        <div class="total-section">
+            <span>Total: $</span>
+            <span id="total-amount">0.00</span>
+        </div>
+
+        <!-- Button Section -->
+        <div class="button-section">
+            <button type="button" onclick="addLineItem()">Add Line Item</button>
+            <button type="submit">Submit</button>
+        </div>
+
+        <span id="entry-type" name="entry-type" data-entry-type="{{ entry_type_guid }}" hidden></span>
+        <span id="qbosync" name="qbosync" hidden></span>
+        <span id="onedrivesync" name="onedrivesync" hidden></span>
+        <span id="budgettrackersync" name="budgettrackersync" hidden></span>
+
+        <!-- PDF Viewer and Upload Section -->
+        <div class="file-section">
+            <div class="pdf-preview-container">
+                <div id="pdf-list"></div>
+                <iframe id="pdf-viewer"></iframe>
+            </div>
+
+            <div class="drop-zone">
+                <span>Drop PDF Files Here OR Click to Upload</span>
+                <input type="file" class="drop-zone__input" accept=".pdf,application/pdf" multiple>
+            </div>
+        </div>
+
+    </div>
+</form>
+
+<style>
+    /* Main container */
+    .entry-container {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        padding: 20px;
+        width: 100%;
+        max-width: 1200px;  /* Maximum width for large screens */
+        margin: 0 auto;     /* Center on page */
+        box-sizing: border-box;
+    }
+
+    /* Header section */
+    .header-section {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 15px;
+        margin-bottom: 20px;
+        width: 100%;
+    }
+
+    .header-section > * {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+    }
+
+    /* Line items section */
+    .line-items-container {
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+        margin-bottom: 20px;
+        width: 100%;
+    }
+
+    /* Total and buttons section */
+    .total-section {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+        gap: 10px;
+        margin: 20px 0;
+        padding: 10px;
+        background-color: #f8f8f8;
+        border-radius: 4px;
+    }
+
+    .button-section {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 10px;
+        margin: 20px 0;
+        width: 100%;
+    }
+
+    /* File section */
+    .file-section {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        width: 100%;
+    }
+
+    .pdf-preview-container {
+        width: 100%;
+        max-width: 1200px;
+        margin: 20px auto;
+        padding: 20px;
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+
+    #pdf-list {
+        width: 100%;
+        max-width: 1200px;
+        margin: 0 auto;
+    }
+
+    #pdf-viewer {
+        width: 100%;
+        max-width: 1200px;
+        height: 500px;
+        display: none;
+        margin: 0 auto;
+    }
+
+    .drop-zone {
+        width: 100%;
+        max-width: 1200px;
+        height: 200px;
+        margin: 0 auto;
+        padding: 25px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        background: #f8f8f8;
+        border: 3px dashed #aaa;
+        border-radius: 4px;
+        transition: all 0.3s ease;
+        cursor: pointer;
+        box-sizing: border-box;
+    }
+
+    /* Responsive adjustments */
+    @media (max-width: 768px) {
+        .entry-container {
+            padding: 10px;
+        }
+
+        .header-section {
+            grid-template-columns: 1fr;  /* Stack on mobile */
+        }
+
+        .button-section {
+            grid-template-columns: 1fr;  /* Stack buttons on mobile */
+        }
+
+        .total-section {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .pdf-preview-container {
+            padding: 10px;
+        }
+
+        #pdf-viewer {
+            height: 50vh;  /* Smaller height on mobile */
+        }
+    }
+
+    /* Form controls styling */
+    input, select, button {
+        padding: 8px 12px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-size: 14px;
+        transition: all 0.3s ease;
+    }
+
+    button {
+        cursor: pointer;
+        background-color: #4CAF50;
+        color: white;
+        border: none;
+    }
+
+    button:hover {
+        opacity: 0.9;
+    }
+
+    button[type="submit"] {
+        background-color: #2196F3;
+    }
+
+    .remove-button {
+        background-color: #ff4444;
+    }
+
+    .line-item {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;  /* Allow items to wrap on narrow screens */
+        gap: 10px;
+        align-items: center;
+        padding: 10px;
+        background-color: #f5f5f5;
+        border-radius: 4px;
+    }
+
+    .line-item > * {
+        flex: 1 1 auto;  /* Allow items to grow and shrink */
+        min-width: 120px;  /* Minimum width before wrapping */
+    }
+
+    /* Specific widths for different fields */
+    .line-item select[name="cost-code"] {
+        flex: 2 1 200px;  /* Larger flex-basis for cost code */
+    }
+
+    .line-item input[name="description"] {
+        flex: 3 1 250px;  /* Larger flex-basis for description */
+    }
+
+    .line-item input[name="units"],
+    .line-item input[name="rate"],
+    .line-item input[name="amount"] {
+        flex: 1 1 100px;  /* Smaller flex-basis for number inputs */
+    }
+
+    .line-item input[type="checkbox"] {
+        flex: 0 0 auto;  /* Don't grow or shrink checkbox */
+        min-width: auto;
+    }
+
+    .line-item select[name="project"] {
+        flex: 2 1 200px;  /* Larger flex-basis for project */
+    }
+
+    .line-item button {
+        flex: 0 0 auto;  /* Don't grow or shrink button */
+        min-width: auto;
+    }
+
+    /* Media query for narrow screens */
+    @media (max-width: 768px) {
+        .line-item {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .line-item > * {
+            width: 100%;
+            margin-bottom: 5px;
+        }
+
+        .line-item button {
+            align-self: flex-end;
+        }
+    }
+
+    .add-line-item {
+        background-color: #4CAF50;
+        color: white;
+    }
+
+    .submit-entry {
+        background-color: #2196F3;
+        color: white;
+    }
+
+    .drop-zone--over {
+        border-style: solid;
+    }
+
+    .drop-zone__input {
+        display: none;
+    }
+
+    .pdf-list-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px;
+        border-bottom: 1px solid #eee;
+    }
+
+    .pdf-list-item button {
+        margin-left: 10px;
+    }
+
+    .form-group {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-bottom: 20px;
+        max-width: 300px;  /* Adjust width as needed */
+    }
+
+    .form-group label {
+        font-weight: bold;
+        margin-bottom: 5px;
+    }
+
+    .form-group select,
+    .form-group input {
+        padding: 8px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+    }
+
+    #line-items {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+    }
+
+    #line-items li {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+    }
+
+    #line-items select,
+    #line-items input[type="text"] {
+        padding: 8px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+    }
+
+    #line-items input[type="checkbox"] {
+        margin: 0 10px;
+    }
+
+    /* Adjust widths for different fields */
+    #line-items select[name="subCostCode"] { width: 200px; }
+    #line-items input[name="description"] { width: 200px; }
+    #line-items input[name="units"] { width: 80px; }
+    #line-items input[name="rate"] { width: 100px; }
+    #line-items input[name="amount"] { width: 100px; }
+    #line-items select[name="project"] { width: 200px; }
+
+    /* Style remove button */
+    #line-items button {
+        padding: 8px 15px;
+        background-color: #ff4444;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+
+    #line-items button:hover {
+        background-color: #cc0000;
+    }
+
+    .button-group {
+        display: flex;
+        gap: 10px;
+        margin-top: 20px;
+        margin-bottom: 20px;
+    }
+
+    .button-group button {
+        padding: 10px 20px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+    }
+
+    .button-group button[type="button"] {  /* Add Line Item button */
+        background-color: #4CAF50;
+        color: white;
+    }
+
+    .button-group button[type="submit"] {  /* Submit button */
+        background-color: #2196F3;
+        color: white;
+    }
+
+    .button-group button:hover {
+        opacity: 0.9;
+    }
+
+</style>
+
+<script>
+
+    var vendor = '';
+    var number = '';
+    var date = '';
+    var entry_type = '';
+    var total = 0;
+    var lineItems = [];
+    var files = [];
+    var fileArray = [];
+
+    function addLineItem() {
+        const lineItemsContainer = document.querySelector('.line-items-container');
+        const newLineItem = document.createElement('div');
+        newLineItem.className = 'line-item';
+        
+        newLineItem.innerHTML = `
+            <select name="cost-code" required>
+                <option value="">Select Cost Code</option>
+                {% for sub_cost_code in sub_cost_codes %}
+                    <option value="{{ sub_cost_code.sub_cost_code_guid }}">{{ sub_cost_code.number }}: {{ sub_cost_code.name }}</option>
+                {% endfor %}
+            </select>
+            <input type="text" name="description" placeholder="Description" required>
+            <input type="text" name="units" placeholder="Units" value="1" required>
+            <input type="text" name="rate" placeholder="Rate" required>
+            <input type="text" name="amount" placeholder="Amount" required readonly>
+            <input type="checkbox" name="isBillable" value="1" checked>
+            <select name="project" required>
+                <option value="">Select Project</option>
+                {% for project in projects %}
+                    <option value="{{ project.project_guid }}">{{ project.name }}</option>
+                {% endfor %}
+            </select>
+            <button type="button" onclick="removeLineItem(this)">Remove</button>
+        `;
+
+        lineItemsContainer.appendChild(newLineItem);
+        attachEventListenersToLineItem(newLineItem);
+
+        // Set focus on the cost-code select of the newly added line item
+        const costCodeSelect = newLineItem.querySelector('select[name="cost-code"]');
+        costCodeSelect.focus();
+    }
+
+    function attachEventListenersToLineItem(item) {
+        var unitsInput = item.querySelector('input[name="units"]');
+        var rateInput = item.querySelector('input[name="rate"]');
+        var amountInput = item.querySelector('input[name="amount"]');
+
+        function calculateAndDisplayAmount() {
+            var units = parseFloat(unitsInput.value) || 0;
+            var rate = parseFloat(rateInput.value) || 0;
+            var amount = units * rate;
+            amountInput.value = amount ? amount.toFixed(2) : '';
+            updateTotalAmount();
+        }
+
+        unitsInput.addEventListener('input', calculateAndDisplayAmount);
+        rateInput.addEventListener('input', calculateAndDisplayAmount);
+    }
+
+    function updateTotalAmount() {
+        var lineItems = document.querySelectorAll('input[name="amount"]');
+        var totalLineItems = 0;
+        lineItems.forEach(function(item) {
+            var amountValue = parseFloat(item.value) || 0;
+            totalLineItems += amountValue;
+        });
+        document.getElementById('total-amount').innerText = totalLineItems.toFixed(2);
+    }
+
+    function removeLineItem(button) {
+        const lineItem = button.closest('.line-item');
+        lineItem.remove();
+        updateTotalAmount();
+    }
+
+    function findClosestVendor(slmVendorName, vendorSelect) {
+        let bestMatch = null;
+        let highestScore = 0;
+        
+        // Get all vendor options
+        const vendorOptions = Array.from(vendorSelect.options);
+        
+        vendorOptions.forEach(option => {
+            if (!option.text) return; // Skip empty options
+            
+            // Convert both to lowercase for comparison
+            const vendorA = slmVendorName.toLowerCase();
+            const vendorB = option.text.toLowerCase();
+            
+            // Simple similarity score
+            let score = 0;
+            
+            // Exact match
+            if (vendorA === vendorB) {
+                score = 100;
+            }
+            // First word exact match
+            else if (vendorA.split(' ')[0] === vendorB.split(' ')[0]) {
+                score = 90;
+            }
+            // First two words match
+            else if (vendorA.split(' ').slice(0,2).join(' ') === vendorB.split(' ').slice(0,2).join(' ')) {
+                score = 85;
+            }
+            // First word is contained in the other
+            else if (vendorA.split(' ')[0].includes(vendorB.split(' ')[0]) || 
+                    vendorB.split(' ')[0].includes(vendorA.split(' ')[0])) {
+                score = 70;
+            }
+            
+            //console.log(`Comparing "${vendorA}" with "${vendorB}": score ${score}`);
+            
+            // Update best match if score is higher
+            if (score > highestScore) {
+                highestScore = score;
+                bestMatch = option;
+            }
+        });
+        
+        return highestScore > 69 ? bestMatch : null; // Higher threshold
+    }
+
+    function formatDate(dateString) {
+        if (!dateString) return '';
+        
+        try {
+            // Parse the date string
+            const date = new Date(dateString);
+            
+            // Check if date is valid
+            if (isNaN(date)) {
+                console.error('Invalid date:', dateString);
+                return '';
+            }
+
+            // Get components
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');  // Add leading zero
+            const day = String(date.getDate()).padStart(2, '0');         // Add leading zero
+            
+            // Format for HTML date input (YYYY-MM-DD)
+            return `${year}-${month}-${day}`;
+            
+            // For MM/DD/YYYY format, use:
+            // return `${month}/${day}/${year}`;
+        } catch (error) {
+            console.error('Error formatting date:', error);
+            return '';
+        }
+    }
+
+    function uploadFiles(files) {
+        var formData = new FormData();
+    
+        // Validate files
+        for (const file of files) {
+            if (file.type !== 'application/pdf') {
+                alert('Please upload PDF files only');
+                return;
+            }
+
+            // Create preview immediately
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                // Add to fileArray for form submission
+                fileArray.push({
+                    name: file.name,
+                    type: file.type,
+                    size: file.size,
+                    data: e.target.result // base64 encoded data
+                });
+
+                // Show preview
+                addPdfToList(file.name, e.target.result)
+
+                // After adding to fileArray, prepare and send request
+                const requestData = {
+                    'files': fileArray
+                };
+
+                // Submit the data
+                var xhr = new XMLHttpRequest();
+                xhr.open('POST', '/api/pass/bill/to/slm');
+                xhr.setRequestHeader('Content-Type', 'application/json');
+                xhr.onload = function() {
+                    var response = JSON.parse(xhr.responseText);
+                    var data = JSON.parse(response);
+                    console.log(data);
+
+                    // Find and select vendor in dropdown
+                    const vendorSelect = document.getElementById('vendor');
+                    const bestMatch = findClosestVendor(data.vendor_name, vendorSelect);
+
+                    if (bestMatch) {
+                        vendorSelect.value = bestMatch.value;
+                    }
+
+                    if (xhr.status === 201) {
+
+                        document.getElementById('number').value = data.invoice_number;
+                        document.getElementById('date').value = formatDate(data.invoice_date);
+
+                        const line_item = document.querySelector('.line-items-container .line-item');
+                        if (line_item) {
+                            const amount = data.invoice_amount.replace('$', '');
+                            line_item.querySelector('input[name="rate"]').value = amount;
+                            line_item.querySelector('input[name="amount"]').value = amount;
+                            updateTotalAmount();
+                        }
+
+                    } else {
+
+                        console.log('Error: ', response);
+
+                    }
+                };
+                xhr.send(JSON.stringify(requestData));
+            };
+            reader.readAsDataURL(file);
+        }
+    }
+
+    function addPdfToList(filename, dataUrl) {
+        const pdfList = document.getElementById('pdf-list');
+        const listItem = document.createElement('div');
+        listItem.className = 'pdf-list-item';
+        
+        listItem.innerHTML = `
+            <span>${filename}</span>
+            <div>
+                <button onclick="removePdf(this)">Remove</button>
+            </div>
+        `;
+        
+        pdfList.appendChild(listItem);
+
+        // Automatically view the PDF
+        viewPdf(dataUrl);
+    }
+
+    function viewPdf(dataUrl) {
+        const viewer = document.getElementById('pdf-viewer');
+        viewer.src = dataUrl;
+        viewer.style.display = 'block';
+    }
+
+    function removePdf(button) {
+        const listItem = button.closest('.pdf-list-item');
+        const index = Array.from(listItem.parentNode.children).indexOf(listItem);
+        
+        // Remove the file from fileArray
+        fileArray.splice(index, 1);
+
+        listItem.remove();
+        
+        // Clear the file input value
+        document.querySelector('.drop-zone__input').value = '';
+    
+        if (document.getElementById('pdf-list').children.length === 0) {
+            document.getElementById('pdf-viewer').style.display = 'none';
+        }
+
+        // Clear the form field values
+        document.getElementById('vendor').selectedIndex = 0;
+        document.getElementById('number').value = '';
+        document.getElementById('date').value = '';
+        const line_item = document.querySelector('.line-items-container .line-item');
+        if (line_item) {
+            line_item.querySelector('input[name="rate"]').value = '';
+            line_item.querySelector('input[name="amount"]').value = '';
+            updateTotalAmount();
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        addLineItem(); // Add initial line item when the page loads
+        // Get today's date in YYYY-MM-DD format for the date input
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('date').value = today;
+    });
+
+    document.querySelectorAll(".drop-zone").forEach(dropZone => {
+        const input = dropZone.querySelector(".drop-zone__input");
+
+        dropZone.addEventListener("click", e => {
+            input.click();
+        });
+
+        input.addEventListener("change", e => {
+            if (input.files.length) {
+                uploadFiles(input.files);
+            }
+        });
+
+        dropZone.addEventListener("dragover", e => {
+            e.preventDefault();
+            dropZone.classList.add("drop-zone--over");
+        });
+
+        ["dragleave", "dragend"].forEach(type => {
+            dropZone.addEventListener(type, e => {
+                dropZone.classList.remove("drop-zone--over");
+            });
+        });
+
+        dropZone.addEventListener("drop", e => {
+            e.preventDefault();
+
+            if (e.dataTransfer.files.length) {
+                input.files = e.dataTransfer.files;
+                uploadFiles(e.dataTransfer.files);
+            }
+
+            dropZone.classList.remove("drop-zone--over");
+        });
+    });
+
+    document.getElementById('entryForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        var form = e.target;
+        actionURL = '/api/post/bill';
+
+        // Construct the data array
+        var formData = {
+            'vendor': form.querySelector('[name="vendor"]').value,
+            'number': form.querySelector('[name="number"]').value,
+            'date': form.querySelector('[name="date"]').value,
+            'entry_type': form.querySelector('[name="entry-type"]').getAttribute('data-entry-type'),
+            'total': document.getElementById('total-amount').innerText,
+            'lineItems': [],
+            'files': fileArray
+        };
+
+        // Iterate over each line item
+        document.querySelectorAll('.line-item').forEach(function(item) {
+            formData.lineItems.push({
+                subCostCode: item.querySelector('[name="cost-code"]').value,
+                description: item.querySelector('[name="description"]').value,
+                units: item.querySelector('[name="units"]').value,
+                rate: item.querySelector('[name="rate"]').value,
+                amount: item.querySelector('[name="amount"]').value,
+                isBillable: item.querySelector('[name="isBillable"]').checked,
+                project: item.querySelector('[name="project"]').value
+            });
+        });
+
+        // Convert the data array to JSON
+        var jsonData = JSON.stringify(formData);
+
+        //console.log("Form data: ", formData);
+        //console.log('Files being sent: ', fileArray);
+
+        // Submit the data
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', actionURL, true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.onload = function() {
+            var response_status_code = xhr.status;
+            console.log('response_status_code: ', response_status_code);
+            var response_text = JSON.parse(xhr.responseText);
+            console.log('response_text: ', response_text);
+            var response_message = response_text.message;
+            console.log('response_message: ', response_message);
+
+            if (response_status_code == 200) {
+                // document.getElementById('qbosync').innerText = 'QBO Sync Successful';
+                setTimeout(function() {
+                    window.location.href = '/entry/bill';
+                }, 1000); // 1000 milliseconds = 1 seconds
+            } else {
+                // document.getElementById('qbosync').innerText = 'QBO Sync Failed';
+            }
+
+        };
+        xhr.send(JSON.stringify(formData));
+
+    });
+
+</script>

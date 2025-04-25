@@ -1,0 +1,63 @@
+{% extends 'shared/layout/base.html' %}
+
+{% set projects = projects | default((), true) %}
+
+{% with messages = get_flashed_messages() %}
+    {% if messages %}
+        <ul class="messages">
+            {% for message in messages %}
+                <li{% if message.tags %} class="{{ message.tags }}"{% endif %}>{{ message }}</li>
+            {% endfor %}
+        </ul>
+    {% endif %}
+{% endwith %}
+
+<ul id="vendors">
+
+</ul>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        loadVendors();
+    });
+
+    async function loadVendors() {
+        try {   
+            const response = await fetch("/api/get/vendors");
+            const result = await response.json();
+            const records = result.data?.records;
+            
+            console.log('Full response:', result);  // Debug full response
+            console.log('Content Length (B):', (response.headers.get('Content-Length'))); // bytes
+            console.log('Content Length (KB):', (response.headers.get('Content-Length') / 1024)); // kilobytes
+            console.log('Content Length (MB):', (response.headers.get('Content-Length') / 1024 / 1024)); // megabytes
+            console.log('Records:', records); // Debug records
+            
+            if (result.status_code === 200) {
+                
+                const chunkSize = 100;
+                const vendorsList = document.getElementById("vendors");
+                let html = '';                
+
+                for (let i=0; i<records.length; i+=chunkSize) {
+                    const chunk = records.slice(i, i + chunkSize);
+                    setTimeout(() => {
+                        const chunkHtml = chunk.map(vendor => `
+                            <li>
+                                <a href="/vendor/${vendor.vendor_guid}">
+                                    <div>${vendor.vendor_name}</div>
+                                </a>
+                            </li>
+                        `).join('');
+                        html += chunkHtml;
+                        vendorsList.innerHTML = html;
+                    }, 0); // 1000 = 1 second delay
+                }
+            } else {
+                console.error("Error or invalid data:", result.message);
+            }
+        } catch (error) {
+            console.error("Error loading vendors:", error);
+        }
+    }
+</script>

@@ -1,0 +1,27 @@
+<nav class="navigator">
+    <div class="navigator-container">
+        <div class="nav-group-top">
+            <a href="/dashboard" class="nav-item {% if active_page == 'dashboard' %}active{% endif %}">
+                <span>Dashboard</span>
+            </a>
+        </div>
+
+        <div class="nav-group-middle">
+            {% if session.get('modules') %}
+                {% for module in session.get('modules') %}
+                    <a href="{{ module.slug }}" class="nav-item {% if active_page == module.slug %}active{% endif %}">
+                        <span>{{ module.name.capitalize() + 's' if module.name[-1] != 's' else module.name.capitalize() }}</span>
+                    </a>
+                {% endfor %}
+            {% endif %}
+        </div>
+
+        {% if session.get('logged_in') %}
+            <div class="nav-group-bottom">
+                <a href="/logout" class="nav-item">
+                    <span>Logout</span>
+                </a>
+            </div>
+        {% endif %}
+    </div>
+</nav>

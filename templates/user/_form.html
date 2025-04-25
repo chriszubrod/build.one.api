@@ -1,0 +1,34 @@
+<label for="username">Username:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ user.username }}</span>
+{% else %}
+    <input type="text" id="username" name="username" value="{{ user.username if user else '' }}">
+{% endif %}
+
+<label for="password">Password:</label>
+{% if readonly %}
+    <span class="readonly-field">********</span>
+{% else %}
+    <input type="password" id="password" name="password" value="********">
+{% endif %}
+
+<label for="isActive">Active:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ "Yes" if user.is_active else "No" }}</span>
+{% else %}
+    <input type="checkbox" id="isActive" name="isActive" checked>
+{% endif %}
+
+<label for="roleGuid">Role:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ user.role_name }}</span>
+{% else %}
+    <select id="roleGuid" name="roleGuid" required>
+        <option value="">Select Role</option>
+        {% for role in roles %}
+            <option value="{{ role.guid }}" {{ 'selected' if user and user.role_id == role.id else '' }}>
+                {{ role.name }}
+            </option>
+        {% endfor %}
+    </select>
+{% endif %}

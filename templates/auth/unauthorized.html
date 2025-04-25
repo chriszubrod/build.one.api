@@ -1,0 +1,7 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block content %}
+    <h1>Unauthorized</h1>
+    <p>You do not have permission to access this resource.</p>
+    <a href="{{ url_for('auth_web.login_route') }}">Return to Login</a>
+{% endblock %} 

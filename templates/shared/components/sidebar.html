@@ -1,0 +1,60 @@
+<aside class="sidebar">
+    <div class="sidebar-resize-handle"></div>
+    
+    <div class="sidebar-content">
+        <!-- Sidebar content goes here -->
+        {% block sidebar_content %}
+        {% endblock %}
+    </div>
+
+</aside>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const sidebar = document.querySelector('.sidebar');
+    const handle = document.querySelector('.sidebar-resize-handle');
+    let isResizing = false;
+    let lastDownX = 0;
+    let originalWidth = 0;
+
+    // Restore saved width
+    const storedWidth = localStorage.getItem('sidebarWidth');
+    if (storedWidth) {
+        sidebar.style.width = storedWidth + 'px';
+    }
+
+    handle.addEventListener('mousedown', (e) => {
+        isResizing = true;
+        lastDownX = e.clientX;
+        originalWidth = sidebar.offsetWidth;
+        handle.classList.add('dragging');
+        sidebar.classList.add('resizing');
+        document.body.style.userSelect = 'none';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!isResizing) return;
+
+        const delta = e.clientX - lastDownX;
+        const newWidth = originalWidth - delta;
+        
+        if (newWidth >= 250 && newWidth <= 600) {
+            sidebar.style.width = newWidth + 'px';
+            localStorage.setItem('sidebarWidth', newWidth);
+        }
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (isResizing) {
+            isResizing = false;
+            handle.classList.remove('dragging');
+            sidebar.classList.remove('resizing');
+            document.body.style.userSelect = '';
+        }
+    });
+
+    handle.addEventListener('selectstart', (e) => {
+        e.preventDefault();
+    });
+});
+</script>

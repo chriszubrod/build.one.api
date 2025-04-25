@@ -1,5 +1,7 @@
+import ast
 import json
 import re
+
 
 def get_crew_output(result):
 
@@ -29,10 +31,15 @@ def get_crew_output(result):
 
 def extract_json_block(text):
     try:
-        match = re.search(r'{.*}', text, re.DOTALL)
-        return match.group(0) if match else "{}"
-    except Exception:
-        return "{}"
+        match = re.search(r"```(?:json)?\s*({.*?})\s*```", text, re.DOTALL)
+        raw_json = match.group(1) if match else text.strip()
+        try:
+            return json.loads(raw_json)
+        except json.JSONDecodeError:
+            return ast.literal_eval(raw_json)  # fallback for Python-style dicts
+    except Exception as e:
+        print(f"❌ Failed to extract JSON block: {e}")
+        return {}
 
 
 def ensure_dict(value):

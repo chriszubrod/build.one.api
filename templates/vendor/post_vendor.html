@@ -1,0 +1,93 @@
+{% extends 'shared/layout/base.html' %}
+
+<form id="vendorForm">
+    
+    {% with messages = get_flashed_messages() %}
+        {% if messages %}
+            <ul class="messages">
+                {% for message in messages %}
+                    <li{% if message.tags %} class="{{ message.tags }}"{% endif %}>{{ message }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+    {% endwith %}
+
+    <!-- Vendor -->
+    <label for="vendorname">Vendor Name:</label>
+    <input type="text" id="vendorname" name="vendorname" required>
+
+    <label for="abbreviation">Abbreviation:</label>
+    <input type="text" id="abbreviation" name="abbreviation" required>
+
+    <label for="taxidnumber">Tax ID Number:</label>
+    <input type="text" id="taxidnumber" name="taxidnumber">
+
+    <label for="isActive">Active:</label>
+    <input type="checkbox" id="isActive" name="isActive" value="1" checked>
+
+    <label for="vendortype">Type:</label>
+    <input type="text" id="vendortype" name="vendortype" required>
+
+    <!-- Contact -->
+    <label for="firstname">First Name:</label>
+    <input type="text" id="firstname" name="firstname">
+
+    <label for="lastname">Last Name:</label>
+    <input type="text" id="lastname" name="lastname">
+
+    <label for="email">Email:</label>
+    <input type="email" id="email" name="email" required>
+
+    <label for="phone">Phone:</label>
+    <input id="phone" name="phone">
+
+    <!-- Address -->
+    <label for="streetOne">Street One:</label>
+    <input type="text" id="streetOne" name="streetOne" required>
+
+    <label for="streetTwo">Street Two:</label>
+    <input type="text" id="streetTwo" name="streetTwo">
+
+    <label for="city">City:</label>
+    <input type="text" id="city" name="city" required>
+
+    <label for="state">State:</label>
+    <input type="text" id="state" name="state" required>
+
+    <label for="zipCode">Zip Code:</label>
+    <input type="text" id="zipCode" name="zipCode" required>
+
+    <!-- Certificate Of Insurance -->
+
+    <!-- Payment Term -->
+    <label for="paymentterm">Payment Term:</label>
+    <select id="paymentterm" name="paymentterm" required>
+        <option value="">Select Payment Term</option>
+        {% for term in paymentterms %}
+            <option value="{{ term.GUID }}">{{ term.Name }}</option>
+        {% endfor %}
+    </select>
+
+    <button type="submit">Submit</button>
+
+</form>
+
+<script>
+    document.getElementById('vendorForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        var form = e.target;
+        form.action = '/api/post/vendor';
+        form.method = 'POST';
+        var formData = new FormData(form);
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', form.action, true);
+        xhr.onload = function() {
+            var response = JSON.parse(xhr.responseText);
+            console.log(response['message']);
+            if (xhr.status === 201) {
+                form.reset();
+            }
+        };
+        xhr.send(formData);
+    });
+</script>

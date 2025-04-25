@@ -1,0 +1,17 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block content %}
+
+    {% for vendor in vendors %}
+
+        <div>
+            <div>
+                <span>{{ vendor.guid }}</span>
+                <span>{{ vendor.vendorname }}</span>
+                <span>{{ vendor.isActive }}</span>
+            </div>
+        </div>
+
+    {% endfor %}
+
+{% endblock %}

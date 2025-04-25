@@ -1,0 +1,17 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block content %}
+
+    {% for entry_type in entry_types %}
+
+        <div>
+            <div>
+                <span>{{ entry_type.guid }}</span>
+                <span>{{ entry_type.name }}</span>
+                <span>{{ entry_type.description }}</span>
+            </div>
+        </div>
+
+    {% endfor %}
+
+{% endblock %}

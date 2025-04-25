@@ -1,0 +1,32 @@
+<label for="number">Sub Cost Code Number:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ sub_cost_code.number }}</span>
+{% else %}
+    <input type="text" id="number" name="number" value="{{ sub_cost_code.number if sub_cost_code else '' }}" required>
+{% endif %}
+
+<label for="name">Sub Cost Code Name:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ sub_cost_code.name }}</span>
+{% else %}
+    <input type="text" id="name" name="name" value="{{ sub_cost_code.name if sub_cost_code else '' }}" required>
+{% endif %}
+
+<label for="desc">Sub Cost Code Description:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ sub_cost_code.desc }}</span>
+{% else %}
+    <input type="text" id="desc" name="desc" value="{{ sub_cost_code.desc if sub_cost_code else '' }}" required>
+{% endif %}
+
+<label for="cost-code">Cost Code:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ sub_cost_code.cost_code }}</span>
+{% else %}
+    <select id="cost-code" name="cost-code" required>
+        <option value="">Select Cost Code</option>
+        {% for code in costcodes %}
+            <option value="{{ code.GUID }}">{{ code.Name }}</option>
+        {% endfor %}
+    </select>
+{% endif %}

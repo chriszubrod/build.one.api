@@ -1,0 +1,21 @@
+<label for="name">Module Name:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ module.name }}</span>
+{% else %}
+    <input type="text" id="name" name="name" value="{{ module.name if module else '' }}" required>
+{% endif %}
+
+<label for="description">Description:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ entry_type.description }}</span>
+{% else %}
+    <input type="text" id="description" name="description" value="{{ module.description if module else '' }}" required>
+{% endif %}
+
+<label for="slug">Slug:</label>
+{% if readonly %}
+    <span class="readonly-field">{{ module.slug }}</span>
+{% else %}
+    <input type="text" id="slug" name="slug" value="{{ module.slug if module else '' }}" required>
+{% endif %}
+

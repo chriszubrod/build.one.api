@@ -1,0 +1,293 @@
+<!-- Line Items Container -->
+<div class="line-items-container">
+    <!-- Header Section -->
+    <div class="line-item-row button-row">
+        <div class="line-item-cell full-width">
+            <h3>Line Items</h3>
+        </div>
+    </div>
+
+    <!-- Line Items Area -->
+    <div class="line-items-area">
+        <!-- Line Item Template -->
+        <div class="line-item-container">
+            <!-- Cost Code Row -->
+            <div class="line-item-row cost-code-row">
+                <div class="line-item-cell full-width">
+                    <label for="sub-cost-code">Cost Code:</label>
+                    {% if readonly %}
+                        {% for s in sub_cost_codes %}
+                            {% if entry_line_item.sub_cost_code_id == s.id %}
+                                <span class="readonly-field">{{ s.number }}: {{ s.name }}</span>
+                            {% endif %}
+                        {% endfor %}
+                    {% else %}
+                        <select id="sub-cost-code" name="sub-cost-code" required>
+                            <option value="">Select Cost Code</option>
+                            {% for s in sub_cost_codes %}
+                                <option value="{{ s.guid }}">{{ s.number }}: {{ s.name }}</option>
+                            {% endfor %}
+                        </select>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Description Row -->
+            <div class="line-item-row description-row">
+                <div class="line-item-cell">
+                    <label for="description">Description:</label>
+                    {% if readonly %}
+                        <span class="readonly-field">{{ entry_line_item.description }}</span>
+                    {% else %}
+                        <input type="text" id="description" name="description" value="" required>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Details Row -->
+            <div class="line-item-row details-row">
+                <div class="line-item-cell narrow">
+                    <label for="units">Units:</label>
+                    {% if readonly %}
+                        <span class="readonly-field">{{ entry_line_item.units }}</span>
+                    {% else %}
+                        <input type="text" id="units" name="units" value="1" required>
+                    {% endif %}
+                </div>
+
+                <div class="line-item-cell narrow">
+                    <label for="rate">Rate:</label>
+                    {% if readonly %}
+                        <span class="readonly-field">${{ "{:,.2f}".format(entry_line_item.rate | float) }}</span>
+                    {% else %}
+                        <input type="text" id="rate" name="rate" value="${{ '{:,.2f}'.format(0) }}" required>
+                    {% endif %}
+                </div>
+
+                <div class="line-item-cell narrow">
+                    <label for="amount">Amount:</label>
+                    {% if readonly %}
+                        <span class="readonly-field">${{ "{:,.2f}".format(entry_line_item.amount | float) }}</span>
+                    {% else %}
+                        <input type="text" id="amount" name="amount" value="${{ '{:,.2f}'.format(0) }}" required readonly 
+                            style="pointer-events: none; user-select: none; background-color: var(--color-hover);"
+                            tabindex="-1">
+                    {% endif %}
+                </div>
+
+                <div class="line-item-cell narrow">
+                    <label for="isBillable">Billable:</label>
+                    {% if readonly %}
+                        <span class="readonly-field">{{ entry_line_item.is_billable }}</span>
+                    {% else %}
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="is-billable" name="is-billable" value="1" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Project Row -->
+            <div class="line-item-row project-row">
+                <div class="line-item-cell full-width">
+                    <label for="project">Project:</label>
+                    {% if readonly %}
+                        {% for p in projects %}
+                            {% if entry_line_item.project_id == p.id %}
+                                <span class="readonly-field">{{ p.name }}</span>
+                            {% endif %}
+                        {% endfor %}
+                    {% else %}
+                        <select id="project" name="project" required>
+                            <option value="">Select Project</option>
+                            {% for p in projects %}
+                                <option value="{{ p.guid }}">{{ p.name }}</option>
+                            {% endfor %}
+                        </select>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Remove Button Row -->
+            <div class="line-item-row remove-row">
+                <div class="line-item-cell">
+                    {% if readonly %}
+                        <button type="button" onclick="" hidden>Remove</button>
+                    {% else %}
+                        <button type="button" onclick="removeLineItem(this)">Remove</button>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Line Item Button -->
+    {% if not readonly %}
+        <div class="add-line-item-row">
+            <button type="button" onclick="addLineItem()">Add Line Item</button>
+        </div>
+    {% endif %}
+</div>
+
+{% block scripts %}
+    <script>
+        function formatCurrency(value) {
+            // Format to match Python's '{:,.2f}' format
+            return '$' + parseFloat(value).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+        }
+
+        function parseCurrency(value) {
+            // Remove $ and commas, then parse as float
+            return parseFloat(value.replace(/[$,]/g, '')) || 0;
+        }
+
+        function calculateAmount(lineItemContainer) {
+            const unitsInput = lineItemContainer.querySelector('input[name="units"]');
+            const rateInput = lineItemContainer.querySelector('input[name="rate"]');
+            const amountInput = lineItemContainer.querySelector('input[name="amount"]');
+            
+            const units = parseFloat(unitsInput.value) || 0;
+            const rate = parseCurrency(rateInput.value);
+            
+            const amount = units * rate;
+            amountInput.value = formatCurrency(amount);
+
+            // Update total after calculating individual amount
+            updateTotal();
+        }
+
+        function updateTotal() {
+            const totalElement = document.getElementById('total');
+            if (!totalElement) return;
+
+            // Get all amount inputs
+            const amountInputs = document.querySelectorAll('.line-item-container input[name="amount"]');
+            
+            // Sum up all amounts
+            const total = Array.from(amountInputs).reduce((sum, input) => {
+                return sum + parseCurrency(input.value);
+            }, 0);
+
+            // Update the total display
+            totalElement.textContent = formatCurrency(total);
+        }
+
+        function handleRateInput(event) {
+            const input = event.target;
+            const value = input.value;
+            
+            // Remove all non-numeric characters except decimal point
+            let numericValue = value.replace(/[^\d.]/g, '');
+            
+            // Ensure only one decimal point
+            const decimalPoints = numericValue.match(/\./g) || [];
+            if (decimalPoints.length > 1) {
+                numericValue = numericValue.replace(/\./g, (match, index) => index === numericValue.indexOf('.') ? '.' : '');
+            }
+            
+            input.value = numericValue;
+        }
+
+        function handleRateFocus(event) {
+            const input = event.target;
+            // Store the current numeric value for later use
+            input.dataset.currentValue = parseCurrency(input.value);
+            // Clear the input completely
+            input.value = '';
+        }
+
+        function handleRateBlur(event) {
+            const input = event.target;
+            let value = input.value.trim();
+            
+            // If the field is empty and there's no stored value, default to 0
+            // Otherwise use the input value or stored value
+            if (!value && !input.dataset.currentValue) {
+                value = '0';
+            } else if (!value) {
+                value = input.dataset.currentValue;
+            }
+            
+            input.value = formatCurrency(parseFloat(value) || 0);
+            calculateAmount(input.closest('.line-item-container'));
+        }
+
+        function initializeLineItemInputs(lineItemContainer) {
+            const rateInput = lineItemContainer.querySelector('input[name="rate"]');
+            const unitsInput = lineItemContainer.querySelector('input[name="units"]');
+            
+            if (rateInput) {
+                rateInput.addEventListener('focus', handleRateFocus);
+                rateInput.addEventListener('input', handleRateInput);
+                rateInput.addEventListener('blur', handleRateBlur);
+                rateInput.value = formatCurrency(parseCurrency(rateInput.value));
+            }
+            
+            if (unitsInput) {
+                unitsInput.addEventListener('input', (event) => {
+                    calculateAmount(lineItemContainer);
+                });
+            }
+
+            // Calculate initial amount and update total
+            calculateAmount(lineItemContainer);
+        }
+
+        function addLineItem() {
+            // Get the template from the first line item
+            const template = document.querySelector('.line-item-container');
+            const newItem = template.cloneNode(true);
+            
+            // Reset form values
+            newItem.querySelectorAll('input[type="text"]').forEach(input => {
+                if (input.name === 'units') {
+                    input.value = '1';
+                } else if (input.name === 'rate' || input.name === 'amount') {
+                    input.value = formatCurrency(0);
+                } else {
+                    input.value = '';
+                }
+            });
+            
+            newItem.querySelectorAll('select').forEach(select => {
+                select.value = '';
+            });
+            
+            // Ensure billable is checked by default
+            const billableCheckbox = newItem.querySelector('input[type="checkbox"]');
+            if (billableCheckbox) {
+                billableCheckbox.checked = true;
+            }
+            
+            // Add the new item to the container
+            const lineItemsArea = document.querySelector('.line-items-area');
+            lineItemsArea.appendChild(newItem);
+            
+            // Initialize the new inputs
+            initializeLineItemInputs(newItem);
+        }
+
+        function removeLineItem(button) {
+            const lineItemContainer = button.closest('.line-item-container');
+            const allContainers = document.querySelectorAll('.line-item-container');
+            
+            // Only remove if there's more than one line item
+            if (allContainers.length > 1) {
+                lineItemContainer.remove();
+                // Update total after removing a line item
+                updateTotal();
+            }
+        }
+
+        // Initialize existing line items when the page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('.line-item-container').forEach(container => {
+                initializeLineItemInputs(container);
+            });
+            // Initialize total on page load
+            updateTotal();
+        });
+    </script>
+{% endblock %}
+

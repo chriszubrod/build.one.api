@@ -1,0 +1,45 @@
+{% extends 'shared/components/body.html' %}
+
+{% block title %}Roles{% endblock %}
+
+{% block content %}
+
+    <div class="list-header">
+        <h1>Roles</h1>
+        <div class="list-actions">
+            <a href="{{ url_for('role_web.create_role_route') }}" class="btn btn-primary">
+                <i class="fas fa-plus"></i>
+                New Role
+            </a>
+        </div>
+    </div>
+
+    <div class="list-grid">
+        {% for role in roles %}
+            <a href="{{ url_for('role_web.view_role_route', role_guid=role.guid) }}" class="list-card">
+                <div class="list-card-header">
+                    <h3 class="item-name">{{ role.name }}</h3>
+                </div>
+                <div class="list-card-body">
+                    <div class="item-info">
+                        <div class="info-item">
+                            <label>ID</label>
+                            <span>{{ role.guid[:8] }}</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- <div class="list-card-footer"> -->
+                <!--     <span><i class="fas fa-calendar-alt"></i> Created {{ role.created_datetime }}</span> -->
+                <!-- </div> -->
+            </a>
+        {% else %}
+            <div class="list-empty-state">
+                <i class="fas fa-list"></i>
+                <h3>No Roles Yet</h3>
+                <p>Create your first role to get started</p>
+                <a href="{{ url_for('role_web.create_role_route') }}" class="btn btn-primary">Create New</a>
+            </div>
+        {% endfor %}
+    </div>
+
+{% endblock %}

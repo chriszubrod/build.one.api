@@ -1,0 +1,498 @@
+<div class="file-upload-section" id="fileUploadArea">
+    <form id="fileUploadForm" enctype="multipart/form-data">
+    <input type="file" id="fileInput" name="file" accept=".pdf" style="display: none;">
+    <div class="file-upload-content">
+        <i class="fas fa-cloud-upload-alt file-upload-icon"></i>
+        <div class="file-upload-text">
+            <p>Drag and drop a file here or <span class="upload-link">click to select</span></p>
+            <p class="file-types">Accepted files: PDF</p>
+        </div>
+    </div>
+    <div id="filePreview" class="file-preview">
+        <div class="preview-content"></div>
+    </div>
+        <!-- These hidden fields will be used to pass data to the main form -->
+        <input type="hidden" id="file-text" name="file-text">
+        <input type="hidden" id="file-number-of-pages" name="file-number-of-pages">
+        <input type="hidden" id="file-analysis-result" name="file-analysis-result">
+        <!-- Add the missing analysis status div -->
+        <div id="analysisStatus" class="analysis-status"></div>
+    </form>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Check if all required elements exist before proceeding
+        const fileUploadForm = document.getElementById('fileUploadForm');
+        const fileUploadArea = document.getElementById('fileUploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const filePreview = document.getElementById('filePreview');
+        
+        if (!fileUploadForm || !fileUploadArea || !fileInput || !filePreview) {
+            console.error('Critical file upload elements are missing');
+            return;
+        }
+        
+        const previewContent = filePreview.querySelector('.preview-content');
+        const analysisStatus = document.getElementById('analysisStatus');
+        
+        if (!previewContent || !analysisStatus) {
+            console.error('Secondary file upload elements are missing');
+            return;
+        }
+        
+        // Prevent the file form from submitting normally
+        fileUploadForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            return false;
+        });
+        
+        // Click to select
+        fileUploadArea.addEventListener('click', (e) => {
+            // Prevent click if clicking on preview content or buttons
+            if (!e.target.closest('.preview-content') && !e.target.closest('.file-actions')) {
+                fileInput.click();
+            }
+        });
+        
+        // Drag and drop handlers
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            fileUploadArea.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            fileUploadArea.addEventListener(eventName, highlight, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            fileUploadArea.addEventListener(eventName, unhighlight, false);
+        });
+
+        function highlight() {
+            fileUploadArea.classList.add('drag-over');
+        }
+
+        function unhighlight() {
+            fileUploadArea.classList.remove('drag-over');
+        }
+
+        // Handle dropped files
+        fileUploadArea.addEventListener('drop', handleDrop, false);
+        
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const file = dt.files[0]; // Only take the first file
+            
+            if (file) {
+                handleFile(file);
+            }
+        }
+
+        // Handle selected files
+        fileInput.addEventListener('change', function() {
+            if (this.files.length > 0) {
+                handleFile(this.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            // Check file type
+            if (file.type !== 'application/pdf') {
+                alert('Please upload only PDF files.');
+                return;
+            }
+
+            // Show loading state
+            analysisStatus.innerHTML = '<div class="loading-spinner"></div> Analyzing document...';
+            analysisStatus.classList.add('in-progress');
+            analysisStatus.style.display = 'block';
+
+            try {
+                // Create a URL for the file
+                const fileURL = URL.createObjectURL(file);
+                
+                // Create preview with basic file info
+                    let previewHTML = `
+                        <div class="preview-header">
+                            <div class="file-info">
+                                <span class="file-name">${file.name}</span>
+                                <span class="file-size">${formatFileSize(file.size)}</span>
+                            </div>
+                            <div class="file-actions">
+                                <button type="button" class="action-button change-file" onclick="changeFile()">
+                                    <i class="fas fa-exchange-alt"></i> Change
+                                </button>
+                                <button type="button" class="action-button remove-file" onclick="removeFile()">
+                                    <i class="fas fa-times"></i> Remove
+                                </button>
+                            </div>
+                        </div>
+                        <div class="preview-viewer">
+                        <embed src="${fileURL}" type="application/pdf" width="100%" height="600px">
+                        </div>`;
+                    
+                    previewContent.innerHTML = previewHTML;
+                    filePreview.style.display = 'block';
+                    fileUploadArea.classList.add('has-file');
+                
+                // Immediately send file for analysis
+                analyzeFile(file);
+            } catch (err) {
+                console.error('Error preparing file preview:', err);
+                analysisStatus.innerHTML = `
+                    <div class="analysis-result error">
+                        <i class="fas fa-exclamation-circle"></i>
+                        <span>Error preparing file preview: ${err.message}</span>
+                    </div>
+                `;
+                analysisStatus.classList.remove('in-progress');
+                analysisStatus.classList.add('error');
+            }
+        }
+
+        // Function to send file for analysis
+        async function analyzeFile(file) {
+            try {
+                // Convert file to base64
+                const base64File = await readFileAsBase64(file);
+                
+                // Create JSON payload
+                const jsonPayload = {
+                    files: [{
+                        name: file.name,
+                        type: file.type,
+                        size: file.size,
+                        data: base64File
+                    }]
+                };
+                
+                // Send to analysis API with JSON content type
+                const response = await fetch('/api/document/analysis', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(jsonPayload)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Server responded with ${response.status}: ${response.statusText}`);
+                }
+                
+                const result = await response.json();
+                const resultData = result.data;
+                console.log('API response:', result);
+                
+                // Update analysis status based on result
+                if (result.success) {
+                    // Store the analysis result in the hidden fields
+                    document.getElementById('file-text').value = resultData.text_data || '';
+                    document.getElementById('file-number-of-pages').value = resultData.page_count || '';
+                    document.getElementById('file-analysis-result').value = resultData.message || '';
+                    
+                    // Make these values accessible to the main form
+                    updateMainFormFields(result);
+                    
+                    // Update the analysis status with success message
+                    analysisStatus.innerHTML = `
+                        <div class="analysis-result success">
+                            <i class="fas fa-check-circle"></i>
+                            <span>Analysis complete!</span>
+                            <div class="analysis-summary">
+                                ${renderAnalysisSummary(result)}
+                            </div>
+                        </div>
+                    `;
+                    analysisStatus.classList.remove('in-progress');
+                    analysisStatus.classList.add('success');
+                } else {
+                    // Handle analysis failure
+                    analysisStatus.innerHTML = `
+                        <div class="analysis-result error">
+                            <i class="fas fa-exclamation-circle"></i>
+                            <span>Analysis failed: ${result.message || 'Unknown error'}</span>
+                        </div>
+                    `;
+                    analysisStatus.classList.remove('in-progress');
+                    analysisStatus.classList.add('error');
+                }
+            } catch (error) {
+                console.error('Error analyzing file:', error);
+                analysisStatus.innerHTML = `
+                    <div class="analysis-result error">
+                        <i class="fas fa-exclamation-circle"></i>
+                        <span>Error analyzing file: ${error.message}</span>
+                    </div>
+                `;
+                analysisStatus.classList.remove('in-progress');
+                analysisStatus.classList.add('error');
+            }
+        }
+        
+        // Helper function to convert file to base64
+        function readFileAsBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    resolve(reader.result); // This is the base64 string
+                };
+                reader.onerror = () => {
+                    reject(new Error('Failed to read file as base64'));
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // Function to update the main form with our data
+        function updateMainFormFields(result) {
+            // Find the parent form that contains this component
+            const mainForm = fileUploadForm.closest('form[id]');
+            if (!mainForm) return;
+            
+            // Look for existing hidden fields in the main form, or create them
+            let fileTextField = mainForm.querySelector('input[name="file_text"]');
+            let fileAnalysisField = mainForm.querySelector('input[name="file_analysis"]');
+            let fileNameField = mainForm.querySelector('input[name="file_name"]');
+            
+            // Create the fields if they don't exist
+            if (!fileTextField) {
+                fileTextField = document.createElement('input');
+                fileTextField.type = 'hidden';
+                fileTextField.name = 'file_text';
+                mainForm.appendChild(fileTextField);
+            }
+            
+            if (!fileAnalysisField) {
+                fileAnalysisField = document.createElement('input');
+                fileAnalysisField.type = 'hidden';
+                fileAnalysisField.name = 'file_analysis';
+                mainForm.appendChild(fileAnalysisField);
+            }
+            
+            if (!fileNameField) {
+                fileNameField = document.createElement('input');
+                fileNameField.type = 'hidden';
+                fileNameField.name = 'file_name';
+                mainForm.appendChild(fileNameField);
+            }
+            
+            // Set values
+            fileTextField.value = result.text || '';
+            fileAnalysisField.value = JSON.stringify(result);
+            fileNameField.value = fileInput.files[0]?.name || '';
+        }
+
+        // Helper function to render analysis summary based on result
+        function renderAnalysisSummary(result) {
+            // This can be customized based on what your API returns
+            const summary = [];
+            
+            if (result.text) {
+                summary.push(`<div>Extracted ${result.text.length} characters of text</div>`);
+            }
+            
+            if (result.document_type) {
+                summary.push(`<div>Document type: ${result.document_type}</div>`);
+            }
+            
+            if (result.categories) {
+                summary.push(`<div>Categories: ${result.categories.join(', ')}</div>`);
+            }
+            
+            if (result.entities) {
+                summary.push(`<div>Found ${result.entities.length} entities</div>`);
+            }
+            
+            // Add more result properties as needed
+            
+            return summary.join('') || 'Analysis complete';
+        }
+
+        // Format file size
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // Updated Remove file function
+        window.removeFile = function() {
+            fileInput.value = '';
+            previewContent.innerHTML = '';
+            filePreview.style.display = 'none';
+            fileUploadArea.classList.remove('has-file');
+            
+            // Clear all file-related fields in this form
+            document.getElementById('file-text').value = '';
+            document.getElementById('file-analysis-result').value = '';
+            
+            // Also clear the fields we might have added to the main form
+            const mainForm = fileUploadForm.closest('form[id]');
+            if (mainForm) {
+                const fieldsToRemove = ['file_text', 'file_analysis', 'file_name'];
+                fieldsToRemove.forEach(name => {
+                    const field = mainForm.querySelector(`input[name="${name}"]`);
+                    if (field) field.value = '';
+                });
+            }
+            
+            // Hide and reset analysis status
+            analysisStatus.style.display = 'none';
+            analysisStatus.innerHTML = '';
+            analysisStatus.className = 'analysis-status';
+        };
+
+        // Change file function
+        window.changeFile = function() {
+            fileInput.click();
+        };
+    });
+</script>
+
+<style>
+    .file-upload-section.has-file {
+        padding: var(--spacing-sm);
+    }
+
+    .file-upload-section.has-file .file-upload-content {
+        display: none;
+    }
+
+    .preview-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: var(--spacing-sm);
+        padding: var(--spacing-xs);
+        background-color: var(--color-hover);
+        border-radius: var(--border-radius);
+    }
+
+    .file-info {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .file-name {
+        font-size: 0.9rem;
+        color: #333;
+        font-weight: 500;
+    }
+
+    .file-size {
+        font-size: 0.8rem;
+        color: #666;
+    }
+
+    .file-actions {
+        display: flex;
+        gap: var(--spacing-xs);
+    }
+
+    .action-button {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 8px;
+        font-size: 0.85rem;
+        background: none;
+        border: 1px solid var(--color-border);
+        color: #666;
+        height: auto;
+    }
+
+    .action-button:hover {
+        background-color: var(--color-hover);
+        color: var(--color-primary);
+        border-color: var(--color-primary);
+    }
+
+    .action-button.remove-file:hover {
+        color: #dc3545;
+        border-color: #dc3545;
+    }
+
+    .preview-viewer {
+        border: 1px solid var(--color-border);
+        border-radius: var(--border-radius);
+        overflow: hidden;
+        background-color: white;
+    }
+
+    .preview-viewer img {
+        display: block;
+        margin: 0 auto;
+        object-fit: contain;
+    }
+
+    .preview-viewer embed {
+        display: block;
+        margin: 0 auto;
+    }
+
+    .file-pages {
+        font-size: 0.8rem;
+        color: #666;
+    }
+
+    .analysis-status {
+        margin-top: var(--spacing-sm);
+        padding: var(--spacing-xs);
+        border-radius: var(--border-radius);
+        font-size: 0.9rem;
+        display: none;
+    }
+    
+    .analysis-status.in-progress {
+        background-color: #f8f9fa;
+        color: #6c757d;
+    }
+    
+    .analysis-status.success {
+        background-color: #d4edda;
+        color: #155724;
+    }
+    
+    .analysis-status.error {
+        background-color: #f8d7da;
+        color: #721c24;
+    }
+    
+    .analysis-result {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+    
+    .analysis-result i {
+        margin-right: 6px;
+    }
+    
+    .analysis-summary {
+        margin-top: 6px;
+        font-size: 0.85rem;
+    }
+    
+    .loading-spinner {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        margin-right: 8px;
+        border: 2px solid rgba(0, 0, 0, 0.1);
+        border-top-color: #007bff;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+    }
+    
+    @keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+</style>

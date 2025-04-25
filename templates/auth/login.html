@@ -1,0 +1,113 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Login{% endblock %}
+
+{% block body %}
+
+    <body class="site-layout">
+
+        <!-- Main Content -->
+        <main class="main-content">
+
+            <h1>Login</h1>
+
+            <form id="loginForm" autocomplete="off" onsubmit="return false;">
+                {% include 'auth/_form.html' %}
+                <button type="submitButton" id="submitButton">Login</button>
+            </form>
+
+            <p>Need an account? <a href="{{ url_for('auth_web.register_route') }}">Register here</a></p>
+
+        </main>
+
+    </body>
+
+{% endblock %}
+
+{% block scripts %}
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Get the login form
+            const loginForm = document.getElementById('loginForm');
+
+            // Add event listener on loginForm submit
+            loginForm.addEventListener('submit', function(event) {
+                // Prevent default form submission
+                event.preventDefault();
+
+                // Get form data
+                const username = document.getElementById('username').value;
+                const password = document.getElementById('password').value;
+
+                // Make API call
+                fetch('/api/post/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        username: username,
+                        password: password
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Store token in localStorage for future API calls
+                        localStorage.setItem('token', data.data.token);
+
+                        // Create a form for session creation
+                        const sessionForm = document.createElement('form');
+                        sessionForm.method = 'POST';
+                        sessionForm.action = '/login';
+                        sessionForm.style.display = 'none';
+
+                        // Add token
+                        const tokenInput = document.createElement('input');
+                        tokenInput.type = 'hidden';
+                        tokenInput.name = 'token';
+                        tokenInput.value = data.data.token;
+                        sessionForm.appendChild(tokenInput);
+                        
+                        // Add username
+                        const usernameInput = document.createElement('input');
+                        usernameInput.type = 'hidden';
+                        usernameInput.name = 'username';
+                        usernameInput.value = data.data.username;
+                        sessionForm.appendChild(usernameInput);
+
+                        // Add user_id
+                        const userIdInput = document.createElement('input');
+                        userIdInput.type = 'hidden';
+                        userIdInput.name = 'user_id';
+                        userIdInput.value = data.data.user_id;
+                        sessionForm.appendChild(userIdInput);
+
+                        // Add form to document and submit
+                        document.body.appendChild(sessionForm);
+                        sessionForm.submit();
+                        
+                    } else {
+                        
+                        // Handle login error
+                        const errorDiv = document.getElementById('loginError');
+                        if (errorDiv) {
+                            errorDiv.textContent = data.message || 'Login failed';
+                            errorDiv.style.display = 'block';
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    const errorDiv = document.getElementById('loginError');
+                    if (errorDiv) {
+                        errorDiv.textContent = 'An error occurred during login';
+                        errorDiv.style.display = 'block';
+                    }
+                });
+            });
+        });
+    </script>
+
+{% endblock %}

@@ -1,0 +1,26 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block content %}
+
+    <h1>Edit Bill</h1>
+
+    <label>Entry Guid:</label>
+    <span>{{ entry.guid }}</span>
+
+    <form id="billForm" autocomplete="off" onsubmit="return false;">
+
+        {% include 'entry/bill/_form.html' %}
+
+        <button type="submitButton" id="submitButton" >Submit</button>
+
+    </form>
+
+{% endblock %}
+
+<script src="{{ url_for('static', filename='js/form-handler.js') }}" defer></script>
+
+<script defer>
+    document.addEventListener('DOMContentLoaded', function() {
+        FormHandler.init('billForm', '/api/entry/bill/{{ entry.id }}', 'PUT');
+    });
+</script>

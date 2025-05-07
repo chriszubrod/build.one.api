@@ -1,53 +1,96 @@
-{% extends 'shared/components/body.html' %}
-
-{% block title %}{{ entry_type.capitalize() + 's' if entry_type[-1] != 's' else entry_type.capitalize() }}{% endblock %}
-
-{% block content %}
-
-    <div class="list-header">
-        <h1>{{ entry_type.capitalize() + 's' if entry_type[-1] != 's' else entry_type.capitalize() }}</h1>
-        <div class="list-actions">
-            <a href="{{ url_for('entry_web.create_entry_route', entry_type=entry_type) }}" class="btn btn-primary">
-                <i class="fas fa-plus"></i>
-                New {{ entry_type.capitalize() }}
-            </a>
-        </div>
-    </div>
-
-    <div class="list-grid">
-        {% for entry in entries %}
-            <a href="{{ url_for('entry_web.view_entry_route', entry_type=entry_type, entry_guid=entry.guid) }}" class="list-card">
-                <div class="list-card-header">
-                    <h3 class="item-name">{{ entry.number }}</h3>
-                </div>
-                <div class="list-card-body">
-                    <div class="item-info">
-                        <div class="info-item">
-                            <label>ID</label>
-                            <span>{{ entry.guid[:8] }}</span>
-                        </div>
-                        <div class="info-item">
-                            <label>Date</label>
-                            <span>{{ entry.date }}</span>
-                        </div>
-                        <div class="info-item">
-                            <label>Amount</label>
-                            <span>${{ "{:,.2f}".format(entry.amount | float) }}</span>
-                        </div>
-                    </div>
-                </div>
-                <!-- <div class="list-card-footer"> -->
-                <!--     <span><i class="fas fa-calendar-alt"></i> Created {{ entry.created_datetime }}</span> -->
-                <!-- </div> -->
-            </a>
-        {% else %}
-            <div class="list-empty-state">
-                <i class="fas fa-list"></i>
-                <h3>No {{ entry_type.capitalize() + 's' if entry_type[-1] != 's' else entry_type.capitalize() }} Yet</h3>
-                <p>Create your first {{ entry_type.lower() }} to get started</p>
-                <a href="{{ url_for('entry_web.create_entry_route', entry_type=entry_type) }}" class="btn btn-primary">Create New</a>
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Bills</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <style>
+            html, body { min-height: 100vh; margin: 0; }
+            #drop-area.dragover { background-color: rgba(59, 130, 246, 0.1); border-color: #3b82f6; }
+            input[type="file"] {
+                display: none;
+            }
+        </style>
+    </head>
+    <body class="bg-gray-50">
+        <div class="container mx-auto px-4 py-8">
+            <div class="flex justify-between items-center mb-6">
+                <h1 class="text-2xl font-bold text-gray-800">Bills</h1>
+                <a href="/bill/create" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+                    Create New Bill
+                </a>
             </div>
-        {% endfor %}
-    </div>
 
-{% endblock %}
+            <div class="bg-white rounded-lg shadow overflow-hidden">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Invoice Number
+                            </th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Vendor
+                            </th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Date
+                            </th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Amount
+                            </th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Billed
+                            </th>
+                            <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Actions
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        {% if bills %}
+                            {% for bill in bills %}
+                                <tr class="hover:bg-gray-50">
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                                        {{ bill.number }}
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        {% for vendor in vendors %}
+                                            {% if vendor.id == bill.vendor_id %}
+                                                {{ vendor.name }}
+                                            {% endif %}
+                                        {% endfor %}
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        {{ bill.date.strftime('%Y-%m-%d') }}
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        ${{ "%.2f"|format(bill.amount) }}
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
+                                            {% if bill.is_billed %}
+                                                bg-green-100 text-green-800
+                                            {% else %}
+                                                bg-yellow-100 text-yellow-800
+                                            {% endif %}">
+                                            {{ 'Billed' if bill.is_billed else 'Pending' }}
+                                        </span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                        <a href="/bill/{{ bill.guid }}" class="text-blue-600 hover:text-blue-900">View</a>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr>
+                                <td colspan="6" class="px-6 py-4 text-center text-sm text-gray-500">
+                                    No bills found
+                                </td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </body>
+</html>

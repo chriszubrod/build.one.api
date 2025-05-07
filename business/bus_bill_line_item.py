@@ -16,50 +16,50 @@ from persistence import (
 )
 
 
-def get_entry_line_items() -> BusinessResponse:
+def get_bill_line_items() -> BusinessResponse:
     """
-    Retrieves all entry line items from the database.
+    Retrieves all bill line items from the database.
     """
-    pers_entry_line_items_resp = pers_bill_line_item.read_entry_line_items()
+    pers_bill_line_items_resp = pers_bill_line_item.read_bill_line_items()
     return BusinessResponse(
-        data=pers_entry_line_items_resp.data,
-        message=pers_entry_line_items_resp.message,
-        status_code=pers_entry_line_items_resp.status_code,
-        success=pers_entry_line_items_resp.success,
-        timestamp=pers_entry_line_items_resp.timestamp
+        data=pers_bill_line_items_resp.data,
+        message=pers_bill_line_items_resp.message,
+        status_code=pers_bill_line_items_resp.status_code,
+        success=pers_bill_line_items_resp.success,
+        timestamp=pers_bill_line_items_resp.timestamp
     )
 
 
-def get_entry_line_item_by_id(entry_line_item_id: int) -> BusinessResponse:
+def get_bill_line_item_by_id(bill_line_item_id: int) -> BusinessResponse:
     """
-    Retrieves an entry line item by its ID.
+    Retrieves a bill line item by its ID.
     """
-    pers_entry_line_item_resp = pers_bill_line_item.read_entry_line_item_by_id(entry_line_item_id)
+    pers_bill_line_item_resp = pers_bill_line_item.read_bill_line_item_by_id(bill_line_item_id)
     return BusinessResponse(
-        data=pers_entry_line_item_resp.data,
-        message=pers_entry_line_item_resp.message,
-        status_code=pers_entry_line_item_resp.status_code,
-        success=pers_entry_line_item_resp.success,
-        timestamp=pers_entry_line_item_resp.timestamp
+        data=pers_bill_line_item_resp.data,
+        message=pers_bill_line_item_resp.message,
+        status_code=pers_bill_line_item_resp.status_code,
+        success=pers_bill_line_item_resp.success,
+        timestamp=pers_bill_line_item_resp.timestamp
     )
 
 
-def get_entry_line_item_by_entry_id(entry_id: int) -> BusinessResponse:
+def get_bill_line_item_by_bill_id(bill_id: int) -> BusinessResponse:
     """
-    Retrieves an entry line item by its entry ID.
+    Retrieves a bill line item by its bill ID.
     """
-    pers_entry_line_item_resp = pers_bill_line_item.\
-        read_entry_line_item_by_entry_id(entry_id)
+    pers_bill_line_item_resp = pers_bill_line_item.\
+        read_bill_line_item_by_bill_id(bill_id)
     return BusinessResponse(
-        data=pers_entry_line_item_resp.data,
-        message=pers_entry_line_item_resp.message,
-        status_code=pers_entry_line_item_resp.status_code,
-        success=pers_entry_line_item_resp.success,
-        timestamp=pers_entry_line_item_resp.timestamp
+        data=pers_bill_line_item_resp.data,
+        message=pers_bill_line_item_resp.message,
+        status_code=pers_bill_line_item_resp.status_code,
+        success=pers_bill_line_item_resp.success,
+        timestamp=pers_bill_line_item_resp.timestamp
     )
 
 
-def post_entry_line_item(
+def post_bill_line_item(
         created_datetime: datetime,
         modified_datetime: datetime,
         description: str,
@@ -68,12 +68,12 @@ def post_entry_line_item(
         amount: float,
         is_billable: int,
         is_billed: int,
-        entry_guid: str,
+        bill_guid: str,
         sub_cost_code_guid: str,
         project_guid: str
     ) -> BusinessResponse:
     """
-    Posts an entry line item to the database.
+    Posts a bill line item to the database.
     """
 
     # validate description
@@ -136,11 +136,11 @@ def post_entry_line_item(
             timestamp=datetime.now(tz.tzlocal())
         )
 
-    # validate entry guid
-    if not entry_guid or entry_guid is None or entry_guid == '':
+    # validate bill guid
+    if not bill_guid or bill_guid is None or bill_guid == '':
         return BusinessResponse(
             data=None,
-            message='Missing Entry Guid.',
+            message='Missing Bill Guid.',
             status_code=400,
             success=False,
             timestamp=datetime.now(tz.tzlocal())
@@ -166,18 +166,18 @@ def post_entry_line_item(
             timestamp=datetime.now(tz.tzlocal())
         )
 
-    # get entry id
-    entry_id = None
-    read_entry_pers_response = pers_bill.read_entry_by_guid(entry_guid)
-    if read_entry_pers_response.success:
-        entry_id = read_entry_pers_response.data.id
+    # get bill id
+    bill_id = None
+    read_bill_pers_response = pers_bill.read_bill_by_guid(bill_guid)
+    if read_bill_pers_response.success:
+        bill_id = read_bill_pers_response.data.id
     else:
         return BusinessResponse(
-            data=read_entry_pers_response.data,
-            message=read_entry_pers_response.message,
-            status_code=read_entry_pers_response.status_code,
-            success=read_entry_pers_response.success,
-            timestamp=read_entry_pers_response.timestamp
+            data=read_bill_pers_response.data,
+            message=read_bill_pers_response.message,
+            status_code=read_bill_pers_response.status_code,
+            success=read_bill_pers_response.success,
+            timestamp=read_bill_pers_response.timestamp
         )
 
     # get sub cost code id
@@ -210,8 +210,8 @@ def post_entry_line_item(
         )
 
 
-    # create entry line item object instance
-    _entry_line_item = pers_bill_line_item.EntryLineItem(
+    # create bill line item object instance
+    _bill_line_item = pers_bill_line_item.BillLineItem(
         created_datetime=created_datetime,
         modified_datetime=modified_datetime,
         description=description,
@@ -220,19 +220,19 @@ def post_entry_line_item(
         amount=amount,
         is_billable=is_billable,
         is_billed=is_billed,
-        entry_id=entry_id,
+        bill_id=bill_id,
         sub_cost_code_id=sub_cost_code_id,
         project_id=project_id
     )
 
-    # create entry line item in database
-    post_entry_line_item_pers_response = pers_bill_line_item.\
-        create_entry_line_item(_entry_line_item)
+    # create bill line item in database
+    post_bill_line_item_pers_response = pers_bill_line_item.\
+        create_bill_line_item(_bill_line_item)
 
     return BusinessResponse(
-        data=post_entry_line_item_pers_response.data,
-        message=post_entry_line_item_pers_response.message,
-        status_code=post_entry_line_item_pers_response.status_code,
-        success=post_entry_line_item_pers_response.success,
-        timestamp=post_entry_line_item_pers_response.timestamp
+        data=post_bill_line_item_pers_response.data,
+        message=post_bill_line_item_pers_response.message,
+        status_code=post_bill_line_item_pers_response.status_code,
+        success=post_bill_line_item_pers_response.success,
+        timestamp=post_bill_line_item_pers_response.timestamp
     )

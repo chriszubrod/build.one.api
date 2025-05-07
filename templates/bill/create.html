@@ -3,26 +3,31 @@
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>AP Agent Upload</title>
+        <title>Bill</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <style>
             html, body { min-height: 100vh; margin: 0; }
             #drop-area.dragover { background-color: rgba(59, 130, 246, 0.1); border-color: #3b82f6; }
+            input[type="file"] {
+                display: none;
+            }
         </style>
     </head>
     <body class="bg-gray-50">
-        <div id="drop-area" class="absolute inset-0 border-4 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-500 text-center p-6 transition-all duration-200 hidden">
-            <p class="text-lg">Drag & drop a PDF invoice here or click to upload</p>
-            <input id="file-input" type="file" accept="application/pdf" class="hidden">
-        </div>
-
         <div class="relative z-10 max-w-6xl mx-auto mt-12 p-6 pb-12 bg-white rounded-xl shadow-lg flex flex-col md:flex-row gap-6" id="form-container">
             <div class="flex-1 space-y-6">
-                <form id="invoice-form" class="space-y-6">
+                <form id="invoice-form" class="space-y-6" onsubmit="return false;">
                     <div class="grid grid-cols-2 gap-4">
-                        <input name="vendor" placeholder="Vendor" readonly class="border p-2 rounded w-full">
-                        <input name="invoice_number" placeholder="Invoice Number" readonly class="border p-2 rounded w-full">
-                        <input type="date" name="invoice_date" readonly class="border p-2 rounded w-full">
+                        <select name="vendor" id="vendor" class="border p-2 rounded w-full" required>
+                            <option value="">Select Vendor</option>
+                            {% if vendors %}
+                                {% for vendor in vendors %}
+                                    <option value="{{ vendor.guid }}">{{ vendor.name }}</option>
+                                {% endfor %}
+                            {% endif %}
+                        </select>
+                        <input name="number" placeholder="Invoice Number" class="border p-2 rounded w-full">
+                        <input type="date" name="date" class="border p-2 rounded w-full">
                         <input name="total_amount" placeholder="Total Amount" type="text" inputmode="decimal" readonly class="border p-2 rounded w-full">
                     </div>
 
@@ -32,162 +37,211 @@
                             <button type="button" onclick="addLineItem()" class="text-blue-600 text-sm">+ Add Item</button>
                         </div>
                         <div id="line-items" class="space-y-2">
-                            <div class="grid grid-cols-12 gap-2">
-                                <input name="cost_code[]" placeholder="Cost Code" readonly class="border p-2 rounded col-span-2">
-                                <input name="description[]" placeholder="Description" readonly class="border p-2 rounded col-span-4">
-                                <input name="line_amount[]" placeholder="Amount" readonly class="border p-2 rounded col-span-2">
-                                <label class="flex flex-col items-center col-span-1 text-sm">
-                                    <span class="mb-1">Billable</span>
-                                    <input type="checkbox" name="billable[]" readonly checked class="mt-1">
-                                </label>
-                                <input name="project[]" placeholder="Project" readonly class="border p-2 rounded col-span-2">
-                            </div>
+                            <!-- Bill Line Item -->
                         </div>
-                    </div>
-
-                    <div id="preview" class="mb-6">
-                        <div class="flex justify-between items-center">
-                            <p class="font-semibold">Uploaded File:</p>
-                            <button type="button" onclick="clearFile()" class="text-red-600 text-sm underline">Remove File</button>
-                        </div>
-                        <p id="file-name" class="text-sm text-gray-700"></p>
-                        <iframe id="pdf-viewer" class="w-full aspect-[8.5/11] border rounded mt-2" type="application/pdf"></iframe>
                     </div>
 
                     <button type="submit" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">Submit Invoice</button>
-                </form>
-            </div>
 
-            <div class="w-full md:w-1/3 flex flex-col">
-                <div class="border rounded p-3 bg-gray-50 flex-1 flex flex-col">
-                    <p class="font-semibold mb-2">Chat</p>
-                    <div id="chat-box" class="flex-1 overflow-y-auto space-y-2 text-sm bg-white p-2 border rounded break-words whitespace-pre-wrap"></div>
-                    <div class="mt-2 flex items-center gap-2">
-                        <textarea id="chat-input" placeholder="Type a message..." class="flex-1 border p-2 rounded resize-none overflow-hidden" rows="1"></textarea>
-                        <button type="button" onclick="sendMessage()" class="bg-blue-600 text-white px-4 py-2 rounded">Send</button>
-                        <button type="button" onclick="document.getElementById('chat-file').click()" class="flex items-center justify-center w-8 h-8 rounded-full bg-gray-200 hover:bg-gray-300 text-gray-700">
-                            <span class="text-xl leading-none">+</span>
-                        </button>
-                        <input id="chat-file" type="file" accept="application/pdf" class="hidden" onchange="handleFile(this.files[0])">
+                    <div id="preview" class="mb-6">
+                        <iframe id="pdf-viewer" class="w-full aspect-[8.5/11] border rounded mt-2 hidden" type="application/pdf"></iframe>
                     </div>
-                </div>
+
+                </form>
             </div>
         </div>
 
         <script>
-            const dropArea = document.getElementById('drop-area');
-            const fileInput = document.getElementById('file-input');
             const formContainer = document.getElementById('form-container');
             const fileNameEl = document.getElementById('file-name');
             const pdfViewer = document.getElementById('pdf-viewer');
 
-            function clearFile() {
-                fileInput.value = null;
-                fileNameEl.textContent = '';
-                pdfViewer.src = '';
-                formContainer.classList.add('hidden');
-                dropArea.classList.remove('hidden');
+            function toBase64(file) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.readAsDataURL(file);
+                    reader.onload = () => resolve(reader.result.split(',')[1]);
+                    reader.onerror = (error) => reject(error);
+                });
             }
 
-            dropArea.addEventListener('click', () => fileInput.click());
-
-            ['dragenter', 'dragover'].forEach(event => {
-                window.addEventListener(event, e => {
-                    e.preventDefault();
-                    dropArea.classList.remove('hidden');
-                    formContainer.classList.add('hidden');
-                    dropArea.classList.add('dragover');
-                });
-            });
-
-            ['dragleave', 'drop'].forEach(event => {
-                dropArea.addEventListener(event, e => {
-                    e.preventDefault();
-                    dropArea.classList.remove('dragover');
-                });
-            });
-
-            dropArea.addEventListener('drop', e => {
-                const file = e.dataTransfer.files[0];
-                if (file && file.type === 'application/pdf') handleFile(file);
-            });
-
-            fileInput.addEventListener('change', e => {
-                const file = e.target.files[0];
-                if (file && file.type === 'application/pdf') handleFile(file);
-            });
+            function clearFile() {
+                fileNameEl.textContent = '';
+                pdfViewer.src = '';
+                document.getElementById('preview').classList.add('hidden');
+            }
 
             function handleFile(file) {
-                fileNameEl.textContent = file.name;
-                pdfViewer.src = URL.createObjectURL(file);
-                dropArea.classList.add('hidden');
-                formContainer.classList.remove('hidden');
+                if (file && file.type === 'application/pdf') {
+                    fileNameEl.innerHTML = `
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6 text-gray-600 cursor-pointer" data-file-input="${fileInput.id}">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M10.125 2.25h-4.5c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125v-9M10.125 2.25h.375a9 9 0 0 1 9 9v.375M10.125 2.25A3.375 3.375 0 0 1 13.5 5.625v1.5c0 .621.504 1.125 1.125 1.125h1.5a3.375 3.375 0 0 1 3.375 3.375M9 15l2.25 2.25L15 12" />
+                        </svg>
+                    `;
+                    dropArea.classList.add('hidden');
+                    preview.classList.remove('hidden');
+                    
+                    // Add click handler to the SVG
+                    fileNameEl.addEventListener('click', function(e) {
+                        const svg = e.target.closest('svg');
+                        if (svg) {
+                            const fileInputId = svg.dataset.fileInput;
+                            const fileInput = document.getElementById(fileInputId);
+                            if (fileInput) {
+                                previewPDF(e.target, fileInput);
+                            }
+                        }
+                    });
+                    
+                    // Show PDF in the viewer
+                    const url = URL.createObjectURL(file);
+                    pdfViewer.src = url;
+                    pdfViewer.classList.remove('hidden');
+                }
+            }
+
+            function previewPDF(element, fileInput) {
+                const file = fileInput.files[0];
+                if (file) {
+                    const url = URL.createObjectURL(file);
+                    const pdfViewer = document.getElementById('pdf-viewer');
+                    pdfViewer.src = url;
+                    pdfViewer.classList.remove('hidden');
+                }
             }
 
             function addLineItem() {
                 const container = document.createElement('div');
                 container.className = 'grid grid-cols-12 gap-2';
+                const fileInputId = `file-input-${Date.now()}`;
                 container.innerHTML = `
-                    <input name="cost_code[]" placeholder="Cost Code" readonly class="border p-2 rounded col-span-2">
-                    <input name="description[]" placeholder="Description" readonly class="border p-2 rounded col-span-4">
-                    <input name="line_amount[]" placeholder="Amount" readonly class="border p-2 rounded col-span-2">
+                    <select name="cost_code[]" class="border p-2 rounded col-span-2" required>
+                        <option value="">Select Cost Code</option>
+                        {% if sub_cost_codes %}
+                            {% for sub_cost_code in sub_cost_codes %}
+                                <option value="{{ sub_cost_code.guid }}">{{ sub_cost_code.number }} - {{ sub_cost_code.name }}</option>
+                            {% endfor %}
+                        {% endif %}
+                    </select>
+                    <input name="description[]" placeholder="Description" class="border p-2 rounded col-span-3">
+                    <input name="line_amount[]" placeholder="Amount" value="$0.00" class="border p-2 rounded col-span-2">
                     <label class="flex flex-col items-center col-span-1 text-sm">
-                    <span class="mb-1">Billable</span>
-                    <input type="checkbox" name="billable[]" readonly class="mt-1">
+                        <span class="mb-1">Billable</span>
+                        <input type="checkbox" name="billable[]" checked class="mt-1">
                     </label>
-                    <input name="project[]" placeholder="Project" readonly class="border p-2 rounded col-span-2">
-                    <button type="button" onclick="this.parentElement.remove()" class="text-red-600 text-xs underline col-span-1 self-center">Remove</button>
+                    <select name="project[]" class="border p-2 rounded col-span-2" required>
+                        <option value="">Select Project</option>
+                        {% if projects %}
+                            {% for project in projects %}
+                                <option value="{{ project.guid }}">{{ project.name }}</option>
+                            {% endfor %}
+                        {% endif %}
+                    </select>
+                    <div class="col-span-2">
+                        <div class="drop-area border-2 border-dashed border-gray-300 p-2 rounded text-center text-sm text-gray-500">
+                            <p class="text-xs">Drag & drop PDF or click here</p>
+                            <input type="file" class="hidden" accept="application/pdf" id="${fileInputId}">
+                        </div>
+                        <div class="preview hidden mt-2 flex flex-col items-center">
+                            <p class="text-xs text-gray-700">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6 text-gray-600 cursor-pointer" data-file-input="${fileInputId}">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M10.125 2.25h-4.5c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125v-9M10.125 2.25h.375a9 9 0 0 1 9 9v.375M10.125 2.25A3.375 3.375 0 0 1 13.5 5.625v1.5c0 .621.504 1.125 1.125 1.125h1.5a3.375 3.375 0 0 1 3.375 3.375M9 15l2.25 2.25L15 12" />
+                                </svg>
+                            </p>
+                            <button type="button" class="text-red-600 text-xs underline">Remove</button>
+                        </div>
+                    </div>
+                    <button type="button" onclick="this.parentElement.remove()" class="text-red-600 text-xs underline col-span-12">Remove Line Item</button>
                 `;
                 document.getElementById('line-items').appendChild(container);
+                formatCurrency(container.querySelector('input[name="line_amount[]"]'));
+                initializeFileUpload(container);
             }
 
-            function sendMessage() {
-                const input = document.getElementById('chat-input');
-                const msg = input.value.trim();
-                if (!msg) return;
-                const chatBox = document.getElementById('chat-box');
-                const bubble = document.createElement('div');
-                const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                bubble.innerHTML = `<div class='flex justify-between text-xs text-gray-400 mb-1'><span>You</span><span>${time}</span></div><div>${msg}</div>`;
-                bubble.className = 'bg-blue-100 p-2 rounded self-end text-right';
-                chatBox.appendChild(bubble);
-                input.value = '';
-                chatBox.scrollTop = chatBox.scrollHeight;
+            function initializeFileUpload(container) {
+                const dropArea = container.querySelector('.drop-area');
+                const fileInput = container.querySelector('input[type="file"]');
+                const preview = container.querySelector('.preview');
+                const fileNameEl = preview.querySelector('p');
+                const removeBtn = preview.querySelector('button');
+                const pdfViewer = document.getElementById('pdf-viewer');
 
-                if (msg.toLowerCase().includes("vendor")) {
-                    document.querySelector('input[name="vendor"]').value = "ACME Supplies";
-                    const confirmBubble = document.createElement('div');
-                    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                    confirmBubble.innerHTML = `<div class='flex justify-between text-xs text-gray-400 mb-1'><span>Agent</span><span>${time}</span></div><div>✅ Vendor set to: ACME Supplies</div>`;
-                    confirmBubble.className = 'bg-green-100 p-2 rounded self-start text-left';
-                    chatBox.appendChild(confirmBubble);
-                    chatBox.scrollTop = chatBox.scrollHeight;
+                function handleFile(file) {
+                    if (file && file.type === 'application/pdf') {
+                        fileNameEl.innerHTML = `
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6 text-gray-600 cursor-pointer" data-file-input="${fileInput.id}">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M10.125 2.25h-4.5c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125v-9M10.125 2.25h.375a9 9 0 0 1 9 9v.375M10.125 2.25A3.375 3.375 0 0 1 13.5 5.625v1.5c0 .621.504 1.125 1.125 1.125h1.5a3.375 3.375 0 0 1 3.375 3.375M9 15l2.25 2.25L15 12" />
+                            </svg>
+                        `;
+                        dropArea.classList.add('hidden');
+                        preview.classList.remove('hidden');
+                        
+                        // Add click handler to the SVG
+                        fileNameEl.addEventListener('click', function(e) {
+                            const svg = e.target.closest('svg');
+                            if (svg) {
+                                const fileInputId = svg.dataset.fileInput;
+                                const fileInput = document.getElementById(fileInputId);
+                                if (fileInput) {
+                                    previewPDF(e.target, fileInput);
+                                }
+                            }
+                        });
+                        
+                        // Show PDF in the viewer
+                        const url = URL.createObjectURL(file);
+                        pdfViewer.src = url;
+                        pdfViewer.classList.remove('hidden');
+                    }
                 }
-                if (msg.toLowerCase().includes("invoice number")) {
-                    document.querySelector('input[name="invoice_number"]').value = "INV-2024-01";
-                    const confirmBubble = document.createElement('div');
-                    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                    confirmBubble.innerHTML = `<div class='flex justify-between text-xs text-gray-400 mb-1'><span>Agent</span><span>${time}</span></div><div>✅ Invoice Number set to: INV-2024-01</div>`;
-                    confirmBubble.className = 'bg-green-100 p-2 rounded self-start text-left';
-                    chatBox.appendChild(confirmBubble);
-                    chatBox.scrollTop = chatBox.scrollHeight;
+
+                function clearFile() {
+                    fileInput.value = '';
+                    fileNameEl.textContent = '';
+                    dropArea.classList.remove('hidden');
+                    preview.classList.add('hidden');
+                    
+                    // Clear PDF viewer
+                    pdfViewer.src = '';
+                    pdfViewer.classList.add('hidden');
                 }
-                if (msg.toLowerCase().includes("date")) {
-                    document.querySelector('input[name="invoice_date"]').value = "2024-04-04";
-                    const confirmBubble = document.createElement('div');
-                    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                    confirmBubble.innerHTML = `<div class='flex justify-between text-xs text-gray-400 mb-1'><span>Agent</span><span>${time}</span></div><div>✅ Invoice Date set to: 2024-04-04</div>`;
-                    confirmBubble.className = 'bg-green-100 p-2 rounded self-start text-left';
-                    chatBox.appendChild(confirmBubble);
-                    chatBox.scrollTop = chatBox.scrollHeight;
-                }
+
+                ['dragenter', 'dragover'].forEach(event => {
+                    dropArea.addEventListener(event, e => {
+                        e.preventDefault();
+                        dropArea.classList.add('border-blue-500', 'bg-blue-50');
+                    });
+                });
+
+                ['dragleave', 'drop'].forEach(event => {
+                    dropArea.addEventListener(event, e => {
+                        e.preventDefault();
+                        dropArea.classList.remove('border-blue-500', 'bg-blue-50');
+                    });
+                });
+
+                dropArea.addEventListener('click', () => fileInput.click());
+                dropArea.addEventListener('drop', e => handleFile(e.dataTransfer.files[0]));
+                fileInput.addEventListener('change', e => handleFile(e.target.files[0]));
+                removeBtn.addEventListener('click', clearFile);
+
+                // Add cursor pointer to indicate clickability
+                dropArea.style.cursor = 'pointer';
             }
 
             function formatCurrency(input) {
-                const cleaned = input.value.replace(/[^0-9.-]+/g, '');
+                // Remove any non-numeric characters except decimal point
+                const cleaned = input.value.replace(/[^0-9.-]/g, '');
                 const value = parseFloat(cleaned);
                 if (!isNaN(value)) {
-                    input.value = `$${value.toFixed(2)}`;
+                    input.value = new Intl.NumberFormat('en-US', {
+                        style: 'currency',
+                        currency: 'USD',
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2
+                    }).format(value);
+                } else {
+                    input.value = '$0.00';
                 }
             }
 
@@ -195,42 +249,145 @@
                 const amountInputs = document.querySelectorAll('input[name="line_amount[]"]');
                 let total = 0;
                 amountInputs.forEach(input => {
-                    const cleaned = input.value.replace(/[^0-9.-]+/g, '');
+                    const cleaned = input.value.replace(/[^0-9.-]/g, '');
                     const value = parseFloat(cleaned);
                     if (!isNaN(value)) total += value;
                 });
-                document.querySelector('input[name="total_amount"]').value = `$${total.toFixed(2)}`;
+                document.querySelector('input[name="total_amount"]').value = new Intl.NumberFormat('en-US', {
+                    style: 'currency',
+                    currency: 'USD',
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                }).format(total);
             }
 
+            // Handle input changes
             document.addEventListener('input', function (e) {
                 if (e.target && e.target.name === 'line_amount[]') {
                     updateTotalAmount();
                 }
             });
 
-            const chatInput = document.getElementById('chat-input');
-
-            chatInput.addEventListener('input', function () {
-                chatInput.style.height = 'auto';
-                chatInput.style.height = chatInput.scrollHeight + 'px';
+            // Handle focus (when clicking into the field)
+            document.addEventListener('focus', function (e) {
+                if (e.target && e.target.name === 'line_amount[]') {
+                    // Remove currency formatting but keep the number
+                    const cleaned = e.target.value.replace(/[^0-9.-]/g, '');
+                    e.target.value = cleaned;
+                }
             });
 
-            chatInput.addEventListener('keydown', function (e) {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    sendMessage();
+            // Handle blur (when leaving the field)
+            document.addEventListener('blur', function (e) {
+                if (e.target && e.target.name === 'line_amount[]') {
+                    formatCurrency(e.target);
+                    updateTotalAmount();
                 }
             });
 
             document.addEventListener('click', function (e) {
-                if (e.target && e.target.name === 'line_amount[]') {
-                    formatCurrency(e.target);
-                }
-                if (e.target && e.target.tagName === 'BUTTON' && e.target.textContent === 'Remove') {
+                if (e.target && e.target.tagName === 'BUTTON' && e.target.textContent === 'Remove Line Item') {
                     setTimeout(updateTotalAmount, 0);
                 }
             });
-        </script>
-    </body>
-</html>
 
+            async function submitForm() {
+                const form = document.getElementById('invoice-form');
+                const formData = new FormData(form);
+
+                // Convert FormData to JSON
+                const jsonData = {
+                    vendor: formData.get('vendor'),
+                    number: formData.get('number'),
+                    date: formData.get('date'),
+                    line_items: []
+                };
+
+                // Get all line items
+                const lineItems = document.querySelectorAll('#line-items > div');
+                for (const item of lineItems) {
+                    const lineItem = {
+                        'sub-cost-code': item.querySelector('[name="cost_code[]"]').value,
+                        'description': item.querySelector('[name="description[]"]').value,
+                        'amount': parseFloat(item.querySelector('[name="line_amount[]"]').value.replace(/[^0-9.-]+/g, '')),
+                        'units': 1,
+                        'rate': parseFloat(item.querySelector('[name="line_amount[]"]').value.replace(/[^0-9.-]+/g, '')),
+                        'is-billable': item.querySelector('[name="billable[]"]').checked,
+                        'project': item.querySelector('[name="project[]"]').value
+                    };
+
+                    // Add file data if this line item has a file
+                    const fileInput = item.querySelector('input[type="file"]');
+                    if (fileInput.files.length > 0) {
+                        const file = fileInput.files[0];
+                        console.log('Processing file:', file.name);
+                        try {
+                            const base64Content = await toBase64(file);
+                            console.log('Base64 content length:', base64Content.length);
+                            lineItem.attachment = {
+                                name: file.name,
+                                type: file.type,
+                                size: file.size,
+                                content: base64Content
+                            };
+                            console.log('Attachment added to line item');
+                        } catch (error) {
+                            console.error('Error converting file to base64:', error);
+                        }
+                    }
+
+                    jsonData.line_items.push(lineItem);
+                }
+
+                console.log('Final JSON data:', jsonData);
+                try {
+                    const response = await fetch('/api/bill/post', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(jsonData)
+                    });
+                    console.log(response);
+                    let result;
+                    try {
+                        result = await response.json();
+                    } catch (e) {
+                        console.error('Failed to parse JSON response:', e);
+                        throw new Error(`Server returned invalid JSON. Status: ${response.status}`);
+                    }
+
+                    if (!response.ok) {
+                        throw new Error(`Server error: ${result.message || response.statusText}`);
+                    }
+                    
+                    if (result.success) {
+                        alert('Bill submitted successfully!');
+                        //clearFile();
+                        //form.reset();
+                    } else {
+                        alert(`Error: ${result.message || 'Unknown error occurred'}`);
+                    }
+                } catch (error) {
+                    console.error('Error details:', error);
+                    alert(`Error submitting form: ${error.message}`);
+                }
+            }
+
+            // Add event listener to form submit button
+            document.querySelector('button[type="submit"]').addEventListener('click', submitForm);
+
+            // Initialize the form with one line item
+            console.log('Initializing form...');
+            try {
+                addLineItem();
+                console.log('Line item added successfully');
+            } catch (error) {
+                console.error('Error adding line item:', error);
+            }
+
+        </script>
+
+    </body>
+
+</html>

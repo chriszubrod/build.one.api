@@ -4,12 +4,10 @@ CREATE TABLE Attachment (
     [CreatedDatetime] DATETIMEOFFSET NOT NULL,
     [ModifiedDatetime] DATETIMEOFFSET NOT NULL,
     [Name] VARCHAR(255) NOT NULL,
-    [Text] VARCHAR(MAX) NOT NULL,
-    [NumberOfPages] INT NOT NULL,
+    [Size] BIGINT NULL,
+    [Type] VARCHAR(100) NULL,
+	[Content] VARBINARY(MAX) NULL,
     [TransactionId] INT NOT NULL,
-	[FilePath] VARCHAR(255) NOT NULL,
-	[FileSize] VARCHAR(255) NOT NULL,
-	[FileType] VARCHAR(255) NOT NULL,
     FOREIGN KEY (TransactionId) REFERENCES [Transaction](Id)
 );
 

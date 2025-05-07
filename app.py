@@ -6,6 +6,7 @@ from flask import (
 from agents import sample_agent
 
 from blueprints.api import (
+    api_bill,
     api_document_classification
 )
 
@@ -17,6 +18,7 @@ from blueprints.web import (
 
 app = Flask(__name__)
 
+app.register_blueprint(api_bill.api_bill_bp)
 app.register_blueprint(api_document_classification.api_document_classification_bp)
 
 app.register_blueprint(web_bill.web_bill_bp)

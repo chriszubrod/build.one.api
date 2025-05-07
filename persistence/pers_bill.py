@@ -15,7 +15,7 @@ import pyodbc
 # local imports
 from persistence import pers_database
 from persistence.pers_response import PersistenceResponse
-from persistence.pers_attachment import Attachment
+from persistence.pers_bill_line_item_attachment import BillLineItemAttachment
 from persistence.pers_bill_line_item import BillLineItem
 
 
@@ -50,14 +50,15 @@ class Bill:
 
 def create_bill_with_line_items_and_attachments(
         bill: Bill,
-        line_items: List[BillLineItem],
-        attachments: List[Attachment]
+        line_items: list,
+        attachments: list
 ) -> PersistenceResponse:
     """Creates a new bill with line items and attachments in the database."""
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 # Convert line items and attachments to pyodbc.Row compatible format
+                '''
                 line_items_params = [(
                     item.created_datetime,
                     item.modified_datetime,
@@ -81,13 +82,13 @@ def create_bill_with_line_items_and_attachments(
                     att.file_size,
                     att.file_type
                 ) for att in attachments]
-
+                '''
                 # Debug prints
-                print("Bill data:", bill)
-                print("Line items:", line_items_params)
-                print("Attachments:", attachments_params)
+                #print("Bill data:", bill)
+                #print("Line items:", line_items_params)
+                #print("Attachments:", attachments_params)
 
-                sql = "{CALL CreateBillWithLineItemsAndAttachment(?, ?, ?, ?, ?, ?, ?, ?, ?)}"
+                sql = "{CALL CreateBillWithLineItemsAndAttachments(?, ?, ?, ?, ?, ?, ?, ?)}"
                 row_count = cursor.execute(
                     sql,
                     bill.created_datetime,
@@ -96,16 +97,15 @@ def create_bill_with_line_items_and_attachments(
                     bill.date,
                     bill.amount,
                     bill.vendor_id,
-                    bill.attachment_id,
-                    line_items_params,
-                    attachments_params
+                    line_items,
+                    attachments
                 ).rowcount
                 cnxn.commit()
                 if row_count > 0:
                     return PersistenceResponse(
                         data=row_count,
                         message=(
-                            "Bill with line items and attachment has been successfully created."
+                            "Bill with line items and attachments has been successfully created."
                         ),
                         status_code=201,
                         success=True,
@@ -116,7 +116,7 @@ def create_bill_with_line_items_and_attachments(
                     return PersistenceResponse(
                         data=None,
                         message=(
-                            "Bill with line items and attachment has NOT been created."
+                            "Bill with line items and attachments has NOT been created."
                         ),
                         status_code=400,
                         success=False,
@@ -127,7 +127,7 @@ def create_bill_with_line_items_and_attachments(
             cnxn.rollback()
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to create bill with line items and attachment: {str(e)}",
+                message=f"Failed to create bill with line items and attachments: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()

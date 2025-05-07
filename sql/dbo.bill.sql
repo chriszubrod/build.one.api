@@ -18,39 +18,17 @@ CREATE TABLE [Bill] (
 SELECT * FROM [Transaction];
 SELECT * FROM [Bill];
 SELECT * FROM [BillLineItem];
-SELECT * FROM [Attachment];
-SELECT * FROM [Vendor];
-
-
-DELETE FROM [Bill]
-WHERE Id IN (42,43,44);
-
-ALTER TABLE [Bill]
-DROP COLUMN [AttachmentId];
-
-SELECT 
-    fk.name AS ForeignKeyName,
-    tp.name AS ParentTable,
-    cp.name AS ParentColumn,
-    tr.name AS ReferencingTable,
-    cr.name AS ReferencingColumn
-FROM sys.foreign_keys fk
-INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
-INNER JOIN sys.tables tp ON fkc.referenced_object_id = tp.object_id
-INNER JOIN sys.columns cp ON fkc.referenced_object_id = cp.object_id AND fkc.referenced_column_id = cp.column_id
-INNER JOIN sys.tables tr ON fkc.parent_object_id = tr.object_id
-INNER JOIN sys.columns cr ON fkc.parent_object_id = cr.object_id AND fkc.parent_column_id = cr.column_id
-WHERE fk.name = 'FK__Entry__Attachmen__618671AF';
-
-ALTER TABLE Entry
-DROP CONSTRAINT FK__Entry__Attachmen__618671AF;
+SELECT * FROM [BilLLineItemAttachment];
 
 
 
 
-DROP PROCEDURE IF EXISTS CreateEntryWithLineItemsAndAttachment;
 
-CREATE TYPE EntryLineItemType AS TABLE (
+DROP PROCEDURE IF EXISTS CreateBillWithLineItemsAndAttachments;
+
+
+CREATE TYPE BillLineItemType AS TABLE (
+    [RowKey] UNIQUEIDENTIFIER NOT NULL,
     [CreatedDatetime] DATETIMEOFFSET NOT NULL,
     [ModifiedDatetime] DATETIMEOFFSET NOT NULL,
     [Description] VARCHAR(255) NOT NULL,
@@ -63,128 +41,126 @@ CREATE TYPE EntryLineItemType AS TABLE (
     [ProjectId] INT NOT NULL
 );
 
-CREATE TYPE AttachmentType AS TABLE (
+CREATE TYPE BillLineItemAttachmentType AS TABLE (
+    [LineItemRowKey] UNIQUEIDENTIFIER NOT NULL,
     [CreatedDatetime] DATETIMEOFFSET NOT NULL,
     [ModifiedDatetime] DATETIMEOFFSET NOT NULL,
     [Name] NVARCHAR(255) NOT NULL,
-    [Text] NVARCHAR(MAX) NOT NULL,
-    [NumberOfPages] INT NOT NULL,
-    [FilePath] NVARCHAR(255) NOT NULL,
-    [FileSize] NVARCHAR(255) NOT NULL,
-    [FileType] NVARCHAR(255) NOT NULL
+    [Size] BIGINT NOT NULL,
+    [Type] NVARCHAR(100) NOT NULL,
+    [Content] VARBINARY(MAX) NOT NULL
 );
 
-CREATE PROCEDURE CreateEntryWithLineItemsAndAttachment
-	-- Shared
-	@CreatedDatetime DATETIMEOFFSET,
-    @ModifiedDatetime DATETIMEOFFSET,
-	-- Entry
-    @Number NVARCHAR(255),
-    @Date DATE,
-    @Amount DECIMAL(18,2),
-    @EntryTypeId INT,
-    @VendorId INT,
-	-- EntrLineItems
-	@EntryLineItems EntryLineItemType READONLY,
-	-- Attachment
-	@Attachments AttachmentType READONLY
-AS
-BEGIN
-	BEGIN TRANSACTION;
 
-	-- Insert a new record into the Transaction table
-    INSERT INTO [Transaction] (CreatedDatetime, ModifiedDatetime)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime));
-
-	-- Get the Id of the last inserted record
-    DECLARE @TransactionId INT;
-    SET @TransactionId = SCOPE_IDENTITY();
-
-	-- Insert a new record into the Entry table using the TransactionId
-    INSERT INTO Entry (CreatedDatetime, ModifiedDatetime, [Number], [Date], [Amount], EntryTypeId, VendorId, TransactionId)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime), @Number, @Date, @Amount, @EntryTypeId, @VendorId, @TransactionId);
-
-	-- Get the Id of the last inserted record
-    DECLARE @EntryId INT;
-    SET @EntryId = SCOPE_IDENTITY();
-
-	-- Iterate over the table parameter and insert line items
-    INSERT INTO EntryLineItem (CreatedDatetime, ModifiedDatetime, [Description], [Units], [Rate], [Amount], [IsBillable], [IsBilled], EntryId, SubCostCodeId, ProjectId)
-    SELECT CONVERT(DATETIMEOFFSET, @CreatedDatetime) AS CreatedDatetime, CONVERT(DATETIMEOFFSET, @ModifiedDatetime) AS ModifiedDatetime, [Description], [Units], [Rate], [Amount], [IsBillable], [IsBilled], @EntryId, [SubCostCodeId], [ProjectId]
-    FROM @EntryLineItems;
-
-    -- Iterate over the table parameter and insert attachments
-    INSERT INTO Attachment (CreatedDatetime, ModifiedDatetime, [Name], [Text], [NumberOfPages], TransactionId, [FilePath], [FileSize], [FileType])
-    SELECT CONVERT(DATETIMEOFFSET, @CreatedDatetime) AS CreatedDatetime, CONVERT(DATETIMEOFFSET, @ModifiedDatetime) AS ModifiedDatetime, [Name], [Text], [NumberOfPages], @TransactionId, [FilePath], [FileSize], [FileType]
-    FROM @Attachments;
-
-    COMMIT;
-END
-
-
-
-
-DROP PROCEDURE IF EXISTS CreateBuildoneEntry;
-
-
-CREATE PROCEDURE CreateBuildoneEntry
+CREATE PROCEDURE CreateBillWithLineItemsAndAttachments
+    -- Shared
     @CreatedDatetime DATETIMEOFFSET,
     @ModifiedDatetime DATETIMEOFFSET,
+    -- Bill
     @Number NVARCHAR(255),
     @Date DATE,
     @Amount DECIMAL(18,2),
-    @EntryTypeId INT,
     @VendorId INT,
-    @EntryLineItems EntryLineItemType READONLY
+    -- BillLineItems
+    @BillLineItems BillLineItemType READONLY,
+    -- Attachments
+    @BillLineItemAttachments BillLineItemAttachmentType READONLY
 AS
 BEGIN
     BEGIN TRANSACTION;
 
-    -- Insert a new record into the Transaction table
+    -- Step 1: Insert Transaction record
     INSERT INTO [Transaction] (CreatedDatetime, ModifiedDatetime)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime));
+    VALUES (
+        CONVERT(DATETIMEOFFSET, @CreatedDatetime),
+        CONVERT(DATETIMEOFFSET, @ModifiedDatetime)
+    );
 
-    -- Get the Id of the last inserted record
-    DECLARE @TransactionId INT;
-    SET @TransactionId = SCOPE_IDENTITY();
+    DECLARE @TransactionId INT = SCOPE_IDENTITY();
 
-    -- Insert a new record into the Entry table using the TransactionId
-    INSERT INTO Entry (CreatedDatetime, ModifiedDatetime, [Number], [Date], [Amount], EntryTypeId, VendorId, TransactionId)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime), @Number, @Date, @Amount, @EntryTypeId, @VendorId, @TransactionId);
+    -- Step 2: Insert Bill record
+    INSERT INTO Bill (CreatedDatetime, ModifiedDatetime, [Number], [Date], [Amount], VendorId, TransactionId)
+    VALUES (
+        CONVERT(DATETIMEOFFSET, @CreatedDatetime),
+        CONVERT(DATETIMEOFFSET, @ModifiedDatetime),
+        @Number, @Date, @Amount, @VendorId, @TransactionId
+    );
 
-    -- Get the Id of the last inserted record
-    DECLARE @EntryId INT;
-    SET @EntryId = SCOPE_IDENTITY();
+    DECLARE @BillId INT = SCOPE_IDENTITY();
 
-    -- Iterate over the table parameter and insert line items
-    INSERT INTO EntryLineItem (CreatedDatetime, ModifiedDatetime, [Description], [Units], [Rate], [Amount], [IsBillable], [IsBilled], EntryId, SubCostCodeId, ProjectId)
-    SELECT CONVERT(DATETIMEOFFSET, @CreatedDatetime) AS CreatedDatetime, CONVERT(DATETIMEOFFSET, @ModifiedDatetime) AS ModifiedDatetime, [Description], [Units], [Rate], [Amount], [IsBillable], [IsBilled], @EntryId, [SubCostCodeId], [ProjectId]
-    FROM @EntryLineItems;
+    -- Step 3: Create temp table to map RowKey -> BillLineItemId
+    DECLARE @LineItemMap TABLE (
+        RowKey UNIQUEIDENTIFIER NOT NULL,
+        BillLineItemId INT NOT NULL
+    );
+
+    -- Step 4: Insert BillLineItems and populate map
+    -- First insert all line items
+    INSERT INTO BillLineItem (
+        CreatedDatetime, ModifiedDatetime, [Description], [Units], [Rate], [Amount],
+        [IsBillable], [IsBilled], [BillId], [SubCostCodeId], [ProjectId]
+    )
+    SELECT
+        CONVERT(DATETIMEOFFSET, @CreatedDatetime),
+        CONVERT(DATETIMEOFFSET, @ModifiedDatetime),
+        i.Description,
+        i.Units,
+        i.Rate,
+        i.Amount,
+        i.IsBillable,
+        i.IsBilled,
+        @BillId,
+        i.SubCostCodeId,
+        i.ProjectId
+    FROM @BillLineItems AS i;
+
+    -- Then populate the map table
+    INSERT INTO @LineItemMap (RowKey, BillLineItemId)
+    SELECT 
+        i.RowKey,
+        bl.Id
+    FROM @BillLineItems i
+    INNER JOIN BillLineItem bl ON 
+        bl.CreatedDatetime = CONVERT(DATETIMEOFFSET, @CreatedDatetime) AND
+        bl.ModifiedDatetime = CONVERT(DATETIMEOFFSET, @ModifiedDatetime) AND
+        bl.Description = i.Description AND
+        bl.Units = i.Units AND
+        bl.Rate = i.Rate AND
+        bl.Amount = i.Amount AND
+        bl.IsBillable = i.IsBillable AND
+        bl.IsBilled = i.IsBilled AND
+        bl.BillId = @BillId AND
+        bl.SubCostCodeId = i.SubCostCodeId AND
+        bl.ProjectId = i.ProjectId;
+
+    -- Step 5: Insert Attachments using the map
+    INSERT INTO BillLineItemAttachment (
+        CreatedDatetime, ModifiedDatetime, [Name], [Size], [Type], [Content], BillLineItemId
+    )
+    SELECT
+        CONVERT(DATETIMEOFFSET, a.CreatedDatetime),
+        CONVERT(DATETIMEOFFSET, a.ModifiedDatetime),
+        a.Name,
+        a.Size,
+        a.Type,
+        CONVERT(VARBINARY(MAX), a.Content, 1),
+        m.BillLineItemId
+    FROM @BillLineItemAttachments a
+    INNER JOIN @LineItemMap m ON a.LineItemRowKey = m.RowKey;
 
     COMMIT;
-END
-
-
-DECLARE @EntryLineItems EntryLineItemType;
-INSERT INTO @EntryLineItems VALUES
-	('2025-01-12 22:08:04.478549','2025-01-12 22:08:04.478549','Plans',1,36.05,36.05,0,0,1141,3);
-EXEC CreateBuildoneEntry
-	@CreatedDatetime = '2025-01-12 22:08:04.478549',
-    @ModifiedDatetime = '2025-01-12 22:08:04.478549',
-    @Number = '25-1024',
-    @Date = '01/03/2025',
-    @Amount = '36.05',
-    @EntryTypeId = 2,
-    @VendorId = 117,
-    @EntryLineItems = @EntryLineItems
+END;
 
 
 
 
 
-DROP PROCEDURE IF EXISTS ReadEntries;
 
-CREATE PROCEDURE ReadEntries
+
+
+DROP PROCEDURE IF EXISTS ReadBills;
+
+CREATE PROCEDURE ReadBills
 AS
 BEGIN
     SELECT
@@ -195,49 +171,20 @@ BEGIN
         [Number],
         [Date],
         [Amount],
-        [EntryTypeId],
         [VendorId],
-        [AttachmentId],
         [TransactionId]
-    FROM [Entry];
+    FROM [Bill];
 
     COMMIT;
 END
 
 
-DROP PROCEDURE IF EXISTS ReadEntriesByEntryTypeId;
-
-CREATE PROCEDURE ReadEntriesByEntryTypeId
-	@EntryTypeId INT
-AS
-BEGIN
-	BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [GUID],
-        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
-        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
-        [Number],
-        [Date],
-        [Amount],
-        [EntryTypeId],
-        [VendorId],
-        [AttachmentId],
-        [TransactionId]
-    FROM [Entry]
-	WHERE [EntryTypeId]=@EntryTypeId;
-
-    COMMIT;
-END
-
-EXEC ReadEntriesByEntryTypeId @EntryTypeId=2;
 
 
 
-DROP PROCEDURE IF EXISTS ReadEntryByNumber;
+DROP PROCEDURE IF EXISTS ReadBillByNumber;
 
-CREATE PROCEDURE ReadEntryByNumber
+CREATE PROCEDURE ReadBillByNumber
     @Number NVARCHAR(255)
 AS
 BEGIN
@@ -249,11 +196,9 @@ BEGIN
         [Number],
         [Date],
         [Amount],
-        [EntryTypeId],
         [VendorId],
-        [AttachmentId],
         [TransactionId]
-    FROM Entry
+    FROM Bill
     WHERE [Number] = @Number;
 
 	COMMIT;
@@ -261,9 +206,9 @@ END
 
 
 
-DROP PROCEDURE IF EXISTS ReadEntryByGuid;
+DROP PROCEDURE IF EXISTS ReadBillByGuid;
 
-CREATE PROCEDURE ReadEntryByGuid
+CREATE PROCEDURE ReadBillByGuid
     @Guid NVARCHAR(255)
 AS
 BEGIN
@@ -275,26 +220,10 @@ BEGIN
         [Number],
         [Date],
         [Amount],
-        [EntryTypeId],
         [VendorId],
-        [AttachmentId],
         [TransactionId]
-    FROM Entry
+    FROM Bill
     WHERE [GUID] = @Guid;
 
     COMMIT;
 END
-
-
-
-
-
-
-DELETE FROM dbo.[EntryLineItem];
-DELETE FROM dbo.[Entry];
-
-
-SELECT * FROM dbo.[Entry];
-
-
-

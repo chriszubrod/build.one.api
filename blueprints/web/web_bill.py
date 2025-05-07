@@ -2,7 +2,8 @@
 Module for bill web.
 """
 # python standard library imports
-
+import base64
+import mimetypes
 
 # third party imports
 from flask import Blueprint, render_template
@@ -10,6 +11,7 @@ from flask import Blueprint, render_template
 
 # local imports
 from business import (
+    bus_bill_line_item_attachment,
     bus_bill_line_item,
     bus_bill,
     bus_entry_type,
@@ -32,7 +34,13 @@ def list_bills_route():
     if get_bills_bus_response.success:
         _bills = get_bills_bus_response.data
     print(get_bills_bus_response.message)
-    return render_template('bill/list.html', bills=_bills)
+    _vendors = []
+    get_vendors_bus_response = bus_vendor.get_vendors()
+    if get_vendors_bus_response.success:
+        _vendors = get_vendors_bus_response.data
+    print(get_vendors_bus_response.message)
+
+    return render_template('bill/list.html', bills=_bills, vendors=_vendors)
 
 
 @web_bill_bp.route('/bill/create', methods=['GET'])
@@ -87,8 +95,37 @@ def view_bill_route(bill_guid):
         get_bill_line_item_by_bill_id(_bill.id)
     if get_bill_line_items_bus_response.success:
         _bill_line_items = get_bill_line_items_bus_response.data
-    else:
-        _bill_line_items = []
+
+
+    _bill_line_item_attachments = []
+
+    for bill_line_item in _bill_line_items:
+        get_bill_line_item_attachments_bus_response = bus_bill_line_item_attachment.\
+            get_bill_line_item_attachment_by_bill_line_item_id(bill_line_item.id)
+        if not get_bill_line_item_attachments_bus_response.success:
+            continue
+
+        for attachment in get_bill_line_item_attachments_bus_response.data:
+            file_bytes = attachment.content
+            file_name = attachment.name
+            mime_type, _ = mimetypes.guess_type(file_name)
+            mime_type = mime_type or 'application/octet-stream' 
+            base64_bytes = base64.b64encode(file_bytes).decode('utf-8')
+            data_uri = f'data:{mime_type};base64,{base64_bytes}'
+
+            _bill_line_item_attachments.append(
+                {
+                    'id': attachment.id,
+                    'guid': attachment.guid,
+                    'created_datetime': attachment.created_datetime,
+                    'modified_datetime': attachment.modified_datetime,
+                    'name': file_name,
+                    'size': attachment.size,
+                    'type': mime_type,
+                    'content': data_uri,
+                    'bill_line_item_id': attachment.bill_line_item_id
+                }
+            )
 
     _vendors = []
     get_vendors_bus_response = bus_vendor.get_vendors()
@@ -115,6 +152,7 @@ def view_bill_route(bill_guid):
         'bill/view.html',
         bill=_bill,
         bill_line_items=_bill_line_items,
+        bill_line_item_attachments=_bill_line_item_attachments,
         vendors=_vendors,
         projects=_projects,
         sub_cost_codes=_sub_cost_codes

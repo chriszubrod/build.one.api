@@ -1,20 +1,21 @@
 """
-Module for entry business.
+Module for bill business.
 """
 
 # python standard library imports
 from datetime import datetime
 from dateutil import tz
+import uuid
+import base64
 
 # local imports
-from business import bus_attachment
+from business import bus_bill_line_item_attachment
 from business.bus_response import BusinessResponse
 from utils.function_help import clean_text_for_db
 from persistence import (
-    pers_attachment,
     pers_bill,
     pers_bill_line_item,
-    pers_entry_type,
+    pers_bill_line_item_attachment,
     pers_project,
     pers_sub_cost_code,
     pers_vendor
@@ -35,51 +36,52 @@ def get_bills() -> BusinessResponse:
     )
 
 
-def get_entry_by_guid(entry_guid: str) -> BusinessResponse:
+def get_bill_by_guid(bill_guid: str) -> BusinessResponse:
     """
-    Retrieves an entry by its GUID.
+    Retrieves a bill by its GUID.
     """
-    pers_entry_resp = pers_bill.read_entry_by_guid(entry_guid)
+    pers_bill_resp = pers_bill.read_bill_by_guid(bill_guid)
     return BusinessResponse(
-        data=pers_entry_resp.data,
-        message=pers_entry_resp.message,
-        status_code=pers_entry_resp.status_code,
-        success=pers_entry_resp.success,
-        timestamp=pers_entry_resp.timestamp
+        data=pers_bill_resp.data,
+        message=pers_bill_resp.message,
+        status_code=pers_bill_resp.status_code,
+        success=pers_bill_resp.success,
+        timestamp=pers_bill_resp.timestamp
     )
 
 
-def get_entries_by_entry_type_id(entry_type_id: int) -> BusinessResponse:
+def get_bills_by_vendor_id(vendor_id: int) -> BusinessResponse:
     """
-    Retrieves all entries by entry type id from the database.
+    Retrieves all bills by vendor id from the database.
     """
-    pers_entries_resp = pers_bill.read_entries_by_entry_type_id(entry_type_id)
+    pers_bills_resp = pers_bill.read_bills_by_vendor_id(vendor_id)
     return BusinessResponse(
-        data=pers_entries_resp.data,
-        message=pers_entries_resp.message,
-        status_code=pers_entries_resp.status_code,
-        success=pers_entries_resp.success,
-        timestamp=pers_entries_resp.timestamp
+        data=pers_bills_resp.data,
+        message=pers_bills_resp.message,
+        status_code=pers_bills_resp.status_code,
+        success=pers_bills_resp.success,
+        timestamp=pers_bills_resp.timestamp
     )
 
 
-def post_entry_with_line_items_and_attachment(
+def post_bill_with_line_items_and_attachments(
         created_datetime: datetime,
         modified_datetime: datetime,
         vendor_guid: str,
         number: str,
         date: datetime,
-        entry_type: str,
         line_items: list,
         files: list
     ) -> BusinessResponse:
     """
-    Posts an entry with line items to the database.
+    Posts a bill with line items to the database.
     """
     ###############################################################################################
-    # Validate the Entry
+    # Validate the Bill
     # Validate the vendor guid
-    if not vendor_guid or vendor_guid == '' or vendor_guid is None:
+    if (not vendor_guid
+        or vendor_guid == ''
+        or vendor_guid is None):
         return BusinessResponse(
             data=None,
             message='Vendor guid is required',
@@ -89,7 +91,9 @@ def post_entry_with_line_items_and_attachment(
         )
 
     # Validate the number
-    if not number or number == '' or number is None:
+    if (not number
+        or number == ''
+        or number is None):
         return BusinessResponse(
             data=None,
             message='Number is required',
@@ -99,20 +103,12 @@ def post_entry_with_line_items_and_attachment(
         )
 
     # Validate the date
-    if not date or date is None or date == '':
+    if (not date
+        or date is None
+        or date == ''):
         return BusinessResponse(
             data=None,
             message='Date is required',
-            status_code=400,
-            success=False,
-            timestamp=datetime.now()
-        )
-
-    # Validate the entry type
-    if not entry_type or entry_type == '' or entry_type is None:
-        return BusinessResponse(
-            data=None,
-            message='Entry type is required',
             status_code=400,
             success=False,
             timestamp=datetime.now()
@@ -131,27 +127,16 @@ def post_entry_with_line_items_and_attachment(
     # Get the vendor id
     vendor_id = vendor_pers_resp.data.id
 
-    # Get the entry type id
-    entry_type_pers_resp = pers_entry_type.read_entry_type_by_name(entry_type)
-    if not entry_type_pers_resp.success:
-        return BusinessResponse(
-            data=None,
-            message='Entry type not found',
-            status_code=404,
-            success=False,
-            timestamp=datetime.now()
-        )
-    # Get the entry type id
-    entry_type_id = entry_type_pers_resp.data.id
 
     #print(f'Vendor id: {vendor_id}')
     #print(f'Number: {number}')
     #print(f'Date: {date}')
-    #print(f'Entry type id: {entry_type_id}')
 
     ###############################################################################################
-    # Validate the Entry Line Items
-    if not line_items or line_items == [] or line_items is None:
+    # Validate the Line Items
+    if (not line_items
+        or line_items == []
+        or line_items is None):
         return BusinessResponse(
             data=None,
             message='Line items are required',
@@ -160,10 +145,13 @@ def post_entry_with_line_items_and_attachment(
             timestamp=datetime.now()
         )
 
-    attachment_line_item_names = []
-    _entry_line_items = []
+    _tvp_line_items = []
+    _tvp_attachments = []
+    _row_keys = []
+    _attachment_line_item_names = []
+    _bill_line_items = []
     total = 0
-    for line_item in line_items:
+    for index, line_item in enumerate(line_items):
         #print(f'Line item: {line_item}')
         # Validate the sub-cost code
         if (not line_item['sub-cost-code']
@@ -178,7 +166,9 @@ def post_entry_with_line_items_and_attachment(
             )
 
         # Validate the amount
-        if not line_item['amount'] or line_item['amount'] == '' or line_item['amount'] is None:
+        if (not line_item['amount']
+            or line_item['amount'] == ''
+            or line_item['amount'] is None):
             return BusinessResponse(
                 data=None,
                 message='Amount is required',
@@ -200,7 +190,9 @@ def post_entry_with_line_items_and_attachment(
             )
 
         # Validate the units
-        if not line_item['units'] or line_item['units'] == '' or line_item['units'] is None:
+        if (not line_item['units']
+            or line_item['units'] == ''
+            or line_item['units'] is None):
             return BusinessResponse(
                 data=None,
                 message='Units are required',
@@ -271,102 +263,63 @@ def post_entry_with_line_items_and_attachment(
             )
         project_id = project_pers_resp.data.id
 
-        # Create the attachment name
-        attachment_line_item_names.append(
-            {
-                'project': project_pers_resp.data.abbreviation,
-                'description': line_item['description'],
-                'sub-cost-code': sub_cost_code_pers_resp.data.number,
-                'amount': line_item['amount'],
-            }
-        )
+        row_key = uuid.uuid4()
+
+        _tvp_line_items.append((
+            str(row_key),
+            created_datetime,
+            modified_datetime,
+            line_item['description'],
+            line_item['units'],
+            line_item['rate'],
+            line_item['amount'],
+            line_item['is-billable'],
+            False, #is_billed
+            sub_cost_code_id,
+            project_id
+        ))
+
+        # Add attachment if it exists
+        if index < len(files) and files[index]:
+            attachment = files[index]
+            project_abbr = project_pers_resp.data.abbreviation
+            sub_cost_code_number = sub_cost_code_pers_resp.data.number
+            file_extension = attachment['type'].split('/')[1]
+
+            attachment_name = f'{project_abbr} - {vendor_pers_resp.data.name} - {number} - {line_item["description"]} - {sub_cost_code_number} - ${float(line_item["amount"]):.2f}.{file_extension}'
+
+            _tvp_attachments.append((
+                str(row_key),
+                created_datetime,
+                modified_datetime,
+                attachment_name,
+                attachment['size'],
+                attachment['type'],
+                base64.b64decode(attachment['content'])
+            ))
 
         total += line_item['amount']
 
-        # Create the entry line item object and append to the list
-        _entry_line_items.append(
-            pers_bill_line_item.EntryLineItem(
-                created_datetime=created_datetime,
-                modified_datetime=modified_datetime,
-                description=line_item['description'],
-                units=line_item['units'],
-                rate=line_item['rate'],
-                amount=line_item['amount'],
-                is_billable=line_item['is-billable'],
-                is_billed=False,
-                entry_id=None,
-                sub_cost_code_id=sub_cost_code_id,
-                project_id=project_id
-            )
-        )
+    #print(f'Bill line items: {_bill_line_items}')
 
-    #print(f'Entry line items: {_entry_line_items}')
-
-    _entry = pers_bill.Entry(
+    _bill = pers_bill.Bill(
         created_datetime=created_datetime,
         modified_datetime=modified_datetime,
         number=number,
         date=date,
         amount=total,
-        entry_type_id=entry_type_id,
-        vendor_id=vendor_id,
-        attachment_id=None
+        vendor_id=vendor_id
     )
 
-
-    ###############################################################################################
-    # Validate the Attachments
-    _attachments = []
-    for index, value in enumerate(files):
-
-        _attachments.append(
-            pers_attachment.Attachment(
-                created_datetime=created_datetime,
-                modified_datetime=modified_datetime,
-                name=value['name'],
-                text=clean_text_for_db(value['text']),
-                number_of_pages=value['pages'],
-                file_size=value['size'],
-                file_type=value['type'],
-                file_path=f'project\\{_entry_line_items[index].project_id}\\bill'
-            )
-        )
-
-    #print(f'Attachments: {_attachments}')
-
-    create_entry_resp = pers_bill.create_entry_with_line_items_and_attachment(
-        entry=_entry,
-        line_items=_entry_line_items,
-        attachments=_attachments
+    create_bill_resp = pers_bill.create_bill_with_line_items_and_attachments(
+        bill=_bill,
+        line_items=_tvp_line_items,
+        attachments=_tvp_attachments
     )
-    if create_entry_resp.success:
-        for attachment in _attachments:
-            write_file_resp = bus_attachment.write_file_to_project_id_bill_folder(
-                file_content=attachment.text,
-                file_path=attachment.file_path,
-                file_name=attachment.name
-            )
-            if write_file_resp.success:
-                return BusinessResponse(
-                    data=None,
-                    message='Entry created successfully',
-                    status_code=200,
-                    success=True,
-                    timestamp=datetime.now()
-                )
-            else:
-                return BusinessResponse(
-                    data=None,
-                    message='File write failed',
-                    status_code=500,
-                    success=False,
-                    timestamp=datetime.now()
-                )
-    else:
-        return BusinessResponse(
-            data=None,
-            message='Entry creation failed',
-            status_code=500,
-            success=False,
-            timestamp=datetime.now()
-        )
+    return BusinessResponse(
+        data=create_bill_resp.data,
+        message=create_bill_resp.message,
+        status_code=create_bill_resp.status_code,
+        success=create_bill_resp.success,
+        timestamp=create_bill_resp.timestamp
+    )

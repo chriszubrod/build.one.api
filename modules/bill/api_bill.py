@@ -13,7 +13,7 @@ from flask import Blueprint, request, jsonify
 
 # local imports
 from blueprints.api.api_response import ApiResponse
-from business import bus_bill
+from . import bus_bill
 
 
 api_bill_bp = Blueprint('api_bill', __name__, url_prefix='/api')
@@ -74,6 +74,7 @@ def api_post_bill_route():
             if 'attachment' in line_item:
                 bill_files.append(line_item['attachment'])
 
+        print(f'Bill files: {bill_files}')
         # Call the post_entry function and pass in the data to create an entry
         bill_bus_response = bus_bill.post_bill_with_line_items_and_attachments(
             created_datetime=submission_datetime,

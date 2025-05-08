@@ -6,15 +6,14 @@ from flask import (
 from agents import sample_agent
 
 from blueprints.api import (
-    api_bill,
     api_document_classification
 )
 
 from blueprints.web import (
-    web_bill,
     web_vendor,
     web_document
 )
+from modules.bill import api_bill, web_bill
 
 app = Flask(__name__)
 

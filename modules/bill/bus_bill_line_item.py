@@ -9,10 +9,11 @@ from dateutil import tz
 # local imports
 from business.bus_response import BusinessResponse
 from persistence import (
-    pers_bill,
-    pers_bill_line_item,
     pers_project,
     pers_sub_cost_code
+)
+from modules.bill import (
+    pers_bill_line_item
 )
 
 

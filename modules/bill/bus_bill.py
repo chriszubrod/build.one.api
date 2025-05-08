@@ -9,13 +9,13 @@ import uuid
 import base64
 
 # local imports
-from business import bus_bill_line_item_attachment
+from modules.bill import (
+    bus_bill_line_item_attachment,
+    pers_bill
+)
 from business.bus_response import BusinessResponse
 from utils.function_help import clean_text_for_db
 from persistence import (
-    pers_bill,
-    pers_bill_line_item,
-    pers_bill_line_item_attachment,
     pers_project,
     pers_sub_cost_code,
     pers_vendor
@@ -214,16 +214,16 @@ def post_bill_with_line_items_and_attachments(
             )
 
         # Validate the is-billable
-        if (not line_item['is-billable']
-            or line_item['is-billable'] == ''
-            or line_item['is-billable'] is None):
-            return BusinessResponse(
-                data=None,
-                message='Is billable is required',
-                status_code=400,
-                success=False,
-                timestamp=datetime.now()
-            )
+        #if (not line_item['is-billable']
+        #   or line_item['is-billable'] == ''
+        #    or line_item['is-billable'] is None):
+        #    return BusinessResponse(
+        #        data=None,
+        #        message='Is billable is required',
+        #        status_code=400,
+        #        success=False,
+        #        timestamp=datetime.now()
+        #    )
 
         # Validate the project-guid
         if (not line_item['project']

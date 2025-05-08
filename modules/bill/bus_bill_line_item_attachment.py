@@ -13,7 +13,7 @@ from typing import Union, Tuple
 from pathlib import Path
 
 # persistence imports
-from persistence import (
+from modules.bill import (
     pers_bill_line_item_attachment,
     pers_bill_line_item
 )

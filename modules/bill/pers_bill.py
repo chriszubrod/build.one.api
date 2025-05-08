@@ -15,8 +15,10 @@ import pyodbc
 # local imports
 from persistence import pers_database
 from persistence.pers_response import PersistenceResponse
-from persistence.pers_bill_line_item_attachment import BillLineItemAttachment
-from persistence.pers_bill_line_item import BillLineItem
+from modules.bill import (
+    bus_bill_line_item_attachment,
+    pers_bill
+)
 
 
 @dataclass

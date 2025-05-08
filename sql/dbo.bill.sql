@@ -227,3 +227,6 @@ BEGIN
 
     COMMIT;
 END
+
+
+DELETE FROM Bill;

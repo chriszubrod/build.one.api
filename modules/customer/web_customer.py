@@ -8,13 +8,13 @@ Module for customer web.
 from flask import Blueprint, render_template
 
 # local imports
-from business import bus_customer
+from modules.customer import bus_customer
 
 
-customer_web_bp = Blueprint('customer_web', __name__)
+web_customer_bp = Blueprint('web_customer', __name__, template_folder='templates')
 
 
-@customer_web_bp.route('/customers', methods=['GET'])
+@web_customer_bp.route('/customers', methods=['GET'])
 def list_customers_route():
     """
     Returns the route for the customers page.
@@ -28,7 +28,7 @@ def list_customers_route():
     return render_template('customer/list.html', customers=_customers)
 
 
-@customer_web_bp.route('/customer/create', methods=['GET'])
+@web_customer_bp.route('/customer/create', methods=['GET'])
 def create_customer_route():
     """
     Returns the customer create route for the application.
@@ -36,7 +36,7 @@ def create_customer_route():
     return render_template('customer/create.html')
 
 
-@customer_web_bp.route('/customer/<customer_guid>', methods=['GET'])
+@web_customer_bp.route('/customer/<customer_guid>', methods=['GET'])
 def view_customer_route(customer_guid):
     """
     Returns the customer by guid route.
@@ -51,7 +51,7 @@ def view_customer_route(customer_guid):
     return render_template('customer/view.html', customer=_customer)
 
 
-@customer_web_bp.route('/customer/<customer_guid>/edit', methods=['GET'])
+@web_customer_bp.route('/customer/<customer_guid>/edit', methods=['GET'])
 def edit_customer_route(customer_guid):
     """
     Returns the customer edit route.

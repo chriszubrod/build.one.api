@@ -5,25 +5,30 @@ from flask import (
 )
 from agents import sample_agent
 
-from blueprints.api import (
-    api_document_classification
-)
 
-from blueprints.web import (
-    web_vendor,
-    web_document
+from modules.bill import (
+    api_bill,
+    web_bill
 )
-from modules.bill import api_bill, web_bill
+from modules.customer import (
+    api_customer,
+    web_customer
+)
+from modules.project import (
+    api_project,
+    web_project
+)
 
 app = Flask(__name__)
 
 app.register_blueprint(api_bill.api_bill_bp)
-app.register_blueprint(api_document_classification.api_document_classification_bp)
-
 app.register_blueprint(web_bill.web_bill_bp)
-app.register_blueprint(web_document.web_document_bp)
-app.register_blueprint(web_vendor.web_vendor_bp)
 
+app.register_blueprint(api_customer.api_customer_bp)
+app.register_blueprint(web_customer.web_customer_bp)
+
+app.register_blueprint(api_project.api_project_bp)
+app.register_blueprint(web_project.web_project_bp)
 
 
 @app.route('/')

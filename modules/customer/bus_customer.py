@@ -8,7 +8,7 @@ from dateutil import tz
 
 # local imports
 from business.bus_response import BusinessResponse
-from persistence import pers_customer
+from modules.customer import pers_customer
 
 
 def get_customers() -> BusinessResponse:

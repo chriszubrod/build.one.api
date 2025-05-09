@@ -16,10 +16,10 @@ from modules.bill import (
     bus_bill
 )
 from business import (
-    bus_project,
     bus_sub_cost_code,
     bus_vendor
 )
+from modules.project import bus_project
 
 
 web_bill_bp = Blueprint('web_bill', __name__, template_folder='templates')

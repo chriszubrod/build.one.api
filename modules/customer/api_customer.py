@@ -13,13 +13,13 @@ from flask import Blueprint, request, jsonify
 
 # local imports
 from blueprints.api.api_response import ApiResponse
-from business import bus_customer
+from modules.customer import bus_customer
 
 
-customer_api_bp = Blueprint('customer_api', __name__, url_prefix='/api')
+api_customer_bp = Blueprint('api_customer', __name__, url_prefix='/api')
 
 
-@customer_api_bp.route('/post/customer', methods=['POST'])
+@api_customer_bp.route('/post/customer', methods=['POST'])
 #@tm.token_verification
 def api_post_customer_route():
     """

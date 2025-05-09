@@ -1,5 +1,5 @@
 """
-Module for customer.
+Module for project folder.
 """
 
 # python standard library imports
@@ -16,52 +16,57 @@ from persistence.pers_response import PersistenceResponse
 
 
 @dataclass
-class Customer:
-    """Represents a customer in the system."""
+class Project:
+    """Represents a project in the system."""
     id: Optional[int] = None
     guid: Optional[str] = None
     created_datetime: Optional[datetime] = None
     modified_datetime: Optional[datetime] = None
     name: Optional[str] = None
-    is_active: Optional[bool] = None
-    address_id: Optional[int] = None
+    abbreviation: Optional[str] = None
+    status: Optional[str] = None
+    customer_id: Optional[int] = None
     transaction_id: Optional[int] = None
 
-
     @classmethod
-    def from_db_row(cls, row) -> Optional['Customer']:
-        """Creates a Customer instance from a database row."""
+    def from_db_row(cls, row) -> Optional['Project']:
+        """Creates a Project instance from a database row."""
         return cls(
             id=getattr(row, 'Id', None),
             guid=getattr(row, 'GUID', None),
             created_datetime=getattr(row, 'CreatedDatetime', None),
             modified_datetime=getattr(row, 'ModifiedDatetime', None),
             name=getattr(row, 'Name', None),
-            is_active=getattr(row, 'IsActive', None),
-            address_id=getattr(row, 'AddressId', None),
-            transaction_id=getattr(row, 'TransactionId', None),
+            abbreviation=getattr(row, 'Abbreviation', None),
+            status=getattr(row, 'Status', None),
+            customer_id=getattr(row, 'CustomerId', None),
+            transaction_id=getattr(row, 'TransactionId', None)
         )
 
 
-def create_customer(customer: Customer) -> PersistenceResponse:
-    """Creates a new customer in the database."""
+def create_project(project: Project) -> PersistenceResponse:
+    """
+    Creates a new project in the database.
+    """
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL CreateCustomer(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
+                sql = "{CALL CreateProject(?, ?, ?, ?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,
-                    customer.created_datetime,
-                    customer.modified_datetime,
-                    customer.name,
-                    customer.is_active
+                    project.created_datetime,
+                    project.modified_datetime,
+                    project.name,
+                    project.abbreviation,
+                    project.status,
+                    project.customer_id
                 ).rowcount
                 cnxn.commit()
                 if rowcount > 0:
                     return PersistenceResponse(
-                        data=None,
-                        message="Customer created",
-                        status_code=200,
+                        data=rowcount,
+                        message="Project created",
+                        status_code=201,
                         success=True,
                         timestamp=datetime.now()
                     )
@@ -69,33 +74,37 @@ def create_customer(customer: Customer) -> PersistenceResponse:
                     cnxn.rollback()
                     return PersistenceResponse(
                         data=None,
-                        message="Customer not created",
-                        status_code=400,
+                        message="Failed to create project",
+                        status_code=500,
                         success=False,
                         timestamp=datetime.now()
                     )
+
         except (pyodbc.Error) as e:
             cnxn.rollback()
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to create customer: {str(e)}",
+                message=f"Failed to create project: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_customers() -> PersistenceResponse:
-    """Retrieves all customers from the database."""
+def read_projects() -> PersistenceResponse:
+    """
+    Retrieves all projects from the database.
+    """
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadCustomers}"
+                sql = "{CALL ReadProjects}"
                 rows = cursor.execute(sql).fetchall()
-                if rows:  
+
+                if rows:
                     return PersistenceResponse(
-                        data=[Customer.from_db_row(row) for row in rows],
-                        message="Customers found",
+                        data=[Project.from_db_row(row) for row in rows],
+                        message="Projects found",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -103,43 +112,7 @@ def read_customers() -> PersistenceResponse:
                 else:
                     return PersistenceResponse(
                         data=None,
-                        message="No customers found",
-                        status_code=501,
-                        success=False,
-                        timestamp=datetime.now()
-                    )
-
-        except (pyodbc.Error) as e:
-            return PersistenceResponse(
-                data=None,
-                message=f"Failed to read customers: {str(e)}",
-                status_code=500,
-                success=False,
-                timestamp=datetime.now()
-            )
-
-
-def read_customer_by_id(customer_id: int) -> PersistenceResponse:
-    """
-    Retrieves a customer from the database by ID.
-    """
-    with pers_database.get_db_connection() as cnxn:
-        try:
-            with cnxn.cursor() as cursor:
-                sql = "{CALL ReadCustomerById(?)}"
-                row = cursor.execute(sql, (customer_id,)).fetchone()
-                if row:
-                    return PersistenceResponse(
-                        data=Customer.from_db_row(row),
-                        message="Customer found",
-                        status_code=200,
-                        success=True,
-                        timestamp=datetime.now()
-                    )
-                else:
-                    return PersistenceResponse(
-                        data=None,
-                        message="Customer by id not found",
+                        message="No projects found",
                         status_code=404,
                         success=False,
                         timestamp=datetime.now()
@@ -148,26 +121,27 @@ def read_customer_by_id(customer_id: int) -> PersistenceResponse:
         except (pyodbc.Error) as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read customer by id: {str(e)}",
+                message=f"Failed to read projects: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_customer_by_guid(customer_guid: str) -> PersistenceResponse:
+def read_project_by_id(id: int) -> PersistenceResponse:
     """
-    Retrieves a customer from the database by GUID.
+    Retrieves a project from the database by ID.
     """
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadCustomerByGUID(?)}"
-                row = cursor.execute(sql, (customer_guid,)).fetchone()
+                sql = "{CALL ReadProjectById(?)}"
+                row = cursor.execute(sql, id).fetchone()
+
                 if row:
                     return PersistenceResponse(
-                        data=Customer.from_db_row(row),
-                        message="Customer found",
+                        data=Project.from_db_row(row),
+                        message="Project found",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -175,7 +149,7 @@ def read_customer_by_guid(customer_guid: str) -> PersistenceResponse:
                 else:
                     return PersistenceResponse(
                         data=None,
-                        message="Customer by guid not found",
+                        message="Project not found",
                         status_code=404,
                         success=False,
                         timestamp=datetime.now()
@@ -184,26 +158,27 @@ def read_customer_by_guid(customer_guid: str) -> PersistenceResponse:
         except (pyodbc.Error) as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read customer by guid: {str(e)}",
+                message=f"Failed to read project by guid: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_customer_by_name(name: str) -> PersistenceResponse:
+def read_project_by_guid(guid: str) -> PersistenceResponse:
     """
-    Retrieves a customer from the database by name.
+    Retrieves a project from the database by GUID.
     """
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadCustomerByName(?)}"
-                row = cursor.execute(sql, name).fetchone()
+                sql = "{CALL ReadProjectByGUID(?)}"
+                row = cursor.execute(sql, guid).fetchone()
+
                 if row:
                     return PersistenceResponse(
-                        data=Customer.from_db_row(row),
-                        message="Customer found",
+                        data=Project.from_db_row(row),
+                        message="Project found",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -211,7 +186,7 @@ def read_customer_by_name(name: str) -> PersistenceResponse:
                 else:
                     return PersistenceResponse(
                         data=None,
-                        message="Customer by name not found",
+                        message="Project not found",
                         status_code=404,
                         success=False,
                         timestamp=datetime.now()
@@ -220,37 +195,35 @@ def read_customer_by_name(name: str) -> PersistenceResponse:
         except (pyodbc.Error) as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read customer by name: {str(e)}",
+                message=f"Failed to read project by guid: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def update_customer_by_id(customer: Customer) -> PersistenceResponse:
+def update_project_by_id(project: Project) -> PersistenceResponse:
     """
-    Updates an existing customer in the database.
+    Updates a project in the database by ID.
     """
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL UpdateCustomerById(?, ?, ?, ?, ?, ?)}"
+                sql = "{CALL UpdateProjectById(?, ?, ?, ?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,
-                    customer.id,
-                    customer.guid,
-                    customer.created_datetime,
-                    customer.modified_datetime,
-                    customer.name,
-                    customer.is_active,
-                    customer.address_id,
-                    customer.transaction_id
+                    project.id,
+                    project.modified_datetime,
+                    project.name,
+                    project.abbreviation,
+                    project.status,
+                    project.customer_id
                 ).rowcount
                 cnxn.commit()
                 if rowcount > 0:
                     return PersistenceResponse(
-                        data=None,
-                        message="Customer updated",
+                        data=rowcount,
+                        message="Project updated",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -259,16 +232,59 @@ def update_customer_by_id(customer: Customer) -> PersistenceResponse:
                     cnxn.rollback()
                     return PersistenceResponse(
                         data=None,
-                        message="Customer by id not updated",
-                        status_code=400,
+                        message="Failed to update project by id",
+                        status_code=500,
                         success=False,
                         timestamp=datetime.now()
                     )
+
         except (pyodbc.Error) as e:
             cnxn.rollback()
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to update customer by id: {str(e)}",
+                message=f"Failed to update project by id: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def delete_project_by_id(project: Project) -> PersistenceResponse:
+    """
+    Deletes a project in the database by ID.
+    """
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL DeleteProjectById(?)}"
+                rowcount = cursor.execute(
+                    sql,
+                    project.id
+                ).rowcount
+                cnxn.commit()
+                if rowcount > 0:
+                    return PersistenceResponse(
+                        data=rowcount,
+                        message="Project deleted",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    cnxn.rollback()
+                    return PersistenceResponse(
+                        data=None,
+                        message="Failed to delete project by id",
+                        status_code=500,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            cnxn.rollback()
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to delete project by id: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()

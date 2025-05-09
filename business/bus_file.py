@@ -10,10 +10,10 @@ from business.bus_business_responses import BusinessResponse
 from datetime import datetime
 from helper import function_help as hp
 from integrations import ms_upload_new_file
+from modules.project import pers_project
 from persistence import (
     pers_ms_sharepoint_folder,
     pers_ms_sharepoint_site,
-    pers_project,
     pers_project_folder
 )
 from persistence.pers_response import SuccessResponse, PersistenceResponse, DatabaseError

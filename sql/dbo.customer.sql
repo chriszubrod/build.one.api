@@ -5,9 +5,9 @@ CREATE TABLE Customer (
     [ModifiedDatetime] DATETIMEOFFSET NOT NULL,
     [Name] VARCHAR(255) NOT NULL,
     [IsActive] BIT NOT NULL,
-    [ContactId] INT,
     [AddressId] INT,
     [TransactionId] INT NOT NULL,
+    [IntuitCustomerId] VARCHAR(MAX) NULL,
     FOREIGN KEY (ContactId) REFERENCES Contact(Id),
     FOREIGN KEY (AddressId) REFERENCES [Address](Id),
     FOREIGN KEY (TransactionId) REFERENCES [Transaction](Id)

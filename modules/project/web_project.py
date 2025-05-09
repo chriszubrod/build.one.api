@@ -8,13 +8,14 @@ Module for project web.
 from flask import Blueprint, render_template
 
 # local imports
-from business import bus_customer, bus_project
+from modules.customer import bus_customer
+from modules.project import bus_project
 
 
-project_web_bp = Blueprint('project_web', __name__)
+web_project_bp = Blueprint('web_project', __name__, template_folder='templates')
 
 
-@project_web_bp.route('/projects', methods=['GET'])
+@web_project_bp.route('/projects', methods=['GET'])
 def list_projects_route():
     """
     Returns the route for the projects page.
@@ -25,18 +26,18 @@ def list_projects_route():
         _projects = get_projects_bus_response.data
 
     #print(_projects)
-    return render_template('project/list.html', projects=_projects)
+    return render_template('list.html', projects=_projects)
 
 
-@project_web_bp.route('/project/create', methods=['GET'])
+@web_project_bp.route('/project/create', methods=['GET'])
 def create_project_route():
     """
     Returns the project create route for the application.
     """
-    return render_template('project/create.html')
+    return render_template('create.html')
 
 
-@project_web_bp.route('/project/<project_guid>', methods=['GET'])
+@web_project_bp.route('/project/<project_guid>', methods=['GET'])
 def view_project_route(project_guid):
     """
     Returns the project by guid route.
@@ -55,10 +56,10 @@ def view_project_route(project_guid):
     else:
         _customer = {}
 
-    return render_template('project/view.html', project=_project, customer=_customer)
+    return render_template('view.html', project=_project, customer=_customer)
 
 
-@project_web_bp.route('/project/<project_guid>/edit', methods=['GET'])
+@web_project_bp.route('/project/<project_guid>/edit', methods=['GET'])
 def edit_project_route(project_guid):
     """
     Returns the project edit route.
@@ -70,4 +71,4 @@ def edit_project_route(project_guid):
     else:
         _project = {}
 
-    return render_template('project/edit.html', project=_project)
+    return render_template('edit.html', project=_project)

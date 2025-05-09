@@ -14,12 +14,12 @@ import json
 import requests
 
 from datetime import datetime
+from modules.project import pers_project
 from persistence import (
     pers_intuit_auth,
     pers_intuit_bill,
     pers_intuit_data_sync,
     pers_intuit_urls,
-    pers_project,
     pers_sub_cost_code,
     pers_vendor
 )

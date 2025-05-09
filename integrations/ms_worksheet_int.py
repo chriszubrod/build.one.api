@@ -12,11 +12,11 @@ import requests
 from datetime import datetime
 from helper import function_help as hp
 from integrations import ms_upload_new_file
+from modules.project import pers_project
 from persistence import (
     pers_ms_sharepoint_folder,
     pers_ms_sharepoint_site,
     pers_ms_sharepoint_worksheet,
-    pers_project,
     pers_project_folder,
     pers_sub_cost_code
 )

@@ -14,9 +14,9 @@ from modules.bill import (
     pers_bill
 )
 from business.bus_response import BusinessResponse
+from modules.project import pers_project
 from utils.function_help import clean_text_for_db
 from persistence import (
-    pers_project,
     pers_sub_cost_code,
     pers_vendor
 )

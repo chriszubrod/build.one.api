@@ -20,6 +20,7 @@ from integrations.intuit_customer_int import (
     query_intuit_customer_info
 )
 from business.bus_business_responses import BusinessResponse
+from modules.project import pers_project
 from persistence.pers_response import SuccessResponse
 from persistence import (
     pers_customer,
@@ -28,8 +29,7 @@ from persistence import (
     pers_intuit_data_sync,
 
     pers_intuit_email_address,
-    pers_intuit_urls,
-    pers_project
+    pers_intuit_urls
 )
 
 LAST_UPDATE = ""

@@ -6,9 +6,13 @@ Module for project business.
 from datetime import datetime
 from dateutil import tz
 
+# third party imports
+
+
 # local imports
 from business.bus_response import BusinessResponse
-from persistence import pers_customer, pers_project
+from modules.project import pers_project
+from modules.customer import pers_customer
 
 
 def get_projects() -> BusinessResponse:
@@ -144,4 +148,139 @@ def post_project(
         status_code=create_project_pers_response.status_code,
         success=create_project_pers_response.success,
         timestamp=create_project_pers_response.timestamp
+    )
+
+
+def patch_project_by_guid(
+        modified_datetime: datetime,
+        project_guid: str,
+        name: str,
+        abbreviation: str,
+        status: str
+    ) -> BusinessResponse:
+    """
+    Updates a project.
+    """
+
+    # validate project_guid
+    if not project_guid or project_guid == "" or project_guid is None:
+        return BusinessResponse(
+            data=None,
+            message="Missing Project guid.",
+            status_code=400,
+            success=False,
+            timestamp=datetime.now(tz.tzlocal())
+        )
+
+    # validate name
+    if not name or name == "" or name is None:
+        return BusinessResponse(
+            data=None,
+            message="Missing Project name.",
+            status_code=400,
+            success=False,
+            timestamp=datetime.now(tz.tzlocal())
+        )
+
+    # validate abbreviation
+    if not abbreviation or abbreviation == "" or abbreviation is None:
+        return BusinessResponse(
+            data=None,
+            message="Missing Project abbreviation.",
+            status_code=400,
+            success=False,
+            timestamp=datetime.now(tz.tzlocal())
+        )
+
+    # validate status
+    if not status or status == "" or status is None:
+        return BusinessResponse(
+            data=None,
+            message="Missing Project status.",
+            status_code=400,
+            success=False,
+            timestamp=datetime.now(tz.tzlocal())
+        )
+
+    # validate customer_guid
+    if not customer_guid or customer_guid == "" or customer_guid is None:
+        return BusinessResponse(
+            data=None,
+            message="Missing Project customer_guid.",
+            status_code=400,
+            success=False,
+            timestamp=datetime.now(tz.tzlocal())
+        )
+
+    # get customer id
+    customer_id = None
+    read_customer_by_guid_pers_response = pers_customer.\
+        read_customer_by_guid(customer_guid)
+    if read_customer_by_guid_pers_response.success:
+        customer_id = read_customer_by_guid_pers_response.data.customer_id
+    else:
+        return BusinessResponse(
+            data=None,
+            message=read_customer_by_guid_pers_response.message,
+            status_code=read_customer_by_guid_pers_response.status_code,
+            success=read_customer_by_guid_pers_response.success,
+            timestamp=read_customer_by_guid_pers_response.timestamp
+        )
+
+    # get project
+    _project = None
+    read_project_by_guid_pers_response = pers_project.\
+        read_project_by_guid(project_guid)
+    if read_project_by_guid_pers_response.success:
+        _project = read_project_by_guid_pers_response.data
+
+    # update project in database
+    update_project_pers_response = pers_project.update_project_by_id(
+        project=_project
+    )
+
+    return BusinessResponse(
+        data=update_project_pers_response.data,
+        message=update_project_pers_response.message,
+        status_code=update_project_pers_response.status_code,
+        success=update_project_pers_response.success,
+        timestamp=update_project_pers_response.timestamp
+    )
+
+
+def delete_project_by_guid(
+        project_guid: str
+    ) -> BusinessResponse:
+    """
+    Deletes a project.
+    """
+
+    # validate project_guid
+    if not project_guid or project_guid == "" or project_guid is None:
+        return BusinessResponse(
+            data=None,
+            message="Missing Project guid.",
+            status_code=400,
+            success=False,
+            timestamp=datetime.now(tz.tzlocal())
+        )
+
+    # get project
+    _project = None
+    read_project_by_guid_pers_response = pers_project.\
+        read_project_by_guid(project_guid)
+    if read_project_by_guid_pers_response.success:
+        _project = read_project_by_guid_pers_response.data
+
+    # delete project in database
+    delete_project_pers_response = pers_project.delete_project_by_id(
+        project=_project
+    )
+
+    return BusinessResponse(
+        data=delete_project_pers_response.data,
+        message=delete_project_pers_response.message,
+        status_code=delete_project_pers_response.status_code,
+        success=delete_project_pers_response.success,
+        timestamp=delete_project_pers_response.timestamp
     )

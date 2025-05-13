@@ -10,6 +10,10 @@ from modules.bill import (
     api_bill,
     web_bill
 )
+from modules.company import (
+    api_company,
+    web_company
+)
 from modules.customer import (
     api_customer,
     web_customer
@@ -23,6 +27,9 @@ app = Flask(__name__)
 
 app.register_blueprint(api_bill.api_bill_bp)
 app.register_blueprint(web_bill.web_bill_bp)
+
+app.register_blueprint(api_company.api_company_bp)
+app.register_blueprint(web_company.web_company_bp)
 
 app.register_blueprint(api_customer.api_customer_bp)
 app.register_blueprint(web_customer.web_customer_bp)

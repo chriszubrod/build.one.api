@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Company</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50">
+    <div class="relative z-10 max-w-3xl mx-auto mt-12 p-6 pb-12 bg-white rounded-xl shadow-lg flex flex-col gap-6" id="form-container">
+        <div class="absolute right-8 top-8">
+            <button onclick="window.location.href='/company'" type="button" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 shadow-md">
+                Back to Company List
+            </button>
+        </div>
+        <form id="company-form" class="space-y-6" onsubmit="return false;">
+            <h1 class="text-2xl font-bold mb-4">Create Company</h1>
+            <div class="grid grid-cols-2 gap-4">
+                <input name="name" placeholder="Name" class="border p-2 rounded w-full" required>
+            </div>
+
+            <button type="submit" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">Submit</button>
+        </form>
+    </div>
+
+    <script>
+        const form = document.getElementById('company-form');
+
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const formData = new FormData(form);
+            const jsonData = {
+                name: formData.get('name')
+            };
+
+            try {
+                const response = await fetch('/api/post/company', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(jsonData)
+                });
+                const result = await response.json();
+                if (response.ok && result.success) {
+                    alert('Company created successfully!');
+                    console.log(result);
+                    location.reload();
+                } else {
+                    alert('Error: ' + (result.message || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error submitting form: ' + error.message);
+            }
+        });
+    </script>
+</body>
+</html>

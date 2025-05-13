@@ -30,7 +30,7 @@ DROP COLUMN ContactId;
 
 
 
-DROP PROCEDURE CreateCustomer;
+DROP PROCEDURE IF EXISTS CreateCustomer;
 
 CREATE PROCEDURE CreateCustomer
     @CreatedDatetime DATETIMEOFFSET,

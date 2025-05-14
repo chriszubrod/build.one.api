@@ -8,10 +8,14 @@ from dateutil import tz
 import re
 import bcrypt
 
+# third party imports
+
+
 # local imports
 from business.bus_response import BusinessResponse
-from helper import function_help as fhp
-from persistence import pers_role, pers_user
+from utils import function_help as fhp
+from modules.user import pers_user
+from persistence import pers_role
 
 
 def validate_email(email: str) -> BusinessResponse:

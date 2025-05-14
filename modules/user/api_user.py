@@ -13,14 +13,14 @@ from flask import Blueprint, request, jsonify, session
 
 # local imports
 from blueprints.api.api_response import ApiResponse
-from business import bus_user
+from modules.user import bus_user
 
 
-user_api_bp = Blueprint('user_api', __name__, url_prefix='/api')
+api_user_bp = Blueprint('api_user', __name__, url_prefix='/api')
 
 
 
-@user_api_bp.route('/post/user', methods=['POST'])
+@api_user_bp.route('/post/user', methods=['POST'])
 def api_post_user_route():
     """
     Handles the POST request for saving a user.

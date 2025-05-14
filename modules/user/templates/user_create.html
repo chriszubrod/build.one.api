@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create User</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50">
+    <div class="relative z-10 max-w-3xl mx-auto mt-12 p-6 pb-12 bg-white rounded-xl shadow-lg flex flex-col gap-6" id="form-container">
+        <div class="absolute right-8 top-8">
+            <button onclick="window.location.href='/users'" type="button" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 shadow-md">
+                Back to User List
+            </button>
+        </div>
+        <h1 class="text-2xl font-bold mb-4">Create User</h1>
+        <form id="user-create-form" class="space-y-6">
+            <div class="grid grid-cols-1 gap-4">
+                <div>
+                    <label for="username" class="block font-semibold mb-1">Username</label>
+                    <input type="text" id="username" name="username" class="border p-2 rounded w-full" required>
+                </div>
+                <div>
+                    <label for="password" class="block font-semibold mb-1">Password</label>
+                    <input type="password" id="password" name="password" class="border p-2 rounded w-full" required>
+                </div>
+                <div class="flex items-center">
+                    <input type="checkbox" id="isActive" name="isActive" class="mr-2" checked>
+                    <label for="isActive" class="font-semibold">Active</label>
+                </div>
+                <div>
+                    <label for="roleGuid" class="block font-semibold mb-1">Role</label>
+                    <select id="roleGuid" name="roleGuid" class="border p-2 rounded w-full" required>
+                        <option value="">Select Role</option>
+                        {% for role in roles %}
+                            <option value="{{ role.guid }}">{{ role.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <button type="submit" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">Create User</button>
+        </form>
+    </div>
+    <script>
+        const form = document.getElementById('user-create-form');
+        if (form) {
+            form.addEventListener('submit', async function(e) {
+                e.preventDefault();
+                const formData = new FormData(form);
+                const jsonData = {
+                    username: formData.get('username'),
+                    password: formData.get('password'),
+                    is_active: formData.get('isActive') === 'on',
+                    role_guid: formData.get('roleGuid')
+                };
+                try {
+                    const response = await fetch('/api/post/user', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(jsonData)
+                    });
+                    const result = await response.json();
+                    if (response.ok && result.success) {
+                        alert('User created successfully!');
+                        window.location.href = '/users';
+                    } else {
+                        alert('Error: ' + (result.message || 'Unknown error'));
+                    }
+                } catch (error) {
+                    alert('Error creating user: ' + error.message);
+                }
+            });
+        }
+    </script>
+</body>
+</html>

@@ -9,13 +9,14 @@ Module for user web.
 from flask import Blueprint, render_template
 
 # local imports
-from business import bus_contact, bus_role,bus_user
+from business import bus_contact, bus_role
+from modules.user import bus_user
 
 
-user_web_bp = Blueprint('user_web', __name__)
+web_user_bp = Blueprint('web_user', __name__, template_folder='templates')
 
 
-@user_web_bp.route('/users', methods=['GET'])
+@web_user_bp.route('/users', methods=['GET'])
 def list_users_route():
     """
     Returns the route for the users page.
@@ -27,10 +28,10 @@ def list_users_route():
     else:
         _users = []
 
-    return render_template('user/list.html', users=_users)
+    return render_template('user_list.html', users=_users)
 
 
-@user_web_bp.route('/user/create', methods=['GET'])
+@web_user_bp.route('/user/create', methods=['GET'])
 def create_user_route():
     """
     Returns the user new route.
@@ -42,10 +43,10 @@ def create_user_route():
     else:
         _roles = []
 
-    return render_template('user/create.html', roles=_roles)
+    return render_template('user_create.html', roles=_roles)
 
 
-@user_web_bp.route('/user/<user_guid>', methods=['GET'])
+@web_user_bp.route('/user/<user_guid>', methods=['GET'])
 def view_user_route(user_guid):
     """
     Returns the user by guid route.
@@ -70,10 +71,10 @@ def view_user_route(user_guid):
     else:
         _roles = []
 
-    return render_template('user/view.html', user=_user, contact=_contact, roles=_roles)
+    return render_template('user_view.html', user=_user, contact=_contact, roles=_roles)
 
 
-@user_web_bp.route('/user/<user_guid>/edit', methods=['GET'])
+@web_user_bp.route('/user/<user_guid>/edit', methods=['GET'])
 def edit_user_route(user_guid):
     """
     Returns the user edit route.
@@ -98,4 +99,4 @@ def edit_user_route(user_guid):
     else:
         _roles = []
 
-    return render_template('user/edit.html', user=_user, contact=_contact, roles=_roles)
+    return render_template('user_edit.html', user=_user, contact=_contact, roles=_roles)

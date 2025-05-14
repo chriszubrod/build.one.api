@@ -8,8 +8,10 @@ from dateutil import tz
 
 # local imports
 from business.bus_response import BusinessResponse
-from helper import function_help as fhp
-from persistence import pers_contact, pers_customer, pers_user
+from utils import function_help as fhp
+from modules.user import pers_user
+from persistence import pers_contact
+
 
 
 def post_contact(
@@ -67,6 +69,7 @@ def post_contact(
                 success=read_user_by_guid_pers_response.success,
                 timestamp=read_user_by_guid_pers_response.timestamp
             )
+    '''
     elif user_guid == '' or user_guid is None:
         read_customer_by_guid_pers_response = pers_customer.read_customer_by_guid(customer_guid)
         if read_customer_by_guid_pers_response.success:
@@ -80,6 +83,7 @@ def post_contact(
                 success=read_customer_by_guid_pers_response.success,
                 timestamp=read_customer_by_guid_pers_response.timestamp
             )
+    '''
 
     # create contact object instance
     _contact = pers_contact.Contact(

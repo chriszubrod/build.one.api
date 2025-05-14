@@ -55,7 +55,7 @@ def create_user(user: User) -> PersistenceResponse:
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL CreateUser(?, ?, ?, ?, ?, ?, ?)}"
+                sql = "{CALL CreateUser(?, ?, ?, ?, ?, ?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,
                     user.created_datetime,
@@ -211,7 +211,7 @@ def update_user_by_id(user: User) -> PersistenceResponse:
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL UpdateUserById(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
+                sql = "{CALL UpdateUserById(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,
                     user.id,

@@ -22,6 +22,10 @@ from modules.project import (
     api_project,
     web_project
 )
+from modules.user import (
+    api_user,
+    web_user
+)
 
 app = Flask(__name__)
 
@@ -36,6 +40,10 @@ app.register_blueprint(web_customer.web_customer_bp)
 
 app.register_blueprint(api_project.api_project_bp)
 app.register_blueprint(web_project.web_project_bp)
+
+app.register_blueprint(api_user.api_user_bp)
+app.register_blueprint(web_user.web_user_bp)
+
 
 
 @app.route('/')

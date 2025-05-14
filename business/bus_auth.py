@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 # local imports
 from business.bus_response import BusinessResponse
 from helper import auth_help, token_help
-from persistence import pers_user
+from modules.user import pers_user
 
 
 def post_auth_registration(

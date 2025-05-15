@@ -8,8 +8,8 @@ from dateutil import tz
 
 # local imports
 from business.bus_response import BusinessResponse
-from helper import function_help as fhp
-from persistence import pers_address
+from utils import function_help as fhp
+from modules.address import pers_address
 
 
 def post_address(

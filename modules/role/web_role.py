@@ -8,13 +8,13 @@ Module for role web.
 from flask import Blueprint, render_template
 
 # local imports
-from business import bus_role
+from modules.role import bus_role
 
 
-role_web_bp = Blueprint('role_web', __name__)
+web_role_bp = Blueprint('web_role', __name__, template_folder='templates')
 
 
-@role_web_bp.route('/roles', methods=['GET'])
+@web_role_bp.route('/roles', methods=['GET'])
 def list_roles_route():
     """
     Returns the route for the roles page.
@@ -25,18 +25,18 @@ def list_roles_route():
         _roles = get_roles_bus_response.data
 
     print(_roles)
-    return render_template('role/list.html', roles=_roles)
+    return render_template('role_list.html', roles=_roles)
 
 
-@role_web_bp.route('/role/create', methods=['GET'])
+@web_role_bp.route('/role/create', methods=['GET'])
 def create_role_route():
     """
     Returns the role create route for the application.
     """
-    return render_template('role/create.html')
+    return render_template('role_create.html')
 
 
-@role_web_bp.route('/role/<role_guid>', methods=['GET'])
+@web_role_bp.route('/role/<role_guid>', methods=['GET'])
 def view_role_route(role_guid):
     """
     Returns the role by guid route.
@@ -48,10 +48,10 @@ def view_role_route(role_guid):
     else:
         _role = {}
 
-    return render_template('role/view.html', role=_role)
+    return render_template('role_view.html', role=_role)
 
 
-@role_web_bp.route('/role/<role_guid>/edit', methods=['GET'])
+@web_role_bp.route('/role/<role_guid>/edit', methods=['GET'])
 def edit_role_route(role_guid):
     """
     Returns the role edit route.
@@ -63,4 +63,4 @@ def edit_role_route(role_guid):
     else:
         _role = {}
 
-    return render_template('role/edit.html', role=_role)
+    return render_template('role_edit.html', role=_role)

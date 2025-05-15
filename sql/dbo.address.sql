@@ -15,6 +15,9 @@ CREATE TABLE [Address] (
 SELECT * FROM [Transaction];
 SELECT * FROM [Address];
 
+
+
+
 CREATE PROCEDURE CreateAddress
     @CreatedDatetime DATETIMEOFFSET,
     @ModifiedDatetime DATETIMEOFFSET,
@@ -42,6 +45,93 @@ BEGIN
     COMMIT;
 END
 
+
+
+
+DROP PROCEDURE IF EXISTS ReadAddresses;
+
+CREATE PROCEDURE ReadAddresses
+AS
+BEGIN
+
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [StreetOne],
+        [StreetTwo],
+        [City],
+        [State],
+        [Zip],
+        [TransactionId]
+    FROM [Address];
+
+    COMMIT;
+END;
+
+
+
+DROP PROCEDURE IF EXISTS ReadAddressById;
+
+CREATE PROCEDURE ReadAddressById
+    @Id INT
+AS
+BEGIN
+
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [StreetOne],
+        [StreetTwo],
+        [City],
+        [State],
+        [Zip],
+        [TransactionId]
+    FROM [Address]
+    WHERE [Id] = @Id;
+
+    COMMIT;
+END;
+
+
+
+DROP PROCEDURE IF EXISTS ReadAddressByGUID;
+
+CREATE PROCEDURE ReadAddressByGUID
+    @GUID VARCHAR(255)
+AS
+BEGIN
+
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [StreetOne],
+        [StreetTwo],
+        [City],
+        [State],
+        [Zip],
+        [TransactionId]
+    FROM [Address]
+    WHERE [GUID] = @GUID;
+
+    COMMIT;
+END;
+
+
+
+
+
 CREATE PROCEDURE ReadAddressByStreetCityStateZip
     @StreetOne VARCHAR(255),
     @StreetTwo VARCHAR(255),
@@ -68,6 +158,9 @@ BEGIN
     AND [State] = @State
     AND [Zip] = @Zip;
 END
+
+
+
 
 
 DELETE FROM dbo.[Address];

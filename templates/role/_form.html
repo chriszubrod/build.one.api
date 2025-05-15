@@ -1,6 +1,0 @@
-<label for="name">Role Name:</label>
-{% if readonly %}
-    <span class="readonly-field">{{ role.name }}</span>
-{% else %}
-    <input type="text" id="name" name="name" value="{{ role.name if role else '' }}" required>
-{% endif %}

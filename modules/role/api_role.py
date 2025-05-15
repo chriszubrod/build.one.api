@@ -13,13 +13,13 @@ from flask import Blueprint, request, jsonify
 
 # local imports
 from blueprints.api.api_response import ApiResponse
-from business import bus_role
+from modules.role import bus_role
 
 
-role_api_bp = Blueprint('role_api', __name__, url_prefix='/api')
+api_role_bp = Blueprint('api_role', __name__, url_prefix='/api')
 
 
-@role_api_bp.route('/post/role', methods=['POST'])
+@api_role_bp.route('/post/role', methods=['POST'])
 def api_post_role_route():
     """
     Handles the POST request for saving a role.

@@ -8,7 +8,7 @@ from dateutil import tz
 
 # local imports
 from business.bus_response import BusinessResponse
-from persistence import pers_role
+from modules.role import pers_role
 
 
 def get_roles() -> BusinessResponse:

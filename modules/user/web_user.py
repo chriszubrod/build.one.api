@@ -9,7 +9,8 @@ Module for user web.
 from flask import Blueprint, render_template
 
 # local imports
-from business import bus_contact, bus_role
+from business import bus_contact
+from modules.role import bus_role
 from modules.user import bus_user
 
 

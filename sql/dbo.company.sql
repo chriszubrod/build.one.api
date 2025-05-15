@@ -132,7 +132,7 @@ BEGIN
         [ModifiedDatetime] = CONVERT(DATETIMEOFFSET, @ModifiedDatetime),
         [Name] = @Name
     WHERE [Id] = @Id;
-        
+
     COMMIT;
 END;
 

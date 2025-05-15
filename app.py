@@ -6,6 +6,11 @@ from flask import (
 from agents import sample_agent
 
 
+from modules.address import (
+    api_address,
+    web_address
+)
+
 from modules.bill import (
     api_bill,
     web_bill
@@ -26,8 +31,15 @@ from modules.user import (
     api_user,
     web_user
 )
+from modules.role import (
+    api_role,
+    web_role
+)
 
 app = Flask(__name__)
+
+app.register_blueprint(api_address.api_address_bp)
+app.register_blueprint(web_address.web_address_bp)
 
 app.register_blueprint(api_bill.api_bill_bp)
 app.register_blueprint(web_bill.web_bill_bp)
@@ -44,7 +56,8 @@ app.register_blueprint(web_project.web_project_bp)
 app.register_blueprint(api_user.api_user_bp)
 app.register_blueprint(web_user.web_user_bp)
 
-
+app.register_blueprint(api_role.api_role_bp)
+app.register_blueprint(web_role.web_role_bp)
 
 @app.route('/')
 def index():

@@ -15,7 +15,7 @@ import bcrypt
 from business.bus_response import BusinessResponse
 from utils import function_help as fhp
 from modules.user import pers_user
-from persistence import pers_role
+from modules.role import pers_role
 
 
 def validate_email(email: str) -> BusinessResponse:

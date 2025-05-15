@@ -18,9 +18,9 @@ ADD IntuitItemId VARCHAR(MAX) NULL;
 SELECT * FROM [Transaction];
 SELECT * FROM CostCode ORDER BY [Number];
 
-DROP PROCEDURE IF EXISTS CreateBuildoneCostCode;
+DROP PROCEDURE IF EXISTS CreateCostCode;
 
-CREATE PROCEDURE CreateBuildoneCostCode
+CREATE PROCEDURE CreateCostCode
     @CreatedDatetime DATETIMEOFFSET,
     @ModifiedDatetime DATETIMEOFFSET,
     @Number NUMERIC(18, 4),
@@ -49,9 +49,9 @@ END
 
 
 
-DROP PROCEDURE IF EXISTS ReadBuildoneCostCodes;
+DROP PROCEDURE IF EXISTS ReadCostCodes;
 
-CREATE PROCEDURE ReadBuildoneCostCodes
+CREATE PROCEDURE ReadCostCodes
 AS
 BEGIN
     SELECT
@@ -70,10 +70,10 @@ END
 
 
 
-DROP PROCEDURE IF EXISTS ReadBuildoneCostCodeByName;
+DROP PROCEDURE IF EXISTS ReadCostCodeByName;
 
 
-CREATE PROCEDURE ReadBuildoneCostCodeByName
+CREATE PROCEDURE ReadCostCodeByName
     @Name VARCHAR(255)
 AS
 BEGIN
@@ -92,9 +92,73 @@ BEGIN
 END
 
 
-DROP PROCEDURE IF EXISTS ReadBuildoneCostCodeByIntuitItemId;
 
-CREATE PROCEDURE ReadBuildoneCostCodeByIntuitItemId
+DROP PROCEDURE IF EXISTS ReadBuildoneCostCodeById;
+
+CREATE PROCEDURE ReadCostCodeById
+    @Id INT
+AS
+BEGIN
+
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [GUID],
+        CAST(CreatedDatetime AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST(ModifiedDatetime AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [Number],
+        [Name],
+        [Desc],
+        [TransactionId],
+        IntuitItemId
+    FROM CostCode WHERE Id = @Id;
+
+    COMMIT;
+END;
+
+
+
+
+
+
+
+DROP PROCEDURE IF EXISTS ReadCostCodeByGUID;
+
+CREATE PROCEDURE ReadCostCodeByGUID
+    @GUID VARCHAR(255)
+AS
+BEGIN
+
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [GUID],
+        CAST(CreatedDatetime AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST(ModifiedDatetime AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [Number],
+        [Name],
+        [Desc],
+        [TransactionId],
+        IntuitItemId
+    FROM CostCode
+    WHERE [GUID] = @GUID;
+
+    COMMIT;
+END;
+
+
+
+
+
+
+
+
+
+DROP PROCEDURE IF EXISTS ReadCostCodeByIntuitItemId;
+
+CREATE PROCEDURE ReadCostCodeByIntuitItemId
     @IntuitItemId VARCHAR(MAX)
 AS
 BEGIN
@@ -108,12 +172,50 @@ BEGIN
 		[Desc],
 		[TransactionId],
 		IntuitItemId
-    FROM CostCode WHERE IntuitItemId = @IntuitItemId;
+    FROM CostCode
+    WHERE IntuitItemId = @IntuitItemId;
 END
 
 
 
 DELETE FROM dbo.CostCode;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 DROP PROCEDURE IF EXISTS CreateBuildoneCostCodeByIdIntuitSync;
 

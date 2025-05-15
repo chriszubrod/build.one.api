@@ -8,7 +8,7 @@ from dateutil import tz
 
 # local imports
 from business.bus_response import BusinessResponse
-from persistence import pers_cost_code
+from modules.cost_code import pers_cost_code
 
 
 def post_cost_code(
@@ -96,4 +96,60 @@ def get_cost_codes() -> BusinessResponse:
         status_code=read_cost_codes_pers_response.status_code,
         success=read_cost_codes_pers_response.success,
         timestamp=read_cost_codes_pers_response.timestamp
+    )
+
+
+def get_cost_code_by_guid(cost_code_guid: str) -> BusinessResponse:
+    """
+    Retrieves a cost code by guid.
+    """
+    read_cost_code_pers_response = pers_cost_code.read_cost_code_by_guid(cost_code_guid)
+    return BusinessResponse(
+        data=read_cost_code_pers_response.data,
+        message=read_cost_code_pers_response.message,
+        status_code=read_cost_code_pers_response.status_code,
+        success=read_cost_code_pers_response.success,
+        timestamp=read_cost_code_pers_response.timestamp
+    )
+
+
+def get_cost_code_by_id(cost_code_id: int) -> BusinessResponse:
+    """
+    Retrieves a cost code by id.
+    """
+    read_cost_code_pers_response = pers_cost_code.read_cost_code_by_id(cost_code_id)
+    return BusinessResponse(
+        data=read_cost_code_pers_response.data,
+        message=read_cost_code_pers_response.message,
+        status_code=read_cost_code_pers_response.status_code,
+        success=read_cost_code_pers_response.success,
+        timestamp=read_cost_code_pers_response.timestamp
+    )
+
+
+def get_cost_code_by_number(cost_code_number: int) -> BusinessResponse:
+    """
+    Retrieves a cost code by number.
+    """
+    read_cost_code_pers_response = pers_cost_code.read_cost_code_by_number(cost_code_number)
+    return BusinessResponse(
+        data=read_cost_code_pers_response.data,
+        message=read_cost_code_pers_response.message,
+        status_code=read_cost_code_pers_response.status_code,
+        success=read_cost_code_pers_response.success,
+        timestamp=read_cost_code_pers_response.timestamp
+    )
+
+
+def get_cost_code_by_name(cost_code_name: str) -> BusinessResponse:
+    """
+    Retrieves a cost code by name.
+    """
+    read_cost_code_pers_response = pers_cost_code.read_cost_code_by_name(cost_code_name)
+    return BusinessResponse(
+        data=read_cost_code_pers_response.data,
+        message=read_cost_code_pers_response.message,
+        status_code=read_cost_code_pers_response.status_code,
+        success=read_cost_code_pers_response.success,
+        timestamp=read_cost_code_pers_response.timestamp
     )

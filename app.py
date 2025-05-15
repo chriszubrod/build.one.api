@@ -23,6 +23,10 @@ from modules.contact import (
     api_contact,
     web_contact
 )
+from modules.cost_code import (
+    api_cost_code,
+    web_cost_code
+)
 from modules.customer import (
     api_customer,
     web_customer
@@ -53,6 +57,9 @@ app.register_blueprint(web_company.web_company_bp)
 
 app.register_blueprint(api_contact.api_contact_bp)
 app.register_blueprint(web_contact.web_contact_bp)
+
+app.register_blueprint(api_cost_code.api_cost_code_bp)
+app.register_blueprint(web_cost_code.web_cost_code_bp)
 
 app.register_blueprint(api_customer.api_customer_bp)
 app.register_blueprint(web_customer.web_customer_bp)

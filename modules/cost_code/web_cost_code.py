@@ -8,13 +8,13 @@ Module for cost code web.
 from flask import Blueprint, render_template
 
 # local imports
-from business import bus_cost_code
+from modules.cost_code import bus_cost_code
 
 
-cost_code_web_bp = Blueprint('cost_code_web', __name__)
+web_cost_code_bp = Blueprint('web_cost_code', __name__, template_folder='templates')
 
 
-@cost_code_web_bp.route('/cost-codes', methods=['GET'])
+@web_cost_code_bp.route('/cost-codes', methods=['GET'])
 def list_cost_codes_route():
     """
     Returns the route for the cost codes page.
@@ -25,18 +25,18 @@ def list_cost_codes_route():
         _cost_codes = get_cost_codes_bus_response.data
 
     print(_cost_codes)
-    return render_template('cost_code/list.html', cost_codes=_cost_codes)
+    return render_template('cost_code_list.html', cost_codes=_cost_codes)
 
 
-@cost_code_web_bp.route('/cost-code/create', methods=['GET'])
+@web_cost_code_bp.route('/cost-code/create', methods=['GET'])
 def create_cost_code_route():
     """
     Returns the cost code create route for the application.
     """
-    return render_template('cost_code/create.html')
+    return render_template('cost_code_create.html')
 
 
-@cost_code_web_bp.route('/cost-code/<cost_code_guid>', methods=['GET'])
+@web_cost_code_bp.route('/cost-code/<cost_code_guid>', methods=['GET'])
 def view_cost_code_route(cost_code_guid):
     """
     Returns the cost code by guid route.
@@ -48,10 +48,10 @@ def view_cost_code_route(cost_code_guid):
     else:
         _cost_code = {}
 
-    return render_template('cost_code/view.html', cost_code=_cost_code)
+    return render_template('cost_code_view.html', cost_code=_cost_code)
 
 
-@cost_code_web_bp.route('/cost-code/<cost_code_guid>/edit', methods=['GET'])
+@web_cost_code_bp.route('/cost-code/<cost_code_guid>/edit', methods=['GET'])
 def edit_cost_code_route(cost_code_guid):
     """
     Returns the cost code edit route.
@@ -63,4 +63,4 @@ def edit_cost_code_route(cost_code_guid):
     else:
         _cost_code = {}
 
-    return render_template('cost_code/edit.html', cost_code=_cost_code)
+    return render_template('cost_code_edit.html', cost_code=_cost_code)

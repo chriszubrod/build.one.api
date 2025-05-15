@@ -17,10 +17,10 @@ import requests
 
 from datetime import datetime
 from integrations import intuit_item_int
+from modules.cost_code import pers_cost_code
 from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
 
 from persistence import (
-    pers_cost_code,
     pers_intuit_auth,
     pers_intuit_item,
     pers_intuit_data_sync,

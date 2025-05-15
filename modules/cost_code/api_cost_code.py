@@ -13,13 +13,13 @@ from flask import Blueprint, request, jsonify
 
 # local imports
 from blueprints.api.api_response import ApiResponse
-from business import bus_cost_code
+from modules.cost_code import bus_cost_code
 
 
-cost_code_api_bp = Blueprint('cost_code_api', __name__, url_prefix='/api')
+api_cost_code_bp = Blueprint('api_cost_code', __name__, url_prefix='/api')
 
 
-@cost_code_api_bp.route('/post/cost-code', methods=['POST'])
+@api_cost_code_bp.route('/post/cost-code', methods=['POST'])
 def api_post_cost_code_route():
     """
     Handle the POST request for creating a new Cost Code.

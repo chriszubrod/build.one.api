@@ -122,7 +122,7 @@ def read_cost_codes() -> PersistenceResponse:
             )
 
 
-def read_cost_code_by_number(cost_code: CostCode) -> PersistenceResponse:
+def read_cost_code_by_number(cost_code_number: int) -> PersistenceResponse:
     """
     Retrieves a cost code from the database by number.
     """
@@ -130,7 +130,7 @@ def read_cost_code_by_number(cost_code: CostCode) -> PersistenceResponse:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadCostCodeByNumber(?)}"
-                row = cursor.execute(sql, cost_code.number).fetchone()
+                row = cursor.execute(sql, cost_code_number).fetchone()
                 if row:
                     return PersistenceResponse(
                         data=CostCode.from_db_row(row),
@@ -158,7 +158,7 @@ def read_cost_code_by_number(cost_code: CostCode) -> PersistenceResponse:
             )
 
 
-def read_cost_code_by_name(cost_code: CostCode) -> PersistenceResponse:
+def read_cost_code_by_name(cost_code_name: str) -> PersistenceResponse:
     """
     Retrieves a cost code from the database by name.
     """
@@ -166,7 +166,7 @@ def read_cost_code_by_name(cost_code: CostCode) -> PersistenceResponse:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadCostCodeByName(?)}"
-                row = cursor.execute(sql, cost_code.name).fetchone()
+                row = cursor.execute(sql, cost_code_name).fetchone()
                 if row:
                     return PersistenceResponse(
                         data=CostCode.from_db_row(row),
@@ -188,6 +188,78 @@ def read_cost_code_by_name(cost_code: CostCode) -> PersistenceResponse:
             return PersistenceResponse(
                 data=None,
                 message=f"Failed to read cost code by name: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def read_cost_code_by_id(cost_code_id: int) -> PersistenceResponse:
+    """
+    Retrieves a cost code from the database by id.
+    """
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadCostCodeById(?)}"
+                row = cursor.execute(sql, cost_code_id).fetchone()
+                if row:
+                    return PersistenceResponse(
+                        data=CostCode.from_db_row(row),
+                        message="Cost code retrieved",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    return PersistenceResponse(
+                        data=None,
+                        message="Cost code by id not retrieved",
+                        status_code=400,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read cost code by id: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def read_cost_code_by_guid(cost_code_guid: str) -> PersistenceResponse:
+    """
+    Retrieves a cost code from the database by guid.
+    """
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadCostCodeByGuid(?)}"
+                row = cursor.execute(sql, cost_code_guid).fetchone()
+                if row:
+                    return PersistenceResponse(
+                        data=CostCode.from_db_row(row),
+                        message="Cost code retrieved",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    return PersistenceResponse(
+                        data=None,
+                        message="Cost code by guid not retrieved",
+                        status_code=400,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read cost code by guid: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()

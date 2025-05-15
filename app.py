@@ -19,6 +19,10 @@ from modules.company import (
     api_company,
     web_company
 )
+from modules.contact import (
+    api_contact,
+    web_contact
+)
 from modules.customer import (
     api_customer,
     web_customer
@@ -46,6 +50,9 @@ app.register_blueprint(web_bill.web_bill_bp)
 
 app.register_blueprint(api_company.api_company_bp)
 app.register_blueprint(web_company.web_company_bp)
+
+app.register_blueprint(api_contact.api_contact_bp)
+app.register_blueprint(web_contact.web_contact_bp)
 
 app.register_blueprint(api_customer.api_customer_bp)
 app.register_blueprint(web_customer.web_customer_bp)

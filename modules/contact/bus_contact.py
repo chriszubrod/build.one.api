@@ -6,11 +6,14 @@ Module for contact business.
 from datetime import datetime
 from dateutil import tz
 
+# third party imports
+
+
 # local imports
 from business.bus_response import BusinessResponse
 from utils import function_help as fhp
 from modules.user import pers_user
-from persistence import pers_contact
+from modules.contact import pers_contact
 
 
 

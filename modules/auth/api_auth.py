@@ -14,7 +14,7 @@ from flask import Blueprint, request, jsonify
 
 # local imports
 from blueprints.api.api_response import ApiResponse
-from business import bus_auth
+from modules.auth import bus_auth
 
 auth_api_bp = Blueprint('auth_api', __name__, url_prefix='/api')
 

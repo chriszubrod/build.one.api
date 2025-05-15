@@ -13,16 +13,16 @@ from flask import Blueprint, request, jsonify
 
 # local imports
 from blueprints.api.api_response import ApiResponse
-from business import bus_contact
+from modules.contact import bus_contact
 
 
-contact_api_bp = Blueprint('contact_api', __name__, url_prefix='/api')
+api_contact_bp = Blueprint('api_contact', __name__, url_prefix='/api')
 
 
 
 
 
-@contact_api_bp.route('/post/contact', methods=['POST'])
+@api_contact_bp.route('/post/contact', methods=['POST'])
 def api_post_contact_route():
     """
     Handles the POST request for creating a contact.

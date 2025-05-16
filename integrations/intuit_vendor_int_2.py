@@ -15,14 +15,14 @@ import requests
 
 from datetime import datetime
 from integrations import intuit_vendor_int
+from modules.vendor import pers_vendor
 from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
 from persistence import (
     pers_intuit_auth,
     pers_intuit_vendor,
     pers_intuit_data_sync,
     pers_intuit_email_address,
-    pers_intuit_urls,
-    pers_vendor
+    pers_intuit_urls
 )
 
 LAST_UPDATE = ""

@@ -9,7 +9,7 @@ Module for vendor web.
 from flask import Blueprint, render_template
 
 # local imports
-from business import bus_vendor
+from modules.vendor import bus_vendor
 from modules.contact import bus_contact
 
 

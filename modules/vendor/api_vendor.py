@@ -13,24 +13,13 @@ from flask import Blueprint, request, jsonify, session
 
 # local imports
 from blueprints.api.api_response import ApiResponse
-from business import bus_vendor
+from modules.vendor import bus_vendor
 
 
-vendor_api_bp = Blueprint('vendor_api', __name__, url_prefix='/api')
+api_vendor_bp = Blueprint('api_vendor', __name__, url_prefix='/api')
 
 
-@vendor_api_bp.route('/get/vendors', methods=['GET'])
-#@tm.token_verification
-def api_get_vendors_route():
-    """
-    Retrieves all vendors from the database.
-    """
-    result = bus_vendor.get_vendors()
-    return jsonify(result), result['status_code']
-
-
-@vendor_api_bp.route('/post/vendor', methods=['POST'])
-#@tm.token_verification
+@api_vendor_bp.route('/post/vendor', methods=['POST'])
 def api_post_vendor_route():
     """
     Endpoint for creating a new vendor.

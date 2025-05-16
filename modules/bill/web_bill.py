@@ -15,7 +15,7 @@ from modules.bill import (
     bus_bill_line_item,
     bus_bill
 )
-from business import (
+from modules.vendor import (
     bus_vendor
 )
 from modules.project import bus_project

@@ -8,7 +8,7 @@ from dateutil import tz
 
 # local imports
 from business.bus_response import BusinessResponse
-from persistence import pers_vendor
+from modules.vendor import pers_vendor
 
 
 def get_vendors() -> BusinessResponse:

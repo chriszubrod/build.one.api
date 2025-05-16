@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create Vendor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50">
+    <div class="relative z-10 max-w-2xl mx-auto mt-12 p-6 pb-12 bg-white rounded-xl shadow-lg flex flex-col gap-6" id="form-container">
+        <div class="absolute right-8 top-8">
+            <button onclick="window.location.href='/vendors'" type="button" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 shadow-md">
+                Back to Vendor List
+            </button>
+        </div>
+        <h1 class="text-2xl font-bold mb-4">Create Vendor</h1>
+        <form id="vendor-create-form" class="space-y-6">
+            <div class="grid grid-cols-1 gap-4">
+                <label for="vendorname" class="block font-semibold mb-1">Vendor Name</label>
+                <input type="text" id="vendorname" name="vendorname" class="border p-2 rounded w-full" required>
+
+                <label for="abbreviation" class="block font-semibold mb-1">Abbreviation</label>
+                <input type="text" id="abbreviation" name="abbreviation" class="border p-2 rounded w-full" required>
+
+                <label for="taxidnumber" class="block font-semibold mb-1">Tax ID Number</label>
+                <input type="text" id="taxidnumber" name="taxidnumber" class="border p-2 rounded w-full" required>
+
+                <label for="isActive" class="block font-semibold mb-1">Active</label>
+                <div class="flex items-center mb-2">
+                    <input type="checkbox" id="isActive" name="isActive" value="1" checked class="toggle-checkbox hidden">
+                    <label for="isActive" class="toggle-label flex items-center cursor-pointer">
+                        <div class="relative">
+                            <input type="checkbox" id="isActiveToggle" class="sr-only">
+                            <div class="block bg-gray-300 w-14 h-8 rounded-full"></div>
+                            <div class="dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition"></div>
+                        </div>
+                        <span class="ml-3 text-gray-700">Is Active</span>
+                    </label>
+                </div>
+
+                <label for="vendortype" class="block font-semibold mb-1">Vendor Type</label>
+                <input type="text" id="vendortype" name="vendortype" class="border p-2 rounded w-full" required>
+            </div>
+            <button type="submit" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">Create Vendor</button>
+        </form>
+    </div>
+    <script>
+        const form = document.getElementById('vendor-create-form');
+        if (form) {
+            form.addEventListener('submit', async function(e) {
+                e.preventDefault();
+                const formData = new FormData(form);
+                const jsonData = {};
+                form.querySelectorAll('input, select, textarea').forEach(input => {
+                    if (input.type === 'checkbox') {
+                        jsonData[input.name] = input.checked ? '1' : '0';
+                    } else {
+                        jsonData[input.name] = input.value;
+                    }
+                });
+                try {
+                    const response = await fetch('/api/post/vendor', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(jsonData)
+                    });
+                    const result = await response.json();
+                    if (response.ok && result.success) {
+                        alert('Vendor created successfully!');
+                        window.location.href = '/vendors';
+                    } else {
+                        alert('Error: ' + (result.message || 'Unknown error'));
+                    }
+                } catch (error) {
+                    alert('Error creating vendor: ' + error.message);
+                }
+            });
+        }
+
+        // Toggle functionality for the custom switch
+        document.addEventListener('DOMContentLoaded', function() {
+            const realCheckbox = document.getElementById('isActive');
+            const toggleCheckbox = document.getElementById('isActiveToggle');
+            // Sync initial state
+            toggleCheckbox.checked = realCheckbox.checked;
+            // When the toggle is clicked, update the real checkbox
+            toggleCheckbox.addEventListener('change', function() {
+                realCheckbox.checked = toggleCheckbox.checked;
+            });
+            // When the real checkbox is changed (form reset, etc), update the toggle
+            realCheckbox.addEventListener('change', function() {
+                toggleCheckbox.checked = realCheckbox.checked;
+            });
+        });
+    </script>
+    <style>
+    .toggle-label input:checked + .block {
+        background-color: #22c55e; /* Tailwind green-500 */
+    }
+    .toggle-label input:checked + .block + .dot {
+        transform: translateX(24px);
+        /* Keep the dot white in both states */
+        background-color: #fff;
+    }
+    .toggle-label .dot {
+        transition: transform 0.2s ease-in-out, background 0.2s;
+        background-color: #fff;
+    }
+    </style>
+</body>
+</html>

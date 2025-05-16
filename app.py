@@ -46,6 +46,10 @@ from modules.sub_cost_code import (
     api_sub_cost_code,
     web_sub_cost_code
 )
+from modules.vendor import (
+    api_vendor,
+    web_vendor
+)
 
 app = Flask(__name__)
 
@@ -79,7 +83,8 @@ app.register_blueprint(web_role.web_role_bp)
 app.register_blueprint(api_sub_cost_code.api_sub_cost_code_bp)
 app.register_blueprint(web_sub_cost_code.web_sub_cost_code_bp)
 
-
+app.register_blueprint(api_vendor.api_vendor_bp)
+app.register_blueprint(web_vendor.web_vendor_bp)
 
 
 @app.route('/')

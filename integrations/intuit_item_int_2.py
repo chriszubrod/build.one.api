@@ -18,6 +18,7 @@ import requests
 from datetime import datetime
 from integrations import intuit_item_int
 from modules.cost_code import pers_cost_code
+from modules.sub_cost_code import pers_sub_cost_code
 from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
 
 from persistence import (
@@ -25,8 +26,7 @@ from persistence import (
     pers_intuit_item,
     pers_intuit_data_sync,
     pers_intuit_email_address,
-    pers_intuit_urls,
-    pers_sub_cost_code
+    pers_intuit_urls
 )
 
 LAST_UPDATE = ""

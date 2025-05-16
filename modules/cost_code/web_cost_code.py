@@ -24,7 +24,6 @@ def list_cost_codes_route():
     if get_cost_codes_bus_response.success:
         _cost_codes = get_cost_codes_bus_response.data
 
-    print(_cost_codes)
     return render_template('cost_code_list.html', cost_codes=_cost_codes)
 
 

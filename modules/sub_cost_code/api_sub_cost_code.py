@@ -13,13 +13,13 @@ from flask import Blueprint, request, jsonify
 
 # local imports
 from blueprints.api.api_response import ApiResponse
-from business import bus_sub_cost_code
+from modules.sub_cost_code import bus_sub_cost_code
 
 
-sub_cost_code_api_bp = Blueprint('sub_cost_code_api', __name__, url_prefix='/api')
+api_sub_cost_code_bp = Blueprint('api_sub_cost_code', __name__, url_prefix='/api')
 
 
-@sub_cost_code_api_bp.route('/post/sub-cost-code', methods=['POST'])
+@api_sub_cost_code_bp.route('/post/sub-cost-code', methods=['POST'])
 def api_post_sub_cost_code_route():
 
     try:
@@ -94,7 +94,7 @@ def api_post_sub_cost_code_route():
         )
 
 
-@sub_cost_code_api_bp.route('/get/sub-cost-codes', methods=['GET'])
+@api_sub_cost_code_bp.route('/get/sub-cost-codes', methods=['GET'])
 def api_get_sub_cost_codes_route():
     """
     Retrieves all sub cost codes from the database.

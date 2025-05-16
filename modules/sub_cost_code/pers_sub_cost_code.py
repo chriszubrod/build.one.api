@@ -192,3 +192,165 @@ def read_sub_cost_code_by_guid(guid: str) -> PersistenceResponse:
                 success=False,
                 timestamp=datetime.now()
             )
+
+
+def read_sub_cost_code_by_id(id: int) -> PersistenceResponse:
+    """
+    Retrieves a sub cost code from the database by ID.
+    """
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadSubCostCodeById(?)}"
+                row = cursor.execute(sql, id).fetchone()
+                if row:
+                    return PersistenceResponse(
+                        data=SubCostCode.from_db_row(row),
+                        message="Sub cost code read",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    return PersistenceResponse(
+                        data=None,
+                        message="Sub cost code not read",
+                        status_code=400,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read sub cost code: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def read_sub_cost_code_by_number(number: str) -> PersistenceResponse:
+    """
+    Retrieves a sub cost code from the database by number.
+    """
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadSubCostCodeByNumber(?)}"
+                row = cursor.execute(sql, number).fetchone()
+                if row:
+                    return PersistenceResponse(
+                        data=SubCostCode.from_db_row(row),
+                        message="Sub cost code read",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    return PersistenceResponse(
+                        data=None,
+                        message="Sub cost code not read",
+                        status_code=400,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read sub cost code: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def update_sub_cost_code(sub_cost_code: SubCostCode) -> PersistenceResponse:
+    """
+    Updates a sub cost code in the database.
+    """
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL UpdateSubCostCode(?, ?, ?, ?, ?, ?, ?)}"
+                rowcount = cursor.execute(
+                    sql,
+                    sub_cost_code.id,
+                    sub_cost_code.guid,
+                    sub_cost_code.created_datetime,
+                    sub_cost_code.modified_datetime,
+                    sub_cost_code.number,
+                    sub_cost_code.name,
+                    sub_cost_code.description,
+                    sub_cost_code.cost_code_id
+                ).rowcount
+                cnxn.commit()
+                if rowcount > 0:
+                    return PersistenceResponse(
+                        data=rowcount,
+                        message="Sub cost code updated",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    cnxn.rollback()
+                    return PersistenceResponse(
+                        data=None,
+                        message="Sub cost code not updated",
+                        status_code=400,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            cnxn.rollback()
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to update sub cost code: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def delete_sub_cost_code(id: int) -> PersistenceResponse:
+    """
+    Deletes a sub cost code from the database.
+    """
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL DeleteSubCostCode(?)}"
+                rowcount = cursor.execute(sql, id).rowcount
+                cnxn.commit()
+                if rowcount > 0:
+                    return PersistenceResponse(
+                        data=rowcount,
+                        message="Sub cost code deleted",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    cnxn.rollback()
+                    return PersistenceResponse(
+                        data=None,
+                        message="Sub cost code not deleted",
+                        status_code=400,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            cnxn.rollback()
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to delete sub cost code: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+

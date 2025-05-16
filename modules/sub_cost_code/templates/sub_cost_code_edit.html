@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Sub Cost Code</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50">
+    <div class="relative z-10 max-w-2xl mx-auto mt-12 p-6 pb-12 bg-white rounded-xl shadow-lg flex flex-col gap-6" id="form-container">
+        <div class="absolute right-8 top-8">
+            <button onclick="window.location.href='/sub-cost-codes'" type="button" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 shadow-md">
+                Back to Sub Cost Code List
+            </button>
+        </div>
+        <h1 class="text-2xl font-bold mb-4">Edit Sub Cost Code</h1>
+        {% if sub_cost_code %}
+        <form id="sub-cost-code-edit-form" class="space-y-6">
+            <div class="grid grid-cols-1 gap-4">
+                <label for="guid" class="block font-semibold mb-1">GUID</label>
+                <input type="text" id="guid" name="guid" class="border p-2 rounded w-full bg-gray-100" value="{{ sub_cost_code.guid }}" readonly>
+
+                <label for="number" class="block font-semibold mb-1">Sub Cost Code Number</label>
+                <input type="text" id="number" name="number" class="border p-2 rounded w-full" required value="{{ sub_cost_code.number }}">
+
+                <label for="name" class="block font-semibold mb-1">Sub Cost Code Name</label>
+                <input type="text" id="name" name="name" class="border p-2 rounded w-full" required value="{{ sub_cost_code.name }}">
+
+                <label for="desc" class="block font-semibold mb-1">Sub Cost Code Description</label>
+                <input type="text" id="desc" name="desc" class="border p-2 rounded w-full" required value="{{ sub_cost_code.description }}">
+
+                <label for="cost-code" class="block font-semibold mb-1">Cost Code</label>
+                <select id="cost-code" name="cost-code" class="border p-2 rounded w-full" required>
+                    <option value="">Select Cost Code</option>
+                    {% for code in cost_codes %}
+                        <option value="{{ code.guid }}" {% if code.id == sub_cost_code.cost_code_id %}selected{% endif %}>{{ code.number }} - {{ code.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" class="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600">Update Sub Cost Code</button>
+        </form>
+        {% else %}
+        <div class="text-red-600 font-semibold">Sub cost code not found.</div>
+        {% endif %}
+    </div>
+    <script>
+        const form = document.getElementById('sub-cost-code-edit-form');
+        if (form) {
+            form.addEventListener('submit', async function(e) {
+                e.preventDefault();
+                const formData = new FormData(form);
+                const jsonData = {};
+                form.querySelectorAll('input, select, textarea').forEach(input => {
+                    if (input.type === 'checkbox') {
+                        jsonData[input.name] = input.checked;
+                    } else {
+                        jsonData[input.name] = input.value;
+                    }
+                });
+                try {
+                    const response = await fetch('/api/put/sub-cost-code', {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(jsonData)
+                    });
+                    const result = await response.json();
+                    if (response.ok && result.success) {
+                        alert('Sub cost code updated successfully!');
+                        window.location.href = '/sub-cost-codes';
+                    } else {
+                        alert('Error: ' + (result.message || 'Unknown error'));
+                    }
+                } catch (error) {
+                    alert('Error updating sub cost code: ' + error.message);
+                }
+            });
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sub Cost Code</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50">
+    <div class="relative z-10 max-w-2xl mx-auto mt-12 p-6 pb-12 bg-white rounded-xl shadow-lg flex flex-col gap-6" id="form-container">
+        <div class="absolute right-8 top-8">
+            <button onclick="window.location.href='/sub-cost-codes'" type="button" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 shadow-md">
+                Back to Sub Cost Code List
+            </button>
+        </div>
+        <h1 class="text-2xl font-bold mb-4">View Sub Cost Code</h1>
+        {% if sub_cost_code %}
+        <ul class="divide-y divide-gray-200 bg-gray-50 rounded-lg shadow p-6">
+            <li class="py-4 flex flex-col sm:flex-row sm:items-center">
+                <span class="font-semibold w-32">Number:</span>
+                <span class="ml-2 text-gray-800">{{ sub_cost_code.number }}</span>
+            </li>
+            <li class="py-4 flex flex-col sm:flex-row sm:items-center">
+                <span class="font-semibold w-32">Name:</span>
+                <span class="ml-2 text-gray-800">{{ sub_cost_code.name }}</span>
+            </li>
+            <li class="py-4 flex flex-col sm:flex-row sm:items-center">
+                <span class="font-semibold w-32">Description:</span>
+                <span class="ml-2 text-gray-800">{{ sub_cost_code.description }}</span>
+            </li>
+            <li class="py-4 flex flex-col sm:flex-row sm:items-center">
+                <span class="font-semibold w-32">Cost Code:</span>
+                {% set parent_code = cost_codes | selectattr('id', 'equalto', sub_cost_code.cost_code_id|int) | list %}
+                <span class="ml-2 text-gray-800">
+                    {% if parent_code and parent_code[0] %}
+                        {{ parent_code[0].number }} - {{ parent_code[0].name }}
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </span>
+            </li>
+            <li class="py-4 flex flex-col sm:flex-row sm:items-center">
+                <span class="font-semibold w-32">GUID:</span>
+                <span class="ml-2 text-gray-800">{{ sub_cost_code.guid }}</span>
+            </li>
+        </ul>
+        <div class="mt-6">
+            <a href="{{ url_for('web_sub_cost_code.edit_sub_cost_code_route', sub_cost_code_guid=sub_cost_code.guid) }}" class="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600 shadow-md">
+                Edit Sub Cost Code
+            </a>
+        </div>
+        {% else %}
+        <div class="text-red-600 font-semibold">Sub cost code not found.</div>
+        {% endif %}
+    </div>
+</body>
+</html>

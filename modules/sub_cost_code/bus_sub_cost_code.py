@@ -6,10 +6,14 @@ Module for sub cost code business.
 from datetime import datetime
 from dateutil import tz
 
+# third party imports
+
+
+
 # local imports
 from business.bus_response import BusinessResponse
 from modules.cost_code import pers_cost_code
-from persistence import pers_sub_cost_code
+from modules.sub_cost_code import pers_sub_cost_code
 
 
 def get_sub_cost_codes() -> BusinessResponse:
@@ -33,6 +37,38 @@ def get_sub_cost_code_by_name(sub_cost_code_name: str) -> BusinessResponse:
     """
     pers_read_sub_cost_code_resp = pers_sub_cost_code.\
         read_sub_cost_code_by_name(name=sub_cost_code_name)
+
+    return BusinessResponse(
+        data=pers_read_sub_cost_code_resp.data,
+        message=pers_read_sub_cost_code_resp.message,
+        success=pers_read_sub_cost_code_resp.success,
+        status_code=pers_read_sub_cost_code_resp.status_code,
+        timestamp=pers_read_sub_cost_code_resp.timestamp
+    )
+
+
+def get_sub_cost_code_by_guid(sub_cost_code_guid: str) -> BusinessResponse:
+    """
+    Retrieves a sub cost code from the database by guid.
+    """
+    pers_read_sub_cost_code_resp = pers_sub_cost_code.\
+        read_sub_cost_code_by_guid(guid=sub_cost_code_guid)
+
+    return BusinessResponse(
+        data=pers_read_sub_cost_code_resp.data,
+        message=pers_read_sub_cost_code_resp.message,
+        success=pers_read_sub_cost_code_resp.success,
+        status_code=pers_read_sub_cost_code_resp.status_code,
+        timestamp=pers_read_sub_cost_code_resp.timestamp
+    )
+
+
+def get_sub_cost_code_by_id(sub_cost_code_id: int) -> BusinessResponse:
+    """
+    Retrieves a sub cost code from the database by id.
+    """
+    pers_read_sub_cost_code_resp = pers_sub_cost_code.\
+        read_sub_cost_code_by_id(id=sub_cost_code_id)
 
     return BusinessResponse(
         data=pers_read_sub_cost_code_resp.data,

@@ -3,14 +3,13 @@ from flask import (
     Flask,
     render_template
 )
-from agents import sample_agent
+#from agents import sample_agent
 
 
 from modules.address import (
     api_address,
     web_address
 )
-
 from modules.bill import (
     api_bill,
     web_bill
@@ -43,6 +42,10 @@ from modules.role import (
     api_role,
     web_role
 )
+from modules.sub_cost_code import (
+    api_sub_cost_code,
+    web_sub_cost_code
+)
 
 app = Flask(__name__)
 
@@ -72,6 +75,12 @@ app.register_blueprint(web_user.web_user_bp)
 
 app.register_blueprint(api_role.api_role_bp)
 app.register_blueprint(web_role.web_role_bp)
+
+app.register_blueprint(api_sub_cost_code.api_sub_cost_code_bp)
+app.register_blueprint(web_sub_cost_code.web_sub_cost_code_bp)
+
+
+
 
 @app.route('/')
 def index():

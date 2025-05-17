@@ -1,46 +1,38 @@
-{% extends 'shared/layout/base.html' %}
-
-{% block title %}Login{% endblock %}
-
-{% block body %}
-
-    <body class="site-layout">
-
-        <!-- Main Content -->
-        <main class="main-content">
-
-            <h1>Login</h1>
-
-            <form id="loginForm" autocomplete="off" onsubmit="return false;">
-                {% include 'auth/_form.html' %}
-                <button type="submitButton" id="submitButton">Login</button>
-            </form>
-
-            <p>Need an account? <a href="{{ url_for('auth_web.register_route') }}">Register here</a></p>
-
-        </main>
-
-    </body>
-
-{% endblock %}
-
-{% block scripts %}
-
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="max-w-md mx-auto mt-16 p-8 bg-white rounded-xl shadow-lg">
+        <h1 class="text-2xl font-bold mb-6 text-center">Login</h1>
+        <div id="loginError" class="hidden mb-4 p-3 rounded bg-red-100 text-red-700 text-center"></div>
+        <form id="loginForm" class="space-y-6" autocomplete="off">
+            <div>
+                <label for="username" class="block font-semibold mb-1">Username</label>
+                <input type="text" id="username" name="username" class="border p-2 rounded w-full" autocomplete="off" required>
+            </div>
+            <div>
+                <label for="password" class="block font-semibold mb-1">Password</label>
+                <input type="password" id="password" name="password" class="border p-2 rounded w-full" autocomplete="off" required>
+            </div>
+            <button type="submit" class="w-full bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Login</button>
+        </form>
+        <p class="mt-4 text-center text-sm text-gray-600">
+            Need an account? <a href="{{ url_for('web_auth.register_route') }}" class="text-blue-600 hover:underline">Register here</a>
+        </p>
+    </div>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            // Get the login form
             const loginForm = document.getElementById('loginForm');
-
-            // Add event listener on loginForm submit
             loginForm.addEventListener('submit', function(event) {
-                // Prevent default form submission
                 event.preventDefault();
-
-                // Get form data
                 const username = document.getElementById('username').value;
                 const password = document.getElementById('password').value;
-
-                // Make API call
+                const errorDiv = document.getElementById('loginError');
                 fetch('/api/post/auth/login', {
                     method: 'POST',
                     headers: {
@@ -54,60 +46,18 @@
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        // Store token in localStorage for future API calls
-                        localStorage.setItem('token', data.data.token);
-
-                        // Create a form for session creation
-                        const sessionForm = document.createElement('form');
-                        sessionForm.method = 'POST';
-                        sessionForm.action = '/login';
-                        sessionForm.style.display = 'none';
-
-                        // Add token
-                        const tokenInput = document.createElement('input');
-                        tokenInput.type = 'hidden';
-                        tokenInput.name = 'token';
-                        tokenInput.value = data.data.token;
-                        sessionForm.appendChild(tokenInput);
-                        
-                        // Add username
-                        const usernameInput = document.createElement('input');
-                        usernameInput.type = 'hidden';
-                        usernameInput.name = 'username';
-                        usernameInput.value = data.data.username;
-                        sessionForm.appendChild(usernameInput);
-
-                        // Add user_id
-                        const userIdInput = document.createElement('input');
-                        userIdInput.type = 'hidden';
-                        userIdInput.name = 'user_id';
-                        userIdInput.value = data.data.user_id;
-                        sessionForm.appendChild(userIdInput);
-
-                        // Add form to document and submit
-                        document.body.appendChild(sessionForm);
-                        sessionForm.submit();
-                        
+                        window.location.href = data.data.redirect_url || '/dashboard';
                     } else {
-                        
-                        // Handle login error
-                        const errorDiv = document.getElementById('loginError');
-                        if (errorDiv) {
-                            errorDiv.textContent = data.message || 'Login failed';
-                            errorDiv.style.display = 'block';
-                        }
+                        errorDiv.textContent = data.message || 'Login failed';
+                        errorDiv.classList.remove('hidden');
                     }
                 })
                 .catch(error => {
-                    console.error('Error:', error);
-                    const errorDiv = document.getElementById('loginError');
-                    if (errorDiv) {
-                        errorDiv.textContent = 'An error occurred during login';
-                        errorDiv.style.display = 'block';
-                    }
+                    errorDiv.textContent = 'An error occurred during login';
+                    errorDiv.classList.remove('hidden');
                 });
             });
         });
     </script>
-
-{% endblock %}
+</body>
+</html>

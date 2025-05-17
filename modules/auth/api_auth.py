@@ -9,17 +9,17 @@ from dateutil import tz
 
 # third party imports
 import bleach
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, session
 
 
 # local imports
 from blueprints.api.api_response import ApiResponse
 from modules.auth import bus_auth
 
-auth_api_bp = Blueprint('auth_api', __name__, url_prefix='/api')
+api_auth_bp = Blueprint('api_auth', __name__, url_prefix='/api')
 
 
-@auth_api_bp.route('/post/auth/register', methods=['POST'])
+@api_auth_bp.route('/post/auth/register', methods=['POST'])
 def api_post_auth_register_route():
     """
     Handles the POST request for registering a new user.
@@ -88,11 +88,12 @@ def api_post_auth_register_route():
         )
 
 
-@auth_api_bp.route('/post/auth/login', methods=['POST'])
+@api_auth_bp.route('/post/auth/login', methods=['POST'])
 def api_post_auth_login_route():
     """
     Handles the POST request for logging in a user.
     """
+    
     try:
         # If request is not JSON, return 400 error
         if not request.is_json:
@@ -123,17 +124,25 @@ def api_post_auth_login_route():
         clean_password = bleach.clean(raw_password, strip=True)
         password = html.escape(clean_password)
 
+
         post_auth_login_resp = bus_auth.post_auth_login(
             username=username,
             password=password
         )
 
-        # If login is successful, add redirect url to response data
+        # Always define response_data
         if post_auth_login_resp.success:
             response_data = post_auth_login_resp.data
-            response_data['redirect_url'] = '/dashboard' # absolute path
 
-        #print(f'Post auth login response: {response_data}')
+            session['user_id'] = response_data['user_id']
+            session['username'] = response_data['username']
+            session['token'] = response_data['token']
+            session['timestamp'] = datetime.now().isoformat()
+
+            response_data['redirect_url'] = '/dashboard' # absolute path
+        else:
+            response_data = None
+
         return jsonify(
             ApiResponse(
                 data=response_data,

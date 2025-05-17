@@ -19,16 +19,16 @@ from flask import (
 from modules.module import bus_module
 
 
-auth_web_bp = Blueprint('auth_web', __name__)
+web_auth_bp = Blueprint('web_auth', __name__, template_folder='templates')
 
 
-@auth_web_bp.route('/register', methods=['GET'])
+@web_auth_bp.route('/register', methods=['GET'])
 def register_route():
     """Returns the register route."""
-    return render_template('auth/register.html')
+    return render_template('register.html')
 
 
-@auth_web_bp.route('/login', methods=['GET', 'POST'])
+@web_auth_bp.route('/login', methods=['GET', 'POST'])
 def login_route():
     """
     Handle web session setup after API login
@@ -63,23 +63,23 @@ def login_route():
             #print(f'Session: {session}')
 
             # Redirect to the dashboard
-            return redirect(url_for('dashboard_web.dashboard_route'))
+            return redirect(url_for('web_dashboard.dashboard_route'))
 
         except Exception:
-            return redirect(url_for('auth_web.login_route'))
+            return redirect(url_for('web_auth.login_route'))
 
     # If request method is GET, return the login route
-    return render_template('auth/login.html')
+    return render_template('login.html')
 
 
-@auth_web_bp.route('/logout', methods=['GET'])
+@web_auth_bp.route('/logout', methods=['GET'])
 def logout_route():
     """Logs out the user."""
     session.clear()
-    return redirect(url_for('auth_web.login_route'))
+    return redirect(url_for('web_auth.login_route'))
 
 
-@auth_web_bp.route('/unauthorized', methods=['GET'])
+@web_auth_bp.route('/unauthorized', methods=['GET'])
 def unauthorized_route():
     """Returns the unauthorized route."""
-    return render_template('auth/unauthorized.html'), 401
+    return render_template('unauthorized.html'), 401

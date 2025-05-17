@@ -16,7 +16,7 @@ from flask import (
 )
 
 # local imports
-from business import bus_module
+from modules.module import bus_module
 
 
 auth_web_bp = Blueprint('auth_web', __name__)

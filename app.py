@@ -30,6 +30,10 @@ from modules.customer import (
     api_customer,
     web_customer
 )
+from modules.module import (
+    api_module,
+    web_module
+)
 from modules.project import (
     api_project,
     web_project
@@ -70,6 +74,9 @@ app.register_blueprint(web_cost_code.web_cost_code_bp)
 
 app.register_blueprint(api_customer.api_customer_bp)
 app.register_blueprint(web_customer.web_customer_bp)
+
+app.register_blueprint(api_module.api_module_bp)
+app.register_blueprint(web_module.web_module_bp)
 
 app.register_blueprint(api_project.api_project_bp)
 app.register_blueprint(web_project.web_project_bp)

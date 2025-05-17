@@ -13,7 +13,7 @@ from flask import Blueprint, request, jsonify
 
 # local imports
 from blueprints.api.api_response import ApiResponse
-from business import bus_module
+from modules.module import bus_module
 
 
 payment_term_api_bp = Blueprint('payment_term_api', __name__, url_prefix='/api')

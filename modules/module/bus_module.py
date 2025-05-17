@@ -6,9 +6,12 @@ Module for module business.
 from datetime import datetime
 from dateutil import tz
 
+# third party imports
+
+
 # local imports
 from business.bus_response import BusinessResponse
-from persistence import pers_module
+from modules.module import pers_module
 
 
 def get_modules():

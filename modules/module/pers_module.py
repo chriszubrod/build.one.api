@@ -1,5 +1,5 @@
 """
-Module for entry type.
+Module for module persistence.
 """
 
 # python standard library imports
@@ -16,50 +16,53 @@ from persistence.pers_response import PersistenceResponse
 
 
 @dataclass
-class EntryType:
-    """Represents an entry type in the system."""
+class Module:
+    """Represents a module in the system."""
     id: Optional[int] = None
     guid: Optional[str] = None
     created_datetime: Optional[datetime] = None
     modified_datetime: Optional[datetime] = None
     name: Optional[str] = None
     description: Optional[str] = None
+    slug: Optional[str] = None
     transaction_id: Optional[int] = None
 
     @classmethod
-    def from_db_row(cls, row) -> Optional['EntryType']:
-        """Creates an EntryType instance from a database row."""
+    def from_db_row(cls, row) -> Optional['Module']:
+        """Creates a Module instance from a database row."""
         return cls(
             id=getattr(row, 'Id', None),
             guid=getattr(row, 'GUID', None),
             created_datetime=getattr(row, 'CreatedDatetime', None),
             modified_datetime=getattr(row, 'ModifiedDatetime', None),
             name=getattr(row, 'Name', None),
-            description=getattr(row, 'Description', None),
+            description=getattr(row, 'Desc', None),
+            slug=getattr(row, 'Slug', None),
             transaction_id=getattr(row, 'TransactionId', None)
         )
 
 
-def create_entry_type(entry_type: EntryType) -> PersistenceResponse:
+def create_module(module: Module) -> PersistenceResponse:
     """
-    Creates a new entry type in the database.
+    Creates a new module in the database.
     """
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL CreateEntryType(?, ?, ?, ?)}"
+                sql = "{CALL CreateModule(?, ?, ?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,
-                    entry_type.created_datetime,
-                    entry_type.modified_datetime,
-                    entry_type.name,
-                    entry_type.description
+                    module.created_datetime,
+                    module.modified_datetime,
+                    module.name,
+                    module.description,
+                    module.slug
                 ).rowcount
                 cnxn.commit()
                 if rowcount > 0:
                     return PersistenceResponse(
                         data=rowcount,
-                        message="Entry type created",
+                        message="Module created successfully",
                         status_code=201,
                         success=True,
                         timestamp=datetime.now()
@@ -68,7 +71,7 @@ def create_entry_type(entry_type: EntryType) -> PersistenceResponse:
                     cnxn.rollback()
                     return PersistenceResponse(
                         data=None,
-                        message="Entry type not created",
+                        message="Module not created",
                         status_code=400,
                         success=False,
                         timestamp=datetime.now()
@@ -78,26 +81,26 @@ def create_entry_type(entry_type: EntryType) -> PersistenceResponse:
             cnxn.rollback()
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to create entry type: {str(e)}",
+                message=f"Failed to create module: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_entry_types() -> PersistenceResponse:
+def read_modules() -> PersistenceResponse:
     """
-    Retrieves all entry types from the database.
+    Reads all modules from the database.
     """
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadEntryTypes()}"
+                sql = "{CALL ReadModules}"
                 rows = cursor.execute(sql).fetchall()
                 if rows:
                     return PersistenceResponse(
-                        data=[EntryType.from_db_row(row) for row in rows],
-                        message="Entry types retrieved successfully",
+                        data=[Module.from_db_row(row) for row in rows],
+                        message="Modules read successfully",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -105,32 +108,35 @@ def read_entry_types() -> PersistenceResponse:
                 else:
                     return PersistenceResponse(
                         data=None,
-                        message="No entry types found",
+                        message="No modules found",
                         status_code=404,
                         success=False,
                         timestamp=datetime.now()
                     )
+
         except (pyodbc.Error) as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read entry types: {str(e)}",
+                message=f"Failed to read modules: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_entry_type_by_id(entry_type_id: int) -> PersistenceResponse:
-    """Retrieves an EntryType instance by its ID."""
+def read_module_by_guid(module_guid: str) -> PersistenceResponse:
+    """
+    Reads a module from the database by its GUID.
+    """
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadEntryTypeById(?)}"
-                row = cursor.execute(sql, entry_type_id).fetchone()
+                sql = "{CALL ReadModuleByGUID(?)}"
+                row = cursor.execute(sql, module_guid).fetchone()
                 if row:
                     return PersistenceResponse(
-                        data=EntryType.from_db_row(row),
-                        message="Entry type found",
+                        data=Module.from_db_row(row),
+                        message="Module read successfully",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -138,7 +144,7 @@ def read_entry_type_by_id(entry_type_id: int) -> PersistenceResponse:
                 else:
                     return PersistenceResponse(
                         data=None,
-                        message="Entry type by id not found",
+                        message="Module by guid not found",
                         status_code=404,
                         success=False,
                         timestamp=datetime.now()
@@ -147,61 +153,26 @@ def read_entry_type_by_id(entry_type_id: int) -> PersistenceResponse:
         except (pyodbc.Error) as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read entry type by id: {str(e)}",
+                message=f"Failed to read module by GUID: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_entry_type_by_guid(guid: str) -> PersistenceResponse:
+def read_module_by_name(name: str) -> PersistenceResponse:
     """
-    Retrieves an entry type from the database by GUID.
-    """
-    with pers_database.get_db_connection() as cnxn:
-        try:
-            with cnxn.cursor() as cursor:
-                sql = "{CALL ReadEntryTypeByGUID(?)}"
-                row = cursor.execute(sql, guid).fetchone()
-                if row:
-                    return PersistenceResponse(
-                        data=EntryType.from_db_row(row),
-                        message="Entry type found",
-                        status_code=200,
-                        success=True,
-                        timestamp=datetime.now()
-                    )
-                else:
-                    return PersistenceResponse(
-                        data=None,
-                        message="Entry type by guid not found",
-                        status_code=404,
-                        success=False,
-                        timestamp=datetime.now()
-                    )
-        except (pyodbc.Error) as e:
-            return PersistenceResponse(
-                data=None,
-                message=f"Failed to read entry type by guid: {str(e)}",
-                status_code=500,
-                success=False,
-                timestamp=datetime.now()
-            )
-
-
-def read_entry_type_by_name(name: str) -> PersistenceResponse:
-    """
-    Retrieves an entry type from the database by name.
+    Retrieves a module from the database by name.
     """
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadEntryTypeByName(?)}"
+                sql = "{CALL ReadModuleByName(?)}"
                 row = cursor.execute(sql, name).fetchone()
                 if row:
                     return PersistenceResponse(
-                        data=EntryType.from_db_row(row),
-                        message="Entry type found",
+                        data=Module.from_db_row(row),
+                        message="Module read successfully",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -209,15 +180,16 @@ def read_entry_type_by_name(name: str) -> PersistenceResponse:
                 else:
                     return PersistenceResponse(
                         data=None,
-                        message="Entry type by name not found",
+                        message="Module by name not found",
                         status_code=404,
                         success=False,
                         timestamp=datetime.now()
                     )
+
         except (pyodbc.Error) as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read entry type by name: {str(e)}",
+                message=f"Failed to read module by name: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()

@@ -1,5 +1,5 @@
 """
-Module for entry type API.
+Module for module API.
 """
 
 # python standard library imports
@@ -13,14 +13,13 @@ from flask import Blueprint, request, jsonify
 
 # local imports
 from blueprints.api.api_response import ApiResponse
-from business import bus_module
+from modules.module import bus_module
 
 
-module_api_bp = Blueprint('module_api', __name__, url_prefix='/api')
+api_module_bp = Blueprint('api_module', __name__, url_prefix='/api')
 
 
-@module_api_bp.route('/post/module', methods=['POST'])
-#@tm.token_verification
+@api_module_bp.route('/post/module', methods=['POST'])
 def api_post_module_route():
     """
     Handles the POST request for creating a new module.

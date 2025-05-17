@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Term</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50">
+    <div class="relative z-10 max-w-3xl mx-auto mt-12 p-6 pb-12 bg-white rounded-xl shadow-lg flex flex-col gap-6" id="form-container">
+        <div class="absolute right-8 top-8">
+            <button onclick="window.location.href='/payment-terms'" type="button" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 shadow-md">
+                Back to Payment Term List
+            </button>
+        </div>
+        <h1 class="text-2xl font-bold mb-4">View Payment Term</h1>
+        {% if payment_term %}
+        <ul class="divide-y divide-gray-200 bg-gray-50 rounded-lg shadow p-6">
+            <li class="py-4 flex flex-col sm:flex-row sm:items-center">
+                <span class="font-semibold w-32">GUID:</span>
+                <span class="ml-2 text-gray-800">{{ payment_term.guid }}</span>
+            </li>
+            <li class="py-4 flex flex-col sm:flex-row sm:items-center">
+                <span class="font-semibold w-32">Payment Term Name:</span>
+                <span class="ml-2 text-gray-800">{{ payment_term.name }}</span>
+            </li>
+            <li class="py-4 flex flex-col sm:flex-row sm:items-center">
+                <span class="font-semibold w-32">Value:</span>
+                <span class="ml-2 text-gray-800">{{ payment_term.value }}</span>
+            </li>
+        </ul>
+        <div class="mt-6">
+            <a href="{{ url_for('web_payment_term.edit_payment_term_route', payment_term_guid=payment_term.guid) }}" class="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600 shadow-md">
+                Edit Payment Term
+            </a>
+        </div>
+        {% else %}
+        <div class="text-red-600 font-semibold">Payment term not found.</div>
+        {% endif %}
+    </div>
+</body>
+</html>

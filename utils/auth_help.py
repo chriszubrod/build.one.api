@@ -12,7 +12,7 @@ from flask import session, redirect, url_for
 import bcrypt
 
 # local imports
-from helper.token_help import verify_token, verify_refresh_token, refresh_token
+from utils.token_help import verify_token, verify_refresh_token, refresh_token
 
 
 def requires_auth(permission=None):

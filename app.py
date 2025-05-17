@@ -1,14 +1,19 @@
+# third party imports
 from flask import (
     jsonify,
     Flask,
     render_template
 )
-#from agents import sample_agent
 
 
+# local imports
 from modules.address import (
     api_address,
     web_address
+)
+from modules.auth import (
+    api_auth,
+    web_auth
 )
 from modules.bill import (
     api_bill,
@@ -30,9 +35,17 @@ from modules.customer import (
     api_customer,
     web_customer
 )
+from modules.dashboard import (
+    api_dashboard,
+    web_dashboard
+)
 from modules.module import (
     api_module,
     web_module
+)
+from modules.payment_term import (
+    api_payment_term,
+    web_payment_term
 )
 from modules.project import (
     api_project,
@@ -55,10 +68,16 @@ from modules.vendor import (
     web_vendor
 )
 
+# initialize the app
 app = Flask(__name__)
+app.secret_key = '1df3a3s1df65a1sd6f4asdfa1sd3f132sd1f3as1df56asd65fasd'
 
+# register blueprints
 app.register_blueprint(api_address.api_address_bp)
 app.register_blueprint(web_address.web_address_bp)
+
+app.register_blueprint(api_auth.api_auth_bp)
+app.register_blueprint(web_auth.web_auth_bp)
 
 app.register_blueprint(api_bill.api_bill_bp)
 app.register_blueprint(web_bill.web_bill_bp)
@@ -75,8 +94,14 @@ app.register_blueprint(web_cost_code.web_cost_code_bp)
 app.register_blueprint(api_customer.api_customer_bp)
 app.register_blueprint(web_customer.web_customer_bp)
 
+app.register_blueprint(api_dashboard.api_dashboard_bp)
+app.register_blueprint(web_dashboard.web_dashboard_bp)
+
 app.register_blueprint(api_module.api_module_bp)
 app.register_blueprint(web_module.web_module_bp)
+
+app.register_blueprint(api_payment_term.api_payment_term_bp)
+app.register_blueprint(web_payment_term.web_payment_term_bp)
 
 app.register_blueprint(api_project.api_project_bp)
 app.register_blueprint(web_project.web_project_bp)
@@ -96,18 +121,8 @@ app.register_blueprint(web_vendor.web_vendor_bp)
 
 @app.route('/')
 def index():
-    return "Hello from Flask!"
+    return render_template('shared/layout/base.html')
 
-
-@app.route('/agent')
-def agent():
-    try:
-        response = sample_agent.run_agent()
-        return render_template('index.html', result=response)
-    except Exception as e:
-        return jsonify(
-            {"err": str(e)}
-        ), 500
 
 if __name__ == '__main__':
     app.run(debug=True)

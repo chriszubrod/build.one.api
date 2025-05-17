@@ -1,7 +1,15 @@
-<header class="site-header">
-
-    <div class="header-container">
-
+<nav class="bg-blue-700 text-white px-4 py-3 flex items-center justify-between shadow">
+    <div class="flex items-center space-x-6">
+        <a href="/" class="font-bold text-lg hover:text-blue-200">b1</a>
     </div>
-
-</header>
+    <div class="flex items-center space-x-4">
+        <a href="/company" class="hover:text-blue-200">Company</a>
+        <a href="/account" class="hover:text-blue-200">Account</a>
+        {% if session.get('logged_in') %}
+            <a href="/logout" class="hover:text-blue-200">Logout</a>
+        {% else %}
+            <a href="/login" class="hover:text-blue-200">Login</a>
+            <a href="/register" class="hover:text-blue-200">Register</a>
+        {% endif %}
+    </div>
+</nav>

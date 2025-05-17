@@ -7,17 +7,20 @@
         <!-- Header -->
         {% include 'shared/components/header.html' %}
 
-        <!-- Left Navigator -->
-        {% include 'shared/components/navigator.html' %}
-
-        <!-- Main Content -->
-        <main class="main-content">
-            {% block content %}
-            {% endblock %}
-        </main>
-
-        <!-- Right Sidebar -->
-        {% include 'shared/components/sidebar.html' %}
+        <div class="flex min-h-screen">
+            <!-- Sidebar -->
+            <aside class="w-64 bg-white border-r hidden md:block">
+                {% include 'shared/components/navigator.html' %}
+            </aside>
+            <!-- Main Content -->
+            <main class="flex-1 p-8">
+                {% include 'shared/components/alerts.html' %}
+                
+                {% block content %}
+                
+                {% endblock %}
+            </main>
+        </div>
 
         <!-- Footer -->
         {% include 'shared/components/footer.html' %}

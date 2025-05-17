@@ -42,8 +42,8 @@ BEGIN
     SELECT
         [Id],
         [GUID],
-        CAST([CreatedDatetime] AS NVARCHAR(MAX)),
-        CAST([ModifiedDatetime] AS NVARCHAR(MAX)),
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
         [Name],
         [Value],
         [TransactionId]
@@ -57,14 +57,89 @@ BEGIN
     SELECT
         [Id],
         [GUID],
-        CAST([CreatedDatetime] AS NVARCHAR(MAX)),
-        CAST([ModifiedDatetime] AS NVARCHAR(MAX)),
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
         [Name],
         [Value],
         [TransactionId]
     FROM PaymentTerm
     WHERE [Name] = @Name;
 END
+
+
+DROP PROCEDURE IF EXISTS ReadPaymentTermByGUID;
+
+CREATE PROCEDURE ReadPaymentTermByGUID
+    @GUID UNIQUEIDENTIFIER
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [Name],
+        [Value],
+        [TransactionId]
+    FROM PaymentTerm
+    WHERE [GUID] = @GUID;
+
+    COMMIT;
+END
+
+
+DROP PROCEDURE IF EXISTS ReadPaymentTermByID;
+
+CREATE PROCEDURE ReadPaymentTermByID
+    @ID INT
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [Name],
+        [Value],
+        [TransactionId]
+    FROM PaymentTerm
+    WHERE [Id] = @ID;
+
+    COMMIT;
+END
+
+
+
+
+DROP PROCEDURE IF EXISTS UpdatePaymentTermById;
+
+CREATE PROCEDURE UpdatePaymentTermById
+    @Id INT,
+    @CreatedDatetime DATETIMEOFFSET,
+    @ModifiedDatetime DATETIMEOFFSET,
+    @Name VARCHAR(255),
+    @Value NVARCHAR(255)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    -- Update the PaymentTerm record
+    UPDATE PaymentTerm
+    SET CreatedDatetime = CONVERT(DATETIMEOFFSET, @CreatedDatetime),
+        ModifiedDatetime = CONVERT(DATETIMEOFFSET, @ModifiedDatetime),
+        [Name] = @Name,
+        [Value] = @Value
+    WHERE Id = @Id;
+
+    COMMIT;
+END
+
+
+
 
 
 DELETE FROM PaymentTerm;

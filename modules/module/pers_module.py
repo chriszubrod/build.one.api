@@ -194,3 +194,86 @@ def read_module_by_name(name: str) -> PersistenceResponse:
                 success=False,
                 timestamp=datetime.now()
             )
+
+
+def read_module_by_slug(slug: str) -> PersistenceResponse:
+    """
+    Retrieves a module from the database by slug.
+    """
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadModuleBySlug(?)}"
+                row = cursor.execute(sql, slug).fetchone()
+                if row:
+                    return PersistenceResponse(
+                        data=Module.from_db_row(row),
+                        message="Module read successfully",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    return PersistenceResponse(
+                        data=None,
+                        message="Module by slug not found",
+                        status_code=404,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read module by slug: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def update_module(module: Module) -> PersistenceResponse:
+    """
+    Updates a module in the database.
+    """
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL UpdateModuleById(?, ?, ?, ?, ?)}"
+                rowcount = cursor.execute(
+                    sql,
+                    module.id,
+                    module.modified_datetime,
+                    module.name,
+                    module.description,
+                    module.slug
+                ).rowcount
+                cnxn.commit()
+                if rowcount > 0:
+                    return PersistenceResponse(
+                        data=rowcount,
+                        message="Module updated successfully",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    cnxn.rollback()
+                    return PersistenceResponse(
+                        data=None,
+                        message="Module not updated",
+                        status_code=400,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            cnxn.rollback()
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to update module: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+

@@ -65,8 +65,10 @@ def generate_token() -> dict:
 
         # Ensure we're using the same timestamp for all fields
         payload = {
-            'exp': current_timestamp + int(900),  # 15 minutes from now (UTC)
-            'refresh_exp': current_timestamp + int(604800),  # 7 days from now (UTC)
+            #'exp': current_timestamp + int(900),  # 15 minutes from now (UTC)
+            'exp': current_timestamp + int(5),  # 5 seconds from now (UTC)
+            #'refresh_exp': current_timestamp + int(604800),  # 7 days from now (UTC)
+            'refresh_exp': current_timestamp + int(300),  # 5 minutes from now (UTC)
             'iat': current_timestamp,  # issued at time (UTC)
             'jti': secrets.token_urlsafe(32)
         }
@@ -99,10 +101,12 @@ def refresh_token(token: str) -> dict:
     Refresh token
     """
     try:
-        payload = jwt.decode(token, 'secret', algorithms=['HS256'])
+        # Decode the token WITHOUT verifying 'exp'
+        payload = jwt.decode(token, 'secret', algorithms=['HS256'], options={'verify_exp': False})
 
         current_timestamp = int(datetime.now(timezone.utc).timestamp())
 
+        # Ensure we're using the same timestamp for all fields
         new_payload = {
             'exp': current_timestamp + int(900),  # 15 minutes from now (UTC)
             'refresh_exp': payload['refresh_exp'], # keep the original refresh_exp
@@ -131,16 +135,13 @@ def refresh_token(token: str) -> dict:
         }
 
 
-def verify_token(token: str) -> dict:
+def verify_token(token: str, current_timestamp: int) -> dict:
     """
     Verify token
     """
     try:
         # Decode and verify the token
         payload = jwt.decode(token, 'secret', algorithms=['HS256'])
-
-        # Set current timestamp
-        current_timestamp = int(datetime.now(timezone.utc).timestamp())
 
         # Check if token has expired        
         if current_timestamp > payload['exp']:
@@ -187,16 +188,15 @@ def verify_token(token: str) -> dict:
         }
 
 
-def verify_refresh_token(token: str) -> dict:
+def verify_refresh_token(token: str, current_timestamp: int) -> dict:
     """
     Verify refresh token
     """
+    #print(f"VERIFY_REFRESH_TOKEN CALLED")
     try:
         # Decode and verify the token
-        payload = jwt.decode(token, 'secret', algorithms=['HS256'])
-
-        # Set current timestamp
-        current_timestamp = int(datetime.now(timezone.utc).timestamp())
+        payload = jwt.decode(token, 'secret', algorithms=['HS256'], options={'verify_exp': False})
+        #print(f"verify_refresh_token payload: {payload}")
 
         # Check if refresh token has expired
         if current_timestamp > payload['refresh_exp']:

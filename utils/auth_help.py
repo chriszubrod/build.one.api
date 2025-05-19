@@ -4,7 +4,7 @@ Module for auth helper.
 
 # python standard library imports
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
 from flask import session, redirect, url_for
 
@@ -26,19 +26,26 @@ def requires_auth(permission=None):
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
+            print("=== requires_auth: Start ===")
+            print(f"Session logged_in: {session.get('logged_in')}")
+            print(f"Session token: {session.get('token')}")
+
             # Check if user is logged in via session
             if not session.get('logged_in'):
-                return redirect(url_for('auth_web.login_route'))
+                return redirect(url_for('web_auth.login_route'))
 
             # Check if we have a token
             token = session.get('token')
             if not token:
                 session.clear()  # Clear invalid session
-                return redirect(url_for('auth_web.login_route'))
+                return redirect(url_for('web_auth.login_route'))
+
+            # Set current timestamp
+            current_timestamp = int(datetime.now(timezone.utc).timestamp())
 
             # Verify token
-            verify_result = verify_token(token)
-            #print(f'Verify Token Result: {verify_result}')
+            verify_result = verify_token(token, current_timestamp)
+            print(f"verify_token result: {verify_result}")
 
             if verify_result['success']:
                 # If no specific permission required, allow access
@@ -48,23 +55,28 @@ def requires_auth(permission=None):
                 # Check if user has required permission
                 user_permissions = session.get('permissions', [])
                 if permission not in user_permissions:
-                    return redirect(url_for('auth_web.unauthorized_route'))
+                    return redirect(url_for('web_auth.unauthorized_route'))
 
                 return f(*args, **kwargs)
 
             # Token is not valid, check if it can be refreshed
-            verify_refresh_result = verify_refresh_token(token)
-            #print(f'Verify Refresh Token Result: {verify_refresh_result}')
+            if not verify_result['success']:
+                print("Access token invalid or expired, checking refresh token...")
+                verify_refresh_result = verify_refresh_token(token, current_timestamp)
+                print(f"verify_refresh_token result: {verify_refresh_result}")
 
             if verify_refresh_result['success']:
                 refresh_result = refresh_token(token)
+                print(f"refresh_token result: {refresh_result}")
                 if refresh_result['success']:
+                    print("Token refreshed and session updated.")
                     session['token'] = refresh_result['data']
                     return f(*args, **kwargs)
 
             # If we get here, token is invalid and couldn't be refreshed
+            print("Both access and refresh tokens are invalid/expired. Clearing session and redirecting to login.")
             session.clear()
-            return redirect(url_for('auth_web.login_route'))
+            return redirect(url_for('web_auth.login_route'))
 
         return decorated_function
     return decorator

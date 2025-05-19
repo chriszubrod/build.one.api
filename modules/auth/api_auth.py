@@ -133,12 +133,6 @@ def api_post_auth_login_route():
         # Always define response_data
         if post_auth_login_resp.success:
             response_data = post_auth_login_resp.data
-
-            session['user_id'] = response_data['user_id']
-            session['username'] = response_data['username']
-            session['token'] = response_data['token']
-            session['timestamp'] = datetime.now().isoformat()
-
             response_data['redirect_url'] = '/dashboard' # absolute path
         else:
             response_data = None

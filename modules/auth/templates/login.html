@@ -46,7 +46,32 @@
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        window.location.href = data.data.redirect_url || '/dashboard';
+                        // Create and submit a hidden form to the /login route
+                        const form = document.createElement('form');
+                        form.method = 'POST';
+                        form.action = '/login';
+                        form.style.display = 'none';
+
+                        const tokenInput = document.createElement('input');
+                        tokenInput.type = 'hidden';
+                        tokenInput.name = 'token';
+                        tokenInput.value = data.data.token;
+                        form.appendChild(tokenInput);
+
+                        const usernameInput = document.createElement('input');
+                        usernameInput.type = 'hidden';
+                        usernameInput.name = 'username';
+                        usernameInput.value = data.data.username;
+                        form.appendChild(usernameInput);
+
+                        const userIdInput = document.createElement('input');
+                        userIdInput.type = 'hidden';
+                        userIdInput.name = 'user_id';
+                        userIdInput.value = data.data.user_id;
+                        form.appendChild(userIdInput);
+
+                        document.body.appendChild(form);
+                        form.submit();
                     } else {
                         errorDiv.textContent = data.message || 'Login failed';
                         errorDiv.classList.remove('hidden');

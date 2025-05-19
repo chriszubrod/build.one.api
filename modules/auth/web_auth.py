@@ -55,14 +55,6 @@ def login_route():
             session['username'] = username
             session['user_id'] = user_id
 
-            # Add modules
-            get_modules_bus_response = bus_module.get_modules()
-            if get_modules_bus_response.success:
-                session['modules'] = get_modules_bus_response.data
-
-            #print(f'Session: {session}')
-
-            # Redirect to the dashboard
             return redirect(url_for('web_dashboard.dashboard_route'))
 
         except Exception:

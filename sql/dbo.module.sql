@@ -15,6 +15,11 @@ SELECT * FROM Module;
 
 
 
+
+
+
+
+
 CREATE PROCEDURE CreateModule
     @CreatedDatetime DATETIMEOFFSET,
     @ModifiedDatetime DATETIMEOFFSET,
@@ -44,9 +49,13 @@ END
 EXEC CreateModule
 	@CreatedDatetime = '2025-02-08 00:00:00',
 	@ModifiedDatetime = '2025-02-08 00:00:00',
-	@Name = 'Bills',
-	@Desc = 'Create and edit bills.',
+	@Name = 'Modules',
+	@Desc = 'Manage system modules.',
 	@Slug = '/bills'
+
+
+
+
 
 
 DROP PROCEDURE IF EXISTS ReadModules;
@@ -65,10 +74,15 @@ BEGIN
         [Desc],
         [Slug],
         [TransactionId]
-    FROM Module;
+    FROM Module
+    ORDER BY [Name] ASC;
 
     COMMIT;
 END
+
+
+
+
 
 
 
@@ -101,7 +115,7 @@ END
 
 
 
-
+DROP PROCEDURE IF EXISTS ReadModuleByName;
 
 CREATE PROCEDURE ReadModuleByName
     @Name VARCHAR(255)
@@ -120,13 +134,62 @@ BEGIN
     WHERE [Name] = @Name;
 END
 
+EXEC ReadModuleByName
+    @Name = 'Projects'
+
+
+DROP PROCEDURE IF EXISTS ReadModuleBySlug;
+
+CREATE PROCEDURE ReadModuleBySlug
+    @Slug VARCHAR(255)
+AS
+BEGIN
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)),
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)),
+        [Name],
+        [Desc],
+        [Slug],
+        [TransactionId]
+    FROM Module
+    WHERE [Slug] = @Slug;
+END
 
 
 
+DROP PROCEDURE IF EXISTS UpdateModuleById;
 
-UPDATE Module
-SET [Name] = 'bill', [Desc] = 'Manage bills', [Slug] = '/entry/bills'
-WHERE [Id] = 4;
+CREATE PROCEDURE UpdateModuleById
+    @Id INT,
+    @ModifiedDatetime DATETIMEOFFSET,
+    @Name VARCHAR(255),
+    @Desc VARCHAR(MAX),
+    @Slug VARCHAR(MAX)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    UPDATE Module
+    SET ModifiedDatetime = CONVERT(DATETIMEOFFSET, @ModifiedDatetime),
+        [Name] = @Name,
+        [Desc] = @Desc,
+        Slug = @Slug
+    WHERE [Id] = @Id;
+
+    COMMIT;
+END
+
+EXEC UpdateModuleById
+    @Id = 4,
+    @ModifiedDatetime = '2025-05-18 03:09:00',
+    @Name = 'Bills',
+    @Desc = 'Create and edit bills.',
+    @Slug = '/bills'
+
+
+
 
 
 

@@ -9,12 +9,14 @@ from flask import Blueprint, render_template
 
 # local imports
 from modules.module import bus_module
+from utils.auth_help import requires_auth
 
 
 web_module_bp = Blueprint('web_module', __name__, template_folder='templates')
 
 
 @web_module_bp.route('/modules', methods=['GET'])
+@requires_auth()
 def list_modules_route():
     """
     Returns the route for the modules page.
@@ -23,8 +25,6 @@ def list_modules_route():
     get_modules_bus_response = bus_module.get_modules()
     if get_modules_bus_response.success:
         _modules = get_modules_bus_response.data
-
-    print(_modules)
     return render_template('module_list.html', modules=_modules)
 
 

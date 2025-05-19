@@ -121,7 +121,7 @@ app.register_blueprint(web_vendor.web_vendor_bp)
 
 @app.route('/')
 def index():
-    return render_template('shared/layout/base.html')
+    return render_template('dashboard_view.html')
 
 
 if __name__ == '__main__':

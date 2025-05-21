@@ -9,12 +9,13 @@ from flask import Blueprint, render_template
 
 # local imports
 from modules.role import bus_role
-
+from utils.auth_help import requires_auth
 
 web_role_bp = Blueprint('web_role', __name__, template_folder='templates')
 
 
 @web_role_bp.route('/roles', methods=['GET'])
+@requires_auth()
 def list_roles_route():
     """
     Returns the route for the roles page.
@@ -29,6 +30,7 @@ def list_roles_route():
 
 
 @web_role_bp.route('/role/create', methods=['GET'])
+@requires_auth()
 def create_role_route():
     """
     Returns the role create route for the application.
@@ -37,6 +39,7 @@ def create_role_route():
 
 
 @web_role_bp.route('/role/<role_guid>', methods=['GET'])
+@requires_auth()
 def view_role_route(role_guid):
     """
     Returns the role by guid route.
@@ -52,6 +55,7 @@ def view_role_route(role_guid):
 
 
 @web_role_bp.route('/role/<role_guid>/edit', methods=['GET'])
+@requires_auth()
 def edit_role_route(role_guid):
     """
     Returns the role edit route.

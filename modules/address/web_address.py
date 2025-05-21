@@ -11,12 +11,14 @@ from flask import Blueprint, render_template
 
 # local imports
 from modules.address import bus_address
+from utils.auth_help import requires_auth
 
 
 web_address_bp = Blueprint('web_address', __name__, template_folder='templates')
 
 
 @web_address_bp.route('/addresses', methods=['GET'])
+@requires_auth()
 def list_addresses_route():
     """
     Retrieves the addresses route.
@@ -30,6 +32,7 @@ def list_addresses_route():
 
 
 @web_address_bp.route('/address/create', methods=['GET'])
+@requires_auth()
 def create_address_route():
     """
     Retrieves the create address route.
@@ -38,6 +41,7 @@ def create_address_route():
 
 
 @web_address_bp.route('/address/<address_guid>', methods=['GET'])
+@requires_auth()
 def view_address_route(address_guid):
     """
     Returns the address by guid route.
@@ -53,6 +57,7 @@ def view_address_route(address_guid):
 
 
 @web_address_bp.route('/address/<address_guid>/edit', methods=['GET'])
+@requires_auth()
 def edit_address_route(address_guid):
     """
     Returns the address edit route.

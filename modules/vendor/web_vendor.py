@@ -9,12 +9,14 @@ from flask import Blueprint, render_template
 
 # local imports
 from modules.vendor import bus_vendor
+from utils.auth_help import requires_auth
 
 
 web_vendor_bp = Blueprint('web_vendor', __name__, template_folder='templates')
 
 
 @web_vendor_bp.route('/vendors', methods=['GET'])
+@requires_auth()
 def list_vendors_route():
     """
     Returns the route for the vendors page.
@@ -28,6 +30,7 @@ def list_vendors_route():
 
 
 @web_vendor_bp.route('/vendor/create', methods=['GET'])
+@requires_auth()
 def create_vendor_route():
     """
     Returns the vendor create route for the application.
@@ -36,6 +39,7 @@ def create_vendor_route():
 
 
 @web_vendor_bp.route('/vendor/<vendor_guid>', methods=['GET'])
+@requires_auth()
 def view_vendor_route(vendor_guid):
     """
     Returns the vendor by guid route.
@@ -51,6 +55,7 @@ def view_vendor_route(vendor_guid):
 
 
 @web_vendor_bp.route('/vendor/<vendor_guid>/edit', methods=['GET'])
+@requires_auth()
 def edit_vendor_route(vendor_guid):
     """
     Returns the vendor edit route.

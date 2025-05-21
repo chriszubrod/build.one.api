@@ -9,12 +9,14 @@ from flask import Blueprint, render_template
 
 # local imports
 from modules.contact import bus_contact
+from utils.auth_help import requires_auth
 
 
 web_contact_bp = Blueprint('web_contact', __name__, template_folder='templates')
 
 
 @web_contact_bp.route('/contacts', methods=['GET'])
+@requires_auth()
 def list_contacts_route():
     """
     Returns the route for the contacts page.
@@ -29,6 +31,7 @@ def list_contacts_route():
 
 
 @web_contact_bp.route('/contact/create', methods=['GET'])
+@requires_auth()
 def create_contact_route():
     """
     Returns the contact create route for the application.
@@ -37,6 +40,7 @@ def create_contact_route():
 
 
 @web_contact_bp.route('/contact/<contact_guid>', methods=['GET'])
+@requires_auth()
 def view_contact_route(contact_guid):
     """
     Returns the contact by guid route.
@@ -52,6 +56,7 @@ def view_contact_route(contact_guid):
 
 
 @web_contact_bp.route('/contact/<contact_guid>/edit', methods=['GET'])
+@requires_auth()
 def edit_contact_route(contact_guid):
     """
     Returns the contact edit route.

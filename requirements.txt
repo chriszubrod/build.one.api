@@ -14,7 +14,7 @@ bleach==6.2.0
 blinker==1.9.0
 build==1.2.2.post1
 cachetools==5.5.2
-certifi==2025.1.31
+certifi @ file:///home/conda/feedstock_root/build_artifacts/certifi_1746569525376/work/certifi
 cffi==1.17.1
 charset-normalizer==3.4.1
 chroma-hnswlib==0.7.6

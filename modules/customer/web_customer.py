@@ -9,12 +9,14 @@ from flask import Blueprint, render_template
 
 # local imports
 from modules.customer import bus_customer
+from utils.auth_help import requires_auth
 
 
 web_customer_bp = Blueprint('web_customer', __name__, template_folder='templates')
 
 
 @web_customer_bp.route('/customers', methods=['GET'])
+@requires_auth()
 def list_customers_route():
     """
     Returns the route for the customers page.
@@ -29,6 +31,7 @@ def list_customers_route():
 
 
 @web_customer_bp.route('/customer/create', methods=['GET'])
+@requires_auth()
 def create_customer_route():
     """
     Returns the customer create route for the application.
@@ -37,6 +40,7 @@ def create_customer_route():
 
 
 @web_customer_bp.route('/customer/<customer_guid>', methods=['GET'])
+@requires_auth()
 def view_customer_route(customer_guid):
     """
     Returns the customer by guid route.
@@ -52,6 +56,7 @@ def view_customer_route(customer_guid):
 
 
 @web_customer_bp.route('/customer/<customer_guid>/edit', methods=['GET'])
+@requires_auth()
 def edit_customer_route(customer_guid):
     """
     Returns the customer edit route.

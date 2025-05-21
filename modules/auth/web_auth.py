@@ -17,6 +17,7 @@ from flask import (
 
 # local imports
 from modules.module import bus_module
+from utils.auth_help import requires_auth
 
 
 web_auth_bp = Blueprint('web_auth', __name__, template_folder='templates')
@@ -65,13 +66,8 @@ def login_route():
 
 
 @web_auth_bp.route('/logout', methods=['GET'])
+@requires_auth()
 def logout_route():
     """Logs out the user."""
     session.clear()
     return redirect(url_for('web_auth.login_route'))
-
-
-@web_auth_bp.route('/unauthorized', methods=['GET'])
-def unauthorized_route():
-    """Returns the unauthorized route."""
-    return render_template('unauthorized.html'), 401

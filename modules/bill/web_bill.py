@@ -20,12 +20,14 @@ from modules.vendor import (
 )
 from modules.project import bus_project
 from modules.sub_cost_code import bus_sub_cost_code
+from utils.auth_help import requires_auth
 
 
 web_bill_bp = Blueprint('web_bill', __name__, template_folder='templates')
 
 
 @web_bill_bp.route('/bills', methods=['GET'])
+@requires_auth()
 def list_bills_route():
     """
     Returns the bills route for the application.
@@ -45,6 +47,7 @@ def list_bills_route():
 
 
 @web_bill_bp.route('/bill/create', methods=['GET'])
+@requires_auth()
 def create_bill_route():
     """
     Returns the bill create route for the application.
@@ -80,6 +83,7 @@ def create_bill_route():
 
 
 @web_bill_bp.route('/bill/<bill_guid>', methods=['GET'])
+@requires_auth()
 def view_bill_route(bill_guid):
     """
     Returns the bill by guid route.
@@ -161,6 +165,7 @@ def view_bill_route(bill_guid):
 
 
 @web_bill_bp.route('/bill/<bill_guid>/edit', methods=['GET'])
+@requires_auth()
 def edit_bill_route(bill_guid):
     """
     Returns the bill edit route.

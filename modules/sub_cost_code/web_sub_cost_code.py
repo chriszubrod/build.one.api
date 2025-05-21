@@ -10,12 +10,13 @@ from flask import Blueprint, render_template
 # local imports
 from modules.cost_code import bus_cost_code
 from modules.sub_cost_code import bus_sub_cost_code
-
+from utils.auth_help import requires_auth
 
 web_sub_cost_code_bp = Blueprint('web_sub_cost_code', __name__, template_folder='templates')
 
 
 @web_sub_cost_code_bp.route('/sub-cost-codes', methods=['GET'])
+@requires_auth()
 def list_sub_cost_codes_route():
     """
     Returns the route for the sub cost codes page.
@@ -35,6 +36,7 @@ def list_sub_cost_codes_route():
 
 
 @web_sub_cost_code_bp.route('/sub-cost-code/create', methods=['GET'])
+@requires_auth()
 def create_sub_cost_code_route():
     """
     Returns the sub cost code create route for the application.
@@ -49,6 +51,7 @@ def create_sub_cost_code_route():
 
 
 @web_sub_cost_code_bp.route('/sub-cost-code/<sub_cost_code_guid>', methods=['GET'])
+@requires_auth()
 def view_sub_cost_code_route(sub_cost_code_guid):
     """
     Returns the sub cost code by guid route.
@@ -71,6 +74,7 @@ def view_sub_cost_code_route(sub_cost_code_guid):
 
 
 @web_sub_cost_code_bp.route('/sub-cost-code/<sub_cost_code_guid>/edit', methods=['GET'])
+@requires_auth()
 def edit_sub_cost_code_route(sub_cost_code_guid):
     """
     Returns the sub cost code edit route.

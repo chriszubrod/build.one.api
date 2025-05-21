@@ -16,3 +16,4 @@ CREATE TABLE ms.Auth (
 
 DROP TABLE ms.Auth;
 
+SELECT * FROM ms.Auth;

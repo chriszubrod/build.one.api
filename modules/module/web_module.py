@@ -29,6 +29,7 @@ def list_modules_route():
 
 
 @web_module_bp.route('/module/create', methods=['GET'])
+@requires_auth()
 def create_module_route():
     """
     Returns the module create route for the application.
@@ -37,6 +38,7 @@ def create_module_route():
 
 
 @web_module_bp.route('/module/<module_guid>', methods=['GET'])
+@requires_auth()
 def view_module_route(module_guid):
     """
     Returns the module by guid route.
@@ -52,6 +54,7 @@ def view_module_route(module_guid):
 
 
 @web_module_bp.route('/module/<module_guid>/edit', methods=['GET'])
+@requires_auth()
 def edit_module_route(module_guid):
     """
     Returns the module edit route.

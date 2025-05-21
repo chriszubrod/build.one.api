@@ -12,12 +12,13 @@ from flask import Blueprint, render_template
 from modules.contact import bus_contact
 from modules.role import bus_role
 from modules.user import bus_user
-
+from utils.auth_help import requires_auth
 
 web_user_bp = Blueprint('web_user', __name__, template_folder='templates')
 
 
 @web_user_bp.route('/users', methods=['GET'])
+@requires_auth()
 def list_users_route():
     """
     Returns the route for the users page.
@@ -33,6 +34,7 @@ def list_users_route():
 
 
 @web_user_bp.route('/user/create', methods=['GET'])
+@requires_auth()
 def create_user_route():
     """
     Returns the user new route.
@@ -48,6 +50,7 @@ def create_user_route():
 
 
 @web_user_bp.route('/user/<user_guid>', methods=['GET'])
+@requires_auth()
 def view_user_route(user_guid):
     """
     Returns the user by guid route.
@@ -76,6 +79,7 @@ def view_user_route(user_guid):
 
 
 @web_user_bp.route('/user/<user_guid>/edit', methods=['GET'])
+@requires_auth()
 def edit_user_route(user_guid):
     """
     Returns the user edit route.

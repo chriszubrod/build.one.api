@@ -1,13 +1,14 @@
+
 import pyodbc
 
-from . import database_pers
+from .. import database_pers
 
 
-def create_telephone_number(telephone_number, company_info_id):
+def create_web_site_address(uri, company_info_id):
     resp = {}
     sql = (
         '''
-        INSERT INTO intuit.TelephoneNumber (FreeFormNumber, CompanyInfoId)
+        INSERT INTO intuit.WebSiteAddress (URI, CompanyInfoId)
         VALUES (?, ?);
         '''
     )
@@ -15,16 +16,16 @@ def create_telephone_number(telephone_number, company_info_id):
         cnxn = database_pers.open_db_cnxn()
         cnxn.autocommit = False
         crsr = cnxn.cursor()
-        count = crsr.execute(sql, telephone_number, company_info_id).rowcount
+        count = crsr.execute(sql, uri, company_info_id).rowcount
         if count == 1:
             resp = {
-                "message": "Intuit Telephone Number has been successfully created.",
+                "message": "Intuit Web Site Address has been successfully created.",
                 "rowcount": count,
                 "status_code": 201
             }
         else:
             resp = {
-                "message": "Intuit Telephone Number has NOT been successfully created.",
+                "message": "Intuit Web Site Address has NOT been successfully created.",
                 "rowcount": 0,
                 "status_code": 501
             }
@@ -43,12 +44,12 @@ def create_telephone_number(telephone_number, company_info_id):
         return resp
 
 
-def read_telephone_number_by_company_id(company_id):
+def read_web_site_address_by_company_id(company_id):
     resp = {}
     sql = (
         '''
         SELECT *
-        FROM intuit.TelephoneNumber
+        FROM intuit.WebSiteAddress
         WHERE CompanyInfoId=?;        
         '''
     )
@@ -64,7 +65,7 @@ def read_telephone_number_by_company_id(company_id):
             }
         else:
             resp = {
-                "message": "Intuit Telephone Number was not found.",
+                "message": "Intuit Web Site Address was not found.",
                 "rowcount": 0,
                 "status_code": 501
             }
@@ -79,12 +80,12 @@ def read_telephone_number_by_company_id(company_id):
         return resp
 
 
-def update_telephone_number_by_company_id(telephone_number, company_info_id):
+def update_web_site_address_by_company_id(uri, company_info_id):
     resp = {}
     sql = (
         '''
-        UPDATE intuit.TelephoneNumber
-        SET [Address]=?
+        UPDATE intuit.WebSiteAddress
+        SET URI=?
         WHERE CompanyInfoId=?;
         '''
     )
@@ -92,16 +93,16 @@ def update_telephone_number_by_company_id(telephone_number, company_info_id):
         cnxn = database_pers.open_db_cnxn()
         cnxn.autocommit = False
         crsr = cnxn.cursor()
-        count = crsr.execute(sql, telephone_number, company_info_id).rowcount
+        count = crsr.execute(sql, uri, company_info_id).rowcount
         if count == 1:
             resp = {
-                "message": "Intuit Telephone Number has been successfully updated.",
+                "message": "Intuit Web Site Adddress has been successfully updated.",
                 "rowcount": count,
                 "status_code": 201
             }
         else:
             resp = {
-                "message": "Intuit Telephone Number has NOT been successfully updated.",
+                "message": "Intuit Web Site Address has NOT been successfully updated.",
                 "rowcount": 0,
                 "status_code": 501
             }

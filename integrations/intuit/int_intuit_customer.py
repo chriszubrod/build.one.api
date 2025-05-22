@@ -3,7 +3,7 @@ from typing import Dict, Any
 import requests
 from requests.exceptions import RequestException
 
-from integrations.exceptions_int import IntuitAPIError
+from integrations.intuit.exceptions_int import IntuitAPIError
 
 
 def query_intuit_customer_count_info(uri: str, access_token: str) -> Dict[str, Any]:

@@ -5,12 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>b1</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Scroll to top when page loads
+        window.onload = function() {
+            window.scrollTo(0, 0);
+        };
+    </script>
 </head>
 <body class="bg-gray-50 min-h-screen h-full flex flex-col">
     {% include 'shared/components/header_view.html' %}
-    <div class="flex flex-1 w-full h-full items-stretch">
+    <div class="flex flex-1 w-full h-full items-stretch pt-16 pb-16">
         <main class="flex-1 h-full">
-            <div class="max-w-5xl mx-auto mt-12 p-8 bg-white shadow-lg">
+            <div class="max-w-5xl mx-auto p-8 bg-white shadow-lg">
                 <h1 class="text-3xl font-bold mb-6 text-center">Dashboard</h1>
                 <div class="mb-8 text-center text-gray-700 text-lg">
                     Welcome to your dashboard! Here you can see an overview of your application.

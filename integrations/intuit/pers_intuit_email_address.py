@@ -1,30 +1,30 @@
 import pyodbc
 
-from . import database_pers
+from .. import database_pers
 
 
-def create_company_info(realm_id, id, sync_token, company_name, supported_languages, country, fiscal_year_start_month, legal_name, company_start_date, employer_id, domain, sparse, created_datetime, last_update_datetime):
+def create_email_address(email_address, company_info_id="", customer_id="") -> dict:
     resp = {}
     sql = (
         '''
-        INSERT INTO intuit.CompanyInfo (RealmId, Id, SyncToken, CompanyName, SupportedLanguages, Country, FiscalYearStartMonth, LegalName, CompanyStartDate, EmployerId, Domain, Sparse, CreatedTime, LastUpdatedTime)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+        INSERT INTO intuit.EmailAddress ([Address], CompanyInfoId, CustomerId)
+        VALUES (?, ?, ?);
         '''
     )
     try:
         cnxn = database_pers.open_db_cnxn()
         cnxn.autocommit = False
         crsr = cnxn.cursor()
-        count = crsr.execute(sql, realm_id, id, sync_token, company_name, supported_languages, country, fiscal_year_start_month, legal_name, company_start_date, employer_id, domain, sparse, created_datetime, last_update_datetime).rowcount
+        count = crsr.execute(sql, email_address, company_info_id, customer_id).rowcount
         if count == 1:
             resp = {
-                "message": "Intuit Company Info has been successfully created.",
+                "message": "Intuit Email Address has been successfully created.",
                 "rowcount": count,
                 "status_code": 201
             }
         else:
             resp = {
-                "message": "Intuit Company Info has NOT been successfully created.",
+                "message": "Intuit Email Address has NOT been successfully created.",
                 "rowcount": 0,
                 "status_code": 501
             }
@@ -38,24 +38,22 @@ def create_company_info(realm_id, id, sync_token, company_name, supported_langua
         }
     else:
         cnxn.commit()
-    finally:
-        cnxn.autocommit = True
         return resp
 
 
-def read_company_info_by_id(id):
+def read_email_address_by_company_id(company_id):
     resp = {}
     sql = (
         '''
-        SELECT RealmId, Id, SyncToken, CONVERT(datetime2, LastUpdatedTime, 1)
-        FROM intuit.CompanyInfo
-        WHERE [Id]=?;
+        SELECT *
+        FROM intuit.EmailAddress
+        WHERE CompanyInfoId=?;        
         '''
     )
     try:
         cnxn = database_pers.open_db_cnxn()
         crsr = cnxn.cursor()
-        row = crsr.execute(sql, id).fetchone()
+        row = crsr.execute(sql, company_id).fetchone()
         if row:
             resp = {
                 "message": row,
@@ -64,7 +62,7 @@ def read_company_info_by_id(id):
             }
         else:
             resp = {
-                "message": "Intuit Company Info was not found.",
+                "message": "Intuit Email Address was not found.",
                 "rowcount": 0,
                 "status_code": 501
             }
@@ -79,29 +77,29 @@ def read_company_info_by_id(id):
         return resp
 
 
-def update_company_info(realm_id, id, sync_token, company_name, supported_languages, country, fiscal_year_start_month, legal_name, company_start_date, employer_id, domain, sparse, created_datetime, last_update_datetime):
+def update_email_address_by_company_id(email_address, company_info_id):
     resp = {}
     sql = (
         '''
-        UPDATE intuit.CompanyInfo
-        SET Id=?, SyncToken=?, CompanyName=?, SupportedLanguages=?, Country=?, FiscalYearStartMonth=?, LegalName=?, CompanyStartDate=?, EmployerId=?, Domain=?, Sparse=?, CreatedTime=?, LastUpdatedTime=?
-        WHERE RealmId=?;
+        UPDATE intuit.EmailAddress
+        SET [Address]=?
+        WHERE CompanyInfoId=?;
         '''
     )
     try:
         cnxn = database_pers.open_db_cnxn()
         cnxn.autocommit = False
         crsr = cnxn.cursor()
-        count = crsr.execute(sql, id, sync_token, company_name, supported_languages, country, fiscal_year_start_month, legal_name, company_start_date, employer_id, domain, sparse, created_datetime, last_update_datetime, realm_id).rowcount
+        count = crsr.execute(sql, email_address, company_info_id).rowcount
         if count == 1:
             resp = {
-                "message": "Intuit Company Info has been successfully updated.",
+                "message": "Intuit Email Adddress has been successfully updated.",
                 "rowcount": count,
                 "status_code": 201
             }
         else:
             resp = {
-                "message": "Intuit Company Info has NOT been successfully updated.",
+                "message": "Intuit Email Address has NOT been successfully updated.",
                 "rowcount": 0,
                 "status_code": 501
             }

@@ -16,7 +16,7 @@ import re
 import requests
 
 from datetime import datetime
-from integrations import intuit_item_int
+from integrations.intuit import intuit_item_int
 from modules.cost_code import pers_cost_code
 from modules.sub_cost_code import pers_sub_cost_code
 from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse

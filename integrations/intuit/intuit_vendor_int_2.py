@@ -14,7 +14,7 @@ import json
 import requests
 
 from datetime import datetime
-from integrations import intuit_vendor_int
+from integrations.intuit import intuit_vendor_int
 from modules.vendor import pers_vendor
 from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
 from persistence import (

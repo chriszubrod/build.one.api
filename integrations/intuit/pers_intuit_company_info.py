@@ -1,30 +1,30 @@
 import pyodbc
 
-from . import database_pers
+from .. import database_pers
 
 
-def create_name_value_pair(name, value, company_info_id):
+def create_company_info(realm_id, id, sync_token, company_name, supported_languages, country, fiscal_year_start_month, legal_name, company_start_date, employer_id, domain, sparse, created_datetime, last_update_datetime):
     resp = {}
     sql = (
         '''
-        INSERT INTO intuit.NameValue ([Name], [Value], CompanyInfoId)
-        VALUES (?, ?, ?);
+        INSERT INTO intuit.CompanyInfo (RealmId, Id, SyncToken, CompanyName, SupportedLanguages, Country, FiscalYearStartMonth, LegalName, CompanyStartDate, EmployerId, Domain, Sparse, CreatedTime, LastUpdatedTime)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?);
         '''
     )
     try:
         cnxn = database_pers.open_db_cnxn()
         cnxn.autocommit = False
         crsr = cnxn.cursor()
-        count = crsr.execute(sql, name, value, company_info_id).rowcount
+        count = crsr.execute(sql, realm_id, id, sync_token, company_name, supported_languages, country, fiscal_year_start_month, legal_name, company_start_date, employer_id, domain, sparse, created_datetime, last_update_datetime).rowcount
         if count == 1:
             resp = {
-                "message": "Intuit Name Value has been successfully created.",
+                "message": "Intuit Company Info has been successfully created.",
                 "rowcount": count,
                 "status_code": 201
             }
         else:
             resp = {
-                "message": "Intuit Name Value has NOT been successfully created.",
+                "message": "Intuit Company Info has NOT been successfully created.",
                 "rowcount": 0,
                 "status_code": 501
             }
@@ -34,7 +34,7 @@ def create_name_value_pair(name, value, company_info_id):
         resp = {
             "message": err["description"],
             "rowcount": 0,
-            "status_code": 500
+            "status_code": 501
         }
     else:
         cnxn.commit()
@@ -43,19 +43,19 @@ def create_name_value_pair(name, value, company_info_id):
         return resp
 
 
-def read_name_value_pair_by_name_and_company_id(name, company_info_id):
+def read_company_info_by_id(id):
     resp = {}
     sql = (
         '''
-        SELECT *
-        FROM intuit.NameValue
-        WHERE [Name]=? AND CompanyInfoId=?;
+        SELECT RealmId, Id, SyncToken, CONVERT(datetime2, LastUpdatedTime, 1)
+        FROM intuit.CompanyInfo
+        WHERE [Id]=?;
         '''
     )
     try:
         cnxn = database_pers.open_db_cnxn()
         crsr = cnxn.cursor()
-        row = crsr.execute(sql, name, company_info_id).fetchone()
+        row = crsr.execute(sql, id).fetchone()
         if row:
             resp = {
                 "message": row,
@@ -64,7 +64,7 @@ def read_name_value_pair_by_name_and_company_id(name, company_info_id):
             }
         else:
             resp = {
-                "message": "Intuit Name Value was not found.",
+                "message": "Intuit Company Info was not found.",
                 "rowcount": 0,
                 "status_code": 501
             }
@@ -79,29 +79,29 @@ def read_name_value_pair_by_name_and_company_id(name, company_info_id):
         return resp
 
 
-def update_value_by_name_and_company_id(name, value, company_info_id):
+def update_company_info(realm_id, id, sync_token, company_name, supported_languages, country, fiscal_year_start_month, legal_name, company_start_date, employer_id, domain, sparse, created_datetime, last_update_datetime):
     resp = {}
     sql = (
         '''
-        UPDATE intuit.NameValue
-        SET [Value]=?
-        WHERE [Name]=? AND CompanyInfoId=?;
+        UPDATE intuit.CompanyInfo
+        SET Id=?, SyncToken=?, CompanyName=?, SupportedLanguages=?, Country=?, FiscalYearStartMonth=?, LegalName=?, CompanyStartDate=?, EmployerId=?, Domain=?, Sparse=?, CreatedTime=?, LastUpdatedTime=?
+        WHERE RealmId=?;
         '''
     )
     try:
         cnxn = database_pers.open_db_cnxn()
         cnxn.autocommit = False
         crsr = cnxn.cursor()
-        count = crsr.execute(sql, value, name, company_info_id).rowcount
+        count = crsr.execute(sql, id, sync_token, company_name, supported_languages, country, fiscal_year_start_month, legal_name, company_start_date, employer_id, domain, sparse, created_datetime, last_update_datetime, realm_id).rowcount
         if count == 1:
             resp = {
-                "message": "Intuit Name Value has been successfully updated.",
+                "message": "Intuit Company Info has been successfully updated.",
                 "rowcount": count,
                 "status_code": 201
             }
         else:
             resp = {
-                "message": "Intuit Name Value has NOT been successfully updated.",
+                "message": "Intuit Company Info has NOT been successfully updated.",
                 "rowcount": 0,
                 "status_code": 501
             }
@@ -111,7 +111,7 @@ def update_value_by_name_and_company_id(name, value, company_info_id):
         resp = {
             "message": err["description"],
             "rowcount": 0,
-            "status_code": 500
+            "status_code": 501
         }
     else:
         cnxn.commit()

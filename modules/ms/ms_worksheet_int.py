@@ -11,7 +11,7 @@ import requests
 
 from datetime import datetime
 from helper import function_help as hp
-from integrations import ms_upload_new_file
+from integrations.ms import ms_upload_new_file
 from modules.project import pers_project
 from modules.sub_cost_code import pers_sub_cost_code
 from persistence import (

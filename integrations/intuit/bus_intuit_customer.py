@@ -15,7 +15,7 @@ from datetime import datetime
 import json
 import requests
 
-from integrations.intuit_customer_int import (
+from integrations.intuit.intuit_customer_int import (
     query_intuit_customer_count_info,
     query_intuit_customer_info
 )

@@ -43,7 +43,7 @@ def list_bills_route():
         _vendors = get_vendors_bus_response.data
     print(get_vendors_bus_response.message)
 
-    return render_template('list.html', bills=_bills, vendors=_vendors)
+    return render_template('bill_list.html', bills=_bills, vendors=_vendors)
 
 
 @web_bill_bp.route('/bill/create', methods=['GET'])
@@ -74,7 +74,7 @@ def create_bill_route():
         _projects = []
 
     return render_template(
-        'create.html',
+        'bill_create.html',
         vendors=_vendors,
         sub_cost_codes=_sub_cost_codes,
         projects=_projects,
@@ -154,7 +154,7 @@ def view_bill_route(bill_guid):
         _projects = []
 
     return render_template(
-        'view.html',
+        'bill_view.html',
         bill=_bill,
         bill_line_items=_bill_line_items,
         bill_line_item_attachments=_bill_line_item_attachments,
@@ -207,7 +207,7 @@ def edit_bill_route(bill_guid):
         _projects = []
 
     return render_template(
-        'edit.html',
+        'bill_edit.html',
         bill=_bill,
         bill_line_items=_bill_line_items,
         vendors=_vendors,

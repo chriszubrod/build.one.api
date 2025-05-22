@@ -1,13 +1,13 @@
 import pyodbc
 
-from . import database_pers
+from .. import database_pers
 
 
-def create_email_address(email_address, company_info_id="", customer_id="") -> dict:
+def create_name_value_pair(name, value, company_info_id):
     resp = {}
     sql = (
         '''
-        INSERT INTO intuit.EmailAddress ([Address], CompanyInfoId, CustomerId)
+        INSERT INTO intuit.NameValue ([Name], [Value], CompanyInfoId)
         VALUES (?, ?, ?);
         '''
     )
@@ -15,16 +15,16 @@ def create_email_address(email_address, company_info_id="", customer_id="") -> d
         cnxn = database_pers.open_db_cnxn()
         cnxn.autocommit = False
         crsr = cnxn.cursor()
-        count = crsr.execute(sql, email_address, company_info_id, customer_id).rowcount
+        count = crsr.execute(sql, name, value, company_info_id).rowcount
         if count == 1:
             resp = {
-                "message": "Intuit Email Address has been successfully created.",
+                "message": "Intuit Name Value has been successfully created.",
                 "rowcount": count,
                 "status_code": 201
             }
         else:
             resp = {
-                "message": "Intuit Email Address has NOT been successfully created.",
+                "message": "Intuit Name Value has NOT been successfully created.",
                 "rowcount": 0,
                 "status_code": 501
             }
@@ -34,26 +34,28 @@ def create_email_address(email_address, company_info_id="", customer_id="") -> d
         resp = {
             "message": err["description"],
             "rowcount": 0,
-            "status_code": 501
+            "status_code": 500
         }
     else:
         cnxn.commit()
+    finally:
+        cnxn.autocommit = True
         return resp
 
 
-def read_email_address_by_company_id(company_id):
+def read_name_value_pair_by_name_and_company_id(name, company_info_id):
     resp = {}
     sql = (
         '''
         SELECT *
-        FROM intuit.EmailAddress
-        WHERE CompanyInfoId=?;        
+        FROM intuit.NameValue
+        WHERE [Name]=? AND CompanyInfoId=?;
         '''
     )
     try:
         cnxn = database_pers.open_db_cnxn()
         crsr = cnxn.cursor()
-        row = crsr.execute(sql, company_id).fetchone()
+        row = crsr.execute(sql, name, company_info_id).fetchone()
         if row:
             resp = {
                 "message": row,
@@ -62,7 +64,7 @@ def read_email_address_by_company_id(company_id):
             }
         else:
             resp = {
-                "message": "Intuit Email Address was not found.",
+                "message": "Intuit Name Value was not found.",
                 "rowcount": 0,
                 "status_code": 501
             }
@@ -77,29 +79,29 @@ def read_email_address_by_company_id(company_id):
         return resp
 
 
-def update_email_address_by_company_id(email_address, company_info_id):
+def update_value_by_name_and_company_id(name, value, company_info_id):
     resp = {}
     sql = (
         '''
-        UPDATE intuit.EmailAddress
-        SET [Address]=?
-        WHERE CompanyInfoId=?;
+        UPDATE intuit.NameValue
+        SET [Value]=?
+        WHERE [Name]=? AND CompanyInfoId=?;
         '''
     )
     try:
         cnxn = database_pers.open_db_cnxn()
         cnxn.autocommit = False
         crsr = cnxn.cursor()
-        count = crsr.execute(sql, email_address, company_info_id).rowcount
+        count = crsr.execute(sql, value, name, company_info_id).rowcount
         if count == 1:
             resp = {
-                "message": "Intuit Email Adddress has been successfully updated.",
+                "message": "Intuit Name Value has been successfully updated.",
                 "rowcount": count,
                 "status_code": 201
             }
         else:
             resp = {
-                "message": "Intuit Email Address has NOT been successfully updated.",
+                "message": "Intuit Name Value has NOT been successfully updated.",
                 "rowcount": 0,
                 "status_code": 501
             }
@@ -109,7 +111,7 @@ def update_email_address_by_company_id(email_address, company_info_id):
         resp = {
             "message": err["description"],
             "rowcount": 0,
-            "status_code": 501
+            "status_code": 500
         }
     else:
         cnxn.commit()

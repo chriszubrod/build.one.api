@@ -1,7 +1,32 @@
+"""
+Module for Microsoft Graph API.
+"""
+
+# python standard library imports
+import json
+import os
+import requests
+import sys
+
+# third party imports
+from flask import Blueprint, redirect, request, jsonify
+
+# local imports
+from utils.config_help import get_secrets, write_secrets
 
 
 
-@app.route('/ms/app/oauth2/authorize', methods=['GET'])
+api_ms_bp = Blueprint('api_ms', __name__, url_prefix='/ms/app')
+
+# Add project root to Python path
+project_root = os.path.realpath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.append(project_root)
+
+# Set secrets.json path
+os.environ['SECRETS_PATH'] = os.path.join(project_root, 'secrets.json')
+
+
+@api_ms_bp.route('/oauth2/authorize', methods=['GET'])
 def authorization():
     """
     Responds to HTTP GET requests to the "/ms/app/oauth2/authorize" route with a redirect.
@@ -14,7 +39,7 @@ def authorization():
     >>> authorization()
     <Response 302 Found>
     """
-    secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    secrets = get_secrets()
     client_id = secrets['ms']['client_id']
     tenant = secrets['ms']['tenant']
     endpoint = str(
@@ -29,7 +54,7 @@ def authorization():
     return redirect(endpoint)
 
 
-@app.route('/ms/app/oauth2/authorize/callback', methods=['GET'])
+@api_ms_bp.route('/oauth2/authorize/callback', methods=['GET'])
 def authorization_callback():
     """
     Responds to HTTP GET requests to the "/ms/app/oauth2/authorize" route with a JSON response.
@@ -42,7 +67,7 @@ def authorization_callback():
     >>> authorization_callback()
     <Response 200 OK>
     """
-    refresh_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    refresh_secrets = get_secrets()
     client_id = refresh_secrets['ms']['client_id']
     tenant = refresh_secrets['ms']['tenant']
     client_secret = refresh_secrets['ms']['client_secret']
@@ -78,7 +103,7 @@ def authorization_callback():
     refresh_secrets['ms']['scope'] = scope
     refresh_secrets['ms']['token_type'] = token_type
 
-    hp.write_profile_secrets(url=SECRETS_URL, secrets=refresh_secrets)
+    write_secrets(secrets=refresh_secrets)
 
     return jsonify(
         {
@@ -87,7 +112,7 @@ def authorization_callback():
     )
 
 
-@app.route('/ms/app/oauth2/refresh_token', methods=['GET'])
+@api_ms_bp.route('/oauth2/refresh_token', methods=['GET'])
 def refresh_token():
     """
     Responds to HTTP POST requests to the "/ms/app/oauth2/refresh_token" route with a JSON response.
@@ -101,7 +126,7 @@ def refresh_token():
     <Response 200 OK>
     """
 
-    refresh_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    refresh_secrets = get_secrets()
     client_id = refresh_secrets['ms']['client_id']
     tenant = refresh_secrets['ms']['tenant']
     client_secret = refresh_secrets['ms']['client_secret']
@@ -135,7 +160,7 @@ def refresh_token():
     refresh_secrets['ms']['scope'] = scope
     refresh_secrets['ms']['token_type'] = token_type
 
-    hp.write_profile_secrets(url=SECRETS_URL, secrets=refresh_secrets)
+    write_secrets(secrets=refresh_secrets)
 
     return jsonify(
         {
@@ -144,7 +169,7 @@ def refresh_token():
     )
 
 
-@app.route('/ms/app/profile', methods=['GET'])
+@api_ms_bp.route('/profile', methods=['GET'])
 def get_profile():
     """
     Responds to HTTP GET requests to the "/ms/app/profile" route with a JSON response containing
@@ -158,7 +183,7 @@ def get_profile():
     >>> get_profile()
     <Response 200 OK>
     """
-    profile_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    profile_secrets = get_secrets()
 
     access_token = profile_secrets['ms']['access_token']
     headers = {
@@ -174,7 +199,7 @@ def get_profile():
     )
 
 
-@app.route('/ms/app/sites', methods=['GET'])
+@api_ms_bp.route('/sites', methods=['GET'])
 def get_sites():
     """
     Responds to HTTP GET requests to the "/ms/app/sites" route with a JSON response containing
@@ -188,7 +213,7 @@ def get_sites():
     >>> get_sites()
     <Response 200 OK>
     """
-    sites_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    sites_secrets = get_secrets()
 
     access_token = sites_secrets['ms']['access_token']
     headers = {
@@ -204,7 +229,7 @@ def get_sites():
     )
 
 
-@app.route('/ms/app/sites/<site_id>/drive/root/children', methods=['GET'])
+@api_ms_bp.route('/sites/<site_id>/drive/root/children', methods=['GET'])
 def get_sites_drive_root_children(site_id):
     """
     Responds to HTTP GET requests to the "/ms/app/sites/<site_id>/drive/root/children" route with a JSON response containing
@@ -218,7 +243,7 @@ def get_sites_drive_root_children(site_id):
     >>> get_sites_drive_root_children()
     <Response 200 OK>
     """
-    sites_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    sites_secrets = get_secrets()
 
     access_token = sites_secrets['ms']['access_token']
     headers = {
@@ -234,7 +259,7 @@ def get_sites_drive_root_children(site_id):
     )
 
 
-@app.route('/ms/app/sites/rogersbuildllc', methods=['GET'])
+@api_ms_bp.route('/sites/rogersbuildllc', methods=['GET'])
 def get_site_by_id():
     """
     Responds to HTTP GET requests to the "/ms/app/sites/" route with a JSON response containing
@@ -248,7 +273,7 @@ def get_site_by_id():
     >>> get_site_by_id()
     <Response 200 OK>
     """
-    sites_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    sites_secrets = get_secrets()
 
     access_token = sites_secrets['ms']['access_token']
     headers = {
@@ -264,7 +289,7 @@ def get_site_by_id():
     )
 
 
-@app.route('/ms/app/groups', methods=['GET'])
+@api_ms_bp.route('/groups', methods=['GET'])
 def get_groups():
     """
     Responds to HTTP GET requests to the "/ms/app/groups" route with a JSON response containing
@@ -278,7 +303,7 @@ def get_groups():
     >>> get_groups()
     <Response 200 OK>
     """
-    groups_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    groups_secrets = get_secrets()
 
     access_token = groups_secrets['ms']['access_token']
     headers = {
@@ -294,7 +319,7 @@ def get_groups():
     )
 
 
-@app.route('/ms/app/drive', methods=['GET'])
+@api_ms_bp.route('/drive', methods=['GET'])
 def get_drive():
     """
     Responds to HTTP GET requests to the "/ms/app/drive" route with a JSON response containing
@@ -308,7 +333,7 @@ def get_drive():
     >>> get_drive()
     <Response 200 OK>
     """
-    drive_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    drive_secrets = get_secrets()
 
     access_token = drive_secrets['ms']['access_token']
     headers = {
@@ -324,7 +349,7 @@ def get_drive():
     )
 
 
-@app.route('/ms/app/drives', methods=['GET'])
+@api_ms_bp.route('/drives', methods=['GET'])
 def get_drives():
     """
     Responds to HTTP GET requests to the "/ms/app/drives" route with a JSON response containing
@@ -338,7 +363,7 @@ def get_drives():
     >>> get_drives()
     <Response 200 OK>
     """
-    drives_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    drives_secrets = get_secrets()
 
     access_token = drives_secrets['ms']['access_token']
     headers = {
@@ -354,7 +379,7 @@ def get_drives():
     )
 
 
-@app.route('/ms/app/drives/<drive_id>', methods=['GET'])
+@api_ms_bp.route('/drives/<drive_id>', methods=['GET'])
 def get_drive_by_id(drive_id):
     """
     Responds to HTTP GET requests to the "/ms/app/drives/<drive_id>" route with a JSON response
@@ -371,7 +396,7 @@ def get_drive_by_id(drive_id):
     >>> get_drive_by_id('12345')
     <Response 200 OK>
     """
-    drives_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    drives_secrets = get_secrets()
 
     access_token = drives_secrets['ms']['access_token']
     headers = {
@@ -387,7 +412,7 @@ def get_drive_by_id(drive_id):
     )
 
 
-@app.route('/ms/app/drives/<drive_id>/root/children', methods=['GET'])
+@api_ms_bp.route('/drives/<drive_id>/root/children', methods=['GET'])
 def get_drive_by_id_root_children(drive_id):
     """
     Responds to HTTP GET requests to the "/ms/app/drive/<drive_id>/root/children" route with a JSON
@@ -401,7 +426,7 @@ def get_drive_by_id_root_children(drive_id):
     >>> get_drive_by_id_root_children()
     <Response 200 OK>
     """
-    drive_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    drive_secrets = get_secrets()
 
     access_token = drive_secrets['ms']['access_token']
     headers = {
@@ -417,7 +442,7 @@ def get_drive_by_id_root_children(drive_id):
     )
 
 
-@app.route('/ms/app/drives/<drive_id>/items/<item_id>', methods=['GET'])
+@api_ms_bp.route('/drives/<drive_id>/items/<item_id>', methods=['GET'])
 def get_item_by_id(drive_id, item_id):
     """
     Responds to HTTP GET requests to the "/ms/app/drives/<drive_id>/items/<item_id>" route with a
@@ -431,7 +456,7 @@ def get_item_by_id(drive_id, item_id):
     >>> get_item_by_id()
     <Response 200 OK>
     """
-    item_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    item_secrets = get_secrets()
 
     access_token = item_secrets['ms']['access_token']
     headers = {
@@ -447,12 +472,12 @@ def get_item_by_id(drive_id, item_id):
     )
 
 
-@app.route('/ms/app/drives/<drive_id>/items/<item_id>/children', methods=['GET'])
+@api_ms_bp.route('/drives/<drive_id>/items/<item_id>/children', methods=['GET'])
 def get_drive_items_children(drive_id, item_id):
     """Gets children items for a specific drive item."""
     try:
         # Get access token from secrets
-        secrets = hp.read_profile_secrets(url=SECRETS_URL)
+        secrets = get_secrets()
         access_token = secrets['ms']['access_token']
 
         headers = {
@@ -482,7 +507,7 @@ def get_drive_items_children(drive_id, item_id):
         }
 
 
-@app.route('/ms/app/drives/<drive_id>/items/<item_id>/workbook', methods=['GET'])
+@api_ms_bp.route('/drives/<drive_id>/items/<item_id>/workbook', methods=['GET'])
 def get_workbook(drive_id, item_id):
     """
     Responds to HTTP GET requests to the "/ms/app/drives/<drive_id>/items/<item_id>/workbook"
@@ -500,7 +525,7 @@ def get_workbook(drive_id, item_id):
     >>> get_workbook('12345', '67890')
     <Response 200 OK>
     """
-    workbook_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    workbook_secrets = get_secrets()
 
     access_token = workbook_secrets['ms']['access_token']
     headers = {
@@ -516,10 +541,10 @@ def get_workbook(drive_id, item_id):
     )
 
 
-@app.route('/ms/app/sites/<site_id>/drive/items/<item_id>/workbook/createSession', methods=['GET'])
+@api_ms_bp.route('/sites/<site_id>/drive/items/<item_id>/workbook/createSession', methods=['GET'])
 def get_persistent_session(site_id, item_id):
 
-    profile_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    profile_secrets = get_secrets()
 
     access_token = profile_secrets['ms']['access_token']
     headers = {
@@ -567,17 +592,17 @@ def get_persistent_session(site_id, item_id):
 
     profile_secrets[item_id] = sesh
 
-    hp.write_profile_secrets(url=SECRETS_URL, secrets=profile_secrets)
+    write_secrets(secrets=profile_secrets)
 
     return jsonify(sesh)
 
 
-@app.route('/ms/app/sites/<site_id>/drive/items/<item_id>/workbook/refreshSession', methods=['GET'])
+@api_ms_bp.route('/sites/<site_id>/drive/items/<item_id>/workbook/refreshSession', methods=['GET'])
 def refresh_session(site_id, item_id):
 
     profile_secrets = None
 
-    profile_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    profile_secrets = get_secrets()
 
     access_token = profile_secrets['ms']['access_token']
     headers = {
@@ -600,7 +625,7 @@ def refresh_session(site_id, item_id):
     return resp.json()
 
 
-@app.route('/ms/app/drive/items/<item_id>/workbook/closeSession', methods=['GET'])
+@api_ms_bp.route('/drive/items/<item_id>/workbook/closeSession', methods=['GET'])
 def close_session(item_id):
 
     profile_secrets = None
@@ -619,8 +644,7 @@ def close_session(item_id):
     if resp.status_code == 204:
         if item_id in profile_secrets:
             del profile_secrets[item_id]
-            with open(SECRETS_URL, 'w', encoding='utf-8') as wf:
-                json.dump(profile_secrets, wf, ensure_ascii=False, indent=4)
+            write_secrets(secrets=profile_secrets)
 
         return jsonify(
             {
@@ -633,10 +657,10 @@ def close_session(item_id):
     return resp.json()
 
 
-@app.route('/ms/app/sites/<site_id>/drive/items/<item_id>/workbook/worksheets', methods=['GET'])
+@api_ms_bp.route('/sites/<site_id>/drive/items/<item_id>/workbook/worksheets', methods=['GET'])
 def get_workbook_worksheets(site_id, item_id):
 
-    profile_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    profile_secrets = get_secrets()
 
     access_token = profile_secrets['ms']['access_token']
     headers = {
@@ -654,10 +678,10 @@ def get_workbook_worksheets(site_id, item_id):
     )
 
 
-@app.route('/ms/app/sites/<site_id>/drive/items/<item_id>/workbook/worksheets/<worksheet_id>', methods=['GET'])
+@api_ms_bp.route('/sites/<site_id>/drive/items/<item_id>/workbook/worksheets/<worksheet_id>', methods=['GET'])
 def get_workbook_worksheet(site_id, item_id, worksheet_id):
     # https://graph.microsoft.com/v1.0/sites/(''imviokguifqdnyjvkb9idegwrhi.sharepoint.com%2C17981139-624e-48b0-b1ca-36a21ab8e963%2C1ae020ca-f72c-4665-98df-5a4a7b397436'')/drive/items(''017ZKYN57RHILAEB2UNJD3OOZWEQ7X4Q5Z'')/workbook/worksheets(%27%7B2E248848-EA5A-4153-B412-738524EBC991%7D%27)
-    profile_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    profile_secrets = get_secrets()
 
     access_token = profile_secrets['ms']['access_token']
     headers = {
@@ -674,10 +698,10 @@ def get_workbook_worksheet(site_id, item_id, worksheet_id):
     )
 
 
-@app.route('/ms/app/sites/<site_id>/drive/items/<item_id>/workbook/worksheets/<worksheet_id>/usedRange', methods=['GET'])
+@api_ms_bp.route('/sites/<site_id>/drive/items/<item_id>/workbook/worksheets/<worksheet_id>/usedRange', methods=['GET'])
 def get_workbook_worksheet_used_range(site_id, item_id, worksheet_id):
 
-    profile_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    profile_secrets = get_secrets()
 
     access_token = profile_secrets['ms']['access_token']
     headers = {
@@ -694,10 +718,10 @@ def get_workbook_worksheet_used_range(site_id, item_id, worksheet_id):
     )
 
 
-@app.route('/ms/app/sites/<site_id>/drive/items/<item_id>/workbook/worksheets/<worksheet_id>/range/get', methods=['GET'])
+@api_ms_bp.route('/sites/<site_id>/drive/items/<item_id>/workbook/worksheets/<worksheet_id>/range/get', methods=['GET'])
 def get_workbook_worksheet_range(site_id, item_id, worksheet_id):
 
-    profile_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    profile_secrets = get_secrets()
 
     access_token = profile_secrets['ms']['access_token']
     headers = {
@@ -710,10 +734,10 @@ def get_workbook_worksheet_range(site_id, item_id, worksheet_id):
     return resp.json()
 
 
-@app.route('/ms/app/sites/<site_id>/drive/items/<item_id>/workbook/worksheets/<worksheet_id>/range/insert', methods=['GET'])
+@api_ms_bp.route('/sites/<site_id>/drive/items/<item_id>/workbook/worksheets/<worksheet_id>/range/insert', methods=['GET'])
 def insert_workbook_worksheet_range(site_id, item_id, worksheet_id):
 
-    profile_secrets = hp.read_profile_secrets(url=SECRETS_URL)
+    profile_secrets = get_secrets()
 
     access_token = profile_secrets['ms']['access_token']
     headers = {
@@ -728,18 +752,3 @@ def insert_workbook_worksheet_range(site_id, item_id, worksheet_id):
     resp = requests.post(url=url, data=json.dumps(data), headers=headers, timeout=10)
 
     return resp.json()
-
-
-@app.route('/ms/app/drive/map', methods=['GET'])
-def map_drive():
-    """Maps the entire drive structure using Microsoft Graph API."""
-    # call run_vendor_process in business layer
-    bus_ms_drive_map_resp = bus_ms_drive.run_map_process(SECRETS_URL)
-
-    # return json of message, rowcount and status_code from response.
-    # flask will return dict as json format.
-    return {
-        "message": bus_ms_drive_map_resp.get('message'),
-        "rowcount": bus_ms_drive_map_resp.get('rowcount'),
-        "status_code": bus_ms_drive_map_resp.get('status_code')
-    }

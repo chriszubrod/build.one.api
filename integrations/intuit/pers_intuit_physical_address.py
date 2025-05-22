@@ -1,31 +1,31 @@
 
 import pyodbc
 
-from . import database_pers
+from .. import database_pers
 
 
-def create_web_site_address(uri, company_info_id):
+def create_physical_address(id, postal_code, city, country, line_one, country_sub_division_code, company_info_id):
     resp = {}
     sql = (
         '''
-        INSERT INTO intuit.WebSiteAddress (URI, CompanyInfoId)
-        VALUES (?, ?);
+        INSERT INTO intuit.PhysicalAddress (Id, PostalCode, City, Country, Line1, CountrySubDivisionCode, CompanyInfoId)
+        VALUES (?, ?, ?, ?, ?, ?, ?);
         '''
     )
     try:
         cnxn = database_pers.open_db_cnxn()
         cnxn.autocommit = False
         crsr = cnxn.cursor()
-        count = crsr.execute(sql, uri, company_info_id).rowcount
+        count = crsr.execute(sql, id, postal_code, city, country, line_one, country_sub_division_code, company_info_id).rowcount
         if count == 1:
             resp = {
-                "message": "Intuit Web Site Address has been successfully created.",
+                "message": "Intuit Company Address has been successfully created.",
                 "rowcount": count,
                 "status_code": 201
             }
         else:
             resp = {
-                "message": "Intuit Web Site Address has NOT been successfully created.",
+                "message": "Intuit Company Address has NOT been successfully created.",
                 "rowcount": 0,
                 "status_code": 501
             }
@@ -44,19 +44,19 @@ def create_web_site_address(uri, company_info_id):
         return resp
 
 
-def read_web_site_address_by_company_id(company_id):
+def read_physical_address_by_id_and_company_id(id, company_id):
     resp = {}
     sql = (
         '''
         SELECT *
-        FROM intuit.WebSiteAddress
-        WHERE CompanyInfoId=?;        
+        FROM intuit.PhysicalAddress
+        WHERE Id=? AND CompanyInfoId=?;
         '''
     )
     try:
         cnxn = database_pers.open_db_cnxn()
         crsr = cnxn.cursor()
-        row = crsr.execute(sql, company_id).fetchone()
+        row = crsr.execute(sql, id, company_id).fetchone()
         if row:
             resp = {
                 "message": row,
@@ -65,7 +65,7 @@ def read_web_site_address_by_company_id(company_id):
             }
         else:
             resp = {
-                "message": "Intuit Web Site Address was not found.",
+                "message": "Intuit Company Address was not found.",
                 "rowcount": 0,
                 "status_code": 501
             }
@@ -80,29 +80,29 @@ def read_web_site_address_by_company_id(company_id):
         return resp
 
 
-def update_web_site_address_by_company_id(uri, company_info_id):
+def update_physical_address_by_id_and_company_id(id, postal_code, city, country, line_one, country_sub_division_code, company_info_id):
     resp = {}
     sql = (
         '''
-        UPDATE intuit.WebSiteAddress
-        SET URI=?
-        WHERE CompanyInfoId=?;
+        UPDATE intuit.PhysicalAddress
+        SET PostalCode=?, City=?, Country=?, Line1=?, CountrySubDivisionCode=?
+        WHERE Id=? AND CompanyInfoId=?;
         '''
     )
     try:
         cnxn = database_pers.open_db_cnxn()
         cnxn.autocommit = False
         crsr = cnxn.cursor()
-        count = crsr.execute(sql, uri, company_info_id).rowcount
+        count = crsr.execute(sql, postal_code, city, country, line_one, country_sub_division_code, id, company_info_id).rowcount
         if count == 1:
             resp = {
-                "message": "Intuit Web Site Adddress has been successfully updated.",
+                "message": "Intuit Company Adddress has been successfully updated.",
                 "rowcount": count,
                 "status_code": 201
             }
         else:
             resp = {
-                "message": "Intuit Web Site Address has NOT been successfully updated.",
+                "message": "Intuit Company Address has NOT been successfully updated.",
                 "rowcount": 0,
                 "status_code": 501
             }

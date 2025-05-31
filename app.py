@@ -1,9 +1,13 @@
+# python standard library imports
+import os
+
 # third party imports
 from flask import (
     jsonify,
     Flask,
     render_template
 )
+from flask_wtf.csrf import CSRFProtect
 
 
 # local imports
@@ -68,9 +72,39 @@ from modules.vendor import (
     web_vendor
 )
 
+from utils.config_help import get_secrets, write_secrets, update_secrets
+
+from integrations.ms.auth import api_ms_auth
+
 # initialize the app
 app = Flask(__name__)
-app.secret_key = '1df3a3s1df65a1sd6f4asdfa1sd3f132sd1f3as1df56asd65fasd'
+
+# CSRF Setup
+csrf = CSRFProtect(app)
+csrf.exempt(api_ms_auth.api_ms_auth_bp)
+
+# Secure session cookie setup
+app.config.update(
+    {
+        'SECRET_KEY': '1df3a3s1df65a1sd6f4asdfa1sd3f132sd1f3as1df56asd65fasd',
+        'SERVER_NAME': 'localhost:8000',
+        'SESSION_COOKIE_DOMAIN': 'localhost',
+        'SESSION_COOKIE_SECURE': False, # set to true if using https
+        'SESSION_COOKIE_HTTPONLY': True,
+        'SESSION_COOKIE_SAMESITE': 'Lax'
+    }
+)
+print("FLASK_RUN_HOST:", os.getenv('FLASK_RUN_HOST'))
+
+# Load secrets at app startup
+try:
+    app.config['SECRETS'] = get_secrets()
+except Exception as e:
+    print(f"Warning: Could not load secrets.json: {str(e)}")
+    app.config['SECRETS'] = {}
+
+# Make update_secrets available globally
+app.update_secrets = update_secrets
 
 # register blueprints
 app.register_blueprint(api_address.api_address_bp)
@@ -119,10 +153,25 @@ app.register_blueprint(api_vendor.api_vendor_bp)
 app.register_blueprint(web_vendor.web_vendor_bp)
 
 
+# integration blueprints
+app.register_blueprint(api_ms_auth.api_ms_auth_bp)
+
+
+
+
+
+
+
+
 @app.route('/')
 def index():
-    return render_template('dashboard_view.html')
+    return "pong", 200
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(
+        host='localhost',
+        port=5000,
+        debug=True,
+        use_reloader=False
+        )

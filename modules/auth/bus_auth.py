@@ -110,6 +110,7 @@ def post_auth_login(
 
     # Get user data from response
     _user_data = validate_username_resp.data
+    #print(f"User data: {_user_data}")
 
     # Authenticate user
     verify_password_resp = auth_help.verify_password(
@@ -117,6 +118,7 @@ def post_auth_login(
         hashed_password=_user_data.password_hash
     )
     if not verify_password_resp['success']:
+        print(f"Verify password response: {verify_password_resp}")
         return BusinessResponse(
             data=verify_password_resp['data'],
             message=verify_password_resp['message'],
@@ -128,17 +130,18 @@ def post_auth_login(
     # Generate token
     generate_token_resp = token_help.generate_token()
     if not generate_token_resp['success']:
+        print(f"Generate token response: {generate_token_resp}")
         return BusinessResponse(
-            data=generate_token_resp['data'],
-            message=generate_token_resp['message'],
-            status_code=generate_token_resp['status_code'],
-            success=generate_token_resp['success'],
-            timestamp=generate_token_resp['timestamp']
+            data=generate_token_resp.get('data'),
+            message=generate_token_resp.get('message'),
+            status_code=generate_token_resp.get('status_code'),
+            success=generate_token_resp.get('success'),
+            timestamp=generate_token_resp.get('timestamp')
         )
 
     return BusinessResponse(
         data={
-            'token': generate_token_resp['data'],
+            'token': generate_token_resp.get('data'),
             'username': username,
             'user_id': _user_data.id
         },

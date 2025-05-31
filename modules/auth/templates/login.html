@@ -10,79 +10,28 @@
     <div class="max-w-md mx-auto mt-16 p-8 bg-white rounded-xl shadow-lg">
         <h1 class="text-2xl font-bold mb-6 text-center">Login</h1>
         <div id="loginError" class="hidden mb-4 p-3 rounded bg-red-100 text-red-700 text-center"></div>
-        <form id="loginForm" class="space-y-6" autocomplete="off">
+        <form id="loginForm" class="space-y-6" autocomplete="off" method="POST">
+            {{ form.csrf_token }}
             <div>
-                <label for="username" class="block font-semibold mb-1">Username</label>
-                <input type="text" id="username" name="username" class="border p-2 rounded w-full" autocomplete="off" required>
+                <label for="username" class="block font-semibold mb-1">
+                    {{ form.username.label.text }}
+                </label>
+                {{ form.username(size=32, autofocus=True, autocomplete="off", class="border p-2 rounded w-full") }}
             </div>
             <div>
-                <label for="password" class="block font-semibold mb-1">Password</label>
-                <input type="password" id="password" name="password" class="border p-2 rounded w-full" autocomplete="off" required>
+                <label for="password" class="block font-semibold mb-1">
+                    {{ form.password.label.text }}
+                </label>
+                {{ form.password(size=32, autocomplete="off", class="border p-2 rounded w-full") }}
             </div>
-            <button type="submit" class="w-full bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Login</button>
+            {{ form.submit(class="w-full bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700") }}
         </form>
         <p class="mt-4 text-center text-sm text-gray-600">
             Need an account? <a href="{{ url_for('web_auth.register_route') }}" class="text-blue-600 hover:underline">Register here</a>
         </p>
     </div>
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            const loginForm = document.getElementById('loginForm');
-            loginForm.addEventListener('submit', function(event) {
-                event.preventDefault();
-                const username = document.getElementById('username').value;
-                const password = document.getElementById('password').value;
-                const errorDiv = document.getElementById('loginError');
-                fetch('/api/post/auth/login', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        username: username,
-                        password: password
-                    })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        // Create and submit a hidden form to the /login route
-                        const form = document.createElement('form');
-                        form.method = 'POST';
-                        form.action = '/login';
-                        form.style.display = 'none';
-
-                        const tokenInput = document.createElement('input');
-                        tokenInput.type = 'hidden';
-                        tokenInput.name = 'token';
-                        tokenInput.value = data.data.token;
-                        form.appendChild(tokenInput);
-
-                        const usernameInput = document.createElement('input');
-                        usernameInput.type = 'hidden';
-                        usernameInput.name = 'username';
-                        usernameInput.value = data.data.username;
-                        form.appendChild(usernameInput);
-
-                        const userIdInput = document.createElement('input');
-                        userIdInput.type = 'hidden';
-                        userIdInput.name = 'user_id';
-                        userIdInput.value = data.data.user_id;
-                        form.appendChild(userIdInput);
-
-                        document.body.appendChild(form);
-                        form.submit();
-                    } else {
-                        errorDiv.textContent = data.message || 'Login failed';
-                        errorDiv.classList.remove('hidden');
-                    }
-                })
-                .catch(error => {
-                    errorDiv.textContent = 'An error occurred during login';
-                    errorDiv.classList.remove('hidden');
-                });
-            });
-        });
+        
     </script>
 </body>
 </html>

@@ -18,10 +18,6 @@
         <form id="user-edit-form" class="space-y-6">
             <div class="grid grid-cols-1 gap-4">
                 <div>
-                    <label class="block font-semibold mb-1">Username</label>
-                    <input name="username" value="{{ user.username }}" class="border p-2 rounded w-full" required>
-                </div>
-                <div>
                     <label class="block font-semibold mb-1">GUID</label>
                     <input value="{{ user.guid }}" class="border p-2 rounded w-full bg-gray-100" readonly>
                 </div>
@@ -32,6 +28,10 @@
                 <div>
                     <label class="block font-semibold mb-1">Modified</label>
                     <input value="{{ user.modified_datetime }}" class="border p-2 rounded w-full bg-gray-100" readonly>
+                </div>
+                <div>
+                    <label class="block font-semibold mb-1">Username</label>
+                    <input name="username" value="{{ user.username }}" class="border p-2 rounded w-full" required>
                 </div>
             </div>
             <button type="submit" class="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600">Update User</button>

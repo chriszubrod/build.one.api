@@ -14,19 +14,65 @@ from flask import (
     session,
     url_for
 )
+from flask_wtf import FlaskForm
+from wtforms import StringField, PasswordField, SubmitField
+from wtforms.validators import DataRequired, EqualTo, Length
 
 # local imports
-from modules.module import bus_module
+from modules.auth import bus_auth
+from modules.user import bus_user
 from utils.auth_help import requires_auth
+from utils.token_help import generate_token
 
 
 web_auth_bp = Blueprint('web_auth', __name__, template_folder='templates')
 
 
-@web_auth_bp.route('/register', methods=['GET'])
+class RegisterForm(FlaskForm):
+    username = StringField('Username', validators=[DataRequired(), Length(min=3)])
+    password = PasswordField('Password', validators=[DataRequired(), Length(min=6)])
+    confirm_password = PasswordField('Confirm Password', validators=[DataRequired(), EqualTo('password')])
+    submit = SubmitField('Register')
+
+
+class LoginForm(FlaskForm):
+    username = StringField('Username', validators=[DataRequired()])
+    password = PasswordField('Password', validators=[DataRequired()])
+    submit = SubmitField('Login')
+
+
+@web_auth_bp.route('/register', methods=['GET', 'POST'])
 def register_route():
-    """Returns the register route."""
-    return render_template('register.html')
+    """
+    Handles the user registration.
+    Handle the web session setup after API registration.
+    or
+    Returns the register route.
+    """
+    form = RegisterForm()
+    if form.validate_on_submit():
+        username = form.username.data
+        password = form.password.data
+        confirm_password = form.confirm_password.data
+
+        bus_auth_resp = bus_auth.post_auth_registration(username, password, confirm_password)
+        if bus_auth_resp.success:
+
+            _token = generate_token()
+            if _token.get('success'):
+                session['token'] = _token.get('data')
+
+            _user = bus_user.authorize_user(username)
+            if _user.success:
+                _user_data = _user.data
+                session['user'] = _user_data['user']
+                print(f"Session: {session}")
+
+                return redirect(url_for('web_dashboard.dashboard_route'))
+
+        return bus_auth_resp.message, bus_auth_resp.status_code
+
+    return render_template('register.html', form=form)
 
 
 @web_auth_bp.route('/login', methods=['GET', 'POST'])
@@ -36,38 +82,36 @@ def login_route():
     or
     Returns the login route
     """
-    # If request method is POST, handle web session setup
-    if request.method == 'POST':
-        try:
-            # Get data from the form
-            token = request.form.get('token')
-            username = request.form.get('username')
-            user_id = request.form.get('user_id')
+    form = LoginForm()
+    if form.validate_on_submit():
+        username = form.username.data
+        password = form.password.data
 
-            if not all([token, username, user_id]):
-                return redirect(url_for('auth_web.login_route'))
+        bus_auth_resp = bus_auth.post_auth_login(username, password)
+        if bus_auth_resp.success:
 
-            # Set up session
-            session.clear()
+            _token = generate_token()
+            if _token.get('success'):
+                session['token'] = _token.get('data')
 
-            # Add session variables
-            session['logged_in'] = True
-            session['token'] = token
-            session['username'] = username
-            session['user_id'] = user_id
+            _user = bus_user.authorize_user(username)
+            if _user.success:
+                _user_data = _user.data
+                session['user'] = _user_data['user']
+                print(f"Session: {session}")
 
-            return redirect(url_for('web_dashboard.dashboard_route'))
+                return redirect(url_for('web_dashboard.dashboard_route'))
 
-        except Exception:
-            return redirect(url_for('web_auth.login_route'))
+        return bus_auth_resp.message, bus_auth_resp.status_code
 
-    # If request method is GET, return the login route
-    return render_template('login.html')
+    return render_template('login.html', form=form)
 
 
 @web_auth_bp.route('/logout', methods=['GET'])
-@requires_auth()
 def logout_route():
-    """Logs out the user."""
+    """
+    Logs out the user.
+    Clears the session and redirects to the login route.
+    """
     session.clear()
     return redirect(url_for('web_auth.login_route'))

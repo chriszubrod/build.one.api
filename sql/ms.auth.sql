@@ -11,9 +11,120 @@ CREATE TABLE ms.Auth (
 	[ExtExpiresIn] INT NULL,
 	[RefreshToken] NVARCHAR(MAX) NULL,
 	[Scope] NVARCHAR(MAX) NULL,
-    [TokenType] NVARCHAR(MAX) NULL
+    [TokenType] NVARCHAR(MAX) NULL,
+	[UserId] INT NULL
 );
 
 DROP TABLE ms.Auth;
 
 SELECT * FROM ms.Auth;
+
+ALTER TABLE ms.Auth
+ADD [UserId] INT NULL;
+
+
+
+DROP PROCEDURE IF EXISTS CreateMsAuth;
+
+CREATE PROCEDURE CreateMsAuth
+	@CreatedDatetime DATETIMEOFFSET,
+	@ModifiedDatetime DATETIMEOFFSET,
+	@ClientId NVARCHAR(MAX),
+	@Tenant NVARCHAR(MAX),
+	@ClientSecret NVARCHAR(255),
+	@AccessToken NVARCHAR(MAX),
+	@ExpiresIn INT,
+	@ExtExpiresIn INT,
+	@RefreshToken NVARCHAR(MAX),
+	@Scope NVARCHAR(MAX),
+	@TokenType NVARCHAR(MAX),
+	@UserId INT
+AS
+BEGIN
+	BEGIN TRANSACTION;
+
+	-- Insert a new record into the Auth table
+	INSERT INTO ms.Auth (CreatedDatetime, ModifiedDatetime, ClientId, Tenant, ClientSecret, AccessToken, ExpiresIn, ExtExpiresIn, RefreshToken, Scope, TokenType, UserId)
+	VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime), @ClientId, @Tenant, @ClientSecret, @AccessToken, @ExpiresIn, @ExtExpiresIn, @RefreshToken, @Scope, @TokenType, @UserId);
+
+	COMMIT TRANSACTION;
+END;
+
+
+DROP PROCEDURE IF EXISTS ReadMsAuthByUserId;
+
+CREATE PROCEDURE ReadMsAuthByUserId
+	@UserId INT
+AS
+BEGIN
+	BEGIN TRANSACTION;
+
+	-- Select records from the Auth table by UserId
+	SELECT
+		[Id],
+		[GUID],
+		CAST([CreatedDatetime], DATETIMEOFFSET) AS CreatedDatetime,
+		CAST([ModifiedDatetime], DATETIMEOFFSET) AS ModifiedDatetime,
+		[ClientId],
+		[Tenant],
+		[ClientSecret],
+		[AccessToken],
+		[ExpiresIn],
+		[ExtExpiresIn],
+		[RefreshToken],
+		[Scope],
+		[TokenType],
+		[UserId]
+	FROM ms.Auth
+	WHERE UserId = @UserId;
+
+	COMMIT TRANSACTION;
+END;
+
+
+
+
+
+
+
+DROP PROCEDURE IF EXISTS UpdateMsAuthById;
+
+CREATE PROCEDURE UpdateMsAuthById
+	@Id INT,
+	@GUID UNIQUEIDENTIFIER,
+	@CreatedDatetime DATETIMEOFFSET,
+	@ModifiedDatetime DATETIMEOFFSET,
+	@ClientId NVARCHAR(MAX),
+	@Tenant NVARCHAR(MAX),
+	@ClientSecret NVARCHAR(255),
+	@AccessToken NVARCHAR(MAX),
+	@ExpiresIn INT,
+	@ExtExpiresIn INT,
+	@RefreshToken NVARCHAR(MAX),
+	@Scope NVARCHAR(MAX),
+	@TokenType NVARCHAR(MAX),
+	@UserId INT
+AS
+BEGIN
+	BEGIN TRANSACTION;
+
+	-- Update the record in the Auth table by Id
+	UPDATE ms.Auth
+	SET [GUID] = @GUID,
+		[CreatedDatetime] = CONVERT(DATETIMEOFFSET, @CreatedDatetime),
+		[ModifiedDatetime] = CONVERT(DATETIMEOFFSET, @ModifiedDatetime),
+		[ClientId] = @ClientId,
+		[Tenant] = @Tenant,
+		[ClientSecret] = @ClientSecret,
+		[AccessToken] = @AccessToken,
+		[ExpiresIn] = @ExpiresIn,
+		[ExtExpiresIn] = @ExtExpiresIn,
+		[RefreshToken] = @RefreshToken,
+		[Scope] = @Scope,
+		[TokenType] = @TokenType,
+		[UserId] = @UserId
+	WHERE [Id] = @Id;
+
+	COMMIT TRANSACTION;
+END;
+

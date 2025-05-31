@@ -73,24 +73,27 @@
         </ul>
 
         <h1 class="text-2xl font-bold mb-4">View Integrations</h1>
+
         <h3 class="text-lg font-semibold">Microsoft 365</h3>
         <ul class="divide-y divide-gray-200 bg-gray-50 rounded-lg shadow p-6">
             <li class="py-4 flex flex-col sm:flex-row sm:items-center">
                 <span class="font-semibold w-32">Client ID:</span>
-                <span class="ml-2 text-gray-800">{{ '.client_id' }}</span>
+                <span class="ml-2 text-gray-800">{{ ms_auth.client_id }}</span>
             </li>
             <li class="py-4 flex flex-col sm:flex-row sm:items-center">
                 <span class="font-semibold w-32">Tenant:</span>
-                <span class="ml-2 text-gray-800">{{ '.tenant' }}</span>
+                <span class="ml-2 text-gray-800">{{ ms_auth.tenant }}</span>
             </li>
             <li class="py-4 flex flex-col sm:flex-row sm:items-center">
                 <span class="font-semibold w-32">Scope:</span>
-                <span class="ml-2 text-gray-800">{{ '.scope' }}</span>
+                <span class="ml-2 text-gray-800">{{ ms_auth.scope }}</span>
             </li>
-            <a href="" class="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600 shadow-md">
+            <a href="{{ url_for('api_ms_auth.authorization', next=request.path) }}" class="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600 shadow-md">
                 Edit Microsoft 365
             </a>
         </ul>
+
+        
         <h3 class="text-lg font-semibold">Quickbooks Online Credentials</h3>
         <ul class="divide-y divide-gray-200 bg-gray-50 rounded-lg shadow p-6">
             <li class="py-4 flex flex-col sm:flex-row sm:items-center">

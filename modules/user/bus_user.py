@@ -126,17 +126,18 @@ def post_user(submission_datetime, username, password, role_guid, is_active) -> 
     )
 
 
-def authorize_user(email: str) -> BusinessResponse:
+def authorize_user(username: str) -> BusinessResponse:
     """
     Authorizes a user.
     """
     # Get user from database.
-    _user = pers_user.read_user_by_email(email)
-    if not isinstance(_user, SuccessResponse):
+    _user = pers_user.read_user_by_username(username)
+    if not _user.success:
         return BusinessResponse(
             success=False,
             message=_user.message,
-            status_code=500
+            status_code=500,
+            timestamp=datetime.now(tz.tzlocal())
         )
 
     # Check if the user is active.
@@ -145,16 +146,17 @@ def authorize_user(email: str) -> BusinessResponse:
         return BusinessResponse(
             success=False,
             message="User is not active.",
-            status_code=400
+            status_code=400,
+            timestamp=datetime.now(tz.tzlocal())
         )
 
     # Get the user role.
     _user_role = pers_role.read_role_by_id(_user_data.role_id)
-    if not isinstance(_user_role, SuccessResponse):
+    if not _user_role.success:
         _user_role_id = ""
         _user_role_name = ""
     else:
-        _user_role_id = _user_role.data.role_id
+        _user_role_id = _user_role.data.id
         _user_role_name = _user_role.data.name
 
     # Get the user permissions.

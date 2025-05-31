@@ -27,16 +27,14 @@ def requires_auth(permission=None):
         @wraps(f)
         def decorated_function(*args, **kwargs):
             print("=== requires_auth: Start ===")
-            print(f"Session logged_in: {session.get('logged_in')}")
+            print(f"Session: {session}")
             print(f"Session token: {session.get('token')}")
-
-            # Check if user is logged in via session
-            if not session.get('logged_in'):
-                return redirect(url_for('web_auth.login_route'))
+            print(f"Session user: {session.get('user')}")
 
             # Check if we have a token
             token = session.get('token')
             if not token:
+                print("No token found in session")
                 session.clear()  # Clear invalid session
                 return redirect(url_for('web_auth.login_route'))
 
@@ -71,6 +69,7 @@ def requires_auth(permission=None):
                 if refresh_result['success']:
                     print("Token refreshed and session updated.")
                     session['token'] = refresh_result['data']
+                    print(f"Session From Requires Auth: {session}")
                     return f(*args, **kwargs)
 
             # If we get here, token is invalid and couldn't be refreshed

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>User</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50">
+    <div class="relative z-10 max-w-3xl mx-auto mt-12 p-6 pb-12 bg-white rounded-xl shadow-lg flex flex-col gap-6" id="form-container">
+        <div class="absolute right-8 top-8">
+            <button onclick="window.location.href='/customers'" type="button" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 shadow-md">
+                Back to Customer List
+            </button>
+        </div>
+        <h1 class="text-2xl font-bold mb-4">View Customer</h1>
+        {% if customer %}
+        <ul class="divide-y divide-gray-200 bg-gray-50 rounded-lg shadow p-6">
+            <li class="py-4 flex flex-col sm:flex-row sm:items-center">
+                <span class="font-semibold w-32">GUID:</span>
+                <span class="ml-2 text-gray-800">{{ customer.guid }}</span>
+            </li>
+            <li class="py-4 flex flex-col sm:flex-row sm:items-center">
+                <span class="font-semibold w-32">Created:</span>
+                <span class="ml-2 text-gray-800">{{ customer.created_datetime }}</span>
+            </li>
+            <li class="py-4 flex flex-col sm:flex-row sm:items-center">
+                <span class="font-semibold w-32">Modified:</span>
+                <span class="ml-2 text-gray-800">{{ customer.modified_datetime }}</span>
+            </li>
+            <li class="py-4 flex flex-col sm:flex-row sm:items-center">
+                <span class="font-semibold w-32">Name:</span>
+                <span class="ml-2 text-gray-800">{{ customer.name }}</span>
+            </li>
+            <li class="py-4 flex flex-col sm:flex-row sm:items-center">
+                <span class="font-semibold w-32">Is Active:</span>
+                <span class="ml-2 text-gray-800">{{ customer.is_active }}</span>
+            </li>
+            <a href="{{ url_for('web_customer.edit_customer_route', customer_guid=customer.guid) }}" class="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600 shadow-md">
+                Edit Customer
+            </a>
+        </ul>
+
+        <!-- Address -->
+
+        <!-- Projects -->
+        <h1 class="text-2xl font-bold mb-4">View Projects</h1>
+        {% if projects %}
+            {% for project in projects %}
+            <ul class="divide-y divide-gray-200 bg-gray-50 rounded-lg shadow p-6">
+                <li class="py-4 flex flex-col sm:flex-row sm:items-center">
+                    <span class="font-semibold w-32">Project Name:</span>
+                    <span class="ml-2 text-gray-800">{{ project.name }}</span>
+                </li>
+                <a href="{{ url_for('web_project.edit_project_route', project_guid=project.guid) }}" class="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600 shadow-md">
+                    Edit Project
+                </a>
+            </ul>
+            {% endfor %}
+        {% else %}
+            <div class="text-red-600 font-semibold">No projects found.</div>
+        {% endif %}
+
+        {% else %}
+        <div class="text-red-600 font-semibold">Customer not found.</div>
+        {% endif %}
+    </div>
+</body>
+</html>

@@ -162,8 +162,40 @@ BEGIN
     FROM Project
     WHERE [GUID] = @GUID;
 
-	COMMIT
+	COMMIT;
 END
+
+
+
+DROP PROCEDURE IF EXISTS ReadProjectsByCustomerId;
+
+CREATE PROCEDURE ReadProjectsByCustomerId
+    @CustomerId INT
+AS
+BEGIN
+	BEGIN TRANSACTION
+
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS [CreatedDatetime],
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS [ModifiedDatetime],
+        [Name],
+        [Abbreviation],
+        [Status],
+        [CustomerId],
+        [TransactionId],
+		[mapProjectIntuitCustomerId]
+    FROM Project
+    WHERE [CustomerId] = @CustomerId;
+
+	COMMIT;
+END
+
+
+
+
+
 
 
 

@@ -62,6 +62,25 @@ def get_project_by_guid(project_guid: str) -> BusinessResponse:
     )
 
 
+def get_projects_by_customer_id(customer_id: int) -> BusinessResponse:
+    """
+    Retrieves a project by its customer ID.
+    """
+    read_projects_by_customer_id_pers_response = pers_project.\
+        read_projects_by_customer_id(customer_id)
+
+    print(customer_id)
+    print(read_projects_by_customer_id_pers_response.data)
+
+    return BusinessResponse(
+        data=read_projects_by_customer_id_pers_response.data,
+        message=read_projects_by_customer_id_pers_response.message,
+        status_code=read_projects_by_customer_id_pers_response.status_code,
+        success=read_projects_by_customer_id_pers_response.success,
+        timestamp=read_projects_by_customer_id_pers_response.timestamp
+    )
+
+
 def post_project(
         created_datetime: datetime,
         modified_datetime: datetime,

@@ -127,6 +127,29 @@ END
 
 
 
+DROP PROCEDURE IF EXISTS ReadCustomerByGUID;
+
+CREATE PROCEDURE ReadCustomerByGUID
+    @GUID VARCHAR(255)
+AS
+BEGIN
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [Name],
+        [IsActive],
+        [AddressId],
+        [TransactionId],
+		[IntuitCustomerId]
+    FROM Customer
+    WHERE [GUID] = @GUID;
+END
+
+
+
+
 
 
 

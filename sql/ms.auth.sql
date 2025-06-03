@@ -63,8 +63,8 @@ BEGIN
 	SELECT
 		[Id],
 		[GUID],
-		CAST([CreatedDatetime], DATETIMEOFFSET) AS CreatedDatetime,
-		CAST([ModifiedDatetime], DATETIMEOFFSET) AS ModifiedDatetime,
+		CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
 		[ClientId],
 		[Tenant],
 		[ClientSecret],
@@ -81,7 +81,9 @@ BEGIN
 	COMMIT TRANSACTION;
 END;
 
+EXECUTE ReadMsAuthByUserId @UserId = 2;
 
+DELETE FROM ms.Auth WHERE Id = 2;
 
 
 

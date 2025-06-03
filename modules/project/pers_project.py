@@ -165,6 +165,43 @@ def read_project_by_id(id: int) -> PersistenceResponse:
             )
 
 
+def read_projects_by_customer_id(customer_id: int) -> PersistenceResponse:
+    """
+    Retrieves projects from the database by customer ID.
+    """
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadProjectsByCustomerId(?)}"
+                rows = cursor.execute(sql, customer_id).fetchall()
+
+                if rows:
+                    return PersistenceResponse(
+                        data=[Project.from_db_row(row) for row in rows],
+                        message="Projects found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    return PersistenceResponse(
+                        data=None,
+                        message="No projects found",
+                        status_code=404,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read projects by customer id: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
 def read_project_by_guid(guid: str) -> PersistenceResponse:
     """
     Retrieves a project from the database by GUID.

@@ -43,6 +43,25 @@ def get_customer_by_id(customer_id: int) -> BusinessResponse:
     )
 
 
+def get_customer_by_guid(customer_guid: str) -> BusinessResponse:
+    """
+    Retrieves a customer by its GUID.
+    """
+
+    pers_buildone_customer_resp = pers_customer.read_customer_by_guid(customer_guid)
+
+    #print("Customer Bus:")
+    #print(pers_buildone_customer_resp.data)
+
+    return BusinessResponse(
+        data=pers_buildone_customer_resp.data,
+        message=pers_buildone_customer_resp.message,
+        status_code=pers_buildone_customer_resp.status_code,
+        success=pers_buildone_customer_resp.success,
+        timestamp=pers_buildone_customer_resp.timestamp
+    )
+
+
 def post_customer(
         created_datetime: datetime,
         modified_datetime: datetime,

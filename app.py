@@ -96,15 +96,6 @@ app.config.update(
 )
 print("FLASK_RUN_HOST:", os.getenv('FLASK_RUN_HOST'))
 
-# Load secrets at app startup
-try:
-    app.config['SECRETS'] = get_secrets()
-except Exception as e:
-    print(f"Warning: Could not load secrets.json: {str(e)}")
-    app.config['SECRETS'] = {}
-
-# Make update_secrets available globally
-app.update_secrets = update_secrets
 
 # register blueprints
 app.register_blueprint(api_address.api_address_bp)
@@ -171,7 +162,7 @@ def index():
 if __name__ == '__main__':
     app.run(
         host='localhost',
-        port=5000,
+        port=8000,
         debug=True,
         use_reloader=False
-        )
+    )

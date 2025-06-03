@@ -7,9 +7,8 @@ from typing import Dict, Any
 from flask import current_app
 
 # Get the secrets.json path from environment variable or use default
-project_root = os.path.realpath(os.path.join(os.path.dirname(__file__), '..'))
+project_root = '/Users/chris/Applications/build.one'  # Absolute path to project root
 SECRETS_URL = os.getenv('SECRETS_PATH', os.path.join(project_root, 'secrets.json'))
-print(f"Secrets file path: {SECRETS_URL}")  # This will help verify the path
 
 def get_secrets() -> Dict[str, Any]:
     """

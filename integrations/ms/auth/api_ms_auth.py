@@ -1,5 +1,5 @@
 """
-Module for Microsoft Graph API.
+Module for Microsoft Graph API Authentication.
 """
 
 # python standard library imports
@@ -14,8 +14,6 @@ from dateutil import tz
 from flask import Blueprint, redirect, request, jsonify, current_app, url_for, session, flash
 
 # local imports
-from utils.config_help import get_secrets, update_secrets
-from utils.auth_help import requires_auth
 from integrations.ms.auth import bus_ms_auth
 
 # At the top of the file
@@ -25,12 +23,6 @@ MS_AUTH_BASE_URL = 'https://login.microsoftonline.com'
 
 api_ms_auth_bp = Blueprint('api_ms_auth', __name__, url_prefix='/ms/app', template_folder='templates')
 
-# Add project root to Python path
-project_root = os.path.realpath(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.append(project_root)
-
-# Set secrets.json path
-os.environ['SECRETS_PATH'] = os.path.join(project_root, 'secrets.json')
 
 
 @api_ms_auth_bp.route('/oauth2/authorize', methods=['GET'])
@@ -47,9 +39,17 @@ def authorization():
     <Response 302 Found>
     """
     try:
-        secrets = current_app.config['SECRETS']
-        client_id = secrets['ms']['client_id']
-        tenant = secrets['ms']['tenant']
+        secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
+        if secrets.success:
+            secrets = secrets.data
+        else:
+            return jsonify({
+                "error": "Failed to get Microsoft Graph API integration",
+                "status_code": 500
+            }), 500
+        print(secrets)
+        client_id = secrets.client_id
+        tenant = secrets.tenant
 
         next_page = request.args.get('next', url_for('web_dashboard.dashboard_route'))
 
@@ -59,7 +59,7 @@ def authorization():
             "&response_type=code" +
             "&redirect_uri=http%3A%2F%2Flocalhost%3A8000%2Fms%2Fapp%2Foauth2%2Fauthorize%2Fcallback" +
             "&response_mode=query" +
-            "&scope=offline_access%20user.read%20mail.read%20files.read.all%20files.readwrite.all%20sites.read.all%20sites.selected" +
+            "&scope=openid%20email%20files.read.all%20files.readwrite.all%20mail.read%20offline_access%20profile%20sites.read.all%20sites.selected%20user.read" +
             f"&state={next_page}"
         )
         return redirect(endpoint)
@@ -88,10 +88,18 @@ def authorization_callback():
     >>> authorization_callback()
     <Response 200 OK>
     """
-    refresh_secrets = current_app.config['SECRETS']
-    client_id = refresh_secrets['ms']['client_id']
-    tenant = refresh_secrets['ms']['tenant']
-    client_secret = refresh_secrets['ms']['client_secret']
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
+    if secrets.success:
+        refresh_secrets = secrets.data
+    else:
+        return jsonify({
+            "error": "Failed to get Microsoft Graph API integration",
+            "status_code": 500
+        }), 500
+    print(refresh_secrets)
+    client_id = refresh_secrets.client_id
+    tenant = refresh_secrets.tenant
+    client_secret = refresh_secrets.client_secret
 
     code = request.args.get('code')
 
@@ -102,7 +110,7 @@ def authorization_callback():
         'Content-Type': 'application/x-www-form-urlencoded'
     }
     payload = {
-        'scope': 'offline_access%20user.read%20mail.read%20files.read.all%20files.readwrite.all%20sites.read.all%20sites.selected'
+        'scope': 'openid%20email%20files.read.all%20files.readwrite.all%20mail.read%20offline_access%20profile%20sites.read.all%20sites.selected%20user.read'
     }
     data = {
         'client_id': client_id,
@@ -119,14 +127,15 @@ def authorization_callback():
     scope = resp.json()['scope']
     token_type = resp.json()['token_type']
 
-    refresh_secrets['ms']['access_token'] = access_token
-    refresh_secrets['ms']['expires_in'] = expires_in
-    refresh_secrets['ms']['ext_expires_in'] = ext_expires_in
-    refresh_secrets['ms']['refresh_token'] = token
-    refresh_secrets['ms']['scope'] = scope
-    refresh_secrets['ms']['token_type'] = token_type
+    refresh_secrets.access_token = access_token
+    refresh_secrets.expires_in = expires_in
+    refresh_secrets.ext_expires_in = ext_expires_in
+    refresh_secrets.refresh_token = token
+    refresh_secrets.scope = scope
+    refresh_secrets.token_type = token_type
 
-    current_app.update_secrets(refresh_secrets)
+    print(f'Passing these refresh secrets to the bus: {refresh_secrets}')
+    bus_ms_auth.patch_ms_auth(refresh_secrets)
 
     get_bus_ms_auth_response = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
     if get_bus_ms_auth_response.success:
@@ -188,18 +197,26 @@ def refresh_token():
     <Response 200 OK>
     """
 
-    refresh_secrets = current_app.config['SECRETS']
-    client_id = refresh_secrets['ms']['client_id']
-    tenant = refresh_secrets['ms']['tenant']
-    client_secret = refresh_secrets['ms']['client_secret']
-    refresh_token = refresh_secrets['ms']['refresh_token']
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
+    if secrets.success:
+        refresh_secrets = secrets.data
+    else:
+        return jsonify({
+            "error": "Failed to get Microsoft Graph API integration",
+            "status_code": 500
+        }), 500
+
+    client_id = refresh_secrets.client_id
+    tenant = refresh_secrets.tenant
+    client_secret = refresh_secrets.client_secret
+    refresh_token = refresh_secrets.refresh_token
 
     url = f'https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token'
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded'
     }
     payload = {
-        'scope': 'offline_access%20user.read%20mail.read%20files.read.all%20files.readwrite.all%20sites.read.all%20sites.selected'
+        'scope': 'openid%20email%20files.read.all%20files.readwrite.all%20mail.read%20offline_access%20profile%20sites.read.all%20sites.selected%20user.read'
     }
     data = {
         'client_id': client_id,
@@ -215,20 +232,30 @@ def refresh_token():
     scope = resp.json()['scope']
     token_type = resp.json()['token_type']
 
-    refresh_secrets['ms']['access_token'] = access_token
-    refresh_secrets['ms']['expires_in'] = expires_in
-    refresh_secrets['ms']['ext_expires_in'] = ext_expires_in
-    refresh_secrets['ms']['refresh_token'] = token
-    refresh_secrets['ms']['scope'] = scope
-    refresh_secrets['ms']['token_type'] = token_type
+    refresh_secrets.modified_datetime = datetime.now(tz.tzlocal())
+    refresh_secrets.access_token = access_token
+    refresh_secrets.expires_in = expires_in
+    refresh_secrets.ext_expires_in = ext_expires_in
+    refresh_secrets.refresh_token = token
+    refresh_secrets.scope = scope
+    refresh_secrets.token_type = token_type
 
-    current_app.update_secrets(refresh_secrets)
-
-    return jsonify(
-        {
-            "response_json": resp.json()
-        }
+    #print("MS Refresh Secrets: ", refresh_secrets)
+    path_ms_auth_response = bus_ms_auth.patch_ms_auth(
+        ms_auth=refresh_secrets
     )
+    if path_ms_auth_response.success:
+        flash('Microsoft Graph API integration updated successfully', 'success')
+        return jsonify({
+                "message": "Token refreshed successfully",
+                "status_code": 200
+            })
+    else:
+        flash('Failed to update Microsoft Graph API integration', 'error')
+        return jsonify({
+            "error": "Failed to update Microsoft Graph API integration",
+            "status_code": 500
+        }), 500
 
 
 @api_ms_auth_bp.route('/profile', methods=['GET'])
@@ -265,95 +292,7 @@ def get_profile():
         }), getattr(e.response, 'status_code', 500)
 
 
-@api_ms_auth_bp.route('/sites', methods=['GET'])
-@requires_auth()
-def get_sites():
-    """
-    Responds to HTTP GET requests to the "/ms/app/sites" route with a JSON response containing
-    the user's sites information.
 
-    Returns:
-    Response: A Flask Response object with a body containing the JSON object from the Microsoft
-    Graph API sites endpoint.
-
-    Example:
-    >>> get_sites()
-    <Response 200 OK>
-    """
-    sites_secrets = current_app.config['SECRETS']
-
-    access_token = sites_secrets['ms']['access_token']
-    headers = {
-        'Authorization': f'Bearer {access_token}'
-    }
-    url = 'https://graph.microsoft.com/v1.0/sites?search=*'
-    resp = requests.get(url=url, headers=headers, timeout=10)
-
-    return jsonify(
-        {
-            "response_json": resp.json()
-        }
-    )
-
-
-@api_ms_auth_bp.route('/sites/<site_id>/drive/root/children', methods=['GET'])
-def get_sites_drive_root_children(site_id):
-    """
-    Responds to HTTP GET requests to the "/ms/app/sites/<site_id>/drive/root/children" route with a JSON response containing
-    the user's sites information.
-
-    Returns:
-    Response: A Flask Response object with a body containing the JSON object from the Microsoft
-    Graph API sites endpoint.
-
-    Example:
-    >>> get_sites_drive_root_children()
-    <Response 200 OK>
-    """
-    sites_secrets = current_app.config['SECRETS']
-
-    access_token = sites_secrets['ms']['access_token']
-    headers = {
-        'Authorization': f'Bearer {access_token}'
-    }
-    url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/root/children'
-    resp = requests.get(url=url, headers=headers, timeout=10)
-
-    return jsonify(
-        {
-            "response_json": resp.json()
-        }
-    )
-
-
-@api_ms_auth_bp.route('/sites/rogersbuildllc', methods=['GET'])
-def get_site_by_id():
-    """
-    Responds to HTTP GET requests to the "/ms/app/sites/" route with a JSON response containing
-    the user's site information.
-
-    Returns:
-    Response: A Flask Response object with a body containing the JSON object from the Microsoft
-    Graph API sites endpoint.
-
-    Example:
-    >>> get_site_by_id()
-    <Response 200 OK>
-    """
-    sites_secrets = current_app.config['SECRETS']
-
-    access_token = sites_secrets['ms']['access_token']
-    headers = {
-        'Authorization': f'Bearer {access_token}'
-    }
-    url = f'https://graph.microsoft.com/v1.0/sites/imviokguifqdnyjvkb9idegwrhi.sharepoint.com:/sites/RogersBuildLLC'
-    resp = requests.get(url=url, headers=headers, timeout=10)
-
-    return jsonify(
-        {
-            "response_json": resp.json()
-        }
-    )
 
 
 @api_ms_auth_bp.route('/groups', methods=['GET'])
@@ -377,99 +316,6 @@ def get_groups():
         'Authorization': f'Bearer {access_token}'
     }
     url = 'https://graph.microsoft.com/v1.0/groups'
-    resp = requests.get(url=url, headers=headers, timeout=10)
-
-    return jsonify(
-        {
-            "response_json": resp.json()
-        }
-    )
-
-
-@api_ms_auth_bp.route('/drive', methods=['GET'])
-def get_drive():
-    """
-    Responds to HTTP GET requests to the "/ms/app/drive" route with a JSON response containing
-    the user's drive information.
-
-    Returns:
-    Response: A Flask Response object with a body containing the JSON object from the Microsoft
-    Graph API drive endpoint.
-
-    Example:
-    >>> get_drive()
-    <Response 200 OK>
-    """
-    drive_secrets = current_app.config['SECRETS']
-
-    access_token = drive_secrets['ms']['access_token']
-    headers = {
-        'Authorization': f'Bearer {access_token}'
-    }
-    url = 'https://graph.microsoft.com/v1.0/me/drive'
-    resp = requests.get(url=url, headers=headers, timeout=10)
-
-    return jsonify(
-        {
-            "response_json": resp.json()
-        }
-    )
-
-
-@api_ms_auth_bp.route('/drives', methods=['GET'])
-def get_drives():
-    """
-    Responds to HTTP GET requests to the "/ms/app/drives" route with a JSON response containing
-    the user's drives information.
-
-    Returns:
-    Response: A Flask Response object with a body containing the JSON object from the Microsoft
-    Graph API drives endpoint.
-
-    Example:
-    >>> get_drives()
-    <Response 200 OK>
-    """
-    drives_secrets = current_app.config['SECRETS']
-
-    access_token = drives_secrets['ms']['access_token']
-    headers = {
-        'Authorization': f'Bearer {access_token}'
-    }
-    url = 'https://graph.microsoft.com/v1.0/me/drives'
-    resp = requests.get(url=url, headers=headers, timeout=10)
-
-    return jsonify(
-        {
-            "response_json": resp.json()
-        }
-    )
-
-
-@api_ms_auth_bp.route('/drives/<drive_id>', methods=['GET'])
-def get_drive_by_id(drive_id):
-    """
-    Responds to HTTP GET requests to the "/ms/app/drives/<drive_id>" route with a JSON response
-    containing the information of a specific drive.
-
-    Args:
-    drive_id (str): The ID of the drive.
-
-    Returns:
-    Response: A Flask Response object with a body containing the JSON object from the Microsoft
-    Graph API drives endpoint.
-
-    Example:
-    >>> get_drive_by_id('12345')
-    <Response 200 OK>
-    """
-    drives_secrets = current_app.config['SECRETS']
-
-    access_token = drives_secrets['ms']['access_token']
-    headers = {
-        'Authorization': f'Bearer {access_token}'
-    }
-    url = f'https://graph.microsoft.com/v1.0/drives/{drive_id}'
     resp = requests.get(url=url, headers=headers, timeout=10)
 
     return jsonify(

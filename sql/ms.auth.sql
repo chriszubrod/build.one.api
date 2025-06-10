@@ -89,6 +89,7 @@ DELETE FROM ms.Auth WHERE Id = 2;
 
 
 
+
 DROP PROCEDURE IF EXISTS UpdateMsAuthById;
 
 CREATE PROCEDURE UpdateMsAuthById

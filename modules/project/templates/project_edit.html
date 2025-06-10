@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Project</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <style>
+            html, body { min-height: 100vh; margin: 0; }
+            #drop-area.dragover { background-color: rgba(59, 130, 246, 0.1); border-color: #3b82f6; }
+            input[type="file"] {
+                display: none;
+            }
+        </style>
+    </head>
+    <body class="bg-gray-50">
+        <div class="relative z-10 max-w-3xl mx-auto mt-12 p-6 pb-12 bg-white rounded-xl shadow-lg flex flex-col gap-6" id="form-container">
+            <div class="absolute right-8 top-8">
+                <button onclick="window.location.href='{{ url_for('web_project.view_project_route', project_guid=project.guid) }}'" type="button" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 shadow-md">
+                    Back to Project
+                </button>
+            </div>
+            <h1 class="text-2xl font-bold mb-4">Edit Project</h1>
+            {% if form %}
+            <form method="POST" class="divide-y divide-gray-200 bg-gray-50 rounded-lg shadow p-6">
+                {{ form.csrf_token }}
+                <div class="py-4 flex flex-col sm:flex-row sm:items-center">
+                    <span class="font-semibold w-32">GUID:</span>
+                    <span class="ml-2 text-gray-800">{{ project.guid[:8] }}</span>
+                </div>
+                <div class="py-4 flex flex-col sm:flex-row sm:items-center">
+                    <span class="font-semibold w-32">Created:</span>
+                    <span class="ml-2 text-gray-800">{{ project.created_datetime }}</span>
+                </div>
+                <div class="py-4 flex flex-col sm:flex-row sm:items-center">
+                    <span class="font-semibold w-32">Modified:</span>
+                    <span class="ml-2 text-gray-800">{{ project.modified_datetime }}</span>
+                </div>
+                <div class="py-4 flex flex-col sm:flex-row sm:items-center">
+                    {{ form.name.label(class="font-semibold w-32") }}
+                    {{ form.name(class="ml-2 text-gray-800 border rounded px-2 py-1 w-full max-w-md") }}
+                    {% if form.name.errors %}
+                        <div class="text-red-500 text-sm mt-1">{{ form.name.errors[0] }}</div>
+                    {% endif %}
+                </div>
+                <div class="py-4 flex flex-col sm:flex-row sm:items-center">
+                    {{ form.abbreviation.label(class="font-semibold w-32") }}
+                    {{ form.abbreviation(class="ml-2 text-gray-800 border rounded px-2 py-1 w-full max-w-md") }}
+                    {% if form.abbreviation.errors %}
+                        <div class="text-red-500 text-sm mt-1">{{ form.abbreviation.errors[0] }}</div>
+                    {% endif %}
+                </div>
+                <div class="py-4 flex flex-col sm:flex-row sm:items-center">
+                    {{ form.status.label(class="font-semibold w-32", text="Project Status") }}
+                    {{ form.status(class="ml-2 text-gray-800 bg-transparent border-none") }}
+                    {% if form.status.errors %}
+                        <div class="text-red-500 text-sm mt-1">{{ form.status.errors[0] }}</div>
+                    {% endif %}
+                </div>
+                <div class="py-4 flex flex-col sm:flex-row sm:items-center">
+                    {{ form.customer_guid.label(class="font-semibold w-32", text="Customer") }}
+                    {{ form.customer_guid(class="ml-2 text-gray-800 bg-transparent border-none") }}
+                    {% if form.customer_guid.errors %}
+                        <div class="text-red-500 text-sm mt-1">{{ form.customer_guid.errors[0] }}</div>
+                    {% endif %}
+                </div>
+                <div class="py-4">
+                    {{ form.submit(class="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600 shadow-md") }}
+                </div>
+            </form>
+            {% else %}
+            <div class="text-red-600 font-semibold">Project not found.</div>
+            {% endif %}
+        </div>
+    </body>
+</html>

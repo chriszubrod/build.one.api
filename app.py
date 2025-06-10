@@ -75,6 +75,8 @@ from modules.vendor import (
 from utils.config_help import get_secrets, write_secrets, update_secrets
 
 from integrations.ms.auth import api_ms_auth
+from integrations.ms.picker import web_ms_picker
+from integrations.ms.drives import api_ms_drives
 
 # initialize the app
 app = Flask(__name__)
@@ -82,6 +84,7 @@ app = Flask(__name__)
 # CSRF Setup
 csrf = CSRFProtect(app)
 csrf.exempt(api_ms_auth.api_ms_auth_bp)
+csrf.exempt(web_ms_picker.web_ms_picker_bp)
 
 # Secure session cookie setup
 app.config.update(
@@ -146,8 +149,8 @@ app.register_blueprint(web_vendor.web_vendor_bp)
 
 # integration blueprints
 app.register_blueprint(api_ms_auth.api_ms_auth_bp)
-
-
+app.register_blueprint(web_ms_picker.web_ms_picker_bp)
+app.register_blueprint(api_ms_drives.api_ms_drives_bp)
 
 
 

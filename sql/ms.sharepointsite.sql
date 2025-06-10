@@ -79,8 +79,6 @@ END
 
 
 
-
-
 DROP PROCEDURE IF EXISTS ReadMsSharePointSiteBySiteId;
 
 CREATE PROCEDURE ReadMsSharePointSiteBySiteId

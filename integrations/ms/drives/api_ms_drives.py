@@ -155,6 +155,41 @@ def get_sites_drive_root_children(site_id):
     )
 
 
+@api_ms_drives_bp.route('/drives/<drive_id>/root/children', methods=['GET'])
+def get_drive_by_id_root_children(drive_id):
+    """
+    Responds to HTTP GET requests to the "/ms/app/drive/<drive_id>/root/children" route with a JSON
+    response containing the children items of the root drive.
+
+    Returns:
+    Response: A Flask Response object with a body containing the JSON object from the Microsoft
+    Graph API drive root children endpoint.
+
+    Example:
+    >>> get_drive_by_id_root_children()
+    <Response 200 OK>
+    """
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
+    if secrets.success:
+        secrets = secrets.data
+    else:
+        print(f"Failed to get Microsoft Graph API integration: {secrets.message}")
+
+    access_token = secrets.access_token
+
+    headers = {
+        'Authorization': f'Bearer {access_token}'
+    }
+    url = f'https://graph.microsoft.com/v1.0/drives/{drive_id}/root/children'
+    resp = requests.get(url=url, headers=headers, timeout=10)
+
+    return jsonify(
+        {
+            "response_json": resp.json()
+        }
+    )
+
+
 @api_ms_drives_bp.route('/sites/<site_id>/drives', methods=['GET'])
 def get_site_drives(site_id):
     """
@@ -191,3 +226,43 @@ def get_site_drives(site_id):
             "response_json": resp.json()
         }
     )
+
+
+@api_ms_drives_bp.route('/drives/<drive_id>/items/<item_id>/children', methods=['GET'])
+def get_drive_items_children(drive_id, item_id):
+    """Gets children items for a specific drive item."""
+    try:
+        # Get access token from secrets
+        secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
+        if secrets.success:
+            secrets = secrets.data
+        else:
+            print(f"Failed to get Microsoft Graph API integration: {secrets.message}")
+
+        access_token = secrets.access_token
+
+        headers = {
+            'Authorization': f'Bearer {access_token}',
+            'Content-Type': 'application/json'
+        }
+
+            # Call Microsoft Graph API
+        url = f'https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/children'
+        response = requests.get(url, headers=headers, timeout=10)
+
+        if response.status_code == 200:
+            return {
+                'status': 'success',
+                'response_json': response.json()
+            }
+        else:
+            return {
+                'status': 'error',
+                'message': f"API call failed: {response.text}"
+            }
+
+    except Exception as e:
+        return {
+            'status': 'error',
+            'message': str(e)
+        }

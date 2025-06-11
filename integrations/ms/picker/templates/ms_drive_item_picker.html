@@ -1,0 +1,21 @@
+{% if ms_drives_items %}
+    {% for drive_item in ms_drives_items %}
+        <div class="border rounded-lg p-4 mb-4">
+            <h2 class="text-xl font-bold mb-2">
+                {{ drive_item.name }}
+            </h2>
+            <p class="text-gray-600">{{ drive_item.c_tag }}</p>
+            <p class="text-gray-600">{{ drive_item.e_tag }}</p>
+            <p class="text-sm text-gray-500">
+                <a href="{{ url_for('web_ms_picker.drive_item_children_picker_route', drive_id=drive_id, drive_item_id=drive_item.drive_item_id) }}" 
+                   class="text-blue-600 hover:text-blue-800">
+                   Drive Item ID: {{ drive_item.drive_item_id }}
+                </a>
+            </p>
+            <p class="text-sm text-gray-500">Size: {{ drive_item.size }}</p>
+            <p class="text-sm text-gray-500">Last Modified: {{ drive_item.last_modified_datetime }}</p>
+        </div>
+    {% endfor %}
+{% else %}
+    <p class="text-gray-600">No drives found.</p>
+{% endif %}

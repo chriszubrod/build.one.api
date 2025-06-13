@@ -26,19 +26,10 @@ web_ms_picker_bp = Blueprint('web_ms_picker', __name__, url_prefix='/ms/app', te
 
 
 @web_ms_picker_bp.route('/site/picker', methods=['GET'])
-@requires_auth()
 def site_picker_route():
     """
     Returns the route for the Microsoft Graph API Picker.
     """
-    secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
-    if secrets.success:
-        secrets = secrets.data
-    else:
-        print(f"Failed to get Microsoft Graph API integration: {secrets.message}")
-
-    access_token = secrets.access_token
-
     get_ms_sites_bus_response = bus_ms_sites.get_ms_sites()
     if get_ms_sites_bus_response.success:
         _ms_sites = get_ms_sites_bus_response.data
@@ -49,20 +40,11 @@ def site_picker_route():
 
 
 @web_ms_picker_bp.route('/drive/picker', methods=['GET'])
-@requires_auth()
 def drive_picker_route():
     """
     Returns the route for the Microsoft Graph API Picker.
     """
     site_id = request.args.get('site_id')
-
-    secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
-    if secrets.success:
-        secrets = secrets.data
-    else:
-        print(f"Failed to get Microsoft Graph API integration: {secrets.message}")
-
-    access_token = secrets.access_token
 
     get_ms_drives_bus_response = bus_ms_drives.get_ms_drives_from_graph(site_id)
     if get_ms_drives_bus_response.success:
@@ -74,20 +56,11 @@ def drive_picker_route():
 
 
 @web_ms_picker_bp.route('/drive/children/picker', methods=['GET'])
-@requires_auth()
 def drive_children_picker_route():
     """
     Returns the route for the Microsoft Graph API Picker.
     """
     drive_id = request.args.get('drive_id')
-
-    secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
-    if secrets.success:
-        secrets = secrets.data
-    else:
-        print(f"Failed to get Microsoft Graph API integration: {secrets.message}")
-
-    access_token = secrets.access_token
 
     get_ms_drives_children_bus_response = bus_ms_drives.get_ms_drives_children_from_graph(drive_id)
     if get_ms_drives_children_bus_response.success:
@@ -99,21 +72,12 @@ def drive_children_picker_route():
 
 
 @web_ms_picker_bp.route('/drive/item/children/picker', methods=['GET'])
-@requires_auth()
 def drive_item_children_picker_route():
     """
     Returns the route for the Microsoft Graph API Picker.
     """
     drive_id = request.args.get('drive_id')
     drive_item_id = request.args.get('drive_item_id')
-
-    secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
-    if secrets.success:
-        secrets = secrets.data
-    else:
-        print(f"Failed to get Microsoft Graph API integration: {secrets.message}")
-
-    access_token = secrets.access_token
 
     get_ms_drives_items_children_bus_response = bus_ms_drives.get_ms_drives_items_children_from_graph(drive_id, drive_item_id)
     if get_ms_drives_items_children_bus_response.success:

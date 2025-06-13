@@ -74,6 +74,7 @@ def get_ms_drives_children_from_graph(drive_id: str) -> BusinessResponse:
         ms_drive_item.last_modified_datetime = drive.get('lastModifiedDateTime')
         ms_drive_item.e_tag = drive.get('eTag')
         ms_drive_item.drive_item_id = drive.get('id')
+        ms_drive_item.drive_item_type = drive.get('driveType')
         ms_drive_item.name = drive.get('name')
         ms_drive_item.size = drive.get('size')
         ms_drive_item.web_url = drive.get('webUrl')

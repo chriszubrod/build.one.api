@@ -1,19 +1,19 @@
-{% if ms_sites %}
-    {% for site in ms_sites %}
-        <div class="border rounded-lg p-4 mb-4">
-            <h2 class="text-xl font-bold mb-2">
-                {{ site.display_name }}
-            </h2>
-            <p class="text-gray-600">{{ site.description }}</p>
-            <p class="text-sm text-gray-500">
-                <a href="{{ url_for('web_ms_picker.drive_picker_route', site_id=site.site_id) }}" 
-                   class="text-blue-600 hover:text-blue-800">
-                    Site ID: {{ site.site_id }}
-                </a>
-            </p>
-            <p class="text-sm text-gray-500">Last Modified: {{ site.last_modified_datetime }}</p>
-        </div>
-    {% endfor %}
-{% else %}
-    <p class="text-gray-600">No sites found.</p>
-{% endif %}
+<div class="space-y-2">
+    {% if ms_sites %}
+        {% for site in ms_sites %}
+            <div class="border rounded-lg p-2 hover:bg-gray-50 transition-colors duration-200">
+                <div class="flex items-center">
+                    <p class="text-sm text-gray-500">
+                        Site: 
+                        <a href="{{ url_for('web_ms_picker.drive_picker_route', site_id=site.site_id) }}" 
+                        class="text-blue-600 hover:text-blue-800">
+                            {{ site.display_name }}
+                        </a>
+                    </p>
+                </div>
+            </div>
+        {% endfor %}
+    {% else %}
+        <p class="text-gray-600">No sites found.</p>
+    {% endif %}
+</div>

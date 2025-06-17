@@ -5,8 +5,9 @@
                 <div class="flex items-center">
                     <p class="text-sm text-gray-500">
                         Site: 
-                        <a href="{{ url_for('web_ms_picker.drive_picker_route', site_id=site.site_id) }}" 
-                        class="text-blue-600 hover:text-blue-800">
+                        <a href="#" 
+                           onclick="loadDrives('{{ site.site_id }}', '{{ site.display_name }}'); return false;"
+                           class="text-blue-600 hover:text-blue-800">
                             {{ site.display_name }}
                         </a>
                     </p>

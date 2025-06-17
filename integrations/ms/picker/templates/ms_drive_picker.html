@@ -1,24 +1,34 @@
-{% if ms_drives %}
-    <div class="grid grid-cols-2 gap-4">
+<div class="flex flex-col space-y-2">
+    {% if ms_drives %}
         {% for drive in ms_drives %}
             <div class="border rounded-lg p-2 hover:bg-gray-50 transition-colors duration-200">
-                <div class="flex items-center">
-                    <!-- Drive Name -->
-                    <div class="flex-1">
-                        <a href="{{ url_for('web_ms_picker.drive_children_picker_route', drive_id=drive.drive_id) }}" 
-                           class="text-blue-600 hover:text-blue-800">
-                            {{ drive.name }}
-                        </a>
-                    </div>
+                <!-- Drive Name -->
+                <p class="text-sm text-gray-500">
+                    Drive: 
+                    <a href="#" 
+                        onclick="loadDriveItems('{{ drive.drive_id }}', '{{ drive.name }}'); return false;"
+                        class="text-blue-600 hover:text-blue-800">
+                        {{ drive.name }}
+                    </a>
+                </p>
+                <!-- Drive Type -->
+                <p class="text-sm text-gray-500">
+                    {{ drive.drive_type }}
+                </p>
 
-                    <!-- Drive Type -->
-                    <div class="text-sm text-gray-500 ml-4">
-                        {{ drive.drive_type }}
-                    </div>
-                </div>
+                <button onclick="selectItem({
+                    type: 'drive',
+                    drive_id: '{{ drive.drive_id }}',
+                    item_id: null,
+                    name: '{{ drive.name }}'
+                }); return false;"
+                class="mt-2 text-sm text-green-600 hover:text-green-800">
+                    Select Drive
+                </button>
+
             </div>
         {% endfor %}
-    </div>
-{% else %}
-    <p class="text-gray-600">No drives found.</p>
-{% endif %}
+    {% else %}
+        <p class="text-gray-600">No drives found.</p>
+    {% endif %}
+</div>

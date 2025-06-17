@@ -1,21 +1,40 @@
-{% if ms_drives_items %}
-    {% for drive_item in ms_drives_items %}
-        <div class="border rounded-lg p-4 mb-4">
-            <h2 class="text-xl font-bold mb-2">
-                {{ drive_item.name }}
-            </h2>
-            <p class="text-gray-600">{{ drive_item.c_tag }}</p>
-            <p class="text-gray-600">{{ drive_item.e_tag }}</p>
-            <p class="text-sm text-gray-500">
-                <a href="{{ url_for('web_ms_picker.drive_item_children_picker_route', drive_id=drive_id, drive_item_id=drive_item.drive_item_id) }}" 
-                   class="text-blue-600 hover:text-blue-800">
-                   Drive Item ID: {{ drive_item.drive_item_id }}
-                </a>
-            </p>
-            <p class="text-sm text-gray-500">Size: {{ drive_item.size }}</p>
-            <p class="text-sm text-gray-500">Last Modified: {{ drive_item.last_modified_datetime }}</p>
-        </div>
-    {% endfor %}
-{% else %}
-    <p class="text-gray-600">No drives found.</p>
-{% endif %}
+<div class="flex flex-col space-y-2">
+    {% if ms_drives_items %}
+        {% for drive_item in ms_drives_items %}
+            <div class="border rounded-lg p-2 hover:bg-gray-50 transition-colors duration-200">
+
+                <!-- Drive Item Name -->
+                <p class="text-sm text-gray-500">
+                    {% if drive_item.file %}
+                        File:
+                    {% else %}
+                        Unknown:
+                    {% endif %}
+                    <a href="#" 
+                        onclick="loadDriveItemsChildren('{{ drive_id }}', '{{ drive_item.drive_item_id }}', '{{ drive_item.name }}'); return false;"
+                        class="text-blue-600 hover:text-blue-800">
+                        {{ drive_item.name }}
+                    </a>
+                </p>
+
+                <!-- Drive Item Type -->
+                <p class="text-sm text-gray-500">
+                    {{ drive_item.drive_item_type }}
+                </p>
+
+                <button onclick="selectItem({
+                    type: 'drive_item_child',
+                    drive_id: '{{ drive_id }}',
+                    item_id: '{{ drive_item.drive_item_id }}',
+                    name: '{{ drive_item.name }}'
+                }); return false;"
+                class="mt-2 text-sm text-green-600 hover:text-green-800">
+                    Select Item
+                </button>
+
+            </div>
+        {% endfor %}
+    {% else %}
+        <p class="text-gray-600">No drives found.</p>
+    {% endif %}
+</div>

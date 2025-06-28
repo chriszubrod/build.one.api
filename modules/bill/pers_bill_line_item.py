@@ -109,7 +109,7 @@ def read_bill_line_item_by_id(bill_line_item_id: int) -> PersistenceResponse:
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadBillLineItemById(?)}"
+                sql = "{CALL ReadBuildoneBillLineItemById(?)}"
                 row = cursor.execute(sql, bill_line_item_id).fetchone()
                 if row:
                     return PersistenceResponse(

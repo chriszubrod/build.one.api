@@ -20,8 +20,7 @@ def open_db_cnxn():
         'DATABASE=buildone;' +
         'UID=zubrodcb@bchristopher;' +
         'PWD=KAPsig246!;' +
-        'Encrypt=yes;' +
-        'Connection Timeout=10;'
+        'Encrypt=yes;'
     )
     return database
 

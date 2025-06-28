@@ -135,7 +135,7 @@ def read_project_by_id(id: int) -> PersistenceResponse:
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadProjectById(?)}"
+                sql = "{CALL ReadProjectByID(?)}"
                 row = cursor.execute(sql, id).fetchone()
 
                 if row:

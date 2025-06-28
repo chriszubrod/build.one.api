@@ -42,9 +42,38 @@ SELECT * FROM ms.SharePointFolder;
 
 
 
+DROP PROCEDURE IF EXISTS ReadMsSharePointFolderByFolderId;
 
+CREATE PROCEDURE ReadMsSharePointFolderByFolderId
+	@Id INT
+AS
+BEGIN
+	BEGIN TRANSACTION;
 
+	SELECT
+		[Id],
+		[GUID],
+		CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS [CreatedDatetime],
+		CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS [ModifiedDatetime],
+		[CTag],
+		CAST([MsCreatedDatetime] AS NVARCHAR(MAX)) AS [MsCreatedDatetime],
+		[ETag],
+		[FolderChildCount],
+		[MsId],
+		CAST([LastModifiedDatetime] AS NVARCHAR(MAX)) AS [LastModifiedDatetime],
+		[Name],
+		[MsParentId],
+		[SharedScope],
+		[Size],
+		[WebUrl]
+	FROM ms.SharePointFolder
+	WHERE [Id] = @Id;
 
+    COMMIT;
+END
+
+EXEC ReadMsSharePointFolderByFolderId
+	@Id = 2;
 
 
 

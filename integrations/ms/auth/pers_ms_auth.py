@@ -224,7 +224,6 @@ def update_ms_auth_by_id(ms_auth: MsAuth) -> PersistenceResponse:
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                print("Update MS Auth: ", ms_auth)
                 sql = "{CALL UpdateMsAuthById(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,

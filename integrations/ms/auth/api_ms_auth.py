@@ -196,15 +196,18 @@ def refresh_token():
     >>> refresh_token()
     <Response 200 OK>
     """
+    if session:
+        secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
+    else:
+        secrets = bus_ms_auth.get_ms_auth_by_user_id(2)
 
-    secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
     if secrets.success:
         refresh_secrets = secrets.data
     else:
-        return jsonify({
+        return {
             "error": "Failed to get Microsoft Graph API integration",
             "status_code": 500
-        }), 500
+        }
 
     client_id = refresh_secrets.client_id
     tenant = refresh_secrets.tenant
@@ -240,22 +243,19 @@ def refresh_token():
     refresh_secrets.scope = scope
     refresh_secrets.token_type = token_type
 
-    #print("MS Refresh Secrets: ", refresh_secrets)
     path_ms_auth_response = bus_ms_auth.patch_ms_auth(
         ms_auth=refresh_secrets
     )
     if path_ms_auth_response.success:
-        flash('Microsoft Graph API integration updated successfully', 'success')
-        return jsonify({
+        return {
                 "message": "Token refreshed successfully",
                 "status_code": 200
-            })
+            }
     else:
-        flash('Failed to update Microsoft Graph API integration', 'error')
-        return jsonify({
+        return {
             "error": "Failed to update Microsoft Graph API integration",
             "status_code": 500
-        }), 500
+        }
 
 
 @api_ms_auth_bp.route('/profile', methods=['GET'])

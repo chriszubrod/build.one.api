@@ -127,8 +127,7 @@ BEGIN
         [Abbreviation],
         [Status],
         [CustomerId],
-        [TransactionId],
-		[IntuitCustomerId]
+        [TransactionId]
     FROM Project
     WHERE [Id] = @ID;
 
@@ -136,7 +135,8 @@ BEGIN
 END
 
 
-
+EXEC ReadProjectByID
+    @ID = 3;
 
 
 

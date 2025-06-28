@@ -77,6 +77,7 @@ BEGIN
     COMMIT;
 END
 
+EXEC ReadMsSharePointSites;
 
 
 DROP PROCEDURE IF EXISTS ReadMsSharePointSiteBySiteId;

@@ -4,9 +4,9 @@ import requests
 
 from datetime import datetime
 from flask import jsonify
-from helper import function_help as hp
+
 from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
-from persistence import pers_ms_sharepoint_site
+from integrations.ms import pers_ms_sharepoint_site
 
 
 def refresh_token(SECRETS_URL):
@@ -65,37 +65,99 @@ def refresh_token(SECRETS_URL):
     )
 
 
-def get_items(item_id: str = None) -> dict:
+def get_items(site_id: str = None, item_id: str = None, access_token: str = None) -> dict:
     """Recursively gets all items in a folder."""
     # For SharePoint site drive
-    site_id = "imviokguifqdnyjvkb9idegwrhi.sharepoint.com,17981139-624e-48b0-b1ca-36a21ab8e963,1ae020ca-f72c-4665-98df-5a4a7b397436"
+    #site_id = "imviokguifqdnyjvkb9idegwrhi.sharepoint.com,17981139-624e-48b0-b1ca-36a21ab8e963,1ae020ca-f72c-4665-98df-5a4a7b397436"
+    #item_id = "017ZKYN57RHILAEB2UNJD3OOZWEQ7X4Q5Z"
 
     if item_id:
         url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{item_id}/children'
     else:
         url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/root/children'
 
-    response = requests.get(url, headers=headers, timeout=10)
-    if response.status_code != 200:
-        raise Exception(f"API call failed: {response.text}")
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json'
+    }
 
-    items = response.json().get('value', [])
-    result = []
+    all_items = []
+    next_link = None
+    page_count = 0
 
-    for item in items:
-        item_data = {
-            'name': item.get('name'),
-            'id': item.get('id'),
-            'type': 'folder' if item.get('folder') else 'file',
-            'web_url': item.get('webUrl')
+    try:
+        params = {
+            '$top': 200
         }
 
-        if item.get('folder'):
-            item_data['children'] = get_items(item['id'])
+        while True:
+            page_count += 1
+            if next_link:
+                resp = requests.get(url=next_link, headers=headers, timeout=30)
+            else:
+                resp = requests.get(url, headers=headers, params=params, timeout=30)
 
-        result.append(item_data)
+            if resp.status_code != 200:
+                raise Exception(f"API call failed: {resp.text}")
 
-    return result
+            data = resp.json()
+            items = data.get('value', [])
+
+            for item in items:
+                item_data = {
+                    'msGraphDownloadUrl': item.get('@microsoft.graph.downloadUrl'),
+                    'msCreatedDatetime': item.get('createdDateTime'),
+                    'eTag': item.get('eTag'),
+                    'id': item.get('id'),
+                    'lastModifiedDateTime': item.get('lastModifiedDateTime'),
+                    'name': item.get('name'),
+                    'webUrl': item.get('webUrl'),
+                    'cTag': item.get('cTag'),
+                    'hashQuickHash': item['file']['hashes']['quickXorHash'],
+                    'mimeType': item['file']['mimeType'],
+                    'parentId': item['parentReference']['id'],
+                    'sharedScope': item['shared']['scope'],
+                    'size': item.get('size')
+                }
+                all_items.append(item_data)
+            
+            next_link = data.get('@odata.nextLink')
+            if not next_link:
+                break
+
+        return all_items
+    except Exception as e:
+        print(f"Error getting items: {str(e)}")
+        return None
+
+
+def get_item(site_id: str = None, item_id: str = None, access_token: str = None) -> dict:
+    """
+    Download SharePoint file content using site-specific endpoint
+    """
+    try:
+        # Use the site-specific endpoint
+        url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{item_id}/content"
+        
+        headers = {
+            'Authorization': f'Bearer {access_token}',
+            'Content-Type': 'application/octet-stream'
+        }
+        
+        print(f"Downloading file with ID: {item_id} from site: {site_id}")
+        response = requests.get(url, headers=headers, timeout=60)
+        
+        if response.status_code == 200:
+            file_content = response.content
+            print(f"Successfully downloaded {len(file_content)} bytes")
+            return file_content
+        else:
+            print(f"Failed to download file: {response.status_code} - {response.text}")
+            return None
+            
+    except Exception as e:
+        print(f"Error downloading file: {str(e)}")
+        return None
 
 
 def get_site():

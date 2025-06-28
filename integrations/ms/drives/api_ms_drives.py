@@ -59,14 +59,6 @@ def get_drives():
     """
     Responds to HTTP GET requests to the "/ms/app/drives" route with a JSON response containing
     the user's drives information.
-
-    Returns:
-    Response: A Flask Response object with a body containing the JSON object from the Microsoft
-    Graph API drives endpoint.
-
-    Example:
-    >>> get_drives()
-    <Response 200 OK>
     """
     drives_secrets = current_app.config['SECRETS']
 
@@ -74,12 +66,38 @@ def get_drives():
     headers = {
         'Authorization': f'Bearer {access_token}'
     }
+
+    all_drives = []
+    next_link = None
+
     url = 'https://graph.microsoft.com/v1.0/me/drives'
     resp = requests.get(url=url, headers=headers, timeout=10)
 
+    while True:
+        if next_link:
+            resp = requests.get(url=next_link, headers=headers, timeout=10)
+        else:
+            resp = requests.get(url=url, headers=headers, timeout=10)
+
+        if resp.status_code != 200:
+            return jsonify(
+                {
+                    "error": "Failed to get Microsoft Graph API drives",
+                    "status_code": resp.status_code
+                }
+            ), resp.status_code
+
+        data = resp.json()
+        drives = data.get('value', [])
+        all_drives.extend(drives)
+
+        next_link = data.get('@odata.nextLink')
+        if not next_link:
+            break
+
     return jsonify(
         {
-            "response_json": resp.json()
+            "response_json": all_drives
         }
     )
 
@@ -122,14 +140,6 @@ def get_sites_drive_root_children(site_id):
     """
     Responds to HTTP GET requests to the "/ms/app/sites/<site_id>/drive/root/children" route with a JSON response containing
     the user's sites information.
-
-    Returns:
-    Response: A Flask Response object with a body containing the JSON object from the Microsoft
-    Graph API sites endpoint.
-
-    Example:
-    >>> get_sites_drive_root_children()
-    <Response 200 OK>
     """
     secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
     if secrets.success:

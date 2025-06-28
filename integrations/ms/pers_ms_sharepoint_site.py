@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional
 import pyodbc
 
-import persistence.pers_database as pers_database
-from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
+from persistence import pers_database
+from persistence.pers_response import PersistenceResponse
 
 
 @dataclass
@@ -96,17 +96,31 @@ def read_sharepoint_sites():
                 rows = cursor.execute(sql).fetchall()
 
                 if rows:
-                    return SuccessResponse(
-                        message="SharePoint sites found",
+                    return PersistenceResponse(
                         data=[SharePointSite.from_db_row(row) for row in rows],
-                        status_code=200
+                        message="SharePoint sites found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
                     )
 
-                return PersistenceResponse(message="No SharePoint sites found", status_code=404)
+                return PersistenceResponse(
+                    data=None,
+                    message="No SharePoint sites found",
+                    status_code=404,
+                    success=False,
+                    timestamp=datetime.now()
+                )
 
 
         except pyodbc.Error as e:
-            raise DatabaseError(f"Failed to read SharePoint sites: {str(e)}") from e
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read SharePoint sites: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
 
 
 def read_sharepoint_site_by_site_id(site_id: str):

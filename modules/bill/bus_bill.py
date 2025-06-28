@@ -286,7 +286,7 @@ def post_bill_with_line_items_and_attachments(
             sub_cost_code_number = sub_cost_code_pers_resp.data.number
             file_extension = attachment['type'].split('/')[1]
 
-            attachment_name = f'{project_abbr} - {vendor_pers_resp.data.name} - {number} - {line_item["description"]} - {sub_cost_code_number} - ${float(line_item["amount"]):.2f}.{file_extension}'
+            attachment_name = f'{project_abbr} - {vendor_pers_resp.data.name} - {number} - {line_item["description"]} - {sub_cost_code_number} - ${float(line_item["amount"]):.2f} - {date.strftime("%d-%m-%Y")}.{file_extension}'
 
             _tvp_attachments.append((
                 str(row_key),
@@ -316,6 +316,10 @@ def post_bill_with_line_items_and_attachments(
         line_items=_tvp_line_items,
         attachments=_tvp_attachments
     )
+
+
+
+
     return BusinessResponse(
         data=create_bill_resp.data,
         message=create_bill_resp.message,

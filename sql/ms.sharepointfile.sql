@@ -21,7 +21,7 @@ CREATE TABLE ms.SharePointFile (
 
 DROP TABLE ms.SharePointFile;
 
-
+SELECT * FROM ms.SharePointFile;
 
 
 
@@ -29,8 +29,6 @@ DROP TABLE ms.SharePointFile;
 DROP PROCEDURE IF EXISTS CreateMsSharePointFile;
 
 CREATE PROCEDURE CreateMsSharePointFile
-    @CreatedDatetime DATETIMEOFFSET,
-    @ModifiedDatetime DATETIMEOFFSET,
 	@MsGraphDownloadUrl NVARCHAR(MAX),
 	@CTag NVARCHAR(MAX),
 	@MsCreatedDatetime DATETIMEOFFSET,
@@ -48,9 +46,11 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
+	DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
     -- Insert a new record into the SharePointSite table
     INSERT INTO ms.SharePointFile (CreatedDatetime, ModifiedDatetime, [MsGraphDownloadUrl], [CTag], [MsCreatedDatetime], [ETag], [FileHashQuickXorHash], [FileMimeType], [MsId], [LastModifiedDatetime], [Name], [MsParentId], [SharedScope], [Size], [WebUrl])
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime), @MsGraphDownloadUrl, @CTag, @MsCreatedDatetime, @ETag, @FileHashQuickXorHash, @FileMimeType, @MsId, CONVERT(DATETIMEOFFSET, @LastModifiedDatetime), @Name, @MsParentId, @SharedScope, @Size, @WebUrl);
+    VALUES (@Now, @Now, @MsGraphDownloadUrl, @CTag, @MsCreatedDatetime, @ETag, @FileHashQuickXorHash, @FileMimeType, @MsId, CONVERT(DATETIMEOFFSET, @LastModifiedDatetime), @Name, @MsParentId, @SharedScope, @Size, @WebUrl);
 
     COMMIT;
 END
@@ -87,7 +87,7 @@ BEGIN
     COMMIT;
 END
 
-
+EXEC ReadMsSharePointFiles;
 
 
 
@@ -127,6 +127,43 @@ END
 
 
 
+DROP PROCEDURE IF EXISTS ReadMsSharePointFileByMsId;
+
+CREATE PROCEDURE ReadMsSharePointFileByMsId
+	@MsId NVARCHAR(MAX)
+AS
+BEGIN
+	BEGIN TRANSACTION;
+
+	SELECT
+		[Id],
+		[GUID],
+		CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS [CreatedDatetime],
+		CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS [ModifiedDatetime],
+		[MsGraphDownloadUrl],
+		[CTag],
+		CAST([MsCreatedDatetime] AS NVARCHAR(MAX)) AS [MsCreatedDatetime],
+		[ETag],
+		[FileHashQuickXorHash],
+		[FileMimeType],
+		[MsId],
+		CAST([LastModifiedDatetime] AS NVARCHAR(MAX)) AS [LastModifiedDatetime],
+		[Name],
+		[MsParentId],
+		[SharedScope],
+		[Size],
+		[WebUrl]
+	FROM ms.SharePointFile
+	WHERE [MsId] = @MsId;
+
+	COMMIT;
+END
+
+
+EXEC ReadMsSharePointFileByMsId @MsId = '017ZKYN52UK2WFPW5JABB27EIY7DBET5X6';
+
+
+
 
 
 
@@ -134,7 +171,6 @@ DROP PROCEDURE IF EXISTS UpdateMsSharePointFileByFileId;
 
 CREATE PROCEDURE UpdateMsSharePointFileByFileId
     @FileId NVARCHAR(MAX),
-    @ModifiedDatetime DATETIMEOFFSET,
 	@MsGraphDownloadUrl NVARCHAR(MAX),
 	@CTag NVARCHAR(MAX),
 	@MsCreatedDatetime DATETIMEOFFSET,
@@ -152,8 +188,12 @@ AS
 BEGIN
 	BEGIN TRANSACTION;
 
+	DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
+	-- Update the record in the SharePointFile table
+
 	UPDATE ms.SharePointFile
-    SET [ModifiedDatetime] = CONVERT(DATETIMEOFFSET, @ModifiedDatetime),
+    SET [ModifiedDatetime] = @Now,
         [MsGraphDownloadUrl] = @MsGraphDownloadUrl,
         [CTag] = @CTag,
         [MsCreatedDatetime] = @MsCreatedDatetime,
@@ -205,10 +245,15 @@ SELECT
     FileMimeType,
     MsId,
     LastModifiedDatetime,
-    Name,
+    [Name],
     MsParentId,
     SharedScope,
-    Size,
+    [Size],
     WebUrl
 FROM ms.SharePointFolder
 WHERE Id = 123;  -- Replace with your folder ID
+
+
+
+DELETE FROM ms.SharePointFile
+WHERE Id IN (3,4,5,6);

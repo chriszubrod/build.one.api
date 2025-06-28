@@ -111,6 +111,9 @@ BEGIN
 END
 
 
+EXEC ReadBuildoneBillLineItemById
+    @Id = 1;
+
 
 
 DROP PROCEDURE IF EXISTS ReadBillLineItemByBillId;

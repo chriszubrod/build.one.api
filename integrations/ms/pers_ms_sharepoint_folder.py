@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional
 import pyodbc
 
-import persistence.pers_database as pers_database
-from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
+from persistence import pers_database
+from persistence.pers_response import PersistenceResponse
 
 
 @dataclass
@@ -114,7 +114,7 @@ def read_sharepoint_folders():
             raise DatabaseError(f"Failed to read SharePoint folders: {str(e)}") from e
 
 
-def read_sharepoint_folder_by_folder_id(folder_id: str):
+def read_sharepoint_folder_by_folder_id(folder_id: int):
     """
     Retrieves a SharePoint folder by folder id from the database.
 
@@ -128,16 +128,30 @@ def read_sharepoint_folder_by_folder_id(folder_id: str):
                 row = cursor.execute(sql, folder_id).fetchone()
 
                 if row:
-                    return SuccessResponse(
-                        message="SharePoint folder found",
+                    return PersistenceResponse(
                         data=SharePointFolder.from_db_row(row),
-                        status_code=200
+                        message="SharePoint folder found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
                     )
 
-                return BusinessResponse(message="SharePoint folder not found", status_code=404)
+                return PersistenceResponse(
+                    data=None,
+                    message="SharePoint folder not found",
+                    status_code=404,
+                    success=False,
+                    timestamp=datetime.now()
+                )
 
         except pyodbc.Error as e:
-            raise DatabaseError(f"Failed to read SharePoint folder: {str(e)}") from e
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read SharePoint folder: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
 
 
 def read_sharepoint_folder_by_url(url: str):

@@ -54,6 +54,32 @@ EXEC CreateBuildoneEntryLineItemAttachment
 
 
 
+DROP PROCEDURE IF EXISTS ReadBillLineItemAttachments;
+
+CREATE PROCEDURE ReadBillLineItemAttachments
+AS
+BEGIN
+    BEGIN TRANSACTION;
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [Name],
+        [Size],
+        [Type],
+        [Content],
+        [BillLineItemId]
+    FROM BillLineItemAttachment;
+
+    COMMIT;
+END
+
+EXEC ReadBillLineItemAttachments;
+
+
+
+
 
 
 DROP PROCEDURE IF EXISTS ReadBuildoneBillLineItemAttachmentById;
@@ -108,6 +134,12 @@ END
 EXEC ReadBillLineItemAttachmentByBillLineItemId
     @BillLineItemId = 61
 
+
+
+UPDATE BillLineItemAttachment
+SET
+    [Name] = 'TB3 - Walker Lumber & Hardware - 030536 - Lumber & Hardware - 13.1000 - $769.93 - 4-29-2025.pdf'
+WHERE [Id] = 12;
 
 --
 --

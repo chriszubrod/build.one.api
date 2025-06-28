@@ -96,7 +96,7 @@ EXEC ReadMsSharePointFiles;
 DROP PROCEDURE IF EXISTS ReadMsSharePointFileByFileId;
 
 CREATE PROCEDURE ReadMsSharePointFileByFileId
-    @FileId NVARCHAR(MAX)
+    @FileId INT
 AS
 BEGIN
 	BEGIN TRANSACTION;
@@ -108,12 +108,12 @@ BEGIN
 		CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS [ModifiedDatetime],
 		[MsGraphDownloadUrl],
 		[CTag],
-		[MsCreatedDatetime],
+		CAST([MsCreatedDatetime] AS NVARCHAR(MAX)) AS [MsCreatedDatetime],
 		[ETag],
 		[FileHashQuickXorHash],
 		[FileMimeType],
 		[MsId],
-		[LastModifiedDatetime],
+		CAST([LastModifiedDatetime] AS NVARCHAR(MAX)) AS [LastModifiedDatetime],
 		[Name],
 		[MsParentId],
 		[SharedScope],
@@ -124,6 +124,8 @@ BEGIN
 
     COMMIT;
 END
+
+EXEC ReadMsSharePointFileByFileId @FileId = 2;
 
 
 

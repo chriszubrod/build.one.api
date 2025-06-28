@@ -10,6 +10,8 @@ from flask import Blueprint, render_template
 
 
 # local imports
+from integrations.map import pers_map_attachment_sharepoint_file
+from integrations.ms import pers_ms_sharepoint_file
 from modules.bill import (
     bus_bill_line_item_attachment,
     bus_bill_line_item,
@@ -105,10 +107,9 @@ def view_bill_route(bill_guid):
     _bill_line_item_attachments = []
 
     for bill_line_item in _bill_line_items:
+
         get_bill_line_item_attachments_bus_response = bus_bill_line_item_attachment.\
             get_bill_line_item_attachment_by_bill_line_item_id(bill_line_item.id)
-        if not get_bill_line_item_attachments_bus_response.success:
-            continue
 
         for attachment in get_bill_line_item_attachments_bus_response.data:
             file_bytes = attachment.content
@@ -117,6 +118,21 @@ def view_bill_route(bill_guid):
             mime_type = mime_type or 'application/octet-stream' 
             base64_bytes = base64.b64encode(file_bytes).decode('utf-8')
             data_uri = f'data:{mime_type};base64,{base64_bytes}'
+
+            get_map_attachment_sharepoint_file_response = pers_map_attachment_sharepoint_file.\
+                read_map_attachment_sharepoint_file_by_attachment_id(attachment.id)
+
+            ms_sharepoint_file = None
+            if get_map_attachment_sharepoint_file_response.success:
+                map_attachment_sharepoint_file = get_map_attachment_sharepoint_file_response.data
+                
+                ms_sharepoint_file_id = map_attachment_sharepoint_file.ms_sharepoint_file_id
+                
+                read_sharepoint_file_by_id_response = pers_ms_sharepoint_file.\
+                    read_sharepoint_file_by_id(ms_sharepoint_file_id)
+
+                if read_sharepoint_file_by_id_response.success:
+                    ms_sharepoint_file = read_sharepoint_file_by_id_response.data
 
             _bill_line_item_attachments.append(
                 {
@@ -128,7 +144,8 @@ def view_bill_route(bill_guid):
                     'size': attachment.size,
                     'type': mime_type,
                     'content': data_uri,
-                    'bill_line_item_id': attachment.bill_line_item_id
+                    'bill_line_item_id': attachment.bill_line_item_id,
+                    'ms_sharepoint_file_web_url': ms_sharepoint_file.file_web_url if ms_sharepoint_file else None
                 }
             )
 

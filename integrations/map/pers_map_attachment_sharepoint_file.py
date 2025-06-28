@@ -123,6 +123,40 @@ def read_map_attachment_sharepoint_files() -> PersistenceResponse:
             )
 
 
+def read_map_attachment_sharepoint_file_by_attachment_id(bill_line_item_attachment_id: int) -> PersistenceResponse:
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadAttachmentSharePointFileByAttachmentId (?)}"
+                row = cursor.execute(sql, int(bill_line_item_attachment_id)).fetchone()
+
+                if row:
+                    return PersistenceResponse(
+                        data=MapAttachmentSharepointFile.from_db_row(row),
+                        message="Map Attachment Sharepoint File found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+
+                return PersistenceResponse(
+                    data=[],
+                    message="No Map Attachment Sharepoint File found",
+                    status_code=404,
+                    success=False,
+                    timestamp=datetime.now()
+                )
+
+        except pyodbc.Error as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read Map Attachment Sharepoint File: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
 def read_map_attachment_sharepoint_file_by_attachment_id_file_id(bill_line_item_attachment_id: int, ms_sharepoint_file_id: int) -> PersistenceResponse:
     with pers_database.get_db_connection() as cnxn:
         try:

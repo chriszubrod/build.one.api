@@ -109,5 +109,3 @@ def api_post_bill_route():
                 timestamp=datetime.now(tz.tzlocal())
             ).to_dict()
         )
-
-        

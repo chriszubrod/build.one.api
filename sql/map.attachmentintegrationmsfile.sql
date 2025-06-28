@@ -88,7 +88,7 @@ END;
 DROP PROCEDURE IF EXISTS ReadAttachmentSharePointFileByAttachmentId;
 
 CREATE PROCEDURE ReadAttachmentSharePointFileByAttachmentId
-    @AttachmentId INT
+    @BillLineItemAttachmentid INT
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -101,10 +101,15 @@ BEGIN
         [BillLineItemAttachmentId],
         [MsSharePointFileId]
     FROM map.AttachmentSharePointFile
-    WHERE BillLineItemAttachmentid = @AttachmentId;
+    WHERE BillLineItemAttachmentid = @BillLineItemAttachmentid;
 
     COMMIT TRANSACTION;
 END;
+
+EXEC ReadAttachmentSharePointFileByAttachmentId 
+    @BillLineItemAttachmentid = 11;
+
+
 
 
 DROP PROCEDURE IF EXISTS ReadAttachmentSharePointFileByAttachmentIdSharePointFileId;

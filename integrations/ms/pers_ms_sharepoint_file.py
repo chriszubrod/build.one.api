@@ -150,7 +150,46 @@ def read_sharepoint_files():
             )
 
 
-def read_sharepoint_file_by_ms_id(ms_id: str) -> PersistenceResponse:
+def read_sharepoint_file_by_id(file_id: int) -> PersistenceResponse:
+    """
+    Retrieves a SharePoint file from the database by its ID.
+    """
+    print(f'\nFile ID: {type(file_id)}')
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadMsSharePointFileByFileId (?)}"
+                print(f'\nFile ID: {file_id}')
+                row = cursor.execute(sql, file_id).fetchone()
+                print(f'\nRow: {row}')
+                if row:
+                    return PersistenceResponse(
+                        data=SharePointFile.from_db_row(row),
+                        message="SharePoint file found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+
+                return PersistenceResponse(
+                    data=None,
+                    message="No SharePoint file found",
+                    status_code=404,
+                    success=False,
+                    timestamp=datetime.now()
+                )
+
+        except pyodbc.Error as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read SharePoint file: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def read_sharepoint_file_by_ms_id(ms_id: int) -> PersistenceResponse:
     """
     Retrieves a SharePoint file from the database by its Microsoft ID.
     """
@@ -159,6 +198,7 @@ def read_sharepoint_file_by_ms_id(ms_id: str) -> PersistenceResponse:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointFileByMsId (?)}"
                 row = cursor.execute(sql, ms_id).fetchone()
+                print(f'\nRow: {row}')
                 if row:
                     return PersistenceResponse(
                         data=SharePointFile.from_db_row(row),

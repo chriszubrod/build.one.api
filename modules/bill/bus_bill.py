@@ -8,12 +8,19 @@ from dateutil import tz
 import uuid
 import base64
 
+# third party imports
+from flask import session
+
 # local imports
+from business.bus_response import BusinessResponse
+from integrations.ms import ms_upload_new_file, pers_ms_sharepoint_site, pers_ms_sharepoint_folder
+from integrations.ms.auth import pers_ms_auth
+from integrations.map import pers_map_project_sharepoint_folder
+from integrations.ms.sites import pers_ms_sites
 from modules.bill import (
     bus_bill_line_item_attachment,
     pers_bill
 )
-from business.bus_response import BusinessResponse
 from modules.project import pers_project
 from modules.sub_cost_code import pers_sub_cost_code
 from utils.function_help import clean_text_for_db
@@ -317,6 +324,53 @@ def post_bill_with_line_items_and_attachments(
         attachments=_tvp_attachments
     )
 
+    # If create_bill_resp.success, then sync the bill to SharePoint
+    if create_bill_resp.success:
+
+        access_token = None
+        pers_ms_auth_resp = pers_ms_auth.read_ms_auth_by_user_id(user_id=session['user']['id'])
+        if pers_ms_auth_resp.success:
+            access_token = pers_ms_auth_resp.data.access_token
+
+        site_id = None
+        pers_ms_sites_resp = pers_ms_sharepoint_site.read_sharepoint_sites()
+        if pers_ms_sites_resp.success:
+            site_id = pers_ms_sites_resp.data[0].site_id
+
+        for n, attachment in enumerate(_tvp_attachments):
+
+            project_id = _tvp_line_items[n][11]
+            pers_map_project_folder_resp = pers_map_project_sharepoint_folder.\
+                read_map_project_sharepoint_folders_by_project_by_module(
+                    project_id=project_id,
+                    module_id=4
+                )
+
+            folder_id = None
+            if pers_map_project_folder_resp.success:
+                folder_id = pers_map_project_folder_resp.data[0].ms_sharepoint_folder_id
+                pers_ms_folder_resp = pers_ms_sharepoint_folder.\
+                    read_sharepoint_folder_by_folder_id(folder_id=folder_id)
+                if pers_ms_folder_resp.success:
+                    folder_id = pers_ms_folder_resp.data.folder_id
+
+            file = {
+                'name': attachment[3],
+                'size': attachment[4],
+                'type': attachment[5],
+                'data': attachment[6]
+            }
+
+            if access_token and site_id and folder_id:
+
+                ms_upload_new_file_response = ms_upload_new_file.upload_file_to_sharepoint(
+                    access_token=access_token,
+                    site_id=site_id,
+                    folder_id=folder_id,
+                    file=file
+                )
+                
+                print(f'\nMS Upload New File Response: {ms_upload_new_file_response.message}')
 
 
 

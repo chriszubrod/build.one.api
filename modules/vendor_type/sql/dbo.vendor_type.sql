@@ -186,6 +186,24 @@ EXEC UpdateVendorType
 @Name = 'Subcontractor';
 
 
+DROP PROCEDURE IF EXISTS DeleteVendorType;
+
+CREATE PROCEDURE DeleteVendorType
+    @ID INT
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    DELETE FROM VendorType
+    WHERE [Id] = @ID;
+
+    COMMIT;
+END
+
+EXEC DeleteVendorType
+@ID = 1;
+
+
 
 
 

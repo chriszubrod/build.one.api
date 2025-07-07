@@ -1,43 +1,66 @@
 <!DOCTYPE html>
-
-<html lang="en">
-
+<html lang="en" class="h-full w-full">
     <head>
-
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>{% block title %}Build One{% endblock %}</title>
+        <meta name="description" content="{% block description %}Build.One - Construction Management System{% endblock %}">
+        <meta name="author" content="{% block author %}Build.One{% endblock %}">
+
+        <!-- Favicon -->
+        <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
+
+        <!-- Title -->
+        <title>{% block title %}Build.One{% endblock %}</title>
 
         <!-- Styles -->
         <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
 
+        <!-- Tailwind CSS -->
+        <script src="https://cdn.tailwindcss.com"></script>
+
+        <!-- Additional CSS block for page-specific styles -->
+        {% block extra_css %}{% endblock %}
+
         <!-- Scripts -->
         <script src="{{ url_for('static', filename='js/scripts.js') }}"></script>
 
-        <script src="https://cdn.tailwindcss.com"></script>
+        <!-- CSRF Token for forms -->
+        <meta name="csrf-token" content="{{ csrf_token() }}">
 
+        <!-- Additional head content block -->
+        {% block extra_head %}{% endblock %}
     </head>
 
-    <body class="bg-gray-50 min-h-screen">
+    <body class="bg-white min-h-screen flex flex-col">
 
+        <!-- Header -->
         {% include 'shared/components/header.html' %}
-        <div class="flex min-h-screen">
+    
+        <main class="flex-1 flex h-full">
+    
+            <!-- Alerts -->
+            {% include 'shared/components/alerts.html' %}
+        
+            <!-- Navigator -->
+            {% include 'shared/components/navigator.html' %}
+        
+            <!-- Content -->
+            {% block content %}{% endblock %}
+        
             <!-- Sidebar -->
-            <aside class="w-64 bg-white border-r hidden md:block">
-                {% include 'shared/components/navigator.html' %}
-            </aside>
-            <!-- Main Content -->
-            <main class="flex-1 p-8">
-                {% include 'shared/components/alerts.html' %}
-                {% block content %}{% endblock %}
-            </main>
-        </div>
+            {% include 'shared/components/sidebar.html' %}
+        
+        </main>
+    
+        <!-- Footer -->
         {% include 'shared/components/footer.html' %}
-
-        {% block scripts %}
-
-        {% endblock %}
-
+    
+        <!-- Scripts -->
+        {% block page_scripts %}{% endblock %}
+    
     </body>
+
+    <!-- Additional scripts block for page-specific JavaScript -->
+    {% block extra_scripts %}{% endblock %}
 
 </html>

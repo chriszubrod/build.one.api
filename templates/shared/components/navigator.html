@@ -1,0 +1,38 @@
+<style>
+    .nav-border-custom {
+        height: calc(100vh - 110px);
+    }
+</style>
+
+<!-- nav-border-custom is custom style above. not tailwind -->
+<nav class="p-4 bg-white border-r border-gray-200 hidden md:block flex-shrink-0 nav-border-custom" style="width: var(--navigator-width);">
+    <ul class="space-y-2 flex flex-col h-full">
+        <!-- Dashboard -->
+        <li>
+            <a href="/dashboard" class="block px-3 py-2 text-gray-700 hover:text-gray-900 hover:bg-gray-50 rounded-md">
+                Dashboard
+            </a>
+        </li>
+
+        <!-- If User is Logged In -->
+        {% if session.get('user') %}
+            {% for module in session.get('user', {}).get('modules', []) %}
+                <li>
+                    <a href="/{{ module.name }}" class="block px-3 py-2 text-gray-700 hover:text-gray-900 hover:bg-gray-50 rounded-md">
+                        {{ module.name }}
+                    </a>
+                </li>
+            {% endfor %}
+
+            <!-- If User is Active -->
+            {% if session.get('user', {}).get('is_active', False) %}
+                <li class="mt-auto">
+                    <a href="/logout" class="block px-3 py-2 text-gray-700 hover:text-gray-900 hover:bg-gray-50 rounded-md">
+                        Logout
+                    </a>
+                </li>
+            {% endif %}
+
+        {% endif %}
+    </ul>
+</nav>

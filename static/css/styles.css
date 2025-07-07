@@ -1,0 +1,56 @@
+/* Global settings */
+:root {
+    --header-height: 72px;
+    --footer-height: 72px;
+    --navigator-width: 250px;
+    --aside-width: 250px;
+}
+
+/* Ensure full viewport coverage */
+html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    padding: 0;
+    width: 100%;
+}
+
+body {
+    color: #000000;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-weight: 300;
+    font-size: 16px;
+    line-height: 1.5;
+}
+
+/* Partials settings */
+h1 {
+    font-size: 1.5rem;
+    font-weight: 300;
+}
+
+h2 {
+    font-size: 1.25rem;
+    font-weight: 300;
+}
+
+h3 {
+    font-size: 1rem;
+    font-weight: 300;
+}
+
+
+/* Components settings */
+.logo {
+    color: #111827;
+    font-size: 1.25rem;
+    font-weight: 300;
+    text-decoration: none;
+}
+
+.logo:hover {
+    color: #374151;
+}
+
+
+/* Pages settings */

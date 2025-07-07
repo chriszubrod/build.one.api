@@ -34,7 +34,7 @@ def dashboard_route():
     else:
         _modules = []
 
-    return render_template('dashboard_view.html', user=_user, modules=_modules)
+    return render_template('modules/dashboard/dashboard_view.html', user=_user, modules=_modules)
 
 
 

@@ -1,0 +1,60 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Vendor Type{% endblock %}
+
+{% block content %}
+
+    <!-- Container for the page content -->
+    <div class="flex-1 p-4">
+        <!-- Header section with title and form -->
+        <div class="space-y-2">
+
+            <div class="flex justify-between items-center">
+
+                {% set content = 'Edit Vendor Type' %}
+                {% include '/shared/partials/h1.html' with context %}
+
+                {% set href = url_for('web_vendor_type.list_vendor_types_route') %}
+                {% set content = 'Back to Vendor Types' %}
+                {% include '/shared/partials/a.html' with context %}
+
+            </div>
+
+            <form id="edit-vendor-type-form" class="w-full" autocomplete="off">
+                <input type="hidden" id="guid" name="guid" value="{{ vendor_type.guid }}">
+
+                <label for="name" class="block text-sm font-medium text-gray-700 px-3 py-2">
+                    Name
+                </label>
+
+                <input type="text" id="name" name="name" value="{{ vendor_type.name }}" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400">
+
+                <button type="submit" class="mt-4 px-4 py-2 bg-black text-white rounded hover:bg-gray-800 px-3 py-2">
+                    Save
+                </button>
+            </form>
+
+        </div>
+
+    </div>
+
+    <script>
+        const form = document.getElementById('edit-vendor-type-form');
+        
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            // form id, endpoint, redirect url
+            FormHandler.submitForm(
+                'edit-vendor-type-form',
+                '{{ url_for("api_vendor_type.api_patch_vendor_type_route") }}',
+                {
+                    method: 'PATCH',
+                    redirectUrl: '{{ url_for("web_vendor_type.list_vendor_types_route") }}'
+                }
+            );
+        });
+
+    </script>
+
+{% endblock %}

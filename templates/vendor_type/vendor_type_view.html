@@ -1,0 +1,81 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Vendor Type{% endblock %}
+
+{% block content %}
+
+    <!-- Container for the page content -->
+    <div class="flex-1 p-4">
+        <!-- Header section with title and form -->
+        <div class="space-y-2">
+
+            <div class="flex justify-between items-center">
+
+                {% set content = 'View Vendor Type' %}
+                {% include '/shared/partials/h1.html' with context %}
+
+                {% set href = url_for('web_vendor_type.list_vendor_types_route') %}
+                {% set content = 'Back to Vendor Types' %}
+                {% include '/shared/partials/a.html' with context %}
+
+            </div>
+
+            <dl class="w-full">
+                <div class="px-3 py-2">
+                    <dt class="text-sm font-medium text-gray-700 px-3">
+                        GUID
+                    </dt>
+                    <dd class="block font-medium px-3 text-gray-900">
+                        {{ vendor_type.guid }}
+                    </dd>
+                </div>
+
+                <div class="px-3 py-2">
+                    <dt class="text-sm font-medium text-gray-700 px-3">
+                        Created Datetime
+                    </dt>
+                    <dd class="block font-medium px-3 text-gray-900">
+                        {{ vendor_type.created_datetime[:19] }}
+                    </dd>
+                </div>
+
+                <div class="px-3 py-2">
+                    <dt class="text-sm font-medium text-gray-700 px-3 ">
+                        Modified Datetime
+                    </dt>
+                    <dd class="block font-medium px-3 ext-gray-900">
+                        {{ vendor_type.modified_datetime[:19] }}
+                    </dd>
+                </div>
+
+                <div class="px-3 py-2">
+                    <dt class="text-sm font-medium text-gray-700 px-3">
+                        Name
+                    </dt>
+                    <dd class="block font-medium px-3 text-gray-900">
+                        {{ vendor_type.name }}
+                    </dd>
+                </div>
+
+                <div class="px-3 py-2">
+                    <dt class="text-sm font-medium text-gray-700 px-3">
+                        Transaction ID
+                    </dt>
+                    <dd class="block font-medium px-3 text-gray-900">
+                        {{ vendor_type.transaction_id }}
+                    </dd>
+                </div>
+
+                <div class="px-3 py-2">
+                    <a href="{{ url_for('web_vendor_type.edit_vendor_type_route', vendor_type_guid=vendor_type.guid) }}" class="mt-4 px-4 py-2 bg-black text-white rounded hover:bg-gray-800">
+                        Edit
+                    </a>
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+{% endblock %}

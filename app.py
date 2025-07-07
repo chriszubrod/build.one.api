@@ -3,9 +3,7 @@ import os
 
 # third party imports
 from flask import (
-    jsonify,
-    Flask,
-    render_template
+    Flask
 )
 from flask_wtf.csrf import CSRFProtect
 
@@ -71,6 +69,10 @@ from modules.vendor import (
     api_vendor,
     web_vendor
 )
+from modules.vendor_type import (
+    api_vendor_type,
+    web_vendor_type
+)
 
 from utils.config_help import get_secrets, write_secrets, update_secrets
 
@@ -81,23 +83,11 @@ from integrations.ms.drives import api_ms_drives
 # initialize the app
 app = Flask(__name__)
 
+# Set secret key for CSRF protection
+app.config['SECRET_KEY'] = '63e60b4b7f62c96222b738ad13fd918caa7f4fe712cfde86ca28662d38056d30'
+
 # CSRF Setup
 csrf = CSRFProtect(app)
-csrf.exempt(api_ms_auth.api_ms_auth_bp)
-csrf.exempt(web_ms_picker.web_ms_picker_bp)
-
-# Secure session cookie setup
-app.config.update(
-    {
-        'SECRET_KEY': '1df3a3s1df65a1sd6f4asdfa1sd3f132sd1f3as1df56asd65fasd',
-        'SERVER_NAME': 'localhost:8000',
-        'SESSION_COOKIE_DOMAIN': 'localhost',
-        'SESSION_COOKIE_SECURE': False, # set to true if using https
-        'SESSION_COOKIE_HTTPONLY': True,
-        'SESSION_COOKIE_SAMESITE': 'Lax'
-    }
-)
-print("FLASK_RUN_HOST:", os.getenv('FLASK_RUN_HOST'))
 
 
 # register blueprints
@@ -146,26 +136,15 @@ app.register_blueprint(web_sub_cost_code.web_sub_cost_code_bp)
 app.register_blueprint(api_vendor.api_vendor_bp)
 app.register_blueprint(web_vendor.web_vendor_bp)
 
+app.register_blueprint(api_vendor_type.api_vendor_type_bp)
+app.register_blueprint(web_vendor_type.web_vendor_type_bp)
+
 
 # integration blueprints
 app.register_blueprint(api_ms_auth.api_ms_auth_bp)
 app.register_blueprint(web_ms_picker.web_ms_picker_bp)
 app.register_blueprint(api_ms_drives.api_ms_drives_bp)
 
-
-
-
-
-
 @app.route('/')
 def index():
     return "pong", 200
-
-
-if __name__ == '__main__':
-    app.run(
-        host='localhost',
-        port=8000,
-        debug=True,
-        use_reloader=False
-    )

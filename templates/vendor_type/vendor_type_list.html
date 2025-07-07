@@ -11,12 +11,13 @@
 
             <div class="flex justify-between items-center">
 
-                {% set content = 'Vendor Types' %}
-                {% include '/shared/partials/h1.html' with context %}
+                <h1 class="'px-3 py-2'">
+                    Vendor Types
+                </h1>
 
-                {% set href = url_for('web_vendor_type.create_vendor_type_route') %}
-                {% set content = '+ Create New' %}
-                {% include '/shared/partials/a.html' with context %}
+                <a href="{{ url_for('web_vendor_type.create_vendor_type_route') }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">
+                    + Create New
+                </a>
 
             </div>
 

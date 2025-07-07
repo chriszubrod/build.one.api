@@ -11,16 +11,18 @@
 
             <div class="flex justify-between items-center">
 
-                {% set content = 'Edit Vendor Type' %}
-                {% include '/shared/partials/h1.html' with context %}
+                <h1 class="'px-3 py-2'">
+                    Edit Vendor Type
+                </h1>
 
-                {% set href = url_for('web_vendor_type.list_vendor_types_route') %}
-                {% set content = 'Back to Vendor Types' %}
-                {% include '/shared/partials/a.html' with context %}
-
+                <a href="{{ url_for('web_vendor_type.list_vendor_types_route') }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">
+                    Back to Vendor Types
+                </a>
+                
             </div>
 
             <form id="edit-vendor-type-form" class="w-full" autocomplete="off">
+
                 <input type="hidden" id="guid" name="guid" value="{{ vendor_type.guid }}">
 
                 <label for="name" class="block text-sm font-medium text-gray-700 px-3 py-2">
@@ -32,6 +34,7 @@
                 <button type="submit" class="mt-4 px-4 py-2 bg-black text-white rounded hover:bg-gray-800 px-3 py-2">
                     Save
                 </button>
+
             </form>
 
         </div>
@@ -44,7 +47,7 @@
         form.addEventListener('submit', function(e) {
             e.preventDefault();
 
-            // form id, endpoint, redirect url
+            // form id, endpoint, {method, redirect url}
             FormHandler.submitForm(
                 'edit-vendor-type-form',
                 '{{ url_for("api_vendor_type.api_patch_vendor_type_route") }}',

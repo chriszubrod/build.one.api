@@ -243,7 +243,7 @@ def patch_vendor_type(
         pers_buildone_vendor_type_resp = pers_vendor_type.read_vendor_type_by_name(
             vendor_type_name=vendor_type_name
         )
-        if pers_buildone_vendor_type_resp.success and pers_buildone_vendor_type_resp.data.id != vendor_type_id:
+        if pers_buildone_vendor_type_resp.success and pers_buildone_vendor_type_resp.data.guid != vendor_type_guid:
             return BusinessResponse(
                 data=None,
                 message="Vendor type name already exists",

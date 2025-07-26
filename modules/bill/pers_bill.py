@@ -317,3 +317,47 @@ def read_bills_by_vendor(vendor_id: int) -> PersistenceResponse:
                 success=False,
                 timestamp=datetime.now()
             )
+
+
+def update_bill(bill: Bill) -> PersistenceResponse:
+    """Updates a bill in the database."""
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL UpdateBill(?, ?, ?, ?, ?)}"
+                row_count = cursor.execute(
+                    sql,
+                    bill.id,
+                    bill.number,
+                    bill.date,
+                    bill.amount,
+                    bill.vendor_id
+                ).rowcount
+                cnxn.commit()
+                if row_count > 0:
+                    return PersistenceResponse(
+                        data=row_count,
+                        message="Bill has been successfully updated.",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    cnxn.rollback()
+                    return PersistenceResponse(
+                        data=None,
+                        message="Bill has NOT been successfully updated.",
+                        status_code=400,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            cnxn.rollback()
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to update bill: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )

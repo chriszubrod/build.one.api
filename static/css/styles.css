@@ -2,8 +2,8 @@
 :root {
     --header-height: 72px;
     --footer-height: 72px;
-    --navigator-width: 250px;
-    --aside-width: 250px;
+    --navigator-width: 225px;
+    --aside-width: 225px;
 }
 
 /* Ensure full viewport coverage */
@@ -18,33 +18,33 @@ html, body {
 body {
     color: #000000;
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    font-weight: 300;
-    font-size: 16px;
+    font-weight: 200;
+    font-size: 12px;
     line-height: 1.5;
 }
 
 /* Partials settings */
 h1 {
-    font-size: 1.5rem;
-    font-weight: 300;
+    font-size: 1.0rem;
+    font-weight: 200;
 }
 
 h2 {
-    font-size: 1.25rem;
-    font-weight: 300;
+    font-size: 0.75rem;
+    font-weight: 200;
 }
 
 h3 {
-    font-size: 1rem;
-    font-weight: 300;
+    font-size: 0.50rem;
+    font-weight: 200;
 }
 
 
 /* Components settings */
 .logo {
     color: #111827;
-    font-size: 1.25rem;
-    font-weight: 300;
+    font-size: 0.50rem;
+    font-weight: 200;
     text-decoration: none;
 }
 

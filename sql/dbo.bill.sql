@@ -20,7 +20,8 @@ SELECT * FROM [Bill];
 SELECT * FROM [BillLineItem];
 SELECT * FROM [BilLLineItemAttachment];
 
-
+DELETE FROM [Bill]
+WHERE [Id] > 64;
 
 
 
@@ -227,6 +228,38 @@ BEGIN
 
     COMMIT;
 END
+
+
+DROP PROCEDURE IF EXISTS UpdateBill;
+
+CREATE PROCEDURE UpdateBill
+    @Id INT,
+    @Number NVARCHAR(255),
+    @Date DATE,
+    @Amount DECIMAL(18,2),
+    @VendorId INT
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
+    UPDATE Bill
+    SET
+        [Number] = @Number,
+        [Date] = @Date,
+        [Amount] = @Amount,
+        [VendorId] = @VendorId,
+        [ModifiedDatetime] = @Now
+    WHERE [Id] = @Id;
+
+    COMMIT;
+END
+
+
+
+
+
 
 
 DELETE FROM Bill;

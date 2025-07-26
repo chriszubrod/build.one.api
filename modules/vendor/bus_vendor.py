@@ -10,52 +10,56 @@ from dateutil import tz
 from business.bus_response import BusinessResponse
 from modules.vendor import pers_vendor
 
-
-def get_vendors() -> BusinessResponse:
-    """
-    Retrieves all vendors from the database.
-    """
-    pers_buildone_vendors_resp = pers_vendor.read_vendors()
-    return BusinessResponse(
-        data=pers_buildone_vendors_resp.data,
-        message=pers_buildone_vendors_resp.message,
-        success=pers_buildone_vendors_resp.success,
-        status_code=pers_buildone_vendors_resp.status_code,
-        timestamp=pers_buildone_vendors_resp.timestamp
-    )
+# Constants
+MAX_NAME_LENGTH = 255
+MIN_NAME_LENGTH = 1
+MAX_ABBR_LENGTH = 10
+MIN_ABBR_LENGTH = 1
 
 
-def get_vendor_by_id(vendor_id: int) -> BusinessResponse:
+def validate_vendor_name(name: str) -> tuple[bool, str]:
     """
-    Retrieves a vendor by its ID.
+    Validates the vendor name.
     """
-    pers_buildone_vendor_resp = pers_vendor.read_vendor_by_id(vendor_id)
-    return BusinessResponse(
-        data=pers_buildone_vendor_resp.data,
-        message=pers_buildone_vendor_resp.message,
-        success=pers_buildone_vendor_resp.success,
-        status_code=pers_buildone_vendor_resp.status_code,
-        timestamp=pers_buildone_vendor_resp.timestamp
-    )
+    if not name or not name.strip():
+        return False, "Vendor name is required"
+
+    name = name.strip()
+
+    if len(name) > MAX_NAME_LENGTH:
+        return False, f"Vendor name must be less than {MAX_NAME_LENGTH} characters"
+
+    if len(name) < MIN_NAME_LENGTH:
+        return False, f"Vendor name must be at least {MIN_NAME_LENGTH} characters"
+
+    if any(char in name for char in ['<', '>', '&', '"', "'"]):
+        return False, "Vendor name cannot contain invalid characters"
+
+    return True, name
 
 
-def get_vendor_by_guid(vendor_guid: str) -> BusinessResponse:
+def validate_vendor_abbreviation(abbreviation: str) -> tuple[bool, str]:
     """
-    Retrieves a vendor by its GUID.
+    Validates the vendor abbreviation.
     """
-    pers_buildone_vendor_resp = pers_vendor.read_vendor_by_guid(vendor_guid)
-    return BusinessResponse(
-        data=pers_buildone_vendor_resp.data,
-        message=pers_buildone_vendor_resp.message,
-        success=pers_buildone_vendor_resp.success,
-        status_code=pers_buildone_vendor_resp.status_code,
-        timestamp=pers_buildone_vendor_resp.timestamp
-    )
+    if not abbreviation or not abbreviation.strip():
+        return False, "Vendor abbreviation is required"
+
+    abbreviation = abbreviation.strip()
+
+    if len(abbreviation) > MAX_ABBR_LENGTH:
+        return False, f"Vendor abbreviation must be less than {MAX_ABBR_LENGTH} characters"
+
+    if len(abbreviation) < MIN_ABBR_LENGTH:
+        return False, f"Vendor abbreviation must be at least {MIN_ABBR_LENGTH} characters"
+
+    if any(char in abbreviation for char in ['<', '>', '&', '"', "'"]):
+        return False, "Vendor abbreviation cannot contain invalid characters"
+
+    return True, abbreviation
 
 
 def post_vendor(
-        created_datetime: datetime,
-        modified_datetime: datetime,
         name: str,
         abbreviation: str,
         tax_id_number: str,
@@ -67,24 +71,35 @@ def post_vendor(
     """
 
     # validate name
-    if not name or name == "" or name is None:
+    is_valid, name_result = validate_vendor_name(
+        name=name
+    )
+    if not is_valid:
         return BusinessResponse(
             data=None,
-            message="Missing Vendor name.",
+            message=name_result,
             success=False,
             status_code=400,
-            timestamp=datetime.now(tz.tzlocal())
+            timestamp=datetime.now()
         )
 
+    vendor_name = name_result
+
+
     # validate abbreviation
-    if not abbreviation or abbreviation == "" or abbreviation is None:
+    is_valid, abbreviation_result = validate_vendor_abbreviation(
+        abbreviation=abbreviation
+    )
+    if not is_valid:
         return BusinessResponse(
             data=None,
-            message="Missing Vendor abbreviation.",
+            message=abbreviation_result,
             success=False,
             status_code=400,
-            timestamp=datetime.now(tz.tzlocal())
+            timestamp=datetime.now()
         )
+
+    vendor_abbreviation = abbreviation_result
 
     # validate tax_id_number
     if not tax_id_number or tax_id_number == "" or tax_id_number is None:
@@ -128,10 +143,8 @@ def post_vendor(
 
     # create vendor object instance
     _vendor = pers_vendor.Vendor(
-        created_datetime=created_datetime,
-        modified_datetime=modified_datetime,
-        name=name,
-        abbreviation=abbreviation,
+        name=vendor_name,
+        abbreviation=vendor_abbreviation,
         tax_id_number=tax_id_number,
         is_active=is_active,
         type=vendor_type
@@ -147,3 +160,73 @@ def post_vendor(
         status_code=pers_create_vendor_resp.status_code,
         timestamp=pers_create_vendor_resp.timestamp
     )
+
+
+def get_vendors() -> BusinessResponse:
+    """
+    Retrieves all vendors from the database.
+    """
+    try:
+        pers_buildone_vendors_resp = pers_vendor.read_vendors()
+        return BusinessResponse(
+            data=pers_buildone_vendors_resp.data,
+            message=pers_buildone_vendors_resp.message,
+            success=pers_buildone_vendors_resp.success,
+            status_code=pers_buildone_vendors_resp.status_code,
+            timestamp=pers_buildone_vendors_resp.timestamp
+        )
+    except Exception as e:
+        return BusinessResponse(
+            data=None,
+            message=f"Failed to read vendors: {str(e)}",
+            success=False,
+            status_code=500,
+            timestamp=datetime.now()
+        )
+
+
+def get_vendor_by_id(vendor_id: int) -> BusinessResponse:
+    """
+    Retrieves a vendor by its ID.
+    """
+    try:
+        pers_buildone_vendor_resp = pers_vendor.read_vendor_by_id(vendor_id)
+        return BusinessResponse(
+            data=pers_buildone_vendor_resp.data,
+            message=pers_buildone_vendor_resp.message,
+            success=pers_buildone_vendor_resp.success,
+            status_code=pers_buildone_vendor_resp.status_code,
+            timestamp=pers_buildone_vendor_resp.timestamp
+        )
+    except Exception as e:
+        return BusinessResponse(
+            data=None,
+            message=f"Failed to read vendor by id: {str(e)}",
+            success=False,
+            status_code=500,
+            timestamp=datetime.now()
+        )
+
+
+def get_vendor_by_guid(vendor_guid: str) -> BusinessResponse:
+    """
+    Retrieves a vendor by its GUID.
+    """
+    try:
+        pers_buildone_vendor_resp = pers_vendor.read_vendor_by_guid(vendor_guid)
+        return BusinessResponse(
+            data=pers_buildone_vendor_resp.data,
+            message=pers_buildone_vendor_resp.message,
+            success=pers_buildone_vendor_resp.success,
+            status_code=pers_buildone_vendor_resp.status_code,
+            timestamp=pers_buildone_vendor_resp.timestamp
+        )
+    except Exception as e:
+        return BusinessResponse(
+            data=None,
+            message=f"Failed to read vendor by guid: {str(e)}",
+            success=False,
+            status_code=500,
+            timestamp=datetime.now()
+        )
+

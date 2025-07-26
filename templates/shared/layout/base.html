@@ -21,6 +21,9 @@
         <!-- Additional CSS block for page-specific styles -->
         {% block extra_css %}{% endblock %}
 
+        <!-- PDF.js -->
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
         <!-- Scripts -->
         <script src="{{ url_for('static', filename='js/scripts.js') }}"></script>
 
@@ -31,12 +34,12 @@
         {% block extra_head %}{% endblock %}
     </head>
 
-    <body class="bg-white min-h-screen flex flex-col">
+    <body class="bg-white h-screen flex flex-col overflow-hidden">
 
         <!-- Header -->
         {% include 'shared/components/header.html' %}
     
-        <main class="flex-1 flex h-full">
+        <main class="flex-1 flex overflow-hidden">
     
             <!-- Alerts -->
             {% include 'shared/components/alerts.html' %}
@@ -45,7 +48,9 @@
             {% include 'shared/components/navigator.html' %}
         
             <!-- Content -->
-            {% block content %}{% endblock %}
+            <div class="flex-1">
+                {% block content %}{% endblock %}
+            </div>
         
             <!-- Sidebar -->
             {% include 'shared/components/sidebar.html' %}

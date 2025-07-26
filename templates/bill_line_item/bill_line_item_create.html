@@ -1,0 +1,57 @@
+<div class="grid grid-cols-12 gap-2 items-end border-t border-gray-200 pt-1 min-w-0">
+
+    <label for="line-item-description" class="col-span-12 block text-sm font-medium text-gray-700 px-3 py-1">
+        Description
+    </label>
+    <input id="line-item-description" name="line-item-description[]" class="border p-1 rounded col-span-12 min-w-0" required>
+
+    <!-- First row: sub-cost-code, amount, billable -->
+    <select name="sub-cost-code[]" class="border p-1 rounded col-span-6 min-w-0" required>
+        <option value="">Select Sub Cost Code</option>
+        {% if sub_cost_codes %}
+            {% for sub_cost_code in sub_cost_codes %}
+                <option value="{{ sub_cost_code.guid }}">{{ sub_cost_code.number }} - {{ sub_cost_code.name }}</option>
+            {% endfor %}
+        {% else %}
+            <option>Cost codes did not populate.</option>
+        {% endif %}
+    </select>
+
+    <input name="line-item-amount[]" placeholder="Amount" value="${{ "%.2f"|format(0) }}" class="border p-1 rounded col-span-3 min-w-0">
+
+    <label class="flex flex-col items-center col-span-3 text-sm">
+        <span class="mb-1">Billable</span>
+        <input type="checkbox" name="billable[]" checked class="mt-1">
+    </label>
+
+    <!-- Second row: project, drop-area, remove button -->
+    <select name="project[]" class="border p-1 rounded col-span-6 min-w-0" required>
+        <option value="">Select Project</option>
+        {% if projects %}
+            {% for project in projects %}
+                <option value="{{ project.guid }}">{{ project.name }}</option>
+            {% endfor %}
+        {% else %}
+            <option>Projects did not populate.</option>
+        {% endif %}
+    </select>
+
+    <div class="drop-area border-2 border-dashed border-gray-300 rounded text-center text-sm text-gray-500 col-span-3 min-w-0 p-2 cursor-pointer hover:border-gray-400 hover:bg-gray-50 transition-colors">
+        <p class="text-xs">Drag & drop file or click here</p>
+        <input type="file" class="hidden" accept="application/pdf,image/jpeg,image/png" data-line-item-file>
+    </div>
+
+    <button type="button" onclick="this.parentElement.remove()" class="text-red-600 text-xs underline col-span-3">
+        Remove Line Item
+    </button>
+    
+    <div class="preview hidden mt-1 flex flex-col items-center col-span-12 p-2 bg-green-50 border border-green-200 rounded">
+        <div class="flex items-center space-x-2">
+            <svg class="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <p class="text-xs text-gray-700 font-medium"></p>
+        </div>
+    </div>
+
+</div>

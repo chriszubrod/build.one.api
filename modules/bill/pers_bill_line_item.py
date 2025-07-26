@@ -138,6 +138,40 @@ def read_bill_line_item_by_id(bill_line_item_id: int) -> PersistenceResponse:
             )
 
 
+def read_bill_line_item_by_guid(bill_line_item_guid: str) -> PersistenceResponse:
+    """Retrieves a bill line item from the database by GUID."""
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadBuildoneBillLineItemByGUID(?)}"
+                row = cursor.execute(sql, bill_line_item_guid).fetchone()
+                if row:
+                    return PersistenceResponse(
+                        data=BillLineItem.from_db_row(row),
+                        message="Bill line item by guid found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    return PersistenceResponse(
+                        data=None,
+                        message="Bill line item by guid not found",
+                        status_code=404,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read bill line item by guid: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
 def read_bill_line_item_by_bill_id(bill_id: int) -> PersistenceResponse:
     """Retrieves all bill line items for a specific bill."""
     with pers_database.get_db_connection() as cnxn:
@@ -165,6 +199,52 @@ def read_bill_line_item_by_bill_id(bill_id: int) -> PersistenceResponse:
             return PersistenceResponse(
                 data=None,
                 message=f"Failed to read bill line item by bill id: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def update_bill_line_item(bill_line_item: BillLineItem) -> PersistenceResponse:
+    """Updates a bill line item in the database."""
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL UpdateBillLineItem(?, ?, ?, ?, ?, ?, ?, ?)}"
+                row_count = cursor.execute(
+                    sql,
+                    bill_line_item.id,
+                    bill_line_item.description,
+                    bill_line_item.rate,
+                    bill_line_item.amount,
+                    bill_line_item.is_billable,
+                    bill_line_item.is_billed,
+                    bill_line_item.sub_cost_code_id,
+                    bill_line_item.project_id
+                ).rowcount
+                cnxn.commit()
+                if row_count > 0:
+                    return PersistenceResponse(
+                        data=row_count,
+                        message="Bill Line Item has been successfully updated.",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    cnxn.rollback()
+                    return PersistenceResponse(
+                        data=None,
+                        message="Bill Line Item has NOT been successfully updated.",
+                        status_code=400,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+        except (pyodbc.Error) as e:
+            cnxn.rollback()
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to update Bill Line Item: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()

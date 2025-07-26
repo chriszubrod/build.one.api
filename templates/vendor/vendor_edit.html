@@ -1,0 +1,131 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Vendor{% endblock %}
+
+{% block content %}
+
+    <!-- Container for the page content -->
+    <div class="flex-1 p-4">
+        <!-- Header section with title and form -->
+        <div class="space-y-2">
+
+            <div class="flex justify-between items-center">
+
+                <h1 class="'px-3 py-2'">
+                    Edit Vendor
+                </h1>
+
+                <a href="{{ url_for('web_vendor.list_vendors_route') }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">
+                    Back to Vendors
+                </a>
+                
+            </div>
+
+            <form id="edit-vendor-form" class="w-full" autocomplete="off">
+                
+                <label for="name" class="block text-sm font-medium text-gray-700 px-3 py-2">
+                    Name
+                </label>
+
+                <input type="text" id="name" name="name" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400">
+
+                <label for="abbreviation" class="block text-sm font-medium text-gray-700 px-3 py-2">
+                    Abbreviation
+                </label>
+
+                <input type="text" id="abbreviation" name="abbreviation" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400">
+
+                <label for="taxidnumber" class="block text-sm font-medium text-gray-700 px-3 py-2">
+                    Tax ID Number
+                </label>
+
+                <input type="text" id="taxidnumber" name="taxidnumber" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400">
+
+                <div class="px-3 py-2">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        Is Active
+                    </label>
+                    
+                    <!-- Hidden real checkbox -->
+                    <input type="checkbox" id="isActive" name="isActive" value="1" checked class="hidden">
+                    
+                    <!-- Toggle switch -->
+                    <button type="button" id="isActiveToggle" class="relative inline-flex h-6 w-11 items-center rounded-full bg-green-600 transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2" role="switch" aria-checked="true">
+                        <span class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform translate-x-6"></span>
+                    </button>
+
+                </div>
+
+                <label for="vendortype" class="block text-sm font-medium text-gray-700 px-3 py-2">
+                    Vendor Type
+                </label>
+
+                <select id="vendortype" name="vendortype" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900">
+                    <option value="">Select a vendor type</option>
+                    {% for vendor_type in vendor_types %}
+                        <option value="{{ vendor_type.guid }}" {% if vendor_type.guid == vendor.type.guid %}selected{% endif %}>{{ vendor_type.name }}</option>
+                    {% endfor %}
+                </select>
+
+                <button type="submit" class="mt-4 px-4 py-2 bg-black text-white rounded hover:bg-gray-800 px-3 py-2">
+                    Save
+                </button>
+
+            </form>
+
+        </div>
+
+    </div>
+
+{% endblock %}
+
+{% block page_scripts %}
+
+    <script>
+        const form = document.getElementById('edit-vendor-form');
+        
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            // form id, endpoint, redirect url
+            FormHandler.submitSimpleForm(
+                'edit-vendor-form',
+                '',
+                //'{{ url_for("api_vendor.api_patch_vendor_route", vendor_guid=vendor.guid) }}',
+                '{{ url_for("web_vendor.view_vendor_route", vendor_guid=vendor.guid) }}'
+            );
+        });
+
+        // Toggle functionality for the custom switch
+        document.addEventListener('DOMContentLoaded', function() {
+            const realCheckbox = document.getElementById('isActive');
+            const toggleButton = document.getElementById('isActiveToggle');
+            
+            // Function to update toggle state
+            function updateToggleState(isChecked) {
+                if (isChecked) {
+                    toggleButton.classList.remove('bg-gray-200');
+                    toggleButton.classList.add('bg-green-600');
+                    toggleButton.querySelector('span').classList.remove('translate-x-1');
+                    toggleButton.querySelector('span').classList.add('translate-x-6');
+                } else {
+                    toggleButton.classList.remove('bg-green-600');
+                    toggleButton.classList.add('bg-gray-200');
+                    toggleButton.querySelector('span').classList.remove('translate-x-6');
+                    toggleButton.querySelector('span').classList.add('translate-x-1');
+                }
+            }
+            
+            // Initialize toggle state
+            updateToggleState(realCheckbox.checked);
+            
+            // When the toggle is clicked, update the real checkbox
+            toggleButton.addEventListener('click', function() {
+                realCheckbox.checked = !realCheckbox.checked;
+                updateToggleState(realCheckbox.checked);
+            });
+        });
+
+    </script>
+
+{% endblock %}

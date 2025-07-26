@@ -27,7 +27,7 @@ def get_bill_line_item_attachment_by_bill_line_item_id(
     Retrieves a bill line item attachment by its bill line item ID.
     """
     pers_bill_line_item_attachment_resp = pers_bill_line_item_attachment\
-        .get_bill_line_item_attachment_by_bill_line_item_id(
+        .read_bill_line_item_attachment_by_bill_line_item_id(
             bill_line_item_id
         )
     if pers_bill_line_item_attachment_resp.success:

@@ -95,3 +95,74 @@ def api_post_user_route():
                 timestamp=datetime.now(tz.tzlocal())
             ).to_dict()
         )
+
+
+@api_user_bp.route('/patch/user', methods=['PATCH'])
+def api_patch_user_route():
+    """
+    Handles the PATCH request for updating a user.
+    """
+    try:
+        # If request is not JSON, return 400 error
+        if not request.is_json:
+            return jsonify(
+                ApiResponse(
+                    data=None,
+                    message='Content type must be application/json',
+                    status_code=400,
+                    success=False,
+                    timestamp=datetime.now(tz.tzlocal())
+                ).to_dict()
+            )
+
+        # Get the JSON data from the request
+        data = request.json
+
+        # print the data
+        print(f'\nAPI Data: {data}\n')
+
+        # Get the user guid, strip whitespace, clean with bleach and html.escape
+        raw_user_guid = data.get('guid', '').strip()
+        clean_user_guid = bleach.clean(raw_user_guid, strip=True) # Remove any HTML tags
+        user_guid = html.escape(clean_user_guid) # Escape any special HTML characters
+        print(f'\nAPI User GUID: {user_guid}\n')
+
+        # Get the user name, strip whitespace, clean with bleach and html.escape
+        raw_username = data.get('username', '').strip()
+        clean_username = bleach.clean(raw_username, strip=True) # Remove any HTML tags
+        username = html.escape(clean_username) # Escape any special HTML characters
+
+        # Get the role guid, strip whitespace, clean with bleach and html.escape
+        raw_role_guid = data.get('roleGuid', '').strip()
+        clean_role_guid = bleach.clean(raw_role_guid, strip=True) # Remove any HTML tags
+        role_guid = html.escape(clean_role_guid) # Escape any special HTML characters
+
+        # Call the patch_user function and pass in the data to update a user
+        user_bus_response = bus_user.patch_user(
+            user_guid=user_guid,
+            username=username,
+            role_guid=role_guid
+        )
+
+        # Return the response from the patch_user function
+        return jsonify(
+            ApiResponse(
+                data=user_bus_response.data,
+                message=user_bus_response.message,
+                status_code=user_bus_response.status_code,
+                success=user_bus_response.success,
+                timestamp=datetime.now(tz.tzlocal())
+            ).to_dict()
+        )
+
+    # Handle any exceptions
+    except (ValueError, TypeError, KeyError) as e:
+        return jsonify(
+            ApiResponse(
+                data=None,
+                message=str(e),
+                status_code=500,
+                success=False,
+                timestamp=datetime.now(tz.tzlocal())
+            ).to_dict()
+        )

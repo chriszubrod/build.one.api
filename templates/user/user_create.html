@@ -1,0 +1,114 @@
+
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}User{% endblock %}
+
+{% block content %}
+
+    <!-- Container for the page content -->
+    <div class="flex-1 p-4">
+        <!-- Header section with title and form -->
+        <div class="space-y-2">
+
+            <div class="flex justify-between items-center">
+
+                <h1 class="'px-3 py-2'">
+                    Create User
+                </h1>
+
+                <a href="{{ url_for('web_user.list_users_route') }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">
+                    Back to Users
+                </a>
+
+            </div>
+
+            <form id="create-user-form" class="w-full" autocomplete="off">
+                <!-- username -->
+                <label for="username" class="block text-sm font-medium text-gray-700 px-3 py-2">
+                    Username
+                </label>
+
+                <input type="text" id="username" name="username" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400">
+
+                <!-- password -->
+                <label for="password" class="block text-sm font-medium text-gray-700 px-3 py-2">
+                    Password
+                </label>
+
+                <input type="text" id="password" name="password" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400">
+
+                <!-- active -->
+                <label class="flex flex-col items-center col-span-3 text-sm">
+                    <span class="mb-1">Active</span>
+                    <input type="checkbox" name="is_active" id="toggle_active"
+                        class="sr-only peer"
+                        checked>
+                    <div class="w-11 h-6 bg-gray-300 rounded-full peer-checked:bg-green-500 relative transition-colors duration-200">
+                        <div class="absolute left-0.5 top-0.5 bg-white w-5 h-5 rounded-full shadow
+                            transition-transform duration-200
+                            translate-x-0 peer-checked:translate-x-5
+                            peer-focus:ring-2 peer-focus:ring-green-400">
+                        </div>
+                    </div>
+                </label>
+
+                <!-- role -->
+                <select name="role" class="w-full border p-1 rounded" required>
+                    <option value="">Select Role</option>
+                    {% if roles %}
+                        {% for role in roles %}
+                            <option value="{{ role.guid }}">{{ role.name }}</option>
+                        {% endfor %}
+                    {% else %}
+                        <option>Roles did not populate.</option>
+                    {% endif %}
+                </select>
+
+                <button type="submit" class="mt-4 px-4 py-2 bg-black text-white rounded hover:bg-gray-800 px-3 py-2">
+                    Submit
+                </button>
+
+            </form>
+
+        </div>
+
+    </div>
+
+    <script>
+        const form = document.getElementById('create-user-form');
+        
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            // form id, endpoint, redirect url
+            FormHandler.submitSimpleForm(
+                'create-user-form',
+                '{{ url_for("api_user.api_post_user_route") }}',
+                '{{ url_for("web_user.list_users_route") }}'
+            );
+        });
+
+        // Toggle switch functionality
+        const toggleCheckbox = document.getElementById('toggle_active');
+        const toggleKnob = toggleCheckbox.nextElementSibling.querySelector('div');
+        
+        function updateToggle() {
+            if (toggleCheckbox.checked) {
+                toggleKnob.style.transform = 'translateX(1.25rem)';
+                toggleCheckbox.nextElementSibling.style.backgroundColor = '#10b981';
+            } else {
+                toggleKnob.style.transform = 'translateX(0)';
+                toggleCheckbox.nextElementSibling.style.backgroundColor = '#d1d5db';
+            }
+        }
+        
+        // Initialize toggle state
+        updateToggle();
+        
+        // Add event listener for toggle changes
+        toggleCheckbox.addEventListener('change', updateToggle);
+        
+
+    </script>
+
+{% endblock %}

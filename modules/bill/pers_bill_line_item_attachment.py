@@ -127,7 +127,7 @@ def get_bill_line_item_attachments() -> PersistenceResponse:
             )
 
 
-def get_bill_line_item_attachment_by_bill_line_item_id(bill_line_item_id: int) -> PersistenceResponse:
+def read_bill_line_item_attachment_by_bill_line_item_id(bill_line_item_id: int) -> PersistenceResponse:
     """
     Retrieves all bill line item attachments for a given bill line item ID.
     """
@@ -159,6 +159,52 @@ def get_bill_line_item_attachment_by_bill_line_item_id(bill_line_item_id: int) -
             return PersistenceResponse(
                 data=None,
                 message=f"Error in get bill line item attachments: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def update_bill_line_item_attachment(bill_line_item_attachment: BillLineItemAttachment) -> PersistenceResponse:
+    """
+    Updates a bill line item attachment record in the database.
+
+    """
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL UpdateBillLineItemAttachment(?, ?, ?, ?, ?)}"
+                rowcount = cursor.execute(
+                    sql,
+                    bill_line_item_attachment.id,
+                    bill_line_item_attachment.name,
+                    bill_line_item_attachment.size,
+                    bill_line_item_attachment.type,
+                    bill_line_item_attachment.content
+                ).rowcount
+                cnxn.commit()
+                if rowcount > 0:
+                    return PersistenceResponse(
+                        data=None,
+                        message="Bill line item attachment updated successfully",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    cnxn.rollback()
+                    return PersistenceResponse(
+                        data=None,
+                        message="Bill line item attachment update failed",
+                        status_code=400,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+        except (pyodbc.Error) as e:
+            cnxn.rollback()
+            return PersistenceResponse(
+                data=None,
+                message=f"Error in update bill line item attachment: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()

@@ -39,8 +39,6 @@ SELECT * FROM dbo.PaymentTerm;
 DROP PROCEDURE IF EXISTS CreateVendor;
 
 CREATE PROCEDURE CreateVendor
-    @CreatedDatetime DATETIMEOFFSET,
-    @ModifiedDatetime DATETIMEOFFSET,
     @Name VARCHAR(255),
     @Abbreviation VARCHAR(255),
     @TaxIdNumber VARCHAR(9),
@@ -65,9 +63,11 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
+    DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
     -- Insert a new record into the Transaction table
     INSERT INTO [Transaction] (CreatedDatetime, ModifiedDatetime)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime));
+    VALUES (@Now, @Now);
 
     -- Get the Id of the last inserted record
     DECLARE @TransactionId INT;
@@ -75,7 +75,7 @@ BEGIN
 
     -- Insert a new record into the Contact table using the TransactionId
     INSERT INTO Contact (CreatedDatetime, ModifiedDatetime, FirstName, LastName, Email, Phone, TransactionId)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime), @FirstName, @LastName, @Email, @Phone, @TransactionId);
+    VALUES (@Now, @Now, @FirstName, @LastName, @Email, @Phone, @TransactionId);
 
     -- Get the Id of the last inserted record
     DECLARE @ContactId INT;
@@ -83,7 +83,7 @@ BEGIN
 
     -- Insert a new record into the Address table using the TransactionId
     INSERT INTO [Address] (CreatedDatetime, ModifiedDatetime, StreetOne, StreetTwo, City, [State], Zip, TransactionId)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime), @StreetOne, @StreetTwo, @City, @State, @Zip, @TransactionId);
+    VALUES (@Now, @Now, @StreetOne, @StreetTwo, @City, @State, @Zip, @TransactionId);
 
     -- Get the Id of the last inserted record
     DECLARE @AddressId INT;
@@ -98,7 +98,7 @@ BEGIN
 
     -- Insert a new record into the Vendor table using the TransactionId
     INSERT INTO Vendor (CreatedDatetime, ModifiedDatetime, [Name], Abbreviation, TaxIdNumber, IsActive, [Type], ContactId, AddressId, PaymentTermId, TransactionId, IntuitVendorId)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime), @Name, @Abbreviation, @TaxIdNumber, @IsActive, @Type, @ContactId, @AddressId, @PaymentTermId, @TransactionId, @IntuitVendorId);
+    VALUES (@Now, @Now, @Name, @Abbreviation, @TaxIdNumber, @IsActive, @Type, @ContactId, @AddressId, @PaymentTermId, @TransactionId, @IntuitVendorId);
 
     COMMIT;
 END
@@ -225,3 +225,54 @@ BEGIN
 	COMMIT;
 END
 
+
+DROP PROCEDURE IF EXISTS UpdateVendor;
+
+CREATE PROCEDURE UpdateVendor
+    @ID VARCHAR(255),
+    @Name VARCHAR(255),
+    @Abbreviation VARCHAR(255),
+    @TaxIdNumber VARCHAR(9),
+    @IsActive BIT,
+    @Type VARCHAR(255),
+    @ContactId INT,
+    @AddressId INT,
+    @CertificateOfInsuranceId INT,
+    @PaymentTermId INT
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
+    -- Update the Vendor table
+    UPDATE Vendor
+    SET ModifiedDatetime = @Now,
+        [Name] = @Name,
+        Abbreviation = @Abbreviation,
+        TaxIdNumber = @TaxIdNumber,
+        IsActive = @IsActive,
+        [Type] = @Type,
+        ContactId = @ContactId,
+        AddressId = @AddressId,
+        CertificateOfInsuranceId = @CertificateOfInsuranceId,
+        PaymentTermId = @PaymentTermId
+    WHERE [Id] = @ID;
+
+    COMMIT;
+END
+
+
+DROP PROCEDURE IF EXISTS DeleteVendor;
+
+CREATE PROCEDURE DeleteVendor
+    @ID INT
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    DELETE FROM Vendor
+    WHERE [Id] = @ID;
+
+    COMMIT;
+END

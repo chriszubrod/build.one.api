@@ -2,7 +2,7 @@
 Module for vendor type web.
 """
 # python standard library imports
-from datetime import datetime
+
 
 # third party imports
 from flask import Blueprint, render_template, flash

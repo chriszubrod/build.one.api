@@ -116,6 +116,41 @@ EXEC ReadBuildoneBillLineItemById
 
 
 
+
+
+
+DROP PROCEDURE IF EXISTS ReadBuildoneBillLineItemByGUID;
+
+CREATE PROCEDURE ReadBuildoneBillLineItemByGUID
+    @GUID VARCHAR(MAX)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [Description],
+        [Units],
+        [Rate],
+        [Amount],
+        [IsBillable],
+        [IsBilled],
+        [BillId],
+        [SubCostCodeId],
+        [ProjectId]
+    FROM BillLineItem
+    WHERE [GUID] = @GUID;
+
+    COMMIT;
+END
+
+
+
+
+
+
 DROP PROCEDURE IF EXISTS ReadBillLineItemByBillId;
 
 CREATE PROCEDURE ReadBillLineItemByBillId
@@ -142,6 +177,52 @@ BEGIN
 
     COMMIT;
 END
+
+
+
+DROP PROCEDURE IF EXISTS UpdateBillLineItem;
+
+CREATE PROCEDURE UpdateBillLineItem
+    @Id INT,
+    @Description VARCHAR(255),
+    @Rate NUMERIC(18,4),
+    @Amount DECIMAL(18,2),
+    @IsBillable BIT,
+    @IsBilled BIT,
+    @SubCostCodeId INT,
+    @ProjectId INT
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
+    UPDATE BillLineItem
+    SET
+        [ModifiedDatetime] = @Now,
+        [Description] = @Description,
+        [Rate] = @Rate,
+        [Amount] = @Amount,
+        [IsBillable] = @IsBillable,
+        [IsBilled] = @IsBilled,
+        [SubCostCodeId] = @SubCostCodeId,
+        [ProjectId] = @ProjectId
+    WHERE [Id] = @Id;
+
+    COMMIT;
+END
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 DELETE FROM BillLineItem;

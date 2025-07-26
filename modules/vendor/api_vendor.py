@@ -5,7 +5,6 @@ Module for vendor API.
 # python standard library imports
 import html
 from datetime import datetime
-from dateutil import tz
 
 # third party imports
 import bleach
@@ -16,7 +15,11 @@ from blueprints.api.api_response import ApiResponse
 from modules.vendor import bus_vendor
 
 
-api_vendor_bp = Blueprint('api_vendor', __name__, url_prefix='/api')
+api_vendor_bp = Blueprint(
+    'api_vendor',
+    __name__,
+    url_prefix='/api'
+)
 
 
 @api_vendor_bp.route('/post/vendor', methods=['POST'])
@@ -24,7 +27,6 @@ def api_post_vendor_route():
     """
     Endpoint for creating a new vendor.
     """
-
     try:
         # If request is not JSON, return 400 error
         if not request.is_json:
@@ -34,49 +36,37 @@ def api_post_vendor_route():
                     message='Content type must be application/json',
                     status_code=400,
                     success=False,
-                    timestamp=datetime.now(tz.tzlocal())
+                    timestamp=datetime.now()
                 ).to_dict()
             )
 
         # Get the JSON data from the request
         data = request.json
 
-        # Get the submission datetime
-        submission_datetime = datetime.now(tz.tzlocal()).strftime('%Y-%m-%d %H:%M:%S%z')
-        submission_datetime = submission_datetime[:-2] + ':' + submission_datetime[-2:]
+        # print the data
+        print(f'\nData: {data}\n')
 
         # vendor name
-        raw_vendor_name = data.get('vendorname', '').strip()
-        clean_vendor_name = bleach.clean(raw_vendor_name, strip=True)
-        vendor_name = html.escape(clean_vendor_name)
+        vendor_name = bleach.clean(data.get('name', ''), strip=True)
 
         # vendor abbreviation
-        raw_abbreviation = data.get('abbreviation', '').strip()
-        clean_abbreviation = bleach.clean(raw_abbreviation, strip=True)
-        abbreviation = html.escape(clean_abbreviation)
+        vendor_abbreviation = bleach.clean(data.get('abbreviation', ''), strip=True)
 
         # vendor tax id number
-        raw_tax_id_number = data.get('taxidnumber', '').strip()
-        clean_tax_id_number = bleach.clean(raw_tax_id_number, strip=True)
-        tax_id_number = html.escape(clean_tax_id_number)
+        vendor_tax_id_number = bleach.clean(data.get('taxidnumber', ''), strip=True)
 
         # vendor is active
-        raw_is_active = data.get('isActive', '1')
-        clean_is_active = bleach.clean(raw_is_active, strip=True)
-        is_active = html.escape(clean_is_active)
+        vendor_is_active = bleach.clean(data.get('isActive', '1'), strip=True)
 
         # vendor type
-        raw_vendor_type = data.get('vendortype', '').strip()
-        clean_vendor_type = bleach.clean(raw_vendor_type, strip=True)
-        vendor_type = html.escape(clean_vendor_type)
+        vendor_type = bleach.clean(data.get('vendortype', ''), strip=True)
 
         # Call the post_vendor function and pass in the data to create a vendor
         vendor_bus_response = bus_vendor.post_vendor(
-            submission_datetime=submission_datetime,
-            vendor_name=vendor_name,
-            abbreviation=abbreviation,
-            tax_id_number=tax_id_number,
-            is_active=is_active,
+            name=vendor_name,
+            abbreviation=vendor_abbreviation,
+            tax_id_number=vendor_tax_id_number,
+            is_active=vendor_is_active,
             vendor_type=vendor_type
         )
 
@@ -87,7 +77,7 @@ def api_post_vendor_route():
                 message=vendor_bus_response.message,
                 status_code=vendor_bus_response.status_code,
                 success=vendor_bus_response.success,
-                timestamp=datetime.now(tz.tzlocal())
+                timestamp=vendor_bus_response.timestamp
             ).to_dict()
         )
 
@@ -99,6 +89,6 @@ def api_post_vendor_route():
                 message=str(e),
                 status_code=500,
                 success=False,
-                timestamp=datetime.now(tz.tzlocal())
+                timestamp=datetime.now()
             ).to_dict()
         )

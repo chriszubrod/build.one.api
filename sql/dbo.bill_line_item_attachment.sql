@@ -29,9 +29,11 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
+    DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
     -- Insert a new record into the EntryLineItem table using the TransactionId
     INSERT INTO BillLineItemAttachment (CreatedDatetime, ModifiedDatetime, [Name], [Size], [Type], [Content], [BillLineItemId])
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime), @Name, @Size, @Type, @Content, @BillLineItemId);
+    VALUES (CONVERT(DATETIMEOFFSET, @Now), CONVERT(DATETIMEOFFSET, @Now), @Name, @Size, @Type, @Content, @BillLineItemId);
 
     COMMIT;
 END
@@ -133,6 +135,41 @@ END
 
 EXEC ReadBillLineItemAttachmentByBillLineItemId
     @BillLineItemId = 61
+
+
+
+DROP PROCEDURE IF EXISTS UpdateBillLineItemAttachment;
+
+CREATE PROCEDURE UpdateBillLineItemAttachment
+    @Id INT,
+    @Name VARCHAR(255),
+    @Size BIGINT,
+    @Type VARCHAR(100),
+    @Content VARBINARY(MAX)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
+    UPDATE BillLineItemAttachment
+    SET
+        [ModifiedDatetime] = @Now,
+        [Name] = @Name,
+        [Size] = @Size,
+        [Type] = @Type,
+        [Content] = @Content
+    WHERE [Id] = @Id;
+
+    COMMIT;
+END
+
+
+
+
+
+
+
 
 
 

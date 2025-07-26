@@ -1,0 +1,118 @@
+
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}User{% endblock %}
+
+{% block content %}
+
+    <!-- Container for the page content -->
+    <div class="flex-1 p-4">
+        <!-- Header section with title and form -->
+        <div class="space-y-2">
+
+            <div class="flex justify-between items-center">
+
+                <h1 class="'px-3 py-2'">
+                    View User
+                </h1>
+
+                <a href="{{ url_for('web_user.list_users_route') }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">
+                    Back to Users
+                </a>
+
+            </div>
+
+            <dl class="w-full space-y-3">
+                <div class="flex items-center border-b border-gray-100 py-2">
+                    <dt class="text-sm font-medium text-gray-700 px-3">
+                        GUID
+                    </dt>
+                    <dd class="block font-medium px-3 text-gray-900">
+                        {{ user.guid }}
+                    </dd>
+                </div>
+
+                <div class="flex items-center border-b border-gray-100 py-2">
+                    <dt class="text-sm font-medium text-gray-700 px-3">
+                        Created Datetime
+                    </dt>
+                    <dd class="block font-medium px-3 text-gray-900">
+                        {{ user.created_datetime[:19] }}
+                    </dd>
+                </div>
+
+                <div class="flex items-center border-b border-gray-100 py-2">
+                    <dt class="text-sm font-medium text-gray-700 px-3 ">
+                        Modified Datetime
+                    </dt>
+                    <dd class="block font-medium px-3 ext-gray-900">
+                        {{ user.modified_datetime[:19] }}
+                    </dd>
+                </div>
+
+                <div class="flex items-center border-b border-gray-100 py-2">
+                    <dt class="text-sm font-medium text-gray-700 px-3">
+                        Username
+                    </dt>
+                    <dd class="block font-medium px-3 text-gray-900">
+                        {{ user.username }}
+                    </dd>
+                </div>
+
+                <div class="flex items-center border-b border-gray-100 py-2">
+                    <dt class="text-sm font-medium text-gray-700 px-3">
+                        Password
+                    </dt>
+                    <dd class="block font-medium px-3 text-gray-900">
+                        {% if user.password_hash %}
+                            Value Is Set
+                        {% else %}
+                            No password
+                        {% endif %}
+                    </dd>
+                </div>
+
+                <div class="flex items-center border-b border-gray-100 py-2">
+                    <dt class="text-sm font-medium text-gray-700 px-3">
+                        Active
+                    </dt>
+                    <dd class="block font-medium px-3 text-gray-900">
+                        {{ user.is_active }}
+                    </dd>
+                </div>
+
+                <div class="flex items-center border-b border-gray-100 py-2">
+                    <dt class="text-sm font-medium text-gray-700 px-3">
+                        Role
+                    </dt>
+                    <dd class="block font-medium px-3 text-gray-900">
+                        {% for role in roles %}
+                            {% if role.id == user.role_id %}
+                                {{ role.name }}
+                            {% endif %}
+                        {% endfor %}
+                    </dd>
+                </div>
+
+                <div class="flex items-center border-b border-gray-100 py-2">
+                    <dt class="text-sm font-medium text-gray-700 px-3">
+                        Transaction ID
+                    </dt>
+                    <dd class="block font-medium px-3 text-gray-900">
+                        {{ user.transaction_id }}
+                    </dd>
+                </div>
+
+                <div class="px-3 py-2">
+                    <a href="{{ url_for('web_user.edit_user_route', user_guid=user.guid) }}" class="mt-4 px-4 py-2 bg-black text-white rounded hover:bg-gray-800">
+                        Edit
+                    </a>
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+{% endblock %}

@@ -21,7 +21,7 @@ SELECT * FROM [BillLineItem];
 SELECT * FROM [BilLLineItemAttachment];
 
 DELETE FROM [Bill]
-WHERE [Id] > 64;
+WHERE [Id] = 87;
 
 
 
@@ -66,6 +66,7 @@ CREATE PROCEDURE CreateBillWithLineItemsAndAttachments
     @BillLineItems BillLineItemType READONLY,
     -- Attachments
     @BillLineItemAttachments BillLineItemAttachmentType READONLY
+
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -149,6 +150,7 @@ BEGIN
     FROM @BillLineItemAttachments a
     INNER JOIN @LineItemMap m ON a.LineItemRowKey = m.RowKey;
 
+
     COMMIT;
 END;
 
@@ -228,6 +230,68 @@ BEGIN
 
     COMMIT;
 END
+
+
+
+DROP PROCEDURE IF EXISTS ReadBillById;
+
+CREATE PROCEDURE ReadBillById
+    @Id INT
+AS
+BEGIN
+
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [Number],
+        [Date],
+        [Amount],
+        [VendorId],
+        [TransactionId]
+    FROM Bill
+    WHERE [Id] = @Id;
+
+    COMMIT;
+END
+
+EXEC ReadBillById
+    @Id = 78;
+
+
+DROP PROCEDURE IF EXISTS ReadBillByLastCreated;
+
+CREATE PROCEDURE ReadBillByLastCreated
+AS
+BEGIN
+
+    BEGIN TRANSACTION;
+
+    SELECT TOP 1
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [Number],
+        [Date],
+        [Amount],
+        [VendorId],
+        [TransactionId]
+    FROM Bill
+    ORDER BY [CreatedDatetime] DESC;
+
+    COMMIT;
+END
+
+
+
+
+
+
+
 
 
 DROP PROCEDURE IF EXISTS UpdateBill;

@@ -35,7 +35,7 @@ class ProjectForm(FlaskForm):
 
 
 @web_project_bp.route('/projects', methods=['GET'])
-@requires_auth()
+#@requires_auth()
 def list_projects_route():
     """
     Returns the route for the projects page.
@@ -50,7 +50,7 @@ def list_projects_route():
 
 
 @web_project_bp.route('/project/create', methods=['GET'])
-@requires_auth()
+#@requires_auth()
 def create_project_route():
     """
     Returns the project create route for the application.
@@ -83,7 +83,7 @@ def create_project_route():
 
 
 @web_project_bp.route('/project/<project_guid>', methods=['GET'])
-@requires_auth()
+#@requires_auth()
 def view_project_route(project_guid):
     """
     Returns the project by guid route.
@@ -115,7 +115,7 @@ def view_project_route(project_guid):
 
 
 @web_project_bp.route('/project/<project_guid>/edit', methods=['GET', 'POST'])
-@requires_auth()
+#@requires_auth()
 def edit_project_route(project_guid):
     """
     Returns the project edit route.

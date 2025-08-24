@@ -38,3 +38,4 @@ Size (KB) | Meaning | Notes
 500–5,000 KB | Medium (invoice PDF) | Still great for VARBINARY
 5,000–50,000 KB | Large (big scans, TIFFs) | Watch memory usage
 > 50,000 KB | Huge | Consider external storage
+

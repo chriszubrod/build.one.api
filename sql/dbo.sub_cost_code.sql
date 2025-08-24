@@ -13,7 +13,8 @@ CREATE TABLE SubCostCode (
     FOREIGN KEY (TransactionId) REFERENCES [Transaction](Id)
 );
 
-
+ALTER TABLE SubCostCode
+ALTER COLUMN [Number] NUMERIC(18, 2) NOT NULL;
 
 SELECT * FROM [Transaction];
 SELECT * FROM CostCode;
@@ -56,6 +57,9 @@ BEGIN
 END
 
 
+
+
+
 DROP PROCEDURE IF EXISTS ReadSubCostCodes;
 
 
@@ -74,10 +78,15 @@ BEGIN
         [Description],
         [CostCodeId],
         [TransactionId]
-    FROM SubCostCode;
+    FROM SubCostCode
+    ORDER BY [Number];
 
 	COMMIT;
 END
+
+EXEC ReadSubCostCodes;
+
+
 
 
 
@@ -103,6 +112,42 @@ BEGIN
 
 	COMMIT;
 END
+
+
+
+
+DROP PROCEDURE IF EXISTS UpdateSubCostCode;
+
+CREATE PROCEDURE UpdateSubCostCode
+    @Id INT,
+    @Number NUMERIC(18, 4),
+    @Name VARCHAR(255),
+    @Description VARCHAR(MAX),
+    @CostCodeID INT,
+    @TransactionId INT
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
+    UPDATE SubCostCode
+    SET [Number] = @Number,
+        [Name] = @Name,
+        [Description] = @Description,
+        [CostCodeId] = @CostCodeID,
+        [TransactionId] = @TransactionId,
+        [ModifiedDatetime] = @Now
+    WHERE [Id] = @Id;
+
+    COMMIT;
+END
+
+
+
+
+
+
 
 
 
@@ -157,6 +202,38 @@ BEGIN
 
     COMMIT;
 END
+
+
+
+DROP PROCEDURE IF EXISTS ReadSubCostCodeByID;
+
+CREATE PROCEDURE ReadSubCostCodeByID
+    @ID INT
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [Number],
+        [Name],
+        [Description],
+        [CostCodeId],
+        [TransactionId]
+    FROM SubCostCode
+    WHERE [ID] = @ID;
+
+    COMMIT;
+END
+
+EXEC ReadSubCostCodeByID
+    @ID = 1237; -- Example ID, replace with actual ID as needed
+
+
+
 
 
 

@@ -182,11 +182,13 @@
                                 <div class="border-b border-gray-200 hover:bg-gray-50 transition-colors duration-150 px-6 py-4 whitespace-nowrap row-{{ loop.index }}">
                                     {% for attachment in bill_line_item_attachments %}
                                         {% if attachment.bill_line_item_id == line_item.id %}
-                                            <div class="flex space-x-2">
-                                                <a href="{{ attachment.ms_sharepoint_file_web_url }}" target="_blank" title="View in SharePoint">
-                                                    View
-                                                </a>
-                                            </div>
+                                            {% if attachment.ms_sharepoint_file_web_url %}
+                                                <div class="flex space-x-2">
+                                                    <a href="{{ attachment.ms_sharepoint_file_web_url }}" target="_blank" title="View in SharePoint">
+                                                        View
+                                                    </a>
+                                                </div>
+                                            {% endif %}
                                         {% endif %}
                                     {% endfor %}
                                 </div>

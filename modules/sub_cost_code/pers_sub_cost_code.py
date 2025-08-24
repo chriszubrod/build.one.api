@@ -27,6 +27,7 @@ class SubCostCode:
     description: Optional[str] = None
     cost_code_id: Optional[int] = None
     transaction_id: Optional[int] = None
+    intuit_item_id: Optional[int] = None
 
     @classmethod
     def from_db_row(cls, row) -> Optional['SubCostCode']:
@@ -42,7 +43,8 @@ class SubCostCode:
             name=getattr(row, 'Name', None),
             description=getattr(row, 'Description', None),
             cost_code_id=getattr(row, 'CostCodeId', None),
-            transaction_id=getattr(row, 'TransactionId', None)
+            transaction_id=getattr(row, 'TransactionId', None),
+            intuit_item_id=getattr(row, 'IntuitItemId', None)
         )
 
 
@@ -273,17 +275,15 @@ def update_sub_cost_code(sub_cost_code: SubCostCode) -> PersistenceResponse:
     with pers_database.get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL UpdateSubCostCode(?, ?, ?, ?, ?, ?, ?)}"
+                sql = "{CALL UpdateSubCostCode(@Id=?, @Number=?, @Name=?, @Description=?, @CostCodeId=?, @TransactionId=?)}"
                 rowcount = cursor.execute(
                     sql,
                     sub_cost_code.id,
-                    sub_cost_code.guid,
-                    sub_cost_code.created_datetime,
-                    sub_cost_code.modified_datetime,
                     sub_cost_code.number,
                     sub_cost_code.name,
                     sub_cost_code.description,
-                    sub_cost_code.cost_code_id
+                    sub_cost_code.cost_code_id,
+                    sub_cost_code.transaction_id
                 ).rowcount
                 cnxn.commit()
                 if rowcount > 0:

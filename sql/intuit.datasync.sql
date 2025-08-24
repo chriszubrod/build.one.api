@@ -3,7 +3,7 @@ FROM [intuit].[DataSync]
 ORDER BY [DataSourceName];
 
 INSERT INTO [intuit].[DataSync] ([DataSourceName], [LastUpdateDatetime])
-VALUES ('vendor', '1900-01-01 00:00:00.000');
+VALUES ('bill', '1900-01-01 00:00:00.000');
 
 UPDATE intuit.DataSync
 SET LastUpdateDatetime='1900-01-01 00:00:00.000'

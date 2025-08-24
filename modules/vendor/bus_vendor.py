@@ -9,6 +9,7 @@ from dateutil import tz
 # local imports
 from business.bus_response import BusinessResponse
 from modules.vendor import pers_vendor
+from integrations.map import pers_map_vendor_intuit_vendor
 
 # Constants
 MAX_NAME_LENGTH = 255
@@ -230,3 +231,18 @@ def get_vendor_by_guid(vendor_guid: str) -> BusinessResponse:
             timestamp=datetime.now()
         )
 
+
+def get_mapped_intuit_vendor_by_vendor_id(vendor_id: int) -> BusinessResponse:
+    """
+    Retrieves a mapped intuit vendor from the database by vendor id.
+    """
+    pers_read_mapped_intuit_vendor_resp = pers_map_vendor_intuit_vendor.\
+        read_map_vendor_intuit_vendor_by_vendor_id(vendor_id=vendor_id)
+    
+    return BusinessResponse(
+        data=pers_read_mapped_intuit_vendor_resp.data,
+        message=pers_read_mapped_intuit_vendor_resp.message,
+        success=pers_read_mapped_intuit_vendor_resp.success,
+        status_code=pers_read_mapped_intuit_vendor_resp.status_code,
+        timestamp=pers_read_mapped_intuit_vendor_resp.timestamp
+    )

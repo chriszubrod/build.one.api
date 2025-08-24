@@ -2,9 +2,13 @@ SELECT [UrlsGUID], [CreatedDatetime], [ModifiedDatetime], [Name], [Slug]
 FROM [intuit].[Urls]
 ORDER BY [Name];
 
+DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
 UPDATE intuit.Urls
-SET Slug='69'
+SET ModifiedDatetime=@Now, Slug='75'
 WHERE Name='minorversion';
 
+DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
 INSERT INTO [intuit].[Urls] (CreatedDatetime, ModifiedDatetime, [Name], Slug)
-VALUES ('2024-11-24 00:00:00.000', '2024-11-24 00:00:00.000', 'createbill', '/v3/company/{}/bill');
+VALUES (@Now, @Now, 'querybill', '/v3/company/{}/query?query={}&minorversion={}');

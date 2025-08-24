@@ -553,9 +553,10 @@ def create_a_bill_process(bill):
         else:
             billable_status = "NotBillable"
 
-        pers_buildone_sub_cost_code_resp = pers_sub_cost_code.read_buildone_sub_cost_code_by_guid(
-            sub_cost_code_guid=bill_line_item.get('item_ref_value')
-        )
+        pers_buildone_sub_cost_code_resp = pers_sub_cost_code.\
+            read_buildone_sub_cost_code_by_guid(
+                sub_cost_code_guid=bill_line_item.get('item_ref_value')
+            )
         if isinstance(pers_buildone_sub_cost_code_resp, SuccessResponse):
             item_ref_value = pers_buildone_sub_cost_code_resp.data.intuit_item_id
         else:

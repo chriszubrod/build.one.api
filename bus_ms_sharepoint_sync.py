@@ -116,7 +116,7 @@ def _get_sharepoint_files(site_id, folder_id, access_token):
         item_id=folder_id,
         access_token=access_token
     )
-    print(f'Files: {files[0]}')
+    print(f'\nFiles: {files[0]}')
     return files
 
 
@@ -135,6 +135,7 @@ def _match_sharepoint_file_to_bill_line_item_attachment(sharepoint_files, bill_l
 
     best_match = None
     best_match_score = 0
+    print(f'\n')
     for file_name, file_info in sharepoint_files_dict.items():
         score = SequenceMatcher(None, bill_line_item_attachment_name, file_name).ratio()
         if score > best_match_score:
@@ -144,10 +145,10 @@ def _match_sharepoint_file_to_bill_line_item_attachment(sharepoint_files, bill_l
 
     # Print the file name at the end before returning
     if best_match is not None:
-        print(f"Matched file name: {best_match['file_name']}")
+        print(f"\nMatched file name: {best_match['file_name']}")
         return best_match['file']
     else:
-        print("No match found")
+        print(f"\nNo match found")
         return None
 
 
@@ -163,11 +164,12 @@ def _verify_file_content_match(site_id, item_id, access_token, bill_line_item_at
         )
 
         if file_content is None:
-            print('No file content found')
+            print(f'\nNo file content found')
             return False
 
         attachment_content = bill_line_item_attachment.content
 
+        # TODO: Use SHA256 instead of MD5, if we need to be more secure
         file_hash = hashlib.md5(file_content).hexdigest()
         attachment_hash = hashlib.md5(attachment_content).hexdigest()
 
@@ -208,8 +210,8 @@ def _process_map_attachment_sharepoint_file(bill_line_item_attachment, new_share
     return False
 
 
-def main_function():
-    # TODO: Get bill line item attachments that are not mapped to a sharepoint file
+def main_sharepoint_sync_function():
+    # Get bill line item attachments that are not mapped to a sharepoint file
     bill_line_item_attachments_not_mapped = None
 
     bill_line_item_attachments = _get_bill_line_item_attachments()
@@ -228,25 +230,25 @@ def main_function():
         )
 
 
-    # TODO: Get SharePoint site
+    # Get SharePoint site
     sharepoint_site = _get_sharepoint_site()
     if not sharepoint_site:
         return 'No SharePoint site found'
 
-    # TODO: Refresh SharePoint access token
+    # Refresh SharePoint access token
     api_ms_auth.refresh_token()
 
-    # TODO: Get SharePoint access token
+    # Get SharePoint access token
     access_token = _get_sharepoint_access_token()
     if not access_token:
         return 'No SharePoint access token found'
 
-    # TODO: For each bill line item attachment, get bill line item
+    # For each bill line item attachment, get bill line item
     bill_line_item = None
     sharepoint_folder = None
     sharepoint_files = None
 
-    for bill_line_item_attachment in bill_line_item_attachments_not_mapped[0:1]:
+    for bill_line_item_attachment in bill_line_item_attachments_not_mapped:
         #print(f'\nBill Line Item Attachment Name: {bill_line_item_attachment.name}')
     
         bill_line_item = _get_bill_line_item_by_bill_line_item_id(
@@ -254,7 +256,10 @@ def main_function():
         )
         #print(f'\nBill Line Item: {bill_line_item}')
 
-        # TODO: For each bill line item attachment, get the SharePoint folder for that project.
+
+
+
+        # For each bill line item attachment, get the SharePoint folder for that project.
         project_sharepoint_folder_mapping = _get_project_integration_sharepoint_folder_mapping(
             project_id=bill_line_item.project_id
         )
@@ -266,7 +271,10 @@ def main_function():
             )
         #print(f'\nSharepoint Folder: {sharepoint_folder}')
 
-        # TODO: For each bill line item attachment, get the SharePoint files for that project.
+
+
+
+        # For each bill line item attachment, get the SharePoint files for that project.
         sharepoint_files = _get_sharepoint_files(
             site_id=sharepoint_site.site_sharepoint_id,
             folder_id=sharepoint_folder.folder_ms_id,
@@ -274,23 +282,55 @@ def main_function():
         )
         #print(f'\nSharepoint Files: {sharepoint_files[0]}')
 
+
+
+
+        # Match the bill line item attachment to the SharePoint file
         matched_sharepoint_file = _match_sharepoint_file_to_bill_line_item_attachment(
             sharepoint_files=sharepoint_files,
             bill_line_item_attachment=bill_line_item_attachment
         )
         #print(f'\nMatched Sharepoint File: {matched_sharepoint_file}')
 
-        if matched_sharepoint_file is None:
-            print('\nNo matched sharepoint file found')
-            break
-
+        # Verify the file content matches the bill line item attachment
         file_content_match = _verify_file_content_match(
             site_id=sharepoint_site.site_sharepoint_id,
             item_id=matched_sharepoint_file.get('id'),
             access_token=access_token,
             bill_line_item_attachment=bill_line_item_attachment
         )
-        #print(f'\nFile Content Match: {file_content_match}')
+        print(f'\nFirst Verify File Content Match: {file_content_match}')
+
+        
+        # If no matched sharepoint file, upload new file to SharePoint
+        if not file_content_match:
+            print('\nNo matched sharepoint file found - uploading new file')
+
+            file_dict = [{
+                'name': bill_line_item_attachment.name,
+                'size': bill_line_item_attachment.size,
+                'type': bill_line_item_attachment.type,
+                'data': bill_line_item_attachment.content
+            }]
+
+            # Upload new file to SharePoint
+            upload_new_file_result = ms_upload_new_file.upload_file_to_sharepoint(
+                access_token=access_token,
+                site_id=sharepoint_site.site_sharepoint_id,
+                folder_id=sharepoint_folder.folder_ms_id,
+                file=file_dict
+            )
+            if upload_new_file_result['success']:
+                print(f'\nSuccessfully uploaded new file to SharePoint: {upload_new_file_result}')
+                file_content_match = True
+            else:
+                print(f'\nFailed to upload new file to SharePoint: {upload_new_file_result}')
+
+
+
+
+
+        
 
         if file_content_match:
             new_sharepoint_file = pers_ms_sharepoint_file.SharePointFile(
@@ -362,6 +402,7 @@ def main_function():
     return 'Main Function Complete'
 
 
-print('KICKING OFF')
-main_result = main_function()
-print(main_result)
+if __name__ == '__main__':
+    print('KICKING OFF')
+    main_result = main_sharepoint_sync_function()
+    print(main_result)

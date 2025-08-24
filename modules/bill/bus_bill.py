@@ -5,8 +5,14 @@ Module for bill business.
 # python standard library imports
 from datetime import datetime
 from dateutil import tz
+import asyncio
 import uuid
 import base64
+import sys
+import threading
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # third party imports
 from flask import session
@@ -29,6 +35,9 @@ from utils.function_help import clean_text_for_db
 from modules.vendor import (
     pers_vendor
 )
+import bus_ms_sharepoint_sync
+import bus_ms_budget_tracker_push
+import bus_ms_intuit_bill_sync
 
 
 def get_bills() -> BusinessResponse:
@@ -59,11 +68,39 @@ def get_bill_by_guid(bill_guid: str) -> BusinessResponse:
     )
 
 
+def get_bill_by_id(bill_id: str) -> BusinessResponse:
+    """
+    Retrieves a bill by its ID.
+    """
+    pers_bill_resp = pers_bill.read_bill_by_id(bill_id)
+    return BusinessResponse(
+        data=pers_bill_resp.data,
+        message=pers_bill_resp.message,
+        status_code=pers_bill_resp.status_code,
+        success=pers_bill_resp.success,
+        timestamp=pers_bill_resp.timestamp
+    )
+
+
 def get_bills_by_vendor_id(vendor_id: int) -> BusinessResponse:
     """
     Retrieves all bills by vendor id from the database.
     """
     pers_bills_resp = pers_bill.read_bills_by_vendor_id(vendor_id)
+    return BusinessResponse(
+        data=pers_bills_resp.data,
+        message=pers_bills_resp.message,
+        status_code=pers_bills_resp.status_code,
+        success=pers_bills_resp.success,
+        timestamp=pers_bills_resp.timestamp
+    )
+
+
+def get_bill_by_last_created() -> BusinessResponse:
+    """
+    Retrieves all bills by created datetime from the database.
+    """
+    pers_bills_resp = pers_bill.read_bill_by_last_created()
     return BusinessResponse(
         data=pers_bills_resp.data,
         message=pers_bills_resp.message,
@@ -293,57 +330,27 @@ def post_bill_with_line_items_and_attachments(
     # If create_bill_resp.success, then sync the bill to SharePoint
     if create_bill_resp.success:
 
-        access_token = None
-        #pers_ms_auth_resp = pers_ms_auth.read_ms_auth_by_user_id(user_id=session['user']['id'])
-        pers_ms_auth_resp = pers_ms_auth.read_ms_auth_by_user_id(user_id=2)
-        if pers_ms_auth_resp.success:
-            access_token = pers_ms_auth_resp.data.access_token
+        # Sync the bill to SharePoint in a separate thread
+        def run_sharepoint_sync():
+            bus_ms_sharepoint_sync.main_sharepoint_sync_function()
 
-        site_id = None
-        pers_ms_sites_resp = pers_ms_sharepoint_site.read_sharepoint_sites()
-        if pers_ms_sites_resp.success:
-            site_id = pers_ms_sites_resp.data[0].site_id
+        # Sync the bill to the budget tracker in a separate thread
+        def run_budget_tracker_sync():
+            bus_ms_budget_tracker_push.main_budget_tracker_push_function()
 
-        print(f'TVP Line Items: {_tvp_line_items[0][10]}')
-        for n, attachment in enumerate(_tvp_attachments):
+        # Sync the bill to Intuit in a separate thread
+        def run_intuit_sync():
+            bus_ms_intuit_bill_sync.main_intuit_bill_sync_function()
 
-            project_id = _tvp_line_items[n][10]
-            pers_map_project_folder_resp = pers_map_project_sharepoint_folder.\
-                read_map_project_sharepoint_folders_by_project_by_module(
-                    project_id=project_id,
-                    module_id=4
-                )
+        # Create the sync threads
+        sync_threads = [
+            threading.Thread(target=run_sharepoint_sync, daemon=True),
+            threading.Thread(target=run_budget_tracker_sync, daemon=True),
+            threading.Thread(target=run_intuit_sync, daemon=True)
+        ]
 
-            folder_id = None
-            if pers_map_project_folder_resp.success:
-                folder_id = pers_map_project_folder_resp.data[0].ms_sharepoint_folder_id
-                pers_ms_folder_resp = pers_ms_sharepoint_folder.\
-                    read_sharepoint_folder_by_folder_id(folder_id=folder_id)
-                if pers_ms_folder_resp.success:
-                    folder_id = pers_ms_folder_resp.data.folder_id
-
-            file = {
-                'name': attachment[3],
-                'size': attachment[4], #file-size
-                'type': attachment[5], #file-type
-                'data': attachment[6] #file-content
-            }
-
-            if access_token and site_id and folder_id:
-
-                ms_upload_new_file_response = ms_upload_new_file.upload_file_to_sharepoint(
-                    access_token=access_token,
-                    site_id=site_id,
-                    folder_id=folder_id,
-                    file=file
-                )
-                
-                try:
-                    print(f'\nMS Upload New File Response: {ms_upload_new_file_response.message}')
-                except AttributeError:
-                    print(f'\nMS Upload New File Response: {ms_upload_new_file_response}')
-                except Exception as e:
-                    print(f'\nMS Upload New File Response: Error accessing message - {e}')
+        for thread in sync_threads:
+            thread.start()
 
 
     return BusinessResponse(

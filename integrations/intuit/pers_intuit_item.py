@@ -76,7 +76,7 @@ def create_intuit_item(realm_id, intuit_item):
             raise DatabaseError(f"Failed to create Intuit Item: {str(err)}") from err
 
 
-def read_intuit_item_by_id(item_id):
+def read_intuit_item_by_id(item_id) -> PersistenceResponse:
     """Read intuit item by id."""
     with pers_database.get_db_connection() as cnxn:
         try:
@@ -84,18 +84,29 @@ def read_intuit_item_by_id(item_id):
                 sql = "{CALL ReadIntuitItemById(?)}"
                 row = cursor.execute(sql, item_id).fetchone()
                 if row:
-                    return SuccessResponse( 
+                    return PersistenceResponse( 
                         message="Intuit Item found",
                         data=IntuitItem.from_db_row(row),
-                        status_code=200
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
                     )
                 else:
-                    return BusinessResponse(
+                    return PersistenceResponse(
                         message="Intuit Item not found",
-                        status_code=404
+                        data=None,
+                        status_code=404,
+                        success=False,
+                        timestamp=datetime.now()
                     )
         except pyodbc.DatabaseError as err:
-            raise DatabaseError(f"Failed to read Intuit Item: {str(err)}") from err
+            return PersistenceResponse(
+                message=f"Failed to read Intuit Item: {str(err)}",
+                data=None,
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
 
 
 def update_intuit_item_by_realm_id_and_item_id(realm_id, intuit_item):

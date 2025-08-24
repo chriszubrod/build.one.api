@@ -71,7 +71,7 @@ def read_db_intuit_auth():
                         status_code=200
                     )
                 else:
-                    return BusinessResponse(
+                    return PersistenceResponse(
                         message="Intuit Auth not found",
                         status_code=404
                     )

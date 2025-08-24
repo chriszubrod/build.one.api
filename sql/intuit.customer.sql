@@ -17,8 +17,10 @@ CREATE TABLE intuit.Customer
 	LastUpdatedDatetime DATETIMEOFFSET NOT NULL
 );
 
-SELECT * FROM intuit.Customer
-WHERE IsProject=1;
+SELECT *
+FROM intuit.Customer
+WHERE IsProject=1
+ORDER BY DisplayName;
 
 
 DROP PROCEDURE CreateIntuitCustomer;

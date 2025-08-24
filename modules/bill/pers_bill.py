@@ -85,13 +85,16 @@ def create_bill_with_line_items_and_attachments(
                     att.file_type
                 ) for att in attachments]
                 '''
+
                 # Debug prints
                 #print("Bill data:", bill)
                 #print("Line items:", line_items_params)
                 #print("Attachments:", attachments_params)
 
                 sql = "{CALL CreateBillWithLineItemsAndAttachments(?, ?, ?, ?, ?, ?, ?, ?)}"
-                row_count = cursor.execute(
+                
+                # Execute the stored procedure
+                rowcount = cursor.execute(
                     sql,
                     bill.created_datetime,
                     bill.modified_datetime,
@@ -102,13 +105,13 @@ def create_bill_with_line_items_and_attachments(
                     line_items,
                     attachments
                 ).rowcount
+                
                 cnxn.commit()
-                if row_count > 0:
+                
+                if rowcount > 0:
                     return PersistenceResponse(
-                        data=row_count,
-                        message=(
-                            "Bill with line items and attachments has been successfully created."
-                        ),
+                        data=rowcount,
+                        message="Bill with line items and attachments has been successfully created.",
                         status_code=201,
                         success=True,
                         timestamp=datetime.now()
@@ -117,9 +120,7 @@ def create_bill_with_line_items_and_attachments(
                     cnxn.rollback()
                     return PersistenceResponse(
                         data=None,
-                        message=(
-                            "Bill with line items and attachments has NOT been created."
-                        ),
+                        message="Bill with line items and attachments has NOT been created.",
                         status_code=400,
                         success=False,
                         timestamp=datetime.now()
@@ -313,6 +314,40 @@ def read_bills_by_vendor(vendor_id: int) -> PersistenceResponse:
             return PersistenceResponse(
                 data=None,
                 message=f"Failed to read bills by vendor: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def read_bill_by_last_created() -> PersistenceResponse:
+    """Retrieves the last created bill."""
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadBillByLastCreated()}"
+                rows = cursor.execute(sql).fetchall()
+                if rows:
+                    return PersistenceResponse(
+                        data=[Bill.from_db_row(row) for row in rows],
+                        message="Bill by last created found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    return PersistenceResponse(
+                        data=None,
+                        message="Bill by last created not found",
+                        status_code=404,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read bill by last created: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()

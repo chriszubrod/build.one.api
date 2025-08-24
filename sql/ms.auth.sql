@@ -131,3 +131,11 @@ BEGIN
 	COMMIT TRANSACTION;
 END;
 
+
+
+
+UPDATE ms.Auth
+SET [ClientSecret]=''
+WHERE [Id] = 1;
+
+SELECT * FROM ms.Auth;

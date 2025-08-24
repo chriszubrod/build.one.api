@@ -228,6 +228,11 @@ def refresh_token():
         'client_secret': client_secret
     }
     resp = requests.post(url=url, data=data, params=payload, headers=headers, timeout=10)
+
+    print(f'\nMS Auth Refresh Token Response status: {resp.status_code}')
+    print(f'\nMS Auth Refresh Token Response text: {resp.text}')
+    #print(f'\nMS Auth Refresh Token Response json: {resp.json()}')
+
     access_token = resp.json()['access_token']
     expires_in = resp.json()['expires_in']
     ext_expires_in = resp.json()['ext_expires_in']

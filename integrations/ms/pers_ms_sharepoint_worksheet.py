@@ -96,3 +96,42 @@ def read_sharepoint_worksheets():
             raise DatabaseError(f"Failed to read SharePoint worksheets: {str(e)}") from e
 
 
+def read_sharepoint_worksheet_by_worksheet_id(worksheet_id: int):
+    """
+    Retrieves a SharePoint worksheet by worksheet id from the database.
+
+    Returns:
+        SharePointWorksheet: A SharePointWorksheet object
+    """
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadMsSharePointWorksheetById(?)}"
+                row = cursor.execute(sql, worksheet_id).fetchone()
+
+                if row:
+                    return PersistenceResponse(
+                        data=SharePointWorksheet.from_db_row(row),
+                        message="SharePoint worksheet found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+
+                return PersistenceResponse(
+                    data=None,
+                    message="SharePoint worksheet not found",
+                    status_code=404,
+                    success=False,
+                    timestamp=datetime.now()
+                )
+
+        except pyodbc.Error as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read SharePoint worksheet: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+

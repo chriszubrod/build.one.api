@@ -27,6 +27,8 @@ class Project:
     status: Optional[str] = None
     customer_id: Optional[int] = None
     transaction_id: Optional[int] = None
+    map_project_intuit_customer_id: Optional[int] = None
+    intuit_customer_id: Optional[int] = None
 
     @classmethod
     def from_db_row(cls, row) -> Optional['Project']:
@@ -40,7 +42,9 @@ class Project:
             abbreviation=getattr(row, 'Abbreviation', None),
             status=getattr(row, 'Status', None),
             customer_id=getattr(row, 'CustomerId', None),
-            transaction_id=getattr(row, 'TransactionId', None)
+            transaction_id=getattr(row, 'TransactionId', None),
+            map_project_intuit_customer_id=getattr(row, 'ProjectIntuitCustomerId', None),
+            intuit_customer_id=getattr(row, 'IntuitCustomerId', None)
         )
 
 
@@ -322,6 +326,43 @@ def delete_project_by_id(project: Project) -> PersistenceResponse:
             return PersistenceResponse(
                 data=None,
                 message=f"Failed to delete project by id: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def read_project_intuit_customer_by_project_id(project_id: str) -> PersistenceResponse:
+    """
+    Retrieves a project from the database by GUID.
+    """
+    with pers_database.get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadProjectIntuitCustomerByProjectID(?)}"
+                row = cursor.execute(sql, project_id).fetchone()
+
+                if row:
+                    return PersistenceResponse(
+                        data=Project.from_db_row(row),
+                        message="Project found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    return PersistenceResponse(
+                        data=None,
+                        message="Project not found",
+                        status_code=404,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read project by guid: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()

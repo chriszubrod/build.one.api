@@ -173,11 +173,14 @@ BEGIN
         [SubCostCodeId],
         [ProjectId]
     FROM BillLineItem
-    WHERE [BillId] = @BillId;
+    WHERE [BillId] = @BillId
+    ORDER BY [SubCostCodeId] DESC;
 
     COMMIT;
 END
 
+EXEC ReadBillLineItemByBillId
+    @BillId = 86;
 
 
 DROP PROCEDURE IF EXISTS UpdateBillLineItem;

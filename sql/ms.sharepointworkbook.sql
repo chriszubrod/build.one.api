@@ -110,10 +110,10 @@ END
 
 
 
-DROP PROCEDURE IF EXISTS ReadMsSharePointWorkbookByFileId;
+DROP PROCEDURE IF EXISTS ReadMsSharePointWorkbookById;
 
-CREATE PROCEDURE ReadMsSharePointWorkbookByFileId
-    @FileId NVARCHAR(MAX)
+CREATE PROCEDURE ReadMsSharePointWorkbookById
+    @Id INT
 AS
 BEGIN
 	BEGIN TRANSACTION;
@@ -125,24 +125,25 @@ BEGIN
 		CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS [ModifiedDatetime],
 		[MsGraphDownloadUrl],
 		[CTag],
-		[MsCreatedDatetime],
+		CAST([MsCreatedDatetime] AS NVARCHAR(MAX)) AS [MsCreatedDatetime],
 		[ETag],
 		[FileHashQuickXorHash],
 		[FileMimeType],
 		[MsId],
-		[LastModifiedDatetime],
+		CAST([LastModifiedDatetime] AS NVARCHAR(MAX)) AS [LastModifiedDatetime],
 		[Name],
 		[MsParentId],
 		[SharedScope],
 		[Size],
 		[WebUrl]
 	FROM ms.SharePointWorkbook
-	WHERE [Id] = @FileId;
+	WHERE [Id] = @Id;
 
     COMMIT;
 END
 
-
+EXEC ReadMsSharePointWorkbookById
+	@Id = 1;
 
 
 

@@ -8,13 +8,6 @@ import requests
 def upload_file_to_sharepoint(access_token: str, site_id: str, folder_id: str, file: Dict, conflict_behavior: str = 'replace') -> Dict[str, Any]:
     """
     Uploads a base64 encoded file to SharePoint.
-    
-    Args:
-        access_token: SharePoint access token
-        site_id: SharePoint site ID
-        folder_id: Destination folder ID
-        file: Dictionary containing file details (name, type, size, data)
-        conflict_behavior: How to handle naming conflicts
     """
     try:
         _file = file[0]
@@ -26,18 +19,35 @@ def upload_file_to_sharepoint(access_token: str, site_id: str, folder_id: str, f
         
         if not file_name:
             return {
+                'success': False,
                 'status_code': 404,
                 'message': "File name is required"
             }
 
-        # Convert base64 to binary
-        try:
-            base64_data = _file['data'].split('base64,')[1]
-            file_content = base64.b64decode(base64_data)
-        except (KeyError, IndexError, base64.binascii.Error) as e:
+        # Handle both base64 string and bytes
+        file_content = _file['data']
+        if isinstance(file_content, str):
+            # If it's a string, try to decode as base64
+            try:
+                if 'base64,' in file_content:
+                    base64_data = file_content.split('base64,')[1]
+                else:
+                    base64_data = file_content
+                file_content = base64.b64decode(base64_data)
+            except (KeyError, IndexError, base64.binascii.Error) as e:
+                return {
+                    'success': False,
+                    'status_code': 400,
+                    'message': f"Invalid base64 data: {str(e)}"
+                }
+        elif isinstance(file_content, bytes):
+            # If it's already bytes, use it directly
+            pass
+        else:
             return {
+                'success': False,
                 'status_code': 400,
-                'message': f"Invalid base64 data: {str(e)}"
+                'message': f"Invalid data type: {type(file_content)}"
             }
 
         # Create file-like object from binary data
@@ -45,7 +55,7 @@ def upload_file_to_sharepoint(access_token: str, site_id: str, folder_id: str, f
         file_obj.seek(0)
 
         if file_size > 4 * 1024 * 1024:
-            return large_file_upload(
+            result = large_file_upload(
                 access_token,
                 site_id,
                 folder_id,
@@ -54,18 +64,26 @@ def upload_file_to_sharepoint(access_token: str, site_id: str, folder_id: str, f
                 len(file_content),
                 conflict_behavior
             )
-
-        return simple_upload(
-            access_token,
-            site_id,
-            folder_id,
-            file_obj,
-            file_name,
-            conflict_behavior
-        )
+        else:
+            result = simple_upload(
+                access_token,
+                site_id,
+                folder_id,
+                file_obj,
+                file_name,
+                conflict_behavior
+            )
+        
+        if 'status_code' in result and result['status_code'] in [200, 201]:
+            result['success'] = True
+        else:
+            result['success'] = False
+        
+        return result
 
     except Exception as e:
         return {
+            'success': False,
             'status_code': 500,
             'message': f"Error uploading file: {str(e)}"
         }
@@ -84,9 +102,13 @@ def simple_upload(access_token: str, site_id: str, folder_id: str, file_obj: io.
     response = requests.put(url, headers=headers, data=file_obj, timeout=30)
     
     if response.status_code == 201:
-        return response.json()
+        result = response.json()
+        result['success'] = True  # Add success flag
+        result['status_code'] = 201  # Add status code
+        return result
     
     return {
+        'success': False,
         'status_code': response.status_code,
         'message': f"Upload failed: {response.text}"
     }
@@ -130,9 +152,13 @@ def large_file_upload(access_token: str, site_id: str, folder_id: str, file_obj:
             }
 
         if chunk_response.status_code == 201:
-            return chunk_response.json()
+            result = chunk_response.json()
+            result['success'] = True  # Add success flag
+            result['status_code'] = 201  # Add status code
+            return result
 
     return {
+        'success': False,
         'status_code': 500,
         'message': 'File upload did not complete successfully'
     }

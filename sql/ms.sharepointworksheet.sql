@@ -82,10 +82,10 @@ END
 
 
 
-DROP PROCEDURE IF EXISTS ReadMsSharePointWorksheetByFileId;
+DROP PROCEDURE IF EXISTS ReadMsSharePointWorksheetById;
 
-CREATE PROCEDURE ReadMsSharePointWorksheetByFileId
-    @FileId NVARCHAR(MAX)
+CREATE PROCEDURE ReadMsSharePointWorksheetById
+    @Id NVARCHAR(MAX)
 AS
 BEGIN
 	BEGIN TRANSACTION;
@@ -101,7 +101,7 @@ BEGIN
 		[Position],
 		[Visibility]
 	FROM ms.SharePointWorksheet
-	WHERE [Id] = @FileId;
+	WHERE [Id] = @Id;
 
     COMMIT;
 END

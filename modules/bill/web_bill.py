@@ -96,9 +96,9 @@ def create_bill_route():
             flash(get_projects_bus_response.message, 'error')
             print(f'\nError: {get_projects_bus_response.message}\n')
 
-        print(f'\nvendors: {vendors}\n')
-        print(f'\nsub_cost_codes: {sub_cost_codes}\n')
-        print(f'\nprojects: {projects}\n')
+        #print(f'\nvendors: {vendors}\n')
+        #print(f'\nsub_cost_codes: {sub_cost_codes}\n')
+        #print(f'\nprojects: {projects}\n')
 
         return render_template(
             'bill/bill_create.html',

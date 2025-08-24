@@ -280,3 +280,58 @@ SELECT * FROM dbo.Project;
 
 SELECT * FROM dbo.Project;
 
+
+
+
+
+
+DROP PROCEDURE IF EXISTS ReadProjectIntuitCustomerIdByGUID;
+
+CREATE PROCEDURE ReadProjectIntuitCustomerIdByGUID
+    @GUID UNIQUEIDENTIFIER
+
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [mapProjectIntuitCustomerId]
+    FROM Project
+    WHERE [GUID] = @GUID;
+
+    COMMIT;
+END;
+
+
+
+
+DROP PROCEDURE IF EXISTS ReadProjectIntuitCustomerByProjectID;
+
+CREATE PROCEDURE ReadProjectIntuitCustomerByProjectID
+    @ID INT
+AS
+BEGIN
+
+    BEGIN TRANSACTION;
+
+    SELECT
+        P.[Id],
+        P.[GUID],
+        CAST(P.[CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST(P.[ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        P.[Name],
+        P.[Abbreviation],
+        P.[Status],
+        P.[CustomerId],
+        P.[TransactionId],
+        P.[mapProjectIntuitCustomerId],
+        PIC.[IntuitCustomerId]
+    FROM dbo.Project P
+    JOIN map.ProjectIntuitCustomer PIC ON P.[Id] = PIC.[ProjectId]
+    WHERE P.[Id] = @ID;
+
+    COMMIT;
+END;
+
+EXEC ReadProjectIntuitCustomerByProjectID
+    @ID = 3;

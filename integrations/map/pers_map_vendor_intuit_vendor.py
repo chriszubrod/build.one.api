@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional
 import pyodbc
 
-import persistence.pers_database as pers_database
-from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -43,7 +43,7 @@ def create_map_vendor_intuit_vendor(
     """
     Creates a Map Vendor Intuit Vendor in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateMapVendorIntuitVendor (?, ?)}"
@@ -86,7 +86,7 @@ def read_map_vendor_intuit_vendors() -> PersistenceResponse:
     """
     Retrieves all Map Vendor Intuit Vendors from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMapVendorIntuitVendors}"
@@ -120,7 +120,7 @@ def read_map_vendor_intuit_vendors() -> PersistenceResponse:
 
 
 def read_map_vendor_intuit_vendor_by_vendor_id(vendor_id: int) -> PersistenceResponse:
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMapVendorIntuitVendorByVendorId (?)}"
@@ -154,7 +154,7 @@ def read_map_vendor_intuit_vendor_by_vendor_id(vendor_id: int) -> PersistenceRes
 
 
 def read_map_vendor_intuit_vendor_by_intuit_vendor_id(intuit_vendor_id: int) -> PersistenceResponse:
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMapVendorIntuitVendorByIntuitVendorId (?)}"
@@ -188,7 +188,7 @@ def read_map_vendor_intuit_vendor_by_intuit_vendor_id(intuit_vendor_id: int) -> 
 
 
 def update_map_vendor_intuit_vendor(map_vendor_intuit_vendor):
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateMapVendorIntuitVendorById (?, ?, ?)}"

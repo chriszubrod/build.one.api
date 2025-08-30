@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional
 import pyodbc
 
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -62,7 +62,7 @@ def create_sharepoint_workbook(sharepoint_workbook: SharePointWorkbook):
     """
     Creates a SharePoint workbook in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateMsSharePointWorkbook (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
@@ -119,7 +119,7 @@ def read_sharepoint_workbooks():
     Returns:
         List[SharePointWorkbook]: A list of SharePointWorkbook objects
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointWorkbooks}"
@@ -159,7 +159,7 @@ def read_sharepoint_workbook_by_workbook_id(workbook_id: int):
     Returns:
         SharePointWorkbook: A SharePointWorkbook object
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointWorkbookById(?)}"
@@ -199,7 +199,7 @@ def read_sharepoint_workbook_by_url(url: str):
     Returns:
         SharePointWorkbook: A SharePointWorkbook object
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointWorkbookByUrl(?)}"
@@ -236,7 +236,7 @@ def update_sharepoint_workbook_by_workbook_id(sharepoint_workbook: SharePointWor
     """
     Updates a SharePoint workbook by workbook id in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateMsSharePointWorkbookByWorkbookId (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"

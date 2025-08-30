@@ -13,8 +13,8 @@ import pyodbc
 
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 from modules.bill import (
     bus_bill_line_item_attachment,
     pers_bill
@@ -56,7 +56,7 @@ def create_bill_with_line_items_and_attachments(
         attachments: list
 ) -> PersistenceResponse:
     """Creates a new bill with line items and attachments in the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 # Convert line items and attachments to pyodbc.Row compatible format
@@ -139,7 +139,7 @@ def create_bill_with_line_items_and_attachments(
 
 def create_bill(bill: Bill) -> PersistenceResponse:
     """Creates a new bill in the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateBill(?, ?, ?, ?, ?, ?, ?, ?)}"
@@ -186,7 +186,7 @@ def create_bill(bill: Bill) -> PersistenceResponse:
 
 def read_bills() -> PersistenceResponse:
     """Retrieves all bills from the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadBills()}"
@@ -220,7 +220,7 @@ def read_bills() -> PersistenceResponse:
 
 def read_bill_by_id(bill_id: int) -> PersistenceResponse:
     """Retrieves a bill from the database by ID."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadBillById(?)}"
@@ -254,7 +254,7 @@ def read_bill_by_id(bill_id: int) -> PersistenceResponse:
 
 def read_bill_by_guid(bill_guid: str) -> PersistenceResponse:
     """Retrieves a bill from the database by GUID."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadBillByGuid(?)}"
@@ -288,7 +288,7 @@ def read_bill_by_guid(bill_guid: str) -> PersistenceResponse:
 
 def read_bills_by_vendor(vendor_id: int) -> PersistenceResponse:
     """Retrieves all bills for a specific vendor."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadBillsByVendor(?)}"
@@ -322,7 +322,7 @@ def read_bills_by_vendor(vendor_id: int) -> PersistenceResponse:
 
 def read_bill_by_last_created() -> PersistenceResponse:
     """Retrieves the last created bill."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadBillByLastCreated()}"
@@ -356,7 +356,7 @@ def read_bill_by_last_created() -> PersistenceResponse:
 
 def update_bill(bill: Bill) -> PersistenceResponse:
     """Updates a bill in the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateBill(?, ?, ?, ?, ?)}"

@@ -12,10 +12,10 @@ import bcrypt
 
 
 # local imports
-from business.bus_response import BusinessResponse
 from utils import function_help as fhp
 from modules.user import pers_user
 from modules.role import pers_role
+from shared.response import BusinessResponse
 
 
 def validate_email(email: str) -> BusinessResponse:

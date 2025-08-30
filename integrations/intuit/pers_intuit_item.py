@@ -3,8 +3,8 @@ from datetime import datetime
 from typing import Optional
 import pyodbc
 
-from persistence import pers_database
-from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 @dataclass
 class IntuitItem:
@@ -43,7 +43,7 @@ class IntuitItem:
 
 def create_intuit_item(realm_id, intuit_item):
     """Create intuit item."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateIntuitItem(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
@@ -78,7 +78,7 @@ def create_intuit_item(realm_id, intuit_item):
 
 def read_intuit_item_by_id(item_id) -> PersistenceResponse:
     """Read intuit item by id."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadIntuitItemById(?)}"
@@ -111,7 +111,7 @@ def read_intuit_item_by_id(item_id) -> PersistenceResponse:
 
 def update_intuit_item_by_realm_id_and_item_id(realm_id, intuit_item):
     """Update intuit item by realm id and item id."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateIntuitItemByRealmIdAndItemId(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"

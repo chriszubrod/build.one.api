@@ -11,8 +11,8 @@ from typing import Optional
 import pyodbc
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -56,7 +56,7 @@ class BillLineItem:
 
 def create_bill_line_item(bill_line_item: BillLineItem) -> PersistenceResponse:
     """Creates a new bill line item in the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateBillLineItem(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
@@ -106,7 +106,7 @@ def create_bill_line_item(bill_line_item: BillLineItem) -> PersistenceResponse:
 
 def read_bill_line_item_by_id(bill_line_item_id: int) -> PersistenceResponse:
     """Retrieves a bill line item from the database by ID."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadBuildoneBillLineItemById(?)}"
@@ -140,7 +140,7 @@ def read_bill_line_item_by_id(bill_line_item_id: int) -> PersistenceResponse:
 
 def read_bill_line_item_by_guid(bill_line_item_guid: str) -> PersistenceResponse:
     """Retrieves a bill line item from the database by GUID."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadBuildoneBillLineItemByGUID(?)}"
@@ -174,7 +174,7 @@ def read_bill_line_item_by_guid(bill_line_item_guid: str) -> PersistenceResponse
 
 def read_bill_line_item_by_bill_id(bill_id: int) -> PersistenceResponse:
     """Retrieves all bill line items for a specific bill."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadBillLineItemByBillId(?)}"
@@ -207,7 +207,7 @@ def read_bill_line_item_by_bill_id(bill_id: int) -> PersistenceResponse:
 
 def update_bill_line_item(bill_line_item: BillLineItem) -> PersistenceResponse:
     """Updates a bill line item in the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateBillLineItem(?, ?, ?, ?, ?, ?, ?, ?)}"

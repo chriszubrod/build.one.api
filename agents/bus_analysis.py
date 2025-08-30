@@ -10,7 +10,7 @@ from datetime import datetime
 import requests
 
 # local imports
-from business.bus_response import BusinessResponse
+from shared.response import BusinessResponse
 
 
 

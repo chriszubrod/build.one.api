@@ -16,7 +16,7 @@ import requests
 from datetime import datetime
 from integrations.intuit import intuit_vendor_int
 from modules.vendor import pers_vendor
-from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
+from shared.response import PersistenceResponse
 from persistence import (
     pers_intuit_auth,
     pers_intuit_vendor,

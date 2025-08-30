@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional
 import pyodbc
 
-import persistence.pers_database as pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -45,7 +45,7 @@ def read_map_project_sharepoint_folders_by_project_by_module(
     """
     Retrieves all Map Project Sharepoint Folders by project and module from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadProjectSharePointFolderByProjectIdByModuleId(?, ?)}"

@@ -7,7 +7,7 @@ from datetime import datetime
 from dateutil import tz
 
 # local imports
-from business.bus_response import BusinessResponse
+from shared.response import BusinessResponse
 from modules.vendor import pers_vendor
 from integrations.map import pers_map_vendor_intuit_vendor
 

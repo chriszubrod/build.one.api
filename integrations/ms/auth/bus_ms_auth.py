@@ -12,7 +12,7 @@ import bcrypt
 
 
 # local imports
-from business.bus_response import BusinessResponse
+from shared.response import BusinessResponse
 from utils import function_help as fhp
 from integrations.ms.auth import pers_ms_auth
 

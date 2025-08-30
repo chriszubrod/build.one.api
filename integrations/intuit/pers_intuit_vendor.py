@@ -3,8 +3,8 @@ from datetime import datetime
 from typing import Optional
 import pyodbc
 
-from persistence import pers_database
-from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 @dataclass
 class IntuitVendor:
@@ -45,7 +45,7 @@ class IntuitVendor:
 
 def create_intuit_vendor(realm_id, intuit_vendor):
     """Create vendor."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateIntuitVendor(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
@@ -81,7 +81,7 @@ def create_intuit_vendor(realm_id, intuit_vendor):
 
 def read_intuit_vendor_by_id(vendor_id) -> PersistenceResponse:
     """Read vendor by id."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadIntuitVendorById(?)}"
@@ -114,7 +114,7 @@ def read_intuit_vendor_by_id(vendor_id) -> PersistenceResponse:
 
 def update_intuit_vendor_by_realm_id_and_vendor_id(realm_id, intuit_vendor):
     """Update vendor by realm id and vendor id."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateIntuitVendorByRealmIdAndVendorId(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"

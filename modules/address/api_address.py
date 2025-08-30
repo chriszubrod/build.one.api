@@ -15,8 +15,8 @@ from flask import (
 )
 
 # local imports
-from blueprints.api.api_response import ApiResponse
 from modules.address import bus_address
+from shared.response import ApiResponse
 
 api_address_bp = Blueprint('api_address', __name__, url_prefix='/api')
 

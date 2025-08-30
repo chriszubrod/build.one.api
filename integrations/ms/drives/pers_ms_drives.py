@@ -11,8 +11,8 @@ from typing import Optional
 import pyodbc
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -108,7 +108,7 @@ def read_ms_drives() -> PersistenceResponse:
     """
     Retrieves all drives from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointDrives}"

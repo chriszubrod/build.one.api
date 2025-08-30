@@ -1,8 +1,8 @@
 """
 
 """
-from business.bus_business_responses import BusinessResponse
-from persistence.pers_response import SuccessResponse
+from shared.response import BusinessResponse
+from shared.response import SuccessResponse
 from persistence import pers_ms_sharepoint_site
 
 def get_sharepoint_sites():

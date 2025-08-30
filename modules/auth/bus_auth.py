@@ -6,9 +6,9 @@ Module for auth business.
 from datetime import datetime, timezone
 
 # local imports
-from business.bus_response import BusinessResponse
 from utils import auth_help, token_help
 from modules.user import pers_user
+from shared.response import BusinessResponse
 
 
 def post_auth_registration(

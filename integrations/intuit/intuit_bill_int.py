@@ -24,7 +24,7 @@ from persistence import (
     pers_intuit_urls
 )
 
-from persistence.pers_response import SuccessResponse, PersistenceResponse, DatabaseError
+from shared.response import SuccessResponse, PersistenceResponse, DatabaseError
 
 LAST_UPDATE = ""
 REALM_ID = ""

@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional
 import pyodbc
 
-import persistence.pers_database as pers_database
-from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -43,7 +43,7 @@ def create_map_sub_cost_code_intuit_item(
     """
     Creates a Map Sub Cost Code Intuit Item in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateMapSubCostCodeIntuitItem (?, ?)}"
@@ -86,7 +86,7 @@ def read_map_sub_cost_code_intuit_items() -> PersistenceResponse:
     """
     Retrieves all Map Sub Cost Code Intuit Items from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMapSubCostCodeIntuitItems}"
@@ -120,7 +120,7 @@ def read_map_sub_cost_code_intuit_items() -> PersistenceResponse:
 
 
 def read_map_sub_cost_code_intuit_item_by_sub_cost_code_id(sub_cost_code_id: int) -> PersistenceResponse:
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMapSubCostCodeIntuitItemBySubCostCodeId (?)}"
@@ -154,7 +154,7 @@ def read_map_sub_cost_code_intuit_item_by_sub_cost_code_id(sub_cost_code_id: int
 
 
 def read_map_sub_cost_code_intuit_item_by_intuit_item_id(intuit_item_id: int) -> PersistenceResponse:
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMapSubCostCodeIntuitItemByIntuitItemId (?)}"
@@ -188,7 +188,7 @@ def read_map_sub_cost_code_intuit_item_by_intuit_item_id(intuit_item_id: int) ->
 
 
 def update_map_sub_cost_code_intuit_item(map_sub_cost_code_intuit_item):
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateMapSubCostCodeIntuitItemById (?, ?, ?)}"

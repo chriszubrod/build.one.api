@@ -7,10 +7,10 @@ import base64
 import logging
 
 # local imports
-from business.bus_response import BusinessResponse
 from datetime import datetime
 from typing import Union, Tuple
 from pathlib import Path
+from shared.response import BusinessResponse
 
 # persistence imports
 from modules.bill import (

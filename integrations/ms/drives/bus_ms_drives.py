@@ -11,7 +11,7 @@ import json
 
 
 # local imports
-from business.bus_response import BusinessResponse
+from shared.response import BusinessResponse
 from integrations.ms.drives import api_ms_drives, pers_ms_drives
 
 

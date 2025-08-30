@@ -11,8 +11,8 @@ from typing import Optional
 import pyodbc
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -44,7 +44,7 @@ def create_payment_term(payment_term: PaymentTerm) -> PersistenceResponse:
     """
     Creates a new payment term in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreatePaymentTerm(?, ?, ?, ?)}"
@@ -89,7 +89,7 @@ def read_payment_terms() -> PersistenceResponse:
     """
     Retrieves all payment terms from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadPaymentTerms()}"
@@ -125,7 +125,7 @@ def read_payment_term_by_name(name: str) -> PersistenceResponse:
     """
     Retrieves a payment term from the database by name.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadPaymentTermByName(?)}"
@@ -161,7 +161,7 @@ def read_payment_term_by_guid(guid: str) -> PersistenceResponse:
     """
     Retrieves a payment term from the database by GUID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadPaymentTermByGUID(?)}"

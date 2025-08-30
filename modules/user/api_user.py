@@ -12,7 +12,7 @@ import bleach
 from flask import Blueprint, request, jsonify, session
 
 # local imports
-from blueprints.api.api_response import ApiResponse
+from shared.response import ApiResponse
 from modules.user import bus_user
 
 

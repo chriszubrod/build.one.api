@@ -11,7 +11,7 @@ from dateutil import tz
 
 
 # local imports
-from business.bus_response import BusinessResponse
+from shared.response import BusinessResponse
 from modules.cost_code import pers_cost_code
 from modules.sub_cost_code import pers_sub_cost_code
 from integrations.map import pers_map_sub_cost_code_intuit_item

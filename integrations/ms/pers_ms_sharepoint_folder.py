@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional
 import pyodbc
 
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -58,7 +58,7 @@ def create_sharepoint_folder(sharepoint_folder: SharePointFolder):
     """
     Creates a SharePoint folder in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateMsSharePointFolder (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
@@ -95,7 +95,7 @@ def read_sharepoint_folders():
     Returns:
         List[SharePointFolder]: A list of SharePointFolder objects
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointFolders}"
@@ -121,7 +121,7 @@ def read_sharepoint_folder_by_folder_id(folder_id: int):
     Returns:
         SharePointFolder: A SharePointFolder object
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointFolderByFolderId(?)}"
@@ -161,7 +161,7 @@ def read_sharepoint_folder_by_url(url: str):
     Returns:
         SharePointFolder: A SharePointFolder object
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointFolderByUrl(?)}"
@@ -184,7 +184,7 @@ def update_sharepoint_folder_by_folder_id(sharepoint_folder: SharePointFolder):
     """
     Updates a SharePoint folder by folder id in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateMsSharePointFolderByFolderId (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"

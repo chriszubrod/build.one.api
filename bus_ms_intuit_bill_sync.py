@@ -21,8 +21,8 @@ import jwt
 import time
 
 # local imports
-from business.bus_response import BusinessResponse
-from persistence.pers_response import SuccessResponse
+from shared.response import BusinessResponse
+from shared.response import SuccessResponse
 from integrations.intuit import pers_intuit_urls, pers_intuit_auth
 from integrations.map import (
     pers_map_attachment_sharepoint_file,

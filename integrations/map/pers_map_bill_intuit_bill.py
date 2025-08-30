@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional
 import pyodbc
 
-import persistence.pers_database as pers_database
-from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -43,7 +43,7 @@ def create_map_bill_intuit_bill(
     """
     Creates a Map Bill Intuit Bill in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateMapBillIntuitBill (?, ?)}"
@@ -86,7 +86,7 @@ def read_map_intuit_bills() -> PersistenceResponse:
     """
     Retrieves all Map Bill Intuit Bills from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMapBillIntuitBills}"
@@ -120,7 +120,7 @@ def read_map_intuit_bills() -> PersistenceResponse:
 
 
 def read_map_bill_intuit_bill_by_bill_id(bill_id: int) -> PersistenceResponse:
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMapBillIntuitBillByBillId (?)}"
@@ -154,7 +154,7 @@ def read_map_bill_intuit_bill_by_bill_id(bill_id: int) -> PersistenceResponse:
 
 
 def read_map_bill_intuit_bill_by_intuit_bill_id(intuit_bill_id: int) -> PersistenceResponse:
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMapBillIntuitBillByIntuitBillId (?)}"
@@ -188,7 +188,7 @@ def read_map_bill_intuit_bill_by_intuit_bill_id(intuit_bill_id: int) -> Persiste
 
 
 def update_map_bill_intuit_bill(map_bill_intuit_bill):
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateMapBillIntuitBillById (?, ?, ?)}"

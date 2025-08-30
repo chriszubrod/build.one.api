@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from datetime import datetime
 import pyodbc
 
-from persistence import pers_database
-from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -32,7 +32,7 @@ def read_intuit_data_sync_by_data_source_name(data_source_name):
     """
     Read the Intuit DataSync by data source name.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadDataSyncByDataSourceName (?)}"

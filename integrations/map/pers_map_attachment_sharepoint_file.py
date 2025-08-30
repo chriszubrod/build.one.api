@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional
 import pyodbc
 
-import persistence.pers_database as pers_database
-from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -43,7 +43,7 @@ def create_map_attachment_sharepoint_file(
     """
     Creates a Map Attachment Sharepoint File in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 print('bill_line_item_attachment_id')
@@ -90,7 +90,7 @@ def read_map_attachment_sharepoint_files() -> PersistenceResponse:
     """
     Retrieves all Map Attachment Sharepoint Files from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadAttachmentSharePointFile}"
@@ -124,7 +124,7 @@ def read_map_attachment_sharepoint_files() -> PersistenceResponse:
 
 
 def read_map_attachment_sharepoint_file_by_attachment_id(bill_line_item_attachment_id: int) -> PersistenceResponse:
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadAttachmentSharePointFileByAttachmentId (?)}"
@@ -158,7 +158,7 @@ def read_map_attachment_sharepoint_file_by_attachment_id(bill_line_item_attachme
 
 
 def read_map_attachment_sharepoint_file_by_attachment_id_file_id(bill_line_item_attachment_id: int, ms_sharepoint_file_id: int) -> PersistenceResponse:
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadAttachmentSharePointFileByAttachmentIdSharePointFileId (?, ?)}"
@@ -192,7 +192,7 @@ def read_map_attachment_sharepoint_file_by_attachment_id_file_id(bill_line_item_
 
 
 def update_map_attachment_sharepoint_file(map_attachment_sharepoint_file):
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateAttachmentSharePointFileById (?, ?, ?)}"

@@ -11,8 +11,8 @@ from typing import Optional
 import pyodbc
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -56,7 +56,7 @@ def create_vendor(vendor: Vendor) -> PersistenceResponse:
     """
     Creates a vendor in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateVendor (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
@@ -106,7 +106,7 @@ def read_vendors() -> PersistenceResponse:
     """
     Retrieves all vendors from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadVendors}"
@@ -141,7 +141,7 @@ def read_vendor_by_guid(vendor_guid: str) -> PersistenceResponse:
     """
     Retrieves a vendor by GUID from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadVendorByGuid (?)}"
@@ -177,7 +177,7 @@ def read_vendor_by_id(vendor_id: int) -> PersistenceResponse:
     """
     Retrieves a vendor by Id from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadVendorById (?)}"
@@ -213,7 +213,7 @@ def read_vendor_by_name(vendor_name: str) -> PersistenceResponse:
     """
     Retrieves a vendor by name from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadVendorByName (?)}"
@@ -249,7 +249,7 @@ def update_vendor_by_id(vendor: Vendor) -> PersistenceResponse:
     """
     Updates a vendor by id in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateVendorById (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"

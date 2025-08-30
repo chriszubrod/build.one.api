@@ -5,7 +5,7 @@ import requests
 from datetime import datetime
 from flask import jsonify
 
-from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
+from shared.response import PersistenceResponse
 from integrations.ms import pers_ms_sharepoint_site
 
 

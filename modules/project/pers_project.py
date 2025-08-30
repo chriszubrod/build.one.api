@@ -11,8 +11,8 @@ from typing import Optional
 import pyodbc
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -52,7 +52,7 @@ def create_project(project: Project) -> PersistenceResponse:
     """
     Creates a new project in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateProject(?, ?, ?, ?, ?, ?)}"
@@ -99,7 +99,7 @@ def read_projects() -> PersistenceResponse:
     """
     Retrieves all projects from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadProjects}"
@@ -136,7 +136,7 @@ def read_project_by_id(id: int) -> PersistenceResponse:
     """
     Retrieves a project from the database by ID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadProjectByID(?)}"
@@ -173,7 +173,7 @@ def read_projects_by_customer_id(customer_id: int) -> PersistenceResponse:
     """
     Retrieves projects from the database by customer ID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadProjectsByCustomerId(?)}"
@@ -210,7 +210,7 @@ def read_project_by_guid(guid: str) -> PersistenceResponse:
     """
     Retrieves a project from the database by GUID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadProjectByGUID(?)}"
@@ -247,7 +247,7 @@ def update_project_by_id(project: Project) -> PersistenceResponse:
     """
     Updates a project in the database by ID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateProjectById(?, ?, ?, ?, ?, ?)}"
@@ -294,7 +294,7 @@ def delete_project_by_id(project: Project) -> PersistenceResponse:
     """
     Deletes a project in the database by ID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL DeleteProjectById(?)}"
@@ -336,7 +336,7 @@ def read_project_intuit_customer_by_project_id(project_id: str) -> PersistenceRe
     """
     Retrieves a project from the database by GUID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadProjectIntuitCustomerByProjectID(?)}"

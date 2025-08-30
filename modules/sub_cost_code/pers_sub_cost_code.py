@@ -11,8 +11,8 @@ from typing import Optional
 import pyodbc
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -50,7 +50,7 @@ class SubCostCode:
 
 def create_sub_cost_code(sub_cost_code: SubCostCode) -> PersistenceResponse:
     """Creates a new sub cost code in the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateSubCostCode(?, ?, ?, ?, ?, ?)}"
@@ -94,7 +94,7 @@ def create_sub_cost_code(sub_cost_code: SubCostCode) -> PersistenceResponse:
 
 def read_sub_cost_codes() -> PersistenceResponse:
     """Retrieves all sub cost codes from the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadSubCostCodes}"
@@ -128,7 +128,7 @@ def read_sub_cost_codes() -> PersistenceResponse:
 
 def read_sub_cost_code_by_name(name: str) -> PersistenceResponse:
     """Retrieves a sub cost code from the database by name."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadSubCostCodeByName(?)}"
@@ -164,7 +164,7 @@ def read_sub_cost_code_by_guid(guid: str) -> PersistenceResponse:
     """
     Retrieves a sub cost code from the database by GUID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadSubCostCodeByGUID(?)}"
@@ -200,7 +200,7 @@ def read_sub_cost_code_by_id(id: int) -> PersistenceResponse:
     """
     Retrieves a sub cost code from the database by ID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadSubCostCodeById(?)}"
@@ -236,7 +236,7 @@ def read_sub_cost_code_by_number(number: str) -> PersistenceResponse:
     """
     Retrieves a sub cost code from the database by number.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadSubCostCodeByNumber(?)}"
@@ -272,7 +272,7 @@ def update_sub_cost_code(sub_cost_code: SubCostCode) -> PersistenceResponse:
     """
     Updates a sub cost code in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateSubCostCode(@Id=?, @Number=?, @Name=?, @Description=?, @CostCodeId=?, @TransactionId=?)}"
@@ -319,7 +319,7 @@ def delete_sub_cost_code(id: int) -> PersistenceResponse:
     """
     Deletes a sub cost code from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL DeleteSubCostCode(?)}"

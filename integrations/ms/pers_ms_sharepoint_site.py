@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional
 import pyodbc
 
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -54,7 +54,7 @@ def create_sharepoint_site(sharepoint_site: SharePointSite):
     """
     Creates a SharePoint site in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateMsSharePointSite (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
@@ -89,7 +89,7 @@ def read_sharepoint_sites():
     Returns:
         List[SharePointSite]: A list of SharePointSite objects
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointSites}"
@@ -130,7 +130,7 @@ def read_sharepoint_site_by_site_id(site_id: str):
     Returns:
         SharePointSite: A SharePointSite object
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointSiteBySiteId(?)}"
@@ -157,7 +157,7 @@ def update_sharepoint_site_by_site_id(sharepoint_site: SharePointSite):
     """
     Creates a SharePoint site in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateMsSharePointSiteBySiteId (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"

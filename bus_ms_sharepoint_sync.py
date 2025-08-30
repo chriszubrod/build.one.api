@@ -20,7 +20,7 @@ import jwt
 import time
 
 # local imports
-from business.bus_response import BusinessResponse
+from shared.response import BusinessResponse
 from integrations.map import (
     pers_map_attachment_sharepoint_file,
     pers_map_project_sharepoint_folder

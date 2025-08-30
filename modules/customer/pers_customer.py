@@ -13,8 +13,8 @@ import pyodbc
 
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -48,7 +48,7 @@ class Customer:
 
 def create_customer(customer: Customer) -> PersistenceResponse:
     """Creates a new customer in the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateCustomer(?, ?, ?, ?, ?)}"
@@ -92,7 +92,7 @@ def create_customer(customer: Customer) -> PersistenceResponse:
 
 def read_customers() -> PersistenceResponse:
     """Reads all customers from the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadCustomers()}"
@@ -126,7 +126,7 @@ def read_customers() -> PersistenceResponse:
 
 def read_customer_by_id(customer_id: int) -> PersistenceResponse:
     """Retrieves a customer from the database by ID."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadCustomerById(?)}"
@@ -160,7 +160,7 @@ def read_customer_by_id(customer_id: int) -> PersistenceResponse:
 
 def read_customer_by_guid(customer_guid: str) -> PersistenceResponse:
     """Retrieves a customer from the database by GUID."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadCustomerByGuid(?)}"
@@ -194,7 +194,7 @@ def read_customer_by_guid(customer_guid: str) -> PersistenceResponse:
 
 def update_customer_by_id(customer: Customer) -> PersistenceResponse:
     """Updates a customer in the database by ID."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateCustomerById(?, ?, ?, ?, ?)}"
@@ -238,7 +238,7 @@ def update_customer_by_id(customer: Customer) -> PersistenceResponse:
 
 def delete_customer_by_id(customer_id: int) -> PersistenceResponse:
     """Deletes a customer in the database by ID."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL DeleteCustomerById(?)}"

@@ -11,8 +11,8 @@ from typing import Optional
 import pyodbc
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -42,7 +42,7 @@ def create_role(role: Role) -> PersistenceResponse:
     """
     Creates a new role in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateRole(?)}"
@@ -81,7 +81,7 @@ def read_roles() -> PersistenceResponse:
     """
     Retrieves all roles from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadRoles()}"
@@ -117,7 +117,7 @@ def read_role_by_name(name: str) -> PersistenceResponse:
     """
     Retrieves a role from the database by name.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadRoleByName(?)}"
@@ -153,7 +153,7 @@ def read_role_by_id(role_id: int) -> PersistenceResponse:
     """
     Retrieves a role from the database by id.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadRoleById(?)}"
@@ -189,7 +189,7 @@ def read_role_by_guid(guid: str) -> PersistenceResponse:
     """
     Retrieves a role from the database by guid.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadRoleByGuid(?)}"
@@ -224,7 +224,7 @@ def update_role_by_id(role: Role) -> PersistenceResponse:
     """
     Updates a role in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         print(role)
         try:
             with cnxn.cursor() as cursor:

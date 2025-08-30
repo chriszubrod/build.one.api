@@ -11,8 +11,8 @@ from typing import Optional
 import pyodbc
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -40,7 +40,7 @@ class VendorType:
 
 def create_vendor_type(vendor_type: VendorType) -> PersistenceResponse:
     """Creates a vendor type in the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateVendorType (?)}"
@@ -81,7 +81,7 @@ def read_vendor_types() -> PersistenceResponse:
     """
     Retrieves all vendor types from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadVendorTypes}"
@@ -116,7 +116,7 @@ def read_vendor_type_by_name(vendor_type_name: str) -> PersistenceResponse:
     """
     Retrieves a vendor type by name from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadVendorTypeByName (?)}"
@@ -152,7 +152,7 @@ def read_vendor_type_by_id(vendor_type_id: int) -> PersistenceResponse:
     """
     Retrieves a vendor type by id from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadVendorTypeByID (?)}"
@@ -188,7 +188,7 @@ def read_vendor_type_by_guid(vendor_type_guid: str) -> PersistenceResponse:
     """
     Retrieves a vendor type by guid from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadVendorTypeByGUID (?)}"
@@ -224,7 +224,7 @@ def update_vendor_type(vendor_type: VendorType) -> PersistenceResponse:
     """
     Updates a vendor type by id in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateVendorType (?, ?)}"
@@ -267,7 +267,7 @@ def delete_vendor_type(vendor_type: VendorType) -> PersistenceResponse:
     """
     Deletes a vendor type by id from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL DeleteVendorType (?)}"

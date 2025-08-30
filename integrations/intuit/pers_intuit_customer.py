@@ -3,8 +3,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 import pyodbc
 
-import persistence.pers_database as pers_database
-from persistence.pers_response import (
+from shared.database import get_db_connection
+from shared.response import (
     DatabaseError,
     ValidationError,
     NotFoundError,
@@ -76,7 +76,7 @@ class IntuitCustomer:
 
 def create_intuit_customer(customer: IntuitCustomer) -> Dict[str, Any]:
     """Creates a new Intuit customer in the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateIntuitCustomer(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
@@ -98,7 +98,7 @@ def create_intuit_customer(customer: IntuitCustomer) -> Dict[str, Any]:
 
 def read_intuit_customer_by_id(customer_id: str) -> Dict[str, Any]:
     """Retrieves an Intuit customer from the database by ID."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadIntuitCustomerById(?)}"
@@ -118,7 +118,7 @@ def read_intuit_customer_by_id(customer_id: str) -> Dict[str, Any]:
 
 def update_intuit_customer_by_realm_id_and_customer_id(customer: IntuitCustomer) -> Dict[str, Any]:
     """Updates an existing Intuit customer in the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = (
@@ -148,7 +148,7 @@ def read_intuit_projects():
     """
     Retrieves all intuit projects from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadIntuitProjects()}"

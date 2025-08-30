@@ -10,7 +10,7 @@ from dateutil import tz
 
 
 # local imports
-from business.bus_response import BusinessResponse
+from shared.response import BusinessResponse
 from integrations.ms.sites import pers_ms_sites
 
 

@@ -7,7 +7,7 @@ from datetime import datetime
 from dateutil import tz
 
 # local imports
-from business.bus_response import BusinessResponse
+from shared.response import BusinessResponse
 from utils import function_help as fhp
 from modules.address import pers_address
 

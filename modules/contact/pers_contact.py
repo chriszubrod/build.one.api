@@ -11,8 +11,8 @@ from typing import Optional
 import pyodbc
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 @dataclass
 class Contact:
@@ -50,7 +50,7 @@ def create_contact(contact: Contact) -> PersistenceResponse:
     """
     Creates a contact in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateContact(?, ?, ?, ?, ?, ?)}"
@@ -96,7 +96,7 @@ def read_contacts() -> PersistenceResponse:
     """
     Retrieves all contacts from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadContacts()}"
@@ -132,7 +132,7 @@ def read_contact_by_guid(guid: str) -> PersistenceResponse:
     """
     Retrieves a contact from the database by guid.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadContactByGuid(?)}"
@@ -168,7 +168,7 @@ def read_contact_by_email(email: str) -> PersistenceResponse:
     """
     Retrieves a contact from the database by email address.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadContactByEmail(?)}"
@@ -204,7 +204,7 @@ def read_contact_by_user_id(user_id: int) -> PersistenceResponse:
     """
     Retrieves a contact from the database by user id.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadContactByUserId(?)}"
@@ -239,7 +239,7 @@ def update_contact_by_user_id(contact: Contact) -> PersistenceResponse:
     """
     Updates a contact in the database by user id.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateContactByUserId(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"

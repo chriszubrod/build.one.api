@@ -11,8 +11,8 @@ from typing import Optional
 import pyodbc
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 @dataclass
 class BillLineItemAttachment:
@@ -49,7 +49,7 @@ def create_bill_line_item_attachment(bill_line_item_attachment: BillLineItemAtta
     Creates a new bill line item attachment record in the database.
 
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateBillLineItemAttachment(?, ?, ?, ?, ?, ?, ?, ?)}"
@@ -96,7 +96,7 @@ def get_bill_line_item_attachments() -> PersistenceResponse:
     """
     Retrieves all bill line item attachments.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadBillLineItemAttachments()}"
@@ -131,7 +131,7 @@ def read_bill_line_item_attachment_by_bill_line_item_id(bill_line_item_id: int) 
     """
     Retrieves all bill line item attachments for a given bill line item ID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadBillLineItemAttachmentByBillLineItemId(?)}"
@@ -170,7 +170,7 @@ def update_bill_line_item_attachment(bill_line_item_attachment: BillLineItemAtta
     Updates a bill line item attachment record in the database.
 
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateBillLineItemAttachment(?, ?, ?, ?, ?)}"

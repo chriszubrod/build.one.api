@@ -18,7 +18,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flask import session
 
 # local imports
-from business.bus_response import BusinessResponse
 from integrations.ms import ms_upload_new_file, pers_ms_sharepoint_site, pers_ms_sharepoint_folder
 from integrations.ms.auth import pers_ms_auth
 from integrations.map import pers_map_project_sharepoint_folder
@@ -31,6 +30,7 @@ from modules.bill import (
 )
 from modules.project import pers_project
 from modules.sub_cost_code import pers_sub_cost_code
+from shared.response import BusinessResponse
 from utils.function_help import clean_text_for_db
 from modules.vendor import (
     pers_vendor

@@ -13,8 +13,8 @@ import pyodbc
 
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -40,7 +40,7 @@ class Company:
 
 def create_company(company: Company) -> PersistenceResponse:
     """Creates a new company in the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateCompany(?, ?, ?)}"
@@ -82,7 +82,7 @@ def create_company(company: Company) -> PersistenceResponse:
 
 def read_company() -> PersistenceResponse:
     """Reads a company from the database."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadCompany()}"
@@ -116,7 +116,7 @@ def read_company() -> PersistenceResponse:
 
 def read_company_by_guid(company_guid: str) -> PersistenceResponse:
     """Reads a company from the database by guid."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadCompanyByGuid(?)}"
@@ -151,7 +151,7 @@ def read_company_by_guid(company_guid: str) -> PersistenceResponse:
 def update_company_by_id(company: Company) -> PersistenceResponse:
     """Updates a company in the database by ID."""
     print(company)
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateCompanyById(?, ?, ?)}"
@@ -193,7 +193,7 @@ def update_company_by_id(company: Company) -> PersistenceResponse:
 
 def delete_company_by_id(company_id: int) -> PersistenceResponse:
     """Deletes a company from the database by ID."""
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL DeleteCompanyById(?)}"

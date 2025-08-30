@@ -15,7 +15,7 @@ web_company_bp = Blueprint('web_company', __name__, template_folder='templates')
 
 
 @web_company_bp.route('/company', methods=['GET'])
-@requires_auth()
+#@requires_auth()
 def list_companies_route():
     """
     Returns the route for the company page.

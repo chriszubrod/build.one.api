@@ -1,5 +1,5 @@
 """
-Module for project file.
+Module for project folder.
 """
 
 # python standard library imports
@@ -11,13 +11,13 @@ from typing import Optional
 import pyodbc
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
-class ProjectFile:
-    """Represents a project file in the system."""
+class ProjectFolder:
+    """Represents a project folder in the system."""
     id: Optional[int] = None
     guid: Optional[str] = None
     created_datetime: Optional[datetime] = None
@@ -25,10 +25,11 @@ class ProjectFile:
     project_id: Optional[int] = None
     module: Optional[str] = None
     path: Optional[str] = None
+    url: Optional[str] = None
     transaction_id: Optional[int] = None
 
     @classmethod
-    def from_db_row(cls, row) -> 'ProjectFile':
+    def from_db_row(cls, row) -> Optional['ProjectFolder']:
         """Creates a Project instance from a database row."""
         return cls(
             id=getattr(row, 'Id', None),
@@ -38,32 +39,34 @@ class ProjectFile:
             project_id=getattr(row, 'ProjectId', None),
             module=getattr(row, 'Module', None),
             path=getattr(row, 'Path', None),
+            url=getattr(row, 'Url', None),
             transaction_id=getattr(row, 'TransactionId', None)
         )
 
 
-def create_project_file(project_file: ProjectFile) -> PersistenceResponse:
+def create_project_folder(project_folder: ProjectFolder):
     """
-    Creates a new project file in the database.
+    Creates a new project folder in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL CreateProjectFile(?, ?, ?, ?, ?, ?, ?, ?)}"
+                sql = "{CALL CreateProjectFolder(?, ?, ?, ?, ?, ?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,
-                    project_file.created_datetime,
-                    project_file.modified_datetime,
-                    project_file.project_id,
-                    project_file.module,
-                    project_file.path,
-                    project_file.transaction_id
+                    project_folder.created_datetime,
+                    project_folder.modified_datetime,
+                    project_folder.project_id,
+                    project_folder.module,
+                    project_folder.path,
+                    project_folder.url,
+                    project_folder.transaction_id
                 ).rowcount
                 cnxn.commit()
                 if rowcount > 0:
                     return PersistenceResponse(
                         data=rowcount,
-                        message="Project file created successfully",
+                        message="Project folder created",
                         status_code=201,
                         success=True,
                         timestamp=datetime.now()
@@ -72,36 +75,37 @@ def create_project_file(project_file: ProjectFile) -> PersistenceResponse:
                     cnxn.rollback()
                     return PersistenceResponse(
                         data=None,
-                        message="Project file not created",
+                        message="Project folder not created",
                         status_code=400,
                         success=False,
                         timestamp=datetime.now()
                     )
+
         except (pyodbc.Error) as e:
             cnxn.rollback()
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to create project file: {str(e)}",
+                message=f"Failed to create project folder: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_project_files() -> PersistenceResponse:
+def read_project_folders() -> PersistenceResponse:
     """
-    Retrieves all project files from the database.
+    Retrieves all project folders from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadProjectFiles}"
+                sql = "{CALL ReadProjectFolders}"
                 rows = cursor.execute(sql).fetchall()
 
                 if rows:
                     return PersistenceResponse(
-                        data=[ProjectFile.from_db_row(row) for row in rows],
-                        message="Project files found",
+                        data=[ProjectFolder.from_db_row(row) for row in rows],
+                        message="Project folders found",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -109,7 +113,7 @@ def read_project_files() -> PersistenceResponse:
                 else:
                     return PersistenceResponse(
                         data=None,
-                        message="No project files found",
+                        message="No project folders found",
                         status_code=404,
                         success=False,
                         timestamp=datetime.now()
@@ -118,26 +122,27 @@ def read_project_files() -> PersistenceResponse:
         except (pyodbc.Error) as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read project files: {str(e)}",
+                message=f"Failed to read project folders: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_buildone_project_file_by_guid(guid: str) -> PersistenceResponse:
+def read_project_folder_by_guid(guid: str) -> PersistenceResponse:
     """
-    Retrieves a project file from the database by GUID.
+    Retrieves a project folder from the database by GUID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadProjectFileByGUID(?)}"
+                sql = "{CALL ReadProjectFolderByGUID(?)}"
                 row = cursor.execute(sql, guid).fetchone()
+
                 if row:
                     return PersistenceResponse(
-                        data=ProjectFile.from_db_row(row),
-                        message="Project file found",
+                        data=ProjectFolder.from_db_row(row),
+                        message="Project folder found",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -145,7 +150,7 @@ def read_buildone_project_file_by_guid(guid: str) -> PersistenceResponse:
                 else:
                     return PersistenceResponse(
                         data=None,
-                        message="Project file by guid not found",
+                        message="Project folder by guid not found",
                         status_code=404,
                         success=False,
                         timestamp=datetime.now()
@@ -154,27 +159,27 @@ def read_buildone_project_file_by_guid(guid: str) -> PersistenceResponse:
         except (pyodbc.Error) as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read project file by guid: {str(e)}",
+                message=f"Failed to read project folder by guid: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_project_files_by_project_id(project_id: int) -> PersistenceResponse:
+def read_project_folders_by_project_id(project_id: int) -> PersistenceResponse:
     """
-    Retrieves all project files from the database by project id.
+    Retrieves all project folders from the database by project id.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadProjectFilesByProjectId(?)}"
+                sql = "{CALL ReadProjectFoldersByProjectId(?)}"
                 rows = cursor.execute(sql, project_id).fetchall()
 
                 if rows:
                     return PersistenceResponse(
-                        data=[ProjectFile.from_db_row(row) for row in rows],
-                        message="Project files found",
+                        data=[ProjectFolder.from_db_row(row) for row in rows],
+                        message="Project folders found",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -182,7 +187,7 @@ def read_project_files_by_project_id(project_id: int) -> PersistenceResponse:
                 else:
                     return PersistenceResponse(
                         data=None,
-                        message="No project by project id files found",
+                        message="No project folders by project id found",
                         status_code=404,
                         success=False,
                         timestamp=datetime.now()
@@ -191,7 +196,44 @@ def read_project_files_by_project_id(project_id: int) -> PersistenceResponse:
         except (pyodbc.Error) as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read project files by project id: {str(e)}",
+                message=f"Failed to read project folders by project id: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def read_project_folders_by_project_id_by_module(project_id: int, module: str) -> PersistenceResponse:
+    """
+    Retrieves a project folder by project id and module from the database.
+    """
+    with get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadProjectFolderByProjectIdByModule(?, ?)}"
+                row = cursor.execute(sql, project_id, module).fetchone()
+
+                if row:
+                    return PersistenceResponse(
+                        data=ProjectFolder.from_db_row(row),
+                        message="Project folder found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    return PersistenceResponse(
+                        data=None,
+                        message="Project folder by project id and module not found",
+                        status_code=404,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read project folder by project id and module: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()

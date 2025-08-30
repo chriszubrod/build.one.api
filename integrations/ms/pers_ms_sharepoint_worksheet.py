@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional
 import pyodbc
 
-import persistence.pers_database as pers_database
-from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -46,7 +46,7 @@ def create_sharepoint_worksheet(sharepoint_worksheet: SharePointWorksheet):
     """
     Creates a SharePoint worksheet in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateMsSharePointWorksheet (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
@@ -77,7 +77,7 @@ def read_sharepoint_worksheets():
     Returns:
         List[SharePointWorksheet]: A list of SharePointWorksheet objects
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointWorksheet}"
@@ -103,7 +103,7 @@ def read_sharepoint_worksheet_by_worksheet_id(worksheet_id: int):
     Returns:
         SharePointWorksheet: A SharePointWorksheet object
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointWorksheetById(?)}"

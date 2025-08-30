@@ -19,7 +19,7 @@ from datetime import datetime
 from integrations.intuit import intuit_item_int
 from modules.cost_code import pers_cost_code
 from modules.sub_cost_code import pers_sub_cost_code
-from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
+from shared.response import PersistenceResponse
 
 from persistence import (
     pers_intuit_auth,

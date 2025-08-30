@@ -11,7 +11,7 @@ from dateutil import tz
 
 
 # local imports
-from business.bus_response import BusinessResponse
+from shared.response import BusinessResponse
 from integrations.intuit import pers_intuit_item
 
 

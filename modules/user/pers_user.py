@@ -11,8 +11,8 @@ from typing import Optional
 import pyodbc
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -52,7 +52,7 @@ def create_user(user: User) -> PersistenceResponse:
     """
     Creates a new user in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateUser(?, ?, ?, ?, ?, ?, ?, ?)}"
@@ -100,7 +100,7 @@ def read_users() -> PersistenceResponse:
     """
     Retrieves all users from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadUsers()}"
@@ -136,7 +136,7 @@ def read_user_by_guid(guid: str) -> PersistenceResponse:
     """
     Retrieves a user from the database by GUID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadUserByGuid(?)}"
@@ -172,7 +172,7 @@ def read_user_by_username(username: str) -> PersistenceResponse:
     """
     Retrieves a user from the database by username.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadUserByUsername(?)}"
@@ -208,7 +208,7 @@ def update_user_by_id(user: User) -> PersistenceResponse:
     """
     Updates a user in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateUserById(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"

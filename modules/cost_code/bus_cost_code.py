@@ -7,7 +7,7 @@ from datetime import datetime
 from dateutil import tz
 
 # local imports
-from business.bus_response import BusinessResponse
+from shared.response import BusinessResponse
 from modules.cost_code import pers_cost_code
 
 

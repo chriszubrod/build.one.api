@@ -29,3 +29,6 @@ BEGIN
 END;
 
 EXEC ReadIntuitClient;
+
+
+SELECT * FROM intuit.Client;

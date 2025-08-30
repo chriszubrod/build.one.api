@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional
 import pyodbc
 
-import persistence.pers_database as pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -62,7 +62,7 @@ def create_sharepoint_file(sharepoint_file: SharePointFile):
     """
     Creates a SharePoint file in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateMsSharePointFile (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
@@ -117,7 +117,7 @@ def read_sharepoint_files():
     Returns:
         List[SharePointFile]: A list of SharePointFile objects
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointFiles}"
@@ -155,7 +155,7 @@ def read_sharepoint_file_by_id(file_id: int) -> PersistenceResponse:
     Retrieves a SharePoint file from the database by its ID.
     """
     print(f'\nFile ID: {type(file_id)}')
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointFileByFileId (?)}"
@@ -193,7 +193,7 @@ def read_sharepoint_file_by_ms_id(ms_id: int) -> PersistenceResponse:
     """
     Retrieves a SharePoint file from the database by its Microsoft ID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsSharePointFileByMsId (?)}"
@@ -230,7 +230,7 @@ def update_sharepoint_file(sharepoint_file: SharePointFile):
     """
     Updates a SharePoint file in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateMsSharePointFileByFileId (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"

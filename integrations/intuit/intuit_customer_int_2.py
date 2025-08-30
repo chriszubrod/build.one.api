@@ -19,9 +19,9 @@ from integrations.intuit.intuit_customer_int import (
     query_intuit_customer_count_info,
     query_intuit_customer_info
 )
-from business.bus_business_responses import BusinessResponse
+from shared.response import BusinessResponse
 from modules.project import pers_project
-from persistence.pers_response import SuccessResponse
+from shared.response import SuccessResponse
 from persistence import (
     pers_customer,
     pers_intuit_auth,

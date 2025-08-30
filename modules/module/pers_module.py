@@ -11,8 +11,8 @@ from typing import Optional
 import pyodbc
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -46,7 +46,7 @@ def create_module(module: Module) -> PersistenceResponse:
     """
     Creates a new module in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateModule(?, ?, ?, ?, ?)}"
@@ -92,7 +92,7 @@ def read_modules() -> PersistenceResponse:
     """
     Reads all modules from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadModules}"
@@ -128,7 +128,7 @@ def read_module_by_guid(module_guid: str) -> PersistenceResponse:
     """
     Reads a module from the database by its GUID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadModuleByGUID(?)}"
@@ -164,7 +164,7 @@ def read_module_by_name(name: str) -> PersistenceResponse:
     """
     Retrieves a module from the database by name.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadModuleByName(?)}"
@@ -200,7 +200,7 @@ def read_module_by_slug(slug: str) -> PersistenceResponse:
     """
     Retrieves a module from the database by slug.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadModuleBySlug(?)}"
@@ -236,7 +236,7 @@ def update_module(module: Module) -> PersistenceResponse:
     """
     Updates a module in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateModuleById(?, ?, ?, ?, ?)}"

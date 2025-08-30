@@ -11,8 +11,8 @@ from typing import Optional
 import pyodbc
 
 # local imports
-from persistence import pers_database
-from persistence.pers_response import PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -60,7 +60,7 @@ def create_ms_auth(ms_auth: MsAuth) -> PersistenceResponse:
     """
     Creates a new Microsoft 365 auth in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL CreateMsAuth(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
@@ -113,7 +113,7 @@ def read_ms_auths() -> PersistenceResponse:
     """
     Retrieves all Microsoft 365 auths from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsAuths()}"
@@ -149,7 +149,7 @@ def read_ms_auth_by_user_id(user_id) -> PersistenceResponse:
     """
     Read the Microsoft 365 auth by user id.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsAuthByUserId(?)}"
@@ -185,7 +185,7 @@ def read_ms_auth_by_guid(guid: str) -> PersistenceResponse:
     """
     Retrieves a Microsoft 365 auth from the database by GUID.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL ReadMsAuthByGuid(?)}"
@@ -221,7 +221,7 @@ def update_ms_auth_by_id(ms_auth: MsAuth) -> PersistenceResponse:
     """
     Updates a Microsoft 365 auth in the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL UpdateMsAuthById(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"

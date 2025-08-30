@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from datetime import datetime
 import pyodbc
 
-from persistence import pers_database
-from persistence.pers_response import DatabaseError, SuccessResponse, PersistenceResponse
+from shared.database import get_db_connection
+from shared.response import PersistenceResponse
 
 
 @dataclass
@@ -33,7 +33,7 @@ def read_intuit_urls():
     """
     Read the Intuit Urls record from the database.
     """
-    with pers_database.get_db_connection() as cnxn:
+    with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
                 sql = "SELECT * FROM intuit.Urls;"

@@ -10,7 +10,7 @@ from dateutil import tz
 
 
 # local imports
-from business.bus_response import BusinessResponse
+from shared.response import BusinessResponse
 from modules.payment_term import pers_payment_term
 
 

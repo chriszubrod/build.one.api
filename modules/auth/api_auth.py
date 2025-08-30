@@ -13,7 +13,7 @@ from flask import Blueprint, request, jsonify, session
 
 
 # local imports
-from blueprints.api.api_response import ApiResponse
+from shared.response import ApiResponse
 from modules.auth import bus_auth
 
 api_auth_bp = Blueprint('api_auth', __name__, url_prefix='/api')

@@ -1,0 +1,85 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Certificate of Insurance{% endblock %}
+
+{% block content %}
+
+    <div class="flex flex-col h-full p-4">
+
+        <div class="flex flex-col h-full space-y-2">
+
+            <div class="flex justify-between items-center">
+
+                <h1 class="'px-3 py-2'">
+                    View Certificate of Insurance
+                </h1>
+
+                <a href="{{ url_for('web_certificate_of_insurance.list_certificate_of_insurances_route') }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">
+                    Back to Certificates
+                </a>
+
+            </div>
+
+            <div class="flex flex-col h-full bg-white border border-gray-200 overflow-y-auto scrollbar-hide" style="scrollbar-width: none; -ms-overflow-style: none;">
+
+                <dl class="w-full grid grid-rows-10 content-center gap-0 flex-shrink-0">
+                    <div class="flex items-center border-b border-gray-100 py-2">
+                        <dt class="text-sm font-medium text-gray-700 px-3">GUID</dt>
+                        <dd class="block font-medium px-3 text-gray-900">{{ certificate_of_insurance.guid }}</dd>
+                    </div>
+
+                    <div class="flex items-center border-b border-gray-100 py-2">
+                        <dt class="text-sm font-medium text-gray-700 px-3">Created Datetime</dt>
+                        <dd class="block font-medium px-3 text-gray-900">{{ certificate_of_insurance.created_datetime[:19] if certificate_of_insurance.created_datetime else '' }}</dd>
+                    </div>
+
+                    <div class="flex items-center border-b border-gray-100 py-2">
+                        <dt class="text-sm font-medium text-gray-700 px-3">Modified Datetime</dt>
+                        <dd class="block font-medium px-3 text-gray-900">{{ certificate_of_insurance.modified_datetime[:19] if certificate_of_insurance.modified_datetime else '' }}</dd>
+                    </div>
+
+                    <div class="flex items-center border-b border-gray-100 py-2">
+                        <dt class="text-sm font-medium text-gray-700 px-3">Type Of Insurance Id</dt>
+                        <dd class="block font-medium px-3 text-gray-900">{{ certificate_of_insurance.type_of_insurance_id }}</dd>
+                    </div>
+
+                    <div class="flex items-center border-b border-gray-100 py-2">
+                        <dt class="text-sm font-medium text-gray-700 px-3">Policy Number</dt>
+                        <dd class="block font-medium px-3 text-gray-900">{{ certificate_of_insurance.policy_number }}</dd>
+                    </div>
+
+                    <div class="flex items-center border-b border-gray-100 py-2">
+                        <dt class="text-sm font-medium text-gray-700 px-3">Effective Date</dt>
+                        <dd class="block font-medium px-3 text-gray-900">{{ certificate_of_insurance.policy_eff_date }}</dd>
+                    </div>
+
+                    <div class="flex items-center border-b border-gray-100 py-2">
+                        <dt class="text-sm font-medium text-gray-700 px-3">Expiration Date</dt>
+                        <dd class="block font-medium px-3 text-gray-900">{{ certificate_of_insurance.policy_exp_date }}</dd>
+                    </div>
+
+                    <div class="flex items-center border-b border-gray-100 py-2">
+                        <dt class="text-sm font-medium text-gray-700 px-3">Attachment Id</dt>
+                        <dd class="block font-medium px-3 text-gray-900">{{ certificate_of_insurance.certificate_of_insurance_attachment_id }}</dd>
+                    </div>
+
+                    <div class="flex items-center border-b border-gray-100 py-2">
+                        <dt class="text-sm font-medium text-gray-700 px-3">Vendor Id</dt>
+                        <dd class="block font-medium px-3 text-gray-900">{{ certificate_of_insurance.vendor_id }}</dd>
+                    </div>
+
+                </dl>
+
+                <div class="mt-2 mb-2 px-4 py-2">
+                    <a href="{{ url_for('web_certificate_of_insurance.edit_certificate_of_insurance_route', coi_guid=certificate_of_insurance.guid) }}" class="mt-4 px-4 py-2 bg-black text-white rounded hover:bg-gray-800">
+                        Edit
+                    </a>
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+{% endblock %}

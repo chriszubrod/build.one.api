@@ -21,6 +21,10 @@ from modules.bill import (
     api_bill,
     web_bill
 )
+from modules.certificate_of_insurance import (
+    api_certificate_of_insurance,
+    web_certificate_of_insurance
+)
 from modules.company import (
     api_company,
     web_company
@@ -99,6 +103,9 @@ app.register_blueprint(web_auth.web_auth_bp)
 
 app.register_blueprint(api_bill.api_bill_bp)
 app.register_blueprint(web_bill.web_bill_bp)
+
+app.register_blueprint(api_certificate_of_insurance.api_certificate_of_insurance_bp)
+app.register_blueprint(web_certificate_of_insurance.web_certificate_of_insurance_bp)
 
 app.register_blueprint(api_company.api_company_bp)
 app.register_blueprint(web_company.web_company_bp)

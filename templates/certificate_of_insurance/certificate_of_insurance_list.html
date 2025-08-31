@@ -1,0 +1,110 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Certificates of Insurance{% endblock %}
+
+{% block content %}
+
+    <div class="flex flex-col h-full p-4">
+
+        <div class="flex flex-col h-full space-y-2">
+
+            <div class="flex justify-between items-center">
+
+                <h1 class="'px-3 py-2'">
+                    Certificates of Insurance
+                </h1>
+
+                <a href="{{ url_for('web_certificate_of_insurance.create_certificate_of_insurance_route') }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">
+                    + Create New
+                </a>
+
+            </div>
+
+            <div class="bg-white border border-gray-200 overflow-hidden flex flex-col h-full">
+
+                <div class="grid grid-cols-6 bg-gray-100 border-b border-gray-200">
+
+                    <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        GUID
+                    </div>
+
+                    <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Vendor
+                    </div>
+
+                    <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Policy
+                    </div>
+
+                    <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Effective Date
+                    </div>
+
+                    <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Expiration Date
+                    </div>
+
+                    <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Actions
+                    </div>
+
+                </div>
+                
+                <div class="overflow-y-auto flex flex-col h-full scrollbar-hide" style="scrollbar-width: none; -ms-overflow-style: none;">
+                    
+                    {% if certificate_of_insurances %}
+                        {% for coi in certificate_of_insurances %}
+                            
+                            <div class="grid grid-cols-6 border-b border-gray-200 hover:bg-gray-50 transition-colors duration-150">
+                                
+                                <div class="px-6 py-4 whitespace-nowrap">
+                                   {{ coi.guid[-6:] if coi.guid else '' }}
+                                </div>
+                                
+                                <div class="px-6 py-4 whitespace-nowrap">
+                                    {{ coi.vendor_id or '' }}
+                                </div>
+                                
+                                <div class="px-6 py-4 whitespace-nowrap">
+                                    {{ coi.policy_number or '' }}
+                                 </div>
+
+                                <div class="px-6 py-4 whitespace-nowrap">
+                                    {{ coi.policy_eff_date }}
+                                 </div>
+
+                                <div class="px-6 py-4 whitespace-nowrap">
+                                    {{ coi.policy_exp_date }}
+                                 </div>
+
+                                <div class="px-6 py-4 whitespace-nowrap">
+                                    <a href="{{ url_for('web_certificate_of_insurance.view_certificate_of_insurance_route', coi_guid=coi.guid) }}" class="text-blue-600 hover:text-blue-800 text-sm">
+                                        View
+                                    </a>
+                                </div>
+                            
+                            </div>
+                        
+                        {% endfor %}
+                    {% else %}
+
+                        <div class="px-6 py-4 text-center text-gray-500">
+                            No certificates found.
+                        </div>
+                    
+                    {% endif %}
+
+                </div>
+            
+            </div>
+
+        </div>
+
+    </div>
+
+    <style>
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
+    </style>
+
+{% endblock %}

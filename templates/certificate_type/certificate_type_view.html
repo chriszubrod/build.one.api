@@ -1,0 +1,21 @@
+{% extends 'shared/layout/base.html' %}
+{% block title %}Certificate Type{% endblock %}
+{% block content %}
+<div class="flex flex-col h-full p-4">
+  <div class="flex flex-col h-full space-y-2">
+    <div class="flex justify-between items-center">
+      <h1 class="px-3 py-2">View Certificate Type</h1>
+      <a href="{{ url_for('web_certificate_type.list_certificate_types_route') }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">Back to Certificate Types</a>
+    </div>
+    <div class="bg-white border border-gray-200 p-4 space-y-2">
+      <div><span class="block text-xs text-gray-500 px-3">GUID</span><dd class="block font-medium px-3">{{ certificate_type.guid }}</dd></div>
+      <div><span class="block text-xs text-gray-500 px-3">Created</span><dd class="block font-medium px-3">{{ certificate_type.created_datetime }}</dd></div>
+      <div><span class="block text-xs text-gray-500 px-3">Modified</span><dd class="block font-medium px-3">{{ certificate_type.modified_datetime }}</dd></div>
+      <div><span class="block text-xs text-gray-500 px-3">Name</span><dd class="block font-medium px-3">{{ certificate_type.name }}</dd></div>
+      <div><span class="block text-xs text-gray-500 px-3">Transaction Id</span><dd class="block font-medium px-3">{{ certificate_type.transaction_id }}</dd></div>
+      <a href="{{ url_for('web_certificate_type.edit_certificate_type_route', guid=certificate_type.guid) }}" class="mt-2 inline-block px-4 py-2 bg-black text-white rounded hover:bg-gray-800">Edit</a>
+    </div>
+  </div>
+</div>
+{% endblock %}
+

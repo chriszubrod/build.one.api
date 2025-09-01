@@ -14,7 +14,7 @@
                     View Certificate of Insurance
                 </h1>
 
-                <a href="{{ url_for('web_certificate_of_insurance.list_certificate_of_insurances_route') }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">
+                <a href="{{ url_for('web_certificate.list_certificates_route') }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">
                     Back to Certificates
                 </a>
 
@@ -40,7 +40,7 @@
 
                     <div class="flex items-center border-b border-gray-100 py-2">
                         <dt class="text-sm font-medium text-gray-700 px-3">Type Of Insurance Id</dt>
-                        <dd class="block font-medium px-3 text-gray-900">{{ certificate_of_insurance.type_of_insurance_id }}</dd>
+                        <dd class="block font-medium px-3 text-gray-900">{{ certificate.certificate_type_id }}</dd>
                     </div>
 
                     <div class="flex items-center border-b border-gray-100 py-2">
@@ -71,7 +71,7 @@
                 </dl>
 
                 <div class="mt-2 mb-2 px-4 py-2">
-                    <a href="{{ url_for('web_certificate_of_insurance.edit_certificate_of_insurance_route', coi_guid=certificate_of_insurance.guid) }}" class="mt-4 px-4 py-2 bg-black text-white rounded hover:bg-gray-800">
+                    <a href="{{ url_for('web_certificate.edit_certificate_route', coi_guid=certificate_of_insurance.guid) }}" class="mt-4 px-4 py-2 bg-black text-white rounded hover:bg-gray-800">
                         Edit
                     </a>
                 </div>

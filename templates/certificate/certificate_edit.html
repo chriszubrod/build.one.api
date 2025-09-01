@@ -1,6 +1,6 @@
 {% extends 'shared/layout/base.html' %}
 
-{% block title %}Certificate of Insurance{% endblock %}
+{% block title %}Certificate{% endblock %}
 
 {% block content %}
 
@@ -11,10 +11,10 @@
             <div class="flex justify-between items-center">
 
                 <h1 class="'px-3 py-2'">
-                    Edit Certificate of Insurance
+                    Edit Certificate
                 </h1>
 
-                <a href="{{ url_for('web_certificate_of_insurance.view_certificate_of_insurance_route', coi_guid=certificate_of_insurance.guid) }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">
+                <a href="{{ url_for('web_certificate.view_certificate_route', coi_guid=certificate_of_insurance.guid) }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">
                     Back to Certificate
                 </a>
 
@@ -24,28 +24,28 @@
 
                 <div class="flex items-center border-b border-gray-100 py-2">
                     <dt class="text-sm font-medium text-gray-700 px-3">GUID</dt>
-                    <dd id="coi-guid" class="block font-medium px-3 text-gray-900">{{ certificate_of_insurance.guid }}</dd>
+                    <dd id="certificate-guid" class="block font-medium px-3 text-gray-900">{{ certificate_of_insurance.guid }}</dd>
                 </div>
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
                         <label for="vendor-id" class="block text-sm font-medium text-gray-700 px-3 py-2">Vendor Id</label>
-                        <input type="number" id="vendor-id" name="vendor-id" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400" value="{{ certificate_of_insurance.vendor_id }}">
+                        <input type="number" id="vendor-id" name="vendor-id" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400" value="{{ certificate.vendor_id }}">
                     </div>
 
                     <div>
-                        <label for="type-of-insurance-id" class="block text-sm font-medium text-gray-700 px-3 py-2">Type Of Insurance Id</label>
-                        <input type="number" id="type-of-insurance-id" name="type-of-insurance-id" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400" value="{{ certificate_of_insurance.type_of_insurance_id }}">
+                        <label for="type-of-certificate-id" class="block text sm font-medium text-gray-700 px-3 py-2">Type Of Certificate Id</label>
+                        <input type="number" id="certificate-type-id" name="certificate-type-id" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400" value="{{ certificate.certificate_type_id }}">
                     </div>
 
                     <div>
                         <label for="policy-number" class="block text-sm font-medium text-gray-700 px-3 py-2">Policy Number</label>
-                        <input type="text" id="policy-number" name="policy-number" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400" value="{{ certificate_of_insurance.policy_number }}">
+                        <input type="text" id="policy-number" name="policy-number" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400" value="{{ certificate.policy_number }}">
                     </div>
 
                     <div>
                         <label for="policy-eff-date" class="block text-sm font-medium text-gray-700 px-3 py-2">Policy Effective Date</label>
-                        <input type="date" id="policy-eff-date" name="policy-eff-date" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400" value="{{ certificate_of_insurance.policy_eff_date }}">
+                        <input type="date" id="policy-eff-date" name="policy-eff-date" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400" value="{{ certificate.policy_eff_date }}">
                     </div>
 
                     <div>
@@ -73,36 +73,36 @@
 
 {% block extra_css %}
 <style>
-    #edit-coi-form::-webkit-scrollbar { display: none; }
-    #edit-coi-form { scrollbar-width: none; -ms-overflow-style: none; }
+    #edit-certificate-form::-webkit-scrollbar { display: none; }
+    #edit-certificate-form { scrollbar-width: none; -ms-overflow-style: none; }
 </style>
 {% endblock %}
 
 {% block page_scripts %}
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-    const form = document.getElementById('edit-coi-form');
-    const coiGuid = document.getElementById('coi-guid').textContent.trim();
+    const form = document.getElementById('edit-certificate-form');
+    const certificateGuid = document.getElementById('certificate-guid').textContent.trim();
 
     form.addEventListener('submit', async function (e) {
         e.preventDefault();
 
         const payload = {
             vendorId: parseInt(document.getElementById('vendor-id').value),
-            typeOfInsuranceId: parseInt(document.getElementById('type-of-insurance-id').value),
-            policyNumber: document.getElementById('policy-number').value.trim(),
-            policyEffDate: document.getElementById('policy-eff-date').value,
-            policyExpDate: document.getElementById('policy-exp-date').value,
-            certificateOfInsuranceAttachmentId: parseInt(document.getElementById('attachment-id').value)
+            certificateTypeId: parseInt(document.getElementById('certificate-type-id').value),
+            certificateNumber: document.getElementById('policy-number').value.trim(),
+            certificateEffDate: document.getElementById('policy-eff-date').value,
+            certificateExpDate: document.getElementById('policy-exp-date').value,
+            certificateAttachmentId: parseInt(document.getElementById('attachment-id').value)
         };
 
-        if (!payload.vendorId || !payload.typeOfInsuranceId || !payload.policyNumber || !payload.policyEffDate || !payload.policyExpDate || !payload.certificateOfInsuranceAttachmentId) {
+        if (!payload.vendorId || !payload.certificateTypeId || !payload.policyNumber || !payload.policyEffDate || !payload.policyExpDate || !payload.certificateOfInsuranceAttachmentId) {
             alert('Please complete all fields.');
             return;
         }
 
         try {
-            const resp = await fetch(`{{ url_for('api_certificate_of_insurance.api_patch_certificate_of_insurance_by_guid_route', coi_guid='__GUID__') }}`.replace('__GUID__', coiGuid), {
+            const resp = await fetch(`{{ url_for('api_certificate.api_patch_certificate_by_guid_route', coi_guid='__GUID__') }}`.replace('__GUID__', coiGuid), {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -114,7 +114,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const result = await resp.json();
             if (result.success) {
                 alert('Certificate updated successfully.');
-                window.location.href = `{{ url_for('web_certificate_of_insurance.view_certificate_of_insurance_route', coi_guid='__GUID__') }}`.replace('__GUID__', coiGuid);
+                window.location.href = `{{ url_for('web_certificate.view_certificate_route', coi_guid='__GUID__') }}`.replace('__GUID__', coiGuid);
             } else {
                 alert(result.message || 'Update failed');
             }

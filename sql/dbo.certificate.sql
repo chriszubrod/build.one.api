@@ -3,14 +3,14 @@ CREATE TABLE CertificateOfInsurance (
     [GUID] UNIQUEIDENTIFIER DEFAULT NEWID() NOT NULL,
     [CreatedDatetime] DATETIMEOFFSET NOT NULL,
     [ModifiedDatetime] DATETIMEOFFSET NOT NULL,
-    [TypeOfInsuranceId] INT NOT NULL,
+    [CertificateTypeId] INT NOT NULL,
     [PolicyNumber] VARCHAR(MAX) NOT NULL,
     [PolicyEffDate] DATE NOT NULL,
     [PolicyExpDate] DATE NOT NULL,
     [CertificateOfInsuranceAttachmentId] INT NOT NULL,
     [VendorId] INT NOT NULL,
     [TransactionId] INT NOT NULL,
-    FOREIGN KEY (TypeOfInsuranceId) REFERENCES TypeOfInsurance(Id),
+    FOREIGN KEY (CertificateTypeId) REFERENCES CertificateType(Id),
     FOREIGN KEY (CertificateOfInsuranceAttachmentId) REFERENCES CertificateOfInsuranceAttachment(Id),
     FOREIGN KEY (VendorId) REFERENCES Vendor(Id),
     FOREIGN KEY (TransactionId) REFERENCES [Transaction](Id)
@@ -22,11 +22,10 @@ SELECT * FROM CertificateOfInsurance;
 
 
 
-
 DROP PROCEDURE IF EXISTS CreateCertificateOfInsurance;
 
 CREATE PROCEDURE CreateCertificateOfInsurance
-    @TypeOfInsuranceId INT,
+    @CertificateTypeId INT,
     @PolicyNumber VARCHAR(MAX),
     @PolicyEffDate DATE,
     @PolicyExpDate DATE,
@@ -50,7 +49,7 @@ BEGIN
     INSERT INTO CertificateOfInsurance (
         CreatedDatetime,
         ModifiedDatetime,
-        TypeOfInsuranceId,
+        CertificateTypeId,
         PolicyNumber,
         PolicyEffDate,
         PolicyExpDate,
@@ -61,7 +60,7 @@ BEGIN
     VALUES (
         @Now,
         @Now,
-        @TypeOfInsuranceId,
+        @CertificateTypeId,
         @PolicyNumber,
         @PolicyEffDate,
         @PolicyExpDate,
@@ -87,7 +86,7 @@ BEGIN
         [GUID],
         CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
         CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
-        [TypeOfInsuranceId],
+        [CertificateTypeId],
         [PolicyNumber],
         [PolicyEffDate],
         [PolicyExpDate],
@@ -113,7 +112,7 @@ BEGIN
         [GUID],
         CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
         CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
-        [TypeOfInsuranceId],
+        [CertificateTypeId],
         [PolicyNumber],
         [PolicyEffDate],
         [PolicyExpDate],
@@ -140,7 +139,7 @@ BEGIN
         [GUID],
         CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
         CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
-        [TypeOfInsuranceId],
+        [CertificateTypeId],
         [PolicyNumber],
         [PolicyEffDate],
         [PolicyExpDate],
@@ -158,7 +157,7 @@ DROP PROCEDURE IF EXISTS UpdateCertificateOfInsuranceById;
 
 CREATE PROCEDURE UpdateCertificateOfInsuranceById
     @Id INT,
-    @TypeOfInsuranceId INT,
+    @CertificateTypeId INT,
     @PolicyNumber VARCHAR(MAX),
     @PolicyEffDate DATE,
     @PolicyExpDate DATE,
@@ -173,7 +172,7 @@ BEGIN
     UPDATE CertificateOfInsurance
     SET
         [ModifiedDatetime] = @Now,
-        [TypeOfInsuranceId] = @TypeOfInsuranceId,
+        [CertificateTypeId] = @CertificateTypeId,
         [PolicyNumber] = @PolicyNumber,
         [PolicyEffDate] = @PolicyEffDate,
         [PolicyExpDate] = @PolicyExpDate,
@@ -183,25 +182,6 @@ BEGIN
 
     COMMIT;
 END
-
-
--- Migration snippet: add columns and FKs on an existing table
--- Run this only if your CertificateOfInsurance table does not yet have these columns
--- and constraints. Commented to avoid accidental re-runs.
---
-ALTER TABLE dbo.CertificateOfInsurance
-ADD
-    TypeOfInsuranceId INT NOT NULL,
-    PolicyNumber VARCHAR(MAX) NOT NULL,
-    PolicyEffDate DATE NOT NULL,
-    PolicyExpDate DATE NOT NULL,
-    CertificateOfInsuranceAttachmentId INT NOT NULL,
-    VendorId INT NOT NULL;
-
--- ALTER TABLE dbo.CertificateOfInsurance
--- ADD CONSTRAINT FK_CertificateOfInsurance_TypeOfInsurance FOREIGN KEY (TypeOfInsuranceId) REFERENCES dbo.TypeOfInsurance(Id),
---     CONSTRAINT FK_CertificateOfInsurance_Attachment FOREIGN KEY (CertificateOfInsuranceAttachmentId) REFERENCES dbo.CertificateOfInsuranceAttachment(Id),
---     CONSTRAINT FK_CertificateOfInsurance_Vendor FOREIGN KEY (VendorId) REFERENCES dbo.Vendor(Id);
 
 
 DROP PROCEDURE IF EXISTS DeleteCertificateOfInsurance;
@@ -217,3 +197,21 @@ BEGIN
 
     COMMIT;
 END
+
+-- Migration snippet: add columns and FKs on an existing table
+-- Run this only if your CertificateOfInsurance table does not yet have these columns
+-- and constraints. Commented to avoid accidental re-runs.
+--
+-- ALTER TABLE dbo.CertificateOfInsurance
+-- ADD
+--     CertificateTypeId INT NOT NULL,
+--     PolicyNumber VARCHAR(MAX) NOT NULL,
+--     PolicyEffDate DATE NOT NULL,
+--     PolicyExpDate DATE NOT NULL,
+--     CertificateOfInsuranceAttachmentId INT NOT NULL,
+--     VendorId INT NOT NULL;
+--
+-- ALTER TABLE dbo.CertificateOfInsurance
+-- ADD CONSTRAINT FK_CertificateOfInsurance_CertificateType FOREIGN KEY (CertificateTypeId) REFERENCES dbo.CertificateType(Id),
+--     CONSTRAINT FK_CertificateOfInsurance_Attachment FOREIGN KEY (CertificateOfInsuranceAttachmentId) REFERENCES dbo.CertificateOfInsuranceAttachment(Id),
+--     CONSTRAINT FK_CertificateOfInsurance_Vendor FOREIGN KEY (VendorId) REFERENCES dbo.Vendor(Id);

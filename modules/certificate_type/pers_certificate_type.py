@@ -21,7 +21,9 @@ class CertificateType:
     guid: Optional[str] = None
     created_datetime: Optional[datetime] = None
     modified_datetime: Optional[datetime] = None
+    abbreviation: Optional[str] = None
     name: Optional[str] = None
+    description: Optional[str] = None
     transaction_id: Optional[int] = None
 
     @classmethod
@@ -31,7 +33,9 @@ class CertificateType:
             guid=getattr(row, 'GUID', None),
             created_datetime=getattr(row, 'CreatedDatetime', None),
             modified_datetime=getattr(row, 'ModifiedDatetime', None),
+            abbreviation=getattr(row, 'Abbreviation', None),
             name=getattr(row, 'Name', None),
+            description=getattr(row, 'Description', None),
             transaction_id=getattr(row, 'TransactionId', None)
         )
 
@@ -41,8 +45,8 @@ def create_certificate_type(certificate_type: CertificateType) -> PersistenceRes
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL CreateCertificateType (?)}"
-                rowcount = cursor.execute(sql, certificate_type.name).rowcount
+                sql = "{CALL CreateCertificateType (?, ?, ?)}"
+                rowcount = cursor.execute(sql, certificate_type.abbreviation, certificate_type.name, certificate_type.description).rowcount
                 cnxn.commit()
                 if rowcount > 0:
                     return PersistenceResponse(
@@ -204,8 +208,8 @@ def update_certificate_type(certificate_type: CertificateType) -> PersistenceRes
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL UpdateCertificateType (?, ?)}"
-                rowcount = cursor.execute(sql, certificate_type.id, certificate_type.name).rowcount
+                sql = "{CALL UpdateCertificateTypeById (?, ?, ?, ?)}"
+                rowcount = cursor.execute(sql, certificate_type.id, certificate_type.abbreviation, certificate_type.name, certificate_type.description).rowcount
                 cnxn.commit()
                 if rowcount > 0:
                     return PersistenceResponse(

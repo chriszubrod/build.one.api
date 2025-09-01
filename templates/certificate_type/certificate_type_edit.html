@@ -11,8 +11,16 @@
       <input type="hidden" id="guid" name="guid" value="{{ certificate_type.guid }}">
       <div class="grid grid-cols-1 gap-4">
         <div>
+          <label for="abbreviation" class="block text-sm font-medium text-gray-700 px-3 py-2">Abbreviation</label>
+          <input type="text" id="abbreviation" name="abbreviation" value="{{ certificate_type.abbreviation }}" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400">
+        </div>
+        <div>
           <label for="name" class="block text-sm font-medium text-gray-700 px-3 py-2">Name</label>
           <input type="text" id="name" name="name" value="{{ certificate_type.name }}" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400">
+        </div>
+        <div>
+          <label for="description" class="block text-sm font-medium text-gray-700 px-3 py-2">Description</label>
+          <input type="text" id="description" name="description" value="{{ certificate_type.description }}" class="block font-medium w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400">
         </div>
       </div>
       <div class="flex items-center justify-between border-b border-gray-100 py-2">
@@ -30,10 +38,18 @@ document.addEventListener('DOMContentLoaded', function () {
     e.preventDefault();
     const guid = document.getElementById('guid').value.trim();
     const name = document.getElementById('name').value.trim();
-    if (!guid || !name) { alert('Please complete all fields.'); return; }
+    const abbreviation = document.getElementById('abbreviation').value.trim();
+    const description = document.getElementById('description').value.trim();
+    if (!guid || !name || !abbreviation || !description) { alert('Please complete all fields.'); return; }
     try {
+      const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
       const resp = await fetch('{{ url_for("api_certificate_type.api_patch_certificate_type_route") }}', {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ guid, name })
+        method: 'PATCH', 
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-CSRFToken': csrfToken
+        }, 
+        body: JSON.stringify({ guid, name, abbreviation, description })
       });
       const result = await resp.json();
       if (result.success) { window.location.href = '{{ url_for("web_certificate_type.list_certificate_types_route") }}'; }

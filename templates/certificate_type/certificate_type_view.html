@@ -11,7 +11,9 @@
       <div><span class="block text-xs text-gray-500 px-3">GUID</span><dd class="block font-medium px-3">{{ certificate_type.guid }}</dd></div>
       <div><span class="block text-xs text-gray-500 px-3">Created</span><dd class="block font-medium px-3">{{ certificate_type.created_datetime }}</dd></div>
       <div><span class="block text-xs text-gray-500 px-3">Modified</span><dd class="block font-medium px-3">{{ certificate_type.modified_datetime }}</dd></div>
+      <div><span class="block text-xs text-gray-500 px-3">Abbreviation</span><dd class="block font-medium px-3">{{ certificate_type.abbreviation }}</dd></div>
       <div><span class="block text-xs text-gray-500 px-3">Name</span><dd class="block font-medium px-3">{{ certificate_type.name }}</dd></div>
+      <div><span class="block text-xs text-gray-500 px-3">Description</span><dd class="block font-medium px-3">{{ certificate_type.description }}</dd></div>
       <div><span class="block text-xs text-gray-500 px-3">Transaction Id</span><dd class="block font-medium px-3">{{ certificate_type.transaction_id }}</dd></div>
       <a href="{{ url_for('web_certificate_type.edit_certificate_type_route', guid=certificate_type.guid) }}" class="mt-2 inline-block px-4 py-2 bg-black text-white rounded hover:bg-gray-800">Edit</a>
     </div>

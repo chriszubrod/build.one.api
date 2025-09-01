@@ -3,7 +3,9 @@ CREATE TABLE CertificateType (
     [GUID] UNIQUEIDENTIFIER DEFAULT NEWID() NOT NULL,
     [CreatedDatetime] DATETIMEOFFSET NOT NULL,
     [ModifiedDatetime] DATETIMEOFFSET NOT NULL,
+    [Abbreviation] VARCHAR(50) NULL,
     [Name] VARCHAR(255) NOT NULL,
+    [Description] NVARCHAR(MAX) NULL,
     [TransactionId] INT NOT NULL
 );
 
@@ -19,7 +21,9 @@ BEGIN
         [GUID],
         CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
         CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [Abbreviation],
         [Name],
+        [Description],
         [TransactionId]
     FROM CertificateType
     ORDER BY [Name];
@@ -39,7 +43,9 @@ BEGIN
         [GUID],
         CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
         CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [Abbreviation],
         [Name],
+        [Description],
         [TransactionId]
     FROM CertificateType
     WHERE [Name] = @Name;
@@ -59,7 +65,9 @@ BEGIN
         [GUID],
         CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
         CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [Abbreviation],
         [Name],
+        [Description],
         [TransactionId]
     FROM CertificateType
     WHERE [Id] = @ID;
@@ -79,7 +87,9 @@ BEGIN
         [GUID],
         CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
         CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [Abbreviation],
         [Name],
+        [Description],
         [TransactionId]
     FROM CertificateType
     WHERE [GUID] = @GUID;
@@ -91,41 +101,47 @@ GO
 DROP PROCEDURE IF EXISTS CreateCertificateType;
 GO
 CREATE PROCEDURE CreateCertificateType
-    @Name VARCHAR(255)
+    @Abbreviation VARCHAR(50),
+    @Name VARCHAR(255),
+    @Description NVARCHAR(MAX)
 AS
 BEGIN
     BEGIN TRANSACTION;
     DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
     INSERT INTO [Transaction] (CreatedDatetime, ModifiedDatetime) VALUES (@Now, @Now);
     DECLARE @TransactionId INT = SCOPE_IDENTITY();
-    INSERT INTO CertificateType (CreatedDatetime, ModifiedDatetime, [Name], TransactionId)
-    VALUES (@Now, @Now, @Name, @TransactionId);
+    INSERT INTO CertificateType (CreatedDatetime, ModifiedDatetime, [Abbreviation], [Name], [Description], TransactionId)
+    VALUES (@Now, @Now, @Abbreviation, @Name, @Description, @TransactionId);
     COMMIT;
 END
 GO
 
 -- Update
-DROP PROCEDURE IF EXISTS UpdateCertificateType;
+DROP PROCEDURE IF EXISTS UpdateCertificateTypeById;
 GO
-CREATE PROCEDURE UpdateCertificateType
+CREATE PROCEDURE UpdateCertificateTypeById
     @ID INT,
-    @Name VARCHAR(255)
+    @Abbreviation VARCHAR(50),
+    @Name VARCHAR(255),
+    @Description NVARCHAR(MAX)
 AS
 BEGIN
     BEGIN TRANSACTION;
     DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
     UPDATE CertificateType
     SET [ModifiedDatetime] = @Now,
-        [Name] = @Name
+        [Abbreviation] = @Abbreviation,
+        [Name] = @Name,
+        [Description] = @Description
     WHERE [Id] = @ID;
     COMMIT;
 END
 GO
 
 -- Delete
-DROP PROCEDURE IF EXISTS DeleteCertificateType;
+DROP PROCEDURE IF EXISTS DeleteCertificateTypeById;
 GO
-CREATE PROCEDURE DeleteCertificateType
+CREATE PROCEDURE DeleteCertificateTypeById
     @ID INT
 AS
 BEGIN

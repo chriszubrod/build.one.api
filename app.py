@@ -25,6 +25,10 @@ from modules.certificate import (
     api_certificate,
     web_certificate
 )
+from modules.certificate_type import (
+    api_certificate_type,
+    web_certificate_type
+)
 from modules.company import (
     api_company,
     web_company
@@ -77,10 +81,7 @@ from modules.vendor_type import (
     api_vendor_type,
     web_vendor_type
 )
-from modules.certificate_type import (
-    api_certificate_type,
-    web_certificate_type
-)
+
 
 from utils.config_help import get_secrets, write_secrets, update_secrets
 
@@ -110,6 +111,9 @@ app.register_blueprint(web_bill.web_bill_bp)
 
 app.register_blueprint(api_certificate.api_certificate_bp)
 app.register_blueprint(web_certificate.web_certificate_bp)
+
+app.register_blueprint(api_certificate_type.api_certificate_type_bp)
+app.register_blueprint(web_certificate_type.web_certificate_type_bp)
 
 app.register_blueprint(api_company.api_company_bp)
 app.register_blueprint(web_company.web_company_bp)
@@ -149,8 +153,7 @@ app.register_blueprint(web_vendor.web_vendor_bp)
 
 app.register_blueprint(api_vendor_type.api_vendor_type_bp)
 app.register_blueprint(web_vendor_type.web_vendor_type_bp)
-app.register_blueprint(api_certificate_type.api_certificate_type_bp)
-app.register_blueprint(web_certificate_type.web_certificate_type_bp)
+
 
 
 # integration blueprints

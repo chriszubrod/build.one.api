@@ -1,23 +1,59 @@
 {% extends 'shared/layout/base.html' %}
 
+{% block title %}Create Customer{% endblock %}
+
 {% block content %}
+<div class="flex-1 p-4 flex flex-col">
+  <div class="space-y-2 flex-1">
+    <div class="flex justify-between items-center">
+      <h1 class="px-3 py-2">Create Customer</h1>
+      <a href="{{ url_for('web_customer.list_customers_route') }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">Back to Customers</a>
+    </div>
 
-    <h1>Create Customer</h1>
+    <form id="create-customer-form" class="w-full max-h-[calc(100vh-200px)] overflow-y-auto overflow-x-hidden flex-1" autocomplete="off">
+      <div class="grid grid-cols-2 gap-4 bg-white border border-gray-200 p-4">
+        <div>
+          <label for="name" class="block text-sm font-medium text-gray-700 px-1 py-1">Name</label>
+          <input type="text" id="name" name="name" class="block w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400" required>
+        </div>
+        <div class="flex items-center space-x-2 mt-7">
+          <input type="checkbox" id="isActive" name="isActive" class="h-4 w-4" checked>
+          <label for="isActive" class="text-sm font-medium text-gray-700">Active</label>
+        </div>
+      </div>
 
-    <form id="customerForm" autocomplete="off" onsubmit="return false;">
-
-        {% include 'customer/_form.html' %}
-
-        <button type="submitButton" id="submitButton" >Submit</button>
-
+      <div class="mt-2 mb-2 px-4 py-2">
+        <button type="submit" class="px-4 py-2 bg-black text-white rounded hover:bg-gray-800">Create</button>
+      </div>
     </form>
+  </div>
+</div>
 
-{% endblock %}
-
-<script src="{{ url_for('static', filename='js/form-handler.js') }}" defer></script>
-
-<script defer>
-    document.addEventListener('DOMContentLoaded', function() {
-        FormHandler.init('customerForm', '/api/post/customer', 'POST');
-    });
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const form = document.getElementById('create-customer-form');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('name').value.trim();
+    const isActive = document.getElementById('isActive').checked ? '1' : '0';
+    if (!name) { alert('Please provide a name.'); return; }
+    try {
+      // Get CSRF token
+      const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+      
+      const resp = await fetch('{{ url_for("api_customer.api_post_customer_route") }}', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-CSRFToken': csrfToken
+        },
+        body: JSON.stringify({ name, isActive })
+      });
+      const result = await resp.json();
+      if (resp.ok && result.success) { window.location.href = '{{ url_for("web_customer.list_customers_route") }}'; }
+      else { alert(result.message || `Creation failed (HTTP ${resp.status})`); }
+    } catch (err) { console.error(err); alert(`Error: ${err.message}`); }
+  });
+});
 </script>
+{% endblock %}

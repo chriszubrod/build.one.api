@@ -7,9 +7,7 @@ CREATE TABLE Customer (
     [IsActive] BIT NOT NULL,
     [AddressId] INT,
     [TransactionId] INT NOT NULL,
-    [IntuitCustomerId] VARCHAR(MAX) NULL,
-    FOREIGN KEY (ContactId) REFERENCES Contact(Id),
-    FOREIGN KEY (AddressId) REFERENCES [Address](Id),
+    [MapCustomerIntuitCustomerId] INT NULL,
     FOREIGN KEY (TransactionId) REFERENCES [Transaction](Id)
 );
 
@@ -20,11 +18,11 @@ SELECT * FROM dbo.Customer;
 
 
 ALTER TABLE Customer
-DROP CONSTRAINT FK__Customer__Contac__664B26CC;
+DROP CONSTRAINT FK__Customer__Addres__673F4B05;
 
 
 ALTER TABLE Customer
-DROP COLUMN ContactId;
+DROP COLUMN IntuitCustomerId;
 
 
 
@@ -33,57 +31,29 @@ DROP COLUMN ContactId;
 DROP PROCEDURE IF EXISTS CreateCustomer;
 
 CREATE PROCEDURE CreateCustomer
-    @CreatedDatetime DATETIMEOFFSET,
-    @ModifiedDatetime DATETIMEOFFSET,
-    @CustomerName VARCHAR(255),
-    @IsActive BIT,
-    -- Contact
-    @FirstName VARCHAR(255),
-    @LastName VARCHAR(255),
-    @Email VARCHAR(255),
-    @Phone VARCHAR(255),
-    -- Address
-    @StreetOne VARCHAR(255),
-    @StreetTwo VARCHAR(255),
-    @City VARCHAR(255),
-    @State VARCHAR(2),
-    @Zip VARCHAR(10),
-	-- Intuit
-	@IntuitCustomerId VARCHAR(MAX)
+    @Name VARCHAR(255),
+    @IsActive BIT
 AS
 BEGIN
 	BEGIN TRANSACTION;
 
+    DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
     -- Insert a new record into the Transaction table
     INSERT INTO [Transaction] (CreatedDatetime, ModifiedDatetime)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime));
+    VALUES (@Now, @Now);
 
     -- Get the Id of the last inserted record
     DECLARE @TransactionId INT;
     SET @TransactionId = SCOPE_IDENTITY();
 
-    -- Insert a new record into the Contact table using the TransactionId
-    INSERT INTO Contact (CreatedDatetime, ModifiedDatetime, FirstName, LastName, Email, Phone, TransactionId)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime), @FirstName, @LastName, @Email, @Phone, @TransactionId);
-
-    -- Get the Id of the last inserted record
-    DECLARE @ContactId INT;
-    SET @ContactId = SCOPE_IDENTITY();
-
-    -- Insert a new record into the Address table using the TransactionId
-    INSERT INTO [Address] (CreatedDatetime, ModifiedDatetime, StreetOne, StreetTwo, City, [State], Zip, TransactionId)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime), @StreetOne, @StreetTwo, @City, @State, @Zip, @TransactionId);
-
-    -- Get the Id of the last inserted record
-    DECLARE @AddressId INT;
-    SET @AddressId = SCOPE_IDENTITY();
-
     -- Insert a new record into the Customer table using the TransactionId
-    INSERT INTO Customer (CreatedDatetime, ModifiedDatetime, [Name], IsActive, ContactId, AddressId, TransactionId, IntuitCustomerId)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime), @CustomerName, @IsActive, @ContactId, @AddressId, @TransactionId, @IntuitCustomerId);
+    INSERT INTO Customer (CreatedDatetime, ModifiedDatetime, [Name], IsActive, TransactionId)
+    VALUES (@Now, @Now, @Name, @IsActive, @TransactionId);
 
     COMMIT;
 END
+
 
 
 DROP PROCEDURE IF EXISTS ReadCustomers;
@@ -91,6 +61,9 @@ DROP PROCEDURE IF EXISTS ReadCustomers;
 CREATE PROCEDURE ReadCustomers
 AS
 BEGIN
+
+    BEGIN TRANSACTION;
+
     SELECT
         [Id],
         [GUID],
@@ -98,11 +71,16 @@ BEGIN
         CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
         [Name],
         [IsActive],
-        [AddressId],
         [TransactionId],
-		[IntuitCustomerId]
+        [MapCustomerIntuitCustomerId]
     FROM Customer;
+    
+    COMMIT;
 END
+
+EXEC ReadCustomers;
+
+
 
 
 DROP PROCEDURE IF EXISTS ReadCustomerById;
@@ -111,6 +89,9 @@ CREATE PROCEDURE ReadCustomerById
     @Id INT
 AS
 BEGIN
+
+    BEGIN TRANSACTION;
+
     SELECT
         [Id],
         [GUID],
@@ -118,12 +99,18 @@ BEGIN
         CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
         [Name],
         [IsActive],
-        [AddressId],
         [TransactionId],
-		[IntuitCustomerId]
+		[MapCustomerIntuitCustomerId]
     FROM Customer
     WHERE [Id] = @Id;
+
+    COMMIT;
 END
+
+EXEC ReadCustomerById
+    @Id = 2;
+
+
 
 
 
@@ -133,6 +120,8 @@ CREATE PROCEDURE ReadCustomerByGUID
     @GUID VARCHAR(255)
 AS
 BEGIN
+    BEGIN TRANSACTION;
+
     SELECT
         [Id],
         [GUID],
@@ -140,67 +129,89 @@ BEGIN
         CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
         [Name],
         [IsActive],
-        [AddressId],
         [TransactionId],
-		[IntuitCustomerId]
+		[MapCustomerIntuitCustomerId]
     FROM Customer
     WHERE [GUID] = @GUID;
+
+    COMMIT;
 END
 
+EXEC ReadCustomerByGUID
+    @GUID = '9091382E-39E9-4788-947E-2AD48103A6A4';
 
 
 
-
-
+DROP PROCEDURE IF EXISTS ReadCustomerByName;
 
 CREATE PROCEDURE ReadCustomerByName
     @Name VARCHAR(255)
 AS
 BEGIN
+    BEGIN TRANSACTION;
+
     SELECT
         [Id],
         [GUID],
-        CAST([CreatedDatetime] AS NVARCHAR(MAX)),
-        CAST([ModifiedDatetime] AS NVARCHAR(MAX)),
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
         [Name],
         [IsActive],
-        [ContactId],
-        [AddressId],
         [TransactionId],
-		[IntuitCustomerId]
+		[MapCustomerIntuitCustomerId]
     FROM Customer
     WHERE [Name] = @Name;
+
+    COMMIT;
 END
+
+EXEC ReadCustomerByName
+    @Name = 'Josh and Katy Whalen';
+
+
+
+DROP PROCEDURE IF EXISTS UpdateCustomerById;
 
 CREATE PROCEDURE UpdateCustomerById
 	@Id INT,
-    @ModifiedDatetime DATETIMEOFFSET,
-    @CustomerName VARCHAR(255),
+    @Name VARCHAR(255),
     @IsActive BIT,
-	@TransactionId INT,
-	-- Intuit
-	@IntuitCustomerId VARCHAR(MAX)
+    @MapCustomerIntuitCustomerId INT
 AS
 BEGIN
 	BEGIN TRANSACTION;
 
-    -- Update ModifiedDatetime in the Transaction table
-    UPDATE [Transaction]
-    SET ModifiedDatetime = CONVERT(DATETIMEOFFSET, @ModifiedDatetime)
-    WHERE Id = @TransactionId;
+    DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
 
     -- Update ModifiedDatetime, Name, IsActive and IntuitCustomerId in the Customer table by Id
     UPDATE Customer
-    SET ModifiedDatetime = CONVERT(DATETIMEOFFSET, @ModifiedDatetime),
-        [Name] = @CustomerName,
+    SET ModifiedDatetime = @Now,
+        [Name] = @Name,
         IsActive = @IsActive,
-        IntuitCustomerId = @IntuitCustomerId
+        MapCustomerIntuitCustomerId = @MapCustomerIntuitCustomerId
     WHERE Id = @Id;
 
     COMMIT;
 END
 
 
+
+
+
+
+DROP PROCEDURE IF EXISTS DeleteCompanyById;
+
+CREATE PROCEDURE DeleteCustomerById
+    @Id INT
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    DELETE FROM Customer
+    WHERE Id = @Id;
+
+    COMMIT;
+END
 
 
 DELETE FROM dbo.Customer;

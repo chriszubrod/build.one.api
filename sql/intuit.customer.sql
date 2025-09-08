@@ -19,7 +19,7 @@ CREATE TABLE intuit.Customer
 
 SELECT *
 FROM intuit.Customer
-WHERE IsProject=1
+WHERE IsProject=0 OR IsProject IS NULL
 ORDER BY DisplayName;
 
 
@@ -66,6 +66,43 @@ BEGIN
     FROM intuit.Customer
     WHERE [Id] = @Id;
 END
+
+
+
+
+
+DROP PROCEDURE IF EXISTS ReadIntuitCustomerByIdGUID;
+
+CREATE PROCEDURE ReadIntuitCustomerByIdGUID
+	@GUID UNIQUEIDENTIFIER
+AS
+BEGIN
+	BEGIN TRANSACTION;
+
+	SELECT 
+		[GUID],
+		[RealmId],
+		[Id],
+		[DisplayName],
+		[FullyQualifiedName],
+		[IsJob],
+		[ParentRefValue],
+		[Level],
+		[IsProject],
+		[ClientEntityId],
+		[IsActive],
+		[SyncToken],
+		[V4IDPseudonym],
+		CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS [CreatedDatetime],
+		CAST([LastUpdatedDatetime] AS NVARCHAR(MAX)) AS [LastUpdatedDatetime]
+	FROM intuit.Customer
+	WHERE [GUID] = @GUID;
+
+	COMMIT;
+END
+
+EXEC ReadIntuitCustomerByIdGUID '3D0FDD7C-F5ED-4687-931A-6E15122B124C';
+
 
 
 

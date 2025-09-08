@@ -96,7 +96,7 @@ def create_intuit_customer(customer: IntuitCustomer) -> Dict[str, Any]:
             exception_handler(e)  # This will raise appropriate exception
 
 
-def read_intuit_customer_by_id(customer_id: str) -> Dict[str, Any]:
+def read_intuit_customer_by_id(customer_id: str) -> PersistenceResponse:
     """Retrieves an Intuit customer from the database by ID."""
     with get_db_connection() as cnxn:
         try:
@@ -105,15 +105,29 @@ def read_intuit_customer_by_id(customer_id: str) -> Dict[str, Any]:
                 row = cursor.execute(sql, customer_id).fetchone()
 
                 if row:
-                    return {
-                        "message": row,
-                        "rowcount": 1,
-                        "status_code": 201
-                    }
-                raise NotFoundError(f"Intuit Customer with ID {customer_id} not found")
+                    return PersistenceResponse(
+                        data=IntuitCustomer.from_db_row(row),
+                        message="Intuit Customer found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                return PersistenceResponse(
+                    data=None,
+                    message="Intuit Customer not found",
+                    status_code=404,
+                    success=False,
+                    timestamp=datetime.now()
+                )
 
         except pyodbc.Error as e:
-            exception_handler(e)  # This will raise appropriate exception
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read Intuit Customer: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
 
 
 def update_intuit_customer_by_realm_id_and_customer_id(customer: IntuitCustomer) -> Dict[str, Any]:
@@ -155,16 +169,87 @@ def read_intuit_projects():
                 rows = cursor.execute(sql).fetchall()
 
                 if rows:
-                    return SuccessResponse(
-                        message="Intuit Projects found",
+                    return PersistenceResponse(
                         data=[IntuitCustomer.from_db_row(row) for row in rows],
-                        status_code=200
+                        success=True,
+                        timestamp=datetime.now(),
+                        status_code=200,
+                        message="Intuit Projects found"
                     )
 
                 return PersistenceResponse(
+                    data=None,
                     message="No Intuit Projects found",
-                    status_code=404
+                    status_code=404,
+                    success=False,
+                    timestamp=datetime.now()
                 )
 
         except pyodbc.Error as e:
             raise DatabaseError(f"Failed to read intuit projects: {str(e)}") from e
+
+
+def read_intuit_customer_by_guid(guid: str):
+    """Retrieves an Intuit customer by GUID."""
+    print(f"Read Intuit Customer By GUID: {guid}")
+    with get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{ CALL ReadIntuitCustomerByIdGUID (?) }"
+                row = cursor.execute(sql, guid).fetchone()
+                if row:
+                    return PersistenceResponse(
+                        data=IntuitCustomer.from_db_row(row),
+                        message="Intuit Customer found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                return PersistenceResponse(
+                    data=None,
+                    message="Intuit Customer not found",
+                    status_code=404,
+                    success=False,
+                    timestamp=datetime.now()
+                )
+        except pyodbc.Error as e:
+            raise PersistenceResponse(
+                data=None,
+                message=f"Failed to read intuit customer by guid: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            ) from e
+
+
+def read_intuit_customers_available():
+    """
+    Retrieves Intuit customers that are not yet in dbo.Customer and are not jobs/projects
+    (IsJob is NULL or 0) and (IsProject is NULL or 0).
+    """
+    with get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = (
+                    "SELECT c.[GUID], c.[RealmId], c.[Id], c.[DisplayName], c.[FullyQualifiedName], "
+                    "c.[IsJob], c.[ParentRefValue], c.[Level], c.[IsProject], c.[ClientEntityId], c.[IsActive], "
+                    "c.[SyncToken], c.[V4IDPseudonym], CAST(c.[CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime, "
+                    "CAST(c.[LastUpdatedDatetime] AS NVARCHAR(MAX)) AS LastUpdatedDatetime "
+                    "FROM intuit.Customer c "
+                    "LEFT JOIN dbo.Customer dc ON dc.IntuitCustomerId = c.Id "
+                    "WHERE dc.Id IS NULL AND (c.IsJob IS NULL OR c.IsJob = 0) AND (c.IsProject IS NULL OR c.IsProject = 0) "
+                    "ORDER BY c.DisplayName"
+                )
+                rows = cursor.execute(sql).fetchall()
+                if rows:
+                    return SuccessResponse(
+                        message="Available Intuit Customers found",
+                        data=[IntuitCustomer.from_db_row(row) for row in rows],
+                        status_code=200
+                    )
+                return PersistenceResponse(
+                    message="No available Intuit Customers found",
+                    status_code=404
+                )
+        except pyodbc.Error as e:
+            raise DatabaseError(f"Failed to read available Intuit customers: {str(e)}") from e

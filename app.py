@@ -29,6 +29,10 @@ from modules.certificate_type import (
     api_certificate_type,
     web_certificate_type
 )
+from modules.certificate_attachment import (
+    api_certificate_attachment,
+    web_certificate_attachment
+)
 from modules.company import (
     api_company,
     web_company
@@ -114,6 +118,9 @@ app.register_blueprint(web_certificate.web_certificate_bp)
 
 app.register_blueprint(api_certificate_type.api_certificate_type_bp)
 app.register_blueprint(web_certificate_type.web_certificate_type_bp)
+
+app.register_blueprint(api_certificate_attachment.api_certificate_attachment_bp)
+app.register_blueprint(web_certificate_attachment.web_certificate_attachment_bp)
 
 app.register_blueprint(api_company.api_company_bp)
 app.register_blueprint(web_company.web_company_bp)

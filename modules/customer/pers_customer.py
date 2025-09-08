@@ -26,9 +26,8 @@ class Customer:
     modified_datetime: Optional[datetime] = None
     name: Optional[str] = None
     is_active: Optional[bool] = None
-    address_id: Optional[int] = None
     transaction_id: Optional[int] = None
-    intuit_customer_id: Optional[str] = None
+    map_customer_intuit_customer_id: Optional[int] = None
 
     @classmethod
     def from_db_row(cls, row) -> Optional['Customer']:
@@ -40,9 +39,8 @@ class Customer:
             modified_datetime=getattr(row, 'ModifiedDatetime', None),
             name=getattr(row, 'Name', None),
             is_active=getattr(row, 'IsActive', None),
-            address_id=getattr(row, 'AddressId', None),
             transaction_id=getattr(row, 'TransactionId', None),
-            intuit_customer_id=getattr(row, 'IntuitCustomerId', None)
+            map_customer_intuit_customer_id=getattr(row, 'MapCustomerIntuitCustomerId', None)
         )
 
 
@@ -51,17 +49,14 @@ def create_customer(customer: Customer) -> PersistenceResponse:
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL CreateCustomer(?, ?, ?, ?, ?)}"
+                sql = "{CALL CreateCustomer(?, ?)}"
                 row = cursor.execute(
                     sql,
-                    customer.created_datetime,
-                    customer.modified_datetime,
                     customer.name,
-                    customer.is_active,
-                    customer.address_id
-                ).fetchone()
+                    customer.is_active
+                ).rowcount
                 cnxn.commit()
-                if row:
+                if row > 0:
                     return PersistenceResponse(
                         data=Customer.from_db_row(row),
                         message=("Customer has been successfully created."),
@@ -192,24 +187,57 @@ def read_customer_by_guid(customer_guid: str) -> PersistenceResponse:
             )
 
 
+def read_customer_by_name(name: str) -> PersistenceResponse:
+    """Retrieves a customer from the database by Name."""
+    with get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadCustomerByName(?)}"
+                row = cursor.execute(sql, name).fetchone()
+                if row:
+                    return PersistenceResponse(
+                        data=Customer.from_db_row(row),
+                        message="Customer by name found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    return PersistenceResponse(
+                        data=None,
+                        message="Customer by name not found",
+                        status_code=404,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+
+        except (pyodbc.Error) as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read customer by name: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
 def update_customer_by_id(customer: Customer) -> PersistenceResponse:
     """Updates a customer in the database by ID."""
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL UpdateCustomerById(?, ?, ?, ?, ?)}"
-                row = cursor.execute(
+                sql = "{CALL UpdateCustomerById(?, ?, ?, ?)}"
+                row_count = cursor.execute(
                     sql,
                     customer.id,
-                    customer.modified_datetime,
                     customer.name,
                     customer.is_active,
-                    customer.address_id
-                ).fetchone()
+                    customer.map_customer_intuit_customer_id
+                ).rowcount
                 cnxn.commit()
-                if row:
+                if row_count > 0:
                     return PersistenceResponse(
-                        data=Customer.from_db_row(row),
+                        data=row_count,
                         message="Customer by id updated",
                         status_code=200,
                         success=True,
@@ -220,7 +248,7 @@ def update_customer_by_id(customer: Customer) -> PersistenceResponse:
                     return PersistenceResponse(
                         data=None,
                         message="Customer by id not updated",
-                        status_code=404,
+                        status_code=400,
                         success=False,
                         timestamp=datetime.now()
                     )

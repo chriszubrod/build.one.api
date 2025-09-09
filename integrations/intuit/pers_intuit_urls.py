@@ -39,12 +39,26 @@ def read_intuit_urls():
                 sql = "SELECT * FROM intuit.Urls;"
                 rows = cursor.execute(sql).fetchall()
                 if rows:
-                    return SuccessResponse(
-                        message="Intuit URLs found",
+                    return PersistenceResponse(
                         data=[IntuitUrls.from_db_row(row) for row in rows],
-                        status_code=200
+                        message="Intuit URLs found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
                     )
                 else:
-                    return BusinessResponse(message="Intuit URLs not found", status_code=404)
+                    return PersistenceResponse(
+                        data=None,
+                        message="Intuit URLs not found",
+                        status_code=404,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
         except pyodbc.DatabaseError as err:
-            raise DatabaseError(f"Failed to read Intuit URLs: {str(err)}") from err
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read Intuit URLs: {str(err)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )

@@ -65,19 +65,30 @@ def read_db_intuit_auth():
                 row = cursor.execute(sql).fetchone()
 
                 if row:
-                    return SuccessResponse(
-                        message="Intuit Auth found",
+                    return PersistenceResponse(
                         data=IntuitAuth.from_db_row(row),
-                        status_code=200
+                        message="Intuit Auth found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
                     )
                 else:
                     return PersistenceResponse(
+                        data=None,
                         message="Intuit Auth not found",
-                        status_code=404
+                        status_code=404,
+                        success=False,
+                        timestamp=datetime.now()
                     )
 
         except pyodbc.DatabaseError as err:
-            return DatabaseError(message="Failed to read Intuit Auth", status_code=500)
+            return PersistenceResponse(
+                data=None,
+                message="Failed to read Intuit Auth",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
 
 
 def create_db_intuit_auth(now, code, realmId):
@@ -89,7 +100,7 @@ def create_db_intuit_auth(now, code, realmId):
         '''
     )
     try:
-        cnxn = pers_database.open_db_cnxn()
+        cnxn = get_db_connection()
         cnxn.autocommit = False
         crsr = cnxn.cursor()
         count = crsr.execute(sql, now, now, code, realmId).rowcount
@@ -107,9 +118,8 @@ def create_db_intuit_auth(now, code, realmId):
             }
     except pyodbc.DatabaseError as err:
         cnxn.rollback()
-        err = pers_database.exception_handler(error=err)
         resp = {
-            "message": err["description"],
+            "message": err,
             "rowcount": 0,
             "status_code": 501
         }
@@ -130,7 +140,7 @@ def update_db_intuit_auth_code_realmid_by_authguid(now, authguid, code, realmId)
         '''
     )
     try:
-        cnxn = pers_database.open_db_cnxn()
+        cnxn = get_db_connection()
         cnxn.autocommit = False
         crsr = cnxn.cursor()
         count = crsr.execute(sql, now, code, realmId, authguid).rowcount
@@ -148,9 +158,8 @@ def update_db_intuit_auth_code_realmid_by_authguid(now, authguid, code, realmId)
             }
     except pyodbc.DatabaseError as err:
         cnxn.rollback()
-        err = pers_database.exception_handler(error=err)
         resp = {
-            "message": err["description"],
+            "message": err,
             "rowcount": 0,
             "status_code": 501
         }
@@ -171,7 +180,7 @@ def update_db_intuit_auth_by_authguid(now, tokentype, idtoken, accesstoken, expi
         '''
     )
     try:
-        cnxn = pers_database.open_db_cnxn()
+        cnxn = get_db_connection()
         cnxn.autocommit = False
         crsr = cnxn.cursor()
         count = crsr.execute(sql, now, tokentype, idtoken, accesstoken, expiresin, refreshtoken, xrefreshtokenexpiresin, authguid).rowcount
@@ -189,9 +198,8 @@ def update_db_intuit_auth_by_authguid(now, tokentype, idtoken, accesstoken, expi
             }
     except pyodbc.DatabaseError as err:
         cnxn.rollback()
-        err = pers_database.exception_handler(error=err)
         resp = {
-            "message": err["description"],
+            "message": err,
             "rowcount": 0,
             "status_code": 501
         }
@@ -211,7 +219,7 @@ def delete_auth_by_authguid(authguid):
         '''
     )
     try:
-        cnxn = pers_database.get_db_cnxn()
+        cnxn = get_db_connection()
         cnxn.autocommit = False
         crsr = cnxn.cursor()
         count = crsr.execute(sql, authguid).rowcount
@@ -229,9 +237,8 @@ def delete_auth_by_authguid(authguid):
             }
     except pyodbc.DatabaseError as err:
         cnxn.rollback()
-        err = pers_database.exception_handler(error=err)
         resp = {
-            "message": err["description"],
+            "message": err,
             "rowcount": 0,
             "status_code": 501
         }

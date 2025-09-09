@@ -37,7 +37,7 @@ from modules.vendor import (
 )
 import bus_ms_sharepoint_sync
 import bus_ms_budget_tracker_push
-import bus_ms_intuit_bill_sync
+import bus_intuit_bill_sync
 
 
 def get_bills() -> BusinessResponse:
@@ -340,7 +340,7 @@ def post_bill_with_line_items_and_attachments(
 
         # Sync the bill to Intuit in a separate thread
         def run_intuit_sync():
-            bus_ms_intuit_bill_sync.main_intuit_bill_sync_function()
+            bus_bill_intuit_bill_sync.main_intuit_bill_sync_function()
 
         # Create the sync threads
         sync_threads = [

@@ -15,11 +15,7 @@ from shared.response import ApiResponse
 from modules.vendor_type import bus_vendor_type
 
 
-api_vendor_type_bp = Blueprint(
-    'api_vendor_type',
-    __name__,
-    url_prefix='/api'
-)
+api_vendor_type_bp = Blueprint('api_vendor_type', __name__, url_prefix='/api')
 
 
 @api_vendor_type_bp.route('/post/vendor-type', methods=['POST'])

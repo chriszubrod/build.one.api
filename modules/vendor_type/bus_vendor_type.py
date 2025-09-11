@@ -36,9 +36,7 @@ def validate_vendor_type_name(name: str) -> tuple[bool, str]:
     return True, name
 
 
-def post_vendor_type(
-        vendor_type_name: str
-    ) -> BusinessResponse:
+def post_vendor_type(vendor_type_name: str) -> BusinessResponse:
     """
     Creates a vendor type in the database.
     """

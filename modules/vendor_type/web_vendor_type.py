@@ -12,10 +12,7 @@ from modules.vendor_type import bus_vendor_type
 from utils.auth_help import requires_auth
 
 
-web_vendor_type_bp = Blueprint(
-    'web_vendor_type',
-    __name__
-)
+web_vendor_type_bp = Blueprint('web_vendor_type', __name__, template_folder='templates')
 
 
 @web_vendor_type_bp.route('/vendor-types', methods=['GET'])

@@ -7,29 +7,29 @@ CREATE TABLE Vendor (
     [Abbreviation] VARCHAR(255) NULL,
     [TaxIdNumber] VARCHAR(9),
     [IsActive] BIT NULL,
-    [Type] VARCHAR(255) NULL,
+    [VendorTypeId] INT NULL,
     [ContactId] INT NULL,
     [AddressId] INT NULL,
-    [CertificateOfInsuranceId] INT NULL,
+    [CertificateId] INT NULL,
     [PaymentTermId] INT NULL,
     [TransactionId] INT NOT NULL,
 	[MapVendorIntuitVendorId] VARCHAR(MAX) NULL,
     FOREIGN KEY (ContactId) REFERENCES Contact(Id),
     FOREIGN KEY (AddressId) REFERENCES [Address](Id),
-    FOREIGN KEY (CertificateOfInsuranceId) REFERENCES CertificateOfInsurance(Id),
+    FOREIGN KEY (CertificateId) REFERENCES Certificate(Id),
     FOREIGN KEY (PaymentTermId) REFERENCES PaymentTerm(Id),
     FOREIGN KEY (TransactionId) REFERENCES [Transaction](Id)
 );
 
-ALTER TABLE dbo.Vendor
-ALTER COLUMN IsActive BIT NULL;
-
+EXEC sp_rename 'Vendor.Type', 'VendorTypeId', 'COLUMN';
+ALTER TABLE Vendor
+ALTER COLUMN VendorTypeId INT;
 
 SELECT * FROM dbo.[Transaction];
 SELECT * FROM dbo.Vendor;
 SELECT * FROM dbo.Contact;
 SELECT * FROM dbo.[Address];
-SELECT * FROM dbo.CertificateOfInsurance;
+SELECT * FROM dbo.Certificate;
 SELECT * FROM dbo.PaymentTerm;
 
 
@@ -41,23 +41,8 @@ DROP PROCEDURE IF EXISTS CreateVendor;
 CREATE PROCEDURE CreateVendor
     @Name VARCHAR(255),
     @Abbreviation VARCHAR(255),
-    @TaxIdNumber VARCHAR(9),
     @IsActive BIT,
-    @Type VARCHAR(255),
-    -- Contact
-    @FirstName VARCHAR(255),
-    @LastName VARCHAR(255),
-    @Email VARCHAR(255),
-    @Phone VARCHAR(255),
-    -- Address
-    @StreetOne VARCHAR(255),
-    @StreetTwo VARCHAR(255),
-    @City VARCHAR(255),
-    @State VARCHAR(2),
-    @Zip VARCHAR(10),
-    -- Certificate Of Insurance
-    -- Payment Term
-    @PaymentTermGUID UNIQUEIDENTIFIER
+    @VendorTypeId INT
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -72,32 +57,9 @@ BEGIN
     DECLARE @TransactionId INT;
     SET @TransactionId = SCOPE_IDENTITY();
 
-    -- Insert a new record into the Contact table using the TransactionId
-    INSERT INTO Contact (CreatedDatetime, ModifiedDatetime, FirstName, LastName, Email, Phone, TransactionId)
-    VALUES (@Now, @Now, @FirstName, @LastName, @Email, @Phone, @TransactionId);
-
-    -- Get the Id of the last inserted record
-    DECLARE @ContactId INT;
-    SET @ContactId = SCOPE_IDENTITY();
-
-    -- Insert a new record into the Address table using the TransactionId
-    INSERT INTO [Address] (CreatedDatetime, ModifiedDatetime, StreetOne, StreetTwo, City, [State], Zip, TransactionId)
-    VALUES (@Now, @Now, @StreetOne, @StreetTwo, @City, @State, @Zip, @TransactionId);
-
-    -- Get the Id of the last inserted record
-    DECLARE @AddressId INT;
-    SET @AddressId = SCOPE_IDENTITY();
-
-    -- Certificate Of Insurance
-    --@CertificateOfInsuranceId INT
-
-    -- Get the Id of the Payment Term using the PaymentTermGUID
-    DECLARE @PaymentTermId INT;
-    SELECT @PaymentTermId = Id FROM PaymentTerm WHERE GUID = @PaymentTermGUID;
-
     -- Insert a new record into the Vendor table using the TransactionId
-    INSERT INTO Vendor (CreatedDatetime, ModifiedDatetime, [Name], Abbreviation, TaxIdNumber, IsActive, [Type], ContactId, AddressId, PaymentTermId, TransactionId)
-    VALUES (@Now, @Now, @Name, @Abbreviation, @TaxIdNumber, @IsActive, @Type, @ContactId, @AddressId, @PaymentTermId, @TransactionId);
+    INSERT INTO Vendor (CreatedDatetime, ModifiedDatetime, [Name], Abbreviation, IsActive, [VendorTypeId])
+    VALUES (@Now, @Now, @Name, @Abbreviation, @IsActive, @VendorTypeId);
 
     COMMIT;
 END
@@ -120,12 +82,11 @@ BEGIN
         CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
         [Name],
         Abbreviation,
-        TaxIdNumber,
         IsActive,
-        [Type],
+        [VendorTypeId],
         ContactId,
         AddressId,
-        CertificateOfInsuranceId,
+        CertificateId,
         PaymentTermId,
         TransactionId,
 		MapVendorIntuitVendorId
@@ -154,12 +115,11 @@ BEGIN
         CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
         [Name],
         Abbreviation,
-        TaxIdNumber,
         IsActive,
-        [Type],
+        [VendorTypeId],
         ContactId,
         AddressId,
-        CertificateOfInsuranceId,
+        CertificateId,
         PaymentTermId,
         TransactionId,
 		MapVendorIntuitVendorId
@@ -187,12 +147,11 @@ BEGIN
         CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
         [Name],
         Abbreviation,
-        TaxIdNumber,
         IsActive,
-        [Type],
+        [VendorTypeId],
         ContactId,
         AddressId,
-        CertificateOfInsuranceId,
+        CertificateId,
         PaymentTermId,
         TransactionId,
 		MapVendorIntuitVendorId
@@ -222,12 +181,11 @@ BEGIN
         CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
         [Name],
         Abbreviation,
-        TaxIdNumber,
         IsActive,
-        [Type],
+        [VendorTypeId],
         ContactId,
         AddressId,
-        CertificateOfInsuranceId,
+        CertificateId,
         PaymentTermId,
         TransactionId,
 		MapVendorIntuitVendorId
@@ -244,13 +202,8 @@ CREATE PROCEDURE UpdateVendor
     @ID VARCHAR(255),
     @Name VARCHAR(255),
     @Abbreviation VARCHAR(255),
-    @TaxIdNumber VARCHAR(9),
     @IsActive BIT,
-    @Type VARCHAR(255),
-    @ContactId INT,
-    @AddressId INT,
-    @CertificateOfInsuranceId INT,
-    @PaymentTermId INT
+    @VendorTypeId INT
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -262,13 +215,8 @@ BEGIN
     SET ModifiedDatetime = @Now,
         [Name] = @Name,
         Abbreviation = @Abbreviation,
-        TaxIdNumber = @TaxIdNumber,
         IsActive = @IsActive,
-        [Type] = @Type,
-        ContactId = @ContactId,
-        AddressId = @AddressId,
-        CertificateOfInsuranceId = @CertificateOfInsuranceId,
-        PaymentTermId = @PaymentTermId
+        [VendorTypeId] = @VendorTypeId
     WHERE [Id] = @ID;
 
     COMMIT;

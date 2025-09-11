@@ -9,6 +9,7 @@ from dateutil import tz
 # local imports
 from shared.response import BusinessResponse
 from modules.vendor import pers_vendor
+from modules.vendor_type import pers_vendor_type
 from integrations.map import pers_map_vendor_intuit_vendor
 
 # Constants
@@ -60,13 +61,7 @@ def validate_vendor_abbreviation(abbreviation: str) -> tuple[bool, str]:
     return True, abbreviation
 
 
-def post_vendor(
-        name: str,
-        abbreviation: str,
-        tax_id_number: str,
-        is_active: int,
-        vendor_type: str
-    ) -> BusinessResponse:
+def post_vendor(name: str, abbreviation: str, is_active: int, vendor_type_id: int) -> BusinessResponse:
     """
     Posts a vendor.
     """
@@ -102,16 +97,6 @@ def post_vendor(
 
     vendor_abbreviation = abbreviation_result
 
-    # validate tax_id_number
-    if not tax_id_number or tax_id_number == "" or tax_id_number is None:
-        return BusinessResponse(
-            data=None,
-            message="Missing Vendor tax id number.",
-            success=False,
-            status_code=400,
-            timestamp=datetime.now(tz.tzlocal())
-        )
-
     # validate is_active
     if not is_active or is_active is None:
         return BusinessResponse(
@@ -123,7 +108,7 @@ def post_vendor(
         )
 
     # validate vendor_type
-    if not vendor_type or vendor_type == "" or vendor_type is None:
+    if not vendor_type_id or vendor_type_id == "" or vendor_type_id is None:
         return BusinessResponse(
             data=None,
             message="Missing Vendor type.",
@@ -146,9 +131,8 @@ def post_vendor(
     _vendor = pers_vendor.Vendor(
         name=vendor_name,
         abbreviation=vendor_abbreviation,
-        tax_id_number=tax_id_number,
         is_active=is_active,
-        type=vendor_type
+        vendor_type_id=vendor_type_id
     )
 
     # create vendor
@@ -246,3 +230,79 @@ def get_mapped_intuit_vendor_by_vendor_id(vendor_id: int) -> BusinessResponse:
         status_code=pers_read_mapped_intuit_vendor_resp.status_code,
         timestamp=pers_read_mapped_intuit_vendor_resp.timestamp
     )
+
+
+def patch_vendor(guid: str, name: str, abbreviation: str, is_active: int, vendor_type_guid: str) -> BusinessResponse:
+    """
+    Minimal patch to update a vendor's name and is_active by GUID.
+
+    Looks up the vendor by GUID, then calls the persistence layer to update
+    using the existing values for all other required fields.
+    """
+    try:
+        # validate name
+        is_valid, name_result = validate_vendor_name(name)
+        if not is_valid:
+            return BusinessResponse(
+                data=None,
+                message=name_result,
+                success=False,
+                status_code=400,
+                timestamp=datetime.now()
+            )
+
+        # normalize is_active to 0/1
+        normalized_is_active = 1 if str(is_active) in ['1', 'true', 'True', 'on', 'yes'] else 0
+
+        # read vendor by guid
+        read_resp = pers_vendor.read_vendor_by_guid(vendor_guid=guid)
+        if not read_resp.success or not read_resp.data:
+            return BusinessResponse(
+                data=None,
+                message="Vendor not found",
+                success=False,
+                status_code=404,
+                timestamp=datetime.now()
+            )
+        v = read_resp.data
+
+        # read vendor_type by guid
+        read_vendor_type_resp = pers_vendor_type.read_vendor_type_by_guid(vendor_type_guid=vendor_type_guid)
+        if not read_vendor_type_resp.success or not read_vendor_type_resp.data:
+            return BusinessResponse(
+                data=None,
+                message="Vendor type not found",
+                success=False,
+                status_code=404,
+                timestamp=datetime.now()
+            )
+        vt = read_vendor_type_resp.data
+
+        
+        
+        v.name = name_result
+        v.abbreviation = abbreviation
+        v.is_active = normalized_is_active
+        v.vendor_type_id = vt.id
+
+        # call minimal update by id, preserving existing values for other fields
+        update_resp = pers_vendor.update_vendor_by_id(
+            vendor=v
+        )
+
+        return BusinessResponse(
+            data=update_resp.data,
+            message=update_resp.message,
+            success=update_resp.success,
+            status_code=update_resp.status_code,
+            timestamp=update_resp.timestamp
+        )
+
+    except Exception as e:
+        return BusinessResponse(
+            data=None,
+            message=f"Failed to update vendor: {str(e)}",
+            success=False,
+            status_code=500,
+            timestamp=datetime.now()
+        )

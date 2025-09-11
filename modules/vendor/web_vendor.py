@@ -9,13 +9,11 @@ from flask import Blueprint, render_template, flash
 
 # local imports
 from modules.vendor import bus_vendor
+from modules.vendor_type import bus_vendor_type
 from utils.auth_help import requires_auth
 
 
-web_vendor_bp = Blueprint(
-    'web_vendor',
-    __name__
-)
+web_vendor_bp = Blueprint('web_vendor', __name__, template_folder='templates')
 
 
 @web_vendor_bp.route('/vendors', methods=['GET'])
@@ -61,16 +59,20 @@ def view_vendor_route(vendor_guid):
     Returns the vendor by guid route.
     """
     try:
+        vendor = None
         get_vendor_bus_response = bus_vendor.get_vendor_by_guid(
             vendor_guid=vendor_guid
         )
         if get_vendor_bus_response.success:
             vendor = get_vendor_bus_response.data
-            print(f'\nVendor: {vendor}\n')
-            return render_template('vendor/vendor_view.html', vendor=vendor)
-        else:
-            flash(get_vendor_bus_response.message, 'error')
-            return render_template('shared/layout/error.html', error=get_vendor_bus_response.message), 404
+        
+        vendor_type = None
+        get_vendor_type_bus_response = bus_vendor_type.get_vendor_type_by_id(vendor_type_id=vendor.vendor_type_id)
+        if get_vendor_type_bus_response.success:
+            vendor_type = get_vendor_type_bus_response.data
+        
+        return render_template('vendor/vendor_view.html', vendor=vendor, vendor_type=vendor_type)
+
     except Exception as e:
         flash(str(e), 'error')
         return render_template('shared/layout/error.html', error=str(e)), 500
@@ -83,17 +85,20 @@ def edit_vendor_route(vendor_guid):
     Returns the vendor edit route.
     """
     try:
+        vendor = None
         get_vendor_bus_response = bus_vendor.get_vendor_by_guid(
             vendor_guid=vendor_guid
         )
         if get_vendor_bus_response.success:
             vendor = get_vendor_bus_response.data
-            print(f'\nVendor: {vendor}\n')
-            return render_template('vendor/vendor_edit.html', vendor=vendor)
-        else:
-            print(f'\nError: {get_vendor_bus_response.message}\n')
-            flash(get_vendor_bus_response.message, 'error')
-            return render_template('shared/layout/error.html', error=get_vendor_bus_response.message), 404
+        
+        vendor_types = None
+        get_vendor_types_bus_response = bus_vendor_type.get_vendor_types()
+        if get_vendor_types_bus_response.success:
+            vendor_types = get_vendor_types_bus_response.data
+        
+        return render_template('vendor/vendor_edit.html', vendor=vendor, vendor_types=vendor_types)
+
     except Exception as e:
         print(f'\nError: {e}\n')
         flash(str(e), 'error')

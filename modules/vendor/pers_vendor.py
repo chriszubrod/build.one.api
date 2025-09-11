@@ -24,13 +24,14 @@ class Vendor:
     modified_datetime: Optional[datetime] = None
     name: Optional[str] = None
     abbreviation: Optional[str] = None
-    tax_id_number: Optional[str] = None
     is_active: Optional[bool] = None
-    type: Optional[str] = None
+    vendor_type_id: Optional[int] = None
     contact_id: Optional[int] = None
     address_id: Optional[int] = None
+    certificate_id: Optional[int] = None
     payment_term_id: Optional[int] = None
     transaction_id: Optional[int] = None
+    map_vendor_intuit_vendor_id: Optional[int] = None
 
     @classmethod
     def from_db_row(cls, row) -> Optional['Vendor']:
@@ -42,13 +43,14 @@ class Vendor:
             modified_datetime=getattr(row, 'ModifiedDatetime'),
             name=getattr(row, 'Name'),
             abbreviation=getattr(row, 'Abbreviation'),
-            tax_id_number=getattr(row, 'TaxIdNumber'),
             is_active=getattr(row, 'IsActive'),
-            type=getattr(row, 'Type'),
+            vendor_type_id=getattr(row, 'VendorTypeId'),
             contact_id=getattr(row, 'ContactId'),
             address_id=getattr(row, 'AddressId'),
+            certificate_id=getattr(row, 'CertificateId'),
             payment_term_id=getattr(row, 'PaymentTermId'),
-            transaction_id=getattr(row, 'TransactionId')
+            transaction_id=getattr(row, 'TransactionId'),
+            map_vendor_intuit_vendor_id=getattr(row, 'MapVendorIntuitVendorId', None)
         )
 
 
@@ -59,19 +61,13 @@ def create_vendor(vendor: Vendor) -> PersistenceResponse:
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL CreateVendor (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
+                sql = "{CALL CreateVendor (?, ?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,
-                    vendor.created_datetime,
-                    vendor.modified_datetime,
                     vendor.name,
                     vendor.abbreviation,
-                    vendor.tax_id_number,
                     vendor.is_active,
-                    vendor.type,
-                    vendor.contact_id,
-                    vendor.address_id,
-                    vendor.payment_term_id
+                    vendor.vendor_type_id
                 ).rowcount
                 cnxn.commit()
                 if rowcount > 0:
@@ -252,22 +248,14 @@ def update_vendor_by_id(vendor: Vendor) -> PersistenceResponse:
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL UpdateVendorById (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
+                sql = "{CALL UpdateVendor (?, ?, ?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,
                     vendor.id,
-                    vendor.guid,
-                    vendor.created_datetime,
-                    vendor.modified_datetime,
                     vendor.name,
                     vendor.abbreviation,
-                    vendor.tax_id_number,
                     vendor.is_active,
-                    vendor.type,
-                    vendor.contact_id,
-                    vendor.address_id,
-                    vendor.payment_term_id,
-                    vendor.transaction_id
+                    str(vendor.vendor_type_id) if vendor.vendor_type_id is not None else None  # Convert int to str
                 ).rowcount
                 cnxn.commit()
                 if rowcount > 0:

@@ -52,22 +52,19 @@ def api_post_vendor_route():
         # vendor abbreviation
         vendor_abbreviation = bleach.clean(data.get('abbreviation', ''), strip=True)
 
-        # vendor tax id number
-        vendor_tax_id_number = bleach.clean(data.get('taxidnumber', ''), strip=True)
-
         # vendor is active
-        vendor_is_active = bleach.clean(data.get('isActive', '1'), strip=True)
+        raw_is_active = str(data.get('isActive', '1')).strip()
+        vendor_is_active = 1 if raw_is_active.lower() in ('1', 'true', 'yes') else 0
 
         # vendor type
-        vendor_type = bleach.clean(data.get('vendortype', ''), strip=True)
+        vendor_type_id = bleach.clean(data.get('vendortype', ''), strip=True)
 
         # Call the post_vendor function and pass in the data to create a vendor
         vendor_bus_response = bus_vendor.post_vendor(
             name=vendor_name,
             abbreviation=vendor_abbreviation,
-            tax_id_number=vendor_tax_id_number,
             is_active=vendor_is_active,
-            vendor_type=vendor_type
+            vendor_type_id=vendor_type_id
         )
 
         # Return the response from the post_user_by_guid function
@@ -83,6 +80,80 @@ def api_post_vendor_route():
 
     # Handle any exceptions
     except (ValueError, TypeError, KeyError) as e:
+        return jsonify(
+            ApiResponse(
+                data=None,
+                message=str(e),
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            ).to_dict()
+        )
+
+
+@api_vendor_bp.route('/patch/vendor/<guid>', methods=['PATCH'])
+def api_patch_vendor_route(guid):
+    """
+    Updates a vendor by GUID.
+    """
+    try:
+        # If request is not JSON, return 400 error
+        if not request.is_json:
+            return jsonify(
+                ApiResponse(
+                    data=None,
+                    message='Content type must be application/json',
+                    status_code=400,
+                    success=False,
+                    timestamp=datetime.now()
+                ).to_dict()
+            )
+
+        # Get the JSON data from the request
+        data = request.json
+        
+        # print the data
+        print(f'\nAPI Patch Vendor Data: {data}\n')
+
+        # vendor guid
+        vendor_guid = guid
+
+        # vendor name
+        vendor_name = bleach.clean(data.get('name', ''), strip=True)
+
+        # vendor abbreviation
+        vendor_abbreviation = bleach.clean(data.get('abbreviation', ''), strip=True)
+
+        # vendor is active
+        raw_is_active = str(data.get('isActive', '1')).strip()
+        vendor_is_active = 1 if raw_is_active.lower() in ('1', 'true', 'yes') else 0
+
+        # vendor type
+        vendor_type_guid = bleach.clean(data.get('vendorType', ''), strip=True)
+
+        # Call the post_vendor function and pass in the data to create a vendor
+        resp = bus_vendor.patch_vendor(
+            guid=vendor_guid,
+            name=vendor_name,
+            abbreviation=vendor_abbreviation,
+            is_active=vendor_is_active,
+            vendor_type_guid=vendor_type_guid
+        )
+        print(f'\nPath Vendor Response: {resp}\n')
+
+        # Return the response from the post_user_by_guid function
+        return jsonify(
+            ApiResponse(
+                data=resp.data,
+                message=resp.message,
+                status_code=resp.status_code,
+                success=resp.success,
+                timestamp=resp.timestamp
+            ).to_dict()
+        )
+
+    # Handle any exceptions
+    except Exception as e:
         return jsonify(
             ApiResponse(
                 data=None,

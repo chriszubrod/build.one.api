@@ -5,6 +5,7 @@ Module for vendor business.
 # python standard library imports
 from datetime import datetime
 from dateutil import tz
+import html
 
 # local imports
 from shared.response import BusinessResponse
@@ -34,10 +35,14 @@ def validate_vendor_name(name: str) -> tuple[bool, str]:
     if len(name) < MIN_NAME_LENGTH:
         return False, f"Vendor name must be at least {MIN_NAME_LENGTH} characters"
 
-    if any(char in name for char in ['<', '>', '&', '"', "'"]):
-        return False, "Vendor name cannot contain invalid characters"
+    # Remove potentially dangerous characters instead of rejecting
+    sanitized_name = name.replace('<', '').replace('>', '').replace('"', '').replace("'", '')
+    
+    # Check if any characters were removed and warn if so
+    if len(sanitized_name) != len(name):
+        print(f"Warning: Removed dangerous characters from vendor name: '{name}' -> '{sanitized_name}'")
 
-    return True, name
+    return True, sanitized_name
 
 
 def validate_vendor_abbreviation(abbreviation: str) -> tuple[bool, str]:
@@ -55,10 +60,14 @@ def validate_vendor_abbreviation(abbreviation: str) -> tuple[bool, str]:
     if len(abbreviation) < MIN_ABBR_LENGTH:
         return False, f"Vendor abbreviation must be at least {MIN_ABBR_LENGTH} characters"
 
-    if any(char in abbreviation for char in ['<', '>', '&', '"', "'"]):
-        return False, "Vendor abbreviation cannot contain invalid characters"
+    # Remove potentially dangerous characters instead of rejecting
+    sanitized_abbreviation = abbreviation.replace('<', '').replace('>', '').replace('"', '').replace("'", '')
+    
+    # Check if any characters were removed and warn if so
+    if len(sanitized_abbreviation) != len(abbreviation):
+        print(f"Warning: Removed dangerous characters from vendor abbreviation: '{abbreviation}' -> '{sanitized_abbreviation}'")
 
-    return True, abbreviation
+    return True, sanitized_abbreviation
 
 
 def post_vendor(name: str, abbreviation: str, is_active: int, vendor_type_id: int) -> BusinessResponse:
@@ -153,6 +162,13 @@ def get_vendors() -> BusinessResponse:
     """
     try:
         pers_buildone_vendors_resp = pers_vendor.read_vendors()
+        if pers_buildone_vendors_resp.success and pers_buildone_vendors_resp.data:
+            for vendor in pers_buildone_vendors_resp.data:
+                if vendor.name:
+                    vendor.name = html.unescape(vendor.name)
+                if vendor.abbreviation:
+                    vendor.abbreviation = html.unescape(vendor.abbreviation)
+
         return BusinessResponse(
             data=pers_buildone_vendors_resp.data,
             message=pers_buildone_vendors_resp.message,
@@ -160,6 +176,7 @@ def get_vendors() -> BusinessResponse:
             status_code=pers_buildone_vendors_resp.status_code,
             timestamp=pers_buildone_vendors_resp.timestamp
         )
+
     except Exception as e:
         return BusinessResponse(
             data=None,

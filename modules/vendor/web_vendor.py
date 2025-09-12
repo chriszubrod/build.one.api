@@ -2,7 +2,7 @@
 Module for vendor web.
 """
 # python standard library imports
-
+import html
 
 # third party imports
 from flask import Blueprint, render_template, flash
@@ -23,6 +23,11 @@ def list_vendors_route():
         get_vendors_bus_response = bus_vendor.get_vendors()
         if get_vendors_bus_response.success:
             vendors = get_vendors_bus_response.data
+            for vendor in vendors:
+                if vendor.name:
+                    vendor.name = html.unescape(vendor.name)
+                if vendor.abbreviation:
+                    vendor.abbreviation = html.unescape(vendor.abbreviation)
         else:
             vendors = []
             flash(get_vendors_bus_response.message, 'error')
@@ -91,6 +96,7 @@ def edit_vendor_route(vendor_guid):
         )
         if get_vendor_bus_response.success:
             vendor = get_vendor_bus_response.data
+
         
         vendor_types = None
         get_vendor_types_bus_response = bus_vendor_type.get_vendor_types()

@@ -193,6 +193,12 @@ def get_vendor_by_id(vendor_id: int) -> BusinessResponse:
     """
     try:
         pers_buildone_vendor_resp = pers_vendor.read_vendor_by_id(vendor_id)
+        if pers_buildone_vendor_resp.success and pers_buildone_vendor_resp.data:
+            vendor = pers_buildone_vendor_resp.data
+            if vendor.name:
+                vendor.name = html.unescape(vendor.name)
+            if vendor.abbreviation:
+                vendor.abbreviation = html.unescape(vendor.abbreviation)
         return BusinessResponse(
             data=pers_buildone_vendor_resp.data,
             message=pers_buildone_vendor_resp.message,
@@ -216,6 +222,12 @@ def get_vendor_by_guid(vendor_guid: str) -> BusinessResponse:
     """
     try:
         pers_buildone_vendor_resp = pers_vendor.read_vendor_by_guid(vendor_guid)
+        if pers_buildone_vendor_resp.success and pers_buildone_vendor_resp.data:
+            vendor = pers_buildone_vendor_resp.data
+            if vendor.name:
+                vendor.name = html.unescape(vendor.name)
+            if vendor.abbreviation:
+                vendor.abbreviation = html.unescape(vendor.abbreviation)
         return BusinessResponse(
             data=pers_buildone_vendor_resp.data,
             message=pers_buildone_vendor_resp.message,

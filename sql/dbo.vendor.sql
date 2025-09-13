@@ -5,7 +5,6 @@ CREATE TABLE Vendor (
     [ModifiedDatetime] DATETIMEOFFSET NOT NULL,
     [Name] VARCHAR(255) NOT NULL,
     [Abbreviation] VARCHAR(255) NULL,
-    [TaxIdNumber] VARCHAR(9),
     [IsActive] BIT NULL,
     [VendorTypeId] INT NULL,
     [ContactId] INT NULL,
@@ -31,7 +30,6 @@ SELECT * FROM dbo.Contact;
 SELECT * FROM dbo.[Address];
 SELECT * FROM dbo.Certificate;
 SELECT * FROM dbo.PaymentTerm;
-
 
 
 

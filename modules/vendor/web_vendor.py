@@ -79,6 +79,7 @@ def view_vendor_route(vendor_guid):
         return render_template('vendor/vendor_view.html', vendor=vendor, vendor_type=vendor_type)
 
     except Exception as e:
+        print(f'\nError: {e}\n')
         flash(str(e), 'error')
         return render_template('shared/layout/error.html', error=str(e)), 500
 

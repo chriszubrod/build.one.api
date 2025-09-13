@@ -24,10 +24,6 @@
           <label for="abbreviation" class="block text-sm font-medium text-gray-700 px-1 py-1">Abbreviation</label>
           <input type="text" id="abbreviation" name="abbreviation" value="{{ vendor.abbreviation or '' }}" class="block w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400">
         </div>
-        <div>
-          <label for="taxidnumber" class="block text-sm font-medium text-gray-700 px-1 py-1">Tax ID Number</label>
-          <input type="text" id="taxidnumber" name="taxidnumber" value="{{ vendor.tax_id_number or '' }}" class="block w-full rounded-md border-2 border-gray-300 bg-white shadow-sm focus:border-gray-500 focus:ring-1 focus:ring-gray-500 focus:outline-none px-3 py-2 text-gray-900 placeholder-gray-400">
-        </div>
         <div class="flex items-center space-x-2">
           <input type="checkbox" id="isActive" name="isActive" class="h-4 w-4" {% if vendor.is_active %}checked{% endif %}>
           <label for="isActive" class="text-sm font-medium text-gray-700">Active</label>
@@ -69,10 +65,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const guid = document.getElementById('guid').value.trim();
     const name = document.getElementById('name').value.trim();
     const abbreviation = document.getElementById('abbreviation').value.trim();
-    const taxIdNumber = document.getElementById('taxidnumber').value.trim();
     const isActive = document.getElementById('isActive').checked;
     const vendorType = document.getElementById('vendortype').value;
-    console.log('Form Data:', { name, abbreviation, taxIdNumber, isActive, vendorType });
+    console.log('Form Data:', { name, abbreviation, isActive, vendorType });
     
     // Validate required fields
     if (!name) {
@@ -88,7 +83,6 @@ document.addEventListener('DOMContentLoaded', function() {
       const requestData = {
         name: name,
         abbreviation: abbreviation,
-        taxIdNumber: taxIdNumber,
         isActive: isActive ? 1 : 0,
         vendorType: vendorType
       };

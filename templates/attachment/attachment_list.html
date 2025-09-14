@@ -1,0 +1,107 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Bills{% endblock %}
+
+{% block content %}
+
+    <!-- Container for the page content -->
+    <div class="flex flex-col h-full p-4">
+
+        <!-- Header section with title and create button -->
+        <div class="flex flex-col h-full space-y-2">
+
+            <div class="flex justify-between items-center">
+
+                <h1 class="'px-3 py-2'">
+                    Attachments
+                </h1>
+
+                <a href="{{ url_for('web_attachment.create_attachment_route') }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">
+                    + Create New
+                </a>
+
+            </div>
+
+            <!-- Grid-based vendor list -->
+            <div class="bg-white border border-gray-200 overflow-hidden flex flex-col h-full">
+
+                <!-- Fixed header -->
+                <div class="grid grid-cols-4 bg-gray-100 border-b border-gray-200">
+
+                    <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        GUID
+                    </div>
+
+                    <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Name
+                    </div>
+
+                    <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Type
+                    </div>
+
+                </div>
+                
+                <!-- Scrollable content -->
+                <div class="overflow-y-auto flex flex-col h-full scrollbar-hide" style="scrollbar-width: none; -ms-overflow-style: none;">
+                    
+                    {% if attachments %}
+                        {% for attachment in attachments %}
+                            
+                            <div class="grid grid-cols-4 border-b border-gray-200 hover:bg-gray-50 transition-colors duration-150">
+                                
+                                <div class="px-6 py-4 whitespace-nowrap">
+                                   {{ attachment.guid[-6:] }}
+                                </div>
+                                
+                                <div class="px-6 py-4 whitespace-nowrap">
+                                    {{ attachment.name }}
+                                </div>
+                                
+                                <div class="px-6 py-4 whitespace-nowrap">
+                                    {{ attachment.type }}
+                                 </div>
+
+                                <div class="px-6 py-4 whitespace-nowrap">
+                                    <a href="{{ url_for('web_attachment.view_attachment_route', attachment_guid=attachment.guid) }}" class="text-blue-600 hover:text-blue-800 text-sm">
+                                        View
+                                    </a>
+                                </div>
+                            
+                            </div>
+                        
+                        {% endfor %}
+                    {% else %}
+
+                        <div class="px-6 py-4 text-center text-gray-500">
+                            No attachments found.
+                        </div>
+                    
+                    {% endif %}
+
+                </div>
+            
+            </div>
+
+        </div>
+
+    </div>
+
+    <!-- Hide scrollbars -->
+    <style>
+
+        /* Hide scrollbars for WebKit browsers (Chrome, Safari, Edge) */
+        .scrollbar-hide::-webkit-scrollbar {
+            display: none;
+        }
+        
+        /* Hide scrollbars for Firefox */
+        .scrollbar-hide {
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+        }
+        
+    </style>
+
+{% endblock %}
+

@@ -55,11 +55,9 @@ def create_project(project: Project) -> PersistenceResponse:
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL CreateProject(?, ?, ?, ?, ?, ?)}"
+                sql = "{CALL CreateProject(?, ?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,
-                    project.created_datetime,
-                    project.modified_datetime,
                     project.name,
                     project.abbreviation,
                     project.status,
@@ -290,7 +288,7 @@ def update_project_by_id(project: Project) -> PersistenceResponse:
             )
 
 
-def delete_project_by_id(project: Project) -> PersistenceResponse:
+def delete_project_by_id(id: int) -> PersistenceResponse:
     """
     Deletes a project in the database by ID.
     """
@@ -298,10 +296,7 @@ def delete_project_by_id(project: Project) -> PersistenceResponse:
         try:
             with cnxn.cursor() as cursor:
                 sql = "{CALL DeleteProjectById(?)}"
-                rowcount = cursor.execute(
-                    sql,
-                    project.id
-                ).rowcount
+                rowcount = cursor.execute(sql, id).rowcount
                 cnxn.commit()
                 if rowcount > 0:
                     return PersistenceResponse(

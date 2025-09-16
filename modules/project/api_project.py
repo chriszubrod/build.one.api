@@ -19,13 +19,13 @@ from modules.project import bus_project
 api_project_bp = Blueprint('api_project', __name__, url_prefix='/api')
 
 
-@api_project_bp.route('/get/projects', methods=['GET'])
+@api_project_bp.route('/projects', methods=['GET'])
 def api_get_projects_route():
     """
     Retrieves all projects from the database.
     """
-    projects = bus_project.get_projects()
-    return jsonify(projects)
+    resp = bus_project.get_projects()
+    return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=resp.timestamp).to_dict())
 
 
 @api_project_bp.route('/post/project', methods=['POST'])
@@ -49,15 +49,6 @@ def api_post_project_route():
         # Get the JSON data from the request
         data = request.json
 
-        # Get the submission datetime
-        submission_datetime = datetime.now(tz.tzlocal()).strftime('%Y-%m-%d %H:%M:%S%z')
-        submission_datetime = submission_datetime[:-2] + ':' + submission_datetime[-2:]
-
-        # project guid
-        raw_guid = data.get('projectGuid', '').strip()
-        clean_guid = bleach.clean(raw_guid, strip=True) # Remove any HTML tags
-        project_guid = html.escape(clean_guid) # Escape any special HTML characters
-
         # project name
         raw_name = data.get('name', '').strip()
         clean_name = bleach.clean(raw_name, strip=True) # Remove any HTML tags
@@ -73,14 +64,17 @@ def api_post_project_route():
         clean_status = bleach.clean(raw_status, strip=True) # Remove any HTML tags
         status = html.escape(clean_status) # Escape any special HTML characters
 
-        # Call the post_project_by_guid function and pass in the data to create a project
-        project_bus_response = bus_project.post_project_by_guid(
-            created_datetime=submission_datetime,
-            modified_datetime=submission_datetime,
-            project_guid=project_guid,
+        # customer guid
+        raw_customer_guid = data.get('customerGuid', '').strip()
+        clean_customer_guid = bleach.clean(raw_customer_guid, strip=True)
+        customer_guid = html.escape(clean_customer_guid)
+
+        # Call business layer to create a project
+        project_bus_response = bus_project.post_project(
             name=name,
             abbreviation=abbreviation,
-            status=status
+            status=status,
+            customer_guid=customer_guid
         )
 
         # Return the response from the post_module function
@@ -107,8 +101,8 @@ def api_post_project_route():
         )
 
 
-@api_project_bp.route('/patch/project', methods=['PATCH'])
-def api_patch_project_route():
+@api_project_bp.route('/project/<guid>', methods=['PATCH'])
+def api_patch_project_route(guid):
     """
     Handles the PATCH request for updating a project.
     """
@@ -128,15 +122,6 @@ def api_patch_project_route():
         # Get the JSON data from the request
         data = request.json
 
-        # Get the submission datetime
-        submission_datetime = datetime.now(tz.tzlocal()).strftime('%Y-%m-%d %H:%M:%S%z')
-        submission_datetime = submission_datetime[:-2] + ':' + submission_datetime[-2:]
-
-        # project guid
-        raw_guid = data.get('projectGuid', '').strip()
-        clean_guid = bleach.clean(raw_guid, strip=True) # Remove any HTML tags
-        project_guid = html.escape(clean_guid) # Escape any special HTML characters
-
         # project name
         raw_name = data.get('name', '').strip()
         clean_name = bleach.clean(raw_name, strip=True) # Remove any HTML tags
@@ -152,13 +137,18 @@ def api_patch_project_route():
         clean_status = bleach.clean(raw_status, strip=True) # Remove any HTML tags
         status = html.escape(clean_status) # Escape any special HTML characters
 
+        # customer guid
+        raw_customer_guid = data.get('customerGuid', '').strip()
+        clean_customer_guid = bleach.clean(raw_customer_guid, strip=True)
+        customer_guid = html.escape(clean_customer_guid)
+
         # Call the patch_project_by_guid function and pass in the data to update a project
         project_bus_response = bus_project.patch_project_by_guid(
-            modified_datetime=submission_datetime,
-            project_guid=project_guid,
+            guid=guid,
             name=name,
             abbreviation=abbreviation,
-            status=status
+            status=status,
+            customer_guid=customer_guid
         )
 
         # Return the response from the patch_project_by_guid function
@@ -184,55 +174,32 @@ def api_patch_project_route():
             ).to_dict()
         )
 
+@api_project_bp.route('/project/<guid>', methods=['GET'])
+def api_get_project_by_guid_route(guid):
+    resp = bus_project.get_project_by_guid(guid)
+    return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=resp.timestamp).to_dict())
 
-@api_project_bp.route('/delete/project', methods=['DELETE'])
-def api_delete_project_route():
-    """
-    Handles the DELETE request for deleting a project.
-    """
+
+@api_project_bp.route('/project/<int:id>', methods=['DELETE'])
+def api_delete_project_by_id_route(id):
+    resp = bus_project.delete_project_by_id(id)
+    return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=resp.timestamp).to_dict())
+
+
+@api_project_bp.route('/post/map/project-intuit', methods=['POST'])
+def api_post_map_project_intuit_customer_by_guid_route():
+    """Creates a mapping using GUIDs only (project GUID and Intuit customer GUID)."""
     try:
-        # If request is not JSON, return 400 error
         if not request.is_json:
-            return jsonify(
-                ApiResponse(
-                    data=None,
-                    message='Content type must be application/json',
-                    status_code=400,
-                    success=False,
-                    timestamp=datetime.now(tz.tzlocal())
-                ).to_dict()
-            )
+            return jsonify(ApiResponse(data=None, message='Content type must be application/json', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
 
-        # Get the JSON data from the request
         data = request.json
+        project_guid = str(data.get('projectGuid', '')).strip()
+        intuit_customer_guid = str(data.get('intuitCustomerGuid', '')).strip()
+        if not project_guid or not intuit_customer_guid:
+            return jsonify(ApiResponse(data=None, message='Missing GUIDs for mapping', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
 
-        # project guid
-        raw_guid = data.get('projectGuid', '').strip()
-        clean_guid = bleach.clean(raw_guid, strip=True) # Remove any HTML tags
-        project_guid = html.escape(clean_guid) # Escape any special HTML characters
-
-        # Call the delete_project_by_guid function and pass in the project guid
-        project_bus_response = bus_project.delete_project_by_guid(project_guid)
-
-        # Return the response from the delete_project_by_guid function
-        return jsonify(
-            ApiResponse(
-                data=project_bus_response.data,
-                message=project_bus_response.message,
-                status_code=project_bus_response.status_code,
-                success=project_bus_response.success,
-                timestamp=datetime.now(tz.tzlocal())
-            ).to_dict()
-        )
-
-    # Handle any exceptions
+        resp = bus_project.map_project_to_intuit_customer(project_guid=project_guid, intuit_customer_guid=intuit_customer_guid)
+        return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=datetime.now(tz.tzlocal())).to_dict())
     except (ValueError, TypeError, KeyError) as e:
-        return jsonify(
-            ApiResponse(
-                data=None,
-                message=str(e),
-                status_code=500,
-                success=False,
-                timestamp=datetime.now(tz.tzlocal())
-            ).to_dict()
-        )
+        return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())

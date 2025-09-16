@@ -1,22 +1,15 @@
 """
 Module for project web.
 """
+"""
+Web routes for Project module aligned with Certificate module patterns.
+"""
+
 # python standard library imports
-from datetime import datetime
-from dateutil import tz
+
 
 # third party imports
-from flask import (
-    Blueprint,
-    redirect,
-    render_template,
-    request,
-    session,
-    url_for
-)
-from flask_wtf import FlaskForm
-from wtforms import StringField, SelectField, SubmitField
-from wtforms.validators import DataRequired, EqualTo, Length
+from flask import Blueprint, render_template, flash
 
 # local imports
 from modules.customer import bus_customer
@@ -26,14 +19,6 @@ from utils.auth_help import requires_auth
 web_project_bp = Blueprint('web_project', __name__, template_folder='templates')
 
 
-class ProjectForm(FlaskForm):
-    name = StringField('Name', validators=[DataRequired(), Length(min=3)])
-    abbreviation = StringField('Abbreviation', validators=[DataRequired(), Length(min=3)])
-    status = SelectField('Status')
-    customer_guid = SelectField('Customer')
-    submit = SubmitField('Submit')
-
-
 @web_project_bp.route('/projects', methods=['GET'])
 #@requires_auth()
 def list_projects_route():
@@ -41,133 +26,93 @@ def list_projects_route():
     Returns the route for the projects page.
     """
     _projects = []
-    get_projects_bus_response = bus_project.get_projects()
-    if get_projects_bus_response.success:
-        _projects = get_projects_bus_response.data
-
-    #print(_projects)
-    return render_template('project_list.html', projects=_projects)
+    resp = bus_project.get_projects()
+    if resp.success:
+        _projects = resp.data
+    else:
+        flash(resp.message, 'error')
+    return render_template('project/project_list.html', projects=_projects)
 
 
 @web_project_bp.route('/project/create', methods=['GET'])
 #@requires_auth()
 def create_project_route():
-    """
-    Returns the project create route for the application.
-    """
-    form = ProjectForm()
-    submission_datetime = datetime.now(tz.tzlocal()).strftime('%Y-%m-%d %H:%M:%S%z')
-    submission_datetime = submission_datetime[:-2] + ':' + submission_datetime[-2:]
-    
-    if form.validate_on_submit():
-        name = form.name.data
-        abbreviation = form.abbreviation.data
-        status = form.status.data
-        customer_guid = form.customer_guid.data
-
-        bus_post_project_response = bus_project.post_project(
-            created_datetime=submission_datetime,
-            modified_datetime=submission_datetime,
-            name=name,
-            abbreviation=abbreviation,
-            status=status,
-            customer_guid=customer_guid
-        )
-
-        if bus_post_project_response.success:
-            return redirect(url_for('web_project.list_projects_route'))
-
-        return bus_post_project_response.message, bus_post_project_response.status_code
-
-    return render_template('project_create.html', form=form)
+    """Renders project create with customers list."""
+    customers = []
+    try:
+        customer_resp = bus_customer.get_customers()
+        if customer_resp.success:
+            customers = customer_resp.data
+    except Exception as e:
+        flash(str(e), 'error')
+    return render_template('project/project_create.html', customers=customers)
 
 
 @web_project_bp.route('/project/<project_guid>', methods=['GET'])
 #@requires_auth()
 def view_project_route(project_guid):
-    """
-    Returns the project by guid route.
-    """
-
+    """Renders project view page."""
     _project = {}
-    get_project_bus_response = bus_project.get_project_by_guid(project_guid)
-    if get_project_bus_response.success:
-        _project = get_project_bus_response.data
+    resp = bus_project.get_project_by_guid(project_guid)
+    if resp.success:
+        _project = resp.data
     else:
-        _project = {}
+        flash(resp.message, 'error')
 
     _customer = {}
-    get_customer_bus_response = bus_customer.get_customer_by_id(_project.customer_id)
-    if get_customer_bus_response.success:
-        _customer = get_customer_bus_response.data
-    else:
-        _customer = {}
-
-    # Set status choices for display
+    if _project and getattr(_project, 'customer_id', None):
+        cust_resp = bus_customer.get_customer_by_id(_project.customer_id)
+        if cust_resp.success:
+            _customer = cust_resp.data
+    _intuit_customer = None
+    try:
+        ic_resp = bus_project.get_intuit_customer_by_project_guid(project_guid)
+        if ic_resp.success:
+            _intuit_customer = ic_resp.data
+    except Exception as e:
+        # Non-fatal for view; leave intuit customer as None
+        pass
     status_choices = {
         'P': 'Planning',
         'D': 'Design',
         'B': 'Build',
         'C': 'Complete'
     }
-
-    return render_template('project_view.html', project=_project, customer=_customer, status_choices=status_choices)
+    return render_template('project/project_view.html', project=_project, customer=_customer, status_choices=status_choices, intuit_customer=_intuit_customer)
 
 
 @web_project_bp.route('/project/<project_guid>/edit', methods=['GET', 'POST'])
 #@requires_auth()
 def edit_project_route(project_guid):
-    """
-    Returns the project edit route.
-    """
-    form = ProjectForm()
-    
-    # Get project data
-    get_project_bus_response = bus_project.get_project_by_guid(project_guid)
-    if not get_project_bus_response.success:
-        return render_template('project_edit.html', form=None)
-    
-    project = get_project_bus_response.data
-    
-    # Get customer data for the select field
-    get_customers_bus_response = bus_customer.get_customers()
-    customers = get_customers_bus_response.data if get_customers_bus_response.success else []
-    
-    # Set customer choices
-    form.customer_guid.choices = [(customer.guid, customer.name) for customer in customers]
+    """Renders project edit page with customers list."""
+    _project = {}
+    resp = bus_project.get_project_by_guid(project_guid)
+    if resp.success:
+        _project = resp.data
+    else:
+        flash(resp.message, 'error')
 
-    # Set status choices
-    form.status.choices = [
-        ('P', 'Planning'),
-        ('D', 'Design'),
-        ('B', 'Build'),
-        ('C', 'Complete')
-    ]
-    
-    if request.method == 'GET':
-        # Populate form with existing data
-        form.name.data = project.name
-        form.abbreviation.data = project.abbreviation
-        form.status.data = project.status
-        form.customer_guid.data = next((customer.guid for customer in customers if customer.id == project.customer_id), None)
-    
-    if form.validate_on_submit():
-        submission_datetime = datetime.now(tz.tzlocal()).strftime('%Y-%m-%d %H:%M:%S%z')
-        submission_datetime = submission_datetime[:-2] + ':' + submission_datetime[-2:]
-        
-        # Update project
-        bus_put_project_response = bus_project.put_project(
-            project_guid=project_guid,
-            modified_datetime=submission_datetime,
-            name=form.name.data,
-            abbreviation=form.abbreviation.data,
-            status=form.status.data,
-            customer_guid=form.customer_guid.data
-        )
-        
-        if bus_put_project_response.success:
-            return redirect(url_for('web_project.view_project_route', project_guid=project_guid))
-        
-        return bus_put_project_response.message, bus_put_project_response.status_code
-    
-    return render_template('project_edit.html', form=form, project=project)
+    customers = []
+    cust_resp = bus_customer.get_customers()
+    if cust_resp.success:
+        customers = cust_resp.data
+
+    # Retrieve mapped Intuit customer for project
+    _mapped_intuit_customer = None
+    try:
+        map_resp = bus_project.get_intuit_customer_by_project_guid(project_guid)
+        if getattr(map_resp, 'success', False):
+            _mapped_intuit_customer = map_resp.data
+    except Exception:
+        pass
+
+    # Retrieve Intuit projects for selection
+    intuit_projects = []
+    try:
+        ip_resp = bus_project.get_intuit_projects()
+        if getattr(ip_resp, 'success', False):
+            intuit_projects = ip_resp.data
+    except Exception as e:
+        flash(str(e), 'error')
+
+    return render_template('project/project_edit.html', project=_project, customers=customers, mapped_intuit_customer=_mapped_intuit_customer, intuit_projects=intuit_projects)

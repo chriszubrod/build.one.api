@@ -29,31 +29,27 @@ WHERE Id=3;
 DROP PROCEDURE IF EXISTS CreateProject;
 
 CREATE PROCEDURE CreateProject
-    @CreatedDatetime DATETIMEOFFSET,
-    @ModifiedDatetime DATETIMEOFFSET,
     @Name VARCHAR(255),
     @Abbreviation VARCHAR(255),
     @Status CHAR(1),
-    @CustomerGUID UNIQUEIDENTIFIER
+    @CustomerID INT
 AS
 BEGIN
     BEGIN TRANSACTION;
 
+    DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
     -- Insert a new record into the Transaction table
     INSERT INTO [Transaction] (CreatedDatetime, ModifiedDatetime)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime));
+    VALUES (@Now, @Now);
 
     -- Get the Id of the last inserted record
     DECLARE @TransactionId INT;
     SET @TransactionId = SCOPE_IDENTITY();
 
-    -- Get the Id of Customer record
-    DECLARE @CustomerId INT;
-    SET @CustomerId = (SELECT Id FROM Customer WHERE [GUID] = @CustomerGUID);
-
     -- Insert a new record into the Project table using the TransactionId
     INSERT INTO Project (CreatedDatetime, ModifiedDatetime, [Name], Abbreviation, [Status], CustomerId, TransactionId)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime), @Name, @Abbreviation, @Status, @CustomerId, @TransactionId);
+    VALUES (@Now, @Now, @Name, @Abbreviation, @Status, @CustomerId, @TransactionId);
 
     COMMIT;
 END

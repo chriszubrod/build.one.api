@@ -12,6 +12,7 @@ import json
 
 # local imports
 from shared.response import BusinessResponse
+from integrations.ms.auth import api_ms_auth
 from integrations.ms.drives import api_ms_drives, pers_ms_drives
 
 
@@ -34,10 +35,34 @@ def get_ms_drives_from_graph(site_id: str) -> BusinessResponse:
     """
     Retrieves all drives from the Microsoft Graph API.
     """
+
+    refresh_ms_auth_response = api_ms_auth.refresh_token()
+    print(refresh_ms_auth_response)
+    if not refresh_ms_auth_response.get("status_code") == 200:
+        return BusinessResponse(
+            data=None,
+            message="Failed to refresh MS Auth token",
+            status_code=refresh_ms_auth_response.get("status_code"),
+            success=False,
+            timestamp=datetime.now(tz.tzlocal())
+        )
+
     get_graph_drives_response = api_ms_drives.get_site_drives(site_id)
+
+    # Handle case where API returns a tuple (response, status_code) on error
+    if isinstance(get_graph_drives_response, tuple):
+        return BusinessResponse(
+            data=None,
+            message="Failed to get drives from Microsoft Graph API",
+            status_code=get_graph_drives_response[1],
+            success=False,
+            timestamp=datetime.now(tz.tzlocal())
+        )
+
     drives_data = get_graph_drives_response.get_json()  # Get JSON data from Flask Response
     drives_response_json = drives_data.get('response_json')
     drives_values = drives_response_json.get('value')
+
     drives = []
     for drive in drives_values:
         ms_drive = pers_ms_drives.MsDrive()

@@ -1,6 +1,3 @@
-CREATE SCHEMA ms;
-GO
-
 CREATE TABLE ms.SharePointFolder (
     [Id] INT IDENTITY(1,1) PRIMARY KEY,
     [GUID] UNIQUEIDENTIFIER DEFAULT NEWID() NOT NULL,
@@ -18,8 +15,6 @@ CREATE TABLE ms.SharePointFolder (
 	[Size] BIGINT NULL,
     [WebUrl] NVARCHAR(MAX) NULL
 );
-
-DROP TABLE ms.SharePointFolder;
 
 INSERT INTO ms.SharePointFolder ([CreatedDatetime], [ModifiedDatetime], [CTag], [MsCreatedDatetime], [ETag], [FolderChildCount], [MsId], [LastModifiedDatetime], [Name], [MsParentId], [SharedScope], [Size], [WebUrl])
 VALUES (
@@ -39,6 +34,10 @@ VALUES (
 );
 
 SELECT * FROM ms.SharePointFolder;
+
+
+
+
 
 
 
@@ -137,3 +136,33 @@ BEGIN
 END
 
 
+-- Read by MsId (Graph item id)
+DROP PROCEDURE IF EXISTS ReadMsSharePointFolderByMsId;
+
+CREATE PROCEDURE ReadMsSharePointFolderByMsId
+    @MsId NVARCHAR(MAX)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS [CreatedDatetime],
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS [ModifiedDatetime],
+        [CTag],
+        CAST([MsCreatedDatetime] AS NVARCHAR(MAX)) AS [MsCreatedDatetime],
+        [ETag],
+        [FolderChildCount],
+        [MsId],
+        CAST([LastModifiedDatetime] AS NVARCHAR(MAX)) AS [LastModifiedDatetime],
+        [Name],
+        [MsParentId],
+        [SharedScope],
+        [Size],
+        [WebUrl]
+    FROM ms.SharePointFolder
+    WHERE [MsId] = @MsId;
+
+    COMMIT;
+END

@@ -13,9 +13,9 @@ DROP TABLE map.ProjectSharePointFolder;
 
 
 
-DROP PROCEDURE IF EXISTS CreateProjectSharePointFolder;
+DROP PROCEDURE IF EXISTS CreateMapProjectSharePointFolder;
 
-CREATE PROCEDURE CreateProjectSharePointFolder
+CREATE PROCEDURE CreateMapProjectSharePointFolder
     @CreatedDatetime DATETIMEOFFSET,
     @ModifiedDatetime DATETIMEOFFSET,
     @ProjectId INT,
@@ -25,25 +25,27 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
+    DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
     -- Insert a new record into the ProjectSharePointFolder table
     INSERT INTO map.ProjectSharePointFolder (CreatedDatetime, ModifiedDatetime, ProjectId, ModuleId, MsSharePointFolderId)
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime), @ProjectId, @ModuleId, @MsSharePointFolderId);
+    VALUES (@Now, @Now, @ProjectId, @ModuleId, @MsSharePointFolderId);
 
-    COMMIT TRANSACTION;
-END;
+    COMMIT;
+END
 
-EXEC CreateProjectSharePointFolder
-    '2025-06-20T00:00:00.000',
-    '2025-06-20T00:00:00.000',
+EXEC CreateMapProjectSharePointFolder
+    SYSDATETIMEOFFSET(),
+    SYSDATETIMEOFFSET(),
     3,
     4,
     2;
 
 
 
-DROP PROCEDURE IF EXISTS ReadProjectSharePointFolder;
+DROP PROCEDURE IF EXISTS ReadMapProjectSharePointFolder;
 
-CREATE PROCEDURE ReadProjectSharePointFolder
+CREATE PROCEDURE ReadMapProjectSharePointFolder
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -58,16 +60,16 @@ BEGIN
         [MsSharePointFolderId]
     FROM map.ProjectSharePointFolder;
 
-    COMMIT TRANSACTION;
-END;
+    COMMIT;
+END
 
-EXEC ReadProjectSharePointFolder;
+EXEC ReadMapProjectSharePointFolder;
 
 
 
-DROP PROCEDURE IF EXISTS ReadProjectSharePointFolderByGUID;
+DROP PROCEDURE IF EXISTS ReadMapProjectSharePointFolderByGUID;
 
-CREATE PROCEDURE ReadProjectSharePointFolderByGUID
+CREATE PROCEDURE ReadMapProjectSharePointFolderByGUID
     @GUID UNIQUEIDENTIFIER
 AS
 BEGIN
@@ -84,16 +86,17 @@ BEGIN
     FROM map.ProjectSharePointFolder
     WHERE [GUID] = @GUID;
 
-    COMMIT TRANSACTION;
-END;
+    COMMIT;
+END
+
+EXEC ReadMapProjectSharePointFolderByGUID
+    'put-some-guid-here';
 
 
 
+DROP PROCEDURE IF EXISTS ReadMapProjectSharePointFolderByProjectIdByModuleId;
 
-
-DROP PROCEDURE IF EXISTS ReadProjectSharePointFolderByProjectIdByModuleId;
-
-CREATE PROCEDURE ReadProjectSharePointFolderByProjectIdByModuleId
+CREATE PROCEDURE ReadMapProjectSharePointFolderByProjectIdByModuleId
     @ProjectId INT,
     @ModuleId INT
 AS
@@ -111,21 +114,20 @@ BEGIN
     FROM map.ProjectSharePointFolder
     WHERE ProjectId = @ProjectId AND ModuleId = @ModuleId;
 
-    COMMIT TRANSACTION;
-END;
+    COMMIT;
+END
 
-EXEC ReadProjectSharePointFolderByProjectIdByModuleId
+EXEC ReadMapProjectSharePointFolderByProjectIdByModuleId
     3,
     4;
 
 
 
 
-DROP PROCEDURE IF EXISTS UpdateProjectSharePointFolderById;
+DROP PROCEDURE IF EXISTS UpdateMapProjectSharePointFolderById;
 
-CREATE PROCEDURE UpdateProjectSharePointFolderById
+CREATE PROCEDURE UpdateMapProjectSharePointFolderById
     @Id INT,
-    @ModifiedDatetime DATETIMEOFFSET,
     @ProjectId INT,
     @ModuleId INT,
     @MsSharePointFolderId INT
@@ -133,25 +135,31 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
+    DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
     -- Update the record in the ProjectSharePointFolder table
     UPDATE map.ProjectSharePointFolder
     SET
-        ModifiedDatetime = CONVERT(DATETIMEOFFSET, @ModifiedDatetime),
+        ModifiedDatetime = @Now,
         ProjectId = @ProjectId,
         ModuleId = @ModuleId,
         MsSharePointFolderId = @MsSharePointFolderId
     WHERE Id = @Id;
 
-    COMMIT TRANSACTION;
-END;
+    COMMIT;
+END
+
+EXEC UpdateMapProjectSharePointFolderById
+    1,
+    3,
+    4,
+    2;
 
 
 
+DROP PROCEDURE IF EXISTS DeleteMapProjectSharePointFolderById;
 
-
-DROP PROCEDURE IF EXISTS DeleteProjectSharePointFolderById;
-
-CREATE PROCEDURE DeleteProjectSharePointFolderById
+CREATE PROCEDURE DeleteMapProjectSharePointFolderById
     @Id INT
 AS
 BEGIN
@@ -161,5 +169,8 @@ BEGIN
     DELETE FROM map.ProjectSharePointFolder
     WHERE [Id] = @Id;
 
-    COMMIT TRANSACTION;
-END;
+    COMMIT;
+END
+
+EXEC DeleteMapProjectSharePointFolderById
+    1;

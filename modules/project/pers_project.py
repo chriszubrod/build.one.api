@@ -45,7 +45,7 @@ class Project:
             transaction_id=getattr(row, 'TransactionId', None),
             map_project_intuit_customer_id=getattr(row, 'ProjectIntuitCustomerId', None),
             intuit_customer_id=getattr(row, 'IntuitCustomerId', None)
-        )
+            )
 
 
 def create_project(project: Project) -> PersistenceResponse:

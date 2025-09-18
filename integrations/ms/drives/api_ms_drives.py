@@ -141,7 +141,14 @@ def get_sites_drive_root_children(site_id):
     Responds to HTTP GET requests to the "/ms/app/sites/<site_id>/drive/root/children" route with a JSON response containing
     the user's sites information.
     """
-    secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
+    # Development mode - use a default user ID or get from environment
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
+    else:
+        user_id = session['user']['id']
+
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
     if secrets.success:
         secrets = secrets.data
     else:
@@ -179,7 +186,13 @@ def get_drive_by_id_root_children(drive_id):
     >>> get_drive_by_id_root_children()
     <Response 200 OK>
     """
-    secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
+    # Development mode - use a default user ID or get from environment
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
+    else:
+        user_id = session['user']['id']
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
     if secrets.success:
         secrets = secrets.data
     else:
@@ -214,7 +227,14 @@ def get_site_drives(site_id):
     >>> get_sites_drives()
     <Response 200 OK>
     """
-    secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
+    # Development mode - use a default user ID or get from environment
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
+    else:
+        user_id = session['user']['id']
+    
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
     if secrets.success:
         secrets = secrets.data
     else:
@@ -242,8 +262,14 @@ def get_site_drives(site_id):
 def get_drive_items_children(drive_id, item_id):
     """Gets children items for a specific drive item."""
     try:
+        # Development mode - use a default user ID or get from environment
+        if 'user' not in session:
+            # Use a default user ID for development
+            user_id = 2  # or get from environment variable
+        else:
+            user_id = session['user']['id']
         # Get access token from secrets
-        secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
+        secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
         if secrets.success:
             secrets = secrets.data
         else:

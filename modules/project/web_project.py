@@ -52,6 +52,7 @@ def create_project_route():
 #@requires_auth()
 def view_project_route(project_guid):
     """Renders project view page."""
+
     _project = {}
     resp = bus_project.get_project_by_guid(project_guid)
     if resp.success:
@@ -64,6 +65,7 @@ def view_project_route(project_guid):
         cust_resp = bus_customer.get_customer_by_id(_project.customer_id)
         if cust_resp.success:
             _customer = cust_resp.data
+
     _intuit_customer = None
     try:
         ic_resp = bus_project.get_intuit_customer_by_project_guid(project_guid)
@@ -72,13 +74,25 @@ def view_project_route(project_guid):
     except Exception as e:
         # Non-fatal for view; leave intuit customer as None
         pass
+
+    # Retrieve mapped MS SharePoint folders for this project (all modules)
+    _sharepoint_mappings = []
+    try:
+        if _project and getattr(_project, 'id', None):
+            sp_resp = bus_project.get_ms_sharepoint_folders_by_project_id(_project.id)
+            if getattr(sp_resp, 'success', False):
+                _sharepoint_mappings = sp_resp.data or []
+    except Exception:
+        pass
+    print(f"sharepoint_mappings: {_sharepoint_mappings}")
+
     status_choices = {
         'P': 'Planning',
         'D': 'Design',
         'B': 'Build',
         'C': 'Complete'
     }
-    return render_template('project/project_view.html', project=_project, customer=_customer, status_choices=status_choices, intuit_customer=_intuit_customer)
+    return render_template('project/project_view.html', project=_project, customer=_customer, status_choices=status_choices, intuit_customer=_intuit_customer, sharepoint_mappings=_sharepoint_mappings)
 
 
 @web_project_bp.route('/project/<project_guid>/edit', methods=['GET', 'POST'])
@@ -115,4 +129,40 @@ def edit_project_route(project_guid):
     except Exception as e:
         flash(str(e), 'error')
 
-    return render_template('project/project_edit.html', project=_project, customers=customers, mapped_intuit_customer=_mapped_intuit_customer, intuit_projects=intuit_projects)
+    # Retrieve SharePoint mappings (all modules) and all folders + modules for editing
+    sharepoint_mappings = []
+    sharepoint_folders = []
+    modules = []
+    try:
+        if _project and getattr(_project, 'id', None):
+            sp_map_resp = bus_project.get_ms_sharepoint_folders_by_project_id(_project.id)
+            if getattr(sp_map_resp, 'success', False):
+                sharepoint_mappings = sp_map_resp.data or []
+    except Exception:
+        pass
+    try:
+        from integrations.ms import pers_ms_sharepoint_folder
+        sp_f_resp = pers_ms_sharepoint_folder.read_sharepoint_folders()
+        # Some persistence methods return SuccessResponse without setting 'success'; accept data if present
+        if (hasattr(sp_f_resp, 'data') and sp_f_resp.data) or getattr(sp_f_resp, 'success', False):
+            sharepoint_folders = sp_f_resp.data or []
+    except Exception:
+        pass
+    try:
+        from modules.module import pers_module
+        mod_resp = pers_module.read_modules()
+        if getattr(mod_resp, 'success', False):
+            modules = mod_resp.data or []
+    except Exception:
+        pass
+
+    return render_template(
+        'project/project_edit.html',
+        project=_project,
+        customers=customers,
+        mapped_intuit_customer=_mapped_intuit_customer,
+        intuit_projects=intuit_projects,
+        sharepoint_mappings=sharepoint_mappings,
+        sharepoint_folders=sharepoint_folders,
+        modules=modules
+    )

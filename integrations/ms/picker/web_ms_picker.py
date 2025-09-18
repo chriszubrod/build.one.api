@@ -51,6 +51,7 @@ def drive_picker_route():
         _ms_drives = get_ms_drives_bus_response.data
     else:
         print(f"Failed to get Microsoft Graph API drives: {get_ms_drives_bus_response.message}")
+        _ms_drives = []  # Initialize with empty list on error
 
     return render_template('ms_drive_picker.html', ms_drives=_ms_drives)
 
@@ -67,6 +68,7 @@ def drive_children_picker_route():
         _ms_drives_children = get_ms_drives_children_bus_response.data
     else:
         print(f"Failed to get Microsoft Graph API drives children: {get_ms_drives_children_bus_response.message}")
+        _ms_drives_children = []  # Initialize with empty list on error
 
     return render_template('ms_drive_item_picker.html', ms_drives_items=_ms_drives_children, drive_id=drive_id)
 
@@ -84,5 +86,7 @@ def drive_item_children_picker_route():
         _ms_drives_items_children = get_ms_drives_items_children_bus_response.data
     else:
         print(f"Failed to get Microsoft Graph API drives items children: {get_ms_drives_items_children_bus_response.message}")
+        _ms_drives_items_children = []  # Initialize with empty list on error
+    
     print(f"ms_drives_items_children: {_ms_drives_items_children}")
     return render_template('ms_drive_item_children_picker.html', ms_drives_items=_ms_drives_items_children, drive_id=drive_id, drive_item_id=drive_item_id)

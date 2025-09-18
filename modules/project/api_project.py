@@ -203,3 +203,67 @@ def api_post_map_project_intuit_customer_by_guid_route():
         return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=datetime.now(tz.tzlocal())).to_dict())
     except (ValueError, TypeError, KeyError) as e:
         return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+
+@api_project_bp.route('/post/map/project-sharepoint-folder', methods=['POST'])
+def api_post_map_project_sharepoint_folder_route():
+    """Creates or updates a mapping for Project to MS SharePoint Folder by module slug."""
+    try:
+        if not request.is_json:
+            return jsonify(ApiResponse(data=None, message='Content type must be application/json', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+        data = request.json
+        project_guid = str(data.get('projectGuid', '')).strip()
+        module_slug = str(data.get('moduleSlug', '')).strip()
+        folder_id = int(data.get('folderId', 0))
+        if not project_guid or not module_slug or not folder_id:
+            return jsonify(ApiResponse(data=None, message='Missing fields for mapping', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+        resp = bus_project.map_project_to_ms_sharepoint_folder(project_guid=project_guid, module_slug=module_slug, ms_sharepoint_folder_id=folder_id)
+        return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=datetime.now(tz.tzlocal())).to_dict())
+    except (ValueError, TypeError, KeyError) as e:
+        return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+
+@api_project_bp.route('/post/map/project-sharepoint-folder-select', methods=['POST'])
+def api_post_map_project_sharepoint_folder_select_route():
+    """Maps a Project to a SharePoint folder by resolving/creating the folder via provided details (from picker)."""
+    try:
+        if not request.is_json:
+            return jsonify(ApiResponse(data=None, message='Content type must be application/json', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+        data = request.json
+        project_guid = str(data.get('projectGuid', '')).strip()
+        module_slug = str(data.get('moduleSlug', '')).strip()
+        folder = data.get('folder', {})
+        name = folder.get('name')
+        web_url = folder.get('web_url')
+        ms_id = folder.get('ms_id') or folder.get('item_id')
+        c_tag = folder.get('c_tag')
+        e_tag = folder.get('e_tag')
+        ms_created_datetime = folder.get('created_datetime')
+        last_modified_datetime = folder.get('last_modified_datetime')
+        size = folder.get('size')
+        ms_parent_id = folder.get('ms_parent_id')
+        shared_scope = folder.get('shared_scope')
+
+        if not project_guid or not module_slug or not web_url:
+            return jsonify(ApiResponse(data=None, message='Missing required fields', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+        resp = bus_project.map_project_to_ms_sharepoint_folder_by_details(
+            project_guid=project_guid,
+            module_slug=module_slug,
+            name=name,
+            web_url=web_url,
+            ms_id=ms_id,
+            c_tag=c_tag,
+            e_tag=e_tag,
+            ms_created_datetime=ms_created_datetime,
+            last_modified_datetime=last_modified_datetime,
+            size=size,
+            ms_parent_id=ms_parent_id,
+            shared_scope=shared_scope
+        )
+        return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=datetime.now(tz.tzlocal())).to_dict())
+    except (ValueError, TypeError, KeyError) as e:
+        return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())

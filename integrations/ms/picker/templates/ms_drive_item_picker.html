@@ -19,7 +19,13 @@
                     type: 'drive_item',
                     drive_id: '{{ drive_id }}',
                     item_id: '{{ drive_item.drive_item_id }}',
-                    name: '{{ drive_item.name }}'
+                    name: '{{ drive_item.name }}',
+                    web_url: '{{ drive_item.web_url }}',
+                    c_tag: '{{ drive_item.c_tag }}',
+                    e_tag: '{{ drive_item.e_tag }}',
+                    created_datetime: '{{ drive_item.created_datetime }}',
+                    last_modified_datetime: '{{ drive_item.last_modified_datetime }}',
+                    size: '{{ drive_item.size }}'
                 }); return false;"
                 class="mt-2 text-sm text-green-600 hover:text-green-800">
                     Select Item

@@ -180,6 +180,46 @@ def read_sharepoint_folder_by_url(url: str):
             raise DatabaseError(f"Failed to read SharePoint folder: {str(e)}") from e
 
 
+def read_sharepoint_folder_by_ms_id(ms_id: str):
+    """
+    Retrieves a SharePoint folder by its Microsoft Graph item id (MsId) from the database.
+
+    Returns:
+        SharePointFolder: A SharePointFolder object
+    """
+    with get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadMsSharePointFolderByMsId(?)}"
+                row = cursor.execute(sql, ms_id).fetchone()
+
+                if row:
+                    return PersistenceResponse(
+                        data=SharePointFolder.from_db_row(row),
+                        message="SharePoint folder found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+
+                return PersistenceResponse(
+                    data=None,
+                    message="SharePoint folder not found",
+                    status_code=404,
+                    success=False,
+                    timestamp=datetime.now()
+                )
+
+        except pyodbc.Error as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read SharePoint folder by MsId: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
 def update_sharepoint_folder_by_folder_id(sharepoint_folder: SharePointFolder):
     """
     Updates a SharePoint folder by folder id in the database.

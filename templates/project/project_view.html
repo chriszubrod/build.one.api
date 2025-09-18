@@ -3,14 +3,15 @@
 {% block title %}Project{% endblock %}
 
 {% block content %}
-<div class="flex flex-col p-4">
+<div class="flex flex-col h-full p-4 overflow-y-auto scrollbar-hide" style="scrollbar-width: none; -ms-overflow-style: none;">
   <div class="flex flex-col space-y-2">
     <div class="flex justify-between items-center">
       <h1 class="px-3 py-2">View Project</h1>
       <a href="{{ url_for('web_project.list_projects_route') }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">Back to Projects</a>
     </div>
 
-    <div class="flex flex-col h-full bg-white border border-gray-200 overflow-y-auto scrollbar-hide" style="scrollbar-width: none; -ms-overflow-style: none;">
+    <!-- Project Information -->
+    <div class="flex flex-col bg-white border border-gray-200">
       <dl class="w-full content-center gap-0 flex-shrink-0">
         <div class="flex items-center border-b border-gray-100 py-2">
           <dt class="text-sm font-medium text-gray-700 px-3">GUID</dt>
@@ -62,6 +63,31 @@
             </div>
           {% else %}
             <div class="px-6 py-4 text-center text-gray-500">No Intuit Sync Found.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Linked MS SharePoint Folders Section -->
+    <div class="space-y-2 mt-4">
+      <h2 class="px-3 py-2">Linked MS SharePoint Folders</h2>
+      <div class="bg-white border border-gray-200 overflow-hidden flex flex-col">
+        <div class="grid grid-cols-3 bg-gray-100 border-b border-gray-200">
+          <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Module</div>
+          <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">MS Id</div>
+          <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</div>
+        </div>
+        <div class="overflow-y-auto flex flex-col scrollbar-hide" style="scrollbar-width: none; -ms-overflow-style: none;">
+          {% if sharepoint_mappings and sharepoint_mappings|length > 0 %}
+            {% for item in sharepoint_mappings %}
+              <div class="grid grid-cols-3 border-b border-gray-200 hover:bg-gray-50 transition-colors duration-150">
+                <div class="px-6 py-4 whitespace-nowrap">{{ (item.module.name if item.module else 'Unknown') }}</div>
+                <div class="px-6 py-4 whitespace-nowrap">{{ item.folder.folder_ms_id[-6:] if item.folder else '' }}</div>
+                <div class="px-6 py-4 whitespace-nowrap">{{ item.folder.folder_name if item.folder else '' }}</div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="px-6 py-4 text-center text-gray-500">No SharePoint Folder Mappings Found.</div>
           {% endif %}
         </div>
       </div>

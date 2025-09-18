@@ -196,10 +196,13 @@ def refresh_token():
     >>> refresh_token()
     <Response 200 OK>
     """
-    if session:
-        secrets = bus_ms_auth.get_ms_auth_by_user_id(session['user']['id'])
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
     else:
-        secrets = bus_ms_auth.get_ms_auth_by_user_id(2)
+        user_id = session['user']['id']
+
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
 
     if secrets.success:
         refresh_secrets = secrets.data

@@ -130,8 +130,8 @@ def read_project_sharepoint_folder_map_by_project_id(project_id: int) -> Persist
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadMapProjectSharePointFolder}"
-                rows = cursor.execute(sql).fetchall()
+                sql = "{CALL ReadMapProjectSharePointFolderByProjectId(?)}"
+                rows = cursor.execute(sql, project_id).fetchall()
                 if rows:
                     return PersistenceResponse(
                         data=[MapProjectSharepointFolder.from_db_row(row) for row in rows],

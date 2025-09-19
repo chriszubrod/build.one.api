@@ -84,7 +84,7 @@ def view_project_route(project_guid):
                 _sharepoint_mappings = sp_resp.data or []
     except Exception:
         pass
-    print(f"sharepoint_mappings: {_sharepoint_mappings}")
+    #print(f"sharepoint_mappings: {_sharepoint_mappings}")
 
     status_choices = {
         'P': 'Planning',

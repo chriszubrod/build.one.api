@@ -61,11 +61,9 @@ def create_sharepoint_folder(sharepoint_folder: SharePointFolder):
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL CreateMsSharePointFolder (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
+                sql = "{CALL CreateMsSharePointFolder (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,
-                    sharepoint_folder.folder_created_datetime,
-                    sharepoint_folder.folder_modified_datetime,
                     sharepoint_folder.folder_c_tag,
                     sharepoint_folder.folder_ms_created_datetime,
                     sharepoint_folder.folder_e_tag,
@@ -80,12 +78,30 @@ def create_sharepoint_folder(sharepoint_folder: SharePointFolder):
                 ).rowcount
 
                 if rowcount > 0:
-                    return SuccessResponse(message="SharePoint folder created", status_code=200)
+                    return PersistenceResponse(
+                        data=sharepoint_folder,
+                        message="SharePoint folder created",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
 
-                return BusinessResponse(message="SharePoint folder not created", status_code=400)
+                return PersistenceResponse(
+                    data=None,
+                    message="SharePoint folder not created",
+                    status_code=400,
+                    success=False,
+                    timestamp=datetime.now()
+                )
 
         except pyodbc.Error as e:
-            raise DatabaseError(f"Failed to create SharePoint folder: {str(e)}") from e
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to create SharePoint folder: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
 
 
 def read_sharepoint_folders():
@@ -102,16 +118,30 @@ def read_sharepoint_folders():
                 rows = cursor.execute(sql).fetchall()
 
                 if rows:
-                    return SuccessResponse(
-                        message="SharePoint folders found",
+                    return PersistenceResponse(
                         data=[SharePointFolder.from_db_row(row) for row in rows],
-                        status_code=200
+                        message="SharePoint folders found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
                     )
 
-                return BusinessResponse(message="No SharePoint folders found", status_code=404)
+                return PersistenceResponse(
+                    data=None,
+                    message="No SharePoint folders found",
+                    status_code=404,
+                    success=False,
+                    timestamp=datetime.now()
+                )
 
         except pyodbc.Error as e:
-            raise DatabaseError(f"Failed to read SharePoint folders: {str(e)}") from e
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read SharePoint folders: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
 
 
 def read_sharepoint_folder_by_folder_id(folder_id: int):
@@ -168,16 +198,30 @@ def read_sharepoint_folder_by_url(url: str):
                 row = cursor.execute(sql, url).fetchone()
 
                 if row:
-                    return SuccessResponse(
-                        message="SharePoint folder found",
+                    return PersistenceResponse(
                         data=SharePointFolder.from_db_row(row),
-                        status_code=200
+                        message="SharePoint folder found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
                     )
 
-                return BusinessResponse(message="SharePoint folder not found", status_code=404)
+                return PersistenceResponse(
+                    data=None,
+                    message="SharePoint folder not found",
+                    status_code=404,
+                    success=False,
+                    timestamp=datetime.now()
+                )
 
         except pyodbc.Error as e:
-            raise DatabaseError(f"Failed to read SharePoint folder: {str(e)}") from e
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read SharePoint folder: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
 
 
 def read_sharepoint_folder_by_ms_id(ms_id: str):
@@ -245,9 +289,27 @@ def update_sharepoint_folder_by_folder_id(sharepoint_folder: SharePointFolder):
                 ).rowcount
 
                 if rowcount > 0:
-                    return SuccessResponse(message="SharePoint folder updated", status_code=200)
+                    return PersistenceResponse(
+                        data=sharepoint_folder,
+                        message="SharePoint folder updated",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
 
-                return BusinessResponse(message="SharePoint folder not updated", status_code=400)
+                return PersistenceResponse(
+                    data=None,
+                    message="SharePoint folder not updated",
+                    status_code=400,
+                    success=False,
+                    timestamp=datetime.now()
+                )
 
         except pyodbc.Error as e:
-            raise DatabaseError(f"Failed to update SharePoint folder: {str(e)}") from e
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to update SharePoint folder: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )

@@ -442,8 +442,8 @@ def get_ms_sharepoint_folders_by_project_id(project_id: int) -> BusinessResponse
             success=True,
             timestamp=getattr(map_resp, 'timestamp', datetime.now(tz.tzlocal()))
         )
-
     mappings = map_resp.data
+    print(f"Business Layer Mappings: {mappings}")
 
     # Load modules to enrich mapping with module name/slug
     modules_resp = pers_module.read_modules()
@@ -550,6 +550,13 @@ def map_project_to_ms_sharepoint_folder_by_details(
     shared_scope: Optional[str] = None
 ) -> BusinessResponse:
     """Ensure SharePoint folder exists by URL, then map to project/module by slug."""
+    print(f"DEBUG: map_project_to_ms_sharepoint_folder_by_details called with:")
+    print(f"  project_guid: {project_guid}")
+    print(f"  module_slug: {module_slug}")
+    print(f"  name: {name}")
+    print(f"  web_url: {web_url}")
+    print(f"  ms_id: {ms_id}")
+    
     if not project_guid or not module_slug or not web_url:
         return BusinessResponse(
             data=None,
@@ -562,19 +569,25 @@ def map_project_to_ms_sharepoint_folder_by_details(
     # Resolve existing folder by MsId first (stable), fallback to URL
     existing = None
     if ms_id:
+        print(f"DEBUG: Looking for existing folder by ms_id: {ms_id}")
         existing = pers_ms_sharepoint_folder.read_sharepoint_folder_by_ms_id(ms_id)
+        print(f"DEBUG: Found by ms_id: {existing.success}, data: {existing.data}")
         if not getattr(existing, 'success', False) or not existing.data:
             existing = None
+    
     if existing is None:
+        print(f"DEBUG: Looking for existing folder by web_url: {web_url}")
         existing = pers_ms_sharepoint_folder.read_sharepoint_folder_by_url(web_url)
+        print(f"DEBUG: Found by web_url: {existing.success}, data: {existing.data}")
+    
     folder_id = None
     if getattr(existing, 'success', False) and existing.data:
         folder_id = int(existing.data.folder_id)
+        print(f"DEBUG: Using existing folder_id: {folder_id}")
     else:
+        print(f"DEBUG: Creating new folder record")
         # Create new folder record with provided details
         folder = pers_ms_sharepoint_folder.SharePointFolder(
-            folder_created_datetime=datetime.now(tz.tzlocal()),
-            folder_modified_datetime=datetime.now(tz.tzlocal()),
             folder_c_tag=c_tag,
             folder_ms_created_datetime=ms_created_datetime,
             folder_e_tag=e_tag,
@@ -587,25 +600,32 @@ def map_project_to_ms_sharepoint_folder_by_details(
             folder_size=size,
             folder_web_url=web_url
         )
-        _ = pers_ms_sharepoint_folder.create_sharepoint_folder(folder)
-        reread = None
-        if ms_id:
-            reread = pers_ms_sharepoint_folder.read_sharepoint_folder_by_ms_id(ms_id)
-            if not getattr(reread, 'success', False) or not reread.data:
-                reread = pers_ms_sharepoint_folder.read_sharepoint_folder_by_url(web_url)
-        else:
-            reread = pers_ms_sharepoint_folder.read_sharepoint_folder_by_url(web_url)
-        if getattr(reread, 'success', False) and reread.data:
-            folder_id = int(reread.data.folder_id)
-        else:
+        print(f"DEBUG: Created folder object: {folder}")
+        
+        create_resp = pers_ms_sharepoint_folder.create_sharepoint_folder(folder)
+        print(f"DEBUG: Create folder response: {create_resp.success}, message: {create_resp.message}")
+        
+        if not getattr(create_resp, 'success', False) or not create_resp.data:
             return BusinessResponse(
                 data=None,
-                message=getattr(reread, 'message', 'Failed to persist SharePoint folder'),
-                status_code=getattr(reread, 'status_code', 500),
+                message=create_resp.message or 'Failed to create SharePoint folder',
+                status_code=create_resp.status_code or 500,
                 success=False,
-                timestamp=datetime.now(tz.tzlocal())
+                timestamp=create_resp.timestamp or datetime.now(tz.tzlocal())
             )
-
+        
+        read_resp = pers_ms_sharepoint_folder.read_sharepoint_folder_by_ms_id(ms_id)
+        if not getattr(read_resp, 'success', False) or not read_resp.data:
+            return BusinessResponse(
+                data=None,
+                message=read_resp.message or 'Failed to read SharePoint folder',
+                status_code=read_resp.status_code or 500,
+                success=False,
+                timestamp=read_resp.timestamp or datetime.now(tz.tzlocal())
+            )
+        folder_id = int(read_resp.data.folder_id)
+        print(f"DEBUG: Created new folder_id: {folder_id}")
+    
     return map_project_to_ms_sharepoint_folder(
         project_guid=project_guid,
         module_slug=module_slug,

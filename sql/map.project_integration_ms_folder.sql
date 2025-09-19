@@ -94,6 +94,38 @@ EXEC ReadMapProjectSharePointFolderByGUID
 
 
 
+DROP PROCEDURE IF EXISTS ReadMapProjectSharePointFolderByProjectId;
+
+CREATE PROCEDURE ReadMapProjectSharePointFolderByProjectId
+    @ProjectId Int
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS CreatedDatetime,
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS ModifiedDatetime,
+        [ProjectId],
+        [ModuleId],
+        [MsSharePointFolderId]
+    FROM map.ProjectSharePointFolder
+    WHERE [ProjectId] = @ProjectId;
+
+    COMMIT;
+END
+
+SELECT * FROM Project;
+EXEC ReadMapProjectSharePointFolderByProjectId
+    4;
+
+
+
+
+
+
+
 DROP PROCEDURE IF EXISTS ReadMapProjectSharePointFolderByProjectIdByModuleId;
 
 CREATE PROCEDURE ReadMapProjectSharePointFolderByProjectIdByModuleId

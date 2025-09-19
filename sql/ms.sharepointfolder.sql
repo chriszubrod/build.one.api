@@ -39,6 +39,66 @@ SELECT * FROM ms.SharePointFolder;
 
 
 
+DROP PROCEDURE IF EXISTS CreateMsSharePointFolder;
+
+CREATE PROCEDURE CreateMsSharePointFolder
+	@CTag NVARCHAR(MAX),
+	@MsCreatedDatetime DATETIMEOFFSET,
+	@ETag NVARCHAR(MAX),
+	@FolderChildCount INT,
+	@MsId NVARCHAR(MAX),
+	@LastModifiedDatetime DATETIMEOFFSET,
+	@Name NVARCHAR(MAX),
+	@MsParentId NVARCHAR(MAX),
+	@SharedScope NVARCHAR(MAX),
+	@Size BIGINT,
+	@WebUrl NVARCHAR(MAX)
+AS
+BEGIN
+
+	BEGIN TRANSACTION;
+
+	DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
+	INSERT INTO ms.SharePointFolder (
+		[CreatedDatetime],
+		[ModifiedDatetime],
+		[CTag],
+		[MsCreatedDatetime],
+		[ETag],
+		[FolderChildCount],
+		[MsId],
+		[LastModifiedDatetime],
+		[Name],
+		[MsParentId],
+		[SharedScope],
+		[Size],
+		[WebUrl]
+	)
+	VALUES (
+		@Now,
+		@Now,
+		@CTag,
+		CONVERT(DATETIMEOFFSET, @MsCreatedDatetime),
+		@ETag,
+		@FolderChildCount,
+		@MsId,
+		CONVERT(DATETIMEOFFSET, @LastModifiedDatetime),
+		@Name,
+		@MsParentId,
+		@SharedScope,
+		@Size,
+		@WebUrl
+	);
+
+	COMMIT;
+END
+
+
+
+
+
+
 
 
 DROP PROCEDURE IF EXISTS ReadMsSharePointFolderByFolderId;
@@ -166,3 +226,6 @@ BEGIN
 
     COMMIT;
 END
+
+EXEC ReadMsSharePointFolderByMsId
+	@MsId = '017ZKYN52KL5SM3XLXDNBKYQY5NSPH4UQI';

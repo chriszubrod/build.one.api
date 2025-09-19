@@ -222,6 +222,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Handle selection from picker templates
   window.selectItem = async (payload) => {
+    console.log('selectItem called with payload:', payload);
     try {
       const moduleSlug = moduleSelect.value;
       if (!moduleSlug) { alert('Please select a module first.'); return; }
@@ -236,6 +237,7 @@ document.addEventListener('DOMContentLoaded', () => {
         last_modified_datetime: payload.last_modified_datetime || null,
         size: payload.size || null
       };
+      console.log('Sending folder data:', folder);
       if (!folder.web_url) { alert('Selected item missing web URL. Drill down to a folder and try again.'); return; }
       const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
       const resp = await fetch('/api/post/map/project-sharepoint-folder-select', {

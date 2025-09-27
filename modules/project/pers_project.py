@@ -28,7 +28,6 @@ class Project:
     customer_id: Optional[int] = None
     transaction_id: Optional[int] = None
     map_project_intuit_customer_id: Optional[int] = None
-    intuit_customer_id: Optional[int] = None
 
     @classmethod
     def from_db_row(cls, row) -> Optional['Project']:
@@ -43,9 +42,8 @@ class Project:
             status=getattr(row, 'Status', None),
             customer_id=getattr(row, 'CustomerId', None),
             transaction_id=getattr(row, 'TransactionId', None),
-            map_project_intuit_customer_id=getattr(row, 'ProjectIntuitCustomerId', None),
-            intuit_customer_id=getattr(row, 'IntuitCustomerId', None)
-            )
+            map_project_intuit_customer_id=getattr(row, 'ProjectIntuitCustomerId', None)
+        )
 
 
 def create_project(project: Project) -> PersistenceResponse:

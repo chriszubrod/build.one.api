@@ -92,6 +92,62 @@
         </div>
       </div>
     </div>
+
+    <!-- Linked MS SharePoint Workbooks Section -->
+    <div class="space-y-2 mt-4">
+      <h2 class="px-3 py-2">Linked MS SharePoint Workbooks</h2>
+      <div class="bg-white border border-gray-200 overflow-hidden flex flex-col">
+        <div class="grid grid-cols-3 bg-gray-100 border-b border-gray-200">
+          <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Id</div>
+          <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</div>
+          <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Web URL</div>
+        </div>
+        <div class="overflow-y-auto flex flex-col scrollbar-hide" style="scrollbar-width: none; -ms-overflow-style: none;">
+          {% if sp_workbook_mappings and sp_workbook_mappings|length > 0 %}
+            {% for item in sp_workbook_mappings %}
+              <div class="grid grid-cols-3 border-b border-gray-200 hover:bg-gray-50 transition-colors duration-150">
+                <div class="px-6 py-4 whitespace-nowrap">{{ item.workbook.workbook_ms_id[-6:] if item.workbook else '' }}</div>
+                <div class="px-6 py-4 whitespace-nowrap">{{ item.workbook.workbook_name if item.workbook else '' }}</div>
+                <div class="px-6 py-4 whitespace-nowrap">
+                  {% if item.workbook and item.workbook.workbook_web_url %}
+                    <a href="{{ item.workbook.workbook_web_url }}" target="_blank" class="text-blue-600 hover:text-blue-800">Open</a>
+                  {% else %}
+                    N/A
+                  {% endif %}
+                </div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="px-6 py-4 text-center text-gray-500">No SharePoint Workbook Mappings Found.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Linked MS SharePoint Worksheets Section -->
+    <div class="space-y-2 mt-4">
+      <h2 class="px-3 py-2">Linked MS SharePoint Worksheets</h2>
+      <div class="bg-white border border-gray-200 overflow-hidden flex flex-col">
+        <div class="grid grid-cols-3 bg-gray-100 border-b border-gray-200">
+          <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Id</div>
+          <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</div>
+          <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Visibility</div>
+        </div>
+        <div class="overflow-y-auto flex flex-col scrollbar-hide" style="scrollbar-width: none; -ms-overflow-style: none;">
+          {% if sp_worksheet_mappings and sp_worksheet_mappings|length > 0 %}
+            {% for item in sp_worksheet_mappings %}
+              <div class="grid grid-cols-3 border-b border-gray-200 hover:bg-gray-50 transition-colors duration-150">
+                <div class="px-6 py-4 whitespace-nowrap">{{ item.worksheet.worksheet_ms_id if item.worksheet else '' }}</div>
+                <div class="px-6 py-4 whitespace-nowrap">{{ item.worksheet.worksheet_name if item.worksheet else '' }}</div>
+                <div class="px-6 py-4 whitespace-nowrap">{{ item.worksheet.worksheet_visibility if item.worksheet else '' }}</div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="px-6 py-4 text-center text-gray-500">No SharePoint Worksheet Mappings Found.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 {% endblock %}

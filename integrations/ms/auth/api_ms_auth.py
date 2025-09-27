@@ -15,6 +15,7 @@ from flask import Blueprint, redirect, request, jsonify, current_app, url_for, s
 
 # local imports
 from integrations.ms.auth import bus_ms_auth
+from shared.response import ApiResponse
 
 # At the top of the file
 MS_GRAPH_BASE_URL = 'https://graph.microsoft.com/v1.0'
@@ -281,7 +282,13 @@ def get_profile():
     <Response 200 OK>
     """
     try:
-        secrets = current_app.config['SECRETS']
+        if 'user' not in session:
+            # Use a default user ID for development
+            user_id = 2  # or get from environment variable
+        else:
+            user_id = session['user']['id']
+
+        secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
         access_token = secrets['ms']['access_token']
         headers = {
             'Authorization': f'Bearer {access_token}'
@@ -317,9 +324,15 @@ def get_groups():
     >>> get_groups()
     <Response 200 OK>
     """
-    groups_secrets = current_app.config['SECRETS']
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
+    else:
+        user_id = session['user']['id']
 
-    access_token = groups_secrets['ms']['access_token']
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
+
+    access_token = secrets['ms']['access_token']
     headers = {
         'Authorization': f'Bearer {access_token}'
     }
@@ -348,9 +361,15 @@ def get_item_by_id(drive_id, item_id):
     >>> get_item_by_id()
     <Response 200 OK>
     """
-    item_secrets = current_app.config['SECRETS']
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
+    else:
+        user_id = session['user']['id']
 
-    access_token = item_secrets['ms']['access_token']
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
+
+    access_token = secrets['ms']['access_token']
     headers = {
         'Authorization': f'Bearer {access_token}'
     }
@@ -382,9 +401,15 @@ def get_workbook(drive_id, item_id):
     >>> get_workbook('12345', '67890')
     <Response 200 OK>
     """
-    workbook_secrets = current_app.config['SECRETS']
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
+    else:
+        user_id = session['user']['id']
 
-    access_token = workbook_secrets['ms']['access_token']
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
+
+    access_token = secrets['ms']['access_token']
     headers = {
         'Authorization': f'Bearer {access_token}'
     }
@@ -401,9 +426,15 @@ def get_workbook(drive_id, item_id):
 @api_ms_auth_bp.route('/sites/<site_id>/drive/items/<item_id>/workbook/createSession', methods=['GET'])
 def get_persistent_session(site_id, item_id):
 
-    profile_secrets = current_app.config['SECRETS']
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
+    else:
+        user_id = session['user']['id']
 
-    access_token = profile_secrets['ms']['access_token']
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
+
+    access_token = secrets['ms']['access_token']
     headers = {
         'Prefer': 'respond-async',
         'Content-Type': 'application/json',
@@ -447,9 +478,9 @@ def get_persistent_session(site_id, item_id):
         'usid': usid
     }
 
-    profile_secrets[item_id] = sesh
+    secrets[item_id] = sesh
 
-    current_app.update_secrets(profile_secrets)
+    current_app.update_secrets(secrets)
 
     return jsonify(sesh)
 
@@ -457,15 +488,19 @@ def get_persistent_session(site_id, item_id):
 @api_ms_auth_bp.route('/sites/<site_id>/drive/items/<item_id>/workbook/refreshSession', methods=['GET'])
 def refresh_session(site_id, item_id):
 
-    profile_secrets = None
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
+    else:
+        user_id = session['user']['id']
 
-    profile_secrets = current_app.config['SECRETS']
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
 
-    access_token = profile_secrets['ms']['access_token']
+    access_token = secrets['ms']['access_token']
     headers = {
         'Content-Type': 'application/json',
         'Authorization': f'Bearer {access_token}',
-        'Workbook-Session-Id': profile_secrets[item_id]['id']
+        'Workbook-Session-Id': secrets[item_id]['id']
     }
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{item_id}/workbook/refreshSession'
     resp = requests.post(url=url, headers=headers, timeout=10)
@@ -485,23 +520,27 @@ def refresh_session(site_id, item_id):
 @api_ms_auth_bp.route('/drive/items/<item_id>/workbook/closeSession', methods=['GET'])
 def close_session(item_id):
 
-    profile_secrets = None
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
+    else:
+        user_id = session['user']['id']
 
-    profile_secrets = current_app.config['SECRETS']
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
 
-    access_token = profile_secrets['ms']['access_token']
+    access_token = secrets['ms']['access_token']
     headers = {
         'Content-Type': 'application/json',
         'Authorization': f'Bearer {access_token}',
-        'Workbook-Session-Id': profile_secrets[item_id]['id']
+        'Workbook-Session-Id': secrets[item_id]['id']
     }
     url = f'https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/workbook/closeSession'
     resp = requests.post(url=url, headers=headers, timeout=10)
 
     if resp.status_code == 204:
-        if item_id in profile_secrets:
-            del profile_secrets[item_id]
-            current_app.update_secrets(profile_secrets)
+        if item_id in secrets:
+            del secrets[item_id]
+            current_app.update_secrets(secrets)
 
         return jsonify(
             {
@@ -517,33 +556,52 @@ def close_session(item_id):
 @api_ms_auth_bp.route('/sites/<site_id>/drive/items/<item_id>/workbook/worksheets', methods=['GET'])
 def get_workbook_worksheets(site_id, item_id):
 
-    profile_secrets = current_app.config['SECRETS']
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
+    else:
+        user_id = session['user']['id']
 
-    access_token = profile_secrets['ms']['access_token']
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
+
+    access_token = secrets.data.access_token
     headers = {
-        'Authorization': f'Bearer {access_token}',
-        'workbook-session-id': profile_secrets[item_id]['id']
+        'Authorization': f'Bearer {access_token}'
     }
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{item_id}/workbook/worksheets'
 
     resp = requests.get(url=url, headers=headers, timeout=10)
 
-    return jsonify(
-        {
-            "worksheets_response_json": resp.json()
-        }
+    #print(f"DEBUG: Response: {resp.text}")
+
+    if resp.status_code == 200:
+        data = resp.json()
+        worksheets = data.get("value", [])  # this is a list of worksheet objects
+
+    return ApiResponse(
+        data=worksheets,
+        message="Worksheets fetched successfully",
+        status_code=200,
+        success=True,
+        timestamp=datetime.now(tz.tzlocal())
     )
 
 
 @api_ms_auth_bp.route('/sites/<site_id>/drive/items/<item_id>/workbook/worksheets/<worksheet_id>', methods=['GET'])
 def get_workbook_worksheet(site_id, item_id, worksheet_id):
     # https://graph.microsoft.com/v1.0/sites/(''imviokguifqdnyjvkb9idegwrhi.sharepoint.com%2C17981139-624e-48b0-b1ca-36a21ab8e963%2C1ae020ca-f72c-4665-98df-5a4a7b397436'')/drive/items(''017ZKYN57RHILAEB2UNJD3OOZWEQ7X4Q5Z'')/workbook/worksheets(%27%7B2E248848-EA5A-4153-B412-738524EBC991%7D%27)
-    profile_secrets = current_app.config['SECRETS']
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
+    else:
+        user_id = session['user']['id']
 
-    access_token = profile_secrets['ms']['access_token']
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
+
+    access_token = secrets['ms']['access_token']
     headers = {
         'Authorization': f'Bearer {access_token}',
-        'Workbook-Session-Id': profile_secrets[item_id]['id']
+        'Workbook-Session-Id': secrets[item_id]['id']
     }
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{item_id}/workbook/worksheets/{worksheet_id}'
     resp = requests.get(url=url, headers=headers, timeout=10)
@@ -558,12 +616,18 @@ def get_workbook_worksheet(site_id, item_id, worksheet_id):
 @api_ms_auth_bp.route('/sites/<site_id>/drive/items/<item_id>/workbook/worksheets/<worksheet_id>/usedRange', methods=['GET'])
 def get_workbook_worksheet_used_range(site_id, item_id, worksheet_id):
 
-    profile_secrets = current_app.config['SECRETS']
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
+    else:
+        user_id = session['user']['id']
 
-    access_token = profile_secrets['ms']['access_token']
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
+
+    access_token = secrets['ms']['access_token']
     headers = {
         'Authorization': f'Bearer {access_token}',
-        'Workbook-Session-Id': profile_secrets[item_id]['id']
+        'Workbook-Session-Id': secrets[item_id]['id']
     }
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{item_id}/workbook/worksheets/{worksheet_id}/usedRange'
     resp = requests.get(url=url, headers=headers, timeout=10)
@@ -578,12 +642,18 @@ def get_workbook_worksheet_used_range(site_id, item_id, worksheet_id):
 @api_ms_auth_bp.route('/sites/<site_id>/drive/items/<item_id>/workbook/worksheets/<worksheet_id>/range/get', methods=['GET'])
 def get_workbook_worksheet_range(site_id, item_id, worksheet_id):
 
-    profile_secrets = current_app.config['SECRETS']
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
+    else:
+        user_id = session['user']['id']
 
-    access_token = profile_secrets['ms']['access_token']
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
+
+    access_token = secrets['ms']['access_token']
     headers = {
         'Authorization': f'Bearer {access_token}',
-        'Workbook-Session-Id': profile_secrets[item_id]['id']
+        'Workbook-Session-Id': secrets[item_id]['id']
     }
     url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{item_id}/workbook/worksheets/{worksheet_id}/range(address='A1:B2')"
     resp = requests.get(url=url, headers=headers, timeout=10)
@@ -594,13 +664,19 @@ def get_workbook_worksheet_range(site_id, item_id, worksheet_id):
 @api_ms_auth_bp.route('/sites/<site_id>/drive/items/<item_id>/workbook/worksheets/<worksheet_id>/range/insert', methods=['GET'])
 def insert_workbook_worksheet_range(site_id, item_id, worksheet_id):
 
-    profile_secrets = current_app.config['SECRETS']
+    if 'user' not in session:
+        # Use a default user ID for development
+        user_id = 2  # or get from environment variable
+    else:
+        user_id = session['user']['id']
 
-    access_token = profile_secrets['ms']['access_token']
+    secrets = bus_ms_auth.get_ms_auth_by_user_id(user_id)
+
+    access_token = secrets['ms']['access_token']
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json',
-        'Workbook-Session-Id': profile_secrets[item_id]['id']
+        'Workbook-Session-Id': secrets[item_id]['id']
     }
     data = {
         'shift': 'Down'

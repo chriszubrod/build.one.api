@@ -107,64 +107,193 @@
         </div>
       </div>
     </div>
+
+    <div class="mt-4 bg-white border border-gray-200 p-4">
+      <h2 class="text-base font-semibold text-gray-800 mb-2">Link to MS SharePoint Workbook</h2>
+      <p class="text-sm text-gray-600 mb-3">Pick a workbook via the SharePoint picker.</p>
+      <div class="flex items-center space-x-2 mb-4">
+        <button id="openWorkbookPickerBtn" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Pick Workbook</button>
+        <span id="currentWorkbookLabel" class="text-sm text-gray-600"></span>
+      </div>
+      <div class="bg-white border border-gray-200 overflow-hidden flex flex-col">
+        <div class="grid grid-cols-3 bg-gray-100 border-b border-gray-200">
+          <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Id</div>
+          <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</div>
+          <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Web URL</div>
+        </div>
+        <div class="overflow-y-auto flex flex-col scrollbar-hide" style="scrollbar-width: none; -ms-overflow-style: none;">
+          {% if sharepoint_workbooks and sharepoint_workbooks|length > 0 %}
+            {% for wb in sharepoint_workbooks %}
+              <div class="grid grid-cols-3 border-b border-gray-200 hover:bg-gray-50 transition-colors duration-150">
+                <div class="px-6 py-4 whitespace-nowrap">{{ wb.workbook_ms_id }}</div>
+                <div class="px-6 py-4 whitespace-nowrap">{{ wb.workbook_name }}</div>
+                <div class="px-6 py-4 whitespace-nowrap">
+                  {% if wb.workbook_web_url %}
+                    <a href="{{ wb.workbook_web_url }}" target="_blank" class="text-blue-600 hover:text-blue-800">Open</a>
+                  {% else %}
+                    N/A
+                  {% endif %}
+                </div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="px-6 py-4 text-center text-gray-500">No SharePoint Workbook Mappings Found.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-4 bg-white border border-gray-200 p-4">
+      <h2 class="text-base font-semibold text-gray-800 mb-2">Link to MS SharePoint Worksheet</h2>
+      <p class="text-sm text-gray-600 mb-3">After choosing a workbook, use the sidebar to pick its worksheets.</p>
+      <div class="flex items-center space-x-2 mb-4">
+        <button id="openWorksheetPickerBtn" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Pick Worksheet</button>
+        <span id="currentWorksheetLabel" class="text-sm text-gray-600"></span>
+      </div>
+        <div class="bg-white border border-gray-200 overflow-hidden flex flex-col">
+          <div class="grid grid-cols-3 bg-gray-100 border-b border-gray-200">
+            <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Id</div>
+            <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</div>
+            <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Visibility</div>
+          </div>
+          <div class="overflow-y-auto flex flex-col scrollbar-hide" style="scrollbar-width: none; -ms-overflow-style: none;">
+            {% if sharepoint_worksheets and sharepoint_worksheets|length > 0 %}
+              {% for ws in sharepoint_worksheets %}
+                <div class="grid grid-cols-3 border-b border-gray-200 hover:bg-gray-50 transition-colors duration-150">
+                  <div class="px-6 py-4 whitespace-nowrap">{{ ws.worksheet_ms_id }}</div>
+                  <div class="px-6 py-4 whitespace-nowrap">{{ ws.worksheet_name }}</div>
+                  <div class="px-6 py-4 whitespace-nowrap">{{ ws.worksheet_visibility }}</div>
+                </div>
+              {% endfor %}
+            {% else %}
+              <div class="px-6 py-4 text-center text-gray-500">No SharePoint Worksheet Mappings Found.</div>
+            {% endif %}
+          </div>
+        </div>
+    </div>
+
   </div>
 </div>
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
+
   const form = document.getElementById('edit-project-form');
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const guid = '{{ project.guid }}';
-    const name = document.getElementById('name').value.trim();
-    const abbreviation = document.getElementById('abbreviation').value.trim();
-    const status = document.getElementById('status').value;
-    const customerGuid = document.getElementById('customerGuid').value;
-    if (!name || !abbreviation || !status || !customerGuid) { alert('Please complete all fields.'); return; }
-    try {
-      // Get CSRF token
-      const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
-      
-      const resp = await fetch(`/api/project/${guid}`, {
-        method: 'PATCH',
-        headers: { 
-          'Content-Type': 'application/json',
-          'X-CSRFToken': csrfToken
-        },
-        body: JSON.stringify({ name, abbreviation, status, customerGuid })
-      });
-      if (!resp.ok) { const text = await resp.text(); throw new Error(`HTTP ${resp.status}: ${text}`); }
-      const result = await resp.json();
-      if (result.success) { window.location.href = `{{ url_for('web_project.view_project_route', project_guid='__GUID__') }}`.replace('__GUID__', guid); }
-      else { alert(result.message || 'Update failed'); }
-    } catch (err) { console.error(err); alert(`Error: ${err.message}`); }
-  });
-  
+
+  form.addEventListener(
+    'submit',
+    async (e) => {
+
+      e.preventDefault();
+
+      const guid = '{{ project.guid }}';
+      const name = document.getElementById('name').value.trim();
+      const abbreviation = document.getElementById('abbreviation').value.trim();
+      const status = document.getElementById('status').value;
+      const customerGuid = document.getElementById('customerGuid').value;
+
+      if (!name || !abbreviation || !status || !customerGuid) {
+        alert('Please complete all fields.');
+        return;
+      }
+
+      try {
+        // Get CSRF token
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        
+        const resp = await fetch(
+          `/api/project/${guid}`,
+          {
+            method: 'PATCH',
+            headers: { 
+              'Content-Type': 'application/json',
+              'X-CSRFToken': csrfToken
+            },
+            body: JSON.stringify(
+              {
+                name,
+                abbreviation,
+                status,
+                customerGuid
+              }
+            )
+          }
+        );
+
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(`HTTP ${resp.status}: ${text}`);
+        }
+
+        const result = await resp.json();
+        if (result.success) {
+          window.location.href = `{{ url_for('web_project.view_project_route', project_guid='__GUID__') }}`.replace('__GUID__', guid);
+        }
+        else {
+          alert(result.message || 'Update failed');
+        }
+      } catch (err) {
+        console.error(err);
+        alert(`Error: ${err.message}`);
+      }
+    }
+  );
+
   // Intuit Customer Mapping for Project
   const mapButton = document.getElementById('mapIntuitProjectBtn');
   const intuitSelect = document.getElementById('intuitProjectSelect');
+
   if (mapButton && intuitSelect) {
-    mapButton.addEventListener('click', async () => {
-      const projectGuid = '{{ project.guid }}';
-      const intuitCustomerGuid = intuitSelect.value;
-      if (!intuitCustomerGuid) { alert('Please select an Intuit customer.'); return; }
-      try {
-        const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
-        const response = await fetch('/api/post/map/project-intuit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-          body: JSON.stringify({ projectGuid, intuitCustomerGuid })
-        });
-        const result = await response.json();
-        if (response.ok && result.success) { alert('Project mapped successfully!'); window.location.reload(); }
-        else { alert(result.message || `Mapping failed (HTTP ${response.status})`); }
-      } catch (err) { console.error(err); alert(`Error: ${err.message}`); }
-    });
+    mapButton.addEventListener(
+      'click',
+      async () => {
+        const projectGuid = '{{ project.guid }}';
+        const intuitCustomerGuid = intuitSelect.value;
+        if (!intuitCustomerGuid) {
+          alert('Please select an Intuit customer.');
+          return;
+        }
+        try {
+          const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+          const response = await fetch(
+            '/api/post/map/project-intuit',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken
+              },
+              body: JSON.stringify(
+                {
+                  projectGuid,
+                  intuitCustomerGuid
+                }
+              )
+            }
+          );
+          const result = await response.json();
+          if (response.ok && result.success) {
+            alert('Project mapped successfully!');
+            window.location.reload();
+          } else {
+            alert(result.message || `Mapping failed (HTTP ${response.status})`);
+          }
+        } catch (err) {
+          console.error(err);
+          alert(`Error: ${err.message}`);
+        }
+      }
+    );
   }
+
 
   // SharePoint Folder Picker in Sidebar
   const moduleSelect = document.getElementById('moduleSelect');
   const openPickerBtn = document.getElementById('openSharePointPickerBtn');
+  const openWorkbookPickerBtn = document.getElementById('openWorkbookPickerBtn');
+  const openWorksheetPickerBtn = document.getElementById('openWorksheetPickerBtn');
+  const currentWorkbookLabel = document.getElementById('currentWorkbookLabel');
+  const currentWorksheetLabel = document.getElementById('currentWorksheetLabel');
   const sidebarEl = document.querySelector('aside.aside-border-custom');
 
   function setSidebarContent(innerHtml) {
@@ -180,7 +309,12 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
       </div>`;
     const closeBtn = document.getElementById('closePickerBtn');
-    if (closeBtn) closeBtn.addEventListener('click', () => { sidebarEl.innerHTML = ''; });
+    if (closeBtn) closeBtn.addEventListener(
+      'click',
+      () => {
+        sidebarEl.innerHTML = '';
+      }
+    );
   }
 
   async function openPicker() {
@@ -194,13 +328,31 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // Open worksheet picker based on currently mapped workbook
+  async function openWorksheetPicker() {
+    try {
+      const res = await fetch('/ms/app/worksheet/picker?project_id={{ project.id }}');
+      const html = await res.text();
+      setSidebarContent(html);
+    } catch (e) {
+      console.error(e);
+      alert('Unable to load SharePoint worksheets');
+    }
+  }
+
+  
+
   // Expose picker navigation used by picker templates
   window.loadDrives = async (siteId, displayName) => {
     try {
+      window.__msPickerSiteId = siteId;
       const res = await fetch(`/ms/app/drive/picker?site_id=${encodeURIComponent(siteId)}`);
       const html = await res.text();
       setSidebarContent(html);
-    } catch (e) { console.error(e); alert('Unable to load drives'); }
+    } catch (e) {
+      console.error(e);
+      alert('Unable to load drives');
+    }
   };
 
   window.loadDriveItems = async (driveId, name) => {
@@ -208,50 +360,141 @@ document.addEventListener('DOMContentLoaded', () => {
       const res = await fetch(`/ms/app/drive/children/picker?drive_id=${encodeURIComponent(driveId)}`);
       const html = await res.text();
       setSidebarContent(html);
-    } catch (e) { console.error(e); alert('Unable to load items'); }
+    } catch (e) {
+      console.error(e);
+      alert('Unable to load items');
+    }
   };
 
   window.loadDriveItemsChildren = async (driveId, itemId, name) => {
     try {
-      const params = new URLSearchParams({ drive_id: driveId, drive_item_id: itemId });
+      const params = new URLSearchParams(
+        {
+          drive_id: driveId,
+          drive_item_id: itemId
+        }
+      );
       const res = await fetch(`/ms/app/drive/item/children/picker?${params.toString()}`);
       const html = await res.text();
       setSidebarContent(html);
-    } catch (e) { console.error(e); alert('Unable to load sub-items'); }
+    } catch (e) {
+      console.error(e);
+      alert('Unable to load sub-items');
+    }
   };
 
   // Handle selection from picker templates
   window.selectItem = async (payload) => {
-    console.log('selectItem called with payload:', payload);
     try {
-      const moduleSlug = moduleSelect.value;
-      if (!moduleSlug) { alert('Please select a module first.'); return; }
+      const mode = window.__msPickerMode || 'folder';
       const projectGuid = '{{ project.guid }}';
-      const folder = {
-        name: payload.name || '',
-        web_url: payload.web_url || '',
-        item_id: payload.item_id || payload.drive_id || null,
-        c_tag: payload.c_tag || null,
-        e_tag: payload.e_tag || null,
-        created_datetime: payload.created_datetime || null,
-        last_modified_datetime: payload.last_modified_datetime || null,
-        size: payload.size || null
-      };
-      console.log('Sending folder data:', folder);
-      if (!folder.web_url) { alert('Selected item missing web URL. Drill down to a folder and try again.'); return; }
-      const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
-      const resp = await fetch('/api/post/map/project-sharepoint-folder-select', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-        body: JSON.stringify({ projectGuid, moduleSlug, folder })
-      });
-      const result = await resp.json();
-      if (resp.ok && result.success) {
-        alert('SharePoint mapping saved!');
-        window.location.reload();
-      } else {
-        alert(result.message || `Mapping failed (HTTP ${resp.status})`);
+
+      if (mode === 'folder') {
+        const moduleSlug = moduleSelect.value;
+
+        if (!moduleSlug) {
+          alert('Please select a module first.');
+          return;
+        }
+
+        const folder = {
+          name: payload.name || '',
+          web_url: payload.web_url || '',
+          item_id: payload.item_id || payload.drive_id || null,
+          c_tag: payload.c_tag || null,
+          e_tag: payload.e_tag || null,
+          folder_child_count: payload.folder_child_count || null,
+          ms_parent_id: payload.ms_parent_id || null,
+          shared_scope: payload.shared_scope || null,
+          created_datetime: payload.created_datetime || null,
+          last_modified_datetime: payload.last_modified_datetime || null,
+          size: payload.size || null
+        };
+
+        if (!folder.web_url) {
+          alert('Selected item missing web URL. Drill down to a folder and try again.');
+          return;
+        }
+        
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        
+        const resp = await fetch(
+          '/api/post/map/project-sharepoint-folder-select',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': csrfToken
+            },
+            body: JSON.stringify(
+              {
+                projectGuid,
+                moduleSlug,
+                folder
+              }
+            )
+          }
+        );
+
+        const result = await resp.json();
+        
+        if (resp.ok && result.success) {
+          alert('Folder mapping saved!');
+          window.location.reload();
+        } else {
+          alert(result.message || `Mapping failed (HTTP ${resp.status})`);
+        }
+        return;
       }
+
+      if (mode === 'workbook') {
+
+        const workbook = {
+          name: payload.name || '',
+          web_url: payload.web_url || '',
+          item_id: payload.item_id || null,
+          c_tag: payload.c_tag || null,
+          e_tag: payload.e_tag || null,
+          created_datetime: payload.created_datetime || null,
+          last_modified_datetime: payload.last_modified_datetime || null,
+          size: payload.size || null
+        };
+
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+  
+        const mapResp = await fetch('/api/post/map/project-sharepoint-workbook-select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+          body: JSON.stringify({ projectGuid, workbook: workbook })
+        });
+        const mapJson = await mapResp.json();
+        if (!mapResp.ok || !mapJson.success) { alert(mapJson.message || 'Failed to map workbook'); return; }
+        return;
+      }
+
+      if (mode === 'worksheet') {
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        const ws = {
+          ms_id: payload.ms_id || ''
+        };
+        
+        const mapResp = await fetch('/api/post/map/project-sharepoint-worksheet-select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+          body: JSON.stringify({ projectGuid, worksheet: ws })
+        });
+        
+        const mapJson = await mapResp.json();
+        if (!mapResp.ok || !mapJson.success) { 
+          alert(mapJson.message || 'Failed to map worksheet'); 
+          return; 
+        }
+        
+        alert('Worksheet mapped successfully!');
+        window.location.reload();
+        return;
+      }
+
     } catch (e) {
       console.error(e);
       alert(`Error: ${e.message}`);
@@ -259,8 +502,72 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   if (openPickerBtn) {
-    openPickerBtn.addEventListener('click', (e) => { e.preventDefault(); openPicker(); });
+    openPickerBtn.addEventListener('click', (e) => { e.preventDefault(); window.__msPickerMode='folder'; openPicker(); });
   }
+  if (openWorkbookPickerBtn) {
+    openWorkbookPickerBtn.addEventListener('click', (e) => { e.preventDefault(); window.__msPickerMode='workbook'; openPicker(); });
+  }
+  if (openWorksheetPickerBtn) {
+    openWorksheetPickerBtn.addEventListener('click', (e) => { 
+      e.preventDefault(); 
+      window.__msPickerMode='worksheet'; 
+      openWorksheetPicker();  // ← Call the worksheet picker function
+    });
+  }
+  
+  // Map workbook
+  const mapWbBtn = document.getElementById('mapWorkbookBtn');
+  const workbookSelect = document.getElementById('workbookSelect');
+  if (mapWbBtn && workbookSelect) {
+    mapWbBtn.addEventListener('click', async () => {
+      const projectGuid = '{{ project.guid }}';
+      const workbookId = parseInt(workbookSelect.value || '0', 10);
+      if (!workbookId) { alert('Please select a workbook.'); return; }
+      try {
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        const resp = await fetch('/api/post/map/project-sharepoint-workbook', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+          body: JSON.stringify({ projectGuid, workbookId })
+        });
+        const result = await resp.json();
+        if (resp.ok && result.success) { alert('Workbook mapped!'); window.location.reload(); }
+        else { alert(result.message || `Mapping failed (HTTP ${resp.status})`); }
+      } catch (e) { console.error(e); alert(`Error: ${e.message}`); }
+    });
+  }
+
+  // Map worksheet
+  const mapWsBtn = document.getElementById('mapWorksheetBtn');
+  const worksheetSelect = document.getElementById('worksheetSelect');
+  if (mapWsBtn && worksheetSelect) {
+    mapWsBtn.addEventListener('click', async () => {
+      const projectGuid = '{{ project.guid }}';
+      const worksheetId = parseInt(worksheetSelect.value || '0', 10);
+      if (!worksheetId) { alert('Please select a worksheet.'); return; }
+      try {
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        const resp = await fetch('/api/post/map/project-sharepoint-worksheet', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+          body: JSON.stringify({ projectGuid, worksheetId })
+        });
+        const result = await resp.json();
+        if (resp.ok && result.success) { alert('Worksheet mapped!'); window.location.reload(); }
+        else { alert(result.message || `Mapping failed (HTTP ${resp.status})`); }
+      } catch (e) { console.error(e); alert(`Error: ${e.message}`); }
+    });
+  }
+
+  // Handle worksheet selection from data attributes
+  window.selectWorksheetFromButton = function(button) {
+    const data = {
+      ms_id: button.dataset.msId
+    };
+    console.log('DEBUG: Worksheet data being sent:', data);
+    selectItem(data);
+  };
+
 });
 </script>
 {% endblock %}

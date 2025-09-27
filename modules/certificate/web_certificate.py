@@ -20,7 +20,7 @@ web_certificate_bp = Blueprint('web_certificate', __name__, template_folder='tem
 
 @web_certificate_bp.route('/certificates', methods=['GET'])
 #@requires_auth()
-def list_certificates():
+def list_certificates_route():
     _certificates = []
     resp = bus_coi.get_certificates()
     if resp.success:
@@ -32,7 +32,7 @@ def list_certificates():
 
 @web_certificate_bp.route('/certificate/create', methods=['GET'])
 #@requires_auth()
-def create_certificate():
+def create_certificate_route():
     vendors = []
     certificate_types = []
 

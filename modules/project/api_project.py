@@ -14,6 +14,8 @@ from flask import Blueprint, request, jsonify
 # local imports
 from shared.response import ApiResponse
 from modules.project import bus_project
+from integrations.ms import pers_ms_sharepoint_site
+from integrations.ms import pers_ms_sharepoint_workbook, pers_ms_sharepoint_worksheet
 
 
 api_project_bp = Blueprint('api_project', __name__, url_prefix='/api')
@@ -267,3 +269,244 @@ def api_post_map_project_sharepoint_folder_select_route():
         return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=datetime.now(tz.tzlocal())).to_dict())
     except (ValueError, TypeError, KeyError) as e:
         return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+
+# Workbook mappings
+@api_project_bp.route('/project/<project_id>/sharepoint/workbooks', methods=['GET'])
+def api_get_project_sharepoint_workbooks_route(project_id):
+    try:
+        pid = int(project_id)
+        resp = bus_project.get_ms_sharepoint_workbooks_by_project_id(pid)
+        return jsonify(ApiResponse(data=[{'mapping': vars(item['mapping']), 'workbook': vars(item['workbook']) if item['workbook'] else None} for item in (resp.data or [])], message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=resp.timestamp).to_dict())
+    except Exception as e:
+        return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+
+@api_project_bp.route('/post/map/project-sharepoint-workbook', methods=['POST'])
+def api_post_map_project_sharepoint_workbook_route():
+    try:
+        if not request.is_json:
+            return jsonify(ApiResponse(data=None, message='Content type must be application/json', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+        data = request.json
+        project_guid = str(data.get('projectGuid', '')).strip()
+        workbook_id = int(data.get('workbookId', 0))
+        if not project_guid or not workbook_id:
+            return jsonify(ApiResponse(data=None, message='Missing fields for mapping', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+        resp = bus_project.post_map_project_to_ms_sharepoint_workbook(project_guid, workbook_id)
+        return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=datetime.now(tz.tzlocal())).to_dict())
+    except Exception as e:
+        return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+@api_project_bp.route('/patch/map/project-sharepoint-workbook', methods=['PATCH'])
+def api_patch_map_project_sharepoint_workbook_route():
+    return jsonify(ApiResponse(data=None, message='Update not supported: missing stored procedure', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+@api_project_bp.route('/delete/map/project-sharepoint-workbook/<int:id>', methods=['DELETE'])
+def api_delete_map_project_sharepoint_workbook_route(id):
+    return jsonify(ApiResponse(data=None, message='Delete not supported: missing stored procedure', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+
+# Worksheet mappings
+@api_project_bp.route('/project/<project_id>/sharepoint/worksheets', methods=['GET'])
+def api_get_project_sharepoint_worksheets_route(project_id):
+    try:
+        pid = int(project_id)
+        resp = bus_project.get_ms_sharepoint_worksheets_by_project_id(pid)
+        return jsonify(ApiResponse(data=[{'mapping': vars(item['mapping']), 'worksheet': vars(item['worksheet']) if item['worksheet'] else None} for item in (resp.data or [])], message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=resp.timestamp).to_dict())
+    except Exception as e:
+        return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+
+@api_project_bp.route('/project/<int:project_id>/sharepoint/workbook/context', methods=['GET'])
+def api_get_project_sharepoint_workbook_context_route(project_id: int):
+    """Returns the siteId and workbook itemId (MsId) for the mapped workbook of a project."""
+    try:
+        # Mapped workbook for project
+        wb_resp = bus_project.get_ms_sharepoint_workbooks_by_project_id(project_id)
+        workbooks = wb_resp.data or []
+        if not workbooks:
+            return jsonify(ApiResponse(data=None, message='No mapped SharePoint workbook for project', status_code=404, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+        wb = workbooks[0].get('workbook') if isinstance(workbooks[0], dict) else None
+        if not wb or not getattr(wb, 'workbook_ms_id', None):
+            return jsonify(ApiResponse(data=None, message='Mapped workbook is missing MsId', status_code=404, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+        # Site Id (assumes single site persisted; take the first)
+        site_resp = pers_ms_sharepoint_site.read_sharepoint_sites()
+        if not getattr(site_resp, 'success', False) or not site_resp.data:
+            return jsonify(ApiResponse(data=None, message='SharePoint site not found', status_code=404, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+        site = site_resp.data[0]
+
+        data = {
+            'siteId': getattr(site, 'site_sharepoint_id', None),
+            'itemId': getattr(wb, 'workbook_ms_id', None),
+            'workbook': {
+                'id': getattr(wb, 'workbook_id', None),
+                'ms_id': getattr(wb, 'workbook_ms_id', None),
+                'name': getattr(wb, 'workbook_name', None),
+                'web_url': getattr(wb, 'workbook_web_url', None)
+            }
+        }
+        return jsonify(ApiResponse(data=data, message='Workbook context found', status_code=200, success=True, timestamp=datetime.now(tz.tzlocal())).to_dict())
+    except Exception as e:
+        return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+
+@api_project_bp.route('/post/map/project-sharepoint-worksheet', methods=['POST'])
+def api_post_map_project_sharepoint_worksheet_route():
+    try:
+        if not request.is_json:
+            return jsonify(ApiResponse(data=None, message='Content type must be application/json', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+        data = request.json
+        project_guid = str(data.get('projectGuid', '')).strip()
+        worksheet_id = int(data.get('worksheetId', 0))
+        if not project_guid or not worksheet_id:
+            return jsonify(ApiResponse(data=None, message='Missing fields for mapping', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+        resp = bus_project.post_map_project_to_ms_sharepoint_worksheet(project_guid, worksheet_id)
+        return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=datetime.now(tz.tzlocal())).to_dict())
+    except Exception as e:
+        return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+
+@api_project_bp.route('/post/map/project-sharepoint-workbook-select', methods=['POST'])
+def api_post_map_project_sharepoint_workbook_select_route():
+    try:
+        if not request.is_json:
+            return jsonify(ApiResponse(data=None, message='Content type must be application/json', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+        data = request.json
+        project_guid = str(data.get('projectGuid', '')).strip()
+        wb = data.get('workbook', {})
+        resp = bus_project.map_project_to_ms_sharepoint_workbook_by_details(
+            project_guid=project_guid,
+            name=wb.get('name'),
+            web_url=wb.get('web_url'),
+            ms_id=wb.get('ms_id') or wb.get('item_id'),
+            c_tag=wb.get('c_tag'),
+            e_tag=wb.get('e_tag'),
+            ms_created_datetime=wb.get('created_datetime'),
+            last_modified_datetime=wb.get('last_modified_datetime'),
+            size=wb.get('size'),
+            ms_parent_id=wb.get('ms_parent_id'),
+            shared_scope=wb.get('shared_scope'),
+            ms_graph_download_url=wb.get('ms_graph_download_url'),
+            file_mime_type=wb.get('file_mime_type'),
+            file_hash_quick_xor_hash=wb.get('file_hash_quick_xor_hash')
+        )
+        return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=datetime.now(tz.tzlocal())).to_dict())
+    except Exception as e:
+        return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+
+@api_project_bp.route('/post/map/project-sharepoint-worksheet-select', methods=['POST'])
+def api_post_map_project_sharepoint_worksheet_select_route():
+    try:
+        if not request.is_json:
+            return jsonify(
+                ApiResponse(
+                    data=None,
+                    message='Content type must be application/json',
+                    status_code=400,
+                    success=False,
+                    timestamp=datetime.now(tz.tzlocal())
+                ).to_dict()
+            )
+        
+        data = request.json
+        #print(data)
+        project_guid = str(data.get('projectGuid', '')).strip()
+        #print(f"Project GUID: {project_guid}")
+        worksheet_data = data.get('worksheet', {})
+        ms_id = worksheet_data.get('ms_id')
+        #print(f"MS ID: {ms_id}")
+        
+
+        resp = bus_project.map_project_to_ms_sharepoint_worksheet_by_details(
+            project_guid=project_guid,
+            ms_id=ws.get('ms_id'),
+            name=ws.get('name'),
+            ms_o_data_id=ws.get('ms_o_data_id'),
+            position=ws.get('position'),
+            visibility=ws.get('visibility')
+        )
+        return jsonify(ApiResponse(data=None, message='Not implemented', status_code=200, success=True, timestamp=datetime.now(tz.tzlocal())).to_dict())
+    except Exception as e:
+        return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+
+# Patch/Delete for ms objects
+@api_project_bp.route('/patch/ms/sharepoint/workbook/<int:workbook_id>', methods=['PATCH'])
+def api_patch_ms_sharepoint_workbook_route(workbook_id):
+    try:
+        if not request.is_json:
+            return jsonify(ApiResponse(data=None, message='Content type must be application/json', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+        data = request.json
+        from integrations.ms import pers_ms_sharepoint_workbook
+        wb = pers_ms_sharepoint_workbook.SharePointWorkbook(
+            workbook_id=workbook_id,
+            workbook_ms_graph_download_url=data.get('msGraphDownloadUrl'),
+            workbook_c_tag=data.get('cTag'),
+            workbook_ms_created_datetime=data.get('msCreatedDatetime'),
+            workbook_e_tag=data.get('eTag'),
+            workbook_file_hash_quick_x_or_hash=data.get('fileHashQuickXorHash'),
+            workbook_file_mime_type=data.get('fileMimeType'),
+            workbook_ms_id=data.get('msId'),
+            workbook_last_modified_datetime=data.get('lastModifiedDatetime'),
+            workbook_name=data.get('name'),
+            workbook_ms_parent_id=data.get('msParentId'),
+            workbook_shared_scope=data.get('sharedScope'),
+            workbook_size=data.get('size'),
+            workbook_web_url=data.get('webUrl')
+        )
+        resp = pers_ms_sharepoint_workbook.update_sharepoint_workbook_by_workbook_id(wb)
+        return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=datetime.now(tz.tzlocal())).to_dict())
+    except Exception as e:
+        return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+
+@api_project_bp.route('/delete/ms/sharepoint/workbook/<int:workbook_id>', methods=['DELETE'])
+def api_delete_ms_sharepoint_workbook_route(workbook_id):
+    try:
+        from integrations.ms import pers_ms_sharepoint_workbook
+        resp = pers_ms_sharepoint_workbook.delete_sharepoint_workbook_by_id(workbook_id)
+        return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=datetime.now(tz.tzlocal())).to_dict())
+    except Exception as e:
+        return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+
+@api_project_bp.route('/patch/ms/sharepoint/worksheet/<int:worksheet_id>', methods=['PATCH'])
+def api_patch_ms_sharepoint_worksheet_route(worksheet_id):
+    try:
+        if not request.is_json:
+            return jsonify(ApiResponse(data=None, message='Content type must be application/json', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+        data = request.json
+        from integrations.ms import pers_ms_sharepoint_worksheet
+        ws = pers_ms_sharepoint_worksheet.SharePointWorksheet(
+            worksheet_id=worksheet_id,
+            worksheet_ms_o_data_id=data.get('msODataId'),
+            worksheet_ms_id=data.get('msId'),
+            worksheet_name=data.get('name'),
+            worksheet_position=data.get('position'),
+            worksheet_visibility=data.get('visibility')
+        )
+        resp = pers_ms_sharepoint_worksheet.update_sharepoint_worksheet_by_worksheet_id(ws)
+        return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=datetime.now(tz.tzlocal())).to_dict())
+    except Exception as e:
+        return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+
+@api_project_bp.route('/delete/ms/sharepoint/worksheet/<int:worksheet_id>', methods=['DELETE'])
+def api_delete_ms_sharepoint_worksheet_route(worksheet_id):
+    try:
+        from integrations.ms import pers_ms_sharepoint_worksheet
+        resp = pers_ms_sharepoint_worksheet.delete_sharepoint_worksheet_by_id(worksheet_id)
+        return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=datetime.now(tz.tzlocal())).to_dict())
+    except Exception as e:
+        return jsonify(ApiResponse(data=None, message=str(e), status_code=500, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+@api_project_bp.route('/patch/map/project-sharepoint-worksheet', methods=['PATCH'])
+def api_patch_map_project_sharepoint_worksheet_route():
+    return jsonify(ApiResponse(data=None, message='Update not supported: missing stored procedure', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
+
+@api_project_bp.route('/delete/map/project-sharepoint-worksheet/<int:id>', methods=['DELETE'])
+def api_delete_map_project_sharepoint_worksheet_route(id):
+    return jsonify(ApiResponse(data=None, message='Delete not supported: missing stored procedure', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())

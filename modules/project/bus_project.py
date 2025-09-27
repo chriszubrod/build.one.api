@@ -21,6 +21,16 @@ from modules.customer import pers_customer
 from modules.module import pers_module
 from modules.project import pers_project
 from shared.response import BusinessResponse
+from integrations.map import (
+    pers_map_project_sharepoint_workbook,
+    pers_map_project_sharepoint_worksheet
+)
+from integrations.ms import (
+    pers_ms_sharepoint_site,
+    pers_ms_sharepoint_workbook,
+    pers_ms_sharepoint_worksheet
+)
+from integrations.ms.auth import api_ms_auth
 
 
 
@@ -469,6 +479,244 @@ def get_ms_sharepoint_folders_by_project_id(project_id: int) -> BusinessResponse
         success=True,
         timestamp=datetime.now(tz.tzlocal())
     )
+
+
+def get_ms_sharepoint_workbooks_by_project_id(project_id: int) -> BusinessResponse:
+    """Returns mapped SharePoint Workbooks for a project."""
+    if not project_id:
+        return BusinessResponse(data=None, message="Missing Project id.", status_code=400, success=False, timestamp=datetime.now(tz.tzlocal()))
+
+    # Read all workbook mappings for project
+    map_resp = pers_map_project_sharepoint_workbook.read_map_project_sharepoint_workbook_by_project_id(project_id)
+    mappings = map_resp.data if getattr(map_resp, 'success', False) else []
+
+    # Read all workbooks
+    enriched = []
+    for m in mappings or []:
+        wb = None
+        if getattr(m, 'ms_sharepoint_workbook_id', None):
+            wb_resp = pers_ms_sharepoint_workbook.read_sharepoint_workbook_by_workbook_id(int(m.ms_sharepoint_workbook_id))
+            wb = wb_resp.data if getattr(wb_resp, 'success', False) else None
+        enriched.append(wb)
+
+    return BusinessResponse(
+        data=enriched,
+        message="SharePoint workbook mappings found" if enriched else "No SharePoint workbook mappings found",
+        status_code=200,
+        success=True,
+        timestamp=datetime.now(tz.tzlocal())
+    )
+
+
+def post_map_project_to_ms_sharepoint_workbook(project_guid: str, ms_sharepoint_workbook_id: int) -> BusinessResponse:
+    """Creates a mapping between Project and SharePoint Workbook."""
+    if not project_guid or not ms_sharepoint_workbook_id:
+        return BusinessResponse(data=None, message='Missing fields for mapping', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal()))
+
+    proj = pers_project.read_project_by_guid(project_guid)
+    if not proj.success or not proj.data:
+        return BusinessResponse(data=None, message='Project not found', status_code=404, success=False, timestamp=datetime.now(tz.tzlocal()))
+
+    crt = pers_map_project_sharepoint_workbook.create_map_project_sharepoint_workbook(int(proj.data.id), int(ms_sharepoint_workbook_id))
+    return BusinessResponse(data=None, message=crt.message, status_code=crt.status_code, success=crt.success, timestamp=crt.timestamp)
+
+
+def get_db_ms_sharepoint_worksheets_by_project_id(project_id: int) -> BusinessResponse:
+    """Returns mapped SharePoint Worksheets for a project from the database."""
+    if not project_id:
+        return BusinessResponse(data=None, message="Missing Project id.", status_code=400, success=False, timestamp=datetime.now(tz.tzlocal()))
+
+    # Read all workbook mappings for project
+    map_wb_resp = pers_map_project_sharepoint_workbook.read_map_project_sharepoint_workbook_by_project_id(project_id)
+    wb_mappings = map_wb_resp.data if getattr(map_wb_resp, 'success', False) else []
+
+    # Read all workbooks
+    wb_enriched = []
+    for m in wb_mappings or []:
+        wb = None
+        if getattr(m, 'ms_sharepoint_workbook_id', None):
+            wb_resp = pers_ms_sharepoint_workbook.read_sharepoint_workbook_by_workbook_id(int(m.ms_sharepoint_workbook_id))
+            wb = wb_resp.data if getattr(wb_resp, 'success', False) else None
+        wb_enriched.append(wb)
+    
+    return BusinessResponse(
+        data=wb_enriched,
+        message="SharePoint workbook mappings found" if wb_enriched else "No SharePoint workbook mappings found",
+        status_code=200,
+        success=True,
+        timestamp=datetime.now(tz.tzlocal())
+    )
+
+
+def get_ms_sharepoint_worksheets_by_project_id(project_id: int) -> BusinessResponse:
+    """Returns mapped SharePoint Worksheets for a project."""
+    if not project_id:
+        return BusinessResponse(data=None, message="Missing Project id.", status_code=400, success=False, timestamp=datetime.now(tz.tzlocal()))
+
+    # Read all workbook mappings for project
+    map_wb_resp = pers_map_project_sharepoint_workbook.read_map_project_sharepoint_workbook_by_project_id(project_id)
+    wb_mappings = map_wb_resp.data if getattr(map_wb_resp, 'success', False) else []
+
+    # Read all workbooks
+    wb_enriched = []
+    for m in wb_mappings or []:
+        wb = None
+        if getattr(m, 'ms_sharepoint_workbook_id', None):
+            wb_resp = pers_ms_sharepoint_workbook.read_sharepoint_workbook_by_workbook_id(int(m.ms_sharepoint_workbook_id))
+            wb = wb_resp.data if getattr(wb_resp, 'success', False) else None
+        wb_enriched.append(wb)
+
+    # Refresh the MS Site Id
+    #site_id = ""
+    #site_id_resp = pers_ms_sharepoint_site.read_sharepoint_sites()
+    #if site_id_resp.success:
+    #    site_id = site_id_resp.data[0].site_sharepoint_id
+    #print(f"DEBUG: Site id: {site_id}")
+
+
+
+    # Refresh MS Auth token
+    #refresh_token_resp = api_ms_auth.refresh_token()
+    #print(f"DEBUG: Refresh token response: {refresh_token_resp}")
+
+    # Get worksheets from MS Graph API for each workbook
+    #ms_ws_resp = api_ms_auth.get_workbook_worksheets(
+    #    site_id=site_id,
+    #    item_id=wb_enriched[0].workbook_ms_id
+    #)
+    #print(f"DEBUG: MS Worksheets response: {ms_ws_resp}")
+    #worksheets = ms_ws_resp.data
+    #print(f"DEBUG: Worksheets: {worksheets}")
+
+    return BusinessResponse(
+        data=worksheets,
+        message="SharePoint worksheet mappings found" if worksheets else "No SharePoint worksheet mappings found",
+        status_code=200,
+        success=True,
+        timestamp=datetime.now(tz.tzlocal())
+    )
+
+
+def post_map_project_to_ms_sharepoint_worksheet(project_guid: str, ms_sharepoint_worksheet_id: int) -> BusinessResponse:
+    """Creates a mapping between Project and SharePoint Worksheet."""
+    if not project_guid or not ms_sharepoint_worksheet_id:
+        return BusinessResponse(data=None, message='Missing fields for mapping', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal()))
+
+    proj = pers_project.read_project_by_guid(project_guid)
+    if not proj.success or not proj.data:
+        return BusinessResponse(data=None, message='Project not found', status_code=404, success=False, timestamp=datetime.now(tz.tzlocal()))
+
+    crt = pers_map_project_sharepoint_worksheet.create_map_project_sharepoint_worksheet(int(proj.data.id), int(ms_sharepoint_worksheet_id))
+    return BusinessResponse(data=None, message=crt.message, status_code=crt.status_code, success=crt.success, timestamp=crt.timestamp)
+
+
+def map_project_to_ms_sharepoint_workbook_by_details(
+    project_guid: str,
+    name: str,
+    web_url: str,
+    ms_id: Optional[str] = None,
+    c_tag: Optional[str] = None,
+    e_tag: Optional[str] = None,
+    ms_created_datetime: Optional[str] = None,
+    last_modified_datetime: Optional[str] = None,
+    size: Optional[int] = None,
+    ms_parent_id: Optional[str] = None,
+    shared_scope: Optional[str] = None,
+    ms_graph_download_url: Optional[str] = None,
+    file_mime_type: Optional[str] = None,
+    file_hash_quick_xor_hash: Optional[str] = None
+) -> BusinessResponse:
+    """Ensure workbook exists and map it to the project."""
+    if not project_guid or not web_url:
+        return BusinessResponse(data=None, message='Missing required fields', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal()))
+
+    proj = pers_project.read_project_by_guid(project_guid)
+    if not proj.success or not proj.data:
+        return BusinessResponse(data=None, message='Project not found', status_code=404, success=False, timestamp=datetime.now(tz.tzlocal()))
+    project_id = int(proj.data.id)
+
+    # Lookup workbook by MsId first, then URL
+    wb = None
+    if ms_id:
+        wb = pers_ms_sharepoint_workbook.read_sharepoint_workbook_by_ms_id(ms_id)
+        wb = wb if getattr(wb, 'success', False) and wb.data else None
+    if wb is None:
+        wb_resp = pers_ms_sharepoint_workbook.read_sharepoint_workbook_by_url(web_url)
+        wb = wb_resp if getattr(wb_resp, 'success', False) and wb_resp.data else None
+
+    workbook_id = None
+    if wb:
+        workbook_id = int(wb.data.workbook_id)
+    else:
+        spw = pers_ms_sharepoint_workbook.SharePointWorkbook(
+            workbook_created_datetime=datetime.now(tz.tzlocal()),
+            workbook_modified_datetime=datetime.now(tz.tzlocal()),
+            workbook_ms_graph_download_url=ms_graph_download_url,
+            workbook_c_tag=c_tag,
+            workbook_ms_created_datetime=ms_created_datetime,
+            workbook_e_tag=e_tag,
+            workbook_file_hash_quick_x_or_hash=file_hash_quick_xor_hash,
+            workbook_file_mime_type=file_mime_type,
+            workbook_ms_id=ms_id,
+            workbook_last_modified_datetime=last_modified_datetime,
+            workbook_name=name,
+            workbook_ms_parent_id=ms_parent_id,
+            workbook_shared_scope=shared_scope,
+            workbook_size=size,
+            workbook_web_url=web_url
+        )
+        _ = pers_ms_sharepoint_workbook.create_sharepoint_workbook(spw)
+        print(f"DEBUG: Created SharePoint workbook: {_.success}, data: {_.data}")
+        reread = pers_ms_sharepoint_workbook.read_sharepoint_workbook_by_ms_id(ms_id) if ms_id else pers_ms_sharepoint_workbook.read_sharepoint_workbook_by_url(web_url)
+        print(f"DEBUG: Re-read SharePoint workbook: {reread.success}, data: {reread.data}")
+        if getattr(reread, 'success', False) and reread.data:
+            workbook_id = int(reread.data.workbook_id)
+        else:
+            return BusinessResponse(data=None, message='Failed to persist SharePoint workbook', status_code=500, success=False, timestamp=datetime.now(tz.tzlocal()))
+
+    crt = pers_map_project_sharepoint_workbook.create_map_project_sharepoint_workbook(project_id, workbook_id)
+    return BusinessResponse(data=None, message=crt.message, status_code=crt.status_code, success=crt.success, timestamp=crt.timestamp)
+
+
+def map_project_to_ms_sharepoint_worksheet_by_details(
+    project_guid: str,
+    ms_id: str,
+    name: str,
+    ms_o_data_id: Optional[str] = None,
+    position: Optional[int] = None,
+    visibility: Optional[str] = None
+) -> BusinessResponse:
+    if not project_guid or not ms_id or not name:
+        return BusinessResponse(data=None, message='Missing required fields', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal()))
+
+    proj = pers_project.read_project_by_guid(project_guid)
+    if not proj.success or not proj.data:
+        return BusinessResponse(data=None, message='Project not found', status_code=404, success=False, timestamp=datetime.now(tz.tzlocal()))
+    project_id = int(proj.data.id)
+
+    ws = pers_ms_sharepoint_worksheet.read_sharepoint_worksheet_by_ms_id(ms_id)
+    worksheet_id = None
+    if getattr(ws, 'success', False) and ws.data:
+        worksheet_id = int(ws.data.worksheet_id)
+    else:
+        sps = pers_ms_sharepoint_worksheet.SharePointWorksheet(
+            worksheet_created_datetime=datetime.now(tz.tzlocal()),
+            worksheet_modified_datetime=datetime.now(tz.tzlocal()),
+            worksheet_ms_o_data_id=ms_o_data_id,
+            worksheet_ms_id=ms_id,
+            worksheet_name=name,
+            worksheet_position=position,
+            worksheet_visibility=visibility
+        )
+        _ = pers_ms_sharepoint_worksheet.create_sharepoint_worksheet(sps)
+        reread = pers_ms_sharepoint_worksheet.read_sharepoint_worksheet_by_ms_id(ms_id)
+        if getattr(reread, 'success', False) and reread.data:
+            worksheet_id = int(reread.data.worksheet_id)
+        else:
+            return BusinessResponse(data=None, message='Failed to persist SharePoint worksheet', status_code=500, success=False, timestamp=datetime.now(tz.tzlocal()))
+
+    crt = pers_map_project_sharepoint_worksheet.create_map_project_sharepoint_worksheet(project_id, worksheet_id)
+    return BusinessResponse(data=None, message=crt.message, status_code=crt.status_code, success=crt.success, timestamp=crt.timestamp)
 
 
 def post_map_project_to_ms_sharepoint_folder(project_guid: str, module_slug: str, ms_sharepoint_folder_id: int) -> BusinessResponse:

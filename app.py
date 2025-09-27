@@ -13,6 +13,10 @@ from modules.address import (
     api_address,
     web_address
 )
+from modules.attachment import (
+    api_attachment,
+    web_attachment
+)
 from modules.auth import (
     api_auth,
     web_auth
@@ -28,10 +32,6 @@ from modules.certificate import (
 from modules.certificate_type import (
     api_certificate_type,
     web_certificate_type
-)
-from modules.certificate_attachment import (
-    api_certificate_attachment,
-    web_certificate_attachment
 )
 from modules.company import (
     api_company,
@@ -93,6 +93,8 @@ from integrations.ms.auth import api_ms_auth
 from integrations.ms.picker import web_ms_picker
 from integrations.ms.drives import api_ms_drives
 
+
+
 # initialize the app
 app = Flask(__name__)
 
@@ -107,6 +109,9 @@ csrf = CSRFProtect(app)
 app.register_blueprint(api_address.api_address_bp)
 app.register_blueprint(web_address.web_address_bp)
 
+app.register_blueprint(api_attachment.api_attachment_bp)
+app.register_blueprint(web_attachment.web_attachment_bp)
+
 app.register_blueprint(api_auth.api_auth_bp)
 app.register_blueprint(web_auth.web_auth_bp)
 
@@ -118,9 +123,6 @@ app.register_blueprint(web_certificate.web_certificate_bp)
 
 app.register_blueprint(api_certificate_type.api_certificate_type_bp)
 app.register_blueprint(web_certificate_type.web_certificate_type_bp)
-
-app.register_blueprint(api_certificate_attachment.api_certificate_attachment_bp)
-app.register_blueprint(web_certificate_attachment.web_certificate_attachment_bp)
 
 app.register_blueprint(api_company.api_company_bp)
 app.register_blueprint(web_company.web_company_bp)
@@ -167,6 +169,8 @@ app.register_blueprint(web_vendor_type.web_vendor_type_bp)
 app.register_blueprint(api_ms_auth.api_ms_auth_bp)
 app.register_blueprint(web_ms_picker.web_ms_picker_bp)
 app.register_blueprint(api_ms_drives.api_ms_drives_bp)
+
+
 
 @app.route('/')
 def index():

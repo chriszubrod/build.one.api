@@ -13,6 +13,7 @@ from flask import Blueprint, render_template, flash
 
 # local imports
 from modules.customer import bus_customer
+from modules.module import bus_module
 from modules.project import bus_project
 from utils.auth_help import requires_auth
 
@@ -60,13 +61,15 @@ def view_project_route(project_guid):
     else:
         flash(resp.message, 'error')
 
+
     _customer = {}
     if _project and getattr(_project, 'customer_id', None):
         cust_resp = bus_customer.get_customer_by_id(_project.customer_id)
         if cust_resp.success:
             _customer = cust_resp.data
 
-    _intuit_customer = None
+
+    _intuit_customer = {}
     try:
         ic_resp = bus_project.get_intuit_customer_by_project_guid(project_guid)
         if ic_resp.success:
@@ -77,11 +80,19 @@ def view_project_route(project_guid):
 
     # Retrieve mapped MS SharePoint folders for this project (all modules)
     _sharepoint_mappings = []
+    _sp_workbook_mappings = []
+    _sp_worksheet_mappings = []
     try:
         if _project and getattr(_project, 'id', None):
             sp_resp = bus_project.get_ms_sharepoint_folders_by_project_id(_project.id)
             if getattr(sp_resp, 'success', False):
                 _sharepoint_mappings = sp_resp.data or []
+            wb_resp = bus_project.get_ms_sharepoint_workbooks_by_project_id(_project.id)
+            if getattr(wb_resp, 'success', False):
+                _sp_workbook_mappings = wb_resp.data or []
+            ws_resp = bus_project.get_ms_sharepoint_worksheets_by_project_id(_project.id)
+            if getattr(ws_resp, 'success', False):
+                _sp_worksheet_mappings = ws_resp.data or []
     except Exception:
         pass
     #print(f"sharepoint_mappings: {_sharepoint_mappings}")
@@ -92,13 +103,24 @@ def view_project_route(project_guid):
         'B': 'Build',
         'C': 'Complete'
     }
-    return render_template('project/project_view.html', project=_project, customer=_customer, status_choices=status_choices, intuit_customer=_intuit_customer, sharepoint_mappings=_sharepoint_mappings)
+    return render_template(
+        'project/project_view.html',
+        project=_project,
+        customer=_customer,
+        status_choices=status_choices,
+        intuit_customer=_intuit_customer,
+        sharepoint_mappings=_sharepoint_mappings,
+        sp_workbook_mappings=_sp_workbook_mappings,
+        sp_worksheet_mappings=_sp_worksheet_mappings
+    )
 
 
 @web_project_bp.route('/project/<project_guid>/edit', methods=['GET', 'POST'])
 #@requires_auth()
 def edit_project_route(project_guid):
     """Renders project edit page with customers list."""
+    
+    # Get project
     _project = {}
     resp = bus_project.get_project_by_guid(project_guid)
     if resp.success:
@@ -106,13 +128,16 @@ def edit_project_route(project_guid):
     else:
         flash(resp.message, 'error')
 
+
+    # Get customers
     customers = []
     cust_resp = bus_customer.get_customers()
     if cust_resp.success:
         customers = cust_resp.data
 
-    # Retrieve mapped Intuit customer for project
-    _mapped_intuit_customer = None
+
+    # Get intuit customer
+    _mapped_intuit_customer = {}
     try:
         map_resp = bus_project.get_intuit_customer_by_project_guid(project_guid)
         if getattr(map_resp, 'success', False):
@@ -120,7 +145,7 @@ def edit_project_route(project_guid):
     except Exception:
         pass
 
-    # Retrieve Intuit projects for selection
+    # Get intuit projects
     intuit_projects = []
     try:
         ip_resp = bus_project.get_intuit_projects()
@@ -129,32 +154,40 @@ def edit_project_route(project_guid):
     except Exception as e:
         flash(str(e), 'error')
 
-    # Retrieve SharePoint mappings (all modules) and all folders + modules for editing
-    sharepoint_mappings = []
-    sharepoint_folders = []
+    # Get modules
     modules = []
-    try:
-        if _project and getattr(_project, 'id', None):
-            sp_map_resp = bus_project.get_ms_sharepoint_folders_by_project_id(_project.id)
-            if getattr(sp_map_resp, 'success', False):
-                sharepoint_mappings = sp_map_resp.data or []
-    except Exception:
-        pass
-    try:
-        from integrations.ms import pers_ms_sharepoint_folder
-        sp_f_resp = pers_ms_sharepoint_folder.read_sharepoint_folders()
-        # Some persistence methods return SuccessResponse without setting 'success'; accept data if present
-        if (hasattr(sp_f_resp, 'data') and sp_f_resp.data) or getattr(sp_f_resp, 'success', False):
-            sharepoint_folders = sp_f_resp.data or []
-    except Exception:
-        pass
-    try:
-        from modules.module import pers_module
-        mod_resp = pers_module.read_modules()
-        if getattr(mod_resp, 'success', False):
-            modules = mod_resp.data or []
-    except Exception:
-        pass
+    mod_resp = bus_module.get_modules()
+    if mod_resp.success:
+        modules = mod_resp.data
+    else:
+        flash(mod_resp.message, 'error')
+
+
+    # Get SharePoint mappings (folders) and mapped workbook/worksheet entities for editing
+    sharepoint_mappings = []
+    sharepoint_workbooks = []
+    sharepoint_worksheets = []
+    
+    sharepoint_folders_resp = bus_project.get_ms_sharepoint_folders_by_project_id(_project.id)
+    if sharepoint_folders_resp.success:
+        sharepoint_mappings = sharepoint_folders_resp.data or []
+    else:
+        flash(sharepoint_folders_resp.message, 'error')
+
+    sharepoint_workbooks_resp = bus_project.get_ms_sharepoint_workbooks_by_project_id(_project.id)
+    if sharepoint_workbooks_resp.success:
+        # Response already returns a list of workbook entities (or empty)
+        sharepoint_workbooks = [wb for wb in (sharepoint_workbooks_resp.data) if wb]
+    else:
+        flash(sharepoint_workbooks_resp.message, 'error')
+
+    sharepoint_worksheets_resp = bus_project.get_db_ms_sharepoint_worksheets_by_project_id(_project.id)
+    if sharepoint_worksheets_resp.success:
+        # Response returns a list of worksheet entities from Graph (or empty)
+        sharepoint_worksheets = [ws for ws in (sharepoint_worksheets_resp.data) if ws]
+    else:
+        flash(sharepoint_worksheets_resp.message, 'error')
+
 
     return render_template(
         'project/project_edit.html',
@@ -162,7 +195,8 @@ def edit_project_route(project_guid):
         customers=customers,
         mapped_intuit_customer=_mapped_intuit_customer,
         intuit_projects=intuit_projects,
+        modules=modules,
         sharepoint_mappings=sharepoint_mappings,
-        sharepoint_folders=sharepoint_folders,
-        modules=modules
+        sharepoint_workbooks=sharepoint_workbooks,
+        sharepoint_worksheets=sharepoint_worksheets
     )

@@ -8,21 +8,19 @@
       <a href="{{ url_for('web_certificate_type.create_certificate_type_route') }}" class="text-blue-600 px-3 py-2 hover:text-blue-800 text-sm">+ Create New</a>
     </div>
     <div class="bg-white border border-gray-200 overflow-hidden flex flex-col h-full">
-      <div class="grid grid-cols-5 bg-gray-100 border-b border-gray-200">
+      <div class="grid grid-cols-4 bg-gray-100 border-b border-gray-200">
         <div class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-20">GUID</div>
         <div class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Abbreviation</div>
         <div class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-32">Name</div>
-        <div class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider flex-1">Description</div>
         <div class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Actions</div>
       </div>
       <div class="overflow-y-auto flex flex-col h-full scrollbar-hide" style="scrollbar-width: none; -ms-overflow-style: none;">
         {% if certificate_types %}
           {% for ct in certificate_types %}
-          <div class="grid grid-cols-5 border-b border-gray-200 hover:bg-gray-50">
+          <div class="grid grid-cols-4 border-b border-gray-200 hover:bg-gray-50">
             <div class="px-3 py-4 whitespace-nowrap text-sm w-20">{{ ct.guid[-6:] if ct.guid else '' }}</div>
             <div class="px-3 py-4 whitespace-nowrap text-sm w-24">{{ ct.abbreviation or '' }}</div>
             <div class="px-3 py-4 whitespace-nowrap text-sm w-32">{{ ct.name or '' }}</div>
-            <div class="px-6 py-4 text-sm break-words flex-1">{{ ct.description or '' }}</div>
             <div class="px-3 py-4 whitespace-nowrap text-sm w-20">
               <a href="{{ url_for('web_certificate_type.view_certificate_type_route', guid=ct.guid) }}" class="text-blue-600 hover:text-blue-800 text-sm">View</a>
             </div>

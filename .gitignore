@@ -167,3 +167,5 @@ cython_debug/
 
 # Ignore my secrets file.
 secrets.json
+
+sharepoint_worksheet_dump.json

@@ -73,3 +73,41 @@ def read_map_project_sharepoint_workbook_by_project_id(
                 success=False,
                 timestamp=datetime.now()
             )
+
+
+def create_map_project_sharepoint_workbook(
+        project_id: int,
+        ms_sharepoint_workbook_id: int
+    ) -> PersistenceResponse:
+    """Creates a mapping row in map.ProjectSharePointWorkbook."""
+    with get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL CreateProjectSharePointWorkbook(?, ?)}"
+                rowcount = cursor.execute(sql, int(project_id), int(ms_sharepoint_workbook_id)).rowcount
+                cnxn.commit()
+                if rowcount > 0:
+                    return PersistenceResponse(
+                        data=None,
+                        message="Map Project SharePoint Workbook created",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                cnxn.rollback()
+                return PersistenceResponse(
+                    data=None,
+                    message="Map Project SharePoint Workbook not created",
+                    status_code=400,
+                    success=False,
+                    timestamp=datetime.now()
+                )
+        except pyodbc.Error as e:
+            cnxn.rollback()
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to create Map Project SharePoint Workbook: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )

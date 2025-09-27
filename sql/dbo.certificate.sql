@@ -1,4 +1,5 @@
-CREATE TABLE CertificateOfInsurance (
+CREATE TABLE dbo.Certificate
+(
     [Id] INT IDENTITY(1,1) PRIMARY KEY,
     [GUID] UNIQUEIDENTIFIER DEFAULT NEWID() NOT NULL,
     [CreatedDatetime] DATETIMEOFFSET NOT NULL,
@@ -7,29 +8,31 @@ CREATE TABLE CertificateOfInsurance (
     [PolicyNumber] VARCHAR(MAX) NOT NULL,
     [PolicyEffDate] DATE NOT NULL,
     [PolicyExpDate] DATE NOT NULL,
-    [CertificateOfInsuranceAttachmentId] INT NOT NULL,
+    [CertificateAttachmentId] INT NOT NULL,
     [VendorId] INT NOT NULL,
     [TransactionId] INT NOT NULL,
     FOREIGN KEY (CertificateTypeId) REFERENCES CertificateType(Id),
-    FOREIGN KEY (CertificateOfInsuranceAttachmentId) REFERENCES CertificateOfInsuranceAttachment(Id),
+    FOREIGN KEY (CertificateAttachmentId) REFERENCES CertificateAttachment(Id),
     FOREIGN KEY (VendorId) REFERENCES Vendor(Id),
     FOREIGN KEY (TransactionId) REFERENCES [Transaction](Id)
 );
 
-SELECT * FROM [Transaction];
-SELECT * FROM CertificateOfInsurance;
+SELECT *
+FROM [Transaction];
+SELECT *
+FROM CertificateOfInsurance;
 
 
 
 
-DROP PROCEDURE IF EXISTS CreateCertificateOfInsurance;
+DROP PROCEDURE IF EXISTS CreateCertificate;
 
-CREATE PROCEDURE CreateCertificateOfInsurance
+CREATE PROCEDURE CreateCertificate
     @CertificateTypeId INT,
     @PolicyNumber VARCHAR(MAX),
     @PolicyEffDate DATE,
     @PolicyExpDate DATE,
-    @CertificateOfInsuranceAttachmentId INT,
+    @CertificateAttachmentId INT,
     @VendorId INT
 AS
 BEGIN
@@ -38,35 +41,39 @@ BEGIN
     DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
 
     -- Insert a new record into the Transaction table
-    INSERT INTO [Transaction] (CreatedDatetime, ModifiedDatetime)
-    VALUES (@Now, @Now);
+    INSERT INTO [Transaction]
+        (CreatedDatetime, ModifiedDatetime)
+    VALUES
+        (@Now, @Now);
 
     -- Get the Id of the last inserted record
     DECLARE @TransactionId INT;
     SET @TransactionId = SCOPE_IDENTITY();
 
-    -- Insert a new record into the CertificateOfInsurance table using the TransactionId
-    INSERT INTO CertificateOfInsurance (
+    -- Insert a new record into the Certificate table using the TransactionId
+    INSERT INTO Certificate
+        (
         CreatedDatetime,
         ModifiedDatetime,
         CertificateTypeId,
         PolicyNumber,
         PolicyEffDate,
         PolicyExpDate,
-        CertificateOfInsuranceAttachmentId,
+        CertificateAttachmentId,
         VendorId,
         TransactionId
-    )
-    VALUES (
-        @Now,
-        @Now,
-        @CertificateTypeId,
-        @PolicyNumber,
-        @PolicyEffDate,
-        @PolicyExpDate,
-        @CertificateOfInsuranceAttachmentId,
-        @VendorId,
-        @TransactionId
+        )
+    VALUES
+        (
+            @Now,
+            @Now,
+            @CertificateTypeId,
+            @PolicyNumber,
+            @PolicyEffDate,
+            @PolicyExpDate,
+            @CertificateAttachmentId,
+            @VendorId,
+            @TransactionId
     );
 
     COMMIT;
@@ -74,9 +81,9 @@ END
 
 
 
-DROP PROCEDURE IF EXISTS ReadCertificateOfInsurances;
+DROP PROCEDURE IF EXISTS ReadCertificates;
 
-CREATE PROCEDURE ReadCertificateOfInsurances
+CREATE PROCEDURE ReadCertificates
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -90,18 +97,18 @@ BEGIN
         [PolicyNumber],
         [PolicyEffDate],
         [PolicyExpDate],
-        [CertificateOfInsuranceAttachmentId],
+        [CertificateAttachmentId],
         [VendorId],
         [TransactionId]
-    FROM CertificateOfInsurance;
+    FROM Certificate;
 
     COMMIT;
 END
 
 
-DROP PROCEDURE IF EXISTS ReadCertificateOfInsuranceById;
+DROP PROCEDURE IF EXISTS ReadCertificateById;
 
-CREATE PROCEDURE ReadCertificateOfInsuranceById
+CREATE PROCEDURE ReadCertificateById
     @Id INT
 AS
 BEGIN
@@ -116,19 +123,19 @@ BEGIN
         [PolicyNumber],
         [PolicyEffDate],
         [PolicyExpDate],
-        [CertificateOfInsuranceAttachmentId],
+        [CertificateAttachmentId],
         [VendorId],
         [TransactionId]
-    FROM CertificateOfInsurance
+    FROM Certificate
     WHERE [Id] = @Id;
 
     COMMIT;
 END
 
 
-DROP PROCEDURE IF EXISTS ReadCertificateOfInsuranceByGUID;
+DROP PROCEDURE IF EXISTS ReadCertificateByGUID;
 
-CREATE PROCEDURE ReadCertificateOfInsuranceByGUID
+CREATE PROCEDURE ReadCertificateByGUID
     @GUID UNIQUEIDENTIFIER
 AS
 BEGIN
@@ -143,25 +150,25 @@ BEGIN
         [PolicyNumber],
         [PolicyEffDate],
         [PolicyExpDate],
-        [CertificateOfInsuranceAttachmentId],
+        [CertificateAttachmentId],
         [VendorId],
         [TransactionId]
-    FROM CertificateOfInsurance
+    FROM Certificate
     WHERE [GUID] = @GUID;
 
     COMMIT;
 END
 
 
-DROP PROCEDURE IF EXISTS UpdateCertificateOfInsuranceById;
+DROP PROCEDURE IF EXISTS UpdateCertificateById;
 
-CREATE PROCEDURE UpdateCertificateOfInsuranceById
+CREATE PROCEDURE UpdateCertificateById
     @Id INT,
     @CertificateTypeId INT,
     @PolicyNumber VARCHAR(MAX),
     @PolicyEffDate DATE,
     @PolicyExpDate DATE,
-    @CertificateOfInsuranceAttachmentId INT,
+    @CertificateAttachmentId INT,
     @VendorId INT
 AS
 BEGIN
@@ -169,14 +176,14 @@ BEGIN
 
     DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
 
-    UPDATE CertificateOfInsurance
+    UPDATE Certificate
     SET
         [ModifiedDatetime] = @Now,
         [CertificateTypeId] = @CertificateTypeId,
         [PolicyNumber] = @PolicyNumber,
         [PolicyEffDate] = @PolicyEffDate,
         [PolicyExpDate] = @PolicyExpDate,
-        [CertificateOfInsuranceAttachmentId] = @CertificateOfInsuranceAttachmentId,
+        [CertificateAttachmentId] = @CertificateAttachmentId,
         [VendorId] = @VendorId
     WHERE [Id] = @Id;
 
@@ -184,34 +191,22 @@ BEGIN
 END
 
 
-DROP PROCEDURE IF EXISTS DeleteCertificateOfInsurance;
+DROP PROCEDURE IF EXISTS DeleteCertificate;
 
-CREATE PROCEDURE DeleteCertificateOfInsurance
+CREATE PROCEDURE DeleteCertificate
     @Id INT
 AS
 BEGIN
     BEGIN TRANSACTION;
 
-    DELETE FROM CertificateOfInsurance
+    DELETE FROM Certificate
     WHERE [Id] = @Id;
 
     COMMIT;
 END
 
--- Migration snippet: add columns and FKs on an existing table
--- Run this only if your CertificateOfInsurance table does not yet have these columns
--- and constraints. Commented to avoid accidental re-runs.
---
--- ALTER TABLE dbo.CertificateOfInsurance
--- ADD
---     CertificateTypeId INT NOT NULL,
---     PolicyNumber VARCHAR(MAX) NOT NULL,
---     PolicyEffDate DATE NOT NULL,
---     PolicyExpDate DATE NOT NULL,
---     CertificateOfInsuranceAttachmentId INT NOT NULL,
---     VendorId INT NOT NULL;
---
--- ALTER TABLE dbo.CertificateOfInsurance
--- ADD CONSTRAINT FK_CertificateOfInsurance_CertificateType FOREIGN KEY (CertificateTypeId) REFERENCES dbo.CertificateType(Id),
---     CONSTRAINT FK_CertificateOfInsurance_Attachment FOREIGN KEY (CertificateOfInsuranceAttachmentId) REFERENCES dbo.CertificateOfInsuranceAttachment(Id),
---     CONSTRAINT FK_CertificateOfInsurance_Vendor FOREIGN KEY (VendorId) REFERENCES dbo.Vendor(Id);
+-- Migration snippet: if renaming from CertificateOfInsurance
+-- Keep commented to avoid accidental re-runs
+-- EXEC sp_rename 'dbo.CertificateOfInsurance', 'Certificate';
+-- EXEC sp_rename 'dbo.CertificateOfInsurance.CertificateOfInsuranceAttachmentId', 'CertificateAttachmentId', 'COLUMN';
+-- ALTER TABLE dbo.Certificate WITH CHECK ADD CONSTRAINT FK_Certificate_Attachment FOREIGN KEY (CertificateAttachmentId) REFERENCES dbo.Attachment(Id);

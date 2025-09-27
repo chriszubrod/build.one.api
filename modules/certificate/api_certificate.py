@@ -17,7 +17,7 @@ api_certificate_bp = Blueprint('api_certificate', __name__, url_prefix='/api')
 
 
 @api_certificate_bp.route('/post/certificate', methods=['POST'])
-def api_post_certificate():
+def api_post_certificate_route():
     try:
         if not request.is_json:
             return jsonify(ApiResponse(data=None, message='Content type must be application/json', status_code=400, success=False, timestamp=datetime.now()).to_dict())
@@ -40,19 +40,19 @@ def api_post_certificate():
 
 
 @api_certificate_bp.route('/certificates', methods=['GET'])
-def api_get_certificates():
+def api_get_certificates_route():
     resp = bus_coi.get_certificates()
     return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=resp.timestamp).to_dict())
 
 
 @api_certificate_bp.route('/certificate/<guid>', methods=['GET'])
-def api_get_certificate_by_guid(guid):
+def api_get_certificate_by_guid_route(guid):
     resp = bus_coi.get_certificate_by_guid(guid)
     return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=resp.timestamp).to_dict())
 
 
 @api_certificate_bp.route('/certificate/<guid>', methods=['PATCH'])
-def api_patch_certificate_by_guid(guid):
+def api_patch_certificate_by_guid_route(guid):
     try:
         if not request.is_json:
             return jsonify(ApiResponse(data=None, message='Content type must be application/json', status_code=400, success=False, timestamp=datetime.now()).to_dict())
@@ -73,6 +73,6 @@ def api_patch_certificate_by_guid(guid):
 
 
 @api_certificate_bp.route('/certificate/<int:id>', methods=['DELETE'])
-def api_delete_certificate_by_id(id):
+def api_delete_certificate_by_id_route(id):
     resp = bus_coi.delete_certificate_by_id(id)
     return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=resp.timestamp).to_dict())

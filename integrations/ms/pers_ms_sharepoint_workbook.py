@@ -68,8 +68,6 @@ def create_sharepoint_workbook(sharepoint_workbook: SharePointWorkbook):
                 sql = "{CALL CreateMsSharePointWorkbook (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,
-                    sharepoint_workbook.workbook_created_datetime,
-                    sharepoint_workbook.workbook_modified_datetime,
                     sharepoint_workbook.workbook_ms_graph_download_url,
                     sharepoint_workbook.workbook_c_tag,
                     sharepoint_workbook.workbook_ms_created_datetime,
@@ -239,10 +237,11 @@ def update_sharepoint_workbook_by_workbook_id(sharepoint_workbook: SharePointWor
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL UpdateMsSharePointWorkbookByWorkbookId (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
+                sql = "{CALL UpdateMsSharePointWorkbookById (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,
-                    sharepoint_workbook.workbook_modified_datetime,
+                    sharepoint_workbook.workbook_id,
+                    sharepoint_workbook.workbook_ms_graph_download_url,
                     sharepoint_workbook.workbook_c_tag,
                     sharepoint_workbook.workbook_ms_created_datetime,
                     sharepoint_workbook.workbook_e_tag,
@@ -278,6 +277,72 @@ def update_sharepoint_workbook_by_workbook_id(sharepoint_workbook: SharePointWor
             return PersistenceResponse(
                 data=None,
                 message=f"Failed to update SharePoint workbook: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def read_sharepoint_workbook_by_ms_id(ms_id: str):
+    """Retrieves a SharePoint workbook by its Graph MsId."""
+    with get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL ReadMsSharePointWorkbookByMsId(?)}"
+                row = cursor.execute(sql, ms_id).fetchone()
+                if row:
+                    return PersistenceResponse(
+                        data=SharePointWorkbook.from_db_row(row),
+                        message="SharePoint workbook found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                return PersistenceResponse(
+                    data=None,
+                    message="SharePoint workbook not found",
+                    status_code=404,
+                    success=False,
+                    timestamp=datetime.now()
+                )
+        except pyodbc.Error as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to read SharePoint workbook by MsId: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
+def delete_sharepoint_workbook_by_id(workbook_id: int) -> PersistenceResponse:
+    with get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                sql = "{CALL DeleteMsSharePointWorkbookById(?)}"
+                rowcount = cursor.execute(sql, int(workbook_id)).rowcount
+                cnxn.commit()
+                if rowcount > 0:
+                    return PersistenceResponse(
+                        data=None,
+                        message="SharePoint workbook deleted",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                cnxn.rollback()
+                return PersistenceResponse(
+                    data=None,
+                    message="SharePoint workbook not deleted",
+                    status_code=404,
+                    success=False,
+                    timestamp=datetime.now()
+                )
+        except pyodbc.Error as e:
+            cnxn.rollback()
+            return PersistenceResponse(
+                data=None,
+                message=f"Failed to delete SharePoint workbook: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()

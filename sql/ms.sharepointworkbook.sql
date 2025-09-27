@@ -27,8 +27,6 @@ DROP TABLE ms.SharePointWorkbook;
 DROP PROCEDURE IF EXISTS CreateMsSharePointWorkbook;
 
 CREATE PROCEDURE CreateMsSharePointWorkbook
-    @CreatedDatetime DATETIMEOFFSET,
-    @ModifiedDatetime DATETIMEOFFSET,
 	@MsGraphDownloadUrl NVARCHAR(MAX),
 	@CTag NVARCHAR(MAX),
 	@MsCreatedDatetime DATETIMEOFFSET,
@@ -46,17 +44,17 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
+	DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
     -- Insert a new record into the SharePointSite table
     INSERT INTO ms.SharePointWorkbook (CreatedDatetime, ModifiedDatetime, [MsGraphDownloadUrl], [CTag], [MsCreatedDatetime], [ETag], [FileHashQuickXorHash], [FileMimeType], [MsId], [LastModifiedDatetime], [Name], [MsParentId], [SharedScope], [Size], [WebUrl])
-    VALUES (CONVERT(DATETIMEOFFSET, @CreatedDatetime), CONVERT(DATETIMEOFFSET, @ModifiedDatetime), @MsGraphDownloadUrl, @CTag, @MsCreatedDatetime, @ETag, @FileHashQuickXorHash, @FileMimeType, @MsId, CONVERT(DATETIMEOFFSET, @LastModifiedDatetime), @Name, @MsParentId, @SharedScope, @Size, @WebUrl);
+    VALUES (@Now, @Now, @MsGraphDownloadUrl, @CTag, @MsCreatedDatetime, @ETag, @FileHashQuickXorHash, @FileMimeType, @MsId, CONVERT(DATETIMEOFFSET, @LastModifiedDatetime), @Name, @MsParentId, @SharedScope, @Size, @WebUrl);
 
     COMMIT;
 END
 
 
 EXEC CreateMsSharePointWorkbook
-	@CreatedDatetime = '2025-01-18 00:00:00.000',
-    @ModifiedDatetime = '2025-01-18 00:00:00.000',
 	@MsGraphDownloadUrl = 'https://imviokguifqdnyjvkb9idegwrhi.sharepoint.com/sites/RogersBuildLLC/_layouts/15/download.aspx?UniqueId=02163af1-5407-476a-b73b-36243f7e43b9&Translate=false&tempauth=v1.eyJzaXRlaWQiOiIxNzk4MTEzOS02MjRlLTQ4YjAtYjFjYS0zNmEyMWFiOGU5NjMiLCJhcHBfZGlzcGxheW5hbWUiOiJidWlsZG9uZSIsImFwcGlkIjoiOThhNjQ1YmQtZWVkOS00ZjY0LTk4MzktMDUxNTU3MDZlMWY2IiwiYXVkIjoiMDAwMDAwMDMtMDAwMC0wZmYxLWNlMDAtMDAwMDAwMDAwMDAwL2ltdmlva2d1aWZxZG55anZrYjlpZGVnd3JoaS5zaGFyZXBvaW50LmNvbUA1ZGFmMTNhMS01MTEzLTRkMmMtYmI0My0xM2M2ZDExM2NmMTgiLCJleHAiOiIxNzM3MjU5NjI5In0.CgoKBHNuaWQSAjY0EgsItvqWz4yQ3D0QBRoNNDAuMTI2LjIzLjE2MyoscExESFZpL09jMFJieDMzcnFxMjB2Mzh3elByUGpnNWhpM0hnM0N2ODlDaz0wnwE4AUIQoXjrQh2gAHBtr4_csBlSREoQaGFzaGVkcHJvb2Z0b2tlblIIWyJrbXNpIl1yKTBoLmZ8bWVtYmVyc2hpcHwxMDAzMjAwMWE4MGE4ZGY0QGxpdmUuY29tegEyggESCaETr10TUSxNEbtDE8bRE88YkgEHSW52b2ljZZoBDFJvZ2VycyBCdWlsZKIBF2ludm9pY2VAcm9nZXJzYnVpbGQuY29tqgEQMTAwMzIwMDFBODBBOERGNLIBSWFsbGZpbGVzLnJlYWQgYWxsZmlsZXMud3JpdGUgYWxsc2l0ZXMucmVhZCBzZWxlY3RlZHNpdGVzIGFsbHByb2ZpbGVzLnJlYWTIAQE.JgFmoIZEEBgoEGNvsgH34yovhUOpbDKjJdvRRHD_UE8&ApiVersion=2.0',
 	@CTag = '\"c:{02163AF1-5407-476A-B73B-36243F7E43B9},326\"',
 	@MsCreatedDatetime = '2023-04-13T14:42:15Z',
@@ -104,7 +102,7 @@ BEGIN
     COMMIT;
 END
 
-
+	EXEC ReadMsSharePointWorkbook;
 
 
 
@@ -146,13 +144,78 @@ EXEC ReadMsSharePointWorkbookById
 	@Id = 1;
 
 
+DROP PROCEDURE IF EXISTS ReadMsSharePointWorkbookByUrl;
+
+CREATE PROCEDURE ReadMsSharePointWorkbookByUrl
+	@Url NVARCHAR(MAX)
+AS
+BEGIN
+	BEGIN TRANSACTION;
+	
+	SELECT
+		[Id],
+		[GUID],
+		CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS [CreatedDatetime],
+		CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS [ModifiedDatetime],
+		[MsGraphDownloadUrl],
+		[CTag],
+		[MsCreatedDatetime],
+		[ETag],
+		[FileHashQuickXorHash],
+		[FileMimeType],
+		[MsId],
+		[MsParentId],
+		[SharedScope],
+		[Size],
+		[WebUrl]
+	FROM ms.SharePointWorkbook
+	WHERE [WebUrl] = @Url;
+
+    COMMIT;
+END
+
+EXEC ReadMsSharePointWorkbookByUrl
+	@Url = 'https://imviokguifqdnyjvkb9idegwrhi.sharepoint.com/sites/RogersBuildLLC/_layouts/15/Doc.aspx?sourcedoc=%7B02163AF1-5407-476A-B73B-36243F7E43B9%7D&file=TB3%20-%20917%20Tyne%20Blvd%20-%20Budget%20Tracker.xlsx&action=default&mobileredirect=true';
 
 
-DROP PROCEDURE IF EXISTS UpdateMsSharePointWorkbookByFileId;
 
-CREATE PROCEDURE UpdateMsSharePointWorkbookByFileId
-    @FileId NVARCHAR(MAX),
-    @ModifiedDatetime DATETIMEOFFSET,
+
+DROP PROCEDURE IF EXISTS ReadMsSharePointWorkbookByMsId;
+
+CREATE PROCEDURE ReadMsSharePointWorkbookByMsId
+    @MsId NVARCHAR(MAX)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [GUID],
+        CAST([CreatedDatetime] AS NVARCHAR(MAX)) AS [CreatedDatetime],
+        CAST([ModifiedDatetime] AS NVARCHAR(MAX)) AS [ModifiedDatetime],
+        [MsGraphDownloadUrl],
+        [CTag],
+        [MsCreatedDatetime],
+        [ETag],
+        [FileHashQuickXorHash],
+        [FileMimeType],
+        [MsId],
+        CAST([LastModifiedDatetime] AS NVARCHAR(MAX)) AS [LastModifiedDatetime],
+        [Name],
+        [MsParentId],
+        [SharedScope],
+        [Size],
+        [WebUrl]
+    FROM ms.SharePointWorkbook
+    WHERE [MsId] = @MsId;
+
+    COMMIT;
+END
+
+DROP PROCEDURE IF EXISTS UpdateMsSharePointWorkbookById;
+
+CREATE PROCEDURE UpdateMsSharePointWorkbookById
+    @Id INT,
 	@MsGraphDownloadUrl NVARCHAR(MAX),
 	@CTag NVARCHAR(MAX),
 	@MsCreatedDatetime DATETIMEOFFSET,
@@ -170,8 +233,10 @@ AS
 BEGIN
 	BEGIN TRANSACTION;
 
+	DECLARE @Now DATETIMEOFFSET = SYSDATETIMEOFFSET();
+
 	UPDATE ms.SharePointWorkbook
-    SET [ModifiedDatetime] = CONVERT(DATETIMEOFFSET, @ModifiedDatetime),
+    SET [ModifiedDatetime] = @Now,
         [MsGraphDownloadUrl] = @MsGraphDownloadUrl,
         [CTag] = @CTag,
         [MsCreatedDatetime] = @MsCreatedDatetime,
@@ -185,9 +250,30 @@ BEGIN
         [SharedScope] = @SharedScope,
         [Size] = @Size,
         [WebUrl] = @WebUrl
-    WHERE [Id] = @FileId;
+    WHERE [Id] = @Id;
 
     COMMIT;
 END
 
+
+
+
+DROP PROCEDURE IF EXISTS DeleteMsSharePointWorkbookById;
+
+CREATE PROCEDURE DeleteMsSharePointWorkbookById
+	@Id INT
+AS
+BEGIN
+
+	BEGIN TRANSACTION;
+
+	DELETE FROM ms.SharePointWorkbook
+	WHERE [Id] = @Id;
+
+	COMMIT;
+END
+
+
+EXEC DeleteMsSharePointWorkbookById
+	@Id = 1;
 

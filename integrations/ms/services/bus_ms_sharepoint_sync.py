@@ -7,15 +7,13 @@ import asyncio
 import base64
 import hashlib
 import re
-import requests
 from datetime import datetime
-from dateutil import tz
 from difflib import SequenceMatcher
-from typing import List, Dict, Any
-from flask import session
-
+from typing import Any, Dict, List, Optional
 
 # third party imports
+from dateutil import tz
+from flask import session
 import jwt
 import time
 
@@ -23,16 +21,22 @@ import time
 from shared.response import BusinessResponse
 from integrations.map import (
     pers_map_attachment_sharepoint_file,
-    pers_map_project_sharepoint_folder
+    pers_map_project_sharepoint_folder,
 )
-from integrations.ms import (
-    ms_drive_int,
-    ms_upload_new_file,
+from integrations.ms.auth import api_ms_auth, bus_ms_auth
+from integrations.ms.clients.sharepoint_drive_client import (
+    SharePointDriveClient,
+    SharePointDriveClientProtocol,
+)
+from integrations.ms.clients.sharepoint_upload_client import (
+    SharePointUploadClient,
+    SharePointUploadClientProtocol,
+)
+from integrations.ms.persistence import (
     pers_ms_sharepoint_file,
     pers_ms_sharepoint_folder,
-    pers_ms_sharepoint_site
+    pers_ms_sharepoint_site,
 )
-from integrations.ms.auth import bus_ms_auth, api_ms_auth
 from modules.bill import pers_bill_line_item, pers_bill_line_item_attachment
 from modules.project import pers_project
 
@@ -110,13 +114,19 @@ def _get_sharepoint_folder_by_folder_id(folder_id):
         return None
 
 
-def _get_sharepoint_files(site_id, folder_id, access_token):
-    files = ms_drive_int.get_items(
+def _get_sharepoint_files(
+    site_id: str,
+    folder_id: str,
+    access_token: str,
+    drive_client: SharePointDriveClientProtocol,
+) -> Optional[List[Dict[str, Any]]]:
+    files = drive_client.get_items(
         site_id=site_id,
         item_id=folder_id,
-        access_token=access_token
+        access_token=access_token,
     )
-    print(f'\nFiles: {files[0]}')
+    if files:
+        print(f'\nFiles: {files[0]}')
     return files
 
 
@@ -152,15 +162,21 @@ def _match_sharepoint_file_to_bill_line_item_attachment(sharepoint_files, bill_l
         return None
 
 
-def _verify_file_content_match(site_id, item_id, access_token, bill_line_item_attachment):
+def _verify_file_content_match(
+    site_id: str,
+    item_id: str,
+    access_token: str,
+    bill_line_item_attachment,
+    drive_client: SharePointDriveClientProtocol,
+) -> bool:
     """
     Download SharePoint file and compare binary content with attachment
     """
     try:
-        file_content = ms_drive_int.get_item(
+        file_content = drive_client.get_item(
             site_id=site_id,
             item_id=item_id,
-            access_token=access_token
+            access_token=access_token,
         )
 
         if file_content is None:
@@ -210,7 +226,12 @@ def _process_map_attachment_sharepoint_file(bill_line_item_attachment, new_share
     return False
 
 
-def main_sharepoint_sync_function():
+def main_sharepoint_sync_function(
+    drive_client: Optional[SharePointDriveClientProtocol] = None,
+    upload_client: Optional[SharePointUploadClientProtocol] = None,
+):
+    drive_client = drive_client or SharePointDriveClient()
+    upload_client = upload_client or SharePointUploadClient()
     # Get bill line item attachments that are not mapped to a sharepoint file
     bill_line_item_attachments_not_mapped = None
 
@@ -278,7 +299,8 @@ def main_sharepoint_sync_function():
         sharepoint_files = _get_sharepoint_files(
             site_id=sharepoint_site.site_sharepoint_id,
             folder_id=sharepoint_folder.folder_ms_id,
-            access_token=access_token
+            access_token=access_token,
+            drive_client=drive_client,
         )
         #print(f'\nSharepoint Files: {sharepoint_files[0]}')
 
@@ -297,7 +319,8 @@ def main_sharepoint_sync_function():
             site_id=sharepoint_site.site_sharepoint_id,
             item_id=matched_sharepoint_file.get('id'),
             access_token=access_token,
-            bill_line_item_attachment=bill_line_item_attachment
+            bill_line_item_attachment=bill_line_item_attachment,
+            drive_client=drive_client,
         )
         print(f'\nFirst Verify File Content Match: {file_content_match}')
 
@@ -314,11 +337,11 @@ def main_sharepoint_sync_function():
             }]
 
             # Upload new file to SharePoint
-            upload_new_file_result = ms_upload_new_file.upload_file_to_sharepoint(
+            upload_new_file_result = upload_client.upload_file(
                 access_token=access_token,
                 site_id=sharepoint_site.site_sharepoint_id,
                 folder_id=sharepoint_folder.folder_ms_id,
-                file=file_dict
+                files=file_dict,
             )
             if upload_new_file_result['success']:
                 print(f'\nSuccessfully uploaded new file to SharePoint: {upload_new_file_result}')

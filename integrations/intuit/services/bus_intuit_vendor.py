@@ -12,7 +12,7 @@ from dateutil import tz
 
 # local imports
 from shared.response import BusinessResponse
-from integrations.intuit import pers_intuit_vendor
+from integrations.intuit.persistence import pers_intuit_vendor
 
 
 def get_intuit_vendors() -> BusinessResponse:

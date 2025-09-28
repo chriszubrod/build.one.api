@@ -23,25 +23,23 @@ import time
 # local imports
 from shared.response import BusinessResponse
 from shared.response import SuccessResponse
-from integrations.intuit import pers_intuit_urls, pers_intuit_auth
+from integrations.intuit.persistence import pers_intuit_urls, pers_intuit_auth
 from integrations.map import (
     pers_map_attachment_sharepoint_file,
     pers_map_project_sharepoint_folder,
     pers_map_bill_intuit_bill
 )
-from integrations.ms import (
-    ms_drive_int,
-    ms_upload_new_file,
+from integrations.ms.persistence import (
     pers_ms_sharepoint_file,
     pers_ms_sharepoint_folder,
-    pers_ms_sharepoint_site
+    pers_ms_sharepoint_site,
 )
 from integrations.ms.auth import bus_ms_auth, api_ms_auth
 from modules.bill import pers_bill_line_item, pers_bill
 from modules.project import pers_project
 from modules.sub_cost_code import pers_sub_cost_code, bus_sub_cost_code
 from modules.vendor import pers_vendor, bus_vendor
-from integrations.intuit import bus_intuit_item, bus_intuit_vendor
+from integrations.intuit.services import bus_intuit_item, bus_intuit_vendor
 
 
 def _get_bills():

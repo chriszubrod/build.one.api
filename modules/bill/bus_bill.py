@@ -18,7 +18,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flask import session
 
 # local imports
-from integrations.ms import ms_upload_new_file, pers_ms_sharepoint_site, pers_ms_sharepoint_folder
+from integrations.ms.persistence import (
+    pers_ms_sharepoint_folder,
+    pers_ms_sharepoint_site,
+)
 from integrations.ms.auth import pers_ms_auth
 from integrations.map import pers_map_project_sharepoint_folder
 from integrations.ms.sites import pers_ms_sites
@@ -35,8 +38,7 @@ from utils.function_help import clean_text_for_db
 from modules.vendor import (
     pers_vendor
 )
-import bus_ms_sharepoint_sync
-import bus_ms_budget_tracker_push
+from integrations.ms.services import bus_ms_sharepoint_sync, bus_ms_budget_tracker_push
 import bus_intuit_bill_sync
 
 

@@ -11,13 +11,13 @@ import requests
 
 from datetime import datetime
 from helper import function_help as hp
-from integrations.ms import ms_upload_new_file, pers_project_folder
+from integrations.ms.persistence import pers_project_folder
 from modules.project import pers_project
 from modules.sub_cost_code import pers_sub_cost_code
-from persistence import (
+from integrations.ms.persistence import (
     pers_ms_sharepoint_folder,
     pers_ms_sharepoint_site,
-    pers_ms_sharepoint_worksheet
+    pers_ms_sharepoint_worksheet,
 )
 from shared.response import SuccessResponse, PersistenceResponse, DatabaseError
 

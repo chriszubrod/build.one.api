@@ -11,7 +11,7 @@ from flask import Blueprint, render_template, flash
 
 # local imports
 from integrations.map import pers_map_attachment_sharepoint_file
-from integrations.ms import pers_ms_sharepoint_file
+from integrations.ms.persistence import pers_ms_sharepoint_file
 from modules.bill import (
     bus_bill_line_item_attachment,
     bus_bill_line_item,

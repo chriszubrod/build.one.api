@@ -7,7 +7,7 @@ from datetime import datetime
 
 # local imports
 from shared.response import BusinessResponse
-from integrations.intuit import pers_intuit_customer
+from integrations.intuit.persistence import pers_intuit_customer
 from integrations.map import pers_map_customer_intuit_customer as pers_map_cic
 from modules.customer import pers_customer
 

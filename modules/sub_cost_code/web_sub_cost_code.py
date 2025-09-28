@@ -10,7 +10,7 @@ from flask import Blueprint, render_template, flash
 # local imports
 from modules.cost_code import bus_cost_code
 from modules.sub_cost_code import bus_sub_cost_code
-from integrations.intuit import bus_intuit_item
+from integrations.intuit.services import bus_intuit_item
 from utils.auth_help import requires_auth
 
 web_sub_cost_code_bp = Blueprint('web_sub_cost_code', __name__)

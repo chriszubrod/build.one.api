@@ -24,10 +24,10 @@ import time
 from shared.response import BusinessResponse
 from shared.response import SuccessResponse
 from integrations.intuit.persistence import pers_intuit_urls, pers_intuit_auth
-from integrations.map import (
-    pers_map_attachment_sharepoint_file,
-    pers_map_project_sharepoint_folder,
-    pers_map_bill_intuit_bill
+from integrations.adapters import (
+    map_attachment_to_sharepoint_file as pers_map_attachment_sharepoint_file,
+    map_project_to_sharepoint_folder as pers_map_project_sharepoint_folder,
+    map_bill_to_intuit_bill as pers_map_bill_intuit_bill,
 )
 from integrations.ms.persistence import (
     pers_ms_sharepoint_file,

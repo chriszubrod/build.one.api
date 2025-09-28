@@ -10,7 +10,7 @@ from dateutil import tz
 from shared.response import BusinessResponse
 from modules.customer import pers_customer
 from integrations.intuit.persistence import pers_intuit_customer
-from integrations.map import pers_map_customer_intuit_customer as pers_map_cic
+from integrations.adapters import map_customer_to_intuit_customer as customer_to_intuit_adapter
 
 
 def get_customers() -> BusinessResponse:
@@ -176,7 +176,7 @@ def delete_customer_by_id(id: int) -> BusinessResponse:
 
 def get_available_intuit_customers_for_mapping() -> BusinessResponse:
     """Returns Intuit customers that are not mapped to any Build One customer (and not jobs/projects)."""
-    resp = pers_map_cic.read_available_intuit_customers_for_customer_map()
+    resp = customer_to_intuit_adapter.read_available_intuit_customers_for_customer_map()
     return BusinessResponse(
         data=resp.data,
         message=resp.message,
@@ -230,7 +230,7 @@ def map_customer_to_intuit_customer(
     print(f"Intuit Customer ID: {read_intuit_cust.data}")
 
     # create mapping
-    create_resp = pers_map_cic.create_map_customer_intuit_customer(customer_id, intuit_customer_id)
+    create_resp = customer_to_intuit_adapter.create_map_customer_to_intuit_customer(customer_id, intuit_customer_id)
     return BusinessResponse(
         data=create_resp.data,
         message=create_resp.message,
@@ -244,7 +244,7 @@ def get_mapped_intuit_customer_by_customer_id(customer_id: int) -> BusinessRespo
     """Gets the mapped Intuit customer for a Build One customer."""
     try:
         # Get the mapping
-        mapping_resp = pers_map_cic.read_map_customer_intuit_customer_by_customer_id(customer_id)
+        mapping_resp = customer_to_intuit_adapter.read_map_customer_to_intuit_customer_by_customer_id(customer_id)
         print(f"Mapping response: {mapping_resp.data}")
         if not mapping_resp.success:
             return BusinessResponse(

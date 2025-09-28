@@ -4,14 +4,17 @@ This module contains the persistence layer for the Map Project Sharepoint Workbo
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
+
 import pyodbc
 
+from integrations.adapters import register_adapter
 from shared.database import get_db_connection
 from shared.response import PersistenceResponse
 
 
+@register_adapter
 @dataclass
-class MapProjectSharepointWorkbook:
+class MapProjectToSharepointWorkbook:
     """Represents a Map Project Sharepoint Workbook in the system."""
     id: Optional[int] = None
     guid: Optional[str] = None
@@ -21,8 +24,8 @@ class MapProjectSharepointWorkbook:
     ms_sharepoint_workbook_id: Optional[int] = None
 
     @classmethod
-    def from_db_row(cls, row) -> 'MapProjectSharepointWorkbook':
-        """Creates a MapProjectSharepointWorkbook object from a database row."""
+    def from_db_row(cls, row) -> 'MapProjectToSharepointWorkbook':
+        """Creates a MapProjectToSharepointWorkbook object from a database row."""
         if not row:
             return None
 
@@ -36,7 +39,7 @@ class MapProjectSharepointWorkbook:
         )
 
 
-def read_map_project_sharepoint_workbook_by_project_id(
+def read_map_project_to_sharepoint_workbook_by_project_id(
         project_id: int
     ) -> PersistenceResponse:
     """
@@ -50,7 +53,7 @@ def read_map_project_sharepoint_workbook_by_project_id(
 
                 if rows:
                     return PersistenceResponse(
-                        data=[MapProjectSharepointWorkbook.from_db_row(row) for row in rows],
+                        data=[MapProjectToSharepointWorkbook.from_db_row(row) for row in rows],
                         message="Map Project Sharepoint Workbooks found",
                         status_code=200,
                         success=True,
@@ -75,7 +78,7 @@ def read_map_project_sharepoint_workbook_by_project_id(
             )
 
 
-def create_map_project_sharepoint_workbook(
+def create_map_project_to_sharepoint_workbook(
         project_id: int,
         ms_sharepoint_workbook_id: int
     ) -> PersistenceResponse:

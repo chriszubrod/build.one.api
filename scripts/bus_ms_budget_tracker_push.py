@@ -21,9 +21,9 @@ import jwt
 import time
 
 # local imports
-from integrations.map import (
-    pers_map_project_sharepoint_workbook,
-    pers_map_project_sharepoint_worksheet
+from integrations.adapters import (
+    map_project_to_sharepoint_workbook as pers_map_project_sharepoint_workbook,
+    map_project_to_sharepoint_worksheet as pers_map_project_sharepoint_worksheet,
 )
 from integrations.ms.persistence import (
     pers_ms_sharepoint_site,
@@ -59,7 +59,7 @@ def _get_sharepoint_access_token():
 
 def _get_project_integration_sharepoint_workbook_mapping(project_id):
     project_sharepoint_workbook_mapping = pers_map_project_sharepoint_workbook.\
-        read_map_project_sharepoint_workbook_by_project_id(
+        read_map_project_to_sharepoint_workbook_by_project_id(
             project_id=project_id
         )
     if project_sharepoint_workbook_mapping.success:
@@ -79,7 +79,7 @@ def _get_sharepoint_workbook_by_workbook_id(workbook_id):
 
 def _get_project_integration_sharepoint_worksheet_mapping(project_id):
     project_sharepoint_worksheet_mapping = pers_map_project_sharepoint_worksheet.\
-        read_map_project_sharepoint_worksheet_by_project_id(
+        read_map_project_to_sharepoint_worksheet_by_project_id(
             project_id=project_id
         )
     if project_sharepoint_worksheet_mapping.success:

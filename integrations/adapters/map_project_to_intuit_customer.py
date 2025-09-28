@@ -1,50 +1,52 @@
 """
-Persistence layer for mapping Build One Customer to Intuit Customer.
+Persistence layer for mapping Build One Project to Intuit Customer.
 """
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, List
+from typing import List, Optional
+
 import pyodbc
 
+from integrations.adapters import register_adapter
 from shared.database import get_db_connection
 from shared.response import PersistenceResponse
-from integrations.intuit.pers_intuit_customer import IntuitCustomer
 
 
+@register_adapter
 @dataclass
-class MapCustomerIntuitCustomer:
+class MapProjectToIntuitCustomer:
     id: Optional[int] = None
     guid: Optional[str] = None
     created_datetime: Optional[datetime] = None
     modified_datetime: Optional[datetime] = None
-    customer_id: Optional[int] = None
+    project_id: Optional[int] = None
     intuit_customer_id: Optional[int] = None
 
     @classmethod
-    def from_db_row(cls, row) -> 'MapCustomerIntuitCustomer':
+    def from_db_row(cls, row) -> Optional['MapProjectToIntuitCustomer']:
         if not row:
             return None
         return cls(
-            id=getattr(row, 'Id'),
-            guid=getattr(row, 'GUID'),
-            created_datetime=getattr(row, 'CreatedDatetime'),
-            modified_datetime=getattr(row, 'ModifiedDatetime'),
-            customer_id=getattr(row, 'CustomerId'),
-            intuit_customer_id=getattr(row, 'IntuitCustomerId'),
+            id=getattr(row, 'Id', None),
+            guid=getattr(row, 'GUID', None),
+            created_datetime=getattr(row, 'CreatedDatetime', None),
+            modified_datetime=getattr(row, 'ModifiedDatetime', None),
+            project_id=getattr(row, 'ProjectId', None),
+            intuit_customer_id=getattr(row, 'IntuitCustomerId', None),
         )
 
 
-def create_map_customer_intuit_customer(customer_id: int, intuit_customer_id: int) -> PersistenceResponse:
+def create_map_project_to_intuit_customer(project_id: int, intuit_customer_id: int) -> PersistenceResponse:
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL CreateMapCustomerIntuitCustomer (?, ?)}"
-                rowcount = cursor.execute(sql, int(customer_id), int(intuit_customer_id)).rowcount
+                sql = "{CALL CreateMapProjectIntuitCustomer (?, ?)}"
+                rowcount = cursor.execute(sql, int(project_id), int(intuit_customer_id)).rowcount
                 cnxn.commit()
                 if rowcount > 0:
                     return PersistenceResponse(
                         data=None,
-                        message="Map Customer Intuit Customer created",
+                        message="Map Project Intuit Customer created",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -52,7 +54,7 @@ def create_map_customer_intuit_customer(customer_id: int, intuit_customer_id: in
                 cnxn.rollback()
                 return PersistenceResponse(
                     data=None,
-                    message="Map Customer Intuit Customer not created",
+                    message="Map Project Intuit Customer not created",
                     status_code=400,
                     success=False,
                     timestamp=datetime.now()
@@ -61,30 +63,30 @@ def create_map_customer_intuit_customer(customer_id: int, intuit_customer_id: in
             cnxn.rollback()
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to create Map Customer Intuit Customer: {str(e)}",
+                message=f"Failed to create Map Project Intuit Customer: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_map_customer_intuit_customers() -> PersistenceResponse:
+def read_map_project_to_intuit_customers() -> PersistenceResponse:
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadMapCustomerIntuitCustomers}"
+                sql = "{CALL ReadMapProjectIntuitCustomers}"
                 rows = cursor.execute(sql).fetchall()
                 if rows:
                     return PersistenceResponse(
-                        data=[MapCustomerIntuitCustomer.from_db_row(row) for row in rows],
-                        message="Map Customer Intuit Customers found",
+                        data=[MapProjectToIntuitCustomer.from_db_row(r) for r in rows],
+                        message="Map Project Intuit Customers found",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
                     )
                 return PersistenceResponse(
                     data=[],
-                    message="No Map Customer Intuit Customers found",
+                    message="No Map Project Intuit Customers found",
                     status_code=404,
                     success=False,
                     timestamp=datetime.now()
@@ -92,30 +94,30 @@ def read_map_customer_intuit_customers() -> PersistenceResponse:
         except pyodbc.Error as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read Map Customer Intuit Customers: {str(e)}",
+                message=f"Failed to read Map Project Intuit Customers: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_map_customer_intuit_customer_by_customer_id(customer_id: int) -> PersistenceResponse:
+def read_map_project_to_intuit_customer_by_guid(guid: str) -> PersistenceResponse:
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadMapCustomerIntuitCustomerByCustomerId (?)}"
-                row = cursor.execute(sql, int(customer_id)).fetchone()
+                sql = "{CALL ReadMapProjectToIntuitCustomerByGUID (?)}"
+                row = cursor.execute(sql, guid).fetchone()
                 if row:
                     return PersistenceResponse(
-                        data=MapCustomerIntuitCustomer.from_db_row(row),
-                        message="Map Customer Intuit Customer found",
+                        data=MapProjectToIntuitCustomer.from_db_row(row),
+                        message="Map Project Intuit Customer found",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
                     )
                 return PersistenceResponse(
                     data=None,
-                    message="No Map Customer Intuit Customer found",
+                    message="No Map Project Intuit Customer found",
                     status_code=404,
                     success=False,
                     timestamp=datetime.now()
@@ -123,30 +125,30 @@ def read_map_customer_intuit_customer_by_customer_id(customer_id: int) -> Persis
         except pyodbc.Error as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read Map Customer Intuit Customer: {str(e)}",
+                message=f"Failed to read Map Project Intuit Customer by GUID: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_map_customer_intuit_customer_by_intuit_customer_id(intuit_customer_id: int) -> PersistenceResponse:
+def read_map_project_to_intuit_customer_by_project_id(project_id: int) -> PersistenceResponse:
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadMapCustomerIntuitCustomerByIntuitCustomerId (?)}"
-                row = cursor.execute(sql, int(intuit_customer_id)).fetchone()
+                sql = "{CALL ReadMapProjectIntuitCustomerByProjectId (?)}"
+                row = cursor.execute(sql, int(project_id)).fetchone()
                 if row:
                     return PersistenceResponse(
-                        data=MapCustomerIntuitCustomer.from_db_row(row),
-                        message="Map Customer Intuit Customer found",
+                        data=MapProjectToIntuitCustomer.from_db_row(row),
+                        message="Map Project Intuit Customer found",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
                     )
                 return PersistenceResponse(
                     data=None,
-                    message="No Map Customer Intuit Customer found",
+                    message="No Map Project Intuit Customer found",
                     status_code=404,
                     success=False,
                     timestamp=datetime.now()
@@ -154,24 +156,29 @@ def read_map_customer_intuit_customer_by_intuit_customer_id(intuit_customer_id: 
         except pyodbc.Error as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read Map Customer Intuit Customer: {str(e)}",
+                message=f"Failed to read Map Project Intuit Customer by Project Id: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def update_map_customer_intuit_customer(mapping: MapCustomerIntuitCustomer) -> PersistenceResponse:
+def update_map_project_to_intuit_customer(mapping: MapProjectToIntuitCustomer) -> PersistenceResponse:
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL UpdateMapCustomerIntuitCustomerById (?, ?, ?)}"
-                rowcount = cursor.execute(sql, int(mapping.id), int(mapping.customer_id), int(mapping.intuit_customer_id)).rowcount
+                sql = "{CALL UpdateMapProjectIntuitCustomerById (?, ?, ?)}"
+                rowcount = cursor.execute(
+                    sql,
+                    int(mapping.id),
+                    int(mapping.project_id),
+                    int(mapping.intuit_customer_id)
+                ).rowcount
                 cnxn.commit()
                 if rowcount > 0:
                     return PersistenceResponse(
                         data=None,
-                        message="Map Customer Intuit Customer updated",
+                        message="Map Project Intuit Customer updated",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -179,7 +186,7 @@ def update_map_customer_intuit_customer(mapping: MapCustomerIntuitCustomer) -> P
                 cnxn.rollback()
                 return PersistenceResponse(
                     data=None,
-                    message="Map Customer Intuit Customer not updated",
+                    message="Map Project Intuit Customer not updated",
                     status_code=400,
                     success=False,
                     timestamp=datetime.now()
@@ -188,24 +195,24 @@ def update_map_customer_intuit_customer(mapping: MapCustomerIntuitCustomer) -> P
             cnxn.rollback()
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to update Map Customer Intuit Customer: {str(e)}",
+                message=f"Failed to update Map Project Intuit Customer: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def delete_map_customer_intuit_customer_by_id(id: int) -> PersistenceResponse:
+def delete_map_project_to_intuit_customer_by_id(id: int) -> PersistenceResponse:
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL DeleteMapCustomerIntuitCustomerById (?)}"
+                sql = "{CALL DeleteMapProjectIntuitCustomerById (?)}"
                 rowcount = cursor.execute(sql, int(id)).rowcount
                 cnxn.commit()
                 if rowcount > 0:
                     return PersistenceResponse(
                         data=None,
-                        message="Map Customer Intuit Customer deleted",
+                        message="Map Project Intuit Customer deleted",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -213,7 +220,7 @@ def delete_map_customer_intuit_customer_by_id(id: int) -> PersistenceResponse:
                 cnxn.rollback()
                 return PersistenceResponse(
                     data=None,
-                    message="Map Customer Intuit Customer not deleted",
+                    message="Map Project Intuit Customer not deleted",
                     status_code=404,
                     success=False,
                     timestamp=datetime.now()
@@ -222,40 +229,9 @@ def delete_map_customer_intuit_customer_by_id(id: int) -> PersistenceResponse:
             cnxn.rollback()
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to delete Map Customer Intuit Customer: {str(e)}",
+                message=f"Failed to delete Map Project Intuit Customer: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
-
-def read_available_intuit_customers_for_customer_map() -> PersistenceResponse:
-    """Reads Intuit customers not mapped to any Build One customer (and not jobs/projects)."""
-    with get_db_connection() as cnxn:
-        try:
-            with cnxn.cursor() as cursor:
-                sql = "{CALL ReadAvailableIntuitCustomersForCustomerMap}"
-                rows = cursor.execute(sql).fetchall()
-                if rows:
-                    return PersistenceResponse(
-                        data=[IntuitCustomer.from_db_row(r) for r in rows],
-                        message="Available Intuit Customers for mapping found",
-                        status_code=200,
-                        success=True,
-                        timestamp=datetime.now()
-                    )
-                return PersistenceResponse(
-                    data=[],
-                    message="No available Intuit Customers for mapping found",
-                    status_code=404,
-                    success=False,
-                    timestamp=datetime.now()
-                )
-        except pyodbc.Error as e:
-            return PersistenceResponse(
-                data=None,
-                message=f"Failed to read available Intuit Customers for mapping: {str(e)}",
-                status_code=500,
-                success=False,
-                timestamp=datetime.now()
-            )

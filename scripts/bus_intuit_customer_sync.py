@@ -8,7 +8,7 @@ from datetime import datetime
 # local imports
 from shared.response import BusinessResponse
 from integrations.intuit.persistence import pers_intuit_customer
-from integrations.map import pers_map_customer_intuit_customer as pers_map_cic
+from integrations.adapters import map_customer_to_intuit_customer as map_customer_to_intuit
 from modules.customer import pers_customer
 
 
@@ -29,7 +29,7 @@ def get_available_intuit_customers() -> BusinessResponse:
 
 def get_customer_mapping_by_customer_id(customer_id: int) -> BusinessResponse:
     try:
-        resp = pers_map_cic.read_map_customer_intuit_customer_by_customer_id(customer_id)
+        resp = map_customer_to_intuit.read_map_customer_to_intuit_customer_by_customer_id(customer_id)
         return BusinessResponse(
             data=resp.data,
             message=resp.message,
@@ -55,18 +55,18 @@ def map_customer_to_intuit_customer(customer_id: int, intuit_customer_id: int) -
         if ic.get('status_code') != 201:
             return BusinessResponse(data=None, message="Intuit Customer not found", status_code=404, success=False, timestamp=datetime.now())
     # attempt to read existing mapping
-    existing = pers_map_cic.read_map_customer_intuit_customer_by_customer_id(customer_id)
+    existing = map_customer_to_intuit.read_map_customer_to_intuit_customer_by_customer_id(customer_id)
     if existing.success and existing.data:
         mapping = existing.data
         mapping.intuit_customer_id = intuit_customer_id
-        upd = pers_map_cic.update_map_customer_intuit_customer(mapping)
+        upd = map_customer_to_intuit.update_map_customer_to_intuit_customer(mapping)
         return BusinessResponse(data=upd.data, message=upd.message, status_code=upd.status_code, success=upd.success, timestamp=upd.timestamp)
     # create new mapping
-    crt = pers_map_cic.create_map_customer_intuit_customer(customer_id, intuit_customer_id)
+    crt = map_customer_to_intuit.create_map_customer_to_intuit_customer(customer_id, intuit_customer_id)
     return BusinessResponse(data=crt.data, message=crt.message, status_code=crt.status_code, success=crt.success, timestamp=crt.timestamp)
 
 
 def unmap_customer_by_mapping_id(mapping_id: int) -> BusinessResponse:
-    del_resp = pers_map_cic.delete_map_customer_intuit_customer_by_id(mapping_id)
+    del_resp = map_customer_to_intuit.delete_map_customer_to_intuit_customer_by_id(mapping_id)
     return BusinessResponse(data=del_resp.data, message=del_resp.message, status_code=del_resp.status_code, success=del_resp.success, timestamp=del_resp.timestamp)
 

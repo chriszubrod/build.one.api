@@ -1,28 +1,31 @@
 """
-This module contains the persistence layer for the Map Attachment Sharepoint File.
+This module contains the persistence layer for the Map Bill Intuit Bill.
 """
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
+
 import pyodbc
 
+from integrations.adapters import register_adapter
 from shared.database import get_db_connection
 from shared.response import PersistenceResponse
 
 
+@register_adapter
 @dataclass
-class MapAttachmentSharepointFile:
-    """Represents a Map Attachment Sharepoint File in the system."""
+class MapBillToIntuitBill:
+    """Represents a Map Bill Intuit Bill in the system."""
     id: Optional[int] = None
     guid: Optional[str] = None
     created_datetime: Optional[datetime] = None
     modified_datetime: Optional[datetime] = None
-    bill_line_item_attachment_id: Optional[int] = None
-    ms_sharepoint_file_id: Optional[int] = None
+    bill_id: Optional[int] = None
+    intuit_bill_id: Optional[int] = None
 
     @classmethod
-    def from_db_row(cls, row) -> 'MapAttachmentSharepointFile':
-        """Creates a MapAttachmentSharepointFile object from a database row."""
+    def from_db_row(cls, row) -> 'MapBillToIntuitBill':
+        """Creates a MapBillToIntuitBill object from a database row."""
         if not row:
             return None
 
@@ -31,36 +34,32 @@ class MapAttachmentSharepointFile:
             guid=getattr(row, 'GUID'),
             created_datetime=getattr(row, 'CreatedDatetime'),
             modified_datetime=getattr(row, 'ModifiedDatetime'),
-            bill_line_item_attachment_id=getattr(row, 'BillLineItemAttachmentId'),
-            ms_sharepoint_file_id=getattr(row, 'MsSharePointFileId'),
+            bill_id=getattr(row, 'BillId'),
+            intuit_bill_id=getattr(row, 'IntuitBillId'),
         )
 
 
-def create_map_attachment_sharepoint_file(
-        bill_line_item_attachment_id: int,
-        ms_sharepoint_file_id: int
+def create_map_bill_to_intuit_bill(
+        bill_id: int,
+        intuit_bill_id: int
     ) -> PersistenceResponse:
     """
-    Creates a Map Attachment Sharepoint File in the database.
+    Creates a Map Bill Intuit Bill in the database.
     """
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                print('bill_line_item_attachment_id')
-                print(type(bill_line_item_attachment_id))
-                print('ms_sharepoint_file_id')
-                print(type(ms_sharepoint_file_id))
-                sql = "{CALL CreateAttachmentSharePointFile (?, ?)}"
+                sql = "{CALL CreateMapBillIntuitBill (?, ?)}"
                 rowcount = cursor.execute(
                     sql,
-                    bill_line_item_attachment_id,
-                    ms_sharepoint_file_id
+                    bill_id,
+                    intuit_bill_id
                 ).rowcount
                 cnxn.commit()
                 if rowcount > 0:
                     return PersistenceResponse(
                         data=None,
-                        message="Map Attachment Sharepoint File created",
+                        message="Map Bill Intuit Bill created",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -69,7 +68,7 @@ def create_map_attachment_sharepoint_file(
                     cnxn.rollback()
                     return PersistenceResponse(
                         data=None,
-                        message="Map Attachment Sharepoint File not created",
+                        message="Map Bill Intuit Bill not created",
                         status_code=400,
                         success=False,
                         timestamp=datetime.now()
@@ -79,27 +78,27 @@ def create_map_attachment_sharepoint_file(
             cnxn.rollback()
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to create Map Attachment Sharepoint File: {str(e)}",
+                message=f"Failed to create Map Bill Intuit Bill: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_map_attachment_sharepoint_files() -> PersistenceResponse:
+def read_map_intuit_bills() -> PersistenceResponse:
     """
-    Retrieves all Map Attachment Sharepoint Files from the database.
+    Retrieves all Map Bill Intuit Bills from the database.
     """
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadAttachmentSharePointFile}"
+                sql = "{CALL ReadMapBillIntuitBills}"
                 rows = cursor.execute(sql).fetchall()
 
                 if rows:
                     return PersistenceResponse(
-                        data=[MapAttachmentSharepointFile.from_db_row(row) for row in rows],
-                        message="Map Attachment Sharepoint Files found",
+                        data=[MapBillToIntuitBill.from_db_row(row) for row in rows],
+                        message="Map Bill Intuit Bills found",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -107,7 +106,7 @@ def read_map_attachment_sharepoint_files() -> PersistenceResponse:
 
                 return PersistenceResponse(
                     data=[],
-                    message="No Map Attachment Sharepoint Files found",
+                    message="No Map Bill Intuit Bills found",
                     status_code=404,
                     success=False,
                     timestamp=datetime.now()
@@ -116,24 +115,24 @@ def read_map_attachment_sharepoint_files() -> PersistenceResponse:
         except pyodbc.Error as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read Map Attachment Sharepoint Files: {str(e)}",
+                message=f"Failed to read Map Bill Intuit Bills: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_map_attachment_sharepoint_file_by_attachment_id(bill_line_item_attachment_id: int) -> PersistenceResponse:
+def read_map_bill_to_intuit_bill_by_bill_id(bill_id: int) -> PersistenceResponse:
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadAttachmentSharePointFileByAttachmentId (?)}"
-                row = cursor.execute(sql, int(bill_line_item_attachment_id)).fetchone()
+                sql = "{CALL ReadMapBillIntuitBillByBillId (?)}"
+                row = cursor.execute(sql, int(bill_id)).fetchone()
 
                 if row:
                     return PersistenceResponse(
-                        data=MapAttachmentSharepointFile.from_db_row(row),
-                        message="Map Attachment Sharepoint File found",
+                        data=MapBillToIntuitBill.from_db_row(row),
+                        message="Map Bill Intuit Bill found",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -141,7 +140,7 @@ def read_map_attachment_sharepoint_file_by_attachment_id(bill_line_item_attachme
 
                 return PersistenceResponse(
                     data=[],
-                    message="No Map Attachment Sharepoint File found",
+                    message="No Map Bill Intuit Bill found",
                     status_code=404,
                     success=False,
                     timestamp=datetime.now()
@@ -150,24 +149,24 @@ def read_map_attachment_sharepoint_file_by_attachment_id(bill_line_item_attachme
         except pyodbc.Error as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read Map Attachment Sharepoint File: {str(e)}",
+                message=f"Failed to read Map Bill Intuit Bill: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def read_map_attachment_sharepoint_file_by_attachment_id_file_id(bill_line_item_attachment_id: int, ms_sharepoint_file_id: int) -> PersistenceResponse:
+def read_map_bill_to_intuit_bill_by_intuit_bill_id(intuit_bill_id: int) -> PersistenceResponse:
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadAttachmentSharePointFileByAttachmentIdSharePointFileId (?, ?)}"
-                rows = cursor.execute(sql, bill_line_item_attachment_id, ms_sharepoint_file_id).fetchone()
+                sql = "{CALL ReadMapBillIntuitBillByIntuitBillId (?)}"
+                rows = cursor.execute(sql, int(intuit_bill_id)).fetchone()
 
                 if rows:
                     return PersistenceResponse(
-                        data=[MapAttachmentSharepointFile.from_db_row(row) for row in rows],
-                        message="Map Attachment Sharepoint Files found",
+                        data=[MapBillToIntuitBill.from_db_row(row) for row in rows],
+                        message="Map Bill Intuit Bills found",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -175,7 +174,7 @@ def read_map_attachment_sharepoint_file_by_attachment_id_file_id(bill_line_item_
 
                 return PersistenceResponse(
                     data=[],
-                    message="No Map Attachment Sharepoint Files found",
+                    message="No Map Bill Intuit Bill found",
                     status_code=404,
                     success=False,
                     timestamp=datetime.now()
@@ -184,30 +183,30 @@ def read_map_attachment_sharepoint_file_by_attachment_id_file_id(bill_line_item_
         except pyodbc.Error as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to read Map Attachment Sharepoint Files: {str(e)}",
+                message=f"Failed to read Map Bill Intuit Bill: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def update_map_attachment_sharepoint_file(map_attachment_sharepoint_file):
+def update_map_bill_to_intuit_bill(map_bill_to_intuit_bill):
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL UpdateAttachmentSharePointFileById (?, ?, ?)}"
+                sql = "{CALL UpdateMapBillIntuitBillById (?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,
-                    map_attachment_sharepoint_file.id,
-                    map_attachment_sharepoint_file.bill_line_item_attachment_id,
-                    map_attachment_sharepoint_file.ms_sharepoint_file_id
+                    map_bill_to_intuit_bill.id,
+                    map_bill_to_intuit_bill.bill_id,
+                    map_bill_to_intuit_bill.intuit_bill_id
                 ).rowcount
                 cnxn.commit()
 
                 if rowcount > 0:
                     return PersistenceResponse(
                         data=None,
-                        message="Map Attachment Sharepoint File updated",
+                        message="Map Bill Intuit Bill updated",
                         status_code=200,
                         success=True,
                         timestamp=datetime.now()
@@ -216,7 +215,7 @@ def update_map_attachment_sharepoint_file(map_attachment_sharepoint_file):
                     cnxn.rollback()
                     return PersistenceResponse(
                         data=None,
-                        message="Map Attachment Sharepoint File not updated",
+                        message="Map Bill Intuit Bill not updated",
                         status_code=400,
                         success=False,
                         timestamp=datetime.now()
@@ -226,8 +225,10 @@ def update_map_attachment_sharepoint_file(map_attachment_sharepoint_file):
             cnxn.rollback()
             return PersistenceResponse(
                 data=None,
-                message=f"Failed to update Map Attachment Sharepoint File: {str(e)}",
+                message=f"Failed to update Map Bill Intuit Bill: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
+
+

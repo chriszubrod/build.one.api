@@ -4,14 +4,17 @@ This module contains the persistence layer for the Map Attachment Sharepoint Fil
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
+
 import pyodbc
 
+from integrations.adapters import register_adapter
 from shared.database import get_db_connection
 from shared.response import PersistenceResponse
 
 
+@register_adapter
 @dataclass
-class MapProjectSharepointFolder:
+class MapProjectToSharepointFolder:
     """Represents a Map Project Sharepoint Folder in the system."""
     id: Optional[int] = None
     guid: Optional[str] = None
@@ -22,8 +25,8 @@ class MapProjectSharepointFolder:
     ms_sharepoint_folder_id: Optional[int] = None
 
     @classmethod
-    def from_db_row(cls, row) -> 'MapProjectSharepointFolder':
-        """Creates a MapProjectSharepointFolder object from a database row."""
+    def from_db_row(cls, row) -> 'MapProjectToSharepointFolder':
+        """Creates a MapProjectToSharepointFolder object from a database row."""
         if not row:
             return None
 
@@ -38,7 +41,7 @@ class MapProjectSharepointFolder:
         )
 
 
-def create_map_project_sharepoint_folder(
+def create_map_project_to_sharepoint_folder(
         project_id: int,
         module_id: int,
         ms_sharepoint_folder_id: int
@@ -85,7 +88,7 @@ def create_map_project_sharepoint_folder(
             )
 
 
-def read_map_project_sharepoint_folders_by_project_by_module(
+def read_map_project_to_sharepoint_folders_by_project_by_module(
         project_id: int,
         module_id: int
     ) -> PersistenceResponse:
@@ -100,7 +103,7 @@ def read_map_project_sharepoint_folders_by_project_by_module(
 
                 if rows:
                     return PersistenceResponse(
-                        data=[MapProjectSharepointFolder.from_db_row(row) for row in rows],
+                        data=[MapProjectToSharepointFolder.from_db_row(row) for row in rows],
                         message="Map Project Sharepoint Folders found",
                         status_code=200,
                         success=True,
@@ -134,7 +137,7 @@ def read_project_sharepoint_folder_map_by_project_id(project_id: int) -> Persist
                 rows = cursor.execute(sql, project_id).fetchall()
                 if rows:
                     return PersistenceResponse(
-                        data=[MapProjectSharepointFolder.from_db_row(row) for row in rows],
+                        data=[MapProjectToSharepointFolder.from_db_row(row) for row in rows],
                         message="Project-SharePoint folder mappings found",
                         status_code=200,
                         success=True,
@@ -168,7 +171,7 @@ def read_project_sharepoint_folder_map_by_project_id_by_module_id(project_id: in
 
                 if rows:
                     return PersistenceResponse(
-                        data=[MapProjectSharepointFolder.from_db_row(r) for r in rows],
+                        data=[MapProjectToSharepointFolder.from_db_row(r) for r in rows],
                         message="Project-SharePoint folder mapping found",
                         status_code=200,
                         success=True,
@@ -191,7 +194,7 @@ def read_project_sharepoint_folder_map_by_project_id_by_module_id(project_id: in
             )
 
 
-def update_map_project_sharepoint_folder(mapping: MapProjectSharepointFolder) -> PersistenceResponse:
+def update_map_project_to_sharepoint_folder(mapping: MapProjectToSharepointFolder) -> PersistenceResponse:
     """Updates a Map Project SharePoint Folder record by Id."""
     with get_db_connection() as cnxn:
         try:

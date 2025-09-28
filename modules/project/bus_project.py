@@ -12,18 +12,18 @@ from typing import Optional
 
 # local imports
 from integrations.intuit.persistence import pers_intuit_customer
-from integrations.map import (
-    pers_map_project_intuit_customer,
-    pers_map_project_sharepoint_folder
+from integrations.adapters import (
+    map_project_to_intuit_customer as pers_map_project_intuit_customer,
+    map_project_to_sharepoint_folder as pers_map_project_sharepoint_folder,
 )
 from integrations.ms.persistence import pers_ms_sharepoint_folder
 from modules.customer import pers_customer
 from modules.module import pers_module
 from modules.project import pers_project
 from shared.response import BusinessResponse
-from integrations.map import (
-    pers_map_project_sharepoint_workbook,
-    pers_map_project_sharepoint_worksheet
+from integrations.adapters import (
+    map_project_to_sharepoint_workbook as pers_map_project_sharepoint_workbook,
+    map_project_to_sharepoint_worksheet as pers_map_project_sharepoint_worksheet,
 )
 from integrations.ms.persistence import (
     pers_ms_sharepoint_site,
@@ -340,7 +340,7 @@ def get_intuit_customer_by_project_guid(project_guid: str) -> BusinessResponse:
     project_id = proj_resp.data.id
 
     # Read mapping by project id
-    map_resp = pers_map_project_intuit_customer.read_map_project_intuit_customer_by_project_id(project_id)
+    map_resp = pers_map_project_intuit_customer.read_map_project_to_intuit_customer_by_project_id(project_id)
     if not map_resp.success or not map_resp.data:
         return BusinessResponse(
             data=None,
@@ -420,7 +420,7 @@ def post_map_project_to_intuit_customer(project_guid: str, intuit_customer_guid:
     intuit_customer_id = int(read_intuit.data.id)
 
     # Create mapping (SP may upsert or require uniqueness; mirrors Customer mapping approach)
-    create_resp = pers_map_project_intuit_customer.create_map_project_intuit_customer(project_id, intuit_customer_id)
+    create_resp = pers_map_project_intuit_customer.create_map_project_to_intuit_customer(project_id, intuit_customer_id)
     return BusinessResponse(
         data=create_resp.data,
         message=create_resp.message,
@@ -487,7 +487,7 @@ def get_ms_sharepoint_workbooks_by_project_id(project_id: int) -> BusinessRespon
         return BusinessResponse(data=None, message="Missing Project id.", status_code=400, success=False, timestamp=datetime.now(tz.tzlocal()))
 
     # Read all workbook mappings for project
-    map_resp = pers_map_project_sharepoint_workbook.read_map_project_sharepoint_workbook_by_project_id(project_id)
+    map_resp = pers_map_project_sharepoint_workbook.read_map_project_to_sharepoint_workbook_by_project_id(project_id)
     mappings = map_resp.data if getattr(map_resp, 'success', False) else []
 
     # Read all workbooks
@@ -517,7 +517,7 @@ def post_map_project_to_ms_sharepoint_workbook(project_guid: str, ms_sharepoint_
     if not proj.success or not proj.data:
         return BusinessResponse(data=None, message='Project not found', status_code=404, success=False, timestamp=datetime.now(tz.tzlocal()))
 
-    crt = pers_map_project_sharepoint_workbook.create_map_project_sharepoint_workbook(int(proj.data.id), int(ms_sharepoint_workbook_id))
+    crt = pers_map_project_sharepoint_workbook.create_map_project_to_sharepoint_workbook(int(proj.data.id), int(ms_sharepoint_workbook_id))
     return BusinessResponse(data=None, message=crt.message, status_code=crt.status_code, success=crt.success, timestamp=crt.timestamp)
 
 
@@ -527,7 +527,7 @@ def get_db_ms_sharepoint_worksheets_by_project_id(project_id: int) -> BusinessRe
         return BusinessResponse(data=None, message="Missing Project id.", status_code=400, success=False, timestamp=datetime.now(tz.tzlocal()))
 
     # Read all workbook mappings for project
-    map_wb_resp = pers_map_project_sharepoint_workbook.read_map_project_sharepoint_workbook_by_project_id(project_id)
+    map_wb_resp = pers_map_project_sharepoint_workbook.read_map_project_to_sharepoint_workbook_by_project_id(project_id)
     wb_mappings = map_wb_resp.data if getattr(map_wb_resp, 'success', False) else []
 
     # Read all workbooks
@@ -554,7 +554,7 @@ def get_ms_sharepoint_worksheets_by_project_id(project_id: int) -> BusinessRespo
         return BusinessResponse(data=None, message="Missing Project id.", status_code=400, success=False, timestamp=datetime.now(tz.tzlocal()))
 
     # Read all workbook mappings for project
-    map_wb_resp = pers_map_project_sharepoint_workbook.read_map_project_sharepoint_workbook_by_project_id(project_id)
+    map_wb_resp = pers_map_project_sharepoint_workbook.read_map_project_to_sharepoint_workbook_by_project_id(project_id)
     wb_mappings = map_wb_resp.data if getattr(map_wb_resp, 'success', False) else []
 
     # Read all workbooks
@@ -606,7 +606,7 @@ def post_map_project_to_ms_sharepoint_worksheet(project_guid: str, ms_sharepoint
     if not proj.success or not proj.data:
         return BusinessResponse(data=None, message='Project not found', status_code=404, success=False, timestamp=datetime.now(tz.tzlocal()))
 
-    crt = pers_map_project_sharepoint_worksheet.create_map_project_sharepoint_worksheet(int(proj.data.id), int(ms_sharepoint_worksheet_id))
+    crt = pers_map_project_sharepoint_worksheet.create_map_project_to_sharepoint_worksheet(int(proj.data.id), int(ms_sharepoint_worksheet_id))
     return BusinessResponse(data=None, message=crt.message, status_code=crt.status_code, success=crt.success, timestamp=crt.timestamp)
 
 
@@ -674,7 +674,7 @@ def map_project_to_ms_sharepoint_workbook_by_details(
         else:
             return BusinessResponse(data=None, message='Failed to persist SharePoint workbook', status_code=500, success=False, timestamp=datetime.now(tz.tzlocal()))
 
-    crt = pers_map_project_sharepoint_workbook.create_map_project_sharepoint_workbook(project_id, workbook_id)
+    crt = pers_map_project_sharepoint_workbook.create_map_project_to_sharepoint_workbook(project_id, workbook_id)
     return BusinessResponse(data=None, message=crt.message, status_code=crt.status_code, success=crt.success, timestamp=crt.timestamp)
 
 
@@ -715,7 +715,7 @@ def map_project_to_ms_sharepoint_worksheet_by_details(
         else:
             return BusinessResponse(data=None, message='Failed to persist SharePoint worksheet', status_code=500, success=False, timestamp=datetime.now(tz.tzlocal()))
 
-    crt = pers_map_project_sharepoint_worksheet.create_map_project_sharepoint_worksheet(project_id, worksheet_id)
+    crt = pers_map_project_sharepoint_worksheet.create_map_project_to_sharepoint_worksheet(project_id, worksheet_id)
     return BusinessResponse(data=None, message=crt.message, status_code=crt.status_code, success=crt.success, timestamp=crt.timestamp)
 
 
@@ -755,11 +755,11 @@ def post_map_project_to_ms_sharepoint_folder(project_guid: str, module_slug: str
     module_id = int(mod.data.id)
 
     # If a mapping exists, update; otherwise create
-    existing = pers_map_project_sharepoint_folder.read_map_project_sharepoint_folders_by_project_by_module(project_id, module_id)
+    existing = pers_map_project_sharepoint_folder.read_map_project_to_sharepoint_folders_by_project_by_module(project_id, module_id)
     if getattr(existing, 'success', False) and existing.data:
         mapping = existing.data[0]
         mapping.ms_sharepoint_folder_id = int(ms_sharepoint_folder_id)
-        upd = pers_map_project_sharepoint_folder.update_map_project_sharepoint_folder(mapping)
+        upd = pers_map_project_sharepoint_folder.update_map_project_to_sharepoint_folder(mapping)
         return BusinessResponse(
             data=None,
             message=upd.message,
@@ -768,7 +768,7 @@ def post_map_project_to_ms_sharepoint_folder(project_guid: str, module_slug: str
             timestamp=upd.timestamp
         )
     else:
-        crt = pers_map_project_sharepoint_folder.create_map_project_sharepoint_folder(project_id, module_id, int(ms_sharepoint_folder_id))
+        crt = pers_map_project_sharepoint_folder.create_map_project_to_sharepoint_folder(project_id, module_id, int(ms_sharepoint_folder_id))
         return BusinessResponse(
             data=None,
             message=crt.message,

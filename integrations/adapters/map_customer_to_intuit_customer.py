@@ -8,7 +8,7 @@ from typing import List, Optional
 import pyodbc
 
 from integrations.adapters import register_adapter
-from integrations.intuit.pers_intuit_customer import IntuitCustomer
+from integrations.intuit.persistence.pers_intuit_customer import IntuitCustomer
 from shared.database import get_db_connection
 from shared.response import PersistenceResponse
 

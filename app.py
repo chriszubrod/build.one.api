@@ -90,7 +90,7 @@ from modules.vendor_type import (
 from utils.config_help import get_secrets, write_secrets, update_secrets
 
 from integrations.ms.auth import api_ms_auth
-from integrations.ms.picker import web_ms_picker
+from integrations.ms.web.picker.web_ms_picker import web_ms_picker_bp
 from integrations.ms.drives import api_ms_drives
 
 
@@ -167,7 +167,7 @@ app.register_blueprint(web_vendor_type.web_vendor_type_bp)
 
 # integration blueprints
 app.register_blueprint(api_ms_auth.api_ms_auth_bp)
-app.register_blueprint(web_ms_picker.web_ms_picker_bp)
+app.register_blueprint(web_ms_picker_bp)
 app.register_blueprint(api_ms_drives.api_ms_drives_bp)
 
 

@@ -1,64 +1,52 @@
 """
-Module for address persistence.
+Address persistence service layer.
+
+This module contains all database operations for address entities. It provides
+CRUD operations and handles database connections, transactions, and error
+handling for the address persistence layer.
+
+Functions:
+    create_address: Creates a new address record
+    read_address: Retrieves an address record by ID or GUID
+    read_addresses: Retrieves all address records
+    update_address: Updates an address record by ID or GUID
+    delete_address: Deletes an address record by ID or GUID
 """
 
-# python standard library imports
-from dataclasses import dataclass
+# Standard Library Imports
 from datetime import datetime
-from typing import Optional
 
-# third party imports
+# Third-party Imports
 import pyodbc
 
-# local imports
+# Local Imports
+from modules.address.persistence.models import Address
 from shared.database import get_db_connection
 from shared.response import PersistenceResponse
 
 
-@dataclass
-class Address:
-    """Represents an address in the system."""
-    id: Optional[int] = None
-    guid: Optional[str] = None
-    created_datetime: Optional[datetime] = None
-    modified_datetime: Optional[datetime] = None
-    street_one: Optional[str] = None
-    street_two: Optional[str] = None
-    city: Optional[str] = None
-    state: Optional[str] = None
-    zip_code: Optional[str] = None
-    transaction_id: Optional[int] = None
 
-
-    @classmethod
-    def from_db_row(cls, row) -> Optional['Address']:
-        """Creates an Address instance from a database row."""
-        return cls(
-            id=getattr(row, 'Id', None),
-            guid=getattr(row, 'GUID', None),
-            created_datetime=getattr(row, 'CreatedDatetime', None),
-            modified_datetime=getattr(row, 'ModifiedDatetime', None),
-            street_one=getattr(row, 'StreetOne', None),
-            street_two=getattr(row, 'StreetTwo', None),
-            city=getattr(row, 'City', None),
-            state=getattr(row, 'State', None),
-            zip_code=getattr(row, 'ZipCode', None),
-            transaction_id=getattr(row, 'TransactionId', None)
-        )
 
 
 def create_address(address: Address) -> PersistenceResponse:
     """
     Creates a new address record in the database.
+
+    Args:
+        address: Address instance containing the address data to create
+        
+    Returns:
+        PersistenceResponse with success status and message
+        
+    Raises:
+        pyodbc.Error: If database operation fails
     """
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL CreateAddress(?, ?, ?, ?, ?, ?, ?)}"
+                sql = "{CALL CreateAddress(?, ?, ?, ?, ?)}"
                 rowcount = cursor.execute(
                     sql,
-                    address.created_datetime,
-                    address.modified_datetime,
                     address.street_one,
                     address.street_two,
                     address.city,
@@ -83,7 +71,7 @@ def create_address(address: Address) -> PersistenceResponse:
                         success=False,
                         timestamp=datetime.now()
                     )
-        except (pyodbc.Error) as e:
+        except pyodbc.Error as e:
             cnxn.rollback()
             return PersistenceResponse(
                 data=None,
@@ -94,9 +82,74 @@ def create_address(address: Address) -> PersistenceResponse:
             )
 
 
+def read_address(address: Address) -> PersistenceResponse:
+    """
+    Retrieves a specific address record by its ID or GUID.
+
+    Args:
+        address: Address instance with ID or GUID
+        
+    Returns:
+        PersistenceResponse containing Address object or None if not found
+        
+    Raises:
+        pyodbc.Error: If database operation fails
+    """
+    if not address.id and not address.guid:
+        return PersistenceResponse(
+            data=None,
+            message="Address must have either ID or GUID for read",
+            status_code=400,
+            success=False,
+            timestamp=datetime.now()
+        )
+
+    with get_db_connection() as cnxn:
+        try:
+            with cnxn.cursor() as cursor:
+                if address.id:
+                    sql = "{CALL ReadAddressById(?)}"
+                    params = (address.id,)
+                else:
+                    sql = "{CALL ReadAddressByGuid(?)}"
+                    params = (address.guid,)
+
+                row = cursor.execute(sql, *params).fetchone()
+                if row:
+                    return PersistenceResponse(
+                        data=Address.from_db_row(row),
+                        message="Address found",
+                        status_code=200,
+                        success=True,
+                        timestamp=datetime.now()
+                    )
+                else:
+                    return PersistenceResponse(
+                        data=None,
+                        message="Address not found",
+                        status_code=404,
+                        success=False,
+                        timestamp=datetime.now()
+                    )
+        except pyodbc.Error as e:
+            return PersistenceResponse(
+                data=None,
+                message=f"Error in read address: {str(e)}",
+                status_code=500,
+                success=False,
+                timestamp=datetime.now()
+            )
+
+
 def read_addresses() -> PersistenceResponse:
     """
-    Retrieves all addresses from the database.
+    Retrieves all address records from the database.
+
+    Returns:
+        PersistenceResponse containing list of Address objects or empty list
+        
+    Raises:
+        pyodbc.Error: If database operation fails
     """
     with get_db_connection() as cnxn:
         try:
@@ -113,15 +166,15 @@ def read_addresses() -> PersistenceResponse:
                     )
                 else:
                     return PersistenceResponse(
-                        data=None,
+                        data=[],
                         message="No addresses found",
                         status_code=404,
                         success=False,
                         timestamp=datetime.now()
                     )
-        except (pyodbc.Error) as e:
+        except pyodbc.Error as e:
             return PersistenceResponse(
-                data=None,
+                data=[],
                 message=f"Error in read addresses: {str(e)}",
                 status_code=500,
                 success=False,
@@ -129,94 +182,42 @@ def read_addresses() -> PersistenceResponse:
             )
 
 
-def read_address_by_id(address_id: int) -> PersistenceResponse:
+def update_address(address: Address) -> PersistenceResponse:
     """
-    Retrieves an address from the database by ID.
+    Updates an existing address record by ID or GUID.
+
+    Args:
+        address: Address instance with updated data (must include valid ID or GUID)
+        
+    Returns:
+        PersistenceResponse with success status and message
+        
+    Raises:
+        pyodbc.Error: If database operation fails
     """
+    if not address.id and not address.guid:
+        return PersistenceResponse(
+            data=None,
+            message="Address must have either ID or GUID for update",
+            status_code=400,
+            success=False,
+            timestamp=datetime.now()
+        )
+
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL ReadAddressById(?)}"
-                row = cursor.execute(sql, address_id).fetchone()
-                if row:
-                    return PersistenceResponse(
-                        data=Address.from_db_row(row),
-                        message="Address found",
-                        status_code=200,
-                        success=True,
-                        timestamp=datetime.now()
-                    )
+                if address.id:
+                    sql = "{CALL UpdateAddressById(?, ?, ?, ?, ?, ?)}"
+                    params = (address.id, address.street_one, address.street_two, address.city, address.state, address.zip_code)
+
                 else:
-                    return PersistenceResponse(
-                        data=None,
-                        message="Address not found",
-                        status_code=404,
-                        success=False,
-                        timestamp=datetime.now()
-                    )
-        except (pyodbc.Error) as e:
-            return PersistenceResponse(
-                data=None,
-                message=f"Error in read address by id: {str(e)}",
-                status_code=500,
-                success=False,
-                timestamp=datetime.now()
-            )
+                    sql = "{CALL UpdateAddressByGuid(?, ?, ?, ?, ?, ?)}"
+                    params = (address.guid, address.street_one, address.street_two, address.city, address.state, address.zip_code)
 
+                rowcount = cursor.execute(sql,*params).rowcount
+                cnxn.commit()
 
-def read_address_by_guid(address_guid: str) -> PersistenceResponse:
-    """
-    Retrieves an address from the database by GUID.
-    """
-    with get_db_connection() as cnxn:
-        try:
-            with cnxn.cursor() as cursor:
-                sql = "{CALL ReadAddressByGuid(?)}"
-                row = cursor.execute(sql, address_guid).fetchone()
-                if row:
-                    return PersistenceResponse(
-                        data=Address.from_db_row(row),
-                        message="Address found",
-                        status_code=200,
-                        success=True,
-                        timestamp=datetime.now()
-                    )
-                else:
-                    return PersistenceResponse(
-                        data=None,
-                        message="Address not found",
-                        status_code=404,
-                        success=False,
-                        timestamp=datetime.now()
-                    )
-        except (pyodbc.Error) as e:
-            return PersistenceResponse(
-                data=None,
-                message=f"Error in read address by id: {str(e)}",
-                status_code=500,
-                success=False,
-                timestamp=datetime.now()
-            )
-
-
-def update_address_by_id(address: Address) -> PersistenceResponse:
-    """
-    Updates an address in the database by ID.
-    """
-    with get_db_connection() as cnxn:
-        try:
-            with cnxn.cursor() as cursor:
-                sql = "{CALL UpdateAddressById(?, ?, ?, ?, ?, ?, ?)}"
-                rowcount = cursor.execute(
-                    sql,
-                    address.id,
-                    address.modified_datetime,
-                    address.street_one,
-                    address.street_two,
-                    address.city,
-                    address.state,
-                    address.zip_code
-                ).rowcount
                 if rowcount > 0:
                     return PersistenceResponse(
                         data=None,
@@ -234,26 +235,52 @@ def update_address_by_id(address: Address) -> PersistenceResponse:
                         success=False,
                         timestamp=datetime.now()
                     )
-        except (pyodbc.Error) as e:
+        except pyodbc.Error as e:
             cnxn.rollback()
             return PersistenceResponse(
                 data=None,
-                message=f"Error in update address by id: {str(e)}",
+                message=f"Error in update address: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()
             )
 
 
-def delete_address_by_id(address_id: int) -> PersistenceResponse:
+def delete_address(address: Address) -> PersistenceResponse:
     """
-    Deletes an address from the database by ID.
+    Deletes an address record by its ID or GUID.
+
+    Args:
+        address: Address instance with ID or GUID
+        
+    Returns:
+        PersistenceResponse with success status and message
+        
+    Raises:
+        pyodbc.Error: If database operation fails
     """
+    if not address.id and not address.guid:
+        return PersistenceResponse(
+            data=None,
+            message="Address must have either ID or GUID for delete",
+            status_code=400,
+            success=False,
+            timestamp=datetime.now()
+        )
+
     with get_db_connection() as cnxn:
         try:
             with cnxn.cursor() as cursor:
-                sql = "{CALL DeleteAddressById(?)}"
-                rowcount = cursor.execute(sql, address_id).rowcount
+                if address.id:
+                    sql = "{CALL DeleteAddressById(?)}"
+                    params = (address.id,)
+                else:
+                    sql = "{CALL DeleteAddressByGuid(?)}"
+                    params = (address.guid,)
+
+                rowcount = cursor.execute(sql, *params).rowcount
+                cnxn.commit()
+
                 if rowcount > 0:
                     return PersistenceResponse(
                         data=None,
@@ -270,10 +297,10 @@ def delete_address_by_id(address_id: int) -> PersistenceResponse:
                         success=False,
                         timestamp=datetime.now()
                     )
-        except (pyodbc.Error) as e:
+        except pyodbc.Error as e:
             return PersistenceResponse(
                 data=None,
-                message=f"Error in delete address by id: {str(e)}",
+                message=f"Error in delete address: {str(e)}",
                 status_code=500,
                 success=False,
                 timestamp=datetime.now()

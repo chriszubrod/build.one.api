@@ -14,8 +14,11 @@ from flask import Blueprint, request, jsonify
 # local imports
 from shared.response import ApiResponse
 from modules.project import bus_project
-from integrations.ms import pers_ms_sharepoint_site
-from integrations.ms import pers_ms_sharepoint_workbook, pers_ms_sharepoint_worksheet
+from integrations.ms.persistence import (
+    pers_ms_sharepoint_site,
+    pers_ms_sharepoint_workbook,
+    pers_ms_sharepoint_worksheet,
+)
 
 
 api_project_bp = Blueprint('api_project', __name__, url_prefix='/api')
@@ -440,7 +443,7 @@ def api_patch_ms_sharepoint_workbook_route(workbook_id):
         if not request.is_json:
             return jsonify(ApiResponse(data=None, message='Content type must be application/json', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
         data = request.json
-        from integrations.ms import pers_ms_sharepoint_workbook
+        from integrations.ms.persistence import pers_ms_sharepoint_workbook
         wb = pers_ms_sharepoint_workbook.SharePointWorkbook(
             workbook_id=workbook_id,
             workbook_ms_graph_download_url=data.get('msGraphDownloadUrl'),
@@ -466,7 +469,7 @@ def api_patch_ms_sharepoint_workbook_route(workbook_id):
 @api_project_bp.route('/delete/ms/sharepoint/workbook/<int:workbook_id>', methods=['DELETE'])
 def api_delete_ms_sharepoint_workbook_route(workbook_id):
     try:
-        from integrations.ms import pers_ms_sharepoint_workbook
+        from integrations.ms.persistence import pers_ms_sharepoint_workbook
         resp = pers_ms_sharepoint_workbook.delete_sharepoint_workbook_by_id(workbook_id)
         return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=datetime.now(tz.tzlocal())).to_dict())
     except Exception as e:
@@ -479,7 +482,7 @@ def api_patch_ms_sharepoint_worksheet_route(worksheet_id):
         if not request.is_json:
             return jsonify(ApiResponse(data=None, message='Content type must be application/json', status_code=400, success=False, timestamp=datetime.now(tz.tzlocal())).to_dict())
         data = request.json
-        from integrations.ms import pers_ms_sharepoint_worksheet
+        from integrations.ms.persistence import pers_ms_sharepoint_worksheet
         ws = pers_ms_sharepoint_worksheet.SharePointWorksheet(
             worksheet_id=worksheet_id,
             worksheet_ms_o_data_id=data.get('msODataId'),
@@ -497,7 +500,7 @@ def api_patch_ms_sharepoint_worksheet_route(worksheet_id):
 @api_project_bp.route('/delete/ms/sharepoint/worksheet/<int:worksheet_id>', methods=['DELETE'])
 def api_delete_ms_sharepoint_worksheet_route(worksheet_id):
     try:
-        from integrations.ms import pers_ms_sharepoint_worksheet
+        from integrations.ms.persistence import pers_ms_sharepoint_worksheet
         resp = pers_ms_sharepoint_worksheet.delete_sharepoint_worksheet_by_id(worksheet_id)
         return jsonify(ApiResponse(data=resp.data, message=resp.message, status_code=resp.status_code, success=resp.success, timestamp=datetime.now(tz.tzlocal())).to_dict())
     except Exception as e:

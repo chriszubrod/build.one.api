@@ -16,17 +16,17 @@ import re
 import requests
 
 from datetime import datetime
-from integrations.intuit import intuit_item_int
+from integrations.intuit.clients import intuit_item_int
 from modules.cost_code import pers_cost_code
 from modules.sub_cost_code import pers_sub_cost_code
 from shared.response import PersistenceResponse
 
-from persistence import (
+from integrations.intuit.persistence import (
     pers_intuit_auth,
-    pers_intuit_item,
     pers_intuit_data_sync,
     pers_intuit_email_address,
-    pers_intuit_urls
+    pers_intuit_item,
+    pers_intuit_urls,
 )
 
 LAST_UPDATE = ""

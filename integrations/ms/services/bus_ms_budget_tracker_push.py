@@ -25,10 +25,10 @@ from integrations.map import (
     pers_map_project_sharepoint_workbook,
     pers_map_project_sharepoint_worksheet
 )
-from integrations.ms import (
+from integrations.ms.persistence import (
     pers_ms_sharepoint_site,
     pers_ms_sharepoint_workbook,
-    pers_ms_sharepoint_worksheet
+    pers_ms_sharepoint_worksheet,
 )
 from integrations.ms.auth import bus_ms_auth, api_ms_auth
 from modules.bill import bus_bill, bus_bill_line_item, pers_bill_line_item

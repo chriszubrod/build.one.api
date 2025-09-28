@@ -21,7 +21,7 @@ from integrations.ms.drives import bus_ms_drives
 from integrations.ms.sites import bus_ms_sites
 from utils.auth_help import requires_auth
 from modules.project import bus_project
-from integrations.ms import pers_ms_sharepoint_site
+from integrations.ms.persistence import pers_ms_sharepoint_site
 import requests
 from flask import current_app
 

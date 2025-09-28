@@ -14,15 +14,15 @@ import json
 import requests
 
 from datetime import datetime
-from integrations.intuit import intuit_vendor_int
+from integrations.intuit.clients import intuit_vendor_int
 from modules.vendor import pers_vendor
 from shared.response import PersistenceResponse
-from persistence import (
+from integrations.intuit.persistence import (
     pers_intuit_auth,
-    pers_intuit_vendor,
     pers_intuit_data_sync,
     pers_intuit_email_address,
-    pers_intuit_urls
+    pers_intuit_urls,
+    pers_intuit_vendor,
 )
 
 LAST_UPDATE = ""

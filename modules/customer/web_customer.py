@@ -10,7 +10,7 @@ from flask import Blueprint, render_template, flash
 # local imports
 from modules.customer import bus_customer
 from modules.project import bus_project
-from integrations.intuit import pers_intuit_customer
+from integrations.intuit.persistence import pers_intuit_customer
 from datetime import datetime
 # from utils.auth_help import requires_auth
 

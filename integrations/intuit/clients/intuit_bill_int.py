@@ -17,11 +17,11 @@ from datetime import datetime
 from modules.project import pers_project
 from modules.sub_cost_code import pers_sub_cost_code
 from modules.vendor import pers_vendor
-from persistence import (
+from integrations.intuit.persistence import (
     pers_intuit_auth,
     pers_intuit_bill,
     pers_intuit_data_sync,
-    pers_intuit_urls
+    pers_intuit_urls,
 )
 
 from shared.response import SuccessResponse, PersistenceResponse, DatabaseError

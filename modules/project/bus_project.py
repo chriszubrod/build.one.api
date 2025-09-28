@@ -11,12 +11,12 @@ from typing import Optional
 
 
 # local imports
-from integrations.intuit import pers_intuit_customer
+from integrations.intuit.persistence import pers_intuit_customer
 from integrations.map import (
     pers_map_project_intuit_customer,
     pers_map_project_sharepoint_folder
 )
-from integrations.ms import pers_ms_sharepoint_folder
+from integrations.ms.persistence import pers_ms_sharepoint_folder
 from modules.customer import pers_customer
 from modules.module import pers_module
 from modules.project import pers_project
@@ -25,10 +25,10 @@ from integrations.map import (
     pers_map_project_sharepoint_workbook,
     pers_map_project_sharepoint_worksheet
 )
-from integrations.ms import (
+from integrations.ms.persistence import (
     pers_ms_sharepoint_site,
     pers_ms_sharepoint_workbook,
-    pers_ms_sharepoint_worksheet
+    pers_ms_sharepoint_worksheet,
 )
 from integrations.ms.auth import api_ms_auth
 

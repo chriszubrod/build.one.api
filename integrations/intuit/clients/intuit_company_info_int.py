@@ -8,7 +8,7 @@ persistence layer for loading into the database.
 import json
 import requests
 
-from persistence import (
+from integrations.intuit.persistence import (
     pers_intuit_auth,
     pers_intuit_company_info,
     pers_intuit_data_sync,
@@ -17,7 +17,7 @@ from persistence import (
     pers_intuit_physical_address,
     pers_intuit_telephone_number,
     pers_intuit_urls,
-    pers_intuit_web_site_address
+    pers_intuit_web_site_address,
 )
 
 REALM_ID = ""

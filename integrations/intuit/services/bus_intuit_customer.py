@@ -15,22 +15,21 @@ from datetime import datetime
 import json
 import requests
 
-from integrations.intuit.intuit_customer_int import (
+from integrations.intuit.clients.intuit_customer_int import (
     query_intuit_customer_count_info,
     query_intuit_customer_info
 )
 from shared.response import BusinessResponse
 from modules.project import pers_project
 from shared.response import SuccessResponse
-from persistence import (
-    pers_customer,
+from integrations.intuit.persistence import (
     pers_intuit_auth,
     pers_intuit_customer,
     pers_intuit_data_sync,
-
     pers_intuit_email_address,
-    pers_intuit_urls
+    pers_intuit_urls,
 )
+from modules.customer import pers_customer
 
 LAST_UPDATE = ""
 REALM_ID = ""

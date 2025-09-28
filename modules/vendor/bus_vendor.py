@@ -11,7 +11,7 @@ import html
 from shared.response import BusinessResponse
 from modules.vendor import pers_vendor
 from modules.vendor_type import pers_vendor_type
-from integrations.map import pers_map_vendor_intuit_vendor
+from integrations.adapters import map_vendor_to_intuit_vendor as pers_map_vendor_intuit_vendor
 
 # Constants
 MAX_NAME_LENGTH = 255
@@ -250,7 +250,7 @@ def get_mapped_intuit_vendor_by_vendor_id(vendor_id: int) -> BusinessResponse:
     Retrieves a mapped intuit vendor from the database by vendor id.
     """
     pers_read_mapped_intuit_vendor_resp = pers_map_vendor_intuit_vendor.\
-        read_map_vendor_intuit_vendor_by_vendor_id(vendor_id=vendor_id)
+        read_map_vendor_to_intuit_vendor_by_vendor_id(vendor_id=vendor_id)
     
     return BusinessResponse(
         data=pers_read_mapped_intuit_vendor_resp.data,

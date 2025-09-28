@@ -10,7 +10,7 @@ from flask import Blueprint, render_template, flash
 
 
 # local imports
-from integrations.map import pers_map_attachment_sharepoint_file
+from integrations.adapters import map_attachment_to_sharepoint_file as pers_map_attachment_sharepoint_file
 from integrations.ms.persistence import pers_ms_sharepoint_file
 from modules.bill import (
     bus_bill_line_item_attachment,
@@ -153,7 +153,7 @@ def view_bill_route(bill_guid):
                 data_uri = f'data:{mime_type};base64,{base64_bytes}'
 
                 get_map_attachment_sharepoint_file_response = pers_map_attachment_sharepoint_file.\
-                    read_map_attachment_sharepoint_file_by_attachment_id(attachment.id)
+                    read_map_attachment_to_sharepoint_file_by_attachment_id(attachment.id)
 
                 ms_sharepoint_file = None
                 if get_map_attachment_sharepoint_file_response.success:
@@ -268,7 +268,7 @@ def edit_bill_route(bill_guid):
                 data_uri = f'data:{mime_type};base64,{base64_bytes}'
 
                 get_map_attachment_sharepoint_file_response = pers_map_attachment_sharepoint_file.\
-                    read_map_attachment_sharepoint_file_by_attachment_id(attachment.id)
+                    read_map_attachment_to_sharepoint_file_by_attachment_id(attachment.id)
 
                 ms_sharepoint_file = None
                 if get_map_attachment_sharepoint_file_response.success:

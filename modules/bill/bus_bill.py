@@ -23,7 +23,7 @@ from integrations.ms.persistence import (
     pers_ms_sharepoint_site,
 )
 from integrations.ms.auth import pers_ms_auth
-from integrations.map import pers_map_project_sharepoint_folder
+from integrations.adapters import map_project_to_sharepoint_folder as pers_map_project_sharepoint_folder
 from integrations.ms.sites import pers_ms_sites
 from modules.bill import (
     bus_bill_line_item_attachment,
@@ -38,8 +38,8 @@ from utils.function_help import clean_text_for_db
 from modules.vendor import (
     pers_vendor
 )
-from integrations.ms.services import bus_ms_sharepoint_sync, bus_ms_budget_tracker_push
-import bus_intuit_bill_sync
+from integrations.ms.services import bus_ms_sharepoint_sync
+from scripts import bus_intuit_bill_sync, bus_ms_budget_tracker_push
 
 
 def get_bills() -> BusinessResponse:

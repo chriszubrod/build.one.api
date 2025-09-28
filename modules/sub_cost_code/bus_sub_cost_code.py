@@ -14,7 +14,7 @@ from dateutil import tz
 from shared.response import BusinessResponse
 from modules.cost_code import pers_cost_code
 from modules.sub_cost_code import pers_sub_cost_code
-from integrations.map import pers_map_sub_cost_code_intuit_item
+from integrations.adapters import map_sub_cost_code_to_intuit_item as pers_map_sub_cost_code_intuit_item
 
 
 def get_sub_cost_codes() -> BusinessResponse:
@@ -174,7 +174,7 @@ def get_mapped_intuit_item_by_sub_cost_code_id(sub_cost_code_id: int) -> Busines
     Retrieves a mapped intuit item from the database by sub cost code id.
     """
     pers_read_mapped_intuit_item_resp = pers_map_sub_cost_code_intuit_item.\
-        read_map_sub_cost_code_intuit_item_by_sub_cost_code_id(sub_cost_code_id=sub_cost_code_id)
+        read_map_sub_cost_code_to_intuit_item_by_sub_cost_code_id(sub_cost_code_id=sub_cost_code_id)
     
     return BusinessResponse(
         data=pers_read_mapped_intuit_item_resp.data,

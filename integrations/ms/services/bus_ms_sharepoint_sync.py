@@ -19,9 +19,9 @@ import time
 
 # local imports
 from shared.response import BusinessResponse
-from integrations.map import (
-    pers_map_attachment_sharepoint_file,
-    pers_map_project_sharepoint_folder,
+from integrations.adapters import (
+    map_attachment_to_sharepoint_file as pers_map_attachment_sharepoint_file,
+    map_project_to_sharepoint_folder as pers_map_project_sharepoint_folder,
 )
 from integrations.ms.auth import api_ms_auth, bus_ms_auth
 from integrations.ms.clients.sharepoint_drive_client import (
@@ -52,7 +52,7 @@ def _get_bill_line_item_attachments():
 
 def _get_bill_line_item_attachments_mapping():
     bill_line_item_attachments_mapping = pers_map_attachment_sharepoint_file.\
-        read_map_attachment_sharepoint_files()
+        read_map_attachment_to_sharepoint_files()
     if bill_line_item_attachments_mapping.success:
         return bill_line_item_attachments_mapping.data
     else:
@@ -76,7 +76,7 @@ def _get_bill_line_item_by_bill_line_item_id(bill_line_item_id):
 
 def _get_project_integration_sharepoint_folder_mapping(project_id, module_id=4):
     project_sharepoint_folder_mapping = pers_map_project_sharepoint_folder.\
-        read_map_project_sharepoint_folders_by_project_by_module(
+        read_map_project_to_sharepoint_folders_by_project_by_module(
             project_id=project_id,
             module_id=module_id
         )
@@ -203,25 +203,25 @@ def _process_map_attachment_sharepoint_file(bill_line_item_attachment, new_share
     #print(f'\nBill Line Item Attachment: {bill_line_item_attachment}')
     #print(f'\nNew Sharepoint File: {new_sharepoint_file}')
     read_map_attachment_sharepoint_file_resp = pers_map_attachment_sharepoint_file.\
-        read_map_attachment_sharepoint_file_by_attachment_id_file_id(
+        read_map_attachment_to_sharepoint_file_by_attachment_id_file_id(
             bill_line_item_attachment_id=bill_line_item_attachment.id,
             ms_sharepoint_file_id=new_sharepoint_file.file_id
         )
     if read_map_attachment_sharepoint_file_resp.success:
         map_attachment_sharepoint_file = read_map_attachment_sharepoint_file_resp.data[0]
-        update_map_attachment_sharepoint_file_resp = pers_map_attachment_sharepoint_file.\
-            update_map_attachment_sharepoint_file(
+        update_map_attachment_to_sharepoint_file_resp = pers_map_attachment_sharepoint_file.\
+            update_map_attachment_to_sharepoint_file(
                 map_attachment_sharepoint_file=map_attachment_sharepoint_file
             )
-        if update_map_attachment_sharepoint_file_resp.success:
+        if update_map_attachment_to_sharepoint_file_resp.success:
             return True
     else:
-        create_map_attachment_sharepoint_file_resp = pers_map_attachment_sharepoint_file.\
-            create_map_attachment_sharepoint_file(
+        create_map_attachment_to_sharepoint_file_resp = pers_map_attachment_sharepoint_file.\
+            create_map_attachment_to_sharepoint_file(
                 bill_line_item_attachment_id=bill_line_item_attachment.id,
                 ms_sharepoint_file_id=new_sharepoint_file.file_id
             )
-        if create_map_attachment_sharepoint_file_resp.success:
+        if create_map_attachment_to_sharepoint_file_resp.success:
             return True
     return False
 

@@ -1,32 +1,28 @@
 # Python Standard Library Imports
-import os
-from dotenv import load_dotenv
-
-# Load Environment Variables
-load_dotenv()
-
 
 # Third-party Imports
-from flask import Flask
+from fastapi import Depends, FastAPI
+from typing_extensions import Annotated
 
 # Local Imports
+import config
+
+app = FastAPI()
 
 
-# Initialize the App
-app = Flask(__name__)
-
-# Set Secret Key for CSRF Protection
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
+def get_settings():
+    return config.Settings()
 
 
-# Register Blueprints
-
-@app.route('/')
-def index():
-    return "pong", 200
+@app.get("/ping")
+def ping():
+    return {"message": "pong"}
 
 
-if __name__ == '__main__':
-    host = os.getenv('FLASK_HOST')
-    port = os.getenv('FLASK_PORT')
-    app.run(host=host, port=port, debug=True)
+@app.get("/info")
+async def info(settings: Annotated[config.Settings, Depends(get_settings)]):
+    return {
+        "api_version": settings.api_version,
+        "host": settings.host,
+        "port": settings.port
+    }

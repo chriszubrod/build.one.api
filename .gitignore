@@ -165,7 +165,5 @@ cython_debug/
 
 .vscode/
 
-# Ignore my secrets file.
-secrets.json
-
-sharepoint_worksheet_dump.json
+.DS_Store
+**/.DS_Store

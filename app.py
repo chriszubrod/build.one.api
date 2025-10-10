@@ -6,8 +6,14 @@ from typing_extensions import Annotated
 
 # Local Imports
 import config
+from modules.organization.api.router import router as organization_api_router
+from modules.organization.web.controller import router as organization_web_router
 
 app = FastAPI()
+
+
+app.include_router(organization_api_router)
+app.include_router(organization_web_router)
 
 
 def get_settings():

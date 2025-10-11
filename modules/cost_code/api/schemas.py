@@ -8,13 +8,13 @@ from pydantic import BaseModel, Field
 
 
 class CostCodeCreate(BaseModel):
-    code: str = Field(min_length=1, max_length=50, description="The unique code identifier.")
+    number: str = Field(min_length=1, max_length=50, description="The unique number identifier.")
+    name: str = Field(min_length=1, max_length=255, description="The name of the cost code.")
     description: Optional[str] = Field(default=None, max_length=255, description="The description of the cost code.")
-    category: Optional[str] = Field(default=None, max_length=100, description="The category for the cost code.")
 
 
 class CostCodeUpdate(BaseModel):
     row_version: str = Field(description="The row version of the cost code (base64 encoded).")
-    code: str = Field(min_length=1, max_length=50, description="The unique code identifier.")
+    number: str = Field(min_length=1, max_length=50, description="The unique number identifier.")
+    name: str = Field(min_length=1, max_length=255, description="The name of the cost code.")
     description: Optional[str] = Field(default=None, max_length=255, description="The description of the cost code.")
-    category: Optional[str] = Field(default=None, max_length=100, description="The category for the cost code.")

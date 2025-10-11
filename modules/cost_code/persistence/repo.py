@@ -56,9 +56,9 @@ class CostCodeRepository:
                 row_version=base64.b64encode(row.RowVersion).decode("ascii"),
                 created_datetime=row.CreatedDatetime,
                 modified_datetime=row.ModifiedDatetime,
-                code=row.Code,
-                description=getattr(row, "Description", None),
-                category=getattr(row, "Category", None),
+                number=row.Number,
+                name=row.Name,
+                description=row.Description
             )
         except AttributeError as error:
             logger.error(f"Attribute error during from db: {error}")
@@ -67,7 +67,7 @@ class CostCodeRepository:
             logger.error(f"Internal error during from db: {error}")
             raise map_database_error(error)
 
-    def create(self, *, code: str, description: Optional[str] = None, category: Optional[str] = None) -> CostCode:
+    def create(self, *, number: str, name: str, description: Optional[str] = None) -> CostCode:
         """
         Create a new cost code.
 
@@ -75,9 +75,9 @@ class CostCodeRepository:
         CreateCostCode stored procedure.
 
         Args:
-            code: Cost code identifier
+            number: Cost code number
+            name: Cost code name
             description: Cost code description (optional)
-            category: Cost code category (optional)
 
         Returns:
             Created CostCode object with generated ID and timestamps
@@ -92,9 +92,9 @@ class CostCodeRepository:
                     cursor=cursor,
                     name="CreateCostCode",
                     params={
-                        "Code": code,
-                        "Description": description,
-                        "Category": category,
+                        "Number": number,
+                        "Name": name,
+                        "Description": description
                     },
                 )
                 row = cursor.fetchone()
@@ -193,15 +193,15 @@ class CostCodeRepository:
             logger.error(f"Error during read cost code by public ID: {error}")
             raise map_database_error(error)
 
-    def read_by_code(self, code: str) -> Optional[CostCode]:
+    def read_by_number(self, number: str) -> Optional[CostCode]:
         """
-        Read cost code by code.
+        Read cost code by number.
 
-        Retrieves a specific cost code by its code value using the
-        ReadCostCodeByCode stored procedure.
+        Retrieves a specific cost code by its number value using the
+        ReadCostCodeByNumber stored procedure.
 
         Args:
-            code: Cost code to search for
+            number: Cost code to search for
 
         Returns:
             CostCode object if found, None otherwise
@@ -214,13 +214,13 @@ class CostCodeRepository:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="ReadCostCodeByCode",
-                    params={"Code": code},
+                    name="ReadCostCodeByNumber",
+                    params={"Number": number},
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
         except Exception as error:
-            logger.error(f"Error during read cost code by code: {error}")
+            logger.error(f"Error during read cost code by number: {error}")
             raise map_database_error(error)
 
     def update_by_id(self, cost_code: CostCode) -> Optional[CostCode]:
@@ -248,9 +248,9 @@ class CostCodeRepository:
                     params={
                         "Id": cost_code.id,
                         "RowVersion": cost_code.row_version_bytes,
-                        "Code": cost_code.code,
-                        "Description": cost_code.description,
-                        "Category": cost_code.category,
+                        "Number": cost_code.number,
+                        "Name": cost_code.name,
+                        "Description": cost_code.description
                     },
                 )
                 row = cursor.fetchone()

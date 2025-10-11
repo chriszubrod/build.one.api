@@ -20,9 +20,9 @@ def create_cost_code_router(body: CostCodeCreate):
     Create a new cost code.
     """
     cost_code = service.create(
-        code=body.code,
-        description=body.description,
-        category=body.category,
+        number=body.number,
+        name=body.name,
+        description=body.description
     )
     return cost_code.to_dict()
 

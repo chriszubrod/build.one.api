@@ -17,11 +17,11 @@ class CostCodeService:
         """Initialize the CostCodeService."""
         self.repo = repo or CostCodeRepository()
 
-    def create(self, *, code: str, description: Optional[str] = None, category: Optional[str] = None) -> CostCode:
+    def create(self, *, number: str, name: str, description: Optional[str] = None) -> CostCode:
         """
         Create a new cost code.
         """
-        return self.repo.create(code=code, description=description, category=category)
+        return self.repo.create(number=number, name=name, description=description)
 
     def read_all(self) -> List[CostCode]:
         """
@@ -41,11 +41,11 @@ class CostCodeService:
         """
         return self.repo.read_by_public_id(public_id)
 
-    def read_by_code(self, code: str) -> Optional[CostCode]:
+    def read_by_number(self, number: str) -> Optional[CostCode]:
         """
-        Read a cost code by code.
+        Read a cost code by number.
         """
-        return self.repo.read_by_code(code)
+        return self.repo.read_by_number(number)
 
     def update_by_public_id(self, public_id: str, cost_code) -> Optional[CostCode]:
         """
@@ -54,9 +54,9 @@ class CostCodeService:
         _cost_code = self.read_by_public_id(public_id=public_id)
         if _cost_code:
             _cost_code.row_version = cost_code.row_version
-            _cost_code.code = cost_code.code
+            _cost_code.number = cost_code.number
+            _cost_code.name = cost_code.name
             _cost_code.description = cost_code.description
-            _cost_code.category = cost_code.category
         return self.repo.update_by_id(_cost_code)
 
     def delete_by_public_id(self, public_id: str) -> Optional[CostCode]:

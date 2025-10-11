@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ cost_code.code or 'Cost Code' }} - Build.One</title>
+    <title>{{ cost_code.name or 'Cost Code' }} - Build.One</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -32,7 +32,7 @@
             <div class="col">
                 <div class="d-flex justify-content-between align-items-center">
                     <h1 class="h3 mb-0">
-                        <i class="fas fa-tags me-2"></i>{{ cost_code.code or 'Cost Code Details' }}
+                        <i class="fas fa-tags me-2"></i>{{ cost_code.name or 'Cost Code Details' }}
                     </h1>
                     <div>
                         <a href="/cost-code/{{ cost_code.public_id }}/edit" class="btn btn-light me-2">
@@ -63,10 +63,25 @@
                             <div class="detail-row">
                                 <div class="row">
                                     <div class="col-sm-3">
-                                        <strong><i class="fas fa-barcode me-1"></i>Code:</strong>
+                                        <strong><i class="fas fa-barcode me-1"></i>Number:</strong>
                                     </div>
                                     <div class="col-sm-9">
-                                        {{ cost_code.code or 'Not specified' }}
+                                        {{ cost_code.number or 'Not specified' }}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="detail-row">
+                                <div class="row">
+                                    <div class="col-sm-3">
+                                        <strong><i class="fas fa-folder-tree me-1"></i>Name:</strong>
+                                    </div>
+                                    <div class="col-sm-9">
+                                        {% if cost_code.name %}
+                                            {{ cost_code.name }}
+                                        {% else %}
+                                            <span class="text-muted">Not specified</span>
+                                        {% endif %}
                                     </div>
                                 </div>
                             </div>
@@ -79,21 +94,6 @@
                                     <div class="col-sm-9">
                                         {% if cost_code.description %}
                                             {{ cost_code.description }}
-                                        {% else %}
-                                            <span class="text-muted">Not specified</span>
-                                        {% endif %}
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="detail-row">
-                                <div class="row">
-                                    <div class="col-sm-3">
-                                        <strong><i class="fas fa-folder-tree me-1"></i>Category:</strong>
-                                    </div>
-                                    <div class="col-sm-9">
-                                        {% if cost_code.category %}
-                                            {{ cost_code.category }}
                                         {% else %}
                                             <span class="text-muted">Not specified</span>
                                         {% endif %}

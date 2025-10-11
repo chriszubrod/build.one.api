@@ -15,9 +15,9 @@ class CostCode:
     row_version: Optional[str]
     created_datetime: Optional[str]
     modified_datetime: Optional[str]
-    code: Optional[str]
+    number: Optional[str]
+    name: Optional[str]
     description: Optional[str]
-    category: Optional[str]
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

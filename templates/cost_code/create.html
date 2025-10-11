@@ -44,17 +44,31 @@
                         <div class="card-body">
                             <form id="createCostCodeForm">
                                 <div class="mb-3">
-                                    <label for="code" class="form-label">
-                                        Cost Code <span class="text-danger">*</span>
+                                    <label for="number" class="form-label">
+                                        Number <span class="text-danger">*</span>
                                     </label>
                                     <input type="text"
                                            class="form-control"
-                                           id="code"
-                                           name="code"
+                                           id="number"
+                                           name="number"
                                            required
                                            maxlength="50"
-                                           placeholder="Enter cost code">
+                                           placeholder="Enter number">
                                     <div class="form-text">Required field. Maximum 50 characters.</div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="name" class="form-label">
+                                        Name <span class="text-danger">*</span>
+                                    </label>
+                                    <input type="text"
+                                           class="form-control"
+                                           id="name"
+                                           name="name"
+                                           required
+                                           maxlength="255"
+                                           placeholder="Enter name">
+                                    <div class="form-text">Required field. Maximum 255 characters.</div>
                                 </div>
 
                                 <div class="mb-3">
@@ -68,19 +82,6 @@
                                               maxlength="255"
                                               placeholder="Provide a description"></textarea>
                                     <div class="form-text">Optional. Maximum 255 characters.</div>
-                                </div>
-
-                                <div class="mb-3">
-                                    <label for="category" class="form-label">
-                                        Category
-                                    </label>
-                                    <input type="text"
-                                           class="form-control"
-                                           id="category"
-                                           name="category"
-                                           maxlength="100"
-                                           placeholder="Enter category">
-                                    <div class="form-text">Optional. Maximum 100 characters.</div>
                                 </div>
 
                                 <div class="d-flex justify-content-end">
@@ -107,9 +108,9 @@
 
             const formData = new FormData(this);
             const data = {
-                code: formData.get('code'),
-                description: formData.get('description') || null,
-                category: formData.get('category') || null
+                number: formData.get('number'),
+                name: formData.get('name'),
+                description: formData.get('description') || null
             };
 
             try {

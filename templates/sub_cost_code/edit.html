@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Sub Cost Code - Build.One</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .form-container {
+            max-width: 640px;
+        }
+        .btn-cancel {
+            margin-right: 10px;
+        }
+        .btn-delete {
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <!-- Header -->
+        <div class="row bg-dark text-white py-3 mb-4">
+            <div class="col">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h1 class="h3 mb-0">
+                        <i class="fas fa-edit me-2"></i>Edit Sub Cost Code
+                    </h1>
+                    <a href="/sub-cost-code/list" class="btn btn-light">
+                        <i class="fas fa-arrow-left me-1"></i>Back to List
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Content -->
+        <div class="container">
+            <div class="row justify-content-center">
+                <div class="col form-container">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-layer-group me-2"></i>Sub Cost Code Details
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <form id="editSubCostCodeForm">
+                                <input type="hidden" id="public_id" name="public_id" value="{{ sub_cost_code.public_id }}">
+                                <input type="hidden" id="row_version" name="row_version" value="{{ sub_cost_code.row_version }}">
+
+                                <div class="mb-3">
+                                    <label for="cost_code_public_id" class="form-label">
+                                        Parent Cost Code Public ID <span class="text-danger">*</span>
+                                    </label>
+                                    <input type="text"
+                                           class="form-control"
+                                           id="cost_code_public_id"
+                                           name="cost_code_public_id"
+                                           required
+                                           maxlength="36"
+                                           value="{{ sub_cost_code.cost_code_public_id or '' }}"
+                                           placeholder="Enter parent cost code public ID">
+                                    <div class="form-text">Required field. Provide the parent cost code public identifier.</div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="number" class="form-label">
+                                        Sub Cost Code Number <span class="text-danger">*</span>
+                                    </label>
+                                    <input type="text"
+                                           class="form-control"
+                                           id="number"
+                                           name="number"
+                                           required
+                                           maxlength="50"
+                                           value="{{ sub_cost_code.number or '' }}"
+                                           placeholder="Enter number">
+                                    <div class="form-text">Required field. Maximum 50 characters.</div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="name" class="form-label">
+                                        Name <span class="text-danger">*</span>
+                                    </label>
+                                    <input type="text"
+                                           class="form-control"
+                                           id="name"
+                                           name="name"
+                                           required
+                                           maxlength="255"
+                                           value="{{ sub_cost_code.name or '' }}"
+                                           placeholder="Enter name">
+                                    <div class="form-text">Required field. Maximum 255 characters.</div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="description" class="form-label">
+                                        Description
+                                    </label>
+                                    <textarea class="form-control"
+                                              id="description"
+                                              name="description"
+                                              rows="3"
+                                              maxlength="255"
+                                              placeholder="Provide a description">{{ sub_cost_code.description or '' }}</textarea>
+                                    <div class="form-text">Optional. Maximum 255 characters.</div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <small class="text-muted">
+                                                <i class="fas fa-calendar-plus me-1"></i>
+                                                Created: {{ sub_cost_code.created_datetime or 'Unknown' }}
+                                            </small>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <small class="text-muted">
+                                                <i class="fas fa-calendar-edit me-1"></i>
+                                                Modified: {{ sub_cost_code.modified_datetime or 'Unknown' }}
+                                            </small>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="d-flex justify-content-between">
+                                    <div>
+                                    <button type="button" class="btn btn-danger btn-delete" onclick="deleteSubCostCode()">
+                                        <i class="fas fa-trash me-1"></i>Delete
+                                    </button>
+                                    </div>
+                                    <div>
+                                        <a href="/sub-cost-code/list" class="btn btn-secondary btn-cancel">
+                                            <i class="fas fa-times me-1"></i>Cancel
+                                        </a>
+                                        <button type="submit" class="btn btn-dark">
+                                            <i class="fas fa-save me-1"></i>Update Sub Cost Code
+                                        </button>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.getElementById('editSubCostCodeForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const formData = new FormData(this);
+            const data = {
+                cost_code_public_id: formData.get('cost_code_public_id'),
+                number: formData.get('number'),
+                name: formData.get('name'),
+                description: formData.get('description') || null,
+                row_version: formData.get('row_version')
+            };
+
+            try {
+                const response = await fetch(`/api/v1/update/sub-cost-code/${formData.get('public_id')}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                if (response.ok) {
+                    window.location.href = '/sub-cost-code/list';
+                } else {
+                    const contentType = response.headers.get('content-type');
+                    if (contentType && contentType.includes('application/json')) {
+                        const error = await response.json();
+                        let errorMessage = 'Unknown error';
+                        if (error.detail) {
+                            errorMessage = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                        } else if (error.message) {
+                            errorMessage = error.message;
+                        } else if (typeof error === 'string') {
+                            errorMessage = error;
+                        } else {
+                            errorMessage = JSON.stringify(error);
+                        }
+                        alert('Error updating sub cost code: ' + errorMessage);
+                    } else {
+                        const errorText = await response.text();
+                        alert('Error updating sub cost code: ' + errorText);
+                    }
+                }
+            } catch (error) {
+                console.error('Update error:', error);
+                alert('Error updating sub cost code: ' + error.message);
+            }
+        });
+
+        async function deleteSubCostCode() {
+            if (confirm('Are you sure you want to delete this sub cost code? This action cannot be undone.')) {
+                const formData = new FormData(document.getElementById('editSubCostCodeForm'));
+                const data = {
+                    row_version: formData.get('row_version')
+                };
+
+                try {
+                    const response = await fetch(`/api/v1/delete/sub-cost-code/${formData.get('public_id')}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(data)
+                    });
+
+                    if (response.ok) {
+                        window.location.href = '/sub-cost-code/list';
+                    } else {
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const error = await response.json();
+                            let errorMessage = 'Unknown error';
+                            if (error.detail) {
+                                errorMessage = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                            } else if (error.message) {
+                                errorMessage = error.message;
+                            } else if (typeof error === 'string') {
+                                errorMessage = error;
+                            } else {
+                                errorMessage = JSON.stringify(error);
+                            }
+                            alert('Error deleting sub cost code: ' + errorMessage);
+                        } else {
+                            const errorText = await response.text();
+                            alert('Error deleting sub cost code: ' + errorText);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Delete error:', error);
+                    alert('Error deleting sub cost code: ' + error.message);
+                }
+            }
+        }
+    </script>
+</body>
+</html>

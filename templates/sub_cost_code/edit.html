@@ -50,21 +50,6 @@
                                 <input type="hidden" id="row_version" name="row_version" value="{{ sub_cost_code.row_version }}">
 
                                 <div class="mb-3">
-                                    <label for="cost_code_public_id" class="form-label">
-                                        Parent Cost Code Public ID <span class="text-danger">*</span>
-                                    </label>
-                                    <input type="text"
-                                           class="form-control"
-                                           id="cost_code_public_id"
-                                           name="cost_code_public_id"
-                                           required
-                                           maxlength="36"
-                                           value="{{ sub_cost_code.cost_code_public_id or '' }}"
-                                           placeholder="Enter parent cost code public ID">
-                                    <div class="form-text">Required field. Provide the parent cost code public identifier.</div>
-                                </div>
-
-                                <div class="mb-3">
                                     <label for="number" class="form-label">
                                         Sub Cost Code Number <span class="text-danger">*</span>
                                     </label>
@@ -105,6 +90,21 @@
                                               maxlength="255"
                                               placeholder="Provide a description">{{ sub_cost_code.description or '' }}</textarea>
                                     <div class="form-text">Optional. Maximum 255 characters.</div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="cost_code_id" class="form-label">
+                                        Parent Cost Code <span class="text-danger">*</span>
+                                    </label>
+                                    <select class="form-select"
+                                            id="cost_code_id"
+                                            name="cost_code_id"
+                                            required>
+                                        {% for cost_code in cost_codes %}
+                                            <option value="{{ cost_code.id }}">{{ cost_code.name }}</option>
+                                        {% endfor %}
+                                    </select>
+                                    <div class="form-text">Required field. Select the parent cost code.</div>
                                 </div>
 
                                 <div class="mb-3">
@@ -155,11 +155,11 @@
 
             const formData = new FormData(this);
             const data = {
-                cost_code_public_id: formData.get('cost_code_public_id'),
+                row_version: formData.get('row_version'),
                 number: formData.get('number'),
                 name: formData.get('name'),
                 description: formData.get('description') || null,
-                row_version: formData.get('row_version')
+                cost_code_id: formData.get('cost_code_id')
             };
 
             try {

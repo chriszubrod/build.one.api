@@ -20,27 +20,25 @@ class SubCostCodeService:
     def create(
         self,
         *,
-        cost_code_public_id: str,
         number: str,
         name: str,
         description: Optional[str] = None,
+        cost_code_id: str,
     ) -> SubCostCode:
         """
         Create a new sub cost code.
         """
         return self.repo.create(
-            cost_code_public_id=cost_code_public_id,
             number=number,
             name=name,
             description=description,
+            cost_code_id=cost_code_id
         )
 
-    def read_all(self, cost_code_public_id: Optional[str] = None) -> List[SubCostCode]:
+    def read_all(self) -> List[SubCostCode]:
         """
         Read all sub cost codes.
         """
-        if cost_code_public_id:
-            return self.repo.read_by_cost_code_public_id(cost_code_public_id)
         return self.repo.read_all()
 
     def read_by_id(self, id: str) -> Optional[SubCostCode]:
@@ -55,32 +53,28 @@ class SubCostCodeService:
         """
         return self.repo.read_by_public_id(public_id)
 
-    def read_by_number(self, number: str, cost_code_public_id: str) -> Optional[SubCostCode]:
+    def read_by_number(self, number: str) -> Optional[SubCostCode]:
         """
         Read a sub cost code by number within a parent cost code.
         """
-        return self.repo.read_by_number(number=number, cost_code_public_id=cost_code_public_id)
+        return self.repo.read_by_number(number=number)
 
     def update_by_public_id(self, public_id: str, sub_cost_code) -> Optional[SubCostCode]:
         """
-        Update a sub cost code by public ID.
+        Update a sub cost code by ID.
         """
-        existing = self.read_by_public_id(public_id=public_id)
-        if not existing:
-            return None
-
-        existing.row_version = sub_cost_code.row_version
-        existing.cost_code_public_id = sub_cost_code.cost_code_public_id
-        existing.number = sub_cost_code.number
-        existing.name = sub_cost_code.name
-        existing.description = sub_cost_code.description
-        return self.repo.update_by_id(existing)
+        _sub_cost_code = self.read_by_public_id(public_id=public_id)
+        if _sub_cost_code:
+            _sub_cost_code.row_version = sub_cost_code.row_version
+            _sub_cost_code.number = sub_cost_code.number
+            _sub_cost_code.name = sub_cost_code.name
+            _sub_cost_code.description = sub_cost_code.description
+            _sub_cost_code.cost_code_id = sub_cost_code.cost_code_id
+        return self.repo.update_by_id(_sub_cost_code)
 
     def delete_by_public_id(self, public_id: str) -> Optional[SubCostCode]:
         """
         Soft delete a sub cost code by public ID.
         """
-        existing = self.read_by_public_id(public_id=public_id)
-        if not existing:
-            return None
-        return self.repo.delete_by_id(existing.id)
+        _sub_cost_code = self.read_by_public_id(public_id=public_id)
+        return self.repo.delete_by_id(_sub_cost_code.id)

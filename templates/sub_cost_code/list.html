@@ -32,9 +32,6 @@
                         <i class="fas fa-plus me-1"></i>Add Sub Cost Code
                     </a>
                 </div>
-                {% if cost_code_public_id %}
-                <p class="mt-2 mb-0 small">Filtered by Cost Code Public ID: <strong>{{ cost_code_public_id }}</strong></p>
-                {% endif %}
             </div>
         </div>
 
@@ -65,12 +62,6 @@
                                 {% endif %}
 
                                 <div class="text-muted small mb-3">
-                                    {% if sub_cost_code.cost_code_number %}
-                                    <div><i class="fas fa-link me-1"></i>Parent Number: {{ sub_cost_code.cost_code_number }}</div>
-                                    {% endif %}
-                                    {% if sub_cost_code.cost_code_name %}
-                                    <div><i class="fas fa-building me-1"></i>Parent Name: {{ sub_cost_code.cost_code_name }}</div>
-                                    {% endif %}
                                     <div><i class="fas fa-calendar-plus me-1"></i>Created: {{ sub_cost_code.created_datetime or 'Unknown' }}</div>
                                     <div><i class="fas fa-calendar-edit me-1"></i>Modified: {{ sub_cost_code.modified_datetime }}</div>
                                 </div>

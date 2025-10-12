@@ -15,7 +15,6 @@ from shared.database import (
 )
 
 router = APIRouter(prefix="/api/v1", tags=["api", "sub-cost-code"])
-service = SubCostCodeService()
 
 
 def _handle_database_error(error: DatabaseError):
@@ -36,11 +35,11 @@ def create_sub_cost_code_router(body: SubCostCodeCreate):
     Create a new sub cost code.
     """
     try:
-        sub_cost_code = service.create(
-            cost_code_public_id=body.cost_code_public_id,
+        sub_cost_code = SubCostCodeService().create(
             number=body.number,
             name=body.name,
             description=body.description,
+            cost_code_id=body.cost_code_id,
         )
         return sub_cost_code.to_dict()
     except DatabaseError as error:
@@ -48,12 +47,12 @@ def create_sub_cost_code_router(body: SubCostCodeCreate):
 
 
 @router.get("/get/sub-cost-codes")
-def get_sub_cost_codes_router(cost_code_public_id: str | None = None):
+def get_sub_cost_codes_router():
     """
     Read all sub cost codes.
     """
     try:
-        sub_cost_codes = service.read_all(cost_code_public_id=cost_code_public_id)
+        sub_cost_codes = SubCostCodeService().read_all()
         return [sub_cost_code.to_dict() for sub_cost_code in sub_cost_codes]
     except DatabaseError as error:
         _handle_database_error(error)
@@ -65,7 +64,7 @@ def get_sub_cost_code_by_public_id_router(public_id: str):
     Read a sub cost code by public ID.
     """
     try:
-        sub_cost_code = service.read_by_public_id(public_id=public_id)
+        sub_cost_code = SubCostCodeService.read_by_public_id(public_id=public_id)
         if not sub_cost_code:
             raise HTTPException(status_code=404, detail="Sub cost code not found.")
         return sub_cost_code.to_dict()
@@ -79,7 +78,7 @@ def update_sub_cost_code_by_id_router(public_id: str, body: SubCostCodeUpdate):
     Update a sub cost code by ID.
     """
     try:
-        sub_cost_code = service.update_by_public_id(public_id=public_id, sub_cost_code=body)
+        sub_cost_code = SubCostCodeService().update_by_public_id(public_id=public_id, sub_cost_code=body)
         if not sub_cost_code:
             raise HTTPException(status_code=404, detail="Sub cost code not found.")
         return sub_cost_code.to_dict()
@@ -93,7 +92,7 @@ def delete_sub_cost_code_by_public_id_router(public_id: str):
     Soft delete a sub cost code by ID.
     """
     try:
-        sub_cost_code = service.delete_by_public_id(public_id=public_id)
+        sub_cost_code = SubCostCodeService().delete_by_public_id(public_id=public_id)
         if not sub_cost_code:
             raise HTTPException(status_code=404, detail="Sub cost code not found.")
         return sub_cost_code.to_dict()

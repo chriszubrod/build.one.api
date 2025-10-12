@@ -15,13 +15,10 @@ class SubCostCode:
     row_version: Optional[str]
     created_datetime: Optional[str]
     modified_datetime: Optional[str]
-    cost_code_id: Optional[str]
-    cost_code_public_id: Optional[str]
-    cost_code_number: Optional[str]
-    cost_code_name: Optional[str]
     number: Optional[str]
     name: Optional[str]
     description: Optional[str]
+    cost_code_id: Optional[str]
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

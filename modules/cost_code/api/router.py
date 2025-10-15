@@ -1,7 +1,7 @@
 # Python Standard Library Imports
 
 # Third-party Imports
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
 # Local Imports
 from modules.cost_code.business.service import CostCodeService
@@ -9,13 +9,14 @@ from modules.cost_code.api.schemas import (
     CostCodeCreate,
     CostCodeUpdate,
 )
+from modules.auth.business.service import get_current_user_api
 
 router = APIRouter(prefix="/api/v1", tags=["api", "cost-code"])
 service = CostCodeService()
 
 
 @router.post("/create/cost-code")
-def create_cost_code_router(body: CostCodeCreate):
+def create_cost_code_router(body: CostCodeCreate, current_user: dict = Depends(get_current_user_api)):
     """
     Create a new cost code.
     """
@@ -28,7 +29,7 @@ def create_cost_code_router(body: CostCodeCreate):
 
 
 @router.get("/get/cost-codes")
-def get_cost_codes_router():
+def get_cost_codes_router(current_user: dict = Depends(get_current_user_api)):
     """
     Read all cost codes.
     """
@@ -37,7 +38,7 @@ def get_cost_codes_router():
 
 
 @router.get("/get/cost-code/{public_id}")
-def get_cost_code_by_public_id_router(public_id: str):
+def get_cost_code_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
     """
     Read a cost code by public ID.
     """
@@ -46,7 +47,7 @@ def get_cost_code_by_public_id_router(public_id: str):
 
 
 @router.put("/update/cost-code/{public_id}")
-def update_cost_code_by_id_router(public_id: str, body: CostCodeUpdate):
+def update_cost_code_by_id_router(public_id: str, body: CostCodeUpdate, current_user: dict = Depends(get_current_user_api)):
     """
     Update a cost code by ID.
     """
@@ -55,7 +56,7 @@ def update_cost_code_by_id_router(public_id: str, body: CostCodeUpdate):
 
 
 @router.delete("/delete/cost-code/{public_id}")
-def delete_cost_code_by_public_id_router(public_id: str):
+def delete_cost_code_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
     """
     Soft delete a cost code by ID.
     """

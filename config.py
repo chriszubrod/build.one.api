@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     
     # Security
     secret_key: str
+    algorithm: str
+    access_token_expire_seconds: int
+    refresh_token_expire_seconds: int
+    iterations: int
     
     # Logging
     log_level: str = "INFO"

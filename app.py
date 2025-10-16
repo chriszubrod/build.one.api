@@ -14,6 +14,10 @@ from modules.cost_code.api.router import router as cost_code_api_router
 from modules.cost_code.web.controller import router as cost_code_web_router
 from modules.sub_cost_code.api.router import router as sub_cost_code_api_router
 from modules.sub_cost_code.web.controller import router as sub_cost_code_web_router
+from modules.module.api.router import router as module_api_router
+from modules.module.web.controller import router as module_web_router
+from modules.user.api.router import router as user_api_router
+from modules.user.web.controller import router as user_web_router
 
 app = FastAPI()
 
@@ -26,6 +30,10 @@ app.include_router(cost_code_api_router)
 app.include_router(cost_code_web_router)
 app.include_router(sub_cost_code_api_router)
 app.include_router(sub_cost_code_web_router)
+app.include_router(module_api_router)
+app.include_router(module_web_router)
+app.include_router(user_api_router)
+app.include_router(user_web_router)
 
 
 def get_settings():

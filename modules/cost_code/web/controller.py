@@ -10,7 +10,6 @@ from modules.cost_code.business.service import CostCodeService
 from modules.auth.business.service import get_current_user_web
 
 router = APIRouter(prefix="/cost-code", tags=["web", "cost-code"])
-service = CostCodeService()
 templates = Jinja2Templates(directory="templates/cost_code")
 
 
@@ -19,7 +18,7 @@ async def list_cost_codes(request: Request, current_user: dict = Depends(get_cur
     """
     Get all cost codes.
     """
-    cost_codes = service.read_all()
+    cost_codes = CostCodeService().read_all()
     return templates.TemplateResponse(
         "list.html",
         {
@@ -49,7 +48,7 @@ async def view_cost_code(request: Request, public_id: str, current_user: dict = 
     """
     View a cost code.
     """
-    cost_code = service.read_by_public_id(public_id=public_id)
+    cost_code = CostCodeService().read_by_public_id(public_id=public_id)
     return templates.TemplateResponse(
         "view.html",
         {
@@ -65,7 +64,7 @@ async def edit_cost_code(request: Request, public_id: str, current_user: dict = 
     """
     Edit a cost code.
     """
-    cost_code = service.read_by_public_id(public_id=public_id)
+    cost_code = CostCodeService().read_by_public_id(public_id=public_id)
     return templates.TemplateResponse(
         "edit.html",
         {

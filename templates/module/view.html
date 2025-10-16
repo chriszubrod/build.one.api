@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ module.name or 'Module' }} - Build.One</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .detail-container {
+            max-width: 800px;
+        }
+        .info-card {
+            border-left: 4px solid #0d6efd;
+        }
+        .status-badge {
+            font-size: 0.9rem;
+        }
+        .detail-row {
+            border-bottom: 1px solid #dee2e6;
+            padding: 0.75rem 0;
+        }
+        .detail-row:last-child {
+            border-bottom: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row bg-primary text-white py-3 mb-4">
+            <div class="col">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h1 class="h3 mb-0">
+                        <i class="fas fa-cube me-2"></i>{{ module.name or 'Module Details' }}
+                    </h1>
+                    <div>
+                        <a href="/module/{{ module.public_id }}/edit" class="btn btn-light me-2">
+                            <i class="fas fa-edit me-1"></i>Edit
+                        </a>
+                        <a href="/module/list" class="btn btn-outline-light">
+                            <i class="fas fa-arrow-left me-1"></i>Back to List
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="row justify-content-center">
+                <div class="col detail-container">
+                    <div class="card info-card">
+                        <div class="card-header">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <h5 class="card-title mb-0">
+                                    <i class="fas fa-info-circle me-2"></i>Module Information
+                                </h5>
+                                <span class="badge bg-success status-badge">Active</span>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="detail-row">
+                                <div class="row">
+                                    <div class="col-sm-3">
+                                        <strong><i class="fas fa-heading me-1"></i>Name:</strong>
+                                    </div>
+                                    <div class="col-sm-9">
+                                        {{ module.name or 'Not specified' }}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="detail-row">
+                                <div class="row">
+                                    <div class="col-sm-3">
+                                        <strong><i class="fas fa-route me-1"></i>Route:</strong>
+                                    </div>
+                                    <div class="col-sm-9">
+                                        {{ module.route or 'Not specified' }}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="detail-row">
+                                <div class="row">
+                                    <div class="col-sm-3">
+                                        <strong><i class="fas fa-fingerprint me-1"></i>Public ID:</strong>
+                                    </div>
+                                    <div class="col-sm-9">
+                                        <code>{{ module.public_id or 'Not available' }}</code>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="detail-row">
+                                <div class="row">
+                                    <div class="col-sm-3">
+                                        <strong><i class="fas fa-calendar-plus me-1"></i>Created:</strong>
+                                    </div>
+                                    <div class="col-sm-9">
+                                        {{ module.created_datetime or 'Unknown' }}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="detail-row">
+                                <div class="row">
+                                    <div class="col-sm-3">
+                                        <strong><i class="fas fa-calendar-edit me-1"></i>Last Modified:</strong>
+                                    </div>
+                                    <div class="col-sm-9">
+                                        {{ module.modified_datetime or 'Unknown' }}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card mt-4">
+                        <div class="card-body">
+                            <h6 class="card-title">
+                                <i class="fas fa-cogs me-2"></i>Actions
+                            </h6>
+                            <div class="d-flex flex-wrap gap-2">
+                                <a href="/module/{{ module.public_id }}/edit" class="btn btn-primary">
+                                    <i class="fas fa-edit me-1"></i>Edit Module
+                                </a>
+                                <a href="/module/list" class="btn btn-secondary">
+                                    <i class="fas fa-list me-1"></i>View All Modules
+                                </a>
+                                <button type="button" class="btn btn-danger" onclick="deleteModule()">
+                                    <i class="fas fa-trash me-1"></i>Delete Module
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        async function deleteModule() {
+            if (confirm('Are you sure you want to delete this module? This action cannot be undone.')) {
+                const payload = {
+                    row_version: "{{ module.row_version }}"
+                };
+
+                try {
+                    const response = await fetch(`/api/v1/delete/module/{{ module.public_id }}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        window.location.href = '/module/list';
+                    } else {
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const error = await response.json();
+                            let message = 'Unknown error';
+                            if (error.detail) {
+                                message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                            } else if (error.message) {
+                                message = error.message;
+                            } else if (typeof error === 'string') {
+                                message = error;
+                            } else {
+                                message = JSON.stringify(error);
+                            }
+                            alert('Error deleting module: ' + message);
+                        } else {
+                            const errorText = await response.text();
+                            alert('Error deleting module: ' + errorText);
+                        }
+                    }
+                } catch (error) {
+                    alert('Error deleting module: ' + error.message);
+                }
+            }
+        }
+    </script>
+</body>
+</html>

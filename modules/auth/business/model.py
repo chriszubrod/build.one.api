@@ -48,3 +48,18 @@ class AuthToken:
         """Convert to dictionary with JSON-serializable values."""
         data = asdict(self)
         return data
+
+
+@dataclass
+class RefreshToken:
+    """
+    Refresh token issued on login or signup.
+    """
+    refresh_token: str
+    token_type: str
+    expires_in: int
+
+    def to_dict(self):
+        """Convert to dictionary with JSON-serializable values."""
+        data = asdict(self)
+        return data

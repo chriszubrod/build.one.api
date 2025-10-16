@@ -15,7 +15,8 @@ import jwt
 from config import Settings
 from modules.auth.business.model import (
     Auth,
-    AuthToken
+    AuthToken,
+    RefreshToken
 )
 from modules.auth.persistence.repo import AuthRepository
 from shared.database import (
@@ -76,17 +77,17 @@ def get_current_user_web(request: Request):
     """
     Dependency for web routes that reads token from cookies or query parameters.
     """
-    token = request.cookies.get("auth_token")
+    auth_token = request.cookies.get("auth_token")
 
-    if not token:
-        token = request.query_params.get("token")
+    if not auth_token:
+        auth_token = request.query_params.get("auth_token")
 
-    if not token:
+    if not auth_token:
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header[7:]
+            auth_token = auth_header[7:]
 
-    if not token:
+    if not auth_token:
         raise HTTPException(
             status_code=401,
             detail="Authentication required",
@@ -94,8 +95,8 @@ def get_current_user_web(request: Request):
         )
 
     try:
-        payload = verify_token(token=token)
-        return payload
+        auth_payload = verify_token(token=auth_token)
+        return auth_payload
     except ValueError as e:
         raise HTTPException(
             status_code=401,
@@ -145,7 +146,7 @@ class AuthService:
         _auth = self.read_by_public_id(public_id=public_id)
         return self.repo.delete_by_id(_auth.id)
 
-    def generate_token(self, *, auth: Auth) -> AuthToken:
+    def generate_auth_token(self, *, auth: Auth) -> AuthToken:
         """
         Generate a token for a auth.
         """
@@ -170,13 +171,37 @@ class AuthService:
             token_type="Bearer",
             expires_in=settings.access_token_expire_seconds
         )
-        
+
+    def generate_refresh_token(self, *, auth: Auth) -> RefreshToken:
+        """
+        Generate a refresh token for a auth.
+        """
+        settings = Settings()
+        now = datetime.now(timezone.utc)
+        payload = {
+            "sub": auth.public_id,
+            "username": auth.username,
+            "iat": now,
+            "exp": now + timedelta(seconds=settings.refresh_token_expire_seconds),
+            "jti": str(uuid.uuid4())
+        }
+        token = jwt.encode(
+            payload,
+            settings.secret_key,
+            algorithm=settings.algorithm
+        )
+        return RefreshToken(
+            refresh_token=token,
+            token_type="Bearer",
+            expires_in=settings.refresh_token_expire_seconds
+        )
+
     def login(self, *, username: str, password: str) -> Auth:
         """
         Login a auth.
         """
         auth = self.read_by_username(username=username)
-        token = self.generate_token(auth=auth)
+        token = self.generate_auth_token(auth=auth)
         if not auth:
             raise ValueError("Invalid username.")
         if not _verify_password(password, auth.password_hash):

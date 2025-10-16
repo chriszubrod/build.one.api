@@ -11,6 +11,15 @@ CREATE TABLE dbo.[Auth]
 );
 GO
 
+ALTER TABLE dbo.[Auth]
+ADD [UserId] UNIQUEIDENTIFIER NULL;
+GO
+
+UPDATE dbo.[Auth]
+SET [UserId] = '';
+
+
+
 
 
 DROP PROCEDURE IF EXISTS dbo.CreateAuth;
@@ -186,7 +195,7 @@ BEGIN
 END;
 
 EXEC DeleteAuthById
-    @Id = '00000000-0000-0000-0000-000000000000';
+    @Id = '3d753c12-afa8-f011-8e61-7c1e52165f92';
 GO
 
 

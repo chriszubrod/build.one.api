@@ -17,23 +17,11 @@ class SubCostCodeService:
         """Initialize the SubCostCodeService."""
         self.repo = repo or SubCostCodeRepository()
 
-    def create(
-        self,
-        *,
-        number: str,
-        name: str,
-        description: Optional[str] = None,
-        cost_code_id: str,
-    ) -> SubCostCode:
+    def create(self, *, number: str, name: str, description: Optional[str] = None, cost_code_id: str) -> SubCostCode:
         """
         Create a new sub cost code.
         """
-        return self.repo.create(
-            number=number,
-            name=name,
-            description=description,
-            cost_code_id=cost_code_id
-        )
+        return self.repo.create(number=number, name=name, description=description, cost_code_id=cost_code_id)
 
     def read_all(self) -> List[SubCostCode]:
         """

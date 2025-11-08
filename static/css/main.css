@@ -1,0 +1,8 @@
+
+/* Main content area */
+.main-content {
+    min-width: 0; /* prevents grid blowout */
+    order: 2; /* ensures proper ordering on large screens */
+}
+
+

@@ -1,0 +1,20 @@
+/* Right aside */
+.aside-right {
+    display: none; /* hidden on mobile */
+    background-color: var(--color-background);
+    border-left: 1px solid #e5e7eb;
+    padding: 1rem;
+    /* Removed border-radius: 0.5rem; */
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+    position: sticky;
+    top: 0; /* Changed from 1.5rem to align with header */
+    height: calc(100vh - 4rem); /* Full viewport height minus header/footer space */
+    overflow-y: auto; /* Allow scrolling if content exceeds height */
+    order: 3; /* ensures proper ordering on large screens */
+}
+
+@media (min-width: 1024px) {
+    .sidebar-right {
+        display: block;
+    }
+}

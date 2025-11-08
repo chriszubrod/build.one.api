@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create Sync - Build.One</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .form-container {
+            max-width: 600px;
+        }
+        .btn-cancel {
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <!-- Header -->
+        <div class="row bg-secondary text-white py-3 mb-4">
+            <div class="col">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h1 class="h3 mb-0">
+                        <i class="fas fa-plus me-2"></i>Create Sync
+                    </h1>
+                    <a href="/sync/list" class="btn btn-light">
+                        <i class="fas fa-arrow-left me-1"></i>Back to List
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Content -->
+        <div class="container">
+            <div class="row justify-content-center">
+                <div class="col form-container">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-sync-alt me-2"></i>Sync Details
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <form id="createSyncForm">
+                                <div class="mb-3">
+                                    <label for="provider" class="form-label">
+                                        Provider <span class="text-danger">*</span>
+                                    </label>
+                                    <input type="text"
+                                           class="form-control"
+                                           id="provider"
+                                           name="provider"
+                                           required
+                                           maxlength="50"
+                                           placeholder="Enter provider name">
+                                    <div class="form-text">Required field. Maximum 50 characters.</div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="env" class="form-label">
+                                        Environment <span class="text-danger">*</span>
+                                    </label>
+                                    <input type="text"
+                                           class="form-control"
+                                           id="env"
+                                           name="env"
+                                           required
+                                           maxlength="255"
+                                           placeholder="Enter environment (e.g., production)">
+                                    <div class="form-text">Required field. Maximum 255 characters.</div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="entity" class="form-label">
+                                        Entity <span class="text-danger">*</span>
+                                    </label>
+                                    <input type="text"
+                                           class="form-control"
+                                           id="entity"
+                                           name="entity"
+                                           required
+                                           maxlength="255"
+                                           placeholder="Enter entity (e.g., vendor)">
+                                    <div class="form-text">Required field. Maximum 255 characters.</div>
+                                </div>
+
+                                <div class="d-flex justify-content-end">
+                                    <a href="/sync/list" class="btn btn-secondary btn-cancel">
+                                        <i class="fas fa-times me-1"></i>Cancel
+                                    </a>
+                                    <button type="submit" class="btn btn-secondary">
+                                        <i class="fas fa-save me-1"></i>Create Sync
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.getElementById('createSyncForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const formData = new FormData(this);
+            const data = {
+                provider: formData.get('provider'),
+                env: formData.get('env'),
+                entity: formData.get('entity')
+            };
+
+            try {
+                const response = await fetch('/api/v1/create/sync', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                if (response.ok) {
+                    await response.json();
+                    window.location.href = '/sync/list';
+                } else {
+                    const error = await response.json();
+                    alert('Error creating sync: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error creating sync: ' + error.message);
+            }
+        });
+    </script>
+</body>
+</html>

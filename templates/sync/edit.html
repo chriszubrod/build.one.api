@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Sync - Build.One</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .form-container {
+            max-width: 600px;
+        }
+        .btn-cancel {
+            margin-right: 10px;
+        }
+        .btn-delete {
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <!-- Header -->
+        <div class="row bg-secondary text-white py-3 mb-4">
+            <div class="col">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h1 class="h3 mb-0">
+                        <i class="fas fa-edit me-2"></i>Edit Sync
+                    </h1>
+                    <a href="/sync/list" class="btn btn-light">
+                        <i class="fas fa-arrow-left me-1"></i>Back to List
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Content -->
+        <div class="container">
+            <div class="row justify-content-center">
+                <div class="col form-container">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-sync-alt me-2"></i>Sync Details
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <form id="editSyncForm">
+                                <input type="hidden" id="public_id" name="public_id" value="{{ sync.public_id }}">
+                                <input type="hidden" id="row_version" name="row_version" value="{{ sync.row_version }}">
+
+                                <div class="mb-3">
+                                    <label for="provider" class="form-label">
+                                        Provider <span class="text-danger">*</span>
+                                    </label>
+                                    <input type="text"
+                                           class="form-control"
+                                           id="provider"
+                                           name="provider"
+                                           required
+                                           maxlength="50"
+                                           value="{{ sync.provider or '' }}"
+                                           placeholder="Enter provider name">
+                                    <div class="form-text">Required field. Maximum 50 characters.</div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="env" class="form-label">
+                                        Environment <span class="text-danger">*</span>
+                                    </label>
+                                    <input type="text"
+                                           class="form-control"
+                                           id="env"
+                                           name="env"
+                                           required
+                                           maxlength="255"
+                                           value="{{ sync.env or '' }}"
+                                           placeholder="Enter environment (e.g., production)">
+                                    <div class="form-text">Required field. Maximum 255 characters.</div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="entity" class="form-label">
+                                        Entity <span class="text-danger">*</span>
+                                    </label>
+                                    <input type="text"
+                                           class="form-control"
+                                           id="entity"
+                                           name="entity"
+                                           required
+                                           maxlength="255"
+                                           value="{{ sync.entity or '' }}"
+                                           placeholder="Enter entity (e.g., vendor)">
+                                    <div class="form-text">Required field. Maximum 255 characters.</div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <small class="text-muted">
+                                                <i class="fas fa-calendar-plus me-1"></i>
+                                                Created: {{ sync.created_datetime or 'Unknown' }}
+                                            </small>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <small class="text-muted">
+                                                <i class="fas fa-calendar-edit me-1"></i>
+                                                Modified: {{ sync.modified_datetime or 'Unknown' }}
+                                            </small>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="d-flex justify-content-between">
+                                    <div>
+                                        <button type="button" class="btn btn-danger btn-delete" onclick="deleteSync()">
+                                            <i class="fas fa-trash me-1"></i>Delete
+                                        </button>
+                                    </div>
+                                    <div>
+                                        <a href="/sync/list" class="btn btn-secondary btn-cancel">
+                                            <i class="fas fa-times me-1"></i>Cancel
+                                        </a>
+                                        <button type="submit" class="btn btn-secondary">
+                                            <i class="fas fa-save me-1"></i>Update Sync
+                                        </button>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.getElementById('editSyncForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const formData = new FormData(this);
+            const data = {
+                provider: formData.get('provider'),
+                env: formData.get('env'),
+                entity: formData.get('entity'),
+                row_version: formData.get('row_version')
+            };
+
+            try {
+                const response = await fetch(`/api/v1/update/sync/${formData.get('public_id')}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                if (response.ok) {
+                    window.location.href = '/sync/list';
+                } else {
+                    const contentType = response.headers.get('content-type');
+                    if (contentType && contentType.includes('application/json')) {
+                        const error = await response.json();
+                        let errorMessage = 'Unknown error';
+                        if (error.detail) {
+                            errorMessage = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                        } else if (error.message) {
+                            errorMessage = error.message;
+                        } else if (typeof error === 'string') {
+                            errorMessage = error;
+                        } else {
+                            errorMessage = JSON.stringify(error);
+                        }
+                        alert('Error updating sync: ' + errorMessage);
+                    } else {
+                        const errorText = await response.text();
+                        alert('Error updating sync: ' + errorText);
+                    }
+                }
+            } catch (error) {
+                console.error('Update error:', error);
+                alert('Error updating sync: ' + error.message);
+            }
+        });
+
+        async function deleteSync() {
+            if (confirm('Are you sure you want to delete this sync? This action cannot be undone.')) {
+                const formData = new FormData(document.getElementById('editSyncForm'));
+                const data = {
+                    row_version: formData.get('row_version')
+                };
+
+                try {
+                    const response = await fetch(`/api/v1/delete/sync/${formData.get('public_id')}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(data)
+                    });
+
+                    if (response.ok) {
+                        window.location.href = '/sync/list';
+                    } else {
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const error = await response.json();
+                            let errorMessage = 'Unknown error';
+                            if (error.detail) {
+                                errorMessage = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                            } else if (error.message) {
+                                errorMessage = error.message;
+                            } else if (typeof error === 'string') {
+                                errorMessage = error;
+                            } else {
+                                errorMessage = JSON.stringify(error);
+                            }
+                            alert('Error deleting sync: ' + errorMessage);
+                        } else {
+                            const errorText = await response.text();
+                            alert('Error deleting sync: ' + errorText);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Delete error:', error);
+                    alert('Error deleting sync: ' + error.message);
+                }
+            }
+        }
+    </script>
+</body>
+</html>

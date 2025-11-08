@@ -3,109 +3,108 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Signup - Build.One</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        .form-container {
-            max-width: 600px;
-        }
-        .btn-cancel {
-            margin-right: 10px;
-        }
-    </style>
+    <title>Sign up - Build.One</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}?v={{ range(1000, 9999) | random }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') }}?v={{ range(1000, 9999) | random }}">
 </head>
 <body>
-    <div class="container-fluid">
-        <!-- Header -->
-        <div class="row bg-secondary text-white py-3 mb-4">
-            <div class="col">
-                <div class="d-flex justify-content-between align-items-center">
-                    <h1 class="h3 mb-0">
-                        <i class="fas fa-plus me-2"></i>Signup
-                    </h1>
-                    <a href="/auth/login" class="btn btn-light">
-                        <i class="fas fa-arrow-left me-1"></i>Back to Login
-                    </a>
-                </div>
+    <div class="page-container">
+        <section class="auth-logo">
+            <div>
+                <span aria-hidden="true">b1</span>
+                <span>Build.One</span>
             </div>
-        </div>
+            <div>
+                <span>For Contractors</span>
+            </div>
+        </section>
 
-        <!-- Content -->
-        <div class="container">
-            <div class="row justify-content-center">
-                <div class="col form-container">
-                    <div class="card">
-                        <div class="card-header">
-                            <h5 class="card-title mb-0">
-                                <i class="fas fa-tags me-2"></i>Signup
-                            </h5>
-                        </div>
-                        <div class="card-body">
-                            <form id="signupForm">
-                                <div class="mb-3">
-                                    <label for="username" class="form-label">
-                                        Username <span class="text-danger">*</span>
-                                    </label>
-                                    <input type="text"
-                                           class="form-control"
-                                           id="username"
-                                           name="username"
-                                           required
-                                           maxlength="50"
-                                           placeholder="Enter username">
-                                    <div class="form-text">Required field. Maximum 50 characters.</div>
-                                </div>
+        <section class="auth-panel">
+            <header>
+                <div>
+                    <a href="/auth/login">Log in</a>
+                </div>
+            </header>
 
-                                <div class="mb-3">
-                                    <label for="password" class="form-label">
-                                        Password <span class="text-danger">*</span>
-                                    </label>
-                                    <input type="text"
-                                           class="form-control"
-                                           id="password"
-                                           name="password"
-                                           required
-                                           maxlength="255"
-                                           placeholder="Enter password">
-                                    <div class="form-text">Required field. Maximum 255 characters.</div>
-                                </div>
+            <main aria-labelledby="signup-title">
+                <div>
+                    <h1 id="signup-title">Create your account</h1>
+                    <p>Bring your teams into Build.One. Organize modules, manage cost codes, and ship faster together.</p>
+                </div>
 
-                                <div class="mb-3">
-                                    <label for="password" class="form-label">
-                                        Confirm Password <span class="text-danger">*</span>
-                                    </label>
-                                    <input type="text"
-                                           class="form-control"
-                                           id="confirmPassword"
-                                           name="confirmPassword"
-                                           required
-                                           maxlength="255"
-                                           placeholder="Enter confirm password">
-                                    <div class="form-text">Required field. Maximum 255 characters.</div>
-                                </div>
-
-                                <div class="d-flex justify-content-end">
-                                    <a href="/auth/signup" class="btn btn-secondary btn-cancel">
-                                        <i class="fas fa-times me-1"></i>Cancel
-                                    </a>
-                                    <button type="submit" class="btn btn-secondary">
-                                        <i class="fas fa-save me-1"></i>Signup
-                                    </button>
-                                </div>
-                            </form>
-                        </div>
+                <form id="signupForm" novalidate>
+                    <div>
+                        <label for="username">Username</label>
+                        <input type="text"
+                               id="username"
+                               name="username"
+                               placeholder="Choose a username"
+                               maxlength="50"
+                               required>
                     </div>
-                </div>
-            </div>
-        </div>
+
+                    <div>
+                        <label for="password">Password</label>
+                        <input type="password"
+                               id="password"
+                               name="password"
+                               placeholder="Create a password"
+                               maxlength="255"
+                               required>
+                    </div>
+
+                    <div>
+                        <label for="confirmPassword">Confirm password</label>
+                        <input type="password"
+                               id="confirmPassword"
+                               name="confirmPassword"
+                               placeholder="Re-enter password"
+                               maxlength="255"
+                               required>
+                    </div>
+
+                    <button type="submit" id="signupSubmit" disabled>
+                        Create account
+                    </button>
+                </form>
+            </main>
+
+            <footer>
+                <!--<a href="/support">Support</a>-->
+                <!--<a href="/privacy">Privacy</a>-->
+                <!--<a href="/terms">Terms</a>-->
+            </footer>
+        </section>
     </div>
 
-    <!-- Scripts -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        document.getElementById('signupForm').addEventListener('submit', async function(e) {
+        const signupForm = document.getElementById('signupForm');
+        const signupSubmit = document.getElementById('signupSubmit');
+
+        const confirmPasswordField = signupForm.confirmPassword;
+
+        const toggleSignupButtonState = () => {
+            const usernameFilled = signupForm.username.value.trim().length > 0;
+            const password = signupForm.password.value.trim();
+            const confirmPassword = signupForm.confirmPassword.value.trim();
+            const passwordsMatch = password.length > 0 && password === confirmPassword;
+
+            if (!passwordsMatch && confirmPassword.length > 0) {
+                confirmPasswordField.setCustomValidity('Passwords do not match');
+            } else {
+                confirmPasswordField.setCustomValidity('');
+            }
+
+            signupSubmit.disabled = !(usernameFilled && passwordsMatch);
+        };
+
+        signupForm.addEventListener('input', toggleSignupButtonState);
+        signupForm.addEventListener('submit', async function(e) {
             e.preventDefault();
+            toggleSignupButtonState();
+            if (signupSubmit.disabled) {
+                return;
+            }
 
             const formData = new FormData(this);
             const data = {
@@ -124,17 +123,23 @@
                 });
 
                 if (response.ok) {
-                    await response.json();
-                    window.location.href = '/auth/login';
+                    const result = await response.json();
+                    localStorage.clear();
+                    localStorage.setItem('token.access_token', result.token.access_token);
+                    localStorage.setItem('auth.public_id', result.auth.public_id);
+                    localStorage.setItem('auth.username', result.auth.username);
+                    document.cookie = `token.access_token=${result.token.access_token}; path=/; max-age=${result.token.expires_in}; samesite=lax`;
+                    window.location.href = '/user/create';
                 } else {
                     const error = await response.json();
-                    console.log(error);
-                    alert('Error creating auth: ' + (error.detail || 'Unknown error'));
+                    alert('Unable to create account: ' + (error.detail || 'Unknown error'));
                 }
             } catch (error) {
-                alert('Error creating auth: ' + error.message);
+                alert('Unable to create account: ' + error.message);
             }
         });
+
+        toggleSignupButtonState();
     </script>
 </body>
 </html>

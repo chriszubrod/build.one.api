@@ -9,13 +9,14 @@ class Auth:
     """
     Domain representation of an authentication account persisted in SQL.
     """
-    id: str
-    public_id: str
+    id: Optional[int]
+    public_id: Optional[str]
     row_version: Optional[str]
     created_datetime: Optional[str]
     modified_datetime: Optional[str]
-    username: str
-    password_hash: str
+    username: Optional[str]
+    password_hash: Optional[str]
+    user_id: Optional[int]
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

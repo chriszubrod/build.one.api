@@ -16,6 +16,10 @@ class AuthUpdate(BaseModel):
     row_version: str = Field(description="The row version of the auth (base64 encoded).")
     username: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=8, max_length=255)
+    user_id: int = Field(description="The ID of the user.")
+
+class AuthUpdateUserId(BaseModel):
+    user_public_id: str = Field(description="The public ID of the user.")
 
 
 class AuthLogin(BaseModel):

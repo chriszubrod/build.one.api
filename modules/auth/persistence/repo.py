@@ -42,7 +42,8 @@ class AuthRepository:
             created_datetime=row.CreatedDatetime,
             modified_datetime=row.ModifiedDatetime,
             username=row.Username,
-            password_hash=row.PasswordHash
+            password_hash=row.PasswordHash,
+            user_id=row.UserId
         )
 
     def create(self, *, username: str, password_hash: str) -> Auth:
@@ -143,7 +144,8 @@ class AuthRepository:
                         "Id": auth.id,
                         "RowVersion": auth.row_version_bytes,
                         "Username": auth.username,
-                        "PasswordHash": auth.password_hash
+                        "PasswordHash": auth.password_hash,
+                        "UserId": auth.user_id
                     },
                 )
                 row = cursor.fetchone()

@@ -19,13 +19,15 @@ from modules.auth.business.model import (
     RefreshToken
 )
 from modules.auth.persistence.repo import AuthRepository
+from modules.user.business.service import UserService
 from shared.database import (
     DatabaseConcurrencyError,
     DatabaseOperationError,
 )
 from fastapi import Depends, HTTPException, Request
-from fastapi.security import HTTPAuthorizationCredentials
-from fastapi.security import HTTPBearer
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.responses import RedirectResponse
+
 security = HTTPBearer()
 
 
@@ -77,10 +79,10 @@ def get_current_user_web(request: Request):
     """
     Dependency for web routes that reads token from cookies or query parameters.
     """
-    auth_token = request.cookies.get("auth_token")
+    auth_token = request.cookies.get("token.access_token")
 
     if not auth_token:
-        auth_token = request.query_params.get("auth_token")
+        auth_token = request.query_params.get("token.access_token")
 
     if not auth_token:
         auth_header = request.headers.get("Authorization")
@@ -88,21 +90,14 @@ def get_current_user_web(request: Request):
             auth_token = auth_header[7:]
 
     if not auth_token:
-        raise HTTPException(
-            status_code=401,
-            detail="Authentication required",
-            headers={"Location": "/auth/login"}
-        )
+        return RedirectResponse(url="/auth/login", status_code=303)
 
     try:
         auth_payload = verify_token(token=auth_token)
         return auth_payload
     except ValueError as e:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid token",
-            headers={"Location": "/auth/login"}
-        )
+        return RedirectResponse(url="/auth/login", status_code=303)
+
 
 class AuthService:
     """
@@ -140,7 +135,20 @@ class AuthService:
             _auth.row_version = auth.row_version
             _auth.username = auth.username
             _auth.password_hash = auth.password_hash
+            _auth.user_id = auth.user_id
+
         return self.repo.update_by_id(_auth)
+
+    def update_user_id_by_public_id(self, *, public_id: str, user_public_id: str) -> Auth:
+        _auth = self.read_by_public_id(public_id=public_id)
+        if _auth:
+            _user = UserService().read_by_public_id(public_id=user_public_id)
+            if _user:
+                _auth.user_id = _user.id
+            else:
+                raise ValueError(f"User with public ID {user_public_id} not found.")
+        return self.repo.update_by_id(_auth)
+
 
     def delete_by_public_id(self, *, public_id: str) -> Auth:
         _auth = self.read_by_public_id(public_id=public_id)
@@ -201,11 +209,15 @@ class AuthService:
         Login a auth.
         """
         auth = self.read_by_username(username=username)
-        token = self.generate_auth_token(auth=auth)
+        
         if not auth:
-            raise ValueError("Invalid username.")
+            raise ValueError("Username not found.")
+        
         if not _verify_password(password, auth.password_hash):
             raise ValueError("Invalid password.")
+
+        token = self.generate_auth_token(auth=auth)
+        
         return auth, token
 
     def signup(self, *, username: str, password: str, confirm_password: str) -> Auth:
@@ -214,6 +226,13 @@ class AuthService:
         """
         if password != confirm_password:
             raise ValueError("Passwords do not match.")
-        if self.read_by_username(username=username):
+        
+        _user = self.read_by_username(username=username)
+        print(_user)
+        if _user:
             raise ValueError("Username already exists.")
-        return self.create(username=username, password_hash=_hash_password(password))
+
+        auth = self.create(username=username, password_hash=_hash_password(password))
+        token = self.generate_auth_token(auth=auth)
+
+        return auth, token

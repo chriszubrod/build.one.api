@@ -1,0 +1,17 @@
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/sidebar.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+<nav class="sidebar-nav" aria-label="Sidebar">
+    {% if modules is defined %}
+        <ul class="sidebar-nav-list">
+            {% for module in modules %}
+                <li class="sidebar-nav-item">
+                    <a href="{{ module.route }}" class="sidebar-nav-link {{ 'active' if current_path.startswith(module.route) else '' }}">
+                        {{ module.name }}
+                    </a>
+                </li>
+            {% endfor %}
+        </ul>
+    {% endif %}
+</nav>

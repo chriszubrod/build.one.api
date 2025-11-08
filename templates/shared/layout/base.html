@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>
+            {% block title %}
+                Build.One - {{ self.title() }}
+            {% endblock %}
+        </title>
+        <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}?v={{ range(1000, 9999) | random }}">
+        {% block head %}{% endblock %}
+    </head>
+    <body>
+
+        <div class="main-container">
+        
+            {% include 'shared/partials/header.html' %}
+
+            <div class="main-content-container">
+
+                {% include 'shared/partials/flash.html' %}
+
+                <!-- 3-column app shell: left sidenav, main content, right aside -->
+                <div class="three-column-layout">
+                        
+                    <!-- Left: Sidenav -->
+                    <aside class="sidebar-left" aria-label="Sidebar">
+                        {% block sidebar %}
+                            {% include 'shared/partials/sidebar.html' %}
+                        {% endblock %}
+                    </aside>
+            
+                    <!-- Center: Main content -->
+                    <main id="content" class="main-content" aria-label="Main">
+                        {% block content %}{% endblock %}
+                    </main>
+            
+                    <!-- Right: Aside panel -->
+                    <aside class="sidebar-right" aria-label="Aside">
+                        {% block aside %}
+                            {% include 'shared/partials/aside.html' %}
+                        {% endblock %}
+                    </aside>
+
+                </div>
+            
+            </div>
+        
+        </div>
+        
+        {% include 'shared/partials/footer.html' %}
+        
+        {% block scripts %}{% endblock %}
+
+    </body>
+
+</html>

@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from modules.module.business.service import ModuleService
 from modules.auth.business.service import get_current_user_web
 
-router = APIRouter(prefix="/module", tags=["web", "module"])
+router = APIRouter(prefix="/modules", tags=["web", "module"])
 templates = Jinja2Templates(directory="templates/module")
 
 

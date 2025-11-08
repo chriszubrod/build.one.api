@@ -1,0 +1,29 @@
+Codex Prompt — “Build Vendor Type from Spec + Mirror Reference Module”
+You are a senior engineer in the BuildOne repo.
+Read the vendor type spec and implement a full module that matches the structure, formatting, and style of the reference module.
+
+Inputs
+SPEC_FILE: build.one/modules/vendor_type/vendortype.spec.md
+REFERENCE_MODULE_DIR: build.one/modules/module/
+TARGET_MODULE_DIR: build.one/modules/vendor_type/
+PYTHON_VERSION: 3.11
+Your Tasks
+Parse the spec: Load SPEC_FILE and extract schema, routes, rules, and acceptance criteria.
+
+Study the reference: Scan REFERENCE_MODULE_DIR for naming, code layout, file headers, logging style, error mapping, template structure, JS patterns, and test style. Replicate these conventions exactly for the new module (filenames, imports, helper patterns, docstrings, comments, linting style).
+
+Generate the module: Create all files under TARGET_MODULE_DIR following the Folder Contract and the spec.
+
+Register router in the app’s router index (keep the same import style).
+Update any module registry/index if the reference does this.
+Constraints
+Do not change files outside TARGET_MODULE_DIR unless the reference module pattern requires a router import or module registry update—then change as minimally as the reference does.
+No ORM; pyodbc only.
+Use UTC (SYSUTCDATETIME()), ISO-8601 in API.
+Return 409 on uniqueness/concurrency violations; 422 on validation errors.
+Acceptance Criteria (pass/fail)
+Folder structure, filenames, and code style match the reference module.
+Sprocs work and map correctly; RowVersion conflicts return 409.
+Templates render with the same Tailwind utility patterns as reference.
+Tests pass and mirror reference test style.
+Do not ask questions. If a detail is missing, pick a secure, production-sane default and document it in the new module’s README.md.

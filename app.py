@@ -2,6 +2,7 @@
 
 # Third-party Imports
 from fastapi import Depends, FastAPI
+from fastapi.staticfiles import StaticFiles
 from typing_extensions import Annotated
 
 # Local Imports
@@ -18,9 +19,26 @@ from modules.module.api.router import router as module_api_router
 from modules.module.web.controller import router as module_web_router
 from modules.user.api.router import router as user_api_router
 from modules.user.web.controller import router as user_web_router
+from modules.user_role.api.router import router as user_role_api_router
+from modules.user_role.web.controller import router as user_role_web_router
+from modules.vendor.api.router import router as vendor_api_router
+from modules.vendor.web.controller import router as vendor_web_router
+from modules.vendor_type.api.router import router as vendor_type_api_router
+from modules.vendor_type.web.controller import router as vendor_type_web_router
+from modules.role_module.api.router import router as role_module_api_router
+from modules.role_module.web.controller import router as role_module_web_router
+from modules.dashboard.web.controller import router as dashboard_web_router
+from integrations.sync.api.router import router as sync_api_router
+from integrations.sync.web.controller import router as sync_web_router
+from integrations.intuit.qbo.vendor.api.router import router as qbo_vendor_api_router
+from integrations.intuit.qbo.vendor.web.controller import router as qbo_vendor_web_router
+from integrations.intuit.qbo.client.api.router import router as qbo_client_api_router
+from integrations.intuit.qbo.client.web.controller import router as qbo_client_web_router
+
 
 app = FastAPI()
 
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.include_router(auth_api_router)
 app.include_router(auth_web_router)
@@ -34,6 +52,21 @@ app.include_router(module_api_router)
 app.include_router(module_web_router)
 app.include_router(user_api_router)
 app.include_router(user_web_router)
+app.include_router(user_role_api_router)
+app.include_router(user_role_web_router)
+app.include_router(vendor_api_router)
+app.include_router(vendor_web_router)
+app.include_router(sync_api_router)
+app.include_router(sync_web_router)
+app.include_router(qbo_vendor_api_router)
+app.include_router(qbo_vendor_web_router)
+app.include_router(qbo_client_api_router)
+app.include_router(qbo_client_web_router)
+app.include_router(vendor_type_api_router)
+app.include_router(vendor_type_web_router)
+app.include_router(role_module_api_router)
+app.include_router(role_module_web_router)
+app.include_router(dashboard_web_router)
 
 
 def get_settings():

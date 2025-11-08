@@ -10,7 +10,7 @@ import base64
 
 @dataclass
 class User:
-    id: Optional[str]
+    id: Optional[int]
     public_id: Optional[str]
     row_version: Optional[str]
     created_datetime: Optional[str]

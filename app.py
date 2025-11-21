@@ -2,6 +2,7 @@
 
 # Third-party Imports
 from fastapi import Depends, FastAPI
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from typing_extensions import Annotated
 
@@ -71,6 +72,11 @@ app.include_router(dashboard_web_router)
 
 def get_settings():
     return config.Settings()
+
+
+@app.get("/")
+def root():
+    return RedirectResponse(url="/dashboard")
 
 
 @app.get("/ping")

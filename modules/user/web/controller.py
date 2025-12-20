@@ -9,7 +9,7 @@ from modules.user.business.service import UserService
 from modules.auth.business.service import get_current_user_web
 
 router = APIRouter(prefix="/user", tags=["web", "user"])
-templates = Jinja2Templates(directory="templates/user")
+templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
@@ -19,11 +19,12 @@ async def list_users(request: Request, current_user: dict = Depends(get_current_
     """
     users = UserService().read_all()
     return templates.TemplateResponse(
-        "list.html",
+        "user/list.html",
         {
             "request": request,
             "users": users,
-            "current_user": current_user
+            "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -34,10 +35,11 @@ async def create_user(request: Request, current_user: dict = Depends(get_current
     Render create user form.
     """
     return templates.TemplateResponse(
-        "create.html",
+        "user/create.html",
         {
             "request": request,
-            "current_user": current_user
+            "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -49,11 +51,12 @@ async def view_user(request: Request, public_id: str, current_user: dict = Depen
     """
     user = UserService().read_by_public_id(public_id=public_id)
     return templates.TemplateResponse(
-        "view.html",
+        "user/view.html",
         {
             "request": request,
             "user": user.to_dict(),
-            "current_user": current_user
+            "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -65,10 +68,11 @@ async def edit_user(request: Request, public_id: str, current_user: dict = Depen
     """
     user = UserService().read_by_public_id(public_id=public_id)
     return templates.TemplateResponse(
-        "edit.html",
+        "user/edit.html",
         {
             "request": request,
             "user": user.to_dict(),
-            "current_user": current_user
+            "current_user": current_user,
+            "current_path": request.url.path,
         },
     )

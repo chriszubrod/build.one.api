@@ -19,7 +19,10 @@ from modules.auth.business.model import (
     RefreshToken
 )
 from modules.auth.persistence.repo import AuthRepository
+from modules.organization.business.service import OrganizationService
+from modules.company.business.service import CompanyService
 from modules.user.business.service import UserService
+from modules.module.business.service import ModuleService
 from shared.database import (
     DatabaseConcurrencyError,
     DatabaseOperationError,
@@ -94,6 +97,28 @@ def get_current_user_web(request: Request):
 
     try:
         auth_payload = verify_token(token=auth_token)
+
+        try:
+            _organizations = OrganizationService().read_all()
+            auth_payload["organizations"] = [org.to_dict() for org in _organizations]
+        except Exception:
+            auth_payload["organizations"] = []
+        
+        try:
+            _companies = CompanyService().read_all()
+            auth_payload["companies"] = [company.to_dict() for company in _companies]
+        except Exception:
+            auth_payload["companies"] = []
+        
+        try:
+            _modules = ModuleService().read_all()
+            auth_payload["modules"] = [module.to_dict() for module in _modules]
+        except Exception:
+            auth_payload["modules"] = []
+        
+        # TODO: Add projects when available
+        auth_payload["projects"] = []
+
         return auth_payload
     except ValueError as e:
         return RedirectResponse(url="/auth/login", status_code=303)

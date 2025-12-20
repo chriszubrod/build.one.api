@@ -118,8 +118,16 @@
 
                     window.location.href = '/dashboard';
                 } else {
-                    const error = await response.json();
-                    alert('Unable to sign in: ' + (error.detail || 'Unknown error'));
+                    let errorMessage = 'Unknown error';
+                    try {
+                        const error = await response.json();
+                        errorMessage = error.detail || 'Unknown error';
+                    } catch (jsonError) {
+                        // If response is not JSON (e.g., HTML error page), get text
+                        const errorText = await response.text();
+                        errorMessage = `Server error (${response.status}): ${errorText.substring(0, 100)}`;
+                    }
+                    alert('Unable to sign in: ' + errorMessage);
                 }
             } catch (error) {
                 alert('Unable to sign in: ' + error.message);

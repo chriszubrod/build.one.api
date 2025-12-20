@@ -84,6 +84,9 @@ def login_auth_router(body: AuthLogin):
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Catch all other exceptions (database errors, etc.) and return JSON
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.post("/signup/auth")

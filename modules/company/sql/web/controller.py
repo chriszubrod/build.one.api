@@ -51,7 +51,7 @@ async def view_company(request: Request, public_id: str, current_user: dict = De
     """
     company = CompanyService().read_by_public_id(public_id=public_id)
     return templates.TemplateResponse(
-        "company/view.html",
+     "company/view.html",
         {
             "request": request,
             "company": company.to_dict(),

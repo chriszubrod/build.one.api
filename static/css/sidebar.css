@@ -4,11 +4,10 @@
     background-color: var(--color-background);
     border-right: 1px solid #e5e7eb;
     padding: 1rem;
-    /* border-radius: 0.5rem; - removed */
     box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
     position: sticky;
     top: 0;
-    height: 100%; /* Use full height of the grid container */
+    height: 100%;
     overflow-y: auto;
 }
 
@@ -18,38 +17,55 @@
     }
 }
 
-
 /* Sidebar navigation styling */
 .sidebar-left nav {
     position: sticky;
-    top: 1rem;
+    top: 1.5rem;
 }
 
-.sidebar-left .space-y-1 > div {
+/* Companies section */
+.sidebar-companies {
     margin-bottom: 1.5rem;
+    padding-top: 0;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #e5e7eb;
 }
 
-.sidebar-left h3 {
-    color: var(--color-text-secondary);
-    font-size: 0.75rem;
+.sidebar-company-name {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 0.5rem;
-    padding: 0 0.75rem;
+    color: var(--color-text);
 }
 
-.sidebar-left ul {
+.sidebar-company-selector {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+    background-color: var(--color-background);
+    color: var(--color-text);
+}
+
+.sidebar-company-selector:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+/* Sidebar navigation list */
+.sidebar-nav-list {
     list-style: none;
     padding: 0;
     margin: 0;
 }
 
-.sidebar-left ul li {
+.sidebar-nav-item {
     margin-bottom: 0.25rem;
 }
 
-.sidebar-left ul li a {
+.sidebar-nav-link {
     display: block;
     padding: 0.5rem 0.75rem;
     border-radius: 0.375rem;
@@ -60,13 +76,29 @@
     color: var(--color-text);
 }
 
-.sidebar-left ul li a:hover {
+.sidebar-nav-link:hover {
     background-color: #f3f4f6;
     border-color: #e5e7eb;
 }
 
-.sidebar-left ul li a.bg-gray-900 {
+.sidebar-nav-link.active {
     background-color: #1f2937;
     color: white;
     border-color: #374151;
+}
+
+.sidebar-nav-link--disabled {
+    color: var(--color-text-secondary);
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.sidebar-left h3 {
+    color: var(--color-text-secondary);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.5rem;
+    padding: 0 0.75rem;
 }

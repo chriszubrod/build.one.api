@@ -12,7 +12,19 @@
                 <span>Build.One</span>
             </a>
             <div class="logo-organization">
-                <span>{{ current_user.organization_name if current_user and current_user.organization_name else 'Organization' }}</span>
+                {% if current_user and current_user.organizations and current_user.organizations|length > 0 %}
+                    {% if current_user.organizations|length == 1 %}
+                        <span>{{ current_user.organizations[0].name }}</span>
+                    {% else %}
+                        <select class="organization-selector">
+                            {% for org in current_user.organizations %}
+                                <option value="{{ org.public_id }}">{{ org.name }}</option>
+                            {% endfor %}
+                        </select>
+                    {% endif %}
+                {% else %}
+                    <span>Organization</span>
+                {% endif %}
             </div>
         </div>
 

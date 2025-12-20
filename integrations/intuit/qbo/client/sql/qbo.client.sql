@@ -1,8 +1,17 @@
-IF OBJECT_ID('dbo.client', 'U') IS NOT NULL
-    DROP TABLE dbo.client;
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'buildone')
+    EXEC('CREATE SCHEMA qbo AUTHORIZATION dbo;');
 GO
 
-CREATE TABLE dbo.client
+
+
+
+IF OBJECT_ID('qbo.Client', 'U') IS NOT NULL
+    DROP TABLE qbo.Client;
+GO
+
+
+
+CREATE TABLE qbo.Client
 (
     ClientId NVARCHAR(MAX) NOT NULL,
     ClientSecret NVARCHAR(MAX) NOT NULL
@@ -24,7 +33,7 @@ BEGIN
 
     BEGIN TRANSACTION;
 
-    INSERT INTO dbo.client (ClientId, ClientSecret)
+    INSERT INTO qbo.Client (ClientId, ClientSecret)
     OUTPUT
         INSERTED.ClientId,
         INSERTED.ClientSecret
@@ -34,7 +43,7 @@ BEGIN
 END;
 GO
 
-EXEC CreateQboClient @ClientId = 'test-client', @ClientSecret = 'secret';
+EXEC CreateQboClient @ClientId = 'ABA5fzHtGjWvIqMOQs8qKq12Lg0U23bRCE42Yc2YKvpZy5XeP6', @ClientSecret = 'trXfM3uX9L7MoIGOQ73bfKhArEeS6dEj0W9vpbkG';
 
 
 DROP PROCEDURE IF EXISTS ReadQboClients;
@@ -49,7 +58,7 @@ BEGIN
     SELECT
         ClientId,
         ClientSecret
-    FROM dbo.client;
+    FROM qbo.Client;
 
     COMMIT TRANSACTION;
 END;
@@ -73,7 +82,7 @@ BEGIN
     SELECT
         ClientId,
         ClientSecret
-    FROM dbo.client
+    FROM qbo.Client
     WHERE ClientId = @ClientId;
 
     COMMIT TRANSACTION;
@@ -98,7 +107,7 @@ BEGIN
 
     BEGIN TRANSACTION;
 
-    UPDATE dbo.client
+    UPDATE qbo.Client
     SET ClientId = @ClientId,
         ClientSecret = @ClientSecret
     OUTPUT
@@ -128,7 +137,7 @@ BEGIN
 
     BEGIN TRANSACTION;
 
-    DELETE FROM dbo.client
+    DELETE FROM qbo.Client
     OUTPUT
         DELETED.ClientId,
         DELETED.ClientSecret

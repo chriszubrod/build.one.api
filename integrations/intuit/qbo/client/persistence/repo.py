@@ -26,18 +26,6 @@ class QboClientRepository:
         """Initialize the QboClientRepository."""
         pass
 
-    def _encode_row_version(self, row_version: Optional[bytes]) -> Optional[str]:
-        """
-        Convert a ROWVERSION value to base64 for transport.
-        """
-        if not row_version:
-            return None
-        try:
-            return base64.b64encode(row_version).decode("utf-8")
-        except Exception as error:
-            logger.error("Failed to encode qbo client row version: %s", error)
-            raise map_database_error(error)
-
     def _from_db(self, row: pyodbc.Row) -> Optional[QboClient]:
         """
         Convert a database row into a QboClient dataclass.
@@ -57,12 +45,7 @@ class QboClientRepository:
             logger.error("Unexpected error during qbo client mapping: %s", error)
             raise map_database_error(error)
 
-    def create(
-        self,
-        *,
-        client_id: str,
-        client_secret: str,
-    ) -> QboClient:
+    def create(self, *, client_id: str, client_secret: str) -> QboClient:
         """
         Create a new QboClient.
         """

@@ -49,8 +49,8 @@ BEGIN
 END;
 
 EXEC CreateOrganization
-    @Name = 'BuildOne',
-    @Website = 'https://buildone.com';
+    @Name = 'B. Christopher & Co., LLC',
+    @Website = 'https://wwww.bcand.company';
 GO
 
 DROP PROCEDURE IF EXISTS ReadOrganizations;
@@ -86,7 +86,7 @@ GO
 
 CREATE PROCEDURE ReadOrganizationById
 (
-    @Id UNIQUEIDENTIFIER
+    @Id BIGINT
 )
 AS
 BEGIN
@@ -170,7 +170,7 @@ BEGIN
 END;
 
 EXEC ReadOrganizationByName
-    @Name = 'BuildOne';
+    @Name = 'B. Christopher & Co., LLC';
 GO
 
 
@@ -181,7 +181,7 @@ GO
 
 CREATE PROCEDURE UpdateOrganizationById
 (
-    @Id UNIQUEIDENTIFIER,
+    @Id BIGINT,
     @RowVersion BINARY(8),
     @Name NVARCHAR(255),
     @Website NVARCHAR(255)
@@ -224,7 +224,7 @@ GO
 
 CREATE PROCEDURE DeleteOrganizationById
 (
-    @Id UNIQUEIDENTIFIER
+    @Id BIGINT
 )
 AS
 BEGIN

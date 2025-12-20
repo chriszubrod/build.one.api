@@ -1,0 +1,65 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Companies - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/company.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="company-page-header">
+        <h1>Companies</h1>
+        <a href="/company/create" class="btn btn-primary">Add Company</a>
+    </div>
+
+    {% if companies %}
+        <div class="company-grid">
+            {% for company in companies %}
+            <div class="company-card">
+                <div class="company-card-body">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
+                        <h5 class="company-card-title">
+                            {{ company.name or 'Unnamed Company' }}
+                        </h5>
+                    </div>
+                    {% if company.website %}
+                    <div class="company-metadata">
+                        <div class="company-metadata-item">
+                            <span>Website: {{ company.website }}</span>
+                        </div>
+                    </div>
+                    {% endif %}
+                    <div class="company-metadata" style="margin-top: 1rem;">
+                        <div class="company-metadata-item">
+                            <span>Created: {{ company.created_datetime or 'Unknown' }}</span>
+                        </div>
+                        <div class="company-metadata-item">
+                            <span>Modified: {{ company.modified_datetime or 'Unknown' }}</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="company-card-footer">
+                    <div class="company-btn-group">
+                        <a href="/company/{{ company.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
+                        <a href="/company/{{ company.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="company-empty-state">
+            <div class="company-empty-state-icon">🏢</div>
+            <h3>No Companies Found</h3>
+            <p>Create your first company to get started.</p>
+            <a href="/company/create" class="btn btn-primary">Create Company</a>
+        </div>
+    {% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/auth.js"></script>
+{% endblock %}
+

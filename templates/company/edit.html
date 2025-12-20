@@ -1,0 +1,172 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Edit Company - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/company.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="company-page-header">
+        <h1>Edit Company</h1>
+        <a href="/company/list" class="btn btn-secondary">Back to List</a>
+    </div>
+
+    <div class="company-form-container">
+        <div class="company-form-card">
+            <div class="company-form-card-header">
+                <h5>Company Details</h5>
+            </div>
+            <div class="company-form-card-body">
+                <form id="editCompanyForm">
+                    <input type="hidden" id="public_id" name="public_id" value="{{ company.public_id }}">
+                    <input type="hidden" id="row_version" name="row_version" value="{{ company.row_version }}">
+
+                    <div class="company-form-group">
+                        <label for="name" class="company-form-label">
+                            Name <span class="required">*</span>
+                        </label>
+                        <input type="text"
+                               class="company-form-control"
+                               id="name"
+                               name="name"
+                               required
+                               maxlength="50"
+                               value="{{ company.name or '' }}"
+                               placeholder="Enter company name">
+                        <div class="company-form-text">Required field. Maximum 50 characters.</div>
+                    </div>
+
+                    <div class="company-form-group">
+                        <label for="website" class="company-form-label">
+                            Website <span class="required">*</span>
+                        </label>
+                        <input type="text"
+                               class="company-form-control"
+                               id="website"
+                               name="website"
+                               required
+                               maxlength="255"
+                               value="{{ company.website or '' }}"
+                               placeholder="Enter website">
+                        <div class="company-form-text">Required field. Maximum 255 characters.</div>
+                    </div>
+
+                    <div class="company-metadata" style="margin-top: 1rem; margin-bottom: 1rem;">
+                        <div class="company-metadata-item">
+                            <span>Created: {{ company.created_datetime or 'Unknown' }}</span>
+                        </div>
+                        <div class="company-metadata-item">
+                            <span>Modified: {{ company.modified_datetime or 'Unknown' }}</span>
+                        </div>
+                    </div>
+
+                    <div class="company-form-actions">
+                        <div class="company-form-actions-left">
+                            <button type="button" class="btn btn-danger" onclick="deleteCompany()">Delete</button>
+                        </div>
+                        <div class="company-form-actions-right">
+                            <a href="/company/list" class="btn btn-secondary">Cancel</a>
+                            <button type="submit" class="btn btn-primary">Update Company</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        document.getElementById('editCompanyForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            const data = {
+                name: formData.get('name'),
+                website: formData.get('website'),
+                row_version: formData.get('row_version')
+            };
+
+            try {
+                const response = await fetch(`/api/v1/update/company/${formData.get('public_id')}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                if (response.ok) {
+                    window.location.href = '/company/list';
+                } else {
+                    const contentType = response.headers.get('content-type');
+                    if (contentType && contentType.includes('application/json')) {
+                        const error = await response.json();
+                        let message = 'Unknown error';
+                        if (error.detail) {
+                            message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                        } else if (error.message) {
+                            message = error.message;
+                        } else if (typeof error === 'string') {
+                            message = error;
+                        } else {
+                            message = JSON.stringify(error);
+                        }
+                        alert('Error updating company: ' + message);
+                    } else {
+                        const errorText = await response.text();
+                        alert('Error updating company: ' + errorText);
+                    }
+                }
+            } catch (error) {
+                alert('Error updating company: ' + error.message);
+            }
+        });
+
+        async function deleteCompany() {
+            if (confirm('Are you sure you want to delete this company? This action cannot be undone.')) {
+                const formData = new FormData(document.getElementById('editCompanyForm'));
+
+                try {
+                    const response = await fetch(`/api/v1/delete/company/${formData.get('public_id')}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        },
+                        body: JSON.stringify({ row_version: formData.get('row_version') })
+                    });
+
+                    if (response.ok) {
+                        window.location.href = '/company/list';
+                    } else {
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const error = await response.json();
+                            let message = 'Unknown error';
+                            if (error.detail) {
+                                message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                            } else if (error.message) {
+                                message = error.message;
+                            } else if (typeof error === 'string') {
+                                message = error;
+                            } else {
+                                message = JSON.stringify(error);
+                            }
+                            alert('Error deleting company: ' + message);
+                        } else {
+                            const errorText = await response.text();
+                            alert('Error deleting company: ' + errorText);
+                        }
+                    }
+                } catch (error) {
+                    alert('Error deleting company: ' + error.message);
+                }
+            }
+        }
+    </script>
+{% endblock %}
+

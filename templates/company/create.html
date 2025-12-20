@@ -1,0 +1,105 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Create Company - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/company.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="company-page-header">
+        <h1>Create Company</h1>
+        <a href="/company/list" class="btn btn-secondary">Back to List</a>
+    </div>
+
+    <div class="company-form-container">
+        <div class="company-form-card">
+            <div class="company-form-card-header">
+                <h5>Company Details</h5>
+            </div>
+            <div class="company-form-card-body">
+                <form id="createCompanyForm">
+                    <div class="company-form-group">
+                        <label for="name" class="company-form-label">
+                            Name <span class="required">*</span>
+                        </label>
+                        <input type="text"
+                               class="company-form-control"
+                               id="name"
+                               name="name"
+                               required
+                               maxlength="50"
+                               placeholder="Enter company name">
+                        <div class="company-form-text">Required field. Maximum 50 characters.</div>
+                    </div>
+
+                    <div class="company-form-group">
+                        <label for="website" class="company-form-label">
+                            Website <span class="required">*</span>
+                        </label>
+                        <input type="text"
+                               class="company-form-control"
+                               id="website"
+                               name="website"
+                               required
+                               maxlength="255"
+                               placeholder="Enter website">
+                        <div class="company-form-text">Required field. Maximum 255 characters.</div>
+                    </div>
+
+                    <div class="company-form-actions">
+                        <div class="company-form-actions-left"></div>
+                        <div class="company-form-actions-right">
+                            <a href="/company/list" class="btn btn-secondary">Cancel</a>
+                            <button type="submit" class="btn btn-primary">Create Company</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        document.getElementById('createCompanyForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const formData = new FormData(this);
+            const payload = {
+                name: formData.get('name'),
+                website: formData.get('website')
+            };
+
+            try {
+                const response = await fetch('/api/v1/create/company', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.ok) {
+                    await response.json();
+                    window.location.href = '/company/list';
+                } else {
+                    const contentType = response.headers.get('content-type');
+                    if (contentType && contentType.includes('application/json')) {
+                        const error = await response.json();
+                        alert('Error creating company: ' + (error.detail || error.message || 'Unknown error'));
+                    } else {
+                        const errorText = await response.text();
+                        alert('Error creating company: ' + errorText);
+                    }
+                }
+            } catch (error) {
+                alert('Error creating company: ' + error.message);
+            }
+        });
+    </script>
+{% endblock %}
+

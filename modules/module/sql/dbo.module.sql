@@ -44,8 +44,8 @@ BEGIN
 END;
 
 EXEC CreateModule
-    @Name = 'Bills',
-    @Route = '/bills';
+    @Name = 'Modules',
+    @Route = '/module/list';
 GO
 
 
@@ -200,12 +200,14 @@ BEGIN
 END;
 
 EXEC UpdateModuleById
-    @Id = 2,
-    @RowVersion = 0x0000000000020B74,
-    @Name = 'Bills',
-    @Route = '/bill/list';
+    @Id = 4,
+    @RowVersion = 0x0000000000021B33,
+    @Name = 'Organizations',
+    @Route = '/organization/list';
 GO
 
+EXEC ReadModules;
+GO
 
 DROP PROCEDURE IF EXISTS DeleteModuleById;
 GO

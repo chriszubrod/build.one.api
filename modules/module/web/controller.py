@@ -8,8 +8,8 @@ from fastapi.templating import Jinja2Templates
 from modules.module.business.service import ModuleService
 from modules.auth.business.service import get_current_user_web
 
-router = APIRouter(prefix="/modules", tags=["web", "module"])
-templates = Jinja2Templates(directory="templates/module")
+router = APIRouter(prefix="/module", tags=["web", "module"])
+templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
@@ -19,11 +19,12 @@ async def list_modules(request: Request, current_user: dict = Depends(get_curren
     """
     modules = ModuleService().read_all()
     return templates.TemplateResponse(
-        "list.html",
+        "module/list.html",
         {
             "request": request,
             "modules": modules,
             "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -34,10 +35,11 @@ async def create_module(request: Request, current_user: dict = Depends(get_curre
     Render create module form.
     """
     return templates.TemplateResponse(
-        "create.html",
+        "module/create.html",
         {
             "request": request,
             "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -49,11 +51,12 @@ async def view_module(request: Request, public_id: str, current_user: dict = Dep
     """
     module = ModuleService().read_by_public_id(public_id=public_id)
     return templates.TemplateResponse(
-        "view.html",
+        "module/view.html",
         {
             "request": request,
             "module": module.to_dict(),
             "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -65,10 +68,11 @@ async def edit_module(request: Request, public_id: str, current_user: dict = Dep
     """
     module = ModuleService().read_by_public_id(public_id=public_id)
     return templates.TemplateResponse(
-        "edit.html",
+        "module/edit.html",
         {
             "request": request,
             "module": module.to_dict(),
             "current_user": current_user,
+            "current_path": request.url.path,
         },
     )

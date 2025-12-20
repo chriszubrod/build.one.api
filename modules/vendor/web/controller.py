@@ -9,7 +9,7 @@ from modules.vendor.business.service import VendorService
 from modules.auth.business.service import get_current_user_web as get_current_vendor_web
 
 router = APIRouter(prefix="/vendor", tags=["web", "vendor"])
-templates = Jinja2Templates(directory="templates/vendor")
+templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
@@ -19,11 +19,12 @@ async def list_vendors(request: Request, current_user: dict = Depends(get_curren
     """
     vendors = VendorService().read_all()
     return templates.TemplateResponse(
-        "list.html",
+        "vendor/list.html",
         {
             "request": request,
             "vendors": vendors,
             "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -34,10 +35,11 @@ async def create_vendor(request: Request, current_user: dict = Depends(get_curre
     Render create vendor form.
     """
     return templates.TemplateResponse(
-        "create.html",
+        "vendor/create.html",
         {
             "request": request,
             "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -49,11 +51,12 @@ async def view_vendor(request: Request, public_id: str, current_user: dict = Dep
     """
     vendor = VendorService().read_by_public_id(public_id=public_id)
     return templates.TemplateResponse(
-        "view.html",
+        "vendor/view.html",
         {
             "request": request,
             "vendor": vendor.to_dict(),
             "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -65,10 +68,11 @@ async def edit_vendor(request: Request, public_id: str, current_user: dict = Dep
     """
     vendor = VendorService().read_by_public_id(public_id=public_id)
     return templates.TemplateResponse(
-        "edit.html",
+        "vendor/edit.html",
         {
             "request": request,
             "vendor": vendor.to_dict(),
             "current_user": current_user,
+            "current_path": request.url.path,
         },
     )

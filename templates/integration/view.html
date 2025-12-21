@@ -1,0 +1,108 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}{{ integration.name or 'Integration' }} - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/integration.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="integration-page-header">
+        <h1>{{ integration.name or 'Integration Details' }}</h1>
+        <div style="display: flex; gap: 0.5rem;">
+            <a href="/integration/{{ integration.public_id }}/edit" class="btn btn-primary">Edit</a>
+            <a href="/integration/list" class="btn btn-secondary">Back to List</a>
+        </div>
+    </div>
+
+    <div class="integration-detail-container">
+        <div class="integration-detail-card">
+            <div class="integration-detail-card-header">
+                <h5>Integration Information</h5>
+            </div>
+            <div class="integration-detail-card-body">
+                <div class="integration-detail-row">
+                    <div class="integration-detail-label">Name:</div>
+                    <div class="integration-detail-value">{{ integration.name or 'Not specified' }}</div>
+                </div>
+
+                <div class="integration-detail-row">
+                    <div class="integration-detail-label">Public ID:</div>
+                    <div class="integration-detail-value">
+                        <code>{{ integration.public_id or 'Not available' }}</code>
+                    </div>
+                </div>
+
+                <div class="integration-detail-row">
+                    <div class="integration-detail-label">Created:</div>
+                    <div class="integration-detail-value">{{ integration.created_datetime or 'Unknown' }}</div>
+                </div>
+
+                <div class="integration-detail-row">
+                    <div class="integration-detail-label">Last Modified:</div>
+                    <div class="integration-detail-value">{{ integration.modified_datetime or 'Unknown' }}</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="integration-actions-card">
+            <h6>Actions</h6>
+            <div class="integration-actions-list">
+                <a href="/integration/{{ integration.public_id }}/edit" class="btn btn-primary">Edit Integration</a>
+                <a href="/integration/list" class="btn btn-secondary">View All Integrations</a>
+                <button type="button" class="btn btn-danger" onclick="deleteIntegration()">Delete Integration</button>
+            </div>
+        </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        async function deleteIntegration() {
+            if (confirm('Are you sure you want to delete this integration? This action cannot be undone.')) {
+                const payload = {
+                    row_version: "{{ integration.row_version }}"
+                };
+
+                try {
+                    const response = await fetch(`/api/v1/delete/integration/{{ integration.public_id }}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        window.location.href = '/integration/list';
+                    } else {
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const error = await response.json();
+                            let message = 'Unknown error';
+                            if (error.detail) {
+                                message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                            } else if (error.message) {
+                                message = error.message;
+                            } else if (typeof error === 'string') {
+                                message = error;
+                            } else {
+                                message = JSON.stringify(error);
+                            }
+                            alert('Error deleting integration: ' + message);
+                        } else {
+                            const errorText = await response.text();
+                            alert('Error deleting integration: ' + errorText);
+                        }
+                    }
+                } catch (error) {
+                    alert('Error deleting integration: ' + error.message);
+                }
+            }
+        }
+    </script>
+{% endblock %}
+

@@ -1,0 +1,156 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Edit Integration - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/integration.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="integration-page-header">
+        <h1>Edit Integration</h1>
+        <a href="/integration/list" class="btn btn-secondary">Back to List</a>
+    </div>
+
+    <div class="integration-form-container">
+        <div class="integration-form-card">
+            <div class="integration-form-card-header">
+                <h5>Integration Details</h5>
+            </div>
+            <div class="integration-form-card-body">
+                <form id="editIntegrationForm">
+                    <input type="hidden" id="public_id" name="public_id" value="{{ integration.public_id }}">
+                    <input type="hidden" id="row_version" name="row_version" value="{{ integration.row_version }}">
+
+                    <div class="integration-form-group">
+                        <label for="name" class="integration-form-label">
+                            Name <span class="required">*</span>
+                        </label>
+                        <input type="text"
+                               class="integration-form-control"
+                               id="name"
+                               name="name"
+                               required
+                               maxlength="50"
+                               value="{{ integration.name or '' }}"
+                               placeholder="Enter integration name">
+                        <div class="integration-form-text">Required field. Maximum 50 characters.</div>
+                    </div>
+
+                    <div class="integration-metadata" style="margin-top: 1rem; margin-bottom: 1rem;">
+                        <div class="integration-metadata-item">
+                            <span>Created: {{ integration.created_datetime or 'Unknown' }}</span>
+                        </div>
+                        <div class="integration-metadata-item">
+                            <span>Modified: {{ integration.modified_datetime or 'Unknown' }}</span>
+                        </div>
+                    </div>
+
+                    <div class="integration-form-actions">
+                        <div class="integration-form-actions-left">
+                            <button type="button" class="btn btn-danger" onclick="deleteIntegration()">Delete</button>
+                        </div>
+                        <div class="integration-form-actions-right">
+                            <a href="/integration/list" class="btn btn-secondary">Cancel</a>
+                            <button type="submit" class="btn btn-primary">Update Integration</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        document.getElementById('editIntegrationForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            const data = {
+                name: formData.get('name'),
+                row_version: formData.get('row_version')
+            };
+
+            try {
+                const response = await fetch(`/api/v1/update/integration/${formData.get('public_id')}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                if (response.ok) {
+                    window.location.href = '/integration/list';
+                } else {
+                    const contentType = response.headers.get('content-type');
+                    if (contentType && contentType.includes('application/json')) {
+                        const error = await response.json();
+                        let message = 'Unknown error';
+                        if (error.detail) {
+                            message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                        } else if (error.message) {
+                            message = error.message;
+                        } else if (typeof error === 'string') {
+                            message = error;
+                        } else {
+                            message = JSON.stringify(error);
+                        }
+                        alert('Error updating integration: ' + message);
+                    } else {
+                        const errorText = await response.text();
+                        alert('Error updating integration: ' + errorText);
+                    }
+                }
+            } catch (error) {
+                alert('Error updating integration: ' + error.message);
+            }
+        });
+
+        async function deleteIntegration() {
+            if (confirm('Are you sure you want to delete this integration? This action cannot be undone.')) {
+                const formData = new FormData(document.getElementById('editIntegrationForm'));
+
+                try {
+                    const response = await fetch(`/api/v1/delete/integration/${formData.get('public_id')}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        },
+                        body: JSON.stringify({ row_version: formData.get('row_version') })
+                    });
+
+                    if (response.ok) {
+                        window.location.href = '/integration/list';
+                    } else {
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const error = await response.json();
+                            let message = 'Unknown error';
+                            if (error.detail) {
+                                message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                            } else if (error.message) {
+                                message = error.message;
+                            } else if (typeof error === 'string') {
+                                message = error;
+                            } else {
+                                message = JSON.stringify(error);
+                            }
+                            alert('Error deleting integration: ' + message);
+                        } else {
+                            const errorText = await response.text();
+                            alert('Error deleting integration: ' + errorText);
+                        }
+                    }
+                } catch (error) {
+                    alert('Error deleting integration: ' + error.message);
+                }
+            }
+        }
+    </script>
+{% endblock %}
+

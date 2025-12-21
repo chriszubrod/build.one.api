@@ -10,6 +10,8 @@ from typing_extensions import Annotated
 import config
 from modules.auth.api.router import router as auth_api_router
 from modules.auth.web.controller import router as auth_web_router
+from modules.integration.api.router import router as integration_api_router
+from modules.integration.web.controller import router as integration_web_router
 from modules.organization.api.router import router as organization_api_router
 from modules.organization.web.controller import router as organization_web_router
 from modules.company.api.router import router as company_api_router
@@ -45,6 +47,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.include_router(auth_api_router)
 app.include_router(auth_web_router)
+app.include_router(integration_api_router)
+app.include_router(integration_web_router)
 app.include_router(organization_api_router)
 app.include_router(organization_web_router)
 app.include_router(company_api_router)

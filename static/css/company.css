@@ -106,6 +106,13 @@
     transition: box-shadow 0.2s ease, transform 0.2s ease;
 }
 
+@media (min-width: 1024px) {
+    .company-card {
+        flex-direction: row;
+        height: auto;
+    }
+}
+
 .company-card:hover {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
     transform: translateY(-2px);
@@ -116,11 +123,31 @@
     flex: 1;
 }
 
+@media (min-width: 1024px) {
+    .company-card-body {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        flex: 1;
+        padding: 0.75rem 1.5rem;
+    }
+    
+    .company-card-body > div:first-child {
+        margin-bottom: 0.5rem !important;
+    }
+}
+
 .company-card-title {
     font-size: var(--font-size-action-lg);
     font-weight: var(--font-weight-regular);
     color: var(--color-text);
     margin: 0 0 1rem 0;
+}
+
+@media (min-width: 1024px) {
+    .company-card-title {
+        margin: 0;
+    }
 }
 
 .company-card-footer {
@@ -129,6 +156,16 @@
     border-top: 1px solid #e0e0e0;
     display: flex;
     gap: 0.5rem;
+}
+
+@media (min-width: 1024px) {
+    .company-card-footer {
+        border-top: none;
+        border-left: 1px solid #e0e0e0;
+        padding: 0.75rem 1.5rem;
+        align-items: center;
+        flex-shrink: 0;
+    }
 }
 
 /* Badges */
@@ -160,13 +197,13 @@
 
 @media (min-width: 768px) {
     .company-grid {
-        grid-template-columns: repeat(2, 1fr);
+        grid-template-columns: 1fr;
     }
 }
 
 @media (min-width: 1024px) {
     .company-grid {
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: 1fr;
     }
 }
 
@@ -357,6 +394,13 @@
     font-size: var(--font-size-base);
     color: var(--color-text-secondary);
     margin-top: 1rem;
+}
+
+@media (min-width: 1024px) {
+    .company-metadata {
+        gap: 0.125rem;
+        margin-top: 0.25rem !important;
+    }
 }
 
 .company-metadata-item {

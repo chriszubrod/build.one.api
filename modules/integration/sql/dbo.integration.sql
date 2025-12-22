@@ -5,10 +5,11 @@ CREATE TABLE [dbo].[Integration]
     [RowVersion] ROWVERSION NOT NULL,
     [CreatedDatetime] DATETIME2(3) NOT NULL,
     [ModifiedDatetime] DATETIME2(3) NULL,
-    [Name] NVARCHAR(50) NOT NULL
+    [Name] NVARCHAR(50) NOT NULL,
+    [Status] NVARCHAR(50) NULL,
+    [Endpoint] NVARCHAR(MAX) NULL
 );
 GO
-
 
 DROP TABLE IF EXISTS dbo.[Integration];
 GO
@@ -19,7 +20,9 @@ GO
 
 CREATE PROCEDURE CreateIntegration
 (
-    @Name NVARCHAR(50)
+    @Name NVARCHAR(50),
+    @Status NVARCHAR(50),
+    @Endpoint NVARCHAR(MAX)
 )
 AS
 BEGIN
@@ -27,21 +30,25 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Integration] ([CreatedDatetime], [ModifiedDatetime], [Name])
+    INSERT INTO dbo.[Integration] ([CreatedDatetime], [ModifiedDatetime], [Name], [Status], [Endpoint])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
         INSERTED.[RowVersion],
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[Name]
-    VALUES (@Now, @Now, @Name);
+        INSERTED.[Name],
+        INSERTED.[Status],
+        INSERTED.[Endpoint]
+    VALUES (@Now, @Now, @Name, @Status, @Endpoint);
 
     COMMIT TRANSACTION;
 END;
 
 EXEC CreateIntegration
-    @Name = 'QuickBooks Online';
+    @Name = 'QuickBooks Online',
+    @Status = 'connected',
+    @Endpoint = 'https://www.quickbooks.com';
 GO
 
 
@@ -59,7 +66,9 @@ BEGIN
         [RowVersion],
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name]
+        [Name],
+        [Status],
+        [Endpoint]
     FROM dbo.[Integration]
     ORDER BY [Name] ASC;
 
@@ -87,7 +96,9 @@ BEGIN
         [RowVersion],
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name]
+        [Name],
+        [Status],
+        [Endpoint]
     FROM dbo.[Integration]
     WHERE [Id] = @Id;
 
@@ -116,7 +127,9 @@ BEGIN
         [RowVersion],
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name]
+        [Name],
+        [Status],
+        [Endpoint]
     FROM dbo.[Integration]
     WHERE [PublicId] = @PublicId;
 
@@ -145,7 +158,9 @@ BEGIN
         [RowVersion],
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name]
+        [Name],
+        [Status],
+        [Endpoint]
     FROM dbo.[Integration]
     WHERE [Name] = @Name;
 
@@ -164,7 +179,9 @@ CREATE PROCEDURE UpdateIntegrationById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
-    @Name NVARCHAR(50)
+    @Name NVARCHAR(50),
+    @Status NVARCHAR(50),
+    @Endpoint NVARCHAR(MAX)
 )
 AS
 BEGIN
@@ -175,14 +192,18 @@ BEGIN
     UPDATE dbo.[Integration]
     SET
         [ModifiedDatetime] = @Now,
-        [Name] = @Name
+        [Name] = @Name,
+        [Status] = @Status,
+        [Endpoint] = @Endpoint
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
         INSERTED.[RowVersion],
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[Name]
+        INSERTED.[Name],
+        INSERTED.[Status],
+        INSERTED.[Endpoint]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -191,7 +212,9 @@ END;
 EXEC UpdateIntegrationById
     @Id = 2,
     @RowVersion = 0x0000000000020B74,
-    @Name = 'QuickBooks Online';
+    @Name = 'QuickBooks Online',
+    @Status = 'connected',
+    @Endpoint = 'https://www.quickbooks.com';
 GO
 
 
@@ -213,7 +236,9 @@ BEGIN
         DELETED.[RowVersion],
         CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        DELETED.[Name]
+        DELETED.[Name],
+        DELETED.[Status],
+        DELETED.[Endpoint]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;

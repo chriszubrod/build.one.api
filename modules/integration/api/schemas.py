@@ -13,6 +13,16 @@ class IntegrationCreate(BaseModel):
         max_length=50,
         description="The name of the integration."
     )
+    status: str = Field(
+        min_length=1,
+        max_length=50,
+        description="The status of the integration."
+    )
+    endpoint: str = Field(
+        min_length=1,
+        max_length=255,
+        description="The endpoint of the integration."
+    )
 
 
 class IntegrationUpdate(BaseModel):
@@ -23,4 +33,14 @@ class IntegrationUpdate(BaseModel):
         min_length=1,
         max_length=50,
         description="The name of the integration."
+    )
+    status: str = Field(
+        min_length=1,
+        max_length=50,
+        description="The status of the integration."
+    )
+    endpoint: str = Field(
+        min_length=1,
+        max_length=255,
+        description="The endpoint of the integration."
     )

@@ -16,6 +16,9 @@ class Integration:
     created_datetime: Optional[str]
     modified_datetime: Optional[str]
     name: Optional[str]
+    status: Optional[str]
+    endpoint: Optional[str]
+
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

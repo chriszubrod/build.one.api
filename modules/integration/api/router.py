@@ -18,6 +18,8 @@ def create_integration_router(body: IntegrationCreate, current_user: dict = Depe
     """
     integration = IntegrationService().create(
         name=body.name,
+        status=body.status,
+        endpoint=body.endpoint
     )
     return integration.to_dict()
 

@@ -17,11 +17,11 @@ class IntegrationService:
         """Initialize the IntegrationService."""
         self.repo = repo or IntegrationRepository()
 
-    def create(self, *, name: str) -> Integration:
+    def create(self, *, name: str, status: str, endpoint: str) -> Integration:
         """
         Create a new integration.
         """
-        return self.repo.create(name=name)
+        return self.repo.create(name=name, status=status, endpoint=endpoint)
 
     def read_all(self) -> list[Integration]:
         """
@@ -55,6 +55,8 @@ class IntegrationService:
         if existing:
             existing.row_version = integration.row_version
             existing.name = integration.name
+            existing.status = integration.status
+            existing.endpoint = integration.endpoint
         return self.repo.update_by_id(existing)
 
     def delete_by_public_id(self, public_id: str) -> Optional[Integration]:

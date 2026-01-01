@@ -13,91 +13,1017 @@
         <a href="/vendor/list" class="btn btn-secondary">Back to List</a>
     </div>
 
-    <div class="vendor-form-container">
-        <div class="vendor-form-card">
-            <div class="vendor-form-card-header">
-                <h5>Vendor Details</h5>
-            </div>
-            <div class="vendor-form-card-body">
-                <form id="createVendorForm">
-                    <div class="vendor-form-group">
-                        <label for="name" class="vendor-form-label">
-                            Name <span class="required">*</span>
-                        </label>
-                        <input type="text"
-                               class="vendor-form-control"
-                               id="name"
-                               name="name"
-                               required
-                               maxlength="50"
-                               placeholder="Enter vendor name">
-                        <div class="vendor-form-text">Required field. Maximum 50 characters.</div>
-                    </div>
+    <div class="vendor-create-layout">
+        <aside class="vendor-sidebar">
+            <nav class="vendor-sidebar-nav">
+                <a href="#vendor-details" class="vendor-nav-item active" data-section="vendor-details">
+                    <span class="vendor-nav-label">Vendor Details</span>
+                    <span class="vendor-save-status-icon"></span>
+                </a>
+                <a href="#taxpayer" class="vendor-nav-item" data-section="taxpayer">
+                    <span class="vendor-nav-label">Taxpayer</span>
+                    <span class="vendor-save-status-icon"></span>
+                </a>
+                <a href="#addresses" class="vendor-nav-item" data-section="addresses">
+                    <span class="vendor-nav-label">Addresses</span>
+                    <span class="vendor-save-status-icon"></span>
+                </a>
+            </nav>
+        </aside>
+        
+        <main class="vendor-main-content">
+            <form id="createVendorForm" autocomplete="off">
+                <input type="hidden" id="vendor_public_id" name="vendor_public_id">
+                <input type="hidden" id="vendor_id" name="vendor_id">
+                <input type="hidden" id="taxpayer_id" name="taxpayer_id">
+                <input type="hidden" id="taxpayer_row_version" name="taxpayer_row_version">
+                <input type="hidden" id="row_version" name="row_version">
+                <!-- Address data stored per address type -->
+                {% for address_type in address_types %}
+                <input type="hidden" id="address_{{ address_type.public_id }}_id" name="address_{{ address_type.public_id }}_id">
+                <input type="hidden" id="address_{{ address_type.public_id }}_row_version" name="address_{{ address_type.public_id }}_row_version">
+                <input type="hidden" id="vendor_address_{{ address_type.public_id }}_id" name="vendor_address_{{ address_type.public_id }}_id">
+                {% endfor %}
 
-                    <div class="vendor-form-group">
-                        <label for="abbreviation" class="vendor-form-label">
-                            Abbreviation <span class="required">*</span>
-                        </label>
-                        <input type="text"
-                               class="vendor-form-control"
-                               id="abbreviation"
-                               name="abbreviation"
-                               required
-                               maxlength="255"
-                               placeholder="Enter vendor abbreviation">
-                        <div class="vendor-form-text">Required field. Maximum 255 characters.</div>
-                    </div>
+                <!-- Vendor Details Section -->
+                <section id="vendor-details" class="vendor-section active">
+                    <div class="vendor-form-card">
+                        <div class="vendor-form-card-header">
+                            <h5>Vendor Details</h5>
+                        </div>
+                        <div class="vendor-form-card-body">
+                            <div class="vendor-form-group">
+                                <label for="name" class="vendor-form-label">
+                                    Name <span class="required">*</span>
+                                </label>
+                                <input type="text"
+                                       class="vendor-form-control"
+                                       id="name"
+                                       name="name"
+                                       required
+                                       maxlength="50"
+                                       autocomplete="off"
+                                       placeholder="Enter vendor name">
+                            </div>
 
-                    <div class="vendor-form-actions">
-                        <div class="vendor-form-actions-left"></div>
-                        <div class="vendor-form-actions-right">
-                            <a href="/vendor/list" class="btn btn-secondary">Cancel</a>
-                            <button type="submit" class="btn btn-primary">Create Vendor</button>
+                            <div class="vendor-form-group">
+                                <label for="abbreviation" class="vendor-form-label">
+                                    Abbreviation <span class="required">*</span>
+                                </label>
+                                <input type="text"
+                                       class="vendor-form-control"
+                                       id="abbreviation"
+                                       name="abbreviation"
+                                       required
+                                       maxlength="255"
+                                       autocomplete="off"
+                                       placeholder="Enter vendor abbreviation">
+                            </div>
+
+                            <div class="vendor-form-group">
+                                <label for="vendor_type_id" class="vendor-form-label">
+                                    Vendor Type
+                                </label>
+                                <select class="vendor-form-control"
+                                        id="vendor_type_id"
+                                        name="vendor_type_id">
+                                    <option value="">Select Vendor Type</option>
+                                    {% for vendor_type in vendor_types %}
+                                        <option value="{{ vendor_type.public_id }}">{{ vendor_type.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
                         </div>
                     </div>
-                </form>
-            </div>
-        </div>
+                </section>
+
+                <!-- Taxpayer Information Section -->
+                <section id="taxpayer" class="vendor-section">
+                    <div class="vendor-form-card">
+                        <div class="vendor-form-card-header">
+                            <h5>Taxpayer Information</h5>
+                        </div>
+                        <div class="vendor-form-card-body">
+                            <div class="vendor-form-group">
+                                <label for="entity_name" class="vendor-form-label">
+                                    Entity Name
+                                </label>
+                                <input type="text"
+                                       class="vendor-form-control"
+                                       id="entity_name"
+                                       name="entity_name"
+                                       maxlength="50"
+                                       autocomplete="off"
+                                       placeholder="Enter entity name">
+                            </div>
+
+                            <div class="vendor-form-group">
+                                <label for="business_name" class="vendor-form-label">
+                                    Business Name
+                                </label>
+                                <input type="text"
+                                       class="vendor-form-control"
+                                       id="business_name"
+                                       name="business_name"
+                                       maxlength="255"
+                                       autocomplete="off"
+                                       placeholder="Enter business name">
+                            </div>
+
+                            <div class="vendor-form-group">
+                                <label for="classification" class="vendor-form-label">
+                                    Classification
+                                </label>
+                                <select class="vendor-form-control"
+                                        id="classification"
+                                        name="classification">
+                                    <option value="">Select Classification</option>
+                                    <option value="INDIVIDUAL_SOLE_PROPRIETOR">Individual/Sole Proprietor</option>
+                                    <option value="C_CORPORATION">C Corporation</option>
+                                    <option value="S_CORPORATION">S Corporation</option>
+                                    <option value="PARTNERSHIP">Partnership</option>
+                                    <option value="TRUST_ESTATE">Trust/Estate</option>
+                                    <option value="LLC">LLC</option>
+                                </select>
+                            </div>
+
+                            <div class="vendor-form-group">
+                                <label for="taxpayer_id_number" class="vendor-form-label">
+                                    Taxpayer ID Number
+                                </label>
+                                <input type="text"
+                                       class="vendor-form-control"
+                                       id="taxpayer_id_number"
+                                       name="taxpayer_id_number"
+                                       maxlength="9"
+                                       autocomplete="off"
+                                       placeholder="Enter taxpayer ID number">
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Addresses Section -->
+                <section id="addresses" class="vendor-section">
+                    <div class="vendor-form-card">
+                        <div class="vendor-form-card-header">
+                            <h5>Addresses</h5>
+                        </div>
+                        <div class="vendor-form-card-body">
+                            {% for address_type in address_types %}
+                                {% set is_legal_address = address_type.name.lower() == 'legaladdress' %}
+                                <div class="vendor-address-type-group {% if not is_legal_address %}vendor-address-type-optional{% endif %}" 
+                                     data-address-type-id="{{ address_type.public_id }}"
+                                     {% if is_legal_address %}data-expanded="true"{% endif %}>
+                                    <div class="vendor-address-type-header">
+                                        <h6>
+                                            {{ address_type.name }}
+                                            {% if is_legal_address %} <span class="required">*</span>{% endif %}
+                                        </h6>
+                                        {% if not is_legal_address %}
+                                            <button type="button" class="vendor-address-toggle-btn" onclick="toggleAddressType('{{ address_type.public_id }}')">
+                                                <span class="vendor-address-toggle-text">Show</span>
+                                                <span class="vendor-address-toggle-icon">▼</span>
+                                            </button>
+                                        {% endif %}
+                                    </div>
+
+                                    <div class="vendor-address-form-fields {% if not is_legal_address %}vendor-address-form-fields-hidden{% endif %}" 
+                                         data-address-type-id="{{ address_type.public_id }}">
+                                        <div class="vendor-form-group">
+                                            <label for="street_one_{{ address_type.public_id }}" class="vendor-form-label">
+                                                Street One
+                                            </label>
+                                            <input type="text"
+                                                   class="vendor-form-control"
+                                                   id="street_one_{{ address_type.public_id }}"
+                                                   name="street_one_{{ address_type.public_id }}"
+                                                   data-address-type-id="{{ address_type.public_id }}"
+                                                   data-field-name="street_one"
+                                                   maxlength="255"
+                                                   autocomplete="off"
+                                                   placeholder="Enter street one">
+                                        </div>
+
+                                        <div class="vendor-form-group">
+                                            <label for="street_two_{{ address_type.public_id }}" class="vendor-form-label">
+                                                Street Two
+                                            </label>
+                                            <input type="text"
+                                                   class="vendor-form-control"
+                                                   id="street_two_{{ address_type.public_id }}"
+                                                   name="street_two_{{ address_type.public_id }}"
+                                                   data-address-type-id="{{ address_type.public_id }}"
+                                                   data-field-name="street_two"
+                                                   maxlength="255"
+                                                   autocomplete="off"
+                                                   placeholder="Enter street two">
+                                        </div>
+
+                                        <div class="vendor-form-group">
+                                            <label for="city_{{ address_type.public_id }}" class="vendor-form-label">
+                                                City
+                                            </label>
+                                            <input type="text"
+                                                   class="vendor-form-control"
+                                                   id="city_{{ address_type.public_id }}"
+                                                   name="city_{{ address_type.public_id }}"
+                                                   data-address-type-id="{{ address_type.public_id }}"
+                                                   data-field-name="city"
+                                                   maxlength="100"
+                                                   autocomplete="off"
+                                                   placeholder="Enter city">
+                                        </div>
+
+                                        <div class="vendor-form-group">
+                                            <label for="state_{{ address_type.public_id }}" class="vendor-form-label">
+                                                State
+                                            </label>
+                                            <input type="text"
+                                                   class="vendor-form-control"
+                                                   id="state_{{ address_type.public_id }}"
+                                                   name="state_{{ address_type.public_id }}"
+                                                   data-address-type-id="{{ address_type.public_id }}"
+                                                   data-field-name="state"
+                                                   maxlength="50"
+                                                   autocomplete="off"
+                                                   placeholder="Enter state">
+                                        </div>
+
+                                        <div class="vendor-form-group">
+                                            <label for="zip_{{ address_type.public_id }}" class="vendor-form-label">
+                                                Zip
+                                            </label>
+                                            <input type="text"
+                                                   class="vendor-form-control"
+                                                   id="zip_{{ address_type.public_id }}"
+                                                   name="zip_{{ address_type.public_id }}"
+                                                   data-address-type-id="{{ address_type.public_id }}"
+                                                   data-field-name="zip"    
+                                                   maxlength="20"
+                                                   autocomplete="off"
+                                                   placeholder="Enter zip">
+                                        </div>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </section>
+
+                <div class="vendor-form-actions">
+                    <div class="vendor-form-actions-left"></div>
+                    <div class="vendor-form-actions-right">
+                        <a href="/vendor/list" class="btn btn-secondary">Cancel</a>
+                        <button type="submit" class="btn btn-primary">Complete Vendor</button>
+                    </div>
+                </div>
+            </form>
+        </main>
     </div>
 
 {% endblock %}
 
 {% block scripts %}
     <script>
-        document.getElementById('createVendorForm').addEventListener('submit', async function(e) {
-            e.preventDefault();
+        // Initialize address types from template data
+        const addressTypes = [
+            {% if address_types %}
+                {% for address_type in address_types %}
+                {
+                    id: '{{ address_type.id }}',
+                    public_id: '{{ address_type.public_id }}',
+                    name: '{{ address_type.name }}'
+                }{% if not loop.last %},{% endif %}
+                {% endfor %}
+            {% endif %}
+        ];
+        
+        // Sort to put LegalAddress first
+        addressTypes.sort((a, b) => {
+            if (a.name.toLowerCase() === 'legaladdress') return -1;
+            if (b.name.toLowerCase() === 'legaladdress') return 1;
+            return a.name.localeCompare(b.name);
+        });
+        
+        // Find LegalAddress ID
+        let legalAddressTypeId = null;
+        const legalAddress = addressTypes.find(at => at.name.toLowerCase() === 'legaladdress');
+        if (legalAddress) {
+            legalAddressTypeId = legalAddress.public_id;
+        }
 
-            const formData = new FormData(this);
-            const payload = {
-                name: formData.get('name'),
-                abbreviation: formData.get('abbreviation')
-            };
-
+        // State management
+        const STATE_KEY = 'vendor_create_state';
+        
+        function getStateFromLocalStorage() {
             try {
-                const response = await fetch('/api/v1/create/vendor', {
-                    method: 'POST',
+                const state = localStorage.getItem(STATE_KEY);
+                return state ? JSON.parse(state) : null;
+            } catch (e) {
+                return null;
+            }
+        }
+        
+        function saveStateToLocalStorage(updates) {
+            try {
+                const current = getStateFromLocalStorage() || {};
+                const updated = { ...current, ...updates };
+                localStorage.setItem(STATE_KEY, JSON.stringify(updated));
+            } catch (e) {
+                console.error('Failed to save state:', e);
+            }
+        }
+
+        // Restore state on page load
+        const savedState = getStateFromLocalStorage();
+        if (savedState) {
+            if (savedState.vendorPublicId) {
+                document.getElementById('vendor_public_id').value = savedState.vendorPublicId;
+            }
+            if (savedState.vendorId) {
+                document.getElementById('vendor_id').value = savedState.vendorId;
+            }
+            if (savedState.taxpayerId) {
+                document.getElementById('taxpayer_id').value = savedState.taxpayerId; // Now stores public_id
+            }
+            if (savedState.taxpayerRowVersion) {
+                document.getElementById('taxpayer_row_version').value = savedState.taxpayerRowVersion;
+            }
+            if (savedState.rowVersion) {
+                document.getElementById('row_version').value = savedState.rowVersion;
+            }
+            // Restore address data
+            addressTypes.forEach(addressType => {
+                const addressIdKey = `address_${addressType.public_id}_id`;
+                const addressRowVersionKey = `address_${addressType.public_id}_row_version`;
+                const vendorAddressIdKey = `vendor_address_${addressType.public_id}_id`;
+                
+                if (savedState[addressIdKey]) {
+                    document.getElementById(`address_${addressType.public_id}_id`).value = savedState[addressIdKey];
+                }
+                if (savedState[addressRowVersionKey]) {
+                    document.getElementById(`address_${addressType.public_id}_row_version`).value = savedState[addressRowVersionKey];
+                }
+                if (savedState[vendorAddressIdKey]) {
+                    document.getElementById(`vendor_address_${addressType.public_id}_id`).value = savedState[vendorAddressIdKey];
+                }
+            });
+        }
+
+        // Save status management
+        function updateSaveStatus(section, status) {
+            const navItem = document.querySelector(`[data-section="${section}"]`);
+            if (!navItem) return;
+            
+            const icon = navItem.querySelector('.vendor-save-status-icon');
+            if (!icon) return;
+            
+            icon.className = 'vendor-save-status-icon';
+            if (status === 'saving') {
+                icon.classList.add('saving');
+            } else if (status === 'saved') {
+                icon.classList.add('saved');
+            } else if (status === 'error') {
+                icon.classList.add('error');
+            }
+        }
+
+        // Sidebar navigation
+        function switchSection(sectionId) {
+            // Hide all sections
+            document.querySelectorAll('.vendor-section').forEach(section => {
+                section.classList.remove('active');
+            });
+            
+            // Show selected section
+            const targetSection = document.getElementById(sectionId);
+            if (targetSection) {
+                targetSection.classList.add('active');
+            }
+            
+            // Update sidebar active state
+            document.querySelectorAll('.vendor-nav-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            const navItem = document.querySelector(`[data-section="${sectionId}"]`);
+            if (navItem) {
+                navItem.classList.add('active');
+            }
+            
+            // Save active section to localStorage
+            saveStateToLocalStorage({ activeSection: sectionId });
+        }
+
+        // Initialize sidebar navigation
+        document.querySelectorAll('.vendor-nav-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                e.preventDefault();
+                const sectionId = item.getAttribute('data-section');
+                switchSection(sectionId);
+            });
+        });
+
+        // Restore active section on page load
+        if (savedState?.activeSection) {
+            switchSection(savedState.activeSection);
+        }
+
+        // Debounced backup save function
+        let backupSaveTimeouts = {};
+
+        function setupBackupSave(section, saveFunction) {
+            if (backupSaveTimeouts[section]) {
+                clearTimeout(backupSaveTimeouts[section]);
+            }
+            backupSaveTimeouts[section] = setTimeout(() => {
+                saveFunction();
+                delete backupSaveTimeouts[section];
+            }, 8000);
+        }
+
+        // Get row version helper
+        function getRowVersion() {
+            return document.getElementById('row_version').value;
+        }
+
+        // Show error message for vendor name field
+        function showVendorNameError(message) {
+            // Remove existing error message if any
+            clearVendorNameError();
+            
+            // Create error message element
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'vendor-form-error';
+            errorDiv.id = 'vendor-name-error';
+            errorDiv.textContent = message;
+            
+            // Insert after the name input field
+            const nameInput = document.getElementById('name');
+            const nameGroup = nameInput.closest('.vendor-form-group');
+            nameGroup.appendChild(errorDiv);
+            
+            // Add error styling to the input
+            nameInput.classList.add('vendor-form-control-error');
+        }
+
+        // Clear error message for vendor name field
+        function clearVendorNameError() {
+            const errorDiv = document.getElementById('vendor-name-error');
+            if (errorDiv) {
+                errorDiv.remove();
+            }
+            const nameInput = document.getElementById('name');
+            if (nameInput) {
+                nameInput.classList.remove('vendor-form-control-error');
+            }
+        }
+
+        // Save Vendor Details
+        async function saveVendorDetails() {
+            const name = document.getElementById('name').value.trim();
+            const abbreviation = document.getElementById('abbreviation').value.trim();
+            const vendorTypeId = document.getElementById('vendor_type_id').value;
+            
+            if (!name || !abbreviation) return;
+            
+            updateSaveStatus('vendor-details', 'saving');
+            
+            const vendorPublicId = document.getElementById('vendor_public_id').value;
+            const payload = {
+                name,
+                abbreviation,
+                vendor_type_public_id: vendorTypeId || null,
+                is_draft: true
+            };
+            
+            try {
+                const url = vendorPublicId 
+                    ? `/api/v1/update/vendor/${vendorPublicId}`
+                    : '/api/v1/create/vendor';
+                const method = vendorPublicId ? 'PUT' : 'POST';
+                
+                const requestBody = vendorPublicId 
+                    ? { ...payload, row_version: getRowVersion() }
+                    : payload;
+                
+                const response = await fetch(url, {
+                    method,
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify(requestBody)
                 });
-
+                
                 if (response.ok) {
-                    await response.json();
-                    window.location.href = '/vendor/list';
+                    const vendor = await response.json();
+                    document.getElementById('vendor_public_id').value = vendor.public_id;
+                    document.getElementById('vendor_id').value = vendor.id;
+                    document.getElementById('row_version').value = vendor.row_version;
+                    updateSaveStatus('vendor-details', 'saved');
+                    saveStateToLocalStorage({ 
+                        vendorPublicId: vendor.public_id,
+                        vendorId: vendor.id,
+                        rowVersion: vendor.row_version
+                    });
+                    // Clear any error messages
+                    clearVendorNameError();
+                    if (backupSaveTimeouts['vendor-details']) {
+                        clearTimeout(backupSaveTimeouts['vendor-details']);
+                        delete backupSaveTimeouts['vendor-details'];
+                    }
                 } else {
-                    const contentType = response.headers.get('content-type');
-                    if (contentType && contentType.includes('application/json')) {
-                        const error = await response.json();
-                        alert('Error creating vendor: ' + (error.detail || error.message || 'Unknown error'));
+                    // If 404 and we were trying to update, the vendor doesn't exist - try creating instead
+                    if (response.status === 404 && vendorPublicId) {
+                        // Clear the stale vendor_public_id and retry as create
+                        document.getElementById('vendor_public_id').value = '';
+                        document.getElementById('vendor_id').value = '';
+                        document.getElementById('row_version').value = '';
+                        
+                        // Retry as create
+                        const createResponse = await fetch('/api/v1/create/vendor', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                            },
+                            body: JSON.stringify(payload)
+                        });
+                        
+                        if (createResponse.ok) {
+                            const vendor = await createResponse.json();
+                            document.getElementById('vendor_public_id').value = vendor.public_id;
+                            document.getElementById('vendor_id').value = vendor.id;
+                            document.getElementById('row_version').value = vendor.row_version;
+                            updateSaveStatus('vendor-details', 'saved');
+                            saveStateToLocalStorage({ 
+                                vendorPublicId: vendor.public_id,
+                                vendorId: vendor.id,
+                                rowVersion: vendor.row_version
+                            });
+                            clearVendorNameError();
+                            if (backupSaveTimeouts['vendor-details']) {
+                                clearTimeout(backupSaveTimeouts['vendor-details']);
+                                delete backupSaveTimeouts['vendor-details'];
+                            }
+                            return;
+                        }
+                    }
+                    
+                    updateSaveStatus('vendor-details', 'error');
+                    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                    
+                    // Handle duplicate name error (409 Conflict)
+                    if (response.status === 409) {
+                        showVendorNameError(error.detail || 'A vendor with this name already exists.');
                     } else {
-                        const errorText = await response.text();
-                        alert('Error creating vendor: ' + errorText);
+                        // Show other errors
+                        showVendorNameError(error.detail || 'Error saving vendor. Please try again.');
+                    }
+                    console.error('Error saving vendor:', error);
+                }
+            } catch (error) {
+                updateSaveStatus('vendor-details', 'error');
+                showVendorNameError('Network error. Please check your connection and try again.');
+                console.error('Error saving vendor:', error);
+            }
+        }
+
+        // Save Taxpayer Information
+        async function saveTaxpayerInfo() {
+            const vendorPublicId = document.getElementById('vendor_public_id').value;
+            if (!vendorPublicId) {
+                await saveVendorDetails();
+                return;
+            }
+            
+            updateSaveStatus('taxpayer', 'saving');
+            
+            const entityName = document.getElementById('entity_name').value.trim();
+            const businessName = document.getElementById('business_name').value.trim();
+            const classification = document.getElementById('classification').value;
+            const taxpayerIdNumber = document.getElementById('taxpayer_id_number').value.trim();
+            
+            const hasTaxpayerData = entityName || businessName || classification || taxpayerIdNumber;
+            if (!hasTaxpayerData) {
+                updateSaveStatus('taxpayer', 'saved');
+                return;
+            }
+            
+            const taxpayerPublicId = document.getElementById('taxpayer_id').value; // Storing public_id here
+            const taxpayerPayload = {
+                entity_name: entityName || null,
+                business_name: businessName || null,
+                classification: classification || null,
+                taxpayer_id_number: taxpayerIdNumber || null
+            };
+            
+            try {
+                let updatedTaxpayerPublicId = null;
+                if (taxpayerPublicId) {
+                    // Update existing taxpayer
+                    const taxpayerRowVersion = document.getElementById('taxpayer_row_version').value;
+                    if (!taxpayerRowVersion) {
+                        updateSaveStatus('taxpayer', 'error');
+                        console.error('Taxpayer row_version is required for update');
+                        return;
+                    }
+                    const updatePayload = {
+                        ...taxpayerPayload,
+                        row_version: taxpayerRowVersion
+                    };
+                    const response = await fetch(`/api/v1/update/taxpayer/${taxpayerPublicId}`, {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        },
+                        body: JSON.stringify(updatePayload)
+                    });
+                    if (response.ok) {
+                        const taxpayer = await response.json();
+                        updatedTaxpayerPublicId = taxpayer.public_id;
+                        document.getElementById('taxpayer_row_version').value = taxpayer.row_version;
+                        saveStateToLocalStorage({ taxpayerRowVersion: taxpayer.row_version });
+                    } else {
+                        updateSaveStatus('taxpayer', 'error');
+                        const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                        console.error('Error updating taxpayer:', error);
+                        return;
+                    }
+                } else {
+                    // Create new taxpayer
+                    const response = await fetch('/api/v1/create/taxpayer', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        },
+                        body: JSON.stringify(taxpayerPayload)
+                    });
+                    if (response.ok) {
+                        const taxpayer = await response.json();
+                        updatedTaxpayerPublicId = taxpayer.public_id;
+                        document.getElementById('taxpayer_id').value = taxpayer.public_id;
+                        document.getElementById('taxpayer_row_version').value = taxpayer.row_version;
+                        saveStateToLocalStorage({ 
+                            taxpayerId: taxpayer.public_id,
+                            taxpayerRowVersion: taxpayer.row_version
+                        });
+                    } else {
+                        updateSaveStatus('taxpayer', 'error');
+                        const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                        console.error('Error creating taxpayer:', error);
+                        return;
+                    }
+                }
+                
+                if (updatedTaxpayerPublicId) {
+                    // Update vendor with taxpayer_public_id
+                    const vendorPayload = {
+                        taxpayer_public_id: updatedTaxpayerPublicId,
+                        row_version: getRowVersion()
+                    };
+                    const vendorResponse = await fetch(`/api/v1/update/vendor/${vendorPublicId}`, {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        },
+                        body: JSON.stringify(vendorPayload)
+                    });
+                    if (vendorResponse.ok) {
+                        const vendor = await vendorResponse.json();
+                        document.getElementById('row_version').value = vendor.row_version;
+                        updateSaveStatus('taxpayer', 'saved');
+                        // Clear backup save timeout
+                        if (backupSaveTimeouts['taxpayer']) {
+                            clearTimeout(backupSaveTimeouts['taxpayer']);
+                            delete backupSaveTimeouts['taxpayer'];
+                        }
+                    } else {
+                        updateSaveStatus('taxpayer', 'error');
+                        const error = await vendorResponse.json().catch(() => ({ detail: 'Unknown error' }));
+                        console.error('Error updating vendor with taxpayer:', error);
                     }
                 }
             } catch (error) {
-                alert('Error creating vendor: ' + error.message);
+                updateSaveStatus('taxpayer', 'error');
+                console.error('Error saving taxpayer:', error);
+            }
+        }
+
+        // Save Address (per address type)
+        async function saveAddress(addressTypePublicId) {
+            const vendorPublicId = document.getElementById('vendor_public_id').value;
+            if (!vendorPublicId) {
+                // Ensure vendor exists first
+                await saveVendorDetails();
+                return;
+            }
+            
+            const addressData = getAddressDataForType(addressTypePublicId);
+            if (!addressData) {
+                // No address data - clear status
+                updateSaveStatus('addresses', 'saved');
+                return;
+            }
+            
+            // Validate required fields (street_one, city, state, zip)
+            if (!addressData.street_one || !addressData.city || !addressData.state || !addressData.zip) {
+                updateSaveStatus('addresses', 'error');
+                return;
+            }
+            
+            updateSaveStatus('addresses', 'saving');
+            
+            try {
+                // Get vendor to get database ID
+                const vendorResponse = await fetch(`/api/v1/get/vendor/${vendorPublicId}`, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token.access_token')}` }
+                });
+                if (!vendorResponse.ok) {
+                    updateSaveStatus('addresses', 'error');
+                    return;
+                }
+                const vendor = await vendorResponse.json();
+                const vendorDbId = vendor.id;
+                
+                // Find address type database ID
+                const addressType = addressTypes.find(at => at.public_id === addressTypePublicId);
+                if (!addressType) {
+                    updateSaveStatus('addresses', 'error');
+                    return;
+                }
+                
+                // Check if address already exists for this address type
+                const addressPublicId = document.getElementById(`address_${addressTypePublicId}_id`).value;
+                let updatedAddress = null;
+                
+                if (addressPublicId) {
+                    // Update existing address
+                    const addressRowVersion = document.getElementById(`address_${addressTypePublicId}_row_version`).value;
+                    if (!addressRowVersion) {
+                        updateSaveStatus('addresses', 'error');
+                        console.error('Address row_version is required for update');
+                        return;
+                    }
+                    
+                    const updatePayload = {
+                        street_one: addressData.street_one,
+                        street_two: addressData.street_two || null,
+                        city: addressData.city,
+                        state: addressData.state,
+                        zip: addressData.zip,
+                        row_version: addressRowVersion
+                    };
+                    
+                    const addressResponse = await fetch(`/api/v1/update/address/${addressPublicId}`, {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        },
+                        body: JSON.stringify(updatePayload)
+                    });
+                    
+                    if (addressResponse.ok) {
+                        updatedAddress = await addressResponse.json();
+                        document.getElementById(`address_${addressTypePublicId}_row_version`).value = updatedAddress.row_version;
+                        saveStateToLocalStorage({ 
+                            [`address_${addressTypePublicId}_row_version`]: updatedAddress.row_version
+                        });
+                    } else {
+                        updateSaveStatus('addresses', 'error');
+                        const error = await addressResponse.json().catch(() => ({ detail: 'Unknown error' }));
+                        console.error('Error updating address:', error);
+                        return;
+                    }
+                } else {
+                    // Create new address
+                    const addressResponse = await fetch('/api/v1/create/address', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        },
+                        body: JSON.stringify({
+                            street_one: addressData.street_one,
+                            street_two: addressData.street_two || null,
+                            city: addressData.city,
+                            state: addressData.state,
+                            zip: addressData.zip
+                        })
+                    });
+                    
+                    if (addressResponse.ok) {
+                        updatedAddress = await addressResponse.json();
+                        document.getElementById(`address_${addressTypePublicId}_id`).value = updatedAddress.public_id;
+                        document.getElementById(`address_${addressTypePublicId}_row_version`).value = updatedAddress.row_version;
+                        saveStateToLocalStorage({ 
+                            [`address_${addressTypePublicId}_id`]: updatedAddress.public_id,
+                            [`address_${addressTypePublicId}_row_version`]: updatedAddress.row_version
+                        });
+                    } else {
+                        updateSaveStatus('addresses', 'error');
+                        const error = await addressResponse.json().catch(() => ({ detail: 'Unknown error' }));
+                        console.error('Error creating address:', error);
+                        return;
+                    }
+                }
+                
+                if (updatedAddress) {
+                    // Check if vendor_address link exists
+                    const vendorAddressId = document.getElementById(`vendor_address_${addressTypePublicId}_id`).value;
+                    const addressDbId = updatedAddress.id;
+                    
+                    if (!vendorAddressId) {
+                        // Create vendor_address link
+                        const vendorAddressResponse = await fetch('/api/v1/create/vendor_address', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                            },
+                            body: JSON.stringify({
+                                vendor_id: vendorDbId.toString(),
+                                address_id: addressDbId.toString(),
+                                address_type_id: addressType.id.toString()
+                            })
+                        });
+                        
+                        if (vendorAddressResponse.ok) {
+                            const vendorAddress = await vendorAddressResponse.json();
+                            document.getElementById(`vendor_address_${addressTypePublicId}_id`).value = vendorAddress.public_id;
+                            saveStateToLocalStorage({ 
+                                [`vendor_address_${addressTypePublicId}_id`]: vendorAddress.public_id
+                            });
+                        }
+                    }
+                    
+                    updateSaveStatus('addresses', 'saved');
+                    // Clear backup save timeout
+                    if (backupSaveTimeouts[`address-${addressTypePublicId}`]) {
+                        clearTimeout(backupSaveTimeouts[`address-${addressTypePublicId}`]);
+                        delete backupSaveTimeouts[`address-${addressTypePublicId}`];
+                    }
+                }
+            } catch (error) {
+                updateSaveStatus('addresses', 'error');
+                console.error('Error saving address:', error);
+            }
+        }
+
+        // Get address data for a specific address type
+        function getAddressDataForType(addressTypeId) {
+            const fields = ['street_one', 'street_two', 'city', 'state', 'zip'];
+            const addressData = {};
+            let hasData = false;
+
+            fields.forEach(fieldName => {
+                const input = document.getElementById(`${fieldName}_${addressTypeId}`);
+                if (input) {
+                    const value = input.value.trim();
+                    addressData[fieldName] = value || null;
+                    if (value) hasData = true;
+                }
+            });
+
+            return hasData ? addressData : null;
+        }
+
+        // Toggle address type visibility
+        function toggleAddressType(addressTypeId) {
+            const group = document.querySelector(`[data-address-type-id="${addressTypeId}"]`);
+            if (!group) return;
+            
+            const fields = group.querySelector('.vendor-address-form-fields');
+            const btn = group.querySelector('.vendor-address-toggle-btn');
+            const text = btn ? btn.querySelector('.vendor-address-toggle-text') : null;
+            
+            if (fields && (fields.style.display === 'none' || !group.hasAttribute('data-expanded'))) {
+                fields.style.display = 'flex';
+                fields.style.flexDirection = 'column';
+                group.setAttribute('data-expanded', 'true');
+                if (text) text.textContent = 'Hide';
+            } else if (fields) {
+                fields.style.display = 'none';
+                group.removeAttribute('data-expanded');
+                if (text) text.textContent = 'Show';
+            }
+        }
+
+        // Event listeners for progressive saves
+        // Vendor fields
+        document.getElementById('name').addEventListener('blur', saveVendorDetails);
+        document.getElementById('name').addEventListener('input', () => {
+            clearVendorNameError();
+            setupBackupSave('vendor-details', saveVendorDetails);
+        });
+        document.getElementById('abbreviation').addEventListener('blur', saveVendorDetails);
+        document.getElementById('abbreviation').addEventListener('input', () => setupBackupSave('vendor-details', saveVendorDetails));
+        document.getElementById('vendor_type_id').addEventListener('change', () => {
+            saveVendorDetails();
+            setupBackupSave('vendor-details', saveVendorDetails);
+        });
+
+        // Taxpayer fields
+        document.getElementById('entity_name').addEventListener('blur', saveTaxpayerInfo);
+        document.getElementById('entity_name').addEventListener('input', () => setupBackupSave('taxpayer', saveTaxpayerInfo));
+        document.getElementById('business_name').addEventListener('blur', saveTaxpayerInfo);
+        document.getElementById('business_name').addEventListener('input', () => setupBackupSave('taxpayer', saveTaxpayerInfo));
+        document.getElementById('classification').addEventListener('change', () => {
+            saveTaxpayerInfo();
+            setupBackupSave('taxpayer', saveTaxpayerInfo);
+        });
+        document.getElementById('taxpayer_id_number').addEventListener('blur', saveTaxpayerInfo);
+        document.getElementById('taxpayer_id_number').addEventListener('input', () => setupBackupSave('taxpayer', saveTaxpayerInfo));
+
+        // Address fields
+        addressTypes.forEach(addressType => {
+            const fields = ['street_one', 'street_two', 'city', 'state', 'zip'];
+            fields.forEach(fieldName => {
+                const input = document.getElementById(`${fieldName}_${addressType.public_id}`);
+                if (input) {
+                    input.addEventListener('blur', () => saveAddress(addressType.public_id));
+                    input.addEventListener('input', () => setupBackupSave(`address-${addressType.public_id}`, () => saveAddress(addressType.public_id)));
+                }
+            });
+        });
+
+        // Save all sections before navigation
+        async function saveAllSections() {
+            await saveVendorDetails();
+            await saveTaxpayerInfo();
+            for (const addressType of addressTypes) {
+                await saveAddress(addressType.public_id);
+            }
+        }
+
+        // Navigation protection
+        window.addEventListener('beforeunload', (e) => {
+            saveAllSections();
+        });
+
+        // Final form submission
+        document.getElementById('createVendorForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            // Save all sections first
+            await saveAllSections();
+
+            const vendorPublicId = document.getElementById('vendor_public_id').value;
+            if (!vendorPublicId) {
+                alert('Please complete Vendor Details before submitting.');
+                switchSection('vendor-details');
+                return;
+            }
+
+            // Validate required fields
+            const name = document.getElementById('name').value.trim();
+            const abbreviation = document.getElementById('abbreviation').value.trim();
+            
+            if (!name || !abbreviation) {
+                alert('Name and Abbreviation are required.');
+                switchSection('vendor-details');
+                return;
+            }
+
+            // Validate LegalAddress if required
+            if (legalAddressTypeId) {
+                const legalAddressData = getAddressDataForType(legalAddressTypeId);
+                if (!legalAddressData || !legalAddressData.street_one || !legalAddressData.city || !legalAddressData.state || !legalAddressData.zip) {
+                    alert('LegalAddress is required. Please fill in at least Street One, City, State, and Zip.');
+                    switchSection('addresses');
+                    return;
+                }
+            }
+
+            // Set is_draft to false and save
+            try {
+                const response = await fetch(`/api/v1/update/vendor/${vendorPublicId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    },
+                    body: JSON.stringify({
+                        row_version: getRowVersion(),
+                        is_draft: false
+                    })
+                });
+
+                if (response.ok) {
+                    // Clear localStorage state
+                    localStorage.removeItem(STATE_KEY);
+                    window.location.href = '/vendor/list';
+                } else {
+                    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                    alert('Error completing vendor: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error completing vendor: ' + error.message);
             }
         });
     </script>

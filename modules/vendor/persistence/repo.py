@@ -42,6 +42,9 @@ class VendorRepository:
                 modified_datetime=row.ModifiedDatetime,
                 name=row.Name,
                 abbreviation=row.Abbreviation,
+                taxpayer_id=row.TaxpayerId,
+                vendor_type_id=row.VendorTypeId,
+                is_draft=row.IsDraft,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during vendor mapping: {error}")
@@ -50,20 +53,24 @@ class VendorRepository:
             logger.error(f"Unexpected error during vendor mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, name: Optional[str], abbreviation: Optional[str]) -> Vendor:
+    def create(self, *, name: Optional[str], abbreviation: Optional[str], taxpayer_id: Optional[int] = None, vendor_type_id: Optional[int] = None, is_draft: bool = True) -> Vendor:
         """
         Create a new vendor.
         """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
+                params = {
+                    "Name": name,
+                    "Abbreviation": abbreviation,
+                    "VendorTypeId": vendor_type_id,
+                    "TaxpayerId": taxpayer_id,
+                    "IsDraft": is_draft,
+                }
                 call_procedure(
                     cursor=cursor,
                     name="CreateVendor",
-                    params={
-                        "Name": name,
-                        "Abbreviation": abbreviation,
-                    },
+                    params=params,
                 )
                 row = cursor.fetchone()
                 if not row:
@@ -92,7 +99,7 @@ class VendorRepository:
             logger.error(f"Error during read all vendors: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[Vendor]:
+    def read_by_id(self, id: int) -> Optional[Vendor]:
         """
         Read a vendor by ID.
         """
@@ -153,15 +160,21 @@ class VendorRepository:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
+                params = {
+                    "Id": vendor.id,
+                    "RowVersion": vendor.row_version_bytes,
+                    "Name": vendor.name,
+                    "Abbreviation": vendor.abbreviation,
+                    "VendorTypeId": vendor.vendor_type_id,
+                    "TaxpayerId": vendor.taxpayer_id,
+                }
+                # Only include IsDraft if it's explicitly set (not None)
+                if vendor.is_draft is not None:
+                    params["IsDraft"] = 1 if vendor.is_draft else 0
                 call_procedure(
                     cursor=cursor,
                     name="UpdateVendorById",
-                    params={
-                        "Id": vendor.id,
-                        "RowVersion": vendor.row_version_bytes,
-                        "Name": vendor.name,
-                        "Abbreviation": vendor.abbreviation,
-                    },
+                    params=params,
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
@@ -169,7 +182,7 @@ class VendorRepository:
             logger.error(f"Error during update vendor by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[Vendor]:
+    def delete_by_id(self, id: int) -> Optional[Vendor]:
         """
         Delete a vendor by ID.
         """
@@ -182,7 +195,7 @@ class VendorRepository:
                     params={"Id": id},
                 )
                 row = cursor.fetchone()
-                return self._from_db(row) if row else None
+                return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during delete vendor by ID: {error}")
             raise map_database_error(error)

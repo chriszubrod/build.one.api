@@ -10,13 +10,16 @@ import base64
 
 @dataclass
 class Vendor:
-    id: Optional[str]
+    id: Optional[int]
     public_id: Optional[str]
     row_version: Optional[str]
     created_datetime: Optional[str]
     modified_datetime: Optional[str]
     name: Optional[str]
     abbreviation: Optional[str]
+    taxpayer_id: Optional[int]
+    vendor_type_id: Optional[int]
+    is_draft: Optional[bool]
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

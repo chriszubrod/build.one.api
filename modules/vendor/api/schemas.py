@@ -18,10 +18,23 @@ class VendorCreate(BaseModel):
         max_length=255,
         description="The abbreviation used to identify the vendor.",
     )
+    taxpayer_public_id: Optional[str] = Field(
+        default=None,
+        description="The taxpayer public ID associated with the vendor.",
+    )
+    vendor_type_public_id: Optional[str] = Field(
+        default=None,
+        description="The vendor type public ID associated with the vendor type.",
+    )
+    is_draft: Optional[bool] = Field(
+        default=True,
+        description="Whether the vendor is a draft (incomplete).",
+    )
 
 
 class VendorUpdate(BaseModel):
-    row_version: str = Field(
+    row_version: Optional[str] = Field(
+        default=None,
         description="The row version of the vendor (base64 encoded).",
     )
     name: Optional[str] = Field(
@@ -33,4 +46,16 @@ class VendorUpdate(BaseModel):
         default=None,
         max_length=255,
         description="The abbreviation used to identify the vendor.",
+    )
+    taxpayer_public_id: Optional[str] = Field(
+        default=None,
+        description="The taxpayer public ID associated with the taxpayer record.",
+    )
+    vendor_type_public_id: Optional[str] = Field(
+        default=None,
+        description="The vendor type public ID associated with the vendor type record.",
+    )
+    is_draft: Optional[bool] = Field(
+        default=None,
+        description="Whether the vendor record is a draft (incomplete).",
     )

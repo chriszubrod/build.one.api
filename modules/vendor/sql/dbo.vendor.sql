@@ -1,3 +1,6 @@
+DROP TABLE IF EXISTS [dbo].[Vendor];
+GO
+
 CREATE TABLE [dbo].[Vendor]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -5,8 +8,11 @@ CREATE TABLE [dbo].[Vendor]
     [RowVersion] ROWVERSION NOT NULL,
     [CreatedDatetime] DATETIME2(3) NOT NULL,
     [ModifiedDatetime] DATETIME2(3) NULL,
-    [Name] NVARCHAR(50) NOT NULL,
-    [Abbreviation] NVARCHAR(255) NOT NULL
+    [Name] NVARCHAR(MAX) NOT NULL,
+    [Abbreviation] NVARCHAR(255) NULL,
+    [VendorTypeId] BIGINT NULL,
+    [TaxpayerId] BIGINT NULL,
+    [IsDraft] BIT NOT NULL DEFAULT 1
 );
 GO
 
@@ -17,7 +23,10 @@ GO
 CREATE PROCEDURE CreateVendor
 (
     @Name NVARCHAR(50),
-    @Abbreviation NVARCHAR(255)
+    @Abbreviation NVARCHAR(255),
+    @VendorTypeId BIGINT NULL,
+    @TaxpayerId BIGINT NULL,
+    @IsDraft BIT = 1
 )
 AS
 BEGIN
@@ -25,7 +34,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Vendor] ([CreatedDatetime], [ModifiedDatetime], [Name], [Abbreviation])
+    INSERT INTO dbo.[Vendor] ([CreatedDatetime], [ModifiedDatetime], [Name], [Abbreviation], [VendorTypeId], [TaxpayerId], [IsDraft])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -33,15 +42,20 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[Name],
-        INSERTED.[Abbreviation]
-    VALUES (@Now, @Now, @Name, @Abbreviation);
+        INSERTED.[Abbreviation],
+        INSERTED.[VendorTypeId],
+        INSERTED.[TaxpayerId],
+        INSERTED.[IsDraft]
+    VALUES (@Now, @Now, @Name, @Abbreviation, @VendorTypeId, @TaxpayerId, @IsDraft);
 
     COMMIT TRANSACTION;
 END;
 
 EXEC CreateVendor
     @Name = 'Acme Supply Co.',
-    @Abbreviation = 'ACME';
+    @Abbreviation = 'ACME',
+    @VendorTypeId = 1,
+    @TaxpayerId = 1;
 GO
 
 
@@ -60,7 +74,10 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Name],
-        [Abbreviation]
+        [Abbreviation],
+        [VendorTypeId],
+        [TaxpayerId],
+        [IsDraft]
     FROM dbo.[Vendor]
     ORDER BY [Name] ASC;
 
@@ -76,7 +93,7 @@ GO
 
 CREATE PROCEDURE ReadVendorById
 (
-    @Id UNIQUEIDENTIFIER
+    @Id BIGINT
 )
 AS
 BEGIN
@@ -89,7 +106,10 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Name],
-        [Abbreviation]
+        [Abbreviation],
+        [VendorTypeId],
+        [TaxpayerId],
+        [IsDraft]
     FROM dbo.[Vendor]
     WHERE [Id] = @Id;
 
@@ -97,7 +117,7 @@ BEGIN
 END;
 
 EXEC ReadVendorById
-    @Id = '00000000-0000-0000-0000-000000000000';
+    @Id = 1;
 GO
 
 
@@ -119,7 +139,10 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Name],
-        [Abbreviation]
+        [Abbreviation],
+        [VendorTypeId],
+        [TaxpayerId],
+        [IsDraft]
     FROM dbo.[Vendor]
     WHERE [PublicId] = @PublicId;
 
@@ -127,7 +150,7 @@ BEGIN
 END;
 
 EXEC ReadVendorByPublicId
-    @PublicId = '00000000-0000-0000-0000-000000000000';
+    @PublicId = 1;
 GO
 
 
@@ -149,7 +172,10 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Name],
-        [Abbreviation]
+        [Abbreviation],
+        [VendorTypeId],
+        [TaxpayerId],
+        [IsDraft]
     FROM dbo.[Vendor]
     WHERE [Name] = @Name;
 
@@ -166,10 +192,13 @@ GO
 
 CREATE PROCEDURE UpdateVendorById
 (
-    @Id UNIQUEIDENTIFIER,
+    @Id BIGINT,
     @RowVersion BINARY(8),
     @Name NVARCHAR(50),
-    @Abbreviation NVARCHAR(255)
+    @Abbreviation NVARCHAR(255),
+    @VendorTypeId BIGINT NULL,
+    @TaxpayerId BIGINT NULL,
+    @IsDraft BIT = NULL
 )
 AS
 BEGIN
@@ -181,7 +210,10 @@ BEGIN
     SET
         [ModifiedDatetime] = @Now,
         [Name] = @Name,
-        [Abbreviation] = @Abbreviation
+        [Abbreviation] = @Abbreviation,
+        [VendorTypeId] = @VendorTypeId,
+        [TaxpayerId] = @TaxpayerId,
+        [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -189,7 +221,10 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[Name],
-        INSERTED.[Abbreviation]
+        INSERTED.[Abbreviation],
+        INSERTED.[VendorTypeId],
+        INSERTED.[TaxpayerId],
+        INSERTED.[IsDraft]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -199,7 +234,9 @@ EXEC UpdateVendorById
     @Id = '00000000-0000-0000-0000-000000000000',
     @RowVersion = 0x0000000000000000,
     @Name = 'Acme Supply Co. Updated',
-    @Abbreviation = 'ACME-UPD';
+    @Abbreviation = 'ACME-UPD',
+    @VendorTypeId = 1,
+    @TaxpayerId = 1;
 GO
 
 
@@ -208,7 +245,7 @@ GO
 
 CREATE PROCEDURE DeleteVendorById
 (
-    @Id UNIQUEIDENTIFIER
+    @Id BIGINT
 )
 AS
 BEGIN
@@ -222,12 +259,15 @@ BEGIN
         CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.[Name],
-        DELETED.[Abbreviation]
+        DELETED.[Abbreviation],
+        DELETED.[VendorTypeId],
+        DELETED.[TaxpayerId],
+        DELETED.[IsDraft]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
 END;
 
 EXEC DeleteVendorById
-    @Id = '00000000-0000-0000-0000-000000000000';
+    @Id = 1;
 GO

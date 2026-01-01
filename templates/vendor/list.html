@@ -14,39 +14,52 @@
     </div>
 
     {% if vendors %}
-        <div class="vendor-grid">
+        <div class="vendor-controls">
+            <div class="vendor-sort-group">
+                <label for="vendor-sort" class="vendor-sort-label">Sort by Name</label>
+                <select id="vendor-sort" class="vendor-sort-select">
+                    <option value="asc">A-Z</option>
+                    <option value="desc">Z-A</option>
+                </select>
+            </div>
+            <div class="vendor-filter-group">
+                <label for="vendor-filter" class="vendor-filter-label">Filter by Name or Abbreviation</label>
+                <input type="text"
+                       id="vendor-filter"
+                       class="vendor-filter-input"
+                       placeholder="Search vendors..."
+                       autocomplete="off">
+            </div>
+        </div>
+
+        <div class="vendor-grid" id="vendor-grid">
             {% for vendor in vendors %}
-            <div class="vendor-card">
-                <div class="vendor-card-body">
-                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
-                        <h5 class="vendor-card-title">
-                            {{ vendor.name or 'Unnamed Vendor' }}
-                        </h5>
-                    </div>
+            <div class="vendor-card" 
+                 data-vendor-public-id="{{ vendor.public_id }}" 
+                 data-vendor-name="{{ (vendor.name or 'Unnamed Vendor') | lower }}" 
+                 data-vendor-abbreviation="{{ (vendor.abbreviation or '') | lower }}">
+                <div class="vendor-card-content">
+                    <h5 class="vendor-card-title">
+                        {{ vendor.name or 'Unnamed Vendor' }}
+                    </h5>
                     {% if vendor.abbreviation %}
-                    <div class="vendor-metadata">
-                        <div class="vendor-metadata-item">
-                            <span>Abbreviation: {{ vendor.abbreviation }}</span>
-                        </div>
+                    <div class="vendor-card-abbreviation">
+                        <span>{{ vendor.abbreviation }}</span>
                     </div>
                     {% endif %}
-                    <div class="vendor-metadata" style="margin-top: 1rem;">
-                        <div class="vendor-metadata-item">
-                            <span>Created: {{ vendor.created_datetime or 'Unknown' }}</span>
-                        </div>
-                        <div class="vendor-metadata-item">
-                            <span>Modified: {{ vendor.modified_datetime or 'Unknown' }}</span>
-                        </div>
-                    </div>
-                </div>
-                <div class="vendor-card-footer">
-                    <div class="vendor-btn-group">
+                    <div class="vendor-card-actions">
                         <a href="/vendor/{{ vendor.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
                         <a href="/vendor/{{ vendor.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
                     </div>
                 </div>
             </div>
             {% endfor %}
+        </div>
+
+        <div class="vendor-empty-state" id="vendor-no-results" style="display: none;">
+            <div class="vendor-empty-state-icon">🔍</div>
+            <h3>No Vendors Found</h3>
+            <p>No vendors match your search criteria.</p>
         </div>
     {% else %}
         <div class="vendor-empty-state">
@@ -61,4 +74,70 @@
 
 {% block scripts %}
     <script src="/static/js/auth.js"></script>
+    <script>
+        (function() {
+            const filterInput = document.getElementById('vendor-filter');
+            const sortSelect = document.getElementById('vendor-sort');
+            const vendorGrid = document.getElementById('vendor-grid');
+            const noResults = document.getElementById('vendor-no-results');
+            let allVendorCards = Array.from(vendorGrid.querySelectorAll('.vendor-card'));
+
+            function filterAndSort() {
+                const filterValue = filterInput.value.trim().toLowerCase();
+                const sortValue = sortSelect.value;
+
+                // Filter - search both name and abbreviation
+                let visibleCards = allVendorCards.filter(card => {
+                    const vendorName = card.getAttribute('data-vendor-name') || '';
+                    const vendorAbbreviation = card.getAttribute('data-vendor-abbreviation') || '';
+                    
+                    // Match if filter value is found in either name or abbreviation
+                    return vendorName.includes(filterValue) || vendorAbbreviation.includes(filterValue);
+                });
+
+                // Sort
+                visibleCards.sort((a, b) => {
+                    const nameA = a.getAttribute('data-vendor-name') || '';
+                    const nameB = b.getAttribute('data-vendor-name') || '';
+                    
+                    if (sortValue === 'asc') {
+                        return nameA.localeCompare(nameB);
+                    } else {
+                        return nameB.localeCompare(nameA);
+                    }
+                });
+
+                // Hide all cards first
+                allVendorCards.forEach(card => {
+                    card.style.display = 'none';
+                });
+
+                // Show filtered and sorted cards
+                visibleCards.forEach(card => {
+                    card.style.display = 'flex';
+                });
+
+                // Show/hide no results message
+                if (visibleCards.length === 0 && filterValue !== '') {
+                    noResults.style.display = 'block';
+                    vendorGrid.style.display = 'none';
+                } else {
+                    noResults.style.display = 'none';
+                    vendorGrid.style.display = 'grid';
+                }
+
+                // Reorder cards in DOM
+                visibleCards.forEach(card => {
+                    vendorGrid.appendChild(card);
+                });
+            }
+
+            // Event listeners
+            filterInput.addEventListener('input', filterAndSort);
+            sortSelect.addEventListener('change', filterAndSort);
+
+            // Initial sort
+            filterAndSort();
+        })();
+    </script>
 {% endblock %}

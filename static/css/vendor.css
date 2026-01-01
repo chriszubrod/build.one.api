@@ -17,6 +17,76 @@
     margin: 0;
 }
 
+/* Filter and Sort Controls */
+.vendor-controls {
+    display: flex;
+    gap: 1.5rem;
+    align-items: flex-end;
+    margin-bottom: 1.5rem;
+    padding: 1rem;
+    background-color: var(--color-surface);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+}
+
+.vendor-filter-group,
+.vendor-sort-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.vendor-filter-label,
+.vendor-sort-label {
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-regular);
+    color: var(--color-text);
+}
+
+.vendor-filter-input {
+    height: 2.5rem;
+    padding: 0.5rem 0.75rem;
+    font-size: var(--font-size-action);
+    font-family: inherit;
+    color: var(--color-text);
+    background-color: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    min-width: 250px;
+}
+
+.vendor-filter-input:focus {
+    outline: none;
+    border-color: var(--color-text);
+    box-shadow: 0 0 0 2px rgba(31, 31, 31, 0.1);
+}
+
+.vendor-sort-select {
+    height: 2.5rem;
+    padding: 0.5rem 2.5rem 0.5rem 0.75rem;
+    font-size: var(--font-size-action);
+    font-family: inherit;
+    color: var(--color-text);
+    background-color: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23333' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    background-size: 12px;
+    cursor: pointer;
+}
+
+.vendor-sort-select:focus {
+    outline: none;
+    border-color: var(--color-text);
+    box-shadow: 0 0 0 2px rgba(31, 31, 31, 0.1);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%231f1f1f' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+}
+
 /* Buttons */
 .btn {
     display: inline-flex;
@@ -101,18 +171,23 @@
     border: 1px solid #e0e0e0;
     border-radius: 4px;
     display: flex;
-    flex-direction: column;
-    height: 100%;
+    flex-direction: row;
+    align-items: center;
+    padding: 1rem 1.5rem;
     transition: box-shadow 0.2s ease, transform 0.2s ease;
+    min-height: 60px;
 }
 
 .vendor-card:hover {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-    transform: translateY(-2px);
+    transform: translateY(-1px);
 }
 
-.vendor-card-body {
-    padding: 1.5rem;
+.vendor-card-content {
+    display: flex;
+    align-items: center;
+    gap: 2rem;
+    width: 100%;
     flex: 1;
 }
 
@@ -120,15 +195,22 @@
     font-size: var(--font-size-action-lg);
     font-weight: var(--font-weight-regular);
     color: var(--color-text);
-    margin: 0 0 1rem 0;
+    margin: 0;
+    flex: 0 0 auto;
+    min-width: 200px;
 }
 
-.vendor-card-footer {
-    padding: 1rem 1.5rem;
-    background-color: transparent;
-    border-top: 1px solid #e0e0e0;
+.vendor-card-abbreviation {
+    flex: 0 0 auto;
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-action);
+}
+
+.vendor-card-actions {
     display: flex;
     gap: 0.5rem;
+    margin-left: auto;
+    flex: 0 0 auto;
 }
 
 /* Badges */
@@ -154,26 +236,146 @@
 .vendor-grid {
     display: grid;
     grid-template-columns: 1fr;
-    gap: 1.5rem;
+    gap: 1rem;
     margin-bottom: 1.5rem;
 }
 
-@media (min-width: 768px) {
-    .vendor-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
+/* Sidebar navigation layout */
+.vendor-create-layout {
+    display: flex;
+    gap: 2rem;
+    min-height: calc(100vh - 200px);
 }
 
-@media (min-width: 1024px) {
-    .vendor-grid {
-        grid-template-columns: repeat(3, 1fr);
-    }
+.vendor-sidebar {
+    width: 250px;
+    flex-shrink: 0;
+    background-color: var(--color-background);
+    border-right: 1px solid #e0e0e0;
+    padding: 1.5rem 0;
+}
+
+.vendor-sidebar-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.vendor-nav-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1.5rem;
+    text-decoration: none;
+    color: var(--color-text);
+    border-left: 3px solid transparent;
+    transition: all 0.2s ease;
+}
+
+.vendor-nav-item:hover {
+    background-color: var(--color-surface);
+}
+
+.vendor-nav-item.active {
+    background-color: var(--color-surface);
+    border-left-color: var(--color-text);
+    font-weight: 600;
+}
+
+.vendor-nav-label {
+    flex: 1;
+}
+
+.vendor-save-status-icon {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-left: 0.5rem;
+}
+
+.vendor-save-status-icon.saving {
+    background-color: #ffc107;
+    animation: pulse 1.5s infinite;
+}
+
+.vendor-save-status-icon.saved {
+    background-color: #28a745;
+}
+
+.vendor-save-status-icon.error {
+    background-color: #dc3545;
+}
+
+.vendor-main-content {
+    flex: 1;
+    min-width: 0;
+    max-height: calc(100vh - 200px);
+    overflow-y: auto;
+    padding-right: 0.5rem;
+    padding-bottom: 2rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+/* Minimal scrollbar styling for main content - WebKit browsers */
+.vendor-main-content::-webkit-scrollbar {
+    width: 6px;
+}
+
+.vendor-main-content::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.vendor-main-content::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+}
+
+.vendor-main-content::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
+}
+
+.vendor-section {
+    display: none;
+}
+
+.vendor-section.active {
+    display: block;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
 }
 
 /* Form container */
 .vendor-form-container {
-    max-width: 600px;
-    margin: 0 auto;
+    width: 100%;
+    max-height: calc(100vh - 200px);
+    overflow-y: auto;
+    padding-right: 0.5rem;
+    padding-bottom: 2rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+/* Minimal scrollbar styling - WebKit browsers */
+.vendor-form-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.vendor-form-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.vendor-form-container::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+}
+
+.vendor-form-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
 }
 
 .vendor-form-card {
@@ -189,7 +391,7 @@
 
 .vendor-form-card-header h5 {
     font-size: var(--font-size-action-lg);
-    font-weight: var(--font-weight-regular);
+    font-weight: 600;
     color: var(--color-text);
     margin: 0;
 }
@@ -201,14 +403,19 @@
 /* Form fields */
 .vendor-form-group {
     margin-bottom: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
 }
 
 .vendor-form-label {
-    display: block;
+    display: flex;
+    align-items: center;
     font-size: var(--font-size-action);
     font-weight: var(--font-weight-regular);
     color: var(--color-text);
-    margin-bottom: 0.5rem;
+    min-width: 200px;
+    flex-shrink: 0;
 }
 
 .vendor-form-label .required {
@@ -216,7 +423,7 @@
 }
 
 .vendor-form-control {
-    width: 100%;
+    flex: 1;
     height: 2.5rem;
     padding: 0.5rem 0.75rem;
     font-size: var(--font-size-action);
@@ -234,11 +441,40 @@
     box-shadow: 0 0 0 2px rgba(31, 31, 31, 0.1);
 }
 
+.vendor-form-control-error {
+    border-color: #dc3545 !important;
+    box-shadow: 0 0 0 2px rgba(220, 53, 69, 0.1) !important;
+}
+
+.vendor-form-control select {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23333' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    background-size: 12px;
+    padding-right: 2.5rem;
+}
+
+.vendor-form-control select:focus {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%231f1f1f' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+}
+
 .vendor-form-text {
     display: block;
     margin-top: 0.5rem;
     font-size: var(--font-size-base);
     color: var(--color-text-secondary);
+}
+
+/* Error message styling */
+.vendor-form-error {
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background-color: #fee;
+    border: 1px solid #fcc;
+    border-radius: 4px;
+    color: #c33;
+    font-size: var(--font-size-base);
 }
 
 /* Form actions */
@@ -359,6 +595,13 @@
     margin-top: 1rem;
 }
 
+@media (min-width: 1440px) {
+    .vendor-metadata {
+        gap: 0.25rem;
+        margin-top: 0.75rem;
+    }
+}
+
 .vendor-metadata-item {
     display: flex;
     align-items: center;
@@ -397,12 +640,250 @@
     gap: 0.5rem;
 }
 
+/* Address section */
+.vendor-address-section {
+    margin-top: 2rem;
+}
+
+.vendor-address-loading,
+.vendor-address-error {
+    text-align: center;
+    padding: 2rem;
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-action);
+}
+
+.vendor-address-error {
+    color: #dc3545;
+}
+
+.vendor-address-type-group {
+    margin-bottom: 2rem;
+    padding-bottom: 2rem;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.vendor-address-type-group:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+    padding-bottom: 1rem;
+}
+
+.vendor-address-type-header {
+    margin-bottom: 1.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.vendor-address-type-header h6 {
+    font-size: var(--font-size-action-lg);
+    font-weight: var(--font-weight-regular);
+    color: var(--color-text);
+    margin: 0;
+}
+
+.vendor-address-type-description {
+    font-size: var(--font-size-base);
+    color: var(--color-text-secondary);
+    margin: 0;
+}
+
+.vendor-address-checkbox-group {
+    margin-bottom: 1.5rem;
+    padding: 1rem;
+    background-color: var(--color-surface);
+    border-radius: 4px;
+}
+
+.vendor-address-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: var(--font-size-action);
+    color: var(--color-text);
+    cursor: pointer;
+}
+
+.vendor-address-checkbox-label input[type="checkbox"] {
+    width: 1.25rem;
+    height: 1.25rem;
+    cursor: pointer;
+    accent-color: var(--color-text);
+}
+
+.vendor-address-form-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    width: 100%;
+}
+
+.vendor-address-form-fields .vendor-form-group {
+    width: 100%;
+}
+
+/* Optional address types - hidden by default */
+.vendor-address-type-optional .vendor-address-form-fields-hidden {
+    display: none;
+}
+
+.vendor-address-type-optional[data-expanded="true"] .vendor-address-form-fields-hidden,
+.vendor-address-type-group[data-expanded="true"] .vendor-address-form-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+/* LegalAddress (non-optional) is always visible */
+.vendor-address-type-group:not(.vendor-address-type-optional) .vendor-address-form-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+/* Toggle button for optional address types */
+.vendor-address-toggle-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.375rem 0.75rem;
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-regular);
+    font-family: inherit;
+    background: transparent;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--color-text);
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.vendor-address-toggle-btn:hover {
+    background-color: var(--color-surface);
+    border-color: #d0d0d0;
+}
+
+.vendor-address-toggle-icon {
+    font-size: 0.75rem;
+    transition: transform 0.2s ease;
+}
+
+.vendor-address-type-optional[data-expanded="true"] .vendor-address-toggle-icon {
+    transform: rotate(180deg);
+}
+
+.vendor-address-type-optional[data-expanded="true"] .vendor-address-toggle-text {
+    display: none;
+}
+
+/* Section dividers and titles */
+.vendor-section-divider {
+    margin: 2rem 0 1rem 0;
+    border-top: 1px solid var(--color-border);
+}
+
+.vendor-section-title {
+    margin: 0 0 1.5rem 0;
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--color-text);
+}
+
+/* Taxpayer section */
+.vendor-taxpayer-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
 /* Responsive adjustments */
 @media (max-width: 767px) {
+    .vendor-create-layout {
+        flex-direction: column;
+        gap: 1rem;
+    }
+
+    .vendor-sidebar {
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid #e0e0e0;
+        padding: 1rem 0;
+    }
+
+    .vendor-sidebar-nav {
+        flex-direction: row;
+        overflow-x: auto;
+        padding: 0 1rem;
+    }
+
+    .vendor-nav-item {
+        padding: 0.5rem 1rem;
+        white-space: nowrap;
+        border-left: none;
+        border-bottom: 3px solid transparent;
+    }
+
+    .vendor-nav-item.active {
+        border-left: none;
+        border-bottom-color: var(--color-text);
+    }
+
     .vendor-page-header {
         flex-direction: column;
         align-items: flex-start;
         gap: 1rem;
+    }
+
+    .vendor-controls {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 1rem;
+    }
+
+    .vendor-filter-input {
+        min-width: auto;
+        width: 100%;
+    }
+
+    .vendor-card {
+        flex-direction: column;
+        align-items: flex-start;
+        padding: 1rem;
+    }
+
+    .vendor-card-content {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+        width: 100%;
+    }
+
+    .vendor-card-title {
+        min-width: auto;
+        width: 100%;
+    }
+
+    .vendor-card-actions {
+        margin-left: 0;
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .vendor-form-group {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+
+    .vendor-form-label {
+        min-width: auto;
+        width: 100%;
+        margin-bottom: 0;
+    }
+
+    .vendor-form-control {
+        width: 100%;
     }
 
     .vendor-form-actions {
@@ -427,6 +908,11 @@
 
     .vendor-detail-label {
         flex: 1;
+    }
+
+    .vendor-address-type-group {
+        margin-bottom: 1.5rem;
+        padding-bottom: 1.5rem;
     }
 }
 

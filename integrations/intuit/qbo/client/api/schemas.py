@@ -7,6 +7,11 @@ from pydantic import BaseModel, Field
 
 
 class QboClientCreate(BaseModel):
+    app: str = Field(
+        ...,
+        max_length=512,
+        description="App name.",
+    )
     client_id: str = Field(
         ...,
         max_length=512,
@@ -20,6 +25,11 @@ class QboClientCreate(BaseModel):
 
 
 class QboClientUpdate(BaseModel):
+    app: str = Field(
+        ...,
+        max_length=512,
+        description="App name.",
+    )
     client_id: str = Field(
         ...,
         max_length=512,

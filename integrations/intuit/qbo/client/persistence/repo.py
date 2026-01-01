@@ -35,6 +35,7 @@ class QboClientRepository:
 
         try:
             return QboClient(
+                app=getattr(row, "App", None),
                 client_id=getattr(row, "ClientId", None),
                 client_secret=getattr(row, "ClientSecret", None),
             )
@@ -45,7 +46,7 @@ class QboClientRepository:
             logger.error("Unexpected error during qbo client mapping: %s", error)
             raise map_database_error(error)
 
-    def create(self, *, client_id: str, client_secret: str) -> QboClient:
+    def create(self, *, app: str, client_id: str, client_secret: str) -> QboClient:
         """
         Create a new QboClient.
         """
@@ -56,6 +57,7 @@ class QboClientRepository:
                     cursor=cursor,
                     name="CreateQboClient",
                     params={
+                        "App": app,
                         "ClientId": client_id,
                         "ClientSecret": client_secret,
                     },
@@ -87,37 +89,38 @@ class QboClientRepository:
             logger.error("Error during read all qbo clients: %s", error)
             raise map_database_error(error)
 
-    def read_by_client_id(self, client_id: str) -> Optional[QboClient]:
+    def read_by_app(self, app: str) -> Optional[QboClient]:
         """
-        Read a QboClient by client ID.
+        Read a QboClient by app.
         """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="ReadQboClientByClientId",
+                    name="ReadQboClientByApp",
                     params={
-                        "ClientId": client_id,
+                        "App": app,
                     },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
         except Exception as error:
-            logger.error("Error during read qbo client by client ID: %s", error)
+            logger.error("Error during read qbo client by app: %s", error)
             raise map_database_error(error)
 
-    def update_by_client_id(self, client_id: str, client_secret: str) -> Optional[QboClient]:
+    def update_by_app(self, app: str, client_id: str, client_secret: str) -> Optional[QboClient]:
         """
-        Update a QboClient by client ID.
+        Update a QboClient by app.
         """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="UpdateQboClientByClientId",
+                    name="UpdateQboClientByApp",
                     params={
+                        "App": app,
                         "ClientId": client_id,
                         "ClientSecret": client_secret,
                     },
@@ -125,31 +128,31 @@ class QboClientRepository:
                 row = cursor.fetchone()
                 if not row:
                     logger.error("Update qbo client did not return a row.")
-                    raise map_database_error(Exception("update qbo client by client ID failed"))
+                    raise map_database_error(Exception("update qbo client by app failed"))
                 return self._from_db(row)
         except Exception as error:
-            logger.error("Error during update qbo client by client ID: %s", error)
+            logger.error("Error during update qbo client by app: %s", error)
             raise map_database_error(error)
 
-    def delete_by_client_id(self, client_id: str) -> Optional[QboClient]:
+    def delete_by_app(self, app: str) -> Optional[QboClient]:
         """
-        Delete a QboClient by client ID.
+        Delete a QboClient by app.
         """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="DeleteQboClientByClientId",
+                    name="DeleteQboClientByApp",
                     params={
-                        "ClientId": client_id,
+                        "App": app,
                     },
                 )
                 row = cursor.fetchone()
                 if not row:
                     logger.error("Delete qbo client did not return a row.")
-                    raise map_database_error(Exception("delete qbo client by client ID failed"))
+                    raise map_database_error(Exception("delete qbo client by app failed"))
                 return self._from_db(row)
         except Exception as error:
-            logger.error("Error during delete qbo client by client ID: %s", error)
+            logger.error("Error during delete qbo client by app: %s", error)
             raise map_database_error(error)

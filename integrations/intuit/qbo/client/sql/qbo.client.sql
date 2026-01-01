@@ -13,6 +13,7 @@ GO
 
 CREATE TABLE qbo.Client
 (
+    App NVARCHAR(MAX) NOT NULL,
     ClientId NVARCHAR(MAX) NOT NULL,
     ClientSecret NVARCHAR(MAX) NOT NULL
 );
@@ -24,6 +25,7 @@ GO
 
 CREATE PROCEDURE CreateQboClient
 (
+    @App NVARCHAR(MAX),
     @ClientId NVARCHAR(MAX),
     @ClientSecret NVARCHAR(MAX)
 )
@@ -33,17 +35,20 @@ BEGIN
 
     BEGIN TRANSACTION;
 
-    INSERT INTO qbo.Client (ClientId, ClientSecret)
+    INSERT INTO qbo.Client (App, ClientId, ClientSecret)
     OUTPUT
+        INSERTED.App,
         INSERTED.ClientId,
         INSERTED.ClientSecret
-    VALUES (@ClientId, @ClientSecret);
-
+    VALUES (@App, @ClientId, @ClientSecret);
     COMMIT TRANSACTION;
 END;
 GO
 
-EXEC CreateQboClient @ClientId = 'ABA5fzHtGjWvIqMOQs8qKq12Lg0U23bRCE42Yc2YKvpZy5XeP6', @ClientSecret = 'trXfM3uX9L7MoIGOQ73bfKhArEeS6dEj0W9vpbkG';
+EXEC CreateQboClient
+    @App = 'build.one',
+    @ClientId = 'ABxFNbNXlqWDlNAa7tOakJ5ib9RNpgBSU5qIIxLf1PCAQztL0i',
+    @ClientSecret = 'JZKkGDmKqPyAs7TlmAFIR2ih8DIylq9tlgzI4phm';
 
 
 DROP PROCEDURE IF EXISTS ReadQboClients;
@@ -56,6 +61,7 @@ BEGIN
 
     BEGIN TRANSACTION;
     SELECT
+        App,
         ClientId,
         ClientSecret
     FROM qbo.Client;
@@ -65,6 +71,31 @@ END;
 GO
 
 EXEC ReadQboClients;
+
+
+DROP PROCEDURE IF EXISTS ReadQboClientByApp;
+GO
+
+CREATE PROCEDURE ReadQboClientByApp
+(
+    @App NVARCHAR(MAX)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+    SELECT
+        App,
+        ClientId,
+        ClientSecret
+    FROM qbo.Client
+    WHERE App = @App;
+    COMMIT TRANSACTION;
+END;
+GO
+
+EXEC ReadQboClientByApp @App = 'build.one';
 
 
 DROP PROCEDURE IF EXISTS ReadQboClientByClientId;
@@ -80,6 +111,7 @@ BEGIN
 
     BEGIN TRANSACTION;
     SELECT
+        App,
         ClientId,
         ClientSecret
     FROM qbo.Client
@@ -92,12 +124,12 @@ GO
 EXEC ReadQboClientByClientId @ClientId = 'test-client';
 
 
-
-DROP PROCEDURE IF EXISTS UpdateQboClientByClientId;
+DROP PROCEDURE IF EXISTS UpdateQboClientByApp;
 GO
 
-CREATE PROCEDURE UpdateQboClientByClientId
+CREATE PROCEDURE UpdateQboClientByApp
 (
+    @App NVARCHAR(MAX),
     @ClientId NVARCHAR(MAX),
     @ClientSecret NVARCHAR(MAX)
 )
@@ -108,9 +140,46 @@ BEGIN
     BEGIN TRANSACTION;
 
     UPDATE qbo.Client
-    SET ClientId = @ClientId,
+    SET App = @App,
+        ClientId = @ClientId,
         ClientSecret = @ClientSecret
     OUTPUT
+        INSERTED.App,
+        INSERTED.ClientId,
+        INSERTED.ClientSecret
+    WHERE App = @App;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+EXEC UpdateQboClientByApp
+    @App = 'build.one',
+    @ClientId = 'updated-client',
+    @ClientSecret = 'updated-secret';
+
+
+DROP PROCEDURE IF EXISTS UpdateQboClientByClientId;
+GO
+
+CREATE PROCEDURE UpdateQboClientByClientId
+(
+    @App NVARCHAR(MAX),
+    @ClientId NVARCHAR(MAX),
+    @ClientSecret NVARCHAR(MAX)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    UPDATE qbo.Client
+    SET App = @App,
+        ClientId = @ClientId,
+        ClientSecret = @ClientSecret
+    OUTPUT
+        INSERTED.App,
         INSERTED.ClientId,
         INSERTED.ClientSecret
     WHERE ClientId = @ClientId;
@@ -120,16 +189,17 @@ END;
 GO
 
 EXEC UpdateQboClientByClientId
+    @App = 'build.one',
     @ClientId = 'updated-client',
     @ClientSecret = 'updated-secret';
 
 
-DROP PROCEDURE IF EXISTS DeleteQboClientByClientId;
+DROP PROCEDURE IF EXISTS DeleteQboClientByApp;
 GO
 
-CREATE PROCEDURE DeleteQboClientByClientId
+CREATE PROCEDURE DeleteQboClientByApp
 (
-    @ClientId NVARCHAR(MAX)
+    @App NVARCHAR(MAX)
 )
 AS
 BEGIN
@@ -139,13 +209,14 @@ BEGIN
 
     DELETE FROM qbo.Client
     OUTPUT
+        DELETED.App,
         DELETED.ClientId,
         DELETED.ClientSecret
-    WHERE ClientId = @ClientId;
+    WHERE App = @App;
 
     COMMIT TRANSACTION;
 END;
 GO
 
-EXEC DeleteQboClientByClientId
-    @ClientId = 'updated-client';
+EXEC DeleteQboClientByApp
+    @App = 'build.one';

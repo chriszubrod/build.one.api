@@ -55,7 +55,16 @@ BEGIN
 END;
 GO
 
-EXEC CreateQboAuth @Code = '1234567890', @RealmId = '1234567890', @State = '1234567890', @TokenType = '1234567890', @IdToken = '1234567890', @AccessToken = '1234567890', @ExpiresIn = 1234567890, @RefreshToken = '1234567890', @XRefreshTokenExpiresIn = 1234567890;
+EXEC CreateQboAuth
+    @Code = '1234567890',
+    @RealmId = '1234567890',
+    @State = '1234567890',
+    @TokenType = '1234567890',
+    @IdToken = '1234567890',
+    @AccessToken = '1234567890',
+    @ExpiresIn = 1234567890,
+    @RefreshToken = '1234567890',
+    @XRefreshTokenExpiresIn = 1234567890;
 
 
 DROP PROCEDURE IF EXISTS ReadQboAuths;

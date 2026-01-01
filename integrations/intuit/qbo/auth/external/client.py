@@ -24,30 +24,38 @@ INTUIT_STATE = {
 
 
 def connect_intuit_oauth_2_endpoint():
+
     db_intuit_client_resp = qbo_client_repo.read_all()
 
-    if len(db_intuit_client_resp) > 0:
+    if len(db_intuit_client_resp) == 0:
+        return {
+            "message": "No Intuit client found",
+            "status_code": 404
+        }
 
-        db_intuit_client = db_intuit_client_resp[0]
+    db_intuit_client = db_intuit_client_resp[0]
 
-        INTUIT_STATE['sent-state'] = ''.join(
-            random.choices(string.ascii_lowercase + string.digits, k=30)
-        )
+    INTUIT_STATE['sent-state'] = ''.join(
+        random.choices(string.ascii_lowercase + string.digits, k=30)
+    )
 
-        auth_endpoint = get_intuit_discovery_document()
+    auth_endpoint = get_intuit_discovery_document()
 
-        endpoint = str(
-            auth_endpoint['authorization_endpoint'] +
-            "?" +
-            "client_id=" + db_intuit_client.client_id +
-            "&scope=com.intuit.quickbooks.accounting%20openid%20email%20profile%20address%20phone" +
-            "&redirect_uri=https://python312.azurewebsites.net/intuit/authorization/request/callback" +
-            "&response_type=code" +
-            "&state=" + INTUIT_STATE['sent-state'] +
-            "&claims=%7B%22id_token%22%3A%7B%22realmId%22%3Anull%7D%7D"
-        )
+    endpoint = str(
+        auth_endpoint['authorization_endpoint'] +
+        "?" +
+        "client_id=" + db_intuit_client.client_id +
+        "&scope=com.intuit.quickbooks.accounting%20openid%20email%20profile%20address%20phone" +
+        "&redirect_uri=https://python312.azurewebsites.net/intuit/authorization/request/callback" +
+        "&response_type=code" +
+        "&state=" + INTUIT_STATE['sent-state'] +
+        "&claims=%7B%22id_token%22%3A%7B%22realmId%22%3Anull%7D%7D"
+    )
 
-    return endpoint
+    return {
+        "message": endpoint,
+        "status_code": 201
+    }
 
 
 def connect_intuit_oauth_2_token_endpoint(request: Request):
@@ -128,8 +136,8 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
             "status_code": 201
         }
 
-# TODO: Start Here
-def connect_intuit_oauth_2_token_endpoint_refresh():
+
+def connect_intuit_oauth_2_token_endpoint_refresh(auth):
 
     now = datetime.now()
 
@@ -137,7 +145,11 @@ def connect_intuit_oauth_2_token_endpoint_refresh():
     
     if len(db_intuit_client_resp) > 0:
         db_intuit_client = db_intuit_client_resp[0]
-        client_id_and_secret = bytes(db_intuit_client.client_id + ":" + db_intuit_client.client_secret, encoding='utf-8')
+        client_id_and_secret = bytes(
+            db_intuit_client.client_id
+            + ":"
+            + db_intuit_client.client_secret, encoding='utf-8'
+        )
 
     token_endpoint = get_intuit_discovery_document()
 
@@ -205,7 +217,11 @@ def connect_intuit_oauth_2_token_endpoint_revoke():
 
     if len(db_intuit_client_resp) > 0:
         db_intuit_client = db_intuit_client_resp[0]
-        s = bytes(db_intuit_client.client_id + ":" + db_intuit_client.client_secret, encoding='utf-8')
+        s = bytes(
+            db_intuit_client.client_id
+            + ":"
+            + db_intuit_client.client_secret, encoding='utf-8'
+        )
 
     revocation_endpoint = get_intuit_discovery_document()
 
@@ -228,7 +244,9 @@ def connect_intuit_oauth_2_token_endpoint_revoke():
 
     if resp.status_code == 200:
 
-        delete_db_auth_by_authguid_resp = qbo_auth_repo.delete_by_auth_guid(authguid=db_intuit_auth.auth_guid)
+        delete_db_auth_by_authguid_resp = qbo_auth_repo.delete_by_auth_guid(
+            authguid=db_intuit_auth.auth_guid
+        )
         resp = {
             "message": delete_db_auth_by_authguid_resp.get("message"),
             "status_code": 500

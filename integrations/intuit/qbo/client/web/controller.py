@@ -15,7 +15,7 @@ templates = Jinja2Templates(directory="templates/qbo-client")
 @router.get("/list")
 async def list_qbo_clients(request: Request, current_user: dict = Depends(get_current_qbo_client_web)):
     """
-    List all QBO clients.
+    List all QBO clients by app.
     """
     qbo_clients = QboClientService().read_all()
     return templates.TemplateResponse(
@@ -24,6 +24,7 @@ async def list_qbo_clients(request: Request, current_user: dict = Depends(get_cu
             "request": request,
             "qbo_clients": qbo_clients,
             "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -38,37 +39,40 @@ async def create_qbo_client(request: Request, current_user: dict = Depends(get_c
         {
             "request": request,
             "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
 
-@router.get("/{client_id}")
-async def view_qbo_client(request: Request, client_id: str, current_user: dict = Depends(get_current_qbo_client_web)):
+@router.get("/{app}")
+async def view_qbo_client(request: Request, app: str, current_user: dict = Depends(get_current_qbo_client_web)):
     """
-    View a QBO client.
+    View a QBO client by app.
     """
-    qbo_client = QboClientService().read_by_client_id(client_id)
+    qbo_client = QboClientService().read_by_app(app)
     return templates.TemplateResponse(
         "view.html",
         {
             "request": request,
             "qbo_client": qbo_client.to_dict(),
             "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
 
-@router.get("/{client_id}/edit")
-async def edit_qbo_client(request: Request, client_id: str, current_user: dict = Depends(get_current_qbo_client_web)):
+@router.get("/{app}/edit")
+async def edit_qbo_client(request: Request, app: str, current_user: dict = Depends(get_current_qbo_client_web)):
     """
-    Edit a QBO client.
+    Edit a QBO client by app.
     """
-    qbo_client = QboClientService().read_by_client_id(client_id)
+    qbo_client = QboClientService().read_by_app(app)
     return templates.TemplateResponse(
         "edit.html",
         {
             "request": request,
             "qbo_client": qbo_client.to_dict(),
             "current_user": current_user,
+            "current_path": request.url.path,
         },
     )

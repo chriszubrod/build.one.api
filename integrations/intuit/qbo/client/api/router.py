@@ -18,6 +18,7 @@ def create_qbo_client_router(body: QboClientCreate, current_user: dict = Depends
     Create a new QBO client.
     """
     qbo_client = service.create(
+        app=body.app,
         client_id=body.client_id,
         client_secret=body.client_secret,
     )
@@ -33,28 +34,28 @@ def get_qbo_clients_router(current_user: dict = Depends(get_current_qbo_client_a
     return [qbo_client.to_dict() for qbo_client in qbo_clients]
 
 
-@router.get("/get/qbo-client/{client_id}")
-def get_qbo_client_by_client_id_router(client_id: str, current_user: dict = Depends(get_current_qbo_client_api)):
+@router.get("/get/qbo-client/{app}")
+def get_qbo_client_by_app_router(app: str, current_user: dict = Depends(get_current_qbo_client_api)):
     """
-    Read a QBO client by client ID.
+    Read a QBO client by app.
     """
-    qbo_client = service.read_by_client_id(client_id)
+    qbo_client = service.read_by_app(app)
     return qbo_client.to_dict()
 
 
-@router.put("/update/qbo-client/{client_id}")
-def update_qbo_client_by_client_id_router(client_id: str, body: QboClientUpdate, current_user: dict = Depends(get_current_qbo_client_api)):
+@router.put("/update/qbo-client/{app}")
+def update_qbo_client_by_app_router(app: str, body: QboClientUpdate, current_user: dict = Depends(get_current_qbo_client_api)):
     """
-    Update a QBO client by client ID.
+    Update a QBO client by app.
     """
-    qbo_client = service.update_by_client_id(client_id, body.client_secret)
+    qbo_client = service.update_by_app(app, body.client_id, body.client_secret)
     return qbo_client.to_dict()
 
 
-@router.delete("/delete/qbo-client/{client_id}")
-def delete_qbo_client_by_client_id_router(client_id: str, current_user: dict = Depends(get_current_qbo_client_api)):
+@router.delete("/delete/qbo-client/{app}")
+def delete_qbo_client_by_app_router(app: str, current_user: dict = Depends(get_current_qbo_client_api)):
     """
-    Delete a QBO client by client ID.
+    Delete a QBO client by app.
     """
-    qbo_client = service.delete_by_client_id(client_id)
+    qbo_client = service.delete_by_app(app)
     return qbo_client.to_dict()

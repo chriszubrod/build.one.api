@@ -17,11 +17,12 @@ class QboClientService:
         """Initialize the QboClientService."""
         self.repo = repo or QboClientRepository()
 
-    def create(self, *, client_id: str, client_secret: str) -> QboClient:
+    def create(self, *, app: str, client_id: str, client_secret: str) -> QboClient:
         """
         Create a new QboClient.
         """
         return self.repo.create(
+            app=app,
             client_id=client_id,
             client_secret=client_secret,
         )
@@ -32,25 +33,30 @@ class QboClientService:
         """
         return self.repo.read_all()
 
-    def read_by_client_id(self, client_id: str) -> Optional[QboClient]:
+    def read_by_app(self, app: str) -> Optional[QboClient]:
         """
-        Read a QboClient by client ID.
+        Read a QboClient by app.
         """
-        return self.repo.read_by_client_id(client_id)
+        return self.repo.read_by_app(app)
 
-    def update_by_client_id(self, client_id: str, client_secret: str) -> Optional[QboClient]:
+    def update_by_app(self, app: str, client_id: str, client_secret: str) -> Optional[QboClient]:
         """
-        Update a QboClient by client ID.
+        Update a QboClient by app.
         """
-        existing = self.read_by_client_id(client_id)
+        existing = self.read_by_app(app)
         if existing:
+            existing.app = app
             existing.client_id = client_id
             existing.client_secret = client_secret
-            return self.repo.update_by_client_id(client_id, client_secret)
+            return self.repo.update_by_app(app, client_id, client_secret)
         return None
 
-    def delete_by_client_id(self, client_id: str) -> Optional[QboClient]:
+    def delete_by_app(self, app: str) -> Optional[QboClient]:
         """
-        Delete a QboClient by client ID.
+        Delete a QboClient by app.
         """
-        return self.repo.delete_by_client_id(client_id)
+        existing = self.read_by_app(app)
+        if existing:
+            existing.app = app
+            return self.repo.delete_by_app(app)
+        return None

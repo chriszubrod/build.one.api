@@ -9,6 +9,7 @@ from typing import Optional
 
 @dataclass
 class QboClient:
+    app: Optional[str]
     client_id: Optional[str]
     client_secret: Optional[str]
 

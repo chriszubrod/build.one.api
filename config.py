@@ -24,7 +24,10 @@ class Settings(BaseSettings):
     access_token_expire_seconds: int
     refresh_token_expire_seconds: int
     iterations: int
-    
+
+    # Encryption
+    encryption_key: Optional[str] = None
+
     # Logging
     log_level: str = "INFO"
     log_file: Optional[str] = None

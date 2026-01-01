@@ -210,11 +210,11 @@ BEGIN
 END;
 
 EXEC UpdateIntegrationById
-    @Id = 2,
-    @RowVersion = 0x0000000000020B74,
+    @Id = 1,
+    @RowVersion = 0x0000000000021B43,
     @Name = 'QuickBooks Online',
-    @Status = 'connected',
-    @Endpoint = 'https://www.quickbooks.com';
+    @Status = 'disconnected',
+    @Endpoint = '/api/v1/intuit/qbo/auth/request';
 GO
 
 

@@ -7,7 +7,7 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
-from modules.integration.business.model import Integration
+from modules.integration.business.model import Integration, IntegrationStatus
 from shared.database import (
     call_procedure,
     get_connection,
@@ -34,6 +34,16 @@ class IntegrationRepository:
             return None
 
         try:
+            # Convert string status from DB to enum
+            status = None
+            if hasattr(row, 'Status') and row.Status:
+                try:
+                    status = IntegrationStatus(row.Status)
+                except ValueError:
+                    # If status doesn't match enum values, log and set to None
+                    logger.warning(f"Invalid status value from database: {row.Status}")
+                    status = None
+
             return Integration(
                 id=row.Id,
                 public_id=row.PublicId,
@@ -41,7 +51,7 @@ class IntegrationRepository:
                 created_datetime=row.CreatedDatetime,
                 modified_datetime=row.ModifiedDatetime,
                 name=row.Name,
-                status=row.Status,
+                status=status,
                 endpoint=row.Endpoint
             )
         except AttributeError as error:
@@ -155,6 +165,8 @@ class IntegrationRepository:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
+                # Convert enum to string value for database
+                status_value = integration.status.value if integration.status else None
                 call_procedure(
                     cursor=cursor,
                     name="UpdateIntegrationById",
@@ -162,7 +174,7 @@ class IntegrationRepository:
                         "Id": integration.id,
                         "RowVersion": integration.row_version_bytes,
                         "Name": integration.name,
-                        "Status": integration.status,
+                        "Status": status_value,
                         "Endpoint": integration.endpoint
                     },
                 )

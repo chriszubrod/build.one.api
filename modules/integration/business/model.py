@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 from dataclasses import dataclass, asdict
+from enum import Enum
 from typing import Optional
 import base64
 
@@ -7,6 +8,11 @@ import base64
 
 # Local Imports
 
+
+class IntegrationStatus(Enum):
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+    ERROR = "error"
 
 @dataclass
 class Integration:
@@ -16,7 +22,7 @@ class Integration:
     created_datetime: Optional[str]
     modified_datetime: Optional[str]
     name: Optional[str]
-    status: Optional[str]
+    status: Optional[IntegrationStatus]
     endpoint: Optional[str]
 
 
@@ -36,4 +42,7 @@ class Integration:
         """
         Convert the integration dataclass to a dictionary.
         """
-        return asdict(self)
+        d = asdict(self)
+        if self.status is not None:
+            d["status"] = self.status.value
+        return d

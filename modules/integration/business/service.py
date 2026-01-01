@@ -4,7 +4,7 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from modules.integration.business.model import Integration
+from modules.integration.business.model import Integration, IntegrationStatus
 from modules.integration.persistence.repo import IntegrationRepository
 
 
@@ -17,11 +17,13 @@ class IntegrationService:
         """Initialize the IntegrationService."""
         self.repo = repo or IntegrationRepository()
 
-    def create(self, *, name: str, status: str, endpoint: str) -> Integration:
+    def create(self, *, name: str, status: IntegrationStatus, endpoint: str) -> Integration:
         """
         Create a new integration.
         """
-        return self.repo.create(name=name, status=status, endpoint=endpoint)
+        # Convert enum to string value for database storage
+        status_value = status.value if isinstance(status, IntegrationStatus) else status
+        return self.repo.create(name=name, status=status_value, endpoint=endpoint)
 
     def read_all(self) -> list[Integration]:
         """
@@ -55,7 +57,17 @@ class IntegrationService:
         if existing:
             existing.row_version = integration.row_version
             existing.name = integration.name
-            existing.status = integration.status
+            # Handle enum conversion - if it's already an enum, use it; if it's a string, convert it
+            if isinstance(integration.status, IntegrationStatus):
+                existing.status = integration.status
+            elif isinstance(integration.status, str):
+                try:
+                    existing.status = IntegrationStatus(integration.status)
+                except ValueError:
+                    # If invalid status string, keep existing status
+                    pass
+            else:
+                existing.status = integration.status
             existing.endpoint = integration.endpoint
         return self.repo.update_by_id(existing)
 

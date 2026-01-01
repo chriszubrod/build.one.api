@@ -4,6 +4,12 @@
 from fastapi import APIRouter, Depends
 
 # Local Imports
+from integrations.intuit.qbo.auth.external.client import (
+    connect_intuit_oauth_2_endpoint,
+    connect_intuit_oauth_2_token_endpoint,
+    connect_intuit_oauth_2_token_endpoint_refresh,
+    connect_intuit_oauth_2_token_endpoint_revoke
+)
 from modules.integration.api.schemas import IntegrationCreate, IntegrationUpdate
 from modules.integration.business.service import IntegrationService
 from modules.auth.business.service import get_current_user_api
@@ -57,4 +63,15 @@ def delete_integration_by_public_id_router(public_id: str, current_user: dict = 
     Delete a integration by public ID.
     """
     integration = IntegrationService().delete_by_public_id(public_id=public_id)
+    return integration.to_dict()
+
+
+@router.post("/connect/integration/{public_id}")
+def connect_integration_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+    """
+    Connect an integration.
+    """
+    print('Connect integration router called with public_id:', public_id)
+    integration = IntegrationService().read_by_public_id(public_id=public_id)
+    print('Integration:', integration.to_dict())
     return integration.to_dict()

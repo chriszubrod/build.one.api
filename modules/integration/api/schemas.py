@@ -5,6 +5,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 # Local Imports
+from modules.integration.business.model import IntegrationStatus
 
 
 class IntegrationCreate(BaseModel):
@@ -13,9 +14,7 @@ class IntegrationCreate(BaseModel):
         max_length=50,
         description="The name of the integration."
     )
-    status: str = Field(
-        min_length=1,
-        max_length=50,
+    status: IntegrationStatus = Field(
         description="The status of the integration."
     )
     endpoint: str = Field(
@@ -34,9 +33,7 @@ class IntegrationUpdate(BaseModel):
         max_length=50,
         description="The name of the integration."
     )
-    status: str = Field(
-        min_length=1,
-        max_length=50,
+    status: IntegrationStatus = Field(
         description="The status of the integration."
     )
     endpoint: str = Field(

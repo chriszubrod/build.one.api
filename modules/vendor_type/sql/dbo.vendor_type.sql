@@ -1,6 +1,9 @@
+DROP TABLE IF EXISTS dbo.[VendorType];
+GO
+
 CREATE TABLE [dbo].[VendorType]
 (
-    [Id] UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWSEQUENTIALID(),
+    [Id] BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
     [PublicId] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
     [RowVersion] ROWVERSION NOT NULL,
     [CreatedDatetime] DATETIME2(3) NOT NULL,
@@ -41,7 +44,12 @@ END;
 
 EXEC CreateVendorType
     @Name = 'Materials Supplier',
-    @Description = 'Vendor that supplies construction materials';
+    @Description = 'Vendor that supplies construction materials.';
+GO
+
+EXEC CreateVendorType
+    @Name = 'Tradesman',
+    @Description = 'Sub contractor for a specific trade.';
 GO
 
 
@@ -76,7 +84,7 @@ GO
 
 CREATE PROCEDURE ReadVendorTypeById
 (
-    @Id UNIQUEIDENTIFIER
+    @Id BIGINT
 )
 AS
 BEGIN
@@ -97,7 +105,7 @@ BEGIN
 END;
 
 EXEC ReadVendorTypeById
-    @Id = '00000000-0000-0000-0000-000000000000';
+    @Id = 1;
 GO
 
 
@@ -157,7 +165,7 @@ BEGIN
 END;
 
 EXEC ReadVendorTypeByName
-    @Name = 'General Vendor';
+    @Name = 'Tradesman';
 GO
 
 
@@ -166,7 +174,7 @@ GO
 
 CREATE PROCEDURE UpdateVendorTypeById
 (
-    @Id UNIQUEIDENTIFIER,
+    @Id BIGINT,
     @RowVersion BINARY(8),
     @Name NVARCHAR(50),
     @Description NVARCHAR(255)
@@ -196,7 +204,7 @@ BEGIN
 END;
 
 EXEC UpdateVendorTypeById
-    @Id = '00000000-0000-0000-0000-000000000000',
+    @Id = 1,
     @RowVersion = 0x0000000000000000,
     @Name = 'Updated Vendor',
     @Description = 'Updated vendor type description';
@@ -208,7 +216,7 @@ GO
 
 CREATE PROCEDURE DeleteVendorTypeById
 (
-    @Id UNIQUEIDENTIFIER
+    @Id BIGINT
 )
 AS
 BEGIN
@@ -229,5 +237,5 @@ BEGIN
 END;
 
 EXEC DeleteVendorTypeById
-    @Id = '00000000-0000-0000-0000-000000000000';
+    @Id = 1;
 GO

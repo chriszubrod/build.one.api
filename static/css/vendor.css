@@ -422,6 +422,13 @@
     color: #dc3545;
 }
 
+.vendor-form-value {
+    font-size: var(--font-size-base);
+    color: var(--color-text);
+    flex: 1;
+    padding: 0.5rem 0;
+}
+
 .vendor-form-control {
     flex: 1;
     height: 2.5rem;

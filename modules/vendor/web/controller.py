@@ -11,6 +11,8 @@ from modules.vendor.business.service import VendorService
 from modules.taxpayer.business.service import TaxpayerService
 from modules.address.business.service import AddressService
 from modules.vendor_address.business.service import VendorAddressService
+from modules.taxpayer_attachment.business.service import TaxpayerAttachmentService
+from modules.attachment.business.service import AttachmentService
 from modules.auth.business.service import get_current_user_web as get_current_vendor_web
 
 router = APIRouter(prefix="/vendor", tags=["web", "vendor"])
@@ -102,6 +104,27 @@ async def view_vendor(request: Request, public_id: str, current_user: dict = Dep
         # Get all address types for display
         all_address_types = AddressTypeService().read_all()
         
+        # Fetch taxpayer attachments if taxpayer exists
+        taxpayer_attachments = []
+        attachments_data = []
+        seen_attachment_ids = set()  # Track unique attachment IDs to prevent duplicates
+        if taxpayer:
+            taxpayer_attachment_service = TaxpayerAttachmentService()
+            attachment_service = AttachmentService()
+            taxpayer_attachments = taxpayer_attachment_service.read_by_taxpayer_id(taxpayer_public_id=taxpayer.public_id)
+            
+            # Get full attachment details for each taxpayer attachment
+            # Deduplicate by attachment_id to handle duplicate TaxpayerAttachment records
+            for ta in taxpayer_attachments:
+                if ta.attachment_id and ta.attachment_id not in seen_attachment_ids:
+                    attachment = attachment_service.read_by_id(id=ta.attachment_id)
+                    if attachment:
+                        seen_attachment_ids.add(ta.attachment_id)
+                        attachments_data.append({
+                            "taxpayer_attachment": ta.to_dict(),
+                            "attachment": attachment.to_dict()
+                        })
+        
         return templates.TemplateResponse(
             "vendor/view.html",
             {
@@ -111,6 +134,7 @@ async def view_vendor(request: Request, public_id: str, current_user: dict = Dep
                 "vendor_type": vendor_type.to_dict() if vendor_type else None,
                 "address_types": all_address_types,
                 "addresses_by_type": addresses_by_type,
+                "attachments": attachments_data,
                 "current_user": current_user,
                 "current_path": request.url.path,
             },
@@ -171,6 +195,27 @@ async def edit_vendor(request: Request, public_id: str, current_user: dict = Dep
         all_address_types = AddressTypeService().read_all()
         vendor_types = VendorTypeService().read_all()
         
+        # Fetch taxpayer attachments if taxpayer exists
+        taxpayer_attachments = []
+        attachments_data = []
+        seen_attachment_ids = set()  # Track unique attachment IDs to prevent duplicates
+        if taxpayer:
+            taxpayer_attachment_service = TaxpayerAttachmentService()
+            attachment_service = AttachmentService()
+            taxpayer_attachments = taxpayer_attachment_service.read_by_taxpayer_id(taxpayer_public_id=taxpayer.public_id)
+            
+            # Get full attachment details for each taxpayer attachment
+            # Deduplicate by attachment_id to handle duplicate TaxpayerAttachment records
+            for ta in taxpayer_attachments:
+                if ta.attachment_id and ta.attachment_id not in seen_attachment_ids:
+                    attachment = attachment_service.read_by_id(id=ta.attachment_id)
+                    if attachment:
+                        seen_attachment_ids.add(ta.attachment_id)
+                        attachments_data.append({
+                            "taxpayer_attachment": ta.to_dict(),
+                            "attachment": attachment.to_dict()
+                        })
+        
         return templates.TemplateResponse(
             "vendor/edit.html",
             {
@@ -182,6 +227,7 @@ async def edit_vendor(request: Request, public_id: str, current_user: dict = Dep
                 "address_types": all_address_types,
                 "addresses_by_type": addresses_by_type,
                 "vendor_addresses_by_type": vendor_addresses_by_type,
+                "attachments": attachments_data,
                 "current_user": current_user,
                 "current_path": request.url.path,
             },

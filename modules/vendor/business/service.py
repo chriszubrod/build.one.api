@@ -11,6 +11,10 @@ from modules.taxpayer.persistence.repo import TaxpayerRepository
 from modules.vendor_type.business.service import VendorTypeService
 from modules.vendor.persistence.repo import VendorRepository
 from modules.vendor_address.persistence.repo import VendorAddressRepository
+from modules.taxpayer_attachment.business.service import TaxpayerAttachmentService
+from modules.taxpayer_attachment.persistence.repo import TaxpayerAttachmentRepository
+from modules.attachment.business.service import AttachmentService
+from shared.storage import AzureBlobStorage
 
 
 class VendorService:
@@ -107,11 +111,25 @@ class VendorService:
         Process:
         1. Search for existing vendor record using public_id
         2. If found, delete all associated VendorAddress records by vendor database id
-        3. If vendor has a taxpayer_id, delete the associated Taxpayer record by taxpayer database id
+        3. If vendor has a taxpayer_id:
+           a. Get all TaxpayerAttachment records for the taxpayer
+           b. For each TaxpayerAttachment:
+              - Get the Attachment record
+              - Delete the file from Azure Blob Storage (if blob_url exists)
+              - Delete the Attachment record from database
+              - Delete the TaxpayerAttachment record
+           c. Delete the Taxpayer record
         4. Delete the vendor by database id
         
-        This will also delete all associated VendorAddress and Taxpayer records.
+        This will cascade delete:
+        - VendorAddress records
+        - TaxpayerAttachment records
+        - Attachment records (and files from Azure Blob Storage)
+        - Taxpayer record
+        - Vendor record
         """
+        logger = logging.getLogger(__name__)
+        
         # Step 1: Search for existing vendor record using public_id
         existing = self.read_by_public_id(public_id=public_id)
         if not existing:
@@ -123,18 +141,60 @@ class VendorService:
                 vendor_address_repo = VendorAddressRepository()
                 vendor_address_repo.delete_by_vendor_id(vendor_id=existing.id)
             except Exception as e:
-                # Log the error but continue with vendor deletion
-                logger = logging.getLogger(__name__)
                 logger.warning(f"Error deleting vendor addresses for vendor {existing.id}: {e}")
         
-        # Step 3: Delete the associated Taxpayer record if one exists (by taxpayer database id)
+        # Step 3: Delete taxpayer-related records if taxpayer exists
         if existing.taxpayer_id:
             try:
+                # Get the taxpayer to access its public_id
+                taxpayer = TaxpayerService().read_by_id(id=existing.taxpayer_id)
+                if taxpayer and taxpayer.public_id:
+                    # Step 3a: Get all TaxpayerAttachment records for this taxpayer
+                    taxpayer_attachment_service = TaxpayerAttachmentService()
+                    taxpayer_attachments = taxpayer_attachment_service.read_by_taxpayer_id(taxpayer_public_id=taxpayer.public_id)
+                    
+                    # Step 3b: Delete each attachment and its link
+                    attachment_service = AttachmentService()
+                    # Initialize storage once (may fail if config is missing, handle gracefully)
+                    storage = None
+                    try:
+                        storage = AzureBlobStorage()
+                    except Exception as e:
+                        logger.warning(f"Could not initialize Azure Blob Storage for file deletion: {e}")
+                    
+                    for ta in taxpayer_attachments:
+                        try:
+                            if ta.attachment_id:
+                                # Get the attachment record
+                                attachment = attachment_service.read_by_id(id=ta.attachment_id)
+                                if attachment:
+                                    # Delete from Azure Blob Storage if blob_url exists
+                                    if attachment.blob_url and storage:
+                                        try:
+                                            storage.delete_file(attachment.blob_url)
+                                        except Exception as e:
+                                            logger.warning(f"Error deleting blob {attachment.blob_url} for attachment {attachment.id}: {e}")
+                                    
+                                    # Delete the Attachment record
+                                    try:
+                                        attachment_service.delete_by_public_id(public_id=attachment.public_id)
+                                    except Exception as e:
+                                        logger.warning(f"Error deleting attachment {attachment.id}: {e}")
+                            
+                            # Delete the TaxpayerAttachment record
+                            if ta.id:
+                                try:
+                                    taxpayer_attachment_repo = TaxpayerAttachmentRepository()
+                                    taxpayer_attachment_repo.delete_by_id(id=ta.id)
+                                except Exception as e:
+                                    logger.warning(f"Error deleting taxpayer attachment {ta.id}: {e}")
+                        except Exception as e:
+                            logger.warning(f"Error processing taxpayer attachment {ta.id if ta.id else 'unknown'}: {e}")
+                
+                # Step 3c: Delete the Taxpayer record
                 taxpayer_repo = TaxpayerRepository()
                 taxpayer_repo.delete_by_id(id=existing.taxpayer_id)
             except Exception as e:
-                # Log the error but continue with vendor deletion
-                logger = logging.getLogger(__name__)
                 logger.warning(f"Error deleting taxpayer {existing.taxpayer_id} for vendor {existing.id}: {e}")
         
         # Step 4: Delete the vendor by database id

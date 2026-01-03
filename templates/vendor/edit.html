@@ -11,7 +11,7 @@
     <div class="vendor-page-header">
         <h1>Edit Vendor</h1>
         <a href="/vendor/list" class="btn btn-secondary">Back to List</a>
-    </div>
+                        </div>
 
     <div class="vendor-create-layout">
         <aside class="vendor-sidebar">
@@ -36,7 +36,7 @@
                 <input type="hidden" id="vendor_public_id" name="vendor_public_id" value="{{ vendor.public_id }}">
                 <input type="hidden" id="taxpayer_id" name="taxpayer_id" value="{{ taxpayer.public_id if taxpayer else '' }}">
                 <input type="hidden" id="taxpayer_row_version" name="taxpayer_row_version" value="{{ taxpayer.row_version if taxpayer else '' }}">
-                <input type="hidden" id="row_version" name="row_version" value="{{ vendor.row_version }}">
+                                <input type="hidden" id="row_version" name="row_version" value="{{ vendor.row_version }}">
                 <!-- Address data stored per address type -->
                 {% for address_type in address_types %}
                     {% set address = addresses_by_type.get(address_type.public_id) %}
@@ -56,32 +56,32 @@
                             <div class="vendor-form-group">
                                 <label for="name" class="vendor-form-label">
                                     Name <span class="required">*</span>
-                                </label>
-                                <input type="text"
+                                    </label>
+                                    <input type="text"
                                        class="vendor-form-control"
-                                       id="name"
-                                       name="name"
-                                       required
-                                       maxlength="50"
+                                           id="name"
+                                           name="name"
+                                           required
+                                           maxlength="50"
                                        autocomplete="off"
-                                       value="{{ vendor.name or '' }}"
-                                       placeholder="Enter vendor name">
-                            </div>
+                                           value="{{ vendor.name or '' }}"
+                                           placeholder="Enter vendor name">
+                                </div>
 
                             <div class="vendor-form-group">
                                 <label for="abbreviation" class="vendor-form-label">
                                     Abbreviation <span class="required">*</span>
-                                </label>
-                                <input type="text"
+                                    </label>
+                                    <input type="text"
                                        class="vendor-form-control"
-                                       id="abbreviation"
-                                       name="abbreviation"
-                                       required
-                                       maxlength="255"
+                                           id="abbreviation"
+                                           name="abbreviation"
+                                           required
+                                           maxlength="255"
                                        autocomplete="off"
-                                       value="{{ vendor.abbreviation or '' }}"
-                                       placeholder="Enter vendor abbreviation">
-                            </div>
+                                           value="{{ vendor.abbreviation or '' }}"
+                                           placeholder="Enter vendor abbreviation">
+                                </div>
 
                             <div class="vendor-form-group">
                                 <label for="vendor_type_id" class="vendor-form-label">
@@ -95,9 +95,9 @@
                                         <option value="{{ vendor_type_option.public_id }}" {% if vendor_type and vendor_type.public_id == vendor_type_option.public_id %}selected{% endif %}>{{ vendor_type_option.name }}</option>
                                     {% endfor %}
                                 </select>
-                            </div>
-                        </div>
-                    </div>
+                                        </div>
+                                        </div>
+                                    </div>
                 </section>
 
                 <!-- Taxpayer Information Section -->
@@ -119,7 +119,7 @@
                                        autocomplete="off"
                                        value="{{ taxpayer.entity_name if taxpayer else '' }}"
                                        placeholder="Enter entity name">
-                            </div>
+                                </div>
 
                             <div class="vendor-form-group">
                                 <label for="business_name" class="vendor-form-label">
@@ -165,6 +165,150 @@
                                        value="{{ taxpayer.taxpayer_id_number if taxpayer else '' }}"
                                        placeholder="Enter taxpayer ID number">
                             </div>
+
+                            <!-- Attachments Section -->
+                            {% if taxpayer %}
+                            <div class="vendor-section-divider"></div>
+                            <div class="vendor-taxpayer-attachments">
+                                <h6 class="vendor-section-title">Attachments</h6>
+                                <div class="vendor-attachments-container">
+                                    <!-- Hidden file input -->
+                                    <input type="file" 
+                                           id="attachment-file-input" 
+                                           name="attachment-file-input" 
+                                           style="display: none;" 
+                                           multiple
+                                           accept="*/*">
+                                    
+                                    {% if attachments and attachments|length > 0 %}
+                                        <div class="vendor-attachments-list" id="attachments-list">
+                                            {% for item in attachments %}
+                                                {% set attachment = item.attachment %}
+                                                {% set taxpayer_attachment = item.taxpayer_attachment %}
+                                                <div class="vendor-attachment-item" 
+                                                     data-attachment-public-id="{{ attachment.public_id }}"
+                                                     data-taxpayer-attachment-public-id="{{ taxpayer_attachment.public_id }}">
+                                                    <div class="vendor-attachment-icon">
+                                                        {% if attachment.file_extension %}
+                                                            {% set ext = attachment.file_extension.lower() %}
+                                                            {% if ext == 'pdf' %}
+                                                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                                                    <polyline points="14 2 14 8 20 8"></polyline>
+                                                                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                                                                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                                                                    <polyline points="10 9 9 9 8 9"></polyline>
+                                                                </svg>
+                                                            {% elif ext in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'] %}
+                                                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                                                                    <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                                                                    <polyline points="21 15 16 10 5 21"></polyline>
+                                                                </svg>
+                                                            {% elif ext in ['doc', 'docx'] %}
+                                                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                                                    <polyline points="14 2 14 8 20 8"></polyline>
+                                                                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                                                                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                                                                </svg>
+                                                            {% elif ext in ['xls', 'xlsx'] %}
+                                                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                                                                    <line x1="3" y1="9" x2="21" y2="9"></line>
+                                                                    <line x1="9" y1="21" x2="9" y2="9"></line>
+                                                                </svg>
+                                                            {% else %}
+                                                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                                                    <polyline points="14 2 14 8 20 8"></polyline>
+                                                                </svg>
+                                                            {% endif %}
+                                                        {% else %}
+                                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                                                <polyline points="14 2 14 8 20 8"></polyline>
+                                                            </svg>
+                                                        {% endif %}
+                                                    </div>
+                                                    <div class="vendor-attachment-info">
+                                                        <div class="vendor-attachment-name" title="{{ attachment.original_filename or attachment.filename or 'Unknown' }}">
+                                                            {{ attachment.original_filename or attachment.filename or 'Unknown' }}
+                                                        </div>
+                                                        <div class="vendor-attachment-meta">
+                                                            {% if attachment.file_size %}
+                                                                <span class="vendor-attachment-size">
+                                                                    {% if attachment.file_size < 1024 %}
+                                                                        {{ attachment.file_size }} B
+                                                                    {% elif attachment.file_size < 1048576 %}
+                                                                        {{ "%.1f"|format(attachment.file_size / 1024) }} KB
+                                                                    {% else %}
+                                                                        {{ "%.1f"|format(attachment.file_size / 1048576) }} MB
+                                                                    {% endif %}
+                                                                </span>
+                                                                <span class="vendor-attachment-separator">•</span>
+                                                            {% endif %}
+                                                            {% if attachment.created_datetime %}
+                                                                <span class="vendor-attachment-date">
+                                                                    Uploaded {{ attachment.created_datetime[:10] }}
+                                                                </span>
+                                                            {% endif %}
+                                                        </div>
+                                                    </div>
+                                                    <div class="vendor-attachment-actions">
+                                                        <button type="button" 
+                                                                class="vendor-attachment-btn vendor-attachment-btn-view" 
+                                                                title="View"
+                                                                onclick="viewAttachment('{{ attachment.public_id }}')">
+                                                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                                                <circle cx="12" cy="12" r="3"></circle>
+                                                            </svg>
+                                                        </button>
+                                                        <button type="button" 
+                                                                class="vendor-attachment-btn vendor-attachment-btn-delete" 
+                                                                title="Delete"
+                                                                onclick="deleteAttachment('{{ taxpayer_attachment.public_id }}', '{{ attachment.public_id }}', this)">
+                                                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                                <polyline points="3 6 5 6 21 6"></polyline>
+                                                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                                            </svg>
+                                        </button>
+                                    </div>
+                                                </div>
+                                            {% endfor %}
+                                        </div>
+                                    {% else %}
+                                        <div class="vendor-attachments-placeholder" id="attachments-empty-state">
+                                            <div class="vendor-attachments-placeholder-icon">
+                                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                                    <polyline points="17 8 12 3 7 8"></polyline>
+                                                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                                                </svg>
+                                            </div>
+                                            <p class="vendor-attachments-placeholder-text">No attachments uploaded</p>
+                                            <p class="vendor-attachments-placeholder-hint">Click here or drag files to upload</p>
+                                        </div>
+                                    {% endif %}
+                                    
+                                    <!-- Upload placeholder (shown when attachments exist but user can still add more) -->
+                                    {% if attachments and attachments|length > 0 %}
+                                    <div class="vendor-attachments-placeholder" id="attachments-upload-area" style="margin-top: 1rem; border: 2px dashed #ccc; border-radius: 4px; padding: 1rem; text-align: center; cursor: pointer;">
+                                        <div class="vendor-attachments-placeholder-icon" style="opacity: 0.6;">
+                                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                                <polyline points="17 8 12 3 7 8"></polyline>
+                                                <line x1="12" y1="3" x2="12" y2="15"></line>
+                                            </svg>
+                                        </div>
+                                        <p class="vendor-attachments-placeholder-text" style="margin: 0.5rem 0 0 0; font-size: 0.875rem;">Add more attachments</p>
+                                        <p class="vendor-attachments-placeholder-hint" style="margin: 0.25rem 0 0 0; font-size: 0.75rem; opacity: 0.7;">Click here or drag files to upload</p>
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% endif %}
                         </div>
                     </div>
                 </section>
@@ -191,7 +335,7 @@
                                             <button type="button" class="vendor-address-toggle-btn" onclick="toggleAddressType('{{ address_type.public_id }}')">
                                                 <span class="vendor-address-toggle-text">{% if address %}Hide{% else %}Show{% endif %}</span>
                                                 <span class="vendor-address-toggle-icon">{% if address %}▼{% else %}▶{% endif %}</span>
-                                            </button>
+                                        </button>
                                         {% endif %}
                                     </div>
 
@@ -211,7 +355,7 @@
                                                    autocomplete="off"
                                                    value="{{ address.street_one if address else '' }}"
                                                    placeholder="Enter street one">
-                                        </div>
+                                </div>
 
                                         <div class="vendor-form-group">
                                             <label for="street_two_{{ address_type.public_id }}" class="vendor-form-label">
@@ -227,7 +371,7 @@
                                                    autocomplete="off"
                                                    value="{{ address.street_two if address else '' }}"
                                                    placeholder="Enter street two">
-                                        </div>
+                        </div>
 
                                         <div class="vendor-form-group">
                                             <label for="city_{{ address_type.public_id }}" class="vendor-form-label">
@@ -243,7 +387,7 @@
                                                    autocomplete="off"
                                                    value="{{ address.city if address else '' }}"
                                                    placeholder="Enter city">
-                                        </div>
+                    </div>
 
                                         <div class="vendor-form-group">
                                             <label for="state_{{ address_type.public_id }}" class="vendor-form-label">
@@ -259,7 +403,7 @@
                                                    autocomplete="off"
                                                    value="{{ address.state if address else '' }}"
                                                    placeholder="Enter state">
-                                        </div>
+                </div>
 
                                         <div class="vendor-form-group">
                                             <label for="zip_{{ address_type.public_id }}" class="vendor-form-label">
@@ -275,9 +419,9 @@
                                                    autocomplete="off"
                                                    value="{{ address.zip if address else '' }}"
                                                    placeholder="Enter zip">
-                                        </div>
-                                    </div>
-                                </div>
+            </div>
+        </div>
+    </div>
                             {% endfor %}
                         </div>
                     </div>
@@ -370,7 +514,7 @@
         // Initialize sidebar navigation
         document.querySelectorAll('.vendor-nav-item').forEach(item => {
             item.addEventListener('click', (e) => {
-                e.preventDefault();
+            e.preventDefault();
                 const sectionId = item.getAttribute('data-section');
                 switchSection(sectionId);
             });
@@ -443,7 +587,7 @@
                 vendor_type_public_id: vendorTypeId || null,
                 row_version: getRowVersion()
             };
-            
+
             try {
                 const response = await fetch(`/api/v1/update/vendor/${vendorPublicId}`, {
                     method: 'PUT',
@@ -453,7 +597,7 @@
                     },
                     body: JSON.stringify(payload)
                 });
-                
+
                 if (response.ok) {
                     const vendor = await response.json();
                     document.getElementById('row_version').value = vendor.row_version;
@@ -470,7 +614,7 @@
                     // Handle duplicate name error (409 Conflict)
                     if (response.status === 409) {
                         showVendorNameError(error.detail || 'A vendor with this name already exists.');
-                    } else {
+                        } else {
                         showVendorNameError(error.detail || 'Error saving vendor. Please try again.');
                     }
                     console.error('Error saving vendor:', error);
@@ -951,6 +1095,394 @@
                     }
                 } catch (error) {
                     alert('Error deleting vendor: ' + error.message);
+                }
+            }
+        }
+
+        // Attachment management functions
+        const selectedFiles = new Map(); // Store new files being uploaded
+        const uploadedAttachments = new Map(); // Store uploaded attachment data
+
+        // Initialize attachment functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            const attachmentFileInput = document.getElementById('attachment-file-input');
+            const attachmentsEmptyState = document.getElementById('attachments-empty-state');
+            const attachmentsUploadArea = document.getElementById('attachments-upload-area');
+            const attachmentsList = document.getElementById('attachments-list');
+
+            // Click handlers for file selection
+            if (attachmentsEmptyState) {
+                attachmentsEmptyState.addEventListener('click', () => {
+                    if (attachmentFileInput) attachmentFileInput.click();
+                });
+                attachmentsEmptyState.style.cursor = 'pointer';
+
+                // Drag and drop for empty state
+                attachmentsEmptyState.addEventListener('dragenter', handleDragEnter);
+                attachmentsEmptyState.addEventListener('dragover', handleDragOver);
+                attachmentsEmptyState.addEventListener('dragleave', handleDragLeave);
+                attachmentsEmptyState.addEventListener('drop', handleDrop);
+            }
+
+            if (attachmentsUploadArea) {
+                attachmentsUploadArea.addEventListener('click', () => {
+                    if (attachmentFileInput) attachmentFileInput.click();
+                });
+                attachmentsUploadArea.style.cursor = 'pointer';
+
+                // Drag and drop for upload area
+                attachmentsUploadArea.addEventListener('dragenter', handleDragEnter);
+                attachmentsUploadArea.addEventListener('dragover', handleDragOver);
+                attachmentsUploadArea.addEventListener('dragleave', handleDragLeave);
+                attachmentsUploadArea.addEventListener('drop', handleDrop);
+            }
+
+            if (attachmentFileInput) {
+                attachmentFileInput.addEventListener('change', (event) => {
+                    const files = event.target.files;
+                    if (files && files.length > 0) {
+                        handleFileSelection(files);
+                    }
+                });
+            }
+        });
+
+        // Drag and drop handlers
+        function handleDragEnter(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.currentTarget.classList.add('vendor-attachments-drag-over');
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        function handleDragLeave(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.currentTarget.classList.remove('vendor-attachments-drag-over');
+        }
+
+        function handleDrop(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.currentTarget.classList.remove('vendor-attachments-drag-over');
+            const files = e.dataTransfer.files;
+            if (files && files.length > 0) {
+                handleFileSelection(files);
+            }
+        }
+
+        // Handle file selection
+        function handleFileSelection(files) {
+            Array.from(files).forEach(file => {
+                const fileId = `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                selectedFiles.set(fileId, { file: file, attachmentPublicId: null, uploaded: false });
+                addAttachmentToList(fileId, file, false);
+                uploadAttachment(fileId, file);
+            });
+
+            // Show attachments list and hide empty state
+            const attachmentsList = document.getElementById('attachments-list');
+            const attachmentsEmptyState = document.getElementById('attachments-empty-state');
+            if (attachmentsList && attachmentsEmptyState) {
+                attachmentsList.style.display = 'flex';
+                attachmentsEmptyState.style.display = 'none';
+            }
+        }
+
+        // Add attachment to list
+        function addAttachmentToList(fileId, file, isUploaded = false, attachmentPublicId = null) {
+            const attachmentsList = document.getElementById('attachments-list');
+            if (!attachmentsList) {
+                // Create list if it doesn't exist
+                const container = document.querySelector('.vendor-attachments-container');
+                const newList = document.createElement('div');
+                newList.id = 'attachments-list';
+                newList.className = 'vendor-attachments-list';
+                newList.style.display = 'flex';
+                container.appendChild(newList);
+                attachmentsList = newList;
+            }
+
+            const fileSize = formatFileSize(file.size);
+            const fileDate = new Date().toLocaleDateString();
+            const fileIcon = getFileIcon(file.name);
+
+            const attachmentItem = document.createElement('div');
+            attachmentItem.className = 'vendor-attachment-item';
+            attachmentItem.setAttribute('data-file-id', fileId);
+            if (attachmentPublicId) {
+                attachmentItem.setAttribute('data-attachment-public-id', attachmentPublicId);
+            }
+
+            attachmentItem.innerHTML = `
+                <div class="vendor-attachment-icon">${fileIcon}</div>
+                <div class="vendor-attachment-info">
+                    <div class="vendor-attachment-name" title="${file.name}">${file.name}</div>
+                    <div class="vendor-attachment-meta">
+                        <span class="vendor-attachment-size">${fileSize}</span>
+                        <span class="vendor-attachment-separator">•</span>
+                        <span class="vendor-attachment-date">${isUploaded ? 'Uploaded' : 'Selected'} ${fileDate}</span>
+                        <span class="vendor-attachment-separator">•</span>
+                        <span class="vendor-attachment-status-badge status-uploading">Uploading...</span>
+                    </div>
+                </div>
+                <div class="vendor-attachment-actions">
+                    <button type="button" class="vendor-attachment-btn vendor-attachment-btn-view" title="View" disabled>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                        </svg>
+                    </button>
+                    <button type="button" class="vendor-attachment-btn vendor-attachment-btn-delete" title="Delete" onclick="deleteNewAttachment('${fileId}')">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                    </button>
+                </div>
+            `;
+
+            attachmentsList.appendChild(attachmentItem);
+        }
+
+        // Helper functions
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / 1048576).toFixed(1) + ' MB';
+        }
+
+        function getFileIcon(filename) {
+            const ext = filename.split('.').pop().toLowerCase();
+            const icons = {
+                'pdf': '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>',
+                'jpg': '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>',
+                'jpeg': '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>',
+                'png': '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>',
+                'doc': '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>',
+                'docx': '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>',
+                'xls': '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>',
+                'xlsx': '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>'
+            };
+            return icons[ext] || '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>';
+        }
+
+        // Upload attachment
+        async function uploadAttachment(fileId, file) {
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('category', 'Taxpayer');
+
+                const response = await fetch('/api/v1/upload/attachment', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    },
+                    body: formData
+                });
+
+                if (response.ok) {
+                    const attachment = await response.json();
+                    const attachmentPublicId = attachment.public_id;
+
+                    const fileData = selectedFiles.get(fileId);
+                    if (fileData) {
+                        fileData.attachmentPublicId = attachmentPublicId;
+                        fileData.uploaded = true;
+                        selectedFiles.set(fileId, fileData);
+                    }
+                    uploadedAttachments.set(fileId, attachment);
+
+                    // Update UI
+                    updateAttachmentStatus(fileId, 'uploaded', attachmentPublicId);
+
+                    // Link to taxpayer if exists
+                    const taxpayerPublicId = document.getElementById('taxpayer_id').value;
+                    if (taxpayerPublicId) {
+                        await linkAttachmentToTaxpayer(attachmentPublicId, taxpayerPublicId);
+                    }
+                } else {
+                    const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
+                    updateAttachmentStatus(fileId, 'error');
+                    alert(`Error uploading file: ${error.detail || 'Unknown error'}`);
+                }
+            } catch (error) {
+                updateAttachmentStatus(fileId, 'error');
+                alert(`Error uploading file: ${error.message || 'Network error'}`);
+            }
+        }
+
+        // Update attachment status
+        function updateAttachmentStatus(fileId, status, attachmentPublicId = null) {
+            const item = document.querySelector(`[data-file-id="${fileId}"]`);
+            if (!item) return;
+
+            const statusBadge = item.querySelector('.vendor-attachment-status-badge');
+            const viewBtn = item.querySelector('.vendor-attachment-btn-view');
+
+            if (statusBadge) {
+                statusBadge.className = `vendor-attachment-status-badge status-${status}`;
+                statusBadge.textContent = status === 'uploaded' ? 'Uploaded' : status === 'error' ? 'Error' : 'Uploading...';
+            }
+
+            if (viewBtn) {
+                viewBtn.disabled = status !== 'uploaded';
+                if (status === 'uploaded' && attachmentPublicId) {
+                    viewBtn.onclick = () => viewAttachment(attachmentPublicId);
+                    item.setAttribute('data-attachment-public-id', attachmentPublicId);
+                }
+            }
+        }
+
+        // Link attachment to taxpayer
+        async function linkAttachmentToTaxpayer(attachmentPublicId, taxpayerPublicId) {
+            try {
+                const response = await fetch('/api/v1/create/taxpayer-attachment', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    },
+                    body: JSON.stringify({
+                        taxpayer_public_id: taxpayerPublicId,
+                        attachment_public_id: attachmentPublicId
+                    })
+                });
+
+                if (!response.ok) {
+                    console.warn('Error linking attachment to taxpayer');
+                }
+            } catch (error) {
+                console.warn('Error linking attachment to taxpayer:', error);
+            }
+        }
+
+        // View attachment (preview in new tab)
+        async function viewAttachment(attachmentPublicId) {
+            try {
+                const downloadUrl = `/api/v1/download/attachment/${attachmentPublicId}`;
+                const token = localStorage.getItem('token.access_token');
+                
+                const response = await fetch(downloadUrl, {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const blobUrl = window.URL.createObjectURL(blob);
+                    const previewWindow = window.open(blobUrl, '_blank');
+                    
+                    if (previewWindow) {
+                        setTimeout(() => {
+                            window.URL.revokeObjectURL(blobUrl);
+                        }, 60000);
+                    } else {
+                        const a = document.createElement('a');
+                        a.href = blobUrl;
+                        a.download = '';
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        setTimeout(() => window.URL.revokeObjectURL(blobUrl), 100);
+                    }
+                } else {
+                    const error = await response.json().catch(() => ({ detail: 'Failed to load attachment' }));
+                    alert('Error loading attachment: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error viewing attachment: ' + error.message);
+            }
+        }
+
+        // Delete existing attachment
+        async function deleteAttachment(taxpayerAttachmentPublicId, attachmentPublicId, buttonElement) {
+            if (!confirm('Are you sure you want to delete this attachment? This action cannot be undone.')) {
+                return;
+            }
+
+            try {
+                const token = localStorage.getItem('token.access_token');
+                
+                // Delete TaxpayerAttachment link first
+                const deleteLinkResponse = await fetch(`/api/v1/delete/taxpayer-attachment/${taxpayerAttachmentPublicId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (deleteLinkResponse.ok) {
+                    // Delete the actual attachment
+                    const deleteAttachmentResponse = await fetch(`/api/v1/delete/attachment/${attachmentPublicId}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Authorization': `Bearer ${token}`
+                        }
+                    });
+
+                    if (deleteAttachmentResponse.ok) {
+                        // Remove from UI
+                        const item = buttonElement.closest('.vendor-attachment-item');
+                        if (item) {
+                            item.remove();
+                        }
+
+                        // Check if list is empty and show empty state
+                        const attachmentsList = document.getElementById('attachments-list');
+                        if (attachmentsList && attachmentsList.children.length === 0) {
+                            attachmentsList.style.display = 'none';
+                            const emptyState = document.getElementById('attachments-empty-state');
+                            if (emptyState) {
+                                emptyState.style.display = 'block';
+                            }
+                        }
+                    } else {
+                        const error = await deleteAttachmentResponse.json().catch(() => ({ detail: 'Failed to delete attachment' }));
+                        alert('Error deleting attachment: ' + (error.detail || 'Unknown error'));
+                    }
+                } else {
+                    const error = await deleteLinkResponse.json().catch(() => ({ detail: 'Failed to delete link' }));
+                    alert('Error deleting attachment link: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error deleting attachment: ' + error.message);
+            }
+        }
+
+        // Delete new attachment (not yet saved)
+        function deleteNewAttachment(fileId) {
+            if (!confirm('Are you sure you want to remove this attachment?')) {
+                return;
+            }
+
+            const item = document.querySelector(`[data-file-id="${fileId}"]`);
+            if (item) {
+                const fileData = selectedFiles.get(fileId);
+                if (fileData && fileData.uploaded && fileData.attachmentPublicId) {
+                    // If uploaded, delete from server
+                    deleteAttachment(null, fileData.attachmentPublicId, item);
+                } else {
+                    // Just remove from UI
+                    item.remove();
+                    selectedFiles.delete(fileId);
+                }
+            }
+
+            // Check if list is empty
+            const attachmentsList = document.getElementById('attachments-list');
+            if (attachmentsList && attachmentsList.children.length === 0) {
+                attachmentsList.style.display = 'none';
+                const emptyState = document.getElementById('attachments-empty-state');
+                if (emptyState) {
+                    emptyState.style.display = 'block';
                 }
             }
         }

@@ -158,6 +158,74 @@
                                        autocomplete="off"
                                        placeholder="Enter taxpayer ID number">
                             </div>
+
+                            <!-- Taxpayer Attachments Subsection -->
+                            <div class="vendor-section-divider"></div>
+                            <div class="vendor-taxpayer-attachments">
+                                <h6 class="vendor-section-title">Attachments</h6>
+                                <div class="vendor-attachments-container">
+                                    <!-- Hidden file input -->
+                                    <input type="file" 
+                                           id="attachment-file-input" 
+                                           name="attachment-file-input" 
+                                           style="display: none;" 
+                                           multiple
+                                           accept="*/*">
+                                    
+                                    <!-- Empty State (shown when no attachments) -->
+                                    <div class="vendor-attachments-placeholder" id="attachments-empty-state">
+                                        <div class="vendor-attachments-placeholder-icon">
+                                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                                <polyline points="17 8 12 3 7 8"></polyline>
+                                                <line x1="12" y1="3" x2="12" y2="15"></line>
+                                            </svg>
+                                        </div>
+                                        <p class="vendor-attachments-placeholder-text">No attachments uploaded</p>
+                                        <p class="vendor-attachments-placeholder-hint">Click here or drag files to upload</p>
+                                    </div>
+
+                                    <!-- Attachments List (shown when attachments exist) -->
+                                    <div class="vendor-attachments-list" id="attachments-list" style="display: none;">
+                                        <!-- Attachment items will be dynamically added here via JavaScript -->
+                                        <!-- Example structure for each attachment:
+                                        <div class="vendor-attachment-item" data-attachment-public-id="...">
+                                            <div class="vendor-attachment-icon">
+                                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                                    <polyline points="14 2 14 8 20 8"></polyline>
+                                                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                                                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                                                    <polyline points="10 9 9 9 8 9"></polyline>
+                                                </svg>
+                                            </div>
+                                            <div class="vendor-attachment-info">
+                                                <div class="vendor-attachment-name">document.pdf</div>
+                                                <div class="vendor-attachment-meta">
+                                                    <span class="vendor-attachment-size">2.5 MB</span>
+                                                    <span class="vendor-attachment-separator">•</span>
+                                                    <span class="vendor-attachment-date">Uploaded Jan 15, 2024</span>
+                                                </div>
+                                            </div>
+                                            <div class="vendor-attachment-actions">
+                                                <button type="button" class="vendor-attachment-btn vendor-attachment-btn-view" title="View/Download" data-action="view">
+                                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                                        <circle cx="12" cy="12" r="3"></circle>
+                                                    </svg>
+                                                </button>
+                                                <button type="button" class="vendor-attachment-btn vendor-attachment-btn-delete" title="Delete" data-action="delete">
+                                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                        <polyline points="3 6 5 6 21 6"></polyline>
+                                                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        -->
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </section>
@@ -330,6 +398,25 @@
                 localStorage.setItem(STATE_KEY, JSON.stringify(updated));
             } catch (e) {
                 console.error('Failed to save state:', e);
+            }
+        }
+
+        // Save attachment state to localStorage
+        function saveAttachmentStateToLocalStorage() {
+            try {
+                const attachmentData = {};
+                selectedFiles.forEach((fileData, fileId) => {
+                    if (fileData.uploaded && fileData.attachmentPublicId) {
+                        attachmentData[fileId] = {
+                            attachmentPublicId: fileData.attachmentPublicId,
+                            fileName: fileData.file.name,
+                            fileSize: fileData.file.size
+                        };
+                    }
+                });
+                saveStateToLocalStorage({ attachmentData: attachmentData });
+            } catch (e) {
+                console.error('Failed to save attachment state:', e);
             }
         }
 
@@ -692,6 +779,9 @@
                             clearTimeout(backupSaveTimeouts['taxpayer']);
                             delete backupSaveTimeouts['taxpayer'];
                         }
+
+                        // Link all uploaded attachments to taxpayer
+                        await linkAttachmentsToTaxpayer(updatedTaxpayerPublicId);
                     } else {
                         updateSaveStatus('taxpayer', 'error');
                         const error = await vendorResponse.json().catch(() => ({ detail: 'Unknown error' }));
@@ -940,6 +1030,525 @@
         });
         document.getElementById('taxpayer_id_number').addEventListener('blur', saveTaxpayerInfo);
         document.getElementById('taxpayer_id_number').addEventListener('input', () => setupBackupSave('taxpayer', saveTaxpayerInfo));
+
+        // Attachment file selection
+        const attachmentFileInput = document.getElementById('attachment-file-input');
+        const attachmentsEmptyState = document.getElementById('attachments-empty-state');
+        const attachmentsList = document.getElementById('attachments-list');
+
+        // Click on placeholder to trigger file selection
+        if (attachmentsEmptyState) {
+            attachmentsEmptyState.addEventListener('click', () => {
+                if (attachmentFileInput) {
+                    attachmentFileInput.click();
+                }
+            });
+            attachmentsEmptyState.style.cursor = 'pointer';
+
+            // Drag and drop functionality
+            attachmentsEmptyState.addEventListener('dragenter', handleDragEnter);
+            attachmentsEmptyState.addEventListener('dragover', handleDragOver);
+            attachmentsEmptyState.addEventListener('dragleave', handleDragLeave);
+            attachmentsEmptyState.addEventListener('drop', handleDrop);
+        }
+
+        // Handle file selection
+        if (attachmentFileInput) {
+            attachmentFileInput.addEventListener('change', (event) => {
+                const files = event.target.files;
+                if (files && files.length > 0) {
+                    handleFileSelection(files);
+                }
+            });
+        }
+
+        // Drag and drop event handlers
+        function handleDragEnter(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (attachmentsEmptyState) {
+                attachmentsEmptyState.classList.add('vendor-attachments-drag-over');
+            }
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        function handleDragLeave(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (attachmentsEmptyState) {
+                attachmentsEmptyState.classList.remove('vendor-attachments-drag-over');
+            }
+        }
+
+        function handleDrop(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            if (attachmentsEmptyState) {
+                attachmentsEmptyState.classList.remove('vendor-attachments-drag-over');
+            }
+
+            const files = e.dataTransfer.files;
+            if (files && files.length > 0) {
+                handleFileSelection(files);
+            }
+        }
+
+        // Store selected files (before upload)
+        let selectedFiles = new Map(); // Map of file ID to { file, attachmentPublicId, uploaded }
+        let uploadedAttachments = new Map(); // Map of fileId to attachment data
+
+        // Handle file selection (from both click and drag/drop)
+        function handleFileSelection(files) {
+            console.log('Files selected:', files);
+            
+            // Add files to the selected files map, display them, and trigger upload
+            Array.from(files).forEach(file => {
+                const fileId = `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                selectedFiles.set(fileId, { file: file, attachmentPublicId: null, uploaded: false });
+                addAttachmentToList(fileId, file, false);
+                // Immediately trigger upload
+                uploadAttachment(fileId, file);
+            });
+
+            // Show attachments list and hide empty state
+            if (attachmentsList && attachmentsEmptyState) {
+                attachmentsList.style.display = 'flex';
+                attachmentsEmptyState.style.display = 'none';
+            }
+        }
+
+        // Add attachment item to the list
+        function addAttachmentToList(fileId, file, isUploaded = false, attachmentPublicId = null) {
+            if (!attachmentsList) return;
+
+            const fileSize = formatFileSize(file.size);
+            const fileDate = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+            const fileExtension = getFileExtension(file.name);
+            const fileIcon = getFileIcon(fileExtension);
+            const uploadStatus = isUploaded ? 'Uploaded' : 'Uploading...';
+            const statusClass = isUploaded ? 'vendor-attachment-status-uploaded' : 'vendor-attachment-status-uploading';
+
+            const attachmentItem = document.createElement('div');
+            attachmentItem.className = 'vendor-attachment-item';
+            attachmentItem.setAttribute('data-file-id', fileId);
+            if (attachmentPublicId) {
+                attachmentItem.setAttribute('data-attachment-public-id', attachmentPublicId);
+            }
+            attachmentItem.innerHTML = `
+                <div class="vendor-attachment-icon">
+                    ${fileIcon}
+                </div>
+                <div class="vendor-attachment-info">
+                    <div class="vendor-attachment-name" title="${file.name}">${file.name}</div>
+                    <div class="vendor-attachment-meta">
+                        <span class="vendor-attachment-size">${fileSize}</span>
+                        <span class="vendor-attachment-separator">•</span>
+                        <span class="vendor-attachment-date">${isUploaded ? 'Uploaded' : 'Selected'} ${fileDate}</span>
+                        <span class="vendor-attachment-separator">•</span>
+                        <span class="${statusClass}">${uploadStatus}</span>
+                    </div>
+                </div>
+                <div class="vendor-attachment-actions">
+                    <button type="button" class="vendor-attachment-btn vendor-attachment-btn-view" title="View" data-action="view" data-file-id="${fileId}" ${!isUploaded ? 'disabled' : ''}>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                        </svg>
+                    </button>
+                    <button type="button" class="vendor-attachment-btn vendor-attachment-btn-delete" title="Delete" data-action="delete" data-file-id="${fileId}">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                    </button>
+                </div>
+            `;
+
+            // Add event listeners for view and delete buttons
+            const viewBtn = attachmentItem.querySelector('[data-action="view"]');
+            const deleteBtn = attachmentItem.querySelector('[data-action="delete"]');
+
+            if (viewBtn) {
+                viewBtn.addEventListener('click', () => viewFile(fileId, file));
+            }
+
+            if (deleteBtn) {
+                deleteBtn.addEventListener('click', () => deleteFile(fileId));
+            }
+
+            attachmentsList.appendChild(attachmentItem);
+        }
+
+        // Update attachment item status
+        function updateAttachmentItemStatus(fileId, status, attachmentPublicId = null) {
+            const attachmentItem = document.querySelector(`[data-file-id="${fileId}"]`);
+            if (!attachmentItem) return;
+
+            const statusSpan = attachmentItem.querySelector('.vendor-attachment-status-uploading, .vendor-attachment-status-uploaded, .vendor-attachment-status-error');
+            const dateSpan = attachmentItem.querySelector('.vendor-attachment-date');
+            const viewBtn = attachmentItem.querySelector('[data-action="view"]');
+
+            if (status === 'uploaded') {
+                if (statusSpan) {
+                    statusSpan.className = 'vendor-attachment-status-uploaded';
+                    statusSpan.textContent = 'Uploaded';
+                }
+                if (dateSpan) {
+                    const fileDate = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                    dateSpan.textContent = `Uploaded ${fileDate}`;
+                }
+                if (viewBtn) {
+                    viewBtn.disabled = false;
+                }
+                if (attachmentPublicId) {
+                    attachmentItem.setAttribute('data-attachment-public-id', attachmentPublicId);
+                }
+            } else if (status === 'error') {
+                if (statusSpan) {
+                    statusSpan.className = 'vendor-attachment-status-error';
+                    statusSpan.textContent = 'Upload failed';
+                }
+            }
+        }
+
+        // Upload attachment to server
+        async function uploadAttachment(fileId, file) {
+            try {
+                // Update UI to show "saving" status
+                updateAttachmentItemStatus(fileId, 'uploading');
+                updateSaveStatus('addresses', 'saving');
+
+                // Create FormData with file
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('category', 'Taxpayer');
+
+                // POST to upload endpoint
+                const response = await fetch('/api/v1/upload/attachment', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    },
+                    body: formData
+                });
+
+                if (response.ok) {
+                    const attachment = await response.json();
+                    const attachmentPublicId = attachment.public_id;
+
+                    // Store attachment data
+                    const fileData = selectedFiles.get(fileId);
+                    if (fileData) {
+                        fileData.attachmentPublicId = attachmentPublicId;
+                        fileData.uploaded = true;
+                        selectedFiles.set(fileId, fileData);
+                    }
+                    uploadedAttachments.set(fileId, attachment);
+
+                    // Update UI to show "saved" status
+                    updateAttachmentItemStatus(fileId, 'uploaded', attachmentPublicId);
+                    updateSaveStatus('addresses', 'saved');
+
+                    // Save to localStorage
+                    saveAttachmentStateToLocalStorage();
+
+                    // Try to link to taxpayer if taxpayer exists
+                    const taxpayerPublicId = document.getElementById('taxpayer_id').value;
+                    if (taxpayerPublicId) {
+                        await linkAttachmentToTaxpayer(attachmentPublicId, taxpayerPublicId);
+                    }
+                } else {
+                    const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
+                    updateAttachmentItemStatus(fileId, 'error');
+                    updateSaveStatus('addresses', 'error');
+                    console.error('Error uploading attachment:', error);
+                    alert(`Error uploading file: ${error.detail || 'Unknown error'}`);
+                }
+            } catch (error) {
+                updateAttachmentItemStatus(fileId, 'error');
+                updateSaveStatus('addresses', 'error');
+                console.error('Error uploading attachment:', error);
+                alert(`Error uploading file: ${error.message || 'Network error'}`);
+            }
+        }
+
+        // Link single attachment to taxpayer
+        async function linkAttachmentToTaxpayer(attachmentPublicId, taxpayerPublicId) {
+            try {
+                const response = await fetch('/api/v1/create/taxpayer-attachment', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    },
+                    body: JSON.stringify({
+                        taxpayer_public_id: taxpayerPublicId,
+                        attachment_public_id: attachmentPublicId
+                    })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json().catch(() => ({ detail: 'Failed to link attachment' }));
+                    console.warn('Error linking attachment to taxpayer:', error);
+                    // Don't throw - this is non-blocking
+                }
+            } catch (error) {
+                console.warn('Error linking attachment to taxpayer:', error);
+                // Don't throw - this is non-blocking
+            }
+        }
+
+        // Link all uploaded attachments to taxpayer
+        async function linkAttachmentsToTaxpayer(taxpayerPublicId) {
+            if (!taxpayerPublicId) return;
+
+            // Get all uploaded attachments
+            const attachmentsToLink = [];
+            selectedFiles.forEach((fileData, fileId) => {
+                if (fileData.uploaded && fileData.attachmentPublicId) {
+                    attachmentsToLink.push(fileData.attachmentPublicId);
+                }
+            });
+
+            // Link each attachment
+            for (const attachmentPublicId of attachmentsToLink) {
+                await linkAttachmentToTaxpayer(attachmentPublicId, taxpayerPublicId);
+            }
+        }
+
+        // View file (opens in new tab/window)
+        function viewFile(fileId, file) {
+            const fileData = selectedFiles.get(fileId);
+            const attachmentPublicId = fileData?.attachmentPublicId;
+
+            // If file is uploaded, use server URL
+            if (attachmentPublicId) {
+                const downloadUrl = `/api/v1/download/attachment/${attachmentPublicId}`;
+                window.open(downloadUrl, '_blank');
+                return;
+            }
+
+            // Otherwise use local file
+            if (!file) {
+                file = fileData?.file;
+            }
+
+            if (!file) {
+                console.error('File not found:', fileId);
+                return;
+            }
+
+            // Create object URL for local file
+            const objectUrl = URL.createObjectURL(file);
+            
+            // Open file in new window/tab
+            const newWindow = window.open(objectUrl, '_blank');
+            
+            // Clean up object URL after a delay (when window closes)
+            if (newWindow) {
+                newWindow.addEventListener('beforeunload', () => {
+                    URL.revokeObjectURL(objectUrl);
+                });
+            } else {
+                // If popup blocked, create download link instead
+                const link = document.createElement('a');
+                link.href = objectUrl;
+                link.download = file.name;
+                link.click();
+                setTimeout(() => URL.revokeObjectURL(objectUrl), 100);
+            }
+        }
+
+        // Delete file from list
+        async function deleteFile(fileId) {
+            const fileData = selectedFiles.get(fileId);
+            const attachmentPublicId = fileData?.attachmentPublicId;
+
+            // If file is uploaded, delete from server
+            if (attachmentPublicId) {
+                try {
+                    // Delete TaxpayerAttachment link first (if exists)
+                    const taxpayerPublicId = document.getElementById('taxpayer_id').value;
+                    if (taxpayerPublicId) {
+                        // Get all taxpayer attachments to find the link
+                        const response = await fetch(`/api/v1/get/taxpayer-attachments/${taxpayerPublicId}`, {
+                            headers: {
+                                'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                            }
+                        });
+                        if (response.ok) {
+                            const taxpayerAttachments = await response.json();
+                            const link = taxpayerAttachments.find(ta => ta.attachment_public_id === attachmentPublicId);
+                            if (link) {
+                                await fetch(`/api/v1/delete/taxpayer-attachment/${link.public_id}`, {
+                                    method: 'DELETE',
+                                    headers: {
+                                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                                    }
+                                });
+                            }
+                        }
+                    }
+
+                    // Delete attachment from server
+                    await fetch(`/api/v1/delete/attachment/${attachmentPublicId}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        }
+                    });
+                } catch (error) {
+                    console.error('Error deleting attachment from server:', error);
+                    // Continue with UI removal even if server delete fails
+                }
+            }
+
+            // Remove from UI
+            const attachmentItem = document.querySelector(`[data-file-id="${fileId}"]`);
+            if (attachmentItem) {
+                attachmentItem.remove();
+            }
+
+            // Remove from maps
+            selectedFiles.delete(fileId);
+            uploadedAttachments.delete(fileId);
+
+            // Save state to localStorage
+            saveAttachmentStateToLocalStorage();
+
+            // Show empty state if no files remain
+            if (attachmentsList && attachmentsList.children.length === 0) {
+                if (attachmentsEmptyState) {
+                    attachmentsEmptyState.style.display = 'flex';
+                }
+                if (attachmentsList) {
+                    attachmentsList.style.display = 'none';
+                }
+            }
+        }
+
+        // Format file size
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        // Get file extension
+        function getFileExtension(filename) {
+            const parts = filename.split('.');
+            return parts.length > 1 ? parts[parts.length - 1].toLowerCase() : '';
+        }
+
+        // Get file icon SVG based on extension
+        function getFileIcon(extension) {
+            // Default document icon
+            const defaultIcon = `
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                    <polyline points="10 9 9 9 8 9"></polyline>
+                </svg>
+            `;
+
+            const iconMap = {
+                'pdf': `
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                    </svg>
+                `,
+                'jpg': `
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                        <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                        <polyline points="21 15 16 10 5 21"></polyline>
+                    </svg>
+                `,
+                'jpeg': `
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                        <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                        <polyline points="21 15 16 10 5 21"></polyline>
+                    </svg>
+                `,
+                'png': `
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                        <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                        <polyline points="21 15 16 10 5 21"></polyline>
+                    </svg>
+                `,
+                'gif': `
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                        <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                        <polyline points="21 15 16 10 5 21"></polyline>
+                    </svg>
+                `,
+                'svg': `
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                        <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                        <polyline points="21 15 16 10 5 21"></polyline>
+                    </svg>
+                `,
+                'webp': `
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                        <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                        <polyline points="21 15 16 10 5 21"></polyline>
+                    </svg>
+                `,
+                'doc': `
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                    </svg>
+                `,
+                'docx': `
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                    </svg>
+                `,
+                'xls': `
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                        <line x1="10" y1="9" x2="8" y2="9"></line>
+                    </svg>
+                `,
+                'xlsx': `
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                        <line x1="10" y1="9" x2="8" y2="9"></line>
+                    </svg>
+                `
+            };
+
+            return iconMap[extension] || defaultIcon;
+        }
 
         // Address fields
         addressTypes.forEach(addressType => {

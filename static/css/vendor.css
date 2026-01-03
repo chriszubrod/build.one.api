@@ -978,3 +978,272 @@
     }
 }
 
+/* Taxpayer Attachments Styles */
+.vendor-attachments-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
+.vendor-attachment-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem;
+    background-color: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.375rem;
+    transition: background-color 0.2s;
+}
+
+.vendor-attachment-item:hover {
+    background-color: #f3f4f6;
+}
+
+.vendor-attachment-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.vendor-attachment-name {
+    font-weight: 500;
+    color: #111827;
+    margin-bottom: 0.25rem;
+    word-break: break-word;
+}
+
+.vendor-attachment-description {
+    font-size: 0.875rem;
+    color: #6b7280;
+    margin-bottom: 0.25rem;
+    word-break: break-word;
+}
+
+.vendor-attachment-meta {
+    font-size: 0.75rem;
+    color: #9ca3af;
+}
+
+.vendor-attachment-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-left: 1rem;
+    flex-shrink: 0;
+}
+
+.vendor-attachment-upload {
+    padding: 1rem;
+    background-color: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.375rem;
+    margin-bottom: 1rem;
+}
+
+.vendor-attachment-upload .vendor-form-group {
+    margin-bottom: 0.75rem;
+}
+
+.vendor-attachment-upload .vendor-form-group:last-child {
+    margin-bottom: 0;
+}
+
+#taxpayer_attachment_upload_status {
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+/* Taxpayer Attachments Section */
+.vendor-taxpayer-attachments {
+    margin-top: 2rem;
+    padding-top: 1.5rem;
+}
+
+.vendor-attachments-container {
+    margin-top: 1rem;
+}
+
+.vendor-attachments-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 2rem;
+    background-color: var(--color-surface);
+    border: 2px dashed #d0d0d0;
+    border-radius: 8px;
+    text-align: center;
+    transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.vendor-attachments-placeholder:hover {
+    border-color: var(--color-text);
+    background-color: #f9f9f9;
+}
+
+.vendor-attachments-placeholder.vendor-attachments-drag-over {
+    border-color: var(--color-text);
+    background-color: #e3f2fd;
+    border-style: solid;
+    border-width: 2px;
+}
+
+.vendor-attachments-placeholder-icon {
+    color: #999;
+    margin-bottom: 1rem;
+    opacity: 0.6;
+}
+
+.vendor-attachments-placeholder-text {
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    color: var(--color-text);
+    margin: 0 0 0.5rem 0;
+}
+
+.vendor-attachments-placeholder-hint {
+    font-size: var(--font-size-small);
+    color: #666;
+    margin: 0;
+}
+
+/* Attachments List View */
+.vendor-attachments-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.vendor-attachment-item {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+    background-color: var(--color-surface);
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.vendor-attachment-item:hover {
+    border-color: var(--color-text);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.vendor-attachment-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    color: #666;
+    background-color: #f5f5f5;
+    border-radius: 6px;
+}
+
+.vendor-attachment-icon svg {
+    width: 24px;
+    height: 24px;
+}
+
+.vendor-attachment-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.vendor-attachment-name {
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vendor-attachment-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: var(--font-size-small);
+    color: #666;
+}
+
+.vendor-attachment-separator {
+    color: #999;
+}
+
+.vendor-attachment-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+
+.vendor-attachment-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    background-color: transparent;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    color: #666;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.vendor-attachment-btn:hover {
+    background-color: #f5f5f5;
+    border-color: var(--color-text);
+    color: var(--color-text);
+}
+
+.vendor-attachment-btn svg {
+    width: 18px;
+    height: 18px;
+}
+
+.vendor-attachment-btn-view:hover {
+    background-color: #e3f2fd;
+    border-color: #2196f3;
+    color: #2196f3;
+}
+
+.vendor-attachment-btn-delete:hover {
+    background-color: #ffebee;
+    border-color: #f44336;
+    color: #f44336;
+}
+
+.vendor-attachment-status-uploading {
+    color: #ff9800;
+    font-weight: 500;
+}
+
+.vendor-attachment-status-uploaded {
+    color: #4caf50;
+    font-weight: 500;
+}
+
+.vendor-attachment-status-error {
+    color: #f44336;
+    font-weight: 500;
+}
+
+.vendor-attachment-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.vendor-attachment-btn:disabled:hover {
+    background-color: transparent;
+    border-color: #e0e0e0;
+    color: #666;
+}
+

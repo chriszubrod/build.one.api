@@ -42,6 +42,10 @@ from modules.taxpayer.web.controller import router as taxpayer_web_router
 from modules.role_module.api.router import router as role_module_api_router
 from modules.role_module.web.controller import router as role_module_web_router
 from modules.dashboard.web.controller import router as dashboard_web_router
+from modules.attachment.api.router import router as attachment_api_router
+from modules.attachment.web.controller import router as attachment_web_router
+from modules.taxpayer_attachment.api.router import router as taxpayer_attachment_api_router
+from modules.taxpayer_attachment.web.controller import router as taxpayer_attachment_web_router
 
 from integrations.intuit.qbo.auth.api.router import router as intuit_qbo_auth_api_router
 from integrations.sync.api.router import router as sync_api_router
@@ -96,6 +100,10 @@ app.include_router(taxpayer_web_router)
 app.include_router(role_module_api_router)
 app.include_router(role_module_web_router)
 app.include_router(dashboard_web_router)
+app.include_router(attachment_api_router)
+app.include_router(attachment_web_router)
+app.include_router(taxpayer_attachment_api_router)
+app.include_router(taxpayer_attachment_web_router)
 
 
 def get_settings():

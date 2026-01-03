@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     api_version: str = "1.0.0"
     rate_limit_per_minute: int = 60
     max_content_length: int = 16777216
+    
+    # Azure Blob Storage Configuration
+    azure_storage_account_name: Optional[str] = None
+    azure_storage_account_key: Optional[str] = None
+    azure_storage_sas_token: Optional[str] = None
+    azure_storage_container_name: str = "attachments"
 
     model_config = SettingsConfigDict(
         env_file=".env",

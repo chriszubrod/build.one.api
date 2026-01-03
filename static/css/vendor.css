@@ -206,11 +206,38 @@
     font-size: var(--font-size-action);
 }
 
+/* Vendor status badges */
+.vendor-status-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-left: auto;
+    margin-right: 2rem;
+}
+
 .vendor-card-actions {
     display: flex;
     gap: 0.5rem;
-    margin-left: auto;
     flex: 0 0 auto;
+}
+
+.vendor-status-draft {
+    background-color: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffc107;
+}
+
+.vendor-status-active {
+    background-color: #d4edda;
+    color: #155724;
+    border: 1px solid #28a745;
 }
 
 /* Badges */
@@ -230,6 +257,34 @@
 
 .status-badge {
     font-size: var(--font-size-base);
+}
+
+/* List container with scrollbar */
+.vendor-list-container {
+    max-height: calc(100vh - 300px);
+    overflow-y: auto;
+    padding-right: 0.5rem;
+    padding-bottom: 2rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+/* Minimal scrollbar styling for list container - WebKit browsers */
+.vendor-list-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.vendor-list-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.vendor-list-container::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+}
+
+.vendor-list-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
 }
 
 /* Grid layout */

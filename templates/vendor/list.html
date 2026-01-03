@@ -32,28 +32,33 @@
             </div>
         </div>
 
-        <div class="vendor-grid" id="vendor-grid">
-            {% for vendor in vendors %}
-            <div class="vendor-card" 
-                 data-vendor-public-id="{{ vendor.public_id }}" 
-                 data-vendor-name="{{ (vendor.name or 'Unnamed Vendor') | lower }}" 
-                 data-vendor-abbreviation="{{ (vendor.abbreviation or '') | lower }}">
-                <div class="vendor-card-content">
-                    <h5 class="vendor-card-title">
-                        {{ vendor.name or 'Unnamed Vendor' }}
-                    </h5>
-                    {% if vendor.abbreviation %}
-                    <div class="vendor-card-abbreviation">
-                        <span>{{ vendor.abbreviation }}</span>
-                    </div>
-                    {% endif %}
-                    <div class="vendor-card-actions">
-                        <a href="/vendor/{{ vendor.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
-                        <a href="/vendor/{{ vendor.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
+        <div class="vendor-list-container">
+            <div class="vendor-grid" id="vendor-grid">
+                {% for vendor in vendors %}
+                <div class="vendor-card" 
+                     data-vendor-public-id="{{ vendor.public_id }}" 
+                     data-vendor-name="{{ (vendor.name or 'Unnamed Vendor') | lower }}" 
+                     data-vendor-abbreviation="{{ (vendor.abbreviation or '') | lower }}">
+                    <div class="vendor-card-content">
+                        <h5 class="vendor-card-title">
+                            {{ vendor.name or 'Unnamed Vendor' }}
+                        </h5>
+                        {% if vendor.abbreviation %}
+                        <div class="vendor-card-abbreviation">
+                            <span>{{ vendor.abbreviation }}</span>
+                        </div>
+                        {% endif %}
+                        <span class="vendor-status-badge {% if vendor.is_draft %}vendor-status-draft{% else %}vendor-status-active{% endif %}">
+                            {% if vendor.is_draft %}DRAFT{% else %}ACTIVE{% endif %}
+                        </span>
+                        <div class="vendor-card-actions">
+                            <a href="/vendor/{{ vendor.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
+                            <a href="/vendor/{{ vendor.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
+                        </div>
                     </div>
                 </div>
+                {% endfor %}
             </div>
-            {% endfor %}
         </div>
 
         <div class="vendor-empty-state" id="vendor-no-results" style="display: none;">

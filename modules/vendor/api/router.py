@@ -81,6 +81,10 @@ def delete_vendor_by_public_id_router(public_id: str, current_user: dict = Depen
     """
     try:
         vendor = service.delete_by_public_id(public_id=public_id)
+        if not vendor:
+            raise HTTPException(status_code=404, detail="Vendor not found")
         return vendor.to_dict()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

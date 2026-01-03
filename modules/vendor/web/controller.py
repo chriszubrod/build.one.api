@@ -85,11 +85,19 @@ async def view_vendor(request: Request, public_id: str, current_user: dict = Dep
         address_types = AddressTypeService().read_all()
         addresses_by_type = {}
         
+        # Create a map of address_type database ID to public_id
+        address_type_id_to_public_id = {}
+        for at in address_types:
+            if at.id:
+                address_type_id_to_public_id[int(at.id)] = at.public_id
+        
         for va in vendor_addresses:
             if va.address_id and va.address_type_id:
                 address = AddressService().read_by_id(id=va.address_id)
                 address_type_id = int(va.address_type_id)
-                addresses_by_type[address_type_id] = address
+                address_type_public_id = address_type_id_to_public_id.get(address_type_id)
+                if address_type_public_id:
+                    addresses_by_type[address_type_public_id] = address
         
         # Get all address types for display
         all_address_types = AddressTypeService().read_all()
@@ -120,14 +128,65 @@ async def edit_vendor(request: Request, public_id: str, current_user: dict = Dep
     """
     try:
         vendor = VendorService().read_by_public_id(public_id=public_id)
+        if not vendor:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+        
+        vendor_dict = vendor.to_dict()
+        
+        # Fetch related data
+        taxpayer = None
+        if vendor.taxpayer_id:
+            taxpayer = TaxpayerService().read_by_id(id=vendor.taxpayer_id)
+        
+        vendor_type = None
+        if vendor.vendor_type_id:
+            vendor_type = VendorTypeService().read_by_id(id=str(vendor.vendor_type_id))
+        
+        # Get all vendor addresses for this vendor
+        all_vendor_addresses = VendorAddressService().read_all()
+        vendor_addresses = [va for va in all_vendor_addresses if va.vendor_id and int(va.vendor_id) == vendor.id]
+        
+        # Get addresses and address types
+        address_types = AddressTypeService().read_all()
+        addresses_by_type = {}
+        vendor_addresses_by_type = {}
+        
+        # Create a map of address_type database ID to public_id
+        address_type_id_to_public_id = {}
+        for at in address_types:
+            if at.id:
+                address_type_id_to_public_id[int(at.id)] = at.public_id
+        
+        for va in vendor_addresses:
+            if va.address_id and va.address_type_id:
+                address = AddressService().read_by_id(id=va.address_id)
+                if address:
+                    address_type_id = int(va.address_type_id)
+                    address_type_public_id = address_type_id_to_public_id.get(address_type_id)
+                    if address_type_public_id:
+                        addresses_by_type[address_type_public_id] = address.to_dict()
+                        vendor_addresses_by_type[address_type_public_id] = va.to_dict()
+        
+        # Get all address types and vendor types for dropdowns
+        all_address_types = AddressTypeService().read_all()
+        vendor_types = VendorTypeService().read_all()
+        
         return templates.TemplateResponse(
             "vendor/edit.html",
             {
                 "request": request,
-                "vendor": vendor.to_dict(),
+                "vendor": vendor_dict,
+                "taxpayer": taxpayer.to_dict() if taxpayer else None,
+                "vendor_type": vendor_type.to_dict() if vendor_type else None,
+                "vendor_types": vendor_types,
+                "address_types": all_address_types,
+                "addresses_by_type": addresses_by_type,
+                "vendor_addresses_by_type": vendor_addresses_by_type,
                 "current_user": current_user,
                 "current_path": request.url.path,
             },
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

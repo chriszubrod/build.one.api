@@ -117,7 +117,7 @@
                     </div>
                     <div class="vendor-form-card-body">
                         {% for address_type in address_types %}
-                            {% set address = addresses_by_type.get(address_type.id | int) %}
+                            {% set address = addresses_by_type.get(address_type.public_id) %}
                             {% set is_legal_address = address_type.name.lower() == 'legaladdress' %}
                             <div class="vendor-address-type-group {% if not is_legal_address %}vendor-address-type-optional{% endif %}" 
                                  data-address-type-id="{{ address_type.public_id }}"

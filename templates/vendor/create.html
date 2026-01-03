@@ -34,7 +34,6 @@
         <main class="vendor-main-content">
             <form id="createVendorForm" autocomplete="off">
                 <input type="hidden" id="vendor_public_id" name="vendor_public_id">
-                <input type="hidden" id="vendor_id" name="vendor_id">
                 <input type="hidden" id="taxpayer_id" name="taxpayer_id">
                 <input type="hidden" id="taxpayer_row_version" name="taxpayer_row_version">
                 <input type="hidden" id="row_version" name="row_version">
@@ -291,7 +290,6 @@
             {% if address_types %}
                 {% for address_type in address_types %}
                 {
-                    id: '{{ address_type.id }}',
                     public_id: '{{ address_type.public_id }}',
                     name: '{{ address_type.name }}'
                 }{% if not loop.last %},{% endif %}
@@ -340,9 +338,6 @@
         if (savedState) {
             if (savedState.vendorPublicId) {
                 document.getElementById('vendor_public_id').value = savedState.vendorPublicId;
-            }
-            if (savedState.vendorId) {
-                document.getElementById('vendor_id').value = savedState.vendorId;
             }
             if (savedState.taxpayerId) {
                 document.getElementById('taxpayer_id').value = savedState.taxpayerId; // Now stores public_id
@@ -519,12 +514,10 @@
                 if (response.ok) {
                     const vendor = await response.json();
                     document.getElementById('vendor_public_id').value = vendor.public_id;
-                    document.getElementById('vendor_id').value = vendor.id;
                     document.getElementById('row_version').value = vendor.row_version;
                     updateSaveStatus('vendor-details', 'saved');
                     saveStateToLocalStorage({ 
                         vendorPublicId: vendor.public_id,
-                        vendorId: vendor.id,
                         rowVersion: vendor.row_version
                     });
                     // Clear any error messages
@@ -538,7 +531,6 @@
                     if (response.status === 404 && vendorPublicId) {
                         // Clear the stale vendor_public_id and retry as create
                         document.getElementById('vendor_public_id').value = '';
-                        document.getElementById('vendor_id').value = '';
                         document.getElementById('row_version').value = '';
                         
                         // Retry as create
@@ -554,12 +546,10 @@
                         if (createResponse.ok) {
                             const vendor = await createResponse.json();
                             document.getElementById('vendor_public_id').value = vendor.public_id;
-                            document.getElementById('vendor_id').value = vendor.id;
                             document.getElementById('row_version').value = vendor.row_version;
                             updateSaveStatus('vendor-details', 'saved');
                             saveStateToLocalStorage({ 
                                 vendorPublicId: vendor.public_id,
-                                vendorId: vendor.id,
                                 rowVersion: vendor.row_version
                             });
                             clearVendorNameError();
@@ -750,12 +740,23 @@
                 const vendor = await vendorResponse.json();
                 const vendorDbId = vendor.id;
                 
-                // Find address type database ID
+                // Find address type
                 const addressType = addressTypes.find(at => at.public_id === addressTypePublicId);
                 if (!addressType) {
                     updateSaveStatus('addresses', 'error');
                     return;
                 }
+                
+                // Fetch address type to get database ID
+                const addressTypeResponse = await fetch(`/api/v1/get/address_type/${addressTypePublicId}`, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token.access_token')}` }
+                });
+                if (!addressTypeResponse.ok) {
+                    updateSaveStatus('addresses', 'error');
+                    return;
+                }
+                const addressTypeData = await addressTypeResponse.json();
+                const addressTypeDbId = addressTypeData.id;
                 
                 // Check if address already exists for this address type
                 const addressPublicId = document.getElementById(`address_${addressTypePublicId}_id`).value;
@@ -849,7 +850,7 @@
                             body: JSON.stringify({
                                 vendor_id: vendorDbId.toString(),
                                 address_id: addressDbId.toString(),
-                                address_type_id: addressType.id.toString()
+                                address_type_id: addressTypeDbId.toString()
                             })
                         });
                         

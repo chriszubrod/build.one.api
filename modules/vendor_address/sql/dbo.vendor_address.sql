@@ -323,3 +323,25 @@ END;
 EXEC DeleteVendorAddressById
     @Id = 1;
 GO
+
+
+DROP PROCEDURE IF EXISTS DeleteVendorAddressByVendorId;
+GO
+
+CREATE PROCEDURE DeleteVendorAddressByVendorId
+(
+    @VendorId BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    DELETE FROM dbo.[VendorAddress]
+    WHERE [VendorId] = @VendorId;
+
+    COMMIT TRANSACTION;
+END;
+
+EXEC DeleteVendorAddressByVendorId
+    @VendorId = 1;
+GO

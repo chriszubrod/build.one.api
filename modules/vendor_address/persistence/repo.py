@@ -225,3 +225,19 @@ class VendorAddressRepository:
         except Exception as error:
             logger.error(f"Error during delete vendor address by ID: {error}")
             raise map_database_error(error)
+    
+    def delete_by_vendor_id(self, vendor_id: int) -> None:
+        """
+        Delete all vendor addresses for a vendor by vendor ID.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="DeleteVendorAddressByVendorId",
+                    params={"VendorId": vendor_id},
+                )
+        except Exception as error:
+            logger.error(f"Error during delete vendor addresses by vendor ID: {error}")
+            raise map_database_error(error)

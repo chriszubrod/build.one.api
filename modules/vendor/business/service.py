@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import logging
 from typing import Optional
 
 # Third-party Imports
@@ -6,8 +7,10 @@ from typing import Optional
 # Local Imports
 from modules.vendor.business.model import Vendor
 from modules.taxpayer.business.service import TaxpayerService
+from modules.taxpayer.persistence.repo import TaxpayerRepository
 from modules.vendor_type.business.service import VendorTypeService
 from modules.vendor.persistence.repo import VendorRepository
+from modules.vendor_address.persistence.repo import VendorAddressRepository
 
 
 class VendorService:
@@ -100,8 +103,39 @@ class VendorService:
     def delete_by_public_id(self, public_id: str) -> Optional[Vendor]:
         """
         Delete a vendor by public ID.
+        
+        Process:
+        1. Search for existing vendor record using public_id
+        2. If found, delete all associated VendorAddress records by vendor database id
+        3. If vendor has a taxpayer_id, delete the associated Taxpayer record by taxpayer database id
+        4. Delete the vendor by database id
+        
+        This will also delete all associated VendorAddress and Taxpayer records.
         """
+        # Step 1: Search for existing vendor record using public_id
         existing = self.read_by_public_id(public_id=public_id)
-        if existing:
-            return self.repo.delete_by_id(id=existing.id)
-        return None
+        if not existing:
+            return None
+        
+        # Step 2: Delete all vendor addresses for this vendor first (by vendor database id)
+        if existing.id:
+            try:
+                vendor_address_repo = VendorAddressRepository()
+                vendor_address_repo.delete_by_vendor_id(vendor_id=existing.id)
+            except Exception as e:
+                # Log the error but continue with vendor deletion
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error deleting vendor addresses for vendor {existing.id}: {e}")
+        
+        # Step 3: Delete the associated Taxpayer record if one exists (by taxpayer database id)
+        if existing.taxpayer_id:
+            try:
+                taxpayer_repo = TaxpayerRepository()
+                taxpayer_repo.delete_by_id(id=existing.taxpayer_id)
+            except Exception as e:
+                # Log the error but continue with vendor deletion
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error deleting taxpayer {existing.taxpayer_id} for vendor {existing.id}: {e}")
+        
+        # Step 4: Delete the vendor by database id
+        return self.repo.delete_by_id(id=existing.id)

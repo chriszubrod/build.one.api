@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 from datetime import datetime
+from urllib.parse import quote
 import base64
 import json
 import random
@@ -41,15 +42,19 @@ def connect_intuit_oauth_2_endpoint():
 
     auth_endpoint = get_intuit_discovery_document()
 
+    # Define redirect URI and URL-encode it for the query string
+    redirect_uri = "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/intuit/authorization/request/callback"
+    encoded_redirect_uri = quote(redirect_uri, safe='')
+
     endpoint = str(
         auth_endpoint['authorization_endpoint'] +
         "?" +
-        "client_id=" + db_intuit_client.client_id +
-        "&scope=com.intuit.quickbooks.accounting%20openid%20email%20profile%20address%20phone" +
-        "&redirect_uri=https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/intuit/authorization/request/callback" +
+        "client_id=" + quote(db_intuit_client.client_id, safe='') +
+        "&scope=" + quote("com.intuit.quickbooks.accounting openid email profile address phone", safe='') +
+        "&redirect_uri=" + encoded_redirect_uri +
         "&response_type=code" +
-        "&state=" + INTUIT_STATE['sent-state'] +
-        "&claims=%7B%22id_token%22%3A%7B%22realmId%22%3Anull%7D%7D"
+        "&state=" + quote(INTUIT_STATE['sent-state'], safe='') +
+        "&claims=" + quote('{"id_token":{"realmId":null}}', safe='')
     )
 
     return {
@@ -62,8 +67,13 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
 
     qbo_client = qbo_client_repo.read_all()
 
-    if len(client) > 0:
+    if len(qbo_client) > 0:
         client = qbo_client[0]
+    else:
+        return {
+            "message": "No Intuit client found",
+            "status_code": 404
+        }
 
     now = datetime.now()
 

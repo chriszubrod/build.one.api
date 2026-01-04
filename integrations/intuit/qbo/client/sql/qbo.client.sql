@@ -155,8 +155,8 @@ GO
 
 EXEC UpdateQboClientByApp
     @App = 'build.one',
-    @ClientId = 'updated-client',
-    @ClientSecret = 'updated-secret';
+    @ClientId = 'client-id',
+    @ClientSecret = 'client-secret';
 
 
 DROP PROCEDURE IF EXISTS UpdateQboClientByClientId;

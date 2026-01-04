@@ -13,6 +13,10 @@ GO
 DROP TABLE IF EXISTS dbo.[Integration];
 GO
 
+ALTER TABLE dbo.[Integration]
+DROP COLUMN IF EXISTS [Endpoint];
+GO
+
 
 DROP PROCEDURE IF EXISTS CreateIntegration;
 GO

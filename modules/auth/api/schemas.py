@@ -78,6 +78,16 @@ class AuthTokenResponse(BaseModel):
     expires_in: int
 
 
+class RefreshTokenResponse(BaseModel):
+    refresh_token: str
+    token_type: str = "Bearer"
+    expires_in: int
+
+
+class AuthRefreshRequest(BaseModel):
+    refresh_token: str = Field(..., description="Refresh token")
+
+
 class AuthSessionResponse(BaseModel):
     account: AuthResponse
     token: AuthTokenResponse

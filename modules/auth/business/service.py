@@ -10,6 +10,7 @@ import uuid
 
 # Third-party Imports
 import jwt
+import bcrypt
 
 # Local Imports
 from config import Settings
@@ -35,10 +36,27 @@ security = HTTPBearer()
 
 
 def _hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+    """
+    Hash password using bcrypt with salt.
+    Returns the hashed password as a string.
+    """
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed.decode('utf-8')
 
 def _verify_password(password: str, password_hash: str) -> bool:
-    return _hash_password(password) == password_hash
+    """
+    Verify password against bcrypt hash.
+    Handles both old SHA-256 hashes (for migration) and new bcrypt hashes.
+    """
+    try:
+        # Try bcrypt verification first
+        return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
+    except (ValueError, TypeError):
+        # Fallback for legacy SHA-256 hashes (for migration period)
+        # TODO: Remove this fallback after all passwords are migrated
+        legacy_hash = hashlib.sha256(password.encode()).hexdigest()
+        return legacy_hash == password_hash
 
 def _base64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
@@ -80,12 +98,10 @@ def get_current_user_api(credentials: HTTPAuthorizationCredentials = Depends(sec
 
 def get_current_user_web(request: Request):
     """
-    Dependency for web routes that reads token from cookies or query parameters.
+    Dependency for web routes that reads token from cookies or headers only.
+    Security: Does not read from query parameters to prevent token leakage.
     """
     auth_token = request.cookies.get("token.access_token")
-
-    if not auth_token:
-        auth_token = request.query_params.get("token.access_token")
 
     if not auth_token:
         auth_header = request.headers.get("Authorization")
@@ -232,6 +248,7 @@ class AuthService:
     def login(self, *, username: str, password: str) -> Auth:
         """
         Login a auth.
+        Returns: (auth, access_token, refresh_token)
         """
         auth = self.read_by_username(username=username)
         
@@ -241,23 +258,48 @@ class AuthService:
         if not _verify_password(password, auth.password_hash):
             raise ValueError("Invalid password.")
 
-        token = self.generate_auth_token(auth=auth)
+        access_token = self.generate_auth_token(auth=auth)
+        refresh_token = self.generate_refresh_token(auth=auth)
         
-        return auth, token
+        return auth, access_token, refresh_token
 
     def signup(self, *, username: str, password: str, confirm_password: str) -> Auth:
         """
         Signup a auth.
+        Returns: (auth, access_token, refresh_token)
         """
         if password != confirm_password:
             raise ValueError("Passwords do not match.")
         
         _user = self.read_by_username(username=username)
-        print(_user)
         if _user:
             raise ValueError("Username already exists.")
 
         auth = self.create(username=username, password_hash=_hash_password(password))
-        token = self.generate_auth_token(auth=auth)
+        access_token = self.generate_auth_token(auth=auth)
+        refresh_token = self.generate_refresh_token(auth=auth)
 
-        return auth, token
+        return auth, access_token, refresh_token
+    
+    def refresh_access_token(self, *, refresh_token: str) -> Tuple[AuthToken, RefreshToken]:
+        """
+        Refresh access token using a valid refresh token.
+        Returns new access_token and refresh_token (token rotation).
+        """
+        try:
+            refresh_payload = verify_token(token=refresh_token)
+            
+            # Get auth by public_id from token
+            auth = self.read_by_public_id(public_id=refresh_payload["sub"])
+            if not auth:
+                raise ValueError("Invalid refresh token")
+            
+            # Generate new tokens (token rotation for security)
+            new_access_token = self.generate_auth_token(auth=auth)
+            new_refresh_token = self.generate_refresh_token(auth=auth)
+            
+            return new_access_token, new_refresh_token
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"Token refresh failed: {str(e)}")

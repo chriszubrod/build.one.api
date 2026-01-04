@@ -1,21 +1,22 @@
 # Python Standard Library Imports
 
 # Third-party Imports
+from fastapi import FastAPI, APIRouter, HTTPException, Depends
 
 # Local Imports
-from fastapi import FastAPI, APIRouter, HTTPException
 from modules.organization.business.service import OrganizationService
 from modules.organization.api.schemas import (
     OrganizationCreate,
     OrganizationUpdate
 )
+from modules.auth.business.service import get_current_user_api
 
 router = APIRouter(prefix="/api/v1", tags=["api", "organization"])
 service = OrganizationService()
 
 
 @router.post("/create/organization")
-def create_organization_router(body: OrganizationCreate):
+def create_organization_router(body: OrganizationCreate, current_user: dict = Depends(get_current_user_api)):
     """
     Create a new organization.
     """
@@ -27,7 +28,7 @@ def create_organization_router(body: OrganizationCreate):
 
 
 @router.get("/get/organizations")
-def get_organizations_router():
+def get_organizations_router(current_user: dict = Depends(get_current_user_api)):
     """
     Read all organizations.
     """
@@ -36,7 +37,7 @@ def get_organizations_router():
 
 
 @router.get("/get/organization/{public_id}")
-def get_organization_by_public_id_router(public_id: str):
+def get_organization_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
     """
     Read an organization by public ID.
     """
@@ -45,7 +46,7 @@ def get_organization_by_public_id_router(public_id: str):
 
 
 @router.put("/update/organization/{public_id}")
-def update_organization_by_id_router(public_id: str, body: OrganizationUpdate):
+def update_organization_by_id_router(public_id: str, body: OrganizationUpdate, current_user: dict = Depends(get_current_user_api)):
     """
     Update an organization by ID.
     """
@@ -54,7 +55,7 @@ def update_organization_by_id_router(public_id: str, body: OrganizationUpdate):
 
 
 @router.delete("/delete/organization/{public_id}")
-def delete_organization_by_public_id_router(public_id: str):
+def delete_organization_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
     """
     Soft delete an organization by ID.
     """

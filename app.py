@@ -1,4 +1,7 @@
 # Python Standard Library Imports
+import os
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 
 # Third-party Imports
 from fastapi import Depends, FastAPI
@@ -56,7 +59,30 @@ from integrations.intuit.qbo.client.api.router import router as qbo_client_api_r
 from integrations.intuit.qbo.client.web.controller import router as qbo_client_web_router
 
 
+class ProxyHeadersMiddleware(BaseHTTPMiddleware):
+    """Fix request URL scheme when behind a reverse proxy (Azure App Service)."""
+    async def dispatch(self, request: Request, call_next):
+        # Check for X-Forwarded-Proto header (set by Azure App Service)
+        forwarded_proto = request.headers.get("X-Forwarded-Proto")
+        if forwarded_proto == "https":
+            # Update the request URL to use HTTPS
+            request.scope["scheme"] = "https"
+        
+        response = await call_next(request)
+        return response
+
+
 app = FastAPI()
+
+# Only enable proxy headers middleware in production (Azure App Service)
+# Azure App Service sets WEBSITE_INSTANCE_ID when running in Azure
+if os.getenv("WEBSITE_INSTANCE_ID"):
+    # In Azure, trust forwarded headers from Azure's infrastructure
+    # Azure App Service handles HTTPS termination and sets these headers securely
+    app.add_middleware(ProxyHeadersMiddleware)
+else:
+    # In development, also enable for local testing behind proxies
+    app.add_middleware(ProxyHeadersMiddleware)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

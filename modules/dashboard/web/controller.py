@@ -22,9 +22,6 @@ async def dashboard(request: Request, current_user: dict = Depends(get_current_u
     """
     Dashboard.
     """
-    print(f"Current user: {current_user}")
-    print(f"Request: {request}")
-
     # Check if current_user is a RedirectResponse (authentication failed)
     if isinstance(current_user, RedirectResponse):
         return current_user

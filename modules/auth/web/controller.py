@@ -43,10 +43,11 @@ def signup(request: Request):
 @router.get("/logout")
 def logout(request: Request, current_user: dict = Depends(get_current_user_web)):
     """
-    Logout an invalidate the current user's session.
+    Logout and invalidate the current user's session.
     """
     response = RedirectResponse(url="/auth/login", status_code=303)
-    response.delete_cookie("auth_token", path="/")
+    # Delete the correct cookie name
+    response.delete_cookie("token.access_token", path="/")
     return response
 
 

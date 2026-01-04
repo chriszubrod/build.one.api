@@ -18,8 +18,6 @@ async def list_organizations(request: Request, current_user: dict = Depends(get_
     List all organizations.
     """
     organizations = OrganizationService().read_all()
-    print("organizations")
-    print(organizations)
     return templates.TemplateResponse(
         "organization/list.html",
         {

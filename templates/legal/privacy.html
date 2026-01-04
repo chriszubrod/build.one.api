@@ -1,0 +1,115 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Privacy Policy - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/integration.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="integration-page-header">
+        <h1>Privacy Policy</h1>
+    </div>
+
+    <div class="integration-detail-container">
+        <div class="integration-detail-card">
+            <div class="integration-detail-card-header">
+                <h5>Privacy Policy</h5>
+            </div>
+            <div class="integration-detail-card-body">
+                <div style="padding: 1.5rem; line-height: 1.6;">
+                    <p><strong>Last Updated:</strong> [Date]</p>
+                    
+                    <h3>1. Introduction</h3>
+                    <p>
+                        Build.One ("we," "our," or "us") is committed to protecting your privacy. This Privacy Policy explains 
+                        how we collect, use, disclose, and safeguard your information when you use our services.
+                    </p>
+
+                    <h3>2. Information We Collect</h3>
+                    <p>We may collect the following types of information:</p>
+                    <ul>
+                        <li><strong>Personal Information:</strong> Name, email address, phone number, and other contact information</li>
+                        <li><strong>Account Information:</strong> Username, password, and account preferences</li>
+                        <li><strong>Usage Data:</strong> Information about how you interact with our services</li>
+                        <li><strong>Integration Data:</strong> Data from third-party integrations (e.g., QuickBooks Online) that you authorize</li>
+                    </ul>
+
+                    <h3>3. How We Use Your Information</h3>
+                    <p>We use the information we collect to:</p>
+                    <ul>
+                        <li>Provide, maintain, and improve our services</li>
+                        <li>Process transactions and send related information</li>
+                        <li>Send administrative information and updates</li>
+                        <li>Respond to your inquiries and provide customer support</li>
+                        <li>Monitor and analyze usage patterns</li>
+                        <li>Detect, prevent, and address technical issues</li>
+                    </ul>
+
+                    <h3>4. Information Sharing and Disclosure</h3>
+                    <p>We do not sell your personal information. We may share your information in the following circumstances:</p>
+                    <ul>
+                        <li><strong>Service Providers:</strong> With third-party service providers who perform services on our behalf</li>
+                        <li><strong>Business Transfers:</strong> In connection with a merger, acquisition, or sale of assets</li>
+                        <li><strong>Legal Requirements:</strong> When required by law or to protect our rights</li>
+                        <li><strong>With Your Consent:</strong> When you explicitly authorize us to share information</li>
+                    </ul>
+
+                    <h3>5. Third-Party Integrations</h3>
+                    <p>
+                        Our services integrate with third-party services (such as QuickBooks Online). When you authorize these integrations, 
+                        we may access and store data from these services in accordance with your authorization and their terms of service. 
+                        We encourage you to review the privacy policies of these third-party services.
+                    </p>
+
+                    <h3>6. Data Security</h3>
+                    <p>
+                        We implement appropriate technical and organizational measures to protect your personal information. 
+                        However, no method of transmission over the Internet or electronic storage is 100% secure.
+                    </p>
+
+                    <h3>7. Your Rights</h3>
+                    <p>Depending on your location, you may have the following rights:</p>
+                    <ul>
+                        <li>Access to your personal information</li>
+                        <li>Correction of inaccurate information</li>
+                        <li>Deletion of your personal information</li>
+                        <li>Objection to processing of your information</li>
+                        <li>Data portability</li>
+                    </ul>
+
+                    <h3>8. Data Retention</h3>
+                    <p>
+                        We retain your personal information for as long as necessary to fulfill the purposes outlined in this Privacy Policy, 
+                        unless a longer retention period is required or permitted by law.
+                    </p>
+
+                    <h3>9. Children's Privacy</h3>
+                    <p>
+                        Our services are not intended for individuals under the age of 18. We do not knowingly collect personal information 
+                        from children under 18.
+                    </p>
+
+                    <h3>10. Changes to This Privacy Policy</h3>
+                    <p>
+                        We may update this Privacy Policy from time to time. We will notify you of any changes by posting the new 
+                        Privacy Policy on this page and updating the "Last Updated" date.
+                    </p>
+
+                    <h3>11. Contact Us</h3>
+                    <p>
+                        If you have any questions about this Privacy Policy, please contact us at [contact email].
+                    </p>
+
+                    <p style="margin-top: 2rem; font-size: 0.9em; color: var(--color-text-secondary);">
+                        <em>This is a template Privacy Policy. Please review and customize with your actual data practices and legal requirements, 
+                        including compliance with GDPR, CCPA, and other applicable privacy laws.</em>
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+{% endblock %}
+

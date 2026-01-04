@@ -1,5 +1,7 @@
 # Python Standard Library Imports
+import logging
 import os
+import sys
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
@@ -58,6 +60,48 @@ from integrations.intuit.qbo.vendor.api.router import router as qbo_vendor_api_r
 from integrations.intuit.qbo.vendor.web.controller import router as qbo_vendor_web_router
 from integrations.intuit.qbo.client.api.router import router as qbo_client_api_router
 from integrations.intuit.qbo.client.web.controller import router as qbo_client_web_router
+
+
+def setup_logging():
+    """Configure logging based on settings."""
+    settings = config.Settings()
+    
+    # Get root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
+    
+    # Remove existing handlers to avoid duplicates
+    root_logger.handlers.clear()
+    
+    # Create formatter
+    formatter = logging.Formatter(
+        fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Console handler (if enabled)
+    if settings.log_console:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
+    
+    # File handler (if configured)
+    if settings.log_file:
+        file_handler = logging.FileHandler(settings.log_file)
+        file_handler.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+    
+    # Set uvicorn loggers to same level
+    logging.getLogger("uvicorn").setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
+    logging.getLogger("uvicorn.access").setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
+    
+    logging.info(f"Logging initialized - Level: {settings.log_level}, Console: {settings.log_console}, File: {settings.log_file or 'None'}")
+
+
+# Setup logging first
+setup_logging()
 
 
 class ProxyHeadersMiddleware(BaseHTTPMiddleware):

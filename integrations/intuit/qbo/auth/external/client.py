@@ -46,7 +46,7 @@ def connect_intuit_oauth_2_endpoint():
         "?" +
         "client_id=" + db_intuit_client.client_id +
         "&scope=com.intuit.quickbooks.accounting%20openid%20email%20profile%20address%20phone" +
-        "&redirect_uri=https://python312.azurewebsites.net/intuit/authorization/request/callback" +
+        "&redirect_uri=https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/intuit/authorization/request/callback" +
         "&response_type=code" +
         "&state=" + INTUIT_STATE['sent-state'] +
         "&claims=%7B%22id_token%22%3A%7B%22realmId%22%3Anull%7D%7D"
@@ -101,7 +101,7 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
     data = {
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": "https://python312.azurewebsites.net/intuit/authorization/request/callback"
+        "redirect_uri": "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/intuit/authorization/request/callback"
     }
     resp = requests.post(url=url, data=data, headers=headers)
 

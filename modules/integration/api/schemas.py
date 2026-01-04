@@ -14,13 +14,9 @@ class IntegrationCreate(BaseModel):
         max_length=50,
         description="The name of the integration."
     )
-    status: IntegrationStatus = Field(
-        description="The status of the integration."
-    )
-    endpoint: str = Field(
-        min_length=1,
-        max_length=255,
-        description="The endpoint of the integration."
+    status: Optional[IntegrationStatus] = Field(
+        default=IntegrationStatus.DISCONNECTED,
+        description="The status of the integration. Defaults to DISCONNECTED."
     )
 
 
@@ -35,9 +31,4 @@ class IntegrationUpdate(BaseModel):
     )
     status: IntegrationStatus = Field(
         description="The status of the integration."
-    )
-    endpoint: str = Field(
-        min_length=1,
-        max_length=255,
-        description="The endpoint of the integration."
     )

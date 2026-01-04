@@ -51,8 +51,7 @@ class IntegrationRepository:
                 created_datetime=row.CreatedDatetime,
                 modified_datetime=row.ModifiedDatetime,
                 name=row.Name,
-                status=status,
-                endpoint=row.Endpoint
+                status=status
             )
         except AttributeError as error:
             logger.error(f"Attribute error during integration mapping: {error}")
@@ -61,7 +60,7 @@ class IntegrationRepository:
             logger.error(f"Unexpected error during integration mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, name: str, status: str, endpoint: str) -> Integration:
+    def create(self, *, name: str, status: str) -> Integration:
         """
         Create a new integration.
         """
@@ -73,8 +72,7 @@ class IntegrationRepository:
                     name="CreateIntegration",
                     params={
                         "Name": name,
-                        "Status": status,
-                        "Endpoint": endpoint
+                        "Status": status
                     },
                 )
                 row = cursor.fetchone()
@@ -135,6 +133,8 @@ class IntegrationRepository:
                     params={"PublicId": public_id},
                 )
                 row = cursor.fetchone()
+                if row is None:
+                    return None
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during read integration by public ID: {error}")
@@ -174,8 +174,7 @@ class IntegrationRepository:
                         "Id": integration.id,
                         "RowVersion": integration.row_version_bytes,
                         "Name": integration.name,
-                        "Status": status_value,
-                        "Endpoint": integration.endpoint
+                        "Status": status_value
                     },
                 )
                 row = cursor.fetchone()

@@ -6,8 +6,7 @@ CREATE TABLE [dbo].[Integration]
     [CreatedDatetime] DATETIME2(3) NOT NULL,
     [ModifiedDatetime] DATETIME2(3) NULL,
     [Name] NVARCHAR(50) NOT NULL,
-    [Status] NVARCHAR(50) NULL,
-    [Endpoint] NVARCHAR(MAX) NULL
+    [Status] NVARCHAR(50) NULL
 );
 GO
 
@@ -21,8 +20,7 @@ GO
 CREATE PROCEDURE CreateIntegration
 (
     @Name NVARCHAR(50),
-    @Status NVARCHAR(50),
-    @Endpoint NVARCHAR(MAX)
+    @Status NVARCHAR(50)
 )
 AS
 BEGIN
@@ -30,7 +28,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Integration] ([CreatedDatetime], [ModifiedDatetime], [Name], [Status], [Endpoint])
+    INSERT INTO dbo.[Integration] ([CreatedDatetime], [ModifiedDatetime], [Name], [Status])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -38,17 +36,15 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[Name],
-        INSERTED.[Status],
-        INSERTED.[Endpoint]
-    VALUES (@Now, @Now, @Name, @Status, @Endpoint);
+        INSERTED.[Status]
+    VALUES (@Now, @Now, @Name, @Status);
 
     COMMIT TRANSACTION;
 END;
 
 EXEC CreateIntegration
     @Name = 'QuickBooks Online',
-    @Status = 'connected',
-    @Endpoint = 'https://www.quickbooks.com';
+    @Status = 'disconnected';
 GO
 
 
@@ -67,8 +63,7 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Name],
-        [Status],
-        [Endpoint]
+        [Status]
     FROM dbo.[Integration]
     ORDER BY [Name] ASC;
 
@@ -97,8 +92,7 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Name],
-        [Status],
-        [Endpoint]
+        [Status]
     FROM dbo.[Integration]
     WHERE [Id] = @Id;
 
@@ -128,8 +122,7 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Name],
-        [Status],
-        [Endpoint]
+        [Status]
     FROM dbo.[Integration]
     WHERE [PublicId] = @PublicId;
 
@@ -159,8 +152,7 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Name],
-        [Status],
-        [Endpoint]
+        [Status]
     FROM dbo.[Integration]
     WHERE [Name] = @Name;
 
@@ -180,8 +172,7 @@ CREATE PROCEDURE UpdateIntegrationById
     @Id BIGINT,
     @RowVersion BINARY(8),
     @Name NVARCHAR(50),
-    @Status NVARCHAR(50),
-    @Endpoint NVARCHAR(MAX)
+    @Status NVARCHAR(50)
 )
 AS
 BEGIN
@@ -193,8 +184,7 @@ BEGIN
     SET
         [ModifiedDatetime] = @Now,
         [Name] = @Name,
-        [Status] = @Status,
-        [Endpoint] = @Endpoint
+        [Status] = @Status
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -202,8 +192,7 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[Name],
-        INSERTED.[Status],
-        INSERTED.[Endpoint]
+        INSERTED.[Status]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -213,8 +202,7 @@ EXEC UpdateIntegrationById
     @Id = 1,
     @RowVersion = 0x0000000000021B43,
     @Name = 'QuickBooks Online',
-    @Status = 'disconnected',
-    @Endpoint = '/api/v1/intuit/qbo/auth/request';
+    @Status = 'disconnected';
 GO
 
 
@@ -237,8 +225,7 @@ BEGIN
         CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.[Name],
-        DELETED.[Status],
-        DELETED.[Endpoint]
+        DELETED.[Status]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;

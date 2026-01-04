@@ -23,7 +23,6 @@ class Integration:
     modified_datetime: Optional[str]
     name: Optional[str]
     status: Optional[IntegrationStatus]
-    endpoint: Optional[str]
 
 
     @property

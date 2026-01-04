@@ -1,10 +1,11 @@
 # Python Standard Library Imports
-from typing import Optional
+from typing import Optional, Dict, Any
 
 # Third-party Imports
 
 # Local Imports
 from modules.integration.business.model import Integration, IntegrationStatus
+from modules.integration.business.handlers import IntegrationHandlerFactory
 from modules.integration.persistence.repo import IntegrationRepository
 
 
@@ -17,13 +18,16 @@ class IntegrationService:
         """Initialize the IntegrationService."""
         self.repo = repo or IntegrationRepository()
 
-    def create(self, *, name: str, status: IntegrationStatus, endpoint: str) -> Integration:
+    def create(self, *, name: str, status: Optional[IntegrationStatus] = None) -> Integration:
         """
         Create a new integration.
         """
+        # Default to DISCONNECTED if not provided
+        if status is None:
+            status = IntegrationStatus.DISCONNECTED
         # Convert enum to string value for database storage
         status_value = status.value if isinstance(status, IntegrationStatus) else status
-        return self.repo.create(name=name, status=status_value, endpoint=endpoint)
+        return self.repo.create(name=name, status=status_value)
 
     def read_all(self) -> list[Integration]:
         """
@@ -68,7 +72,6 @@ class IntegrationService:
                     pass
             else:
                 existing.status = integration.status
-            existing.endpoint = integration.endpoint
         return self.repo.update_by_id(existing)
 
     def delete_by_public_id(self, public_id: str) -> Optional[Integration]:
@@ -79,3 +82,45 @@ class IntegrationService:
         if existing:
             return self.repo.delete_by_id(existing.id)
         return None
+
+    def connect(self, public_id: str) -> Dict[str, Any]:
+        """
+        Connect an integration by routing to the appropriate handler.
+        """
+        integration = self.read_by_public_id(public_id)
+        if not integration:
+            return {
+                "success": False,
+                "redirect_url": None,
+                "message": f"Integration with public_id {public_id} not found"
+            }
+        
+        handler = IntegrationHandlerFactory.get_handler(integration)
+        if not handler:
+            return {
+                "success": False,
+                "redirect_url": None,
+                "message": f"No handler found for integration type: {integration.name}"
+            }
+        
+        return handler.connect(integration)
+    
+    def disconnect(self, public_id: str) -> Dict[str, Any]:
+        """
+        Disconnect an integration by routing to the appropriate handler.
+        """
+        integration = self.read_by_public_id(public_id)
+        if not integration:
+            return {
+                "success": False,
+                "message": f"Integration with public_id {public_id} not found"
+            }
+        
+        handler = IntegrationHandlerFactory.get_handler(integration)
+        if not handler:
+            return {
+                "success": False,
+                "message": f"No handler found for integration type: {integration.name}"
+            }
+        
+        return handler.disconnect(integration)

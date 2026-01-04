@@ -13,6 +13,12 @@
         <a href="/integration/create" class="btn btn-primary">Add Integration</a>
     </div>
 
+    {% if request.query_params.get('success') %}
+        <div id="message-container" style="display: block; padding: 1rem; margin-bottom: 1rem; border-radius: 4px; {% if request.query_params.get('success') == 'true' %}background-color: #d4edda; border: 1px solid #c3e6cb; color: #155724;{% else %}background-color: #f8d7da; border: 1px solid #f5c6cb; color: #721c24;{% endif %}">
+            <span id="message-text">{{ request.query_params.get('message', 'Operation completed') }}</span>
+        </div>
+    {% endif %}
+
     {% if integrations %}
         <div class="integration-grid">
             {% for integration in integrations %}

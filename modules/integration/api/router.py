@@ -4,12 +4,6 @@
 from fastapi import APIRouter, Depends
 
 # Local Imports
-from integrations.intuit.qbo.auth.external.client import (
-    connect_intuit_oauth_2_endpoint,
-    connect_intuit_oauth_2_token_endpoint,
-    connect_intuit_oauth_2_token_endpoint_refresh,
-    connect_intuit_oauth_2_token_endpoint_revoke
-)
 from modules.integration.api.schemas import IntegrationCreate, IntegrationUpdate
 from modules.integration.business.service import IntegrationService
 from modules.auth.business.service import get_current_user_api
@@ -24,8 +18,7 @@ def create_integration_router(body: IntegrationCreate, current_user: dict = Depe
     """
     integration = IntegrationService().create(
         name=body.name,
-        status=body.status,
-        endpoint=body.endpoint
+        status=body.status
     )
     return integration.to_dict()
 
@@ -66,12 +59,21 @@ def delete_integration_by_public_id_router(public_id: str, current_user: dict = 
     return integration.to_dict()
 
 
-@router.post("/connect/integration/{public_id}")
+@router.get("/connect/integration/{public_id}")
 def connect_integration_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
     """
-    Connect an integration.
+    Connect an integration by routing to the appropriate integration handler.
+    Returns a dict with redirect_url for OAuth flows or success/error message.
     """
-    print('Connect integration router called with public_id:', public_id)
-    integration = IntegrationService().read_by_public_id(public_id=public_id)
-    print('Integration:', integration.to_dict())
-    return integration.to_dict()
+    result = IntegrationService().connect(public_id=public_id)
+    return result
+
+
+@router.post("/disconnect/integration/{public_id}")
+def disconnect_integration_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+    """
+    Disconnect an integration by routing to the appropriate integration handler.
+    Returns a dict with success/error message.
+    """
+    result = IntegrationService().disconnect(public_id=public_id)
+    return result

@@ -65,9 +65,16 @@ def connect_intuit_oauth_2_endpoint():
     
     endpoint = f"{auth_endpoint['authorization_endpoint']}?{query_string}"
 
-    # Log the redirect URI for debugging (without exposing secrets)
-    logger.info(f"Intuit OAuth redirect URI: {redirect_uri}")
+    # Comprehensive logging for debugging
+    logger.info("=" * 80)
+    logger.info("INTUIT OAUTH AUTHORIZATION URL GENERATION")
+    logger.info("=" * 80)
+    logger.info(f"Redirect URI (unencoded): {redirect_uri}")
     logger.info(f"Redirect URI length: {len(redirect_uri)} characters")
+    logger.info(f"Client ID: {db_intuit_client.client_id[:10]}...{db_intuit_client.client_id[-10:]}")
+    logger.info(f"Authorization endpoint: {auth_endpoint['authorization_endpoint']}")
+    logger.info(f"Full authorization URL: {endpoint}")
+    logger.info(f"Full URL length: {len(endpoint)} characters")
     
     # Verify the redirect URI can be parsed back from the encoded URL
     parsed = urlparse(endpoint)
@@ -75,8 +82,12 @@ def connect_intuit_oauth_2_endpoint():
     if 'redirect_uri' in parsed_params:
         decoded_redirect = parsed_params['redirect_uri'][0]
         logger.info(f"Decoded redirect_uri from URL: {decoded_redirect}")
+        logger.info(f"Decoded redirect_uri length: {len(decoded_redirect)} characters")
         if decoded_redirect != redirect_uri:
-            logger.warning(f"Redirect URI mismatch! Original: {redirect_uri}, Decoded: {decoded_redirect}")
+            logger.warning(f"⚠️  Redirect URI mismatch! Original: {redirect_uri}, Decoded: {decoded_redirect}")
+        else:
+            logger.info("✓ Redirect URI encoding/decoding verified correctly")
+    logger.info("=" * 80)
 
     return {
         "message": endpoint,

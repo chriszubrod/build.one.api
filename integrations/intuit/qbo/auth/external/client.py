@@ -1,6 +1,6 @@
 # Python Standard Library Imports
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 import base64
 import json
 import random
@@ -42,20 +42,23 @@ def connect_intuit_oauth_2_endpoint():
 
     auth_endpoint = get_intuit_discovery_document()
 
-    # Define redirect URI and URL-encode it for the query string
+    # Define redirect URI - must match exactly what's in Intuit Developer Portal
     redirect_uri = "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/intuit/authorization/request/callback"
-    encoded_redirect_uri = quote(redirect_uri, safe='')
 
-    endpoint = str(
-        auth_endpoint['authorization_endpoint'] +
-        "?" +
-        "client_id=" + quote(db_intuit_client.client_id, safe='') +
-        "&scope=" + quote("com.intuit.quickbooks.accounting openid email profile address phone", safe='') +
-        "&redirect_uri=" + encoded_redirect_uri +
-        "&response_type=code" +
-        "&state=" + quote(INTUIT_STATE['sent-state'], safe='') +
-        "&claims=" + quote('{"id_token":{"realmId":null}}', safe='')
-    )
+    # Build query parameters using urlencode for proper encoding
+    query_params = {
+        "client_id": db_intuit_client.client_id,
+        "scope": "com.intuit.quickbooks.accounting openid email profile address phone",
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "state": INTUIT_STATE['sent-state'],
+        "claims": '{"id_token":{"realmId":null}}'
+    }
+    
+    # urlencode properly encodes all values
+    query_string = urlencode(query_params)
+    
+    endpoint = f"{auth_endpoint['authorization_endpoint']}?{query_string}"
 
     return {
         "message": endpoint,

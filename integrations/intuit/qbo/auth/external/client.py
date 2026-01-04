@@ -1,11 +1,14 @@
 # Python Standard Library Imports
 from datetime import datetime
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, parse_qs, urlparse
 import base64
 import json
+import logging
 import random
 import requests
 import string
+
+logger = logging.getLogger(__name__)
 
 # Third-party Imports
 from fastapi import Request
@@ -43,6 +46,7 @@ def connect_intuit_oauth_2_endpoint():
     auth_endpoint = get_intuit_discovery_document()
 
     # Define redirect URI - must match exactly what's in Intuit Developer Portal
+    # IMPORTANT: This must match EXACTLY (character-for-character) what's configured in Intuit Developer Portal
     redirect_uri = "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/intuit/authorization/request/callback"
 
     # Build query parameters using urlencode for proper encoding
@@ -59,6 +63,19 @@ def connect_intuit_oauth_2_endpoint():
     query_string = urlencode(query_params)
     
     endpoint = f"{auth_endpoint['authorization_endpoint']}?{query_string}"
+
+    # Log the redirect URI for debugging (without exposing secrets)
+    logger.info(f"Intuit OAuth redirect URI: {redirect_uri}")
+    logger.info(f"Redirect URI length: {len(redirect_uri)} characters")
+    
+    # Verify the redirect URI can be parsed back from the encoded URL
+    parsed = urlparse(endpoint)
+    parsed_params = parse_qs(parsed.query)
+    if 'redirect_uri' in parsed_params:
+        decoded_redirect = parsed_params['redirect_uri'][0]
+        logger.info(f"Decoded redirect_uri from URL: {decoded_redirect}")
+        if decoded_redirect != redirect_uri:
+            logger.warning(f"Redirect URI mismatch! Original: {redirect_uri}, Decoded: {decoded_redirect}")
 
     return {
         "message": endpoint,

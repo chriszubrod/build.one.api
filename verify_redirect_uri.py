@@ -4,7 +4,7 @@ Script to verify the exact redirect URI format for Intuit OAuth.
 Run this to get the exact redirect URI that should be in Intuit Developer Portal.
 """
 
-redirect_uri = "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/intuit/authorization/request/callback"
+redirect_uri = "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/api/v1/intuit/qbo/auth/request/callback"
 
 print("=" * 80)
 print("INTUIT REDIRECT URI VERIFICATION")

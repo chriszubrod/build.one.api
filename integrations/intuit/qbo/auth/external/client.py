@@ -47,7 +47,8 @@ def connect_intuit_oauth_2_endpoint():
 
     # Define redirect URI - must match exactly what's in Intuit Developer Portal
     # IMPORTANT: This must match EXACTLY (character-for-character) what's configured in Intuit Developer Portal
-    redirect_uri = "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/intuit/authorization/request/callback"
+    # The endpoint is: /api/v1/intuit/qbo/auth/request/callback (see integrations/intuit/qbo/auth/api/router.py)
+    redirect_uri = "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/api/v1/intuit/qbo/auth/request/callback"
 
     # Build query parameters using urlencode for proper encoding
     query_params = {
@@ -131,7 +132,7 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
     data = {
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/intuit/authorization/request/callback"
+        "redirect_uri": "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/api/v1/intuit/qbo/auth/request/callback"
     }
     resp = requests.post(url=url, data=data, headers=headers)
 

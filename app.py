@@ -66,6 +66,22 @@ from integrations.intuit.qbo.client.web.controller import router as qbo_client_w
 app = FastAPI()
 
 
+class ProxyHeadersMiddleware(BaseHTTPMiddleware):
+    """Fix request URL scheme when behind a reverse proxy (Azure App Service)."""
+    async def dispatch(self, request: Request, call_next):
+        # Check for X-Forwarded-Proto header (set by Azure App Service)
+        forwarded_proto = request.headers.get("X-Forwarded-Proto")
+        if forwarded_proto == "https":
+            # Update the request URL to use HTTPS
+            request.scope["scheme"] = "https"
+        
+        response = await call_next(request)
+        return response
+
+
+# Enable proxy headers middleware to handle HTTPS correctly in Azure
+app.add_middleware(ProxyHeadersMiddleware)
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.include_router(address_api_router)

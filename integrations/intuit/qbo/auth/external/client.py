@@ -74,16 +74,16 @@ def connect_intuit_oauth_2_endpoint():
 
 def connect_intuit_oauth_2_token_endpoint(request: Request):
 
-    INTUIT_STATE['received-state'] = request.args.get('state', '')
+    INTUIT_STATE['received-state'] = request.query_params.get('state', '')
 
     db_intuit_client_resp = qbo_client_repo.read_all()
     client = db_intuit_client_resp[0]
     client_id = client.client_id
     client_secret = client.client_secret
 
-    code = request.args.get('code', '')
+    code = request.query_params.get('code', '')
 
-    realmId = request.args.get('realmId', '')
+    realmId = request.query_params.get('realmId', '')
 
     token_endpoint = get_intuit_discovery_document()
 

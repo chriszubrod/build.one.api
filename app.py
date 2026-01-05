@@ -115,9 +115,14 @@ def setup_logging():
                 "In Azure App Service, logs are automatically captured from stdout/stderr."
             )
     
-    # Set uvicorn loggers to same level
-    logging.getLogger("uvicorn").setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
-    logging.getLogger("uvicorn.access").setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
+    # Set uvicorn loggers to same level (if uvicorn is available)
+    # These loggers exist even if uvicorn isn't imported, so this is safe
+    try:
+        logging.getLogger("uvicorn").setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
+        logging.getLogger("uvicorn.access").setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
+    except Exception:
+        # Ignore if uvicorn loggers don't exist
+        pass
     
     logging.info(f"Logging initialized - Level: {settings.log_level}, Console: {settings.log_console}, File: {settings.log_file or 'None'}")
 

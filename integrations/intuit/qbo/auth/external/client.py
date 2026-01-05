@@ -164,7 +164,40 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
         "Content-Type": "application/x-www-form-urlencoded",
         "Authorization": "Basic " + base64.b64encode(s).decode()
     }
-    redirect_uri_for_token = "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/api/v1/intuit/qbo/auth/request/callback"
+    # Build redirect_uri from the actual request URL to ensure it matches exactly
+    # This ensures it matches what Intuit sees when redirecting
+    request_scheme = request.url.scheme
+    request_host = request.url.hostname
+    request_port = request.url.port
+    request_path = request.url.path
+    
+    # Construct redirect_uri from request (matches what Intuit redirected to)
+    if request_port and request_port not in [80, 443]:
+        redirect_uri_from_request = f"{request_scheme}://{request_host}:{request_port}{request_path}"
+    else:
+        redirect_uri_from_request = f"{request_scheme}://{request_host}{request_path}"
+    
+    # Hardcoded redirect_uri (what we think it should be)
+    redirect_uri_hardcoded = "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/api/v1/intuit/qbo/auth/request/callback"
+    
+    print("=" * 80)
+    print("REDIRECT URI COMPARISON")
+    print("=" * 80)
+    print(f"Redirect URI from request: {redirect_uri_from_request}")
+    print(f"Redirect URI from request length: {len(redirect_uri_from_request)}")
+    print(f"Redirect URI hardcoded: {redirect_uri_hardcoded}")
+    print(f"Redirect URI hardcoded length: {len(redirect_uri_hardcoded)}")
+    print(f"Match: {redirect_uri_from_request == redirect_uri_hardcoded}")
+    if redirect_uri_from_request != redirect_uri_hardcoded:
+        print("⚠️  MISMATCH DETECTED!")
+        print(f"Difference in characters:")
+        for i, (c1, c2) in enumerate(zip(redirect_uri_from_request, redirect_uri_hardcoded)):
+            if c1 != c2:
+                print(f"  Position {i}: '{c1}' vs '{c2}'")
+    print("=" * 80)
+    
+    # Use the redirect_uri from the request to ensure exact match
+    redirect_uri_for_token = redirect_uri_from_request
     
     print(f"Token endpoint URL: {url}")
     print(f"Redirect URI being sent to token endpoint: {redirect_uri_for_token}")

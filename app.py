@@ -2,6 +2,7 @@
 import logging
 import os
 import sys
+from pathlib import Path
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
@@ -88,10 +89,31 @@ def setup_logging():
     
     # File handler (if configured)
     if settings.log_file:
-        file_handler = logging.FileHandler(settings.log_file)
-        file_handler.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
+        try:
+            # In Azure App Service, use writable location if path is not writable
+            is_azure = bool(os.getenv("WEBSITE_INSTANCE_ID"))
+            if is_azure and settings.log_file.startswith("/var/log/"):
+                # Azure App Service: /var/log/ is read-only, use /home/LogFiles/ instead
+                log_file = settings.log_file.replace("/var/log/", "/home/LogFiles/")
+                logging.info(f"Azure detected: Redirecting log file from {settings.log_file} to {log_file}")
+            else:
+                log_file = settings.log_file
+            
+            # Create directory if it doesn't exist
+            log_path = Path(log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            file_handler = logging.FileHandler(log_file)
+            file_handler.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
+            file_handler.setFormatter(formatter)
+            root_logger.addHandler(file_handler)
+        except (PermissionError, OSError) as e:
+            # Fall back to console logging only if file logging fails
+            logging.warning(
+                f"Cannot create log file at {settings.log_file}: {e}. "
+                "Falling back to console logging only. "
+                "In Azure App Service, logs are automatically captured from stdout/stderr."
+            )
     
     # Set uvicorn loggers to same level
     logging.getLogger("uvicorn").setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))

@@ -3,6 +3,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """
+    Application settings that work in both local development and Azure App Service.
+    
+    - Local development: Reads from .env file
+    - Azure App Service: Reads from environment variables (which override .env if present)
+    
+    Pydantic Settings automatically handles this - environment variables take precedence
+    over .env file values, making it work seamlessly in both environments.
+    """
     
     # Environment
     env: str = "development"

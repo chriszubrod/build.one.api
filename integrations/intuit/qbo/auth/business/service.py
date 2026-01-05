@@ -39,6 +39,18 @@ class QboAuthService:
         """
         return self.repo.read_all()
 
+    def read_by_id(self, id: int) -> Optional[QboAuth]:
+        """
+        Read a QboAuth by ID.
+        """
+        return self.repo.read_by_id(id)
+    
+    def read_by_public_id(self, public_id: str) -> Optional[QboAuth]:
+        """
+        Read a QboAuth by public ID.
+        """
+        return self.repo.read_by_public_id(public_id)
+
     def read_by_realm_id(self, realm_id: str) -> Optional[QboAuth]:
         """
         Read a QboAuth by realm ID.

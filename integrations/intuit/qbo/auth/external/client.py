@@ -27,134 +27,71 @@ INTUIT_STATE = {
 }
 
 
-def connect_intuit_oauth_2_endpoint():
-
-    db_intuit_client_resp = qbo_client_repo.read_all()
-
-    if len(db_intuit_client_resp) == 0:
-        return {
-            "message": "No Intuit client found",
-            "status_code": 404
+def get_intuit_discovery_document():
+    try:
+        url = "https://developer.api.intuit.com/.well-known/openid_configuration"
+        headers = {
+            "Accept": "application/json"
         }
+        resp = requests.get(url=url, headers=headers)
+        if resp.status_code == 400:
+            return "An error occured during intuit discovery document. " + resp.text
 
-    db_intuit_client = db_intuit_client_resp[0]
+        if resp.status_code == 200:
+            return json.loads(resp.text)
 
-    INTUIT_STATE['sent-state'] = ''.join(
-        random.choices(string.ascii_lowercase + string.digits, k=30)
-    )
+    except:
+        return "An error occured while trying to call openid production configuration."
+
+
+def connect_intuit_oauth_2_endpoint():
+    db_intuit_client_resp = qbo_client_repo.read_all()
+    client = db_intuit_client_resp[0]
+    client_id = client.client_id
+
+    INTUIT_STATE['sent-state'] = ''.join(random.choices(string.ascii_lowercase + string.digits, k=30))
 
     auth_endpoint = get_intuit_discovery_document()
 
-    # Define redirect URI - must match exactly what's in Intuit Developer Portal
-    # IMPORTANT: This must match EXACTLY (character-for-character) what's configured in Intuit Developer Portal
-    # The endpoint is: /api/v1/intuit/qbo/auth/request/callback (see integrations/intuit/qbo/auth/api/router.py)
-    redirect_uri = "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/api/v1/intuit/qbo/auth/request/callback"
-    
-    # Print to terminal for debugging
-    print("=" * 80)
-    print("INTUIT OAUTH AUTHORIZATION URL GENERATION")
-    print("=" * 80)
-    print(f"Redirect URI being sent to Intuit: {redirect_uri}")
-    print(f"Redirect URI length: {len(redirect_uri)} characters")
-    print(f"Redirect URI bytes: {redirect_uri.encode('utf-8')}")
+    endpoint = str(
+        auth_endpoint['authorization_endpoint'] +
+        "?" +
+        "client_id=" + client_id +
+        "&scope=com.intuit.quickbooks.accounting%20openid%20email%20profile%20address%20phone" +
+        "&redirect_uri=https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/api/v1/intuit/qbo/auth/request/callback" +
+        "&response_type=code" +
+        "&state=" + INTUIT_STATE['sent-state'] +
+        "&claims=%7B%22id_token%22%3A%7B%22realmId%22%3Anull%7D%7D"
+    )
 
-    # Build query parameters using urlencode for proper encoding
-    query_params = {
-        "client_id": db_intuit_client.client_id,
-        "scope": "com.intuit.quickbooks.accounting openid email profile address phone",
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "state": INTUIT_STATE['sent-state'],
-        "claims": '{"id_token":{"realmId":null}}'
-    }
-    
-    # urlencode properly encodes all values
-    query_string = urlencode(query_params)
-    
-    endpoint = f"{auth_endpoint['authorization_endpoint']}?{query_string}"
-    
-    print(f"Full authorization URL: {endpoint}")
-    print(f"Encoded redirect_uri in URL: {query_string.split('redirect_uri=')[1].split('&')[0] if 'redirect_uri=' in query_string else 'NOT FOUND'}")
-    print("=" * 80)
-
-    # Comprehensive logging for debugging
-    logger.info("=" * 80)
-    logger.info("INTUIT OAUTH AUTHORIZATION URL GENERATION")
-    logger.info("=" * 80)
-    logger.info(f"Redirect URI (unencoded): {redirect_uri}")
-    logger.info(f"Redirect URI length: {len(redirect_uri)} characters")
-    logger.info(f"Client ID: {db_intuit_client.client_id[:10]}...{db_intuit_client.client_id[-10:]}")
-    logger.info(f"Authorization endpoint: {auth_endpoint['authorization_endpoint']}")
-    logger.info(f"Full authorization URL: {endpoint}")
-    logger.info(f"Full URL length: {len(endpoint)} characters")
-    
-    # Verify the redirect URI can be parsed back from the encoded URL
-    parsed = urlparse(endpoint)
-    parsed_params = parse_qs(parsed.query)
-    if 'redirect_uri' in parsed_params:
-        decoded_redirect = parsed_params['redirect_uri'][0]
-        logger.info(f"Decoded redirect_uri from URL: {decoded_redirect}")
-        logger.info(f"Decoded redirect_uri length: {len(decoded_redirect)} characters")
-        if decoded_redirect != redirect_uri:
-            logger.warning(f"⚠️  Redirect URI mismatch! Original: {redirect_uri}, Decoded: {decoded_redirect}")
-        else:
-            logger.info("✓ Redirect URI encoding/decoding verified correctly")
-    logger.info("=" * 80)
-
-    return {
+    resp = {
         "message": endpoint,
         "status_code": 201
     }
 
+    return resp
+
 
 def connect_intuit_oauth_2_token_endpoint(request: Request):
-
-    qbo_client = qbo_client_repo.read_all()
-
-    if len(qbo_client) > 0:
-        client = qbo_client[0]
-    else:
-        return {
-            "message": "No Intuit client found",
-            "status_code": 404
-        }
-
     now = datetime.now()
 
-    INTUIT_STATE['received-state'] = request.query_params.get('state') or ''
+    INTUIT_STATE['received-state'] = request.args.get('state', '')
 
-    code = request.query_params.get('code') or ''
+    db_intuit_client_resp = qbo_client_repo.read_all()
+    client = db_intuit_client_resp[0]
+    client_id = client.client_id
+    client_secret = client.client_secret
 
-    realm_id = request.query_params.get('realmId') or ''
+    code = request.args.get('code', '')
 
-    qbo_auth = qbo_auth_repo.read_by_realm_id(realm_id)
-
-    if len(qbo_auth) > 0:
-        auth = qbo_auth[0]
-        auth.code = code
-        auth.realm_id = realm_id
-        qbo_auth_repo.update_by_realm_id(auth)
-    else:
-        qbo_auth_repo.create(code=code, realm_id=realm_id)
+    realmId = request.args.get('realmId', '')
 
     token_endpoint = get_intuit_discovery_document()
-    
-    # Print to terminal for debugging
-    print("=" * 80)
-    print("INTUIT OAUTH TOKEN EXCHANGE")
-    print("=" * 80)
-    print(f"Code received: {code[:20] if code else 'None'}...")
-    print(f"State received: {INTUIT_STATE['received-state']}")
-    print(f"Realm ID: {realm_id}")
-    print(f"Request URL: {request.url}")
-    print(f"Request scheme: {request.url.scheme}")
-    print(f"Request hostname: {request.url.hostname}")
-    print(f"Request path: {request.url.path}")
 
     s = bytes(
-        client.client_id
+        client_id
         + ":"
-        + client.client_secret,
+        + client_secret,
         encoding='utf-8'
     )
 
@@ -164,70 +101,27 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
         "Content-Type": "application/x-www-form-urlencoded",
         "Authorization": "Basic " + base64.b64encode(s).decode()
     }
-    # Build redirect_uri from the actual request URL to ensure it matches exactly
-    # This ensures it matches what Intuit sees when redirecting
-    request_scheme = request.url.scheme
-    request_host = request.url.hostname
-    request_port = request.url.port
-    request_path = request.url.path
-    
-    # Construct redirect_uri from request (matches what Intuit redirected to)
-    if request_port and request_port not in [80, 443]:
-        redirect_uri_from_request = f"{request_scheme}://{request_host}:{request_port}{request_path}"
-    else:
-        redirect_uri_from_request = f"{request_scheme}://{request_host}{request_path}"
-    
-    # Hardcoded redirect_uri (what we think it should be)
-    redirect_uri_hardcoded = "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/api/v1/intuit/qbo/auth/request/callback"
-    
-    print("=" * 80)
-    print("REDIRECT URI COMPARISON")
-    print("=" * 80)
-    print(f"Redirect URI from request: {redirect_uri_from_request}")
-    print(f"Redirect URI from request length: {len(redirect_uri_from_request)}")
-    print(f"Redirect URI hardcoded: {redirect_uri_hardcoded}")
-    print(f"Redirect URI hardcoded length: {len(redirect_uri_hardcoded)}")
-    print(f"Match: {redirect_uri_from_request == redirect_uri_hardcoded}")
-    if redirect_uri_from_request != redirect_uri_hardcoded:
-        print("⚠️  MISMATCH DETECTED!")
-        print(f"Difference in characters:")
-        for i, (c1, c2) in enumerate(zip(redirect_uri_from_request, redirect_uri_hardcoded)):
-            if c1 != c2:
-                print(f"  Position {i}: '{c1}' vs '{c2}'")
-    print("=" * 80)
-    
-    # Use the redirect_uri from the request to ensure exact match
-    redirect_uri_for_token = redirect_uri_from_request
-    
-    print(f"Token endpoint URL: {url}")
-    print(f"Redirect URI being sent to token endpoint: {redirect_uri_for_token}")
-    print(f"Redirect URI length: {len(redirect_uri_for_token)} characters")
-    
     data = {
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": redirect_uri_for_token
+        "redirect_uri": "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/api/v1/intuit/qbo/auth/request/callback"
     }
-    
-    print(f"Token exchange data: grant_type={data['grant_type']}, code={code[:20]}..., redirect_uri={redirect_uri_for_token}")
-    print("Making POST request to Intuit token endpoint...")
-    
     resp = requests.post(url=url, data=data, headers=headers)
-    
-    print(f"Token endpoint response status: {resp.status_code}")
-    print(f"Token endpoint response text: {resp.text[:500]}")  # First 500 chars
-    
+
     if resp.status_code == 400:
-        print("=" * 80)
-        print("ERROR: Token endpoint returned 400 Bad Request")
-        print(f"Full response: {resp.text}")
-        print("=" * 80)
-        return {
-            "message": "An error occured: " + resp.text,
-            "status_code": 500
-        }
+        resp = {
+                "message": "An error occured: " + resp.text,
+                "status_code": 500
+            }
+        return resp
 
     if resp.status_code == 200:
+        db_intuit_auth_resp = qbo_auth_repo.read_by_realm_id(realmId)
+
+        auth = None
+        if db_intuit_auth_resp:
+            auth = db_intuit_auth_resp[0]
+        
         resp_json = json.loads(resp.text)
         access_token = resp_json.get('access_token')
         expires_in = resp_json.get('expires_in')
@@ -236,42 +130,57 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
         token_type = resp_json.get('token_type')
         x_refresh_token_expires_in = resp_json.get('x_refresh_token_expires_in')
 
-        qbo_auth_repo.update_by_realm_id(
-            code=code,
-            realm_id=realm_id,
-            state=INTUIT_STATE['received-state'],
-            token_type=token_type,
-            id_token=id_token,
-            access_token=access_token,
-            expires_in=expires_in,
-            refresh_token=refresh_token,
-            x_refresh_token_expires_in=x_refresh_token_expires_in
-        )
-        return {
-            "message": "Oauth 2 Token Endpoint Successful.",
-            "status_code": 201
-        }
+        try:
+            if auth:
+                auth = qbo_auth_repo.update_by_realm_id(
+                    code=code,
+                    realm_id=realmId,
+                    state=INTUIT_STATE['received-state'],
+                    token_type=token_type,
+                    id_token=id_token,
+                    access_token=access_token,
+                    expires_in=expires_in,
+                    refresh_token=refresh_token,
+                    x_refresh_token_expires_in=x_refresh_token_expires_in,
+                )
+            else:
+                auth = qbo_auth_repo.create(
+                    code=code,
+                    realm_id=realmId,
+                    state=INTUIT_STATE['received-state'],
+                    token_type=token_type,
+                    id_token=id_token,
+                    access_token=access_token,
+                    expires_in=str(expires_in),
+                    refresh_token=refresh_token,
+                    x_refresh_token_expires_in=str(x_refresh_token_expires_in),
+                )
+            resp = {
+                "message": "Oauth 2 Token Endpoint Successful.",
+                "status_code": 201
+            }
+        except Exception as error:
+            resp = {
+                "message": "An error occured: " + str(error),
+                "status_code": 500
+            }
+        return resp
 
 
-def connect_intuit_oauth_2_token_endpoint_refresh(auth):
-
+def connect_intuit_oauth_2_token_endpoint_refresh():
     now = datetime.now()
 
-    db_intuit_client_resp = qbo_client_repo.read_all()
-    
-    if len(db_intuit_client_resp) > 0:
-        db_intuit_client = db_intuit_client_resp[0]
-        client_id_and_secret = bytes(
-            db_intuit_client.client_id
-            + ":"
-            + db_intuit_client.client_secret, encoding='utf-8'
-        )
+    pers_read_qbo_client_resp = pers_intuit_client.read_db_intuit_client()
+    print(f'Pers DB Message: {pers_read_qbo_client_resp.get("message")}')
+    if pers_read_qbo_client_resp.get("status_code") == 201:
+        client = pers_read_qbo_client_resp.get("message")
+        client_id_and_secret = bytes(client.__getattribute__('ClientID') + ":" + client.__getattribute__('ClientSecret'), encoding='utf-8')
 
     token_endpoint = get_intuit_discovery_document()
 
-    db_intuit_auth_resp = qbo_auth_repo.read_all()
-    if len(db_intuit_auth_resp) > 0:
-        db_intuit_auth = db_intuit_auth_resp[0]
+    pers_read_auth_resp = pers_intuit_auth.read_db_intuit_auth()
+    if pers_read_auth_resp.get("status_code") == 201:
+        auth = pers_read_auth_resp.get("message")
 
     url = token_endpoint['token_endpoint']
     headers = {
@@ -281,14 +190,14 @@ def connect_intuit_oauth_2_token_endpoint_refresh(auth):
     }
     data = {
         "grant_type": "refresh_token",
-        "refresh_token": db_intuit_auth.refresh_token
+        "refresh_token": auth.__getattribute__('RefreshToken')
     }
     resp = requests.post(url=url, data=data, headers=headers)
     if resp.status_code == 400:
         return {
-            "message": "An error occured: " + resp.text,
-            "status_code": 500
-        }
+                "message": resp.text,
+                "status_code": 201
+            }
 
     if resp.status_code == 200:
         resp_json = json.loads(resp.text)
@@ -299,7 +208,7 @@ def connect_intuit_oauth_2_token_endpoint_refresh(auth):
         token_type = resp_json.get('token_type')
         x_refresh_token_expires_in = resp_json.get('x_refresh_token_expires_in')
 
-        update_db_auth_refresh_resp = qbo_auth_repo.update_by_auth_guid(
+        pers_update_auth_refresh_resp = pers_intuit_auth.update_db_intuit_auth_by_authguid(
             now=now,
             tokentype=token_type,
             idtoken=id_token,
@@ -310,15 +219,10 @@ def connect_intuit_oauth_2_token_endpoint_refresh(auth):
             authguid=auth.__getattribute__('AuthGUID')
         )
 
-        if update_db_auth_refresh_resp.get("status_code") == 201:
+        if pers_update_auth_refresh_resp.get("status_code") == 201:
             return {
-                "message": "Oauth 2 Token Endpoint Refresh Successful.",
+                "message": resp.text,
                 "status_code": 201
-            }
-        else:
-            return {
-                "message": update_db_auth_refresh_resp.get("message"),
-                "status_code": 500
             }
 
     return {
@@ -329,21 +233,17 @@ def connect_intuit_oauth_2_token_endpoint_refresh(auth):
 
 def connect_intuit_oauth_2_token_endpoint_revoke():
 
-    db_intuit_client_resp = qbo_client_repo.read_all()
+    pers_read_qbo_client_resp = pers_intuit_client.read_db_intuit_client()
 
-    if len(db_intuit_client_resp) > 0:
-        db_intuit_client = db_intuit_client_resp[0]
-        s = bytes(
-            db_intuit_client.client_id
-            + ":"
-            + db_intuit_client.client_secret, encoding='utf-8'
-        )
+    if pers_read_qbo_client_resp.get("status_code") == 201:
+        pers_read_qbo_client_resp = pers_read_qbo_client_resp.get("message")
+        s = bytes(pers_read_qbo_client_resp.__getattribute__('ClientID') + ":" + pers_read_qbo_client_resp.__getattribute__('ClientSecret'), encoding='utf-8')
 
     revocation_endpoint = get_intuit_discovery_document()
 
-    db_intuit_auth_resp = qbo_auth_repo.read_all()
-    if len(db_intuit_auth_resp) > 0:
-        db_intuit_auth = db_intuit_auth_resp[0]
+    pers_read_auth_resp = pers_intuit_auth.read_db_intuit_auth()
+    if pers_read_auth_resp.get("status_code") == 201:
+        auth = pers_read_auth_resp.get("message")
 
     url = revocation_endpoint['revocation_endpoint']
     headers = {
@@ -352,7 +252,7 @@ def connect_intuit_oauth_2_token_endpoint_revoke():
         "Authorization": "Basic " + base64.b64encode(s).decode()
     }
     data = {
-        "token": db_intuit_auth.access_token
+        "token": auth.__getattribute__('AccessToken')
     }
     resp = requests.post(url=url, data=data, headers=headers)
     if resp.status_code == 400:
@@ -360,11 +260,10 @@ def connect_intuit_oauth_2_token_endpoint_revoke():
 
     if resp.status_code == 200:
 
-        delete_db_auth_by_authguid_resp = qbo_auth_repo.delete_by_auth_guid(
-            authguid=db_intuit_auth.auth_guid
-        )
+        pers_delete_auth_by_authguid_resp = pers_intuit_auth.delete_auth_by_authguid(authguid=auth.__getattribute__('AuthGUID'))
         resp = {
-            "message": delete_db_auth_by_authguid_resp.get("message"),
-            "status_code": 500
+            "message": pers_delete_auth_by_authguid_resp.text,
+            "status_code": 201
         }
         return resp
+

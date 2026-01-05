@@ -34,6 +34,11 @@ class QboAuthRepository:
 
         try:
             return QboAuth(
+                id=getattr(row, "Id", None),
+                public_id=getattr(row, "PublicId", None),
+                row_version=base64.b64encode(row.RowVersion).decode("ascii"),
+                created_datetime=row.CreatedDatetime,
+                modified_datetime=row.ModifiedDatetime,
                 code=getattr(row, "Code", None),
                 realm_id=getattr(row, "RealmId", None),
                 state=getattr(row, "State", None),
@@ -99,6 +104,46 @@ class QboAuthRepository:
         except Exception as error:
             logger.error("Error during read all qbo auths: %s", error)
             raise map_database_error(error)
+
+    def read_by_id(self, id: int) -> Optional[QboAuth]:
+            """
+            Read a QboAuth by ID.
+            """
+            try:
+                with get_connection() as conn:
+                    cursor = conn.cursor()
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboAuthById",
+                        params={
+                            "Id": id,
+                        },
+                    )
+                    row = cursor.fetchone()
+                    return self._from_db(row)
+            except Exception as error:
+                logger.error("Error during read qbo auth by ID: %s", error)
+                raise map_database_error(error)
+
+    def read_by_public_id(self, public_id: str) -> Optional[QboAuth]:
+            """
+            Read a QboAuth by public ID.
+            """
+            try:
+                with get_connection() as conn:
+                    cursor = conn.cursor()
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboAuthByPublicId",
+                        params={
+                            "PublicId": public_id,
+                        },
+                    )
+                    row = cursor.fetchone()
+                    return self._from_db(row)
+            except Exception as error:
+                logger.error("Error during read qbo auth by public ID: %s", error)
+                raise map_database_error(error)
 
     def read_by_realm_id(self, realm_id: str) -> Optional[QboAuth]:
         """

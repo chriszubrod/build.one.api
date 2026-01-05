@@ -4,6 +4,11 @@ GO
 
 CREATE TABLE qbo.Auth
 (
+    [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
+    [PublicId] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
+    [RowVersion] ROWVERSION NOT NULL,
+    [CreatedDatetime] DATETIME2(3) NOT NULL,
+    [ModifiedDatetime] DATETIME2(3) NULL,
     Code NVARCHAR(MAX) NOT NULL,
     RealmId NVARCHAR(MAX) NOT NULL,
     [State] NVARCHAR(MAX) NOT NULL,
@@ -36,10 +41,17 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
     BEGIN TRANSACTION;
 
-    INSERT INTO qbo.Auth (Code, RealmId, State, TokenType, IdToken, AccessToken, ExpiresIn, RefreshToken, XRefreshTokenExpiresIn)
+    INSERT INTO qbo.Auth ([CreatedDatetime], [ModifiedDatetime], Code, RealmId, State, TokenType, IdToken, AccessToken, ExpiresIn, RefreshToken, XRefreshTokenExpiresIn)
     OUTPUT
+        INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[RowVersion],
+        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.Code,
         INSERTED.RealmId,
         INSERTED.State,
@@ -49,7 +61,7 @@ BEGIN
         INSERTED.ExpiresIn,
         INSERTED.RefreshToken,
         INSERTED.XRefreshTokenExpiresIn
-    VALUES (@Code, @RealmId, @State, @TokenType, @IdToken, @AccessToken, @ExpiresIn, @RefreshToken, @XRefreshTokenExpiresIn);
+    VALUES (@Now, @Now, @Code, @RealmId, @State, @TokenType, @IdToken, @AccessToken, @ExpiresIn, @RefreshToken, @XRefreshTokenExpiresIn);
 
     COMMIT TRANSACTION;
 END;
@@ -77,6 +89,11 @@ BEGIN
 
     BEGIN TRANSACTION;
     SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         Code,
         RealmId,
         [State],
@@ -95,6 +112,86 @@ GO
 EXEC ReadQboAuths;
 
 
+DROP PROCEDURE IF EXISTS ReadQboAuthById;
+GO
+
+CREATE PROCEDURE ReadQboAuthById
+(
+    @Id BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        Code,
+        RealmId,
+        [State],
+        TokenType,
+        IdToken,
+        AccessToken,
+        ExpiresIn,
+        RefreshToken,
+        XRefreshTokenExpiresIn
+    FROM qbo.Auth
+    WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+EXEC ReadQboAuthById
+    @Id = 1;
+GO
+
+
+
+DROP PROCEDURE IF EXISTS ReadQboAuthByPublicId;
+GO
+
+CREATE PROCEDURE ReadQboAuthByPublicId
+(
+    @PublicId UNIQUEIDENTIFIER
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        Code,
+        RealmId,
+        [State],
+        TokenType,
+        IdToken,
+        AccessToken,
+        ExpiresIn,
+        RefreshToken,
+        XRefreshTokenExpiresIn
+    FROM qbo.Auth
+    WHERE [PublicId] = @PublicId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+EXEC ReadQboAuthByPublicId
+    @PublicId = '00000000-0000-0000-0000-000000000000';
+GO
+
+
+
 DROP PROCEDURE IF EXISTS ReadQboAuthByRealmId;
 GO
 
@@ -108,6 +205,11 @@ BEGIN
 
     BEGIN TRANSACTION;
     SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         Code,
         RealmId,
         [State],
@@ -146,10 +248,13 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
     BEGIN TRANSACTION;
 
     UPDATE qbo.Auth
-    SET Code = @Code,
+    SET [ModifiedDatetime] = @Now,
+        Code = @Code,
         RealmId = @RealmId,
         [State] = @State,
         TokenType = @TokenType,
@@ -159,6 +264,11 @@ BEGIN
         RefreshToken = @RefreshToken,
         XRefreshTokenExpiresIn = @XRefreshTokenExpiresIn
     OUTPUT
+        INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[RowVersion],
+        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.Code,
         INSERTED.RealmId,
         INSERTED.[State],
@@ -197,10 +307,17 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
     BEGIN TRANSACTION;
 
     DELETE FROM qbo.Auth
     OUTPUT
+        DELETED.[Id],
+        DELETED.[PublicId],
+        DELETED.[RowVersion],
+        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.Code,
         DELETED.RealmId,
         DELETED.[State],

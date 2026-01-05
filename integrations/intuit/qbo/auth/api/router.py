@@ -56,6 +56,20 @@ def intuit_authorization_request_callback_router(
     OAuth 2.0 callback endpoint for QuickBooks Online.
     Requires authentication to ensure only authenticated users can complete OAuth flow.
     """
+    # Print to terminal for debugging (will appear in Azure logs)
+    print("=" * 80)
+    print("INTUIT OAUTH CALLBACK RECEIVED")
+    print("=" * 80)
+    print(f"Full callback URL: {request.url}")
+    print(f"Full callback URL (string): {str(request.url)}")
+    print(f"Scheme: {request.url.scheme}")
+    print(f"Host: {request.url.hostname}")
+    print(f"Port: {request.url.port}")
+    print(f"Path: {request.url.path}")
+    print(f"Query string: {request.url.query}")
+    print(f"Query parameters (dict): {dict(request.query_params)}")
+    print("=" * 80)
+    
     # Log all query parameters for debugging
     logger.info("=" * 80)
     logger.info("INTUIT OAUTH CALLBACK RECEIVED")
@@ -70,6 +84,16 @@ def intuit_authorization_request_callback_router(
     error_reason = request.query_params.get('error_reason')
     
     if error:
+        print("=" * 80)
+        print("INTUIT OAUTH ERROR DETECTED")
+        print("=" * 80)
+        print(f"Error code: {error}")
+        print(f"Error description: {error_description}")
+        print(f"Error URI: {error_uri}")
+        print(f"Error reason: {error_reason}")
+        print(f"All query params: {dict(request.query_params)}")
+        print("=" * 80)
+        
         logger.error("=" * 80)
         logger.error("INTUIT OAUTH ERROR DETECTED")
         logger.error("=" * 80)
@@ -95,13 +119,21 @@ def intuit_authorization_request_callback_router(
     state = request.query_params.get('state')
     realm_id = request.query_params.get('realmId')
     
+    print(f"Authorization code received: {code[:10] if code else 'None'}...")
+    print(f"State: {state}")
+    print(f"Realm ID: {realm_id}")
+    print("=" * 80)
+    
     logger.info(f"Authorization code received: {code[:10] if code else 'None'}...")
     logger.info(f"State: {state}")
     logger.info(f"Realm ID: {realm_id}")
     logger.info("=" * 80)
     
     # Continue with normal token exchange flow
+    print("Calling connect_intuit_oauth_2_token_endpoint...")
     connect_intuit_oauth_2_token_endpoint_resp = connect_intuit_oauth_2_token_endpoint(request)
+    print(f"Token endpoint response status: {connect_intuit_oauth_2_token_endpoint_resp.get('status_code')}")
+    print(f"Token endpoint response message: {connect_intuit_oauth_2_token_endpoint_resp.get('message')}")
     return {
         "message": connect_intuit_oauth_2_token_endpoint_resp.get("message"),
         "status_code": connect_intuit_oauth_2_token_endpoint_resp.get("status_code")

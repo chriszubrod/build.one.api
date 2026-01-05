@@ -49,6 +49,14 @@ def connect_intuit_oauth_2_endpoint():
     # IMPORTANT: This must match EXACTLY (character-for-character) what's configured in Intuit Developer Portal
     # The endpoint is: /api/v1/intuit/qbo/auth/request/callback (see integrations/intuit/qbo/auth/api/router.py)
     redirect_uri = "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/api/v1/intuit/qbo/auth/request/callback"
+    
+    # Print to terminal for debugging
+    print("=" * 80)
+    print("INTUIT OAUTH AUTHORIZATION URL GENERATION")
+    print("=" * 80)
+    print(f"Redirect URI being sent to Intuit: {redirect_uri}")
+    print(f"Redirect URI length: {len(redirect_uri)} characters")
+    print(f"Redirect URI bytes: {redirect_uri.encode('utf-8')}")
 
     # Build query parameters using urlencode for proper encoding
     query_params = {
@@ -64,6 +72,10 @@ def connect_intuit_oauth_2_endpoint():
     query_string = urlencode(query_params)
     
     endpoint = f"{auth_endpoint['authorization_endpoint']}?{query_string}"
+    
+    print(f"Full authorization URL: {endpoint}")
+    print(f"Encoded redirect_uri in URL: {query_string.split('redirect_uri=')[1].split('&')[0] if 'redirect_uri=' in query_string else 'NOT FOUND'}")
+    print("=" * 80)
 
     # Comprehensive logging for debugging
     logger.info("=" * 80)
@@ -126,6 +138,18 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
         qbo_auth_repo.create(code=code, realm_id=realm_id)
 
     token_endpoint = get_intuit_discovery_document()
+    
+    # Print to terminal for debugging
+    print("=" * 80)
+    print("INTUIT OAUTH TOKEN EXCHANGE")
+    print("=" * 80)
+    print(f"Code received: {code[:20] if code else 'None'}...")
+    print(f"State received: {INTUIT_STATE['received-state']}")
+    print(f"Realm ID: {realm_id}")
+    print(f"Request URL: {request.url}")
+    print(f"Request scheme: {request.url.scheme}")
+    print(f"Request hostname: {request.url.hostname}")
+    print(f"Request path: {request.url.path}")
 
     s = bytes(
         client.client_id
@@ -140,14 +164,31 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
         "Content-Type": "application/x-www-form-urlencoded",
         "Authorization": "Basic " + base64.b64encode(s).decode()
     }
+    redirect_uri_for_token = "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/api/v1/intuit/qbo/auth/request/callback"
+    
+    print(f"Token endpoint URL: {url}")
+    print(f"Redirect URI being sent to token endpoint: {redirect_uri_for_token}")
+    print(f"Redirect URI length: {len(redirect_uri_for_token)} characters")
+    
     data = {
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/api/v1/intuit/qbo/auth/request/callback"
+        "redirect_uri": redirect_uri_for_token
     }
+    
+    print(f"Token exchange data: grant_type={data['grant_type']}, code={code[:20]}..., redirect_uri={redirect_uri_for_token}")
+    print("Making POST request to Intuit token endpoint...")
+    
     resp = requests.post(url=url, data=data, headers=headers)
-
+    
+    print(f"Token endpoint response status: {resp.status_code}")
+    print(f"Token endpoint response text: {resp.text[:500]}")  # First 500 chars
+    
     if resp.status_code == 400:
+        print("=" * 80)
+        print("ERROR: Token endpoint returned 400 Bad Request")
+        print(f"Full response: {resp.text}")
+        print("=" * 80)
         return {
             "message": "An error occured: " + resp.text,
             "status_code": 500

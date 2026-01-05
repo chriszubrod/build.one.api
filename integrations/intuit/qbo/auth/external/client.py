@@ -131,7 +131,7 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
 
         try:
             if auth:
-                auth = qbo_auth_repo.update_by_realm_id(
+                qbo_auth_repo.update_by_realm_id(
                     code=code,
                     realm_id=realmId,
                     state=INTUIT_STATE['received-state'],
@@ -143,7 +143,7 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
                     x_refresh_token_expires_in=x_refresh_token_expires_in,
                 )
             else:
-                auth = qbo_auth_repo.create(
+                qbo_auth_repo.create(
                     code=code,
                     realm_id=realmId,
                     state=INTUIT_STATE['received-state'],
@@ -167,19 +167,19 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
 
 
 def connect_intuit_oauth_2_token_endpoint_refresh():
-    now = datetime.now()
+    
 
-    pers_read_qbo_client_resp = pers_intuit_client.read_db_intuit_client()
-    print(f'Pers DB Message: {pers_read_qbo_client_resp.get("message")}')
-    if pers_read_qbo_client_resp.get("status_code") == 201:
-        client = pers_read_qbo_client_resp.get("message")
-        client_id_and_secret = bytes(client.__getattribute__('ClientID') + ":" + client.__getattribute__('ClientSecret'), encoding='utf-8')
+    db_intuit_client_resp = qbo_client_repo.read_all()
+    client = db_intuit_client_resp[0]
+    client_id = client.client_id
+    client_secret = client.client_secret
+    client_id_and_secret = bytes(client_id + ":" + client_secret, encoding='utf-8')
 
     token_endpoint = get_intuit_discovery_document()
 
-    pers_read_auth_resp = pers_intuit_auth.read_db_intuit_auth()
-    if pers_read_auth_resp.get("status_code") == 201:
-        auth = pers_read_auth_resp.get("message")
+    db_intuit_auth_resp = qbo_auth_repo.read_all()
+    auth = db_intuit_auth_resp[0]
+    refresh_token = auth.refresh_token
 
     url = token_endpoint['token_endpoint']
     headers = {
@@ -189,9 +189,10 @@ def connect_intuit_oauth_2_token_endpoint_refresh():
     }
     data = {
         "grant_type": "refresh_token",
-        "refresh_token": auth.__getattribute__('RefreshToken')
+        "refresh_token": refresh_token
     }
     resp = requests.post(url=url, data=data, headers=headers)
+
     if resp.status_code == 400:
         return {
                 "message": resp.text,
@@ -207,62 +208,76 @@ def connect_intuit_oauth_2_token_endpoint_refresh():
         token_type = resp_json.get('token_type')
         x_refresh_token_expires_in = resp_json.get('x_refresh_token_expires_in')
 
-        pers_update_auth_refresh_resp = pers_intuit_auth.update_db_intuit_auth_by_authguid(
-            now=now,
-            tokentype=token_type,
-            idtoken=id_token,
-            accesstoken=access_token,
-            expiresin=str(expires_in),
-            refreshtoken=refresh_token,
-            xrefreshtokenexpiresin=str(x_refresh_token_expires_in),
-            authguid=auth.__getattribute__('AuthGUID')
-        )
+        try:
+            qbo_auth_repo.update_by_realm_id(
+                code=auth.code,
+                realm_id=auth.realm_id,
+                state=auth.state,
+                token_type=token_type,
+                id_token=id_token,
+                access_token=access_token,
+                expires_in=str(expires_in),
+                refresh_token=refresh_token,
+                x_refresh_token_expires_in=str(x_refresh_token_expires_in)
+            )
 
-        if pers_update_auth_refresh_resp.get("status_code") == 201:
-            return {
-                "message": resp.text,
+            resp = {
+                "message": "Oauth 2 Token Endpoint Refresh Successful.",
                 "status_code": 201
             }
 
-    return {
-        "message": "An error has occured during the refresh phase.",
-        "status_code": 500
-    }
+        except Exception as error:
+
+            resp = {
+                "message": "An error has occured during the refresh phase: " + str(error),
+                "status_code": 500
+            }
+
+        return resp
 
 
 def connect_intuit_oauth_2_token_endpoint_revoke():
 
-    pers_read_qbo_client_resp = pers_intuit_client.read_db_intuit_client()
-
-    if pers_read_qbo_client_resp.get("status_code") == 201:
-        pers_read_qbo_client_resp = pers_read_qbo_client_resp.get("message")
-        s = bytes(pers_read_qbo_client_resp.__getattribute__('ClientID') + ":" + pers_read_qbo_client_resp.__getattribute__('ClientSecret'), encoding='utf-8')
+    db_intuit_client_resp = qbo_client_repo.read_all()
+    client = db_intuit_client_resp[0]
+    client_id = client.client_id
+    client_secret = client.client_secret
+    client_id_and_secret = bytes(client_id + ":" + client_secret, encoding='utf-8')
 
     revocation_endpoint = get_intuit_discovery_document()
 
-    pers_read_auth_resp = pers_intuit_auth.read_db_intuit_auth()
-    if pers_read_auth_resp.get("status_code") == 201:
-        auth = pers_read_auth_resp.get("message")
+    db_intuit_auth_resp = qbo_auth_repo.read_all()
+    auth = db_intuit_auth_resp[0]
+    access_token = auth.access_token
 
     url = revocation_endpoint['revocation_endpoint']
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
-        "Authorization": "Basic " + base64.b64encode(s).decode()
+        "Authorization": "Basic " + base64.b64encode(client_id_and_secret).decode()
     }
     data = {
-        "token": auth.__getattribute__('AccessToken')
+        "token": access_token
     }
     resp = requests.post(url=url, data=data, headers=headers)
+    
     if resp.status_code == 400:
-        return "An error occured: " + resp.text
+        return {
+            "message": "An error occured: " + resp.text,
+            "status_code": 500
+        }
 
     if resp.status_code == 200:
 
-        pers_delete_auth_by_authguid_resp = pers_intuit_auth.delete_auth_by_authguid(authguid=auth.__getattribute__('AuthGUID'))
-        resp = {
-            "message": pers_delete_auth_by_authguid_resp.text,
-            "status_code": 201
-        }
+        try:
+            qbo_auth_repo.delete_by_realm_id(auth.realm_id)
+            resp = {
+                "message": "Oauth 2 Token Endpoint Revoke Successful.",
+                "status_code": 201
+            }
+        except Exception as error:
+            resp = {
+                "message": "An error has occured during the revoke phase: " + str(error),
+                "status_code": 500
+            }
         return resp
-

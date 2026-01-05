@@ -34,8 +34,7 @@ def intuit_authorization_request_router(current_user: dict = Depends(get_current
 
 @router.get('/intuit/qbo/auth/request/callback')
 def intuit_authorization_request_callback_router(
-    request: Request,
-    current_user: dict = Depends(get_current_user_api)
+    request: Request
 ):
     connect_intuit_oauth_2_token_endpoint_resp = connect_intuit_oauth_2_token_endpoint(request)
     return {

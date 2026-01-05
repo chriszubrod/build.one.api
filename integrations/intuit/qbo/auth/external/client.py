@@ -73,7 +73,6 @@ def connect_intuit_oauth_2_endpoint():
 
 
 def connect_intuit_oauth_2_token_endpoint(request: Request):
-    now = datetime.now()
 
     INTUIT_STATE['received-state'] = request.args.get('state', '')
 

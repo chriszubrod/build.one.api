@@ -52,8 +52,3 @@ class Settings(BaseSettings):
     azure_storage_account_key: Optional[str] = None
     azure_storage_sas_token: Optional[str] = None
     azure_storage_container_name: str = "attachments"
-
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        extra="ignore"  # This allows extra fields to be ignored
-    )

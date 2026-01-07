@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 import logging
+from urllib.parse import quote
 
 # Third-party Imports
 from fastapi import APIRouter, Depends, Request
@@ -36,11 +37,27 @@ def intuit_authorization_request_router(current_user: dict = Depends(get_current
 def intuit_authorization_request_callback_router(
     request: Request
 ):
+    """
+    OAuth callback endpoint for Intuit QuickBooks Online.
+    Exchanges authorization code for tokens, then redirects to integration list page.
+    """
     connect_intuit_oauth_2_token_endpoint_resp = connect_intuit_oauth_2_token_endpoint(request)
-    return {
-        "message": connect_intuit_oauth_2_token_endpoint_resp.get("message"),
-        "status_code": connect_intuit_oauth_2_token_endpoint_resp.get("status_code")
-    }
+    
+    # Build redirect URL to integration list page with success/error message
+    redirect_url = "/integration/list"
+    
+    if connect_intuit_oauth_2_token_endpoint_resp.get("status_code") == 201:
+        # Success
+        message = connect_intuit_oauth_2_token_endpoint_resp.get("message", "QuickBooks Online connected successfully")
+        encoded_message = quote(message)
+        redirect_url += f"?success=true&message={encoded_message}"
+    else:
+        # Error
+        message = connect_intuit_oauth_2_token_endpoint_resp.get("message", "Failed to connect QuickBooks Online")
+        encoded_message = quote(message)
+        redirect_url += f"?success=false&message={encoded_message}"
+    
+    return RedirectResponse(url=redirect_url)
 
 
 @router.get('/intuit/qbo/auth/refresh/request')

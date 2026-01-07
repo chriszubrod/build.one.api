@@ -222,7 +222,7 @@ BEGIN
 END;
 
 EXEC UpdateSyncById
-    @Id = 1,
+    @Id = 5,
     @RowVersion = 0x0000000000020B85,
     @Provider = 'qbo',
     @Env = 'production',
@@ -259,5 +259,11 @@ BEGIN
 END;
 
 EXEC DeleteSyncById
-    @Id = 1;
+    @Id = 8;
 GO
+
+UPDATE dbo.[Sync]
+SET [LastSyncDatetime] = NULL
+WHERE [Id] = 8 AND [RowVersion] = 0x0000000000021CE2;
+
+SELECT * FROM dbo.[Sync];

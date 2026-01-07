@@ -192,6 +192,7 @@ def connect_intuit_oauth_2_token_endpoint_refresh():
     client_id_and_secret = bytes(client_id + ":" + client_secret, encoding='utf-8')
 
     token_endpoint = get_intuit_discovery_document()
+    #print("token_endpoint: ", token_endpoint)
 
     db_intuit_auth_resp = qbo_auth_repo.read_all()
     auth = db_intuit_auth_resp[0]
@@ -208,6 +209,8 @@ def connect_intuit_oauth_2_token_endpoint_refresh():
         "refresh_token": refresh_token
     }
     resp = requests.post(url=url, data=data, headers=headers)
+    #print("resp status code: ", resp.status_code)
+    #print("resp: ", resp.text)
 
     if resp.status_code == 400:
         return {
@@ -225,12 +228,20 @@ def connect_intuit_oauth_2_token_endpoint_refresh():
         x_refresh_token_expires_in = resp_json.get('x_refresh_token_expires_in')
 
         try:
+            #print("Trying to update by realm id")
+            #print("auth: ", auth)
+            #print("token_type: ", token_type)
+            #print("id_token: ", id_token)
+            #print("access_token: ", access_token)
+            #print("expires_in: ", expires_in)
+            #print("refresh_token: ", refresh_token)
+            #print("x_refresh_token_expires_in: ", x_refresh_token_expires_in)
             qbo_auth_repo.update_by_realm_id(
                 code=auth.code,
                 realm_id=auth.realm_id,
                 state=auth.state,
                 token_type=token_type,
-                id_token=id_token,
+                id_token=auth.id_token,
                 access_token=access_token,
                 expires_in=int(expires_in) if expires_in else 0,
                 refresh_token=refresh_token,

@@ -128,11 +128,8 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
         return resp
 
     if resp.status_code == 200:
-        db_intuit_auth_resp = qbo_auth_repo.read_by_realm_id(realmId)
-
-        auth = None
-        if db_intuit_auth_resp:
-            auth = db_intuit_auth_resp[0]
+        # read_by_realm_id returns Optional[QboAuth] (single object or None), not a list
+        auth = qbo_auth_repo.read_by_realm_id(realmId)
         
         resp_json = json.loads(resp.text)
         access_token = resp_json.get('access_token')

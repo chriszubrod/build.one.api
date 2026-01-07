@@ -76,7 +76,13 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
 
     INTUIT_STATE['received-state'] = request.query_params.get('state', '')
 
+    # Check for client configuration
     db_intuit_client_resp = qbo_client_repo.read_all()
+    if not db_intuit_client_resp or len(db_intuit_client_resp) == 0:
+        return {
+            "message": "No Intuit client configuration found",
+            "status_code": 500
+        }
     client = db_intuit_client_resp[0]
     client_id = client.client_id
     client_secret = client.client_secret
@@ -86,6 +92,13 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
     realmId = request.query_params.get('realmId', '')
 
     token_endpoint = get_intuit_discovery_document()
+    
+    # Check if discovery document returned an error (string instead of dict)
+    if isinstance(token_endpoint, str):
+        return {
+            "message": token_endpoint,
+            "status_code": 500
+        }
 
     s = bytes(
         client_id
@@ -164,6 +177,12 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
                 "status_code": 500
             }
         return resp
+    
+    # Handle any other status codes (not 200 or 400)
+    return {
+        "message": f"Unexpected status code from token endpoint: {resp.status_code}. Response: {resp.text}",
+        "status_code": 500
+    }
 
 
 def connect_intuit_oauth_2_token_endpoint_refresh():

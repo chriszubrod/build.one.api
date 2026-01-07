@@ -185,6 +185,50 @@ GO
 
 
 
+DROP PROCEDURE IF EXISTS ReadQboCompanyInfoById;
+GO
+
+CREATE PROCEDURE ReadQboCompanyInfoById
+(
+    @Id BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [QboId],
+        [SyncToken],
+        [RealmId],
+        [CompanyName],
+        [LegalName],
+        [CompanyAddrId],
+        [LegalAddrId],
+        [CustomerCommunicationAddrId],
+        [TaxPayerId],
+        [FiscalYearStartMonth],
+        [Country],
+        [Email],
+        [WebAddr],
+        [CurrencyRef]
+    FROM [qbo].[CompanyInfo]
+    WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+EXEC ReadQboCompanyInfoById
+    @Id = 1;
+GO
+
+
+
 DROP PROCEDURE IF EXISTS ReadQboCompanyInfoByRealmId;
 GO
 

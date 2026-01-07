@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from scripts.sync_helper import _normalize_last_sync
 from integrations.sync.business.service import SyncService
 from integrations.intuit.qbo.company_info.business.service import QboCompanyInfoService
+from integrations.intuit.qbo.company_info.connector.business.service import CompanyInfoCompanyConnector
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 def sync_qbo_company_info() -> dict:
     """
+    Sync CompanyInfo from QBO API and then sync to Company module via connector.
     """
     try:
         # Create start time variable
@@ -31,6 +33,7 @@ def sync_qbo_company_info() -> dict:
         # Initialize the services
         sync_service = SyncService()
         company_info_service = QboCompanyInfoService()
+        connector = CompanyInfoCompanyConnector()
         auth_service = QboAuthService()
         
         
@@ -62,10 +65,71 @@ def sync_qbo_company_info() -> dict:
             )
             print(sync_record)
         
-        # Sync CompanyInfo
-        logger.info(f"Syncing CompanyInfo for realm_id: {realm_id}")
-        company_info = company_info_service.sync_from_qbo(realm_id=realm_id)
-        print(company_info)
+        # Get last sync time for incremental sync
+        last_sync_time = None
+        if sync_record and sync_record.last_sync_datetime:
+            last_sync_time = sync_record.last_sync_datetime
+            logger.info(f"Last sync time: {last_sync_time}. Fetching only updated records.")
+        else:
+            logger.info("No previous sync found. Fetching all CompanyInfo records.")
+        
+        # Sync CompanyInfo from QBO API
+        logger.info(f"Syncing CompanyInfo from QBO API for realm_id: {realm_id}")
+        company_info = company_info_service.sync_from_qbo(
+            realm_id=realm_id,
+            last_updated_time=last_sync_time
+        )
+        
+        # If no updates found, still update sync record timestamp and return early
+        if not company_info:
+            logger.info("No CompanyInfo updates found. Updating sync timestamp.")
+            end_time = datetime.now(timezone.utc)
+            end_time_str = _normalize_last_sync(end_time.isoformat())
+            
+            from integrations.sync.business.model import Sync
+            updated_sync = Sync(
+                id=sync_record.id,
+                public_id=sync_record.public_id,
+                row_version=sync_record.row_version,
+                created_datetime=sync_record.created_datetime,
+                modified_datetime=sync_record.modified_datetime,
+                provider=sync_record.provider,
+                env=sync_record.env,
+                entity=sync_record.entity,
+                last_sync_datetime=end_time_str,
+            )
+            sync_service.update_by_public_id(sync_record.public_id, updated_sync)
+            
+            result = {
+                "success": True,
+                "company_info": None,
+                "company": None,
+                "sync_record": updated_sync.to_dict(),
+                "start_time": start_time_str,
+                "end_time": end_time_str,
+                "realm_id": realm_id,
+                "message": "No updates found since last sync",
+            }
+            return {
+                "result": result,
+                "status_code": 200,
+            }
+        
+        # Sync CompanyInfo to Company module via connector
+        company = None
+        if company_info and company_info.id:
+            logger.info(f"Syncing CompanyInfo to Company module for QboCompanyInfo ID: {company_info.id}")
+            try:
+                company = connector.sync_from_qbo_to_company(
+                    qbo_company_info_id=company_info.id,
+                    realm_id=realm_id
+                )
+                logger.info(f"Successfully synced to Company module. Company ID: {company.id}")
+            except Exception as e:
+                logger.warning(f"Failed to sync CompanyInfo to Company module: {e}")
+                # Continue execution even if connector sync fails
+        else:
+            logger.warning("CompanyInfo sync completed but no ID found. Skipping Company module sync.")
 
         # Update Sync record
         end_time = datetime.now(timezone.utc)
@@ -88,6 +152,7 @@ def sync_qbo_company_info() -> dict:
         result = {
             "success": True,
             "company_info": company_info.to_dict(),
+            "company": company.to_dict() if company else None,
             "sync_record": updated_sync.to_dict(),
             "start_time": start_time_str,
             "end_time": end_time_str,

@@ -87,31 +87,37 @@ class QboCompanyInfoRepository:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                call_procedure(
-                    cursor=cursor,
-                    name="CreateQboCompanyInfo",
-                    params={
-                        "QboId": qbo_id,
-                        "SyncToken": sync_token,
-                        "RealmId": realm_id,
-                        "CompanyName": company_name,
-                        "LegalName": legal_name,
-                        "CompanyAddrId": company_addr_id,
-                        "LegalAddrId": legal_addr_id,
-                        "CustomerCommunicationAddrId": customer_communication_addr_id,
-                        "TaxPayerId": tax_payer_id,
-                        "FiscalYearStartMonth": fiscal_year_start_month,
-                        "Country": country,
-                        "Email": email,
-                        "WebAddr": web_addr,
-                        "CurrencyRef": currency_ref,
-                    },
-                )
-                row = cursor.fetchone()
-                if not row:
-                    logger.error("Create qbo company info did not return a row.")
-                    raise map_database_error(Exception("create qbo company info failed"))
-                return self._from_db(row)
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="CreateQboCompanyInfo",
+                        params={
+                            "QboId": qbo_id,
+                            "SyncToken": sync_token,
+                            "RealmId": realm_id,
+                            "CompanyName": company_name,
+                            "LegalName": legal_name,
+                            "CompanyAddrId": company_addr_id,
+                            "LegalAddrId": legal_addr_id,
+                            "CustomerCommunicationAddrId": customer_communication_addr_id,
+                            "TaxPayerId": tax_payer_id,
+                            "FiscalYearStartMonth": fiscal_year_start_month,
+                            "Country": country,
+                            "Email": email,
+                            "WebAddr": web_addr,
+                            "CurrencyRef": currency_ref,
+                        },
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        logger.error("Create qbo company info did not return a row.")
+                        raise map_database_error(Exception("create qbo company info failed"))
+                    return self._from_db(row)
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
         except Exception as error:
             logger.error(f"Error during create qbo company info: {error}")
             raise map_database_error(error)
@@ -123,15 +129,45 @@ class QboCompanyInfoRepository:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                call_procedure(
-                    cursor=cursor,
-                    name="ReadQboCompanyInfos",
-                    params={},
-                )
-                rows = cursor.fetchall()
-                return [self._from_db(row) for row in rows if row]
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboCompanyInfos",
+                        params={},
+                    )
+                    rows = cursor.fetchall()
+                    return [self._from_db(row) for row in rows if row]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
         except Exception as error:
             logger.error(f"Error during read all qbo company infos: {error}")
+            raise map_database_error(error)
+
+    def read_by_id(self, id: int) -> Optional[QboCompanyInfo]:
+        """
+        Read a QboCompanyInfo by database ID.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboCompanyInfoById",
+                        params={"Id": id},
+                    )
+                    row = cursor.fetchone()
+                    return self._from_db(row)
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read qbo company info by ID: {error}")
             raise map_database_error(error)
 
     def read_by_qbo_id(self, qbo_id: str) -> Optional[QboCompanyInfo]:
@@ -141,13 +177,19 @@ class QboCompanyInfoRepository:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                call_procedure(
-                    cursor=cursor,
-                    name="ReadQboCompanyInfoByQboId",
-                    params={"QboId": qbo_id},
-                )
-                row = cursor.fetchone()
-                return self._from_db(row)
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboCompanyInfoByQboId",
+                        params={"QboId": qbo_id},
+                    )
+                    row = cursor.fetchone()
+                    return self._from_db(row)
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
         except Exception as error:
             logger.error(f"Error during read qbo company info by QBO ID: {error}")
             raise map_database_error(error)
@@ -159,13 +201,19 @@ class QboCompanyInfoRepository:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                call_procedure(
-                    cursor=cursor,
-                    name="ReadQboCompanyInfoByRealmId",
-                    params={"RealmId": realm_id},
-                )
-                row = cursor.fetchone()
-                return self._from_db(row)
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboCompanyInfoByRealmId",
+                        params={"RealmId": realm_id},
+                    )
+                    row = cursor.fetchone()
+                    return self._from_db(row)
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
         except Exception as error:
             logger.error(f"Error during read qbo company info by realm ID: {error}")
             raise map_database_error(error)
@@ -194,32 +242,38 @@ class QboCompanyInfoRepository:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                call_procedure(
-                    cursor=cursor,
-                    name="UpdateQboCompanyInfoByQboId",
-                    params={
-                        "QboId": qbo_id,
-                        "RowVersion": row_version,
-                        "SyncToken": sync_token,
-                        "RealmId": realm_id,
-                        "CompanyName": company_name,
-                        "LegalName": legal_name,
-                        "CompanyAddrId": company_addr_id,
-                        "LegalAddrId": legal_addr_id,
-                        "CustomerCommunicationAddrId": customer_communication_addr_id,
-                        "TaxPayerId": tax_payer_id,
-                        "FiscalYearStartMonth": fiscal_year_start_month,
-                        "Country": country,
-                        "Email": email,
-                        "WebAddr": web_addr,
-                        "CurrencyRef": currency_ref,
-                    },
-                )
-                row = cursor.fetchone()
-                if not row:
-                    logger.error("Update qbo company info did not return a row.")
-                    raise map_database_error(Exception("update qbo company info by QBO ID failed"))
-                return self._from_db(row)
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="UpdateQboCompanyInfoByQboId",
+                        params={
+                            "QboId": qbo_id,
+                            "RowVersion": row_version,
+                            "SyncToken": sync_token,
+                            "RealmId": realm_id,
+                            "CompanyName": company_name,
+                            "LegalName": legal_name,
+                            "CompanyAddrId": company_addr_id,
+                            "LegalAddrId": legal_addr_id,
+                            "CustomerCommunicationAddrId": customer_communication_addr_id,
+                            "TaxPayerId": tax_payer_id,
+                            "FiscalYearStartMonth": fiscal_year_start_month,
+                            "Country": country,
+                            "Email": email,
+                            "WebAddr": web_addr,
+                            "CurrencyRef": currency_ref,
+                        },
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        logger.error("Update qbo company info did not return a row.")
+                        raise map_database_error(Exception("update qbo company info by QBO ID failed"))
+                    return self._from_db(row)
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
         except Exception as error:
             logger.error(f"Error during update qbo company info by QBO ID: {error}")
             raise map_database_error(error)
@@ -231,16 +285,22 @@ class QboCompanyInfoRepository:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                call_procedure(
-                    cursor=cursor,
-                    name="DeleteQboCompanyInfoByQboId",
-                    params={"QboId": qbo_id},
-                )
-                row = cursor.fetchone()
-                if not row:
-                    logger.error("Delete qbo company info did not return a row.")
-                    raise map_database_error(Exception("delete qbo company info by QBO ID failed"))
-                return self._from_db(row)
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="DeleteQboCompanyInfoByQboId",
+                        params={"QboId": qbo_id},
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        logger.error("Delete qbo company info did not return a row.")
+                        raise map_database_error(Exception("delete qbo company info by QBO ID failed"))
+                    return self._from_db(row)
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
         except Exception as error:
             logger.error(f"Error during delete qbo company info by QBO ID: {error}")
             raise map_database_error(error)

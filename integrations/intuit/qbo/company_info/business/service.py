@@ -25,7 +25,7 @@ class QboCompanyInfoService:
         """Initialize the QboCompanyInfoService."""
         self.repo = repo or QboCompanyInfoRepository()
 
-    def sync_from_qbo(self, realm_id: str) -> QboCompanyInfo:
+    def sync_from_qbo(self, realm_id: str, last_updated_time: Optional[str] = None) -> Optional[QboCompanyInfo]:
         """
         Fetch CompanyInfo from QBO API and store locally.
         Extracts PhysicalAddress objects and creates/updates them first.
@@ -33,9 +33,12 @@ class QboCompanyInfoService:
         
         Args:
             realm_id: QBO company realm ID
+            last_updated_time: Optional ISO format datetime string. If provided, only fetches
+                CompanyInfo where Metadata.LastUpdatedTime > last_updated_time.
+                If no records match, returns None.
         
         Returns:
-            QboCompanyInfo: The synced company info record
+            QboCompanyInfo: The synced company info record, or None if no updates found
         """
         # Get valid access token
         auth_service = QboAuthService()
@@ -50,10 +53,20 @@ class QboCompanyInfoService:
             access_token=qbo_auth.access_token,
             realm_id=realm_id
         ) as client:
-            qbo_company_info: QboCompanyInfoExternalSchema = client.get_company_info()
+            try:
+                qbo_company_info: QboCompanyInfoExternalSchema = client.get_company_info(
+                    last_updated_time=last_updated_time
+                )
+            except ValueError as e:
+                # If no CompanyInfo found (e.g., no updates since last sync), return None
+                if "No CompanyInfo found" in str(e):
+                    logger.info(f"No CompanyInfo updates found since {last_updated_time or 'beginning'}")
+                    return None
+                raise
         
         if not qbo_company_info:
-            raise ValueError("No CompanyInfo found in QBO API response")
+            logger.info("No CompanyInfo found in QBO API response")
+            return None
         
         # Extract and sync PhysicalAddress records
         company_addr_id = None

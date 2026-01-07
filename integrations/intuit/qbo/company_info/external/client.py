@@ -66,7 +66,7 @@ class QboCompanyInfoClient:
 
     def get_company_info(self, company_id: Optional[str] = None) -> QboCompanyInfo:
         """
-        Retrieve company information from QuickBooks.
+        Retrieve company information from QuickBooks using the query endpoint.
         
         Args:
             company_id: Optional company ID. If not provided, fetches the default company info.
@@ -76,11 +76,27 @@ class QboCompanyInfoClient:
         """
         if company_id:
             path = f"/companyinfo/{company_id}"
+            data = self._request("GET", path)
+            # Handle direct CompanyInfo response format
+            return QboCompanyInfoResponse(**data).company_info
         else:
-            path = f"/v3/company/{self.realm_id}/query?query=SELECT * FROM CompanyInfo"
-        
-        data = self._request("GET", path)
-        return QboCompanyInfoResponse(**data).company_info
+            # Use the query endpoint: /query?query=SELECT * FROM CompanyInfo
+            path = "/query"
+            query_string = "SELECT * FROM CompanyInfo"
+            data = self._request("GET", path, params={"query": query_string})
+
+            # Handle query response format - extract CompanyInfo from QueryResponse
+            if "QueryResponse" in data:
+                query_response = data["QueryResponse"]
+                company_info_list = query_response.get("CompanyInfo", [])
+                if company_info_list:
+                    # Return the first CompanyInfo from the query result
+                    return QboCompanyInfo(**company_info_list[0])
+                else:
+                    raise ValueError("No CompanyInfo found in query response")
+            else:
+                # Fallback to direct response format
+                return QboCompanyInfoResponse(**data).company_info
 
     def _request(
         self,

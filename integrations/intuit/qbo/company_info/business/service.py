@@ -40,7 +40,7 @@ class QboCompanyInfoService:
         # Get valid access token
         auth_service = QboAuthService()
         qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
-        print(f"QBO Auth: {qbo_auth}")
+        #print(f"QBO Auth: {qbo_auth}")
         
         if not qbo_auth or not qbo_auth.access_token:
             raise ValueError(f"No valid access token found for realm_id: {realm_id}")
@@ -62,29 +62,35 @@ class QboCompanyInfoService:
         
         # Sync CompanyAddr
         if qbo_company_info.company_addr:
+            # Use the actual QBO Id from the address reference, or fallback to constructed ID
+            addr_qbo_id = qbo_company_info.company_addr.id or f"{realm_id}-company"
             company_addr_id = self._sync_physical_address(
                 qbo_auth.access_token,
                 realm_id,
                 qbo_company_info.company_addr,
-                f"{realm_id}-company"
+                addr_qbo_id
             )
         
         # Sync LegalAddr
         if qbo_company_info.legal_addr:
+            # Use the actual QBO Id from the address reference, or fallback to constructed ID
+            addr_qbo_id = qbo_company_info.legal_addr.id or f"{realm_id}-legal"
             legal_addr_id = self._sync_physical_address(
                 qbo_auth.access_token,
                 realm_id,
                 qbo_company_info.legal_addr,
-                f"{realm_id}-legal"
+                addr_qbo_id
             )
         
         # Sync CustomerCommunicationAddr
         if qbo_company_info.customer_communication_addr:
+            # Use the actual QBO Id from the address reference, or fallback to constructed ID
+            addr_qbo_id = qbo_company_info.customer_communication_addr.id or f"{realm_id}-customer-communication"
             customer_communication_addr_id = self._sync_physical_address(
                 qbo_auth.access_token,
                 realm_id,
                 qbo_company_info.customer_communication_addr,
-                f"{realm_id}-customer-communication"
+                addr_qbo_id
             )
         
         # Extract email and web address strings
@@ -174,6 +180,19 @@ class QboCompanyInfoService:
         # Check if PhysicalAddress already exists
         physical_address_repo = QboPhysicalAddressRepository()
         existing = physical_address_repo.read_by_qbo_id(qbo_id=qbo_id)
+        
+        # Migration: If not found by QBO ID, try to find by matching address fields
+        # This handles the case where old records have synthetic QBO IDs
+        if not existing and address_ref.line1 and address_ref.city:
+            all_addresses = physical_address_repo.read_all()
+            for addr in all_addresses:
+                # Match by key address fields (line1, city, postal_code)
+                if (addr.line1 == address_ref.line1 and 
+                    addr.city == address_ref.city and
+                    addr.postal_code == address_ref.postal_code):
+                    existing = addr
+                    logger.info(f"Found existing PhysicalAddress by address match (old QBO ID: {addr.qbo_id}), updating to new QBO ID: {qbo_id}")
+                    break
         
         if existing:
             # Update existing PhysicalAddress

@@ -66,7 +66,7 @@ def sync_qbo_company_info() -> dict:
         logger.info(f"Syncing CompanyInfo for realm_id: {realm_id}")
         company_info = company_info_service.sync_from_qbo(realm_id=realm_id)
         print(company_info)
-        '''
+
         # Update Sync record
         end_time = datetime.now(timezone.utc)
         end_time_str = _normalize_last_sync(end_time.isoformat())
@@ -98,7 +98,7 @@ def sync_qbo_company_info() -> dict:
             "result": result,
             "status_code": 200,
         }
-        '''
+
     except Exception as e:
         error_msg = f"Error syncing CompanyInfo: {str(e)}"
         logger.exception(error_msg)

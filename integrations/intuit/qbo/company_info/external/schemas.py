@@ -2,7 +2,7 @@
 from typing import Any, Dict, Optional
 
 # Third-party Imports
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Local Imports
 from integrations.intuit.qbo.base.schemas import _QboBaseModel
@@ -60,6 +60,26 @@ class QboCompanyInfoBase(_QboBaseModel):
     currency_ref: Optional[QboCurrencyRef] = Field(default=None, alias="CurrencyRef")
     domain: Optional[str] = Field(default=None, alias="domain")
     sparse: Optional[bool] = Field(default=None, alias="sparse")
+    
+    @field_validator('fiscal_year_start_month', mode='before')
+    @classmethod
+    def convert_month_name_to_int(cls, v):
+        """
+        Convert month name string (e.g., 'January') to integer (1-12).
+        If already an integer or None, return as-is.
+        """
+        if v is None:
+            return None
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str):
+            month_map = {
+                'January': 1, 'February': 2, 'March': 3, 'April': 4,
+                'May': 5, 'June': 6, 'July': 7, 'August': 8,
+                'September': 9, 'October': 10, 'November': 11, 'December': 12
+            }
+            return month_map.get(v.title())  # Use title() to handle case variations
+        return v
 
 
 class QboCompanyInfo(QboCompanyInfoBase):
@@ -69,6 +89,21 @@ class QboCompanyInfo(QboCompanyInfoBase):
     id: Optional[str] = Field(default=None, alias="Id")
     sync_token: Optional[str] = Field(default=None, alias="SyncToken")
     metadata: Optional[Dict[str, Any]] = Field(default=None, alias="MetaData")
+    
+    @field_validator('id', mode='before')
+    @classmethod
+    def convert_id_to_string(cls, v):
+        """
+        Convert QBO Id to string if it comes as an integer.
+        QBO may return Id as either integer or string, but we store it as string.
+        """
+        if v is None:
+            return None
+        if isinstance(v, int):
+            return str(v)
+        if isinstance(v, str):
+            return v
+        return str(v)
 
 
 class QboCompanyInfoResponse(_QboBaseModel):

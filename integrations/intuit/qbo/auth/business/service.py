@@ -173,7 +173,7 @@ class QboAuthService:
         try:
             # Call the refresh endpoint (it uses read_all()[0] internally, which is fine for single-tenant)
             refresh_result = connect_intuit_oauth_2_token_endpoint_refresh()
-            
+
             if isinstance(refresh_result, dict) and refresh_result.get("status_code") == 201:
                 # Refresh successful, read the updated auth
                 if realm_id:

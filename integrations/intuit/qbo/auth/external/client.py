@@ -148,9 +148,9 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
                     token_type=token_type,
                     id_token=id_token,
                     access_token=access_token,
-                    expires_in=expires_in,
+                    expires_in=int(expires_in) if expires_in else 0,
                     refresh_token=refresh_token,
-                    x_refresh_token_expires_in=x_refresh_token_expires_in,
+                    x_refresh_token_expires_in=int(x_refresh_token_expires_in) if x_refresh_token_expires_in else 0,
                 )
             else:
                 qbo_auth_repo.create(
@@ -160,9 +160,9 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
                     token_type=token_type,
                     id_token=id_token,
                     access_token=access_token,
-                    expires_in=str(expires_in),
+                    expires_in=int(expires_in) if expires_in else 0,
                     refresh_token=refresh_token,
-                    x_refresh_token_expires_in=str(x_refresh_token_expires_in),
+                    x_refresh_token_expires_in=int(x_refresh_token_expires_in) if x_refresh_token_expires_in else 0,
                 )
             resp = {
                 "message": "Oauth 2 Token Endpoint Successful.",
@@ -232,9 +232,9 @@ def connect_intuit_oauth_2_token_endpoint_refresh():
                 token_type=token_type,
                 id_token=id_token,
                 access_token=access_token,
-                expires_in=str(expires_in),
+                expires_in=int(expires_in) if expires_in else 0,
                 refresh_token=refresh_token,
-                x_refresh_token_expires_in=str(x_refresh_token_expires_in)
+                x_refresh_token_expires_in=int(x_refresh_token_expires_in) if x_refresh_token_expires_in else 0
             )
 
             resp = {

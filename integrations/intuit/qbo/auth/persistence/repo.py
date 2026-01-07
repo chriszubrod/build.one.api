@@ -169,29 +169,39 @@ class QboAuthRepository:
         """
         Update a QboAuth by realm ID.
         """
+        cursor = None
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                call_procedure(
-                    cursor=cursor,
-                    name="UpdateQboAuthByRealmId",
-                    params={
-                        "Code": code,
-                        "RealmId": realm_id,
-                        "State": state,
-                        "TokenType": token_type,
-                        "IdToken": id_token,
-                        "AccessToken": access_token,
-                        "ExpiresIn": expires_in,
-                        "RefreshToken": refresh_token,
-                        "XRefreshTokenExpiresIn": x_refresh_token_expires_in,
-                    },
-                )
-                row = cursor.fetchone()
-                if not row:
-                    logger.error("Update qbo auth did not return a row.")
-                    raise map_database_error(Exception("update qbo auth by realm ID failed"))
-                return self._from_db(row)
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="UpdateQboAuthByRealmId",
+                        params={
+                            "Code": code,
+                            "RealmId": realm_id,
+                            "State": state,
+                            "TokenType": token_type,
+                            "IdToken": id_token,
+                            "AccessToken": access_token,
+                            "ExpiresIn": expires_in,
+                            "RefreshToken": refresh_token,
+                            "XRefreshTokenExpiresIn": x_refresh_token_expires_in,
+                        },
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        logger.error("Update qbo auth did not return a row.")
+                        error_msg = "update qbo auth by realm ID failed - no matching record found"
+                        raise Exception(error_msg)
+                    result = self._from_db(row)
+                    return result
+                finally:
+                    if cursor:
+                        try:
+                            cursor.close()
+                        except:
+                            pass
         except Exception as error:
             logger.error("Error during update qbo auth by realm ID: %s", error)
             raise map_database_error(error)

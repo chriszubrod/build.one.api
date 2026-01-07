@@ -52,30 +52,44 @@ def _connect():
 
 @contextmanager
 def get_connection(retries: int = 2, backoff: float = 0.5):
-    attempt = 0
+    """
+    Context manager for database connections with retry logic.
+    
+    Separates connection establishment (with retries) from the yield/exception handling
+    to avoid generator state issues.
+    """
     conn = None
-    while True:
+    last_error = None
+    
+    # Connection retry loop (separate from yield)
+    for attempt in range(retries + 1):
         try:
             conn = _connect()
-            try:
-                yield conn
-                conn.commit()
-            except:
-                conn.rollback()
-                raise
             break
         except pyodbc.Error as e:
+            last_error = e
             if attempt >= retries:
                 raise
-
-            time.sleep(backoff ** (2 ** attempt))
-            attempt += 1
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except:
-                    pass
+            time.sleep(backoff * (2 ** attempt))
+    
+    if conn is None:
+        raise last_error or DatabaseConnectionError("Failed to establish database connection")
+    
+    # Yield with proper exception handling (no while loop)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass  # Ignore rollback errors
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass  # Ignore close errors
 
 
 def call_procedure(cursor: pyodbc.Cursor, name: str, params: dict):

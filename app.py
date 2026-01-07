@@ -55,6 +55,8 @@ from modules.taxpayer_attachment.web.controller import router as taxpayer_attach
 from modules.legal.web.controller import router as legal_web_router
 
 from integrations.intuit.qbo.auth.api.router import router as intuit_qbo_auth_api_router
+from integrations.intuit.qbo.company_info.api.router import router as intuit_qbo_company_info_api_router
+from integrations.intuit.qbo.physical_address.api.router import router as intuit_qbo_physical_address_api_router
 from integrations.sync.api.router import router as sync_api_router
 from integrations.sync.web.controller import router as sync_web_router
 from integrations.intuit.qbo.vendor.api.router import router as qbo_vendor_api_router
@@ -111,6 +113,8 @@ app.include_router(vendor_web_router)
 app.include_router(vendor_address_api_router)
 app.include_router(vendor_address_web_router)
 app.include_router(intuit_qbo_auth_api_router)
+app.include_router(intuit_qbo_company_info_api_router)
+app.include_router(intuit_qbo_physical_address_api_router)
 app.include_router(sync_api_router)
 app.include_router(sync_web_router)
 app.include_router(qbo_vendor_api_router)

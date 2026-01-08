@@ -15,6 +15,7 @@ from scripts.sync_helper import _normalize_last_sync
 from integrations.sync.business.service import SyncService
 from integrations.intuit.qbo.company_info.business.service import QboCompanyInfoService
 from integrations.intuit.qbo.company_info.connector.business.service import CompanyInfoCompanyConnector
+from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,8 @@ def sync_qbo_company_info() -> dict:
         # Initialize the services
         sync_service = SyncService()
         company_info_service = QboCompanyInfoService()
-        connector = CompanyInfoCompanyConnector()
+        company_connector = CompanyInfoCompanyConnector()
+        address_connector = PhysicalAddressAddressConnector()
         auth_service = QboAuthService()
         
         
@@ -115,12 +117,29 @@ def sync_qbo_company_info() -> dict:
                 "status_code": 200,
             }
         
+        # Sync PhysicalAddress records to Address module via connector
+        addresses_synced = []
+        address_ids_to_sync = [
+            company_info.company_addr_id,
+            company_info.legal_addr_id,
+            company_info.customer_communication_addr_id,
+        ]
+        for addr_id in address_ids_to_sync:
+            if addr_id:
+                try:
+                    address = address_connector.sync_from_qbo_to_address(qbo_physical_address_id=addr_id)
+                    addresses_synced.append(address.id if address else None)
+                    logger.info(f"Successfully synced PhysicalAddress {addr_id} to Address module. Address ID: {address.id if address else 'None'}")
+                except Exception as e:
+                    logger.warning(f"Failed to sync PhysicalAddress {addr_id} to Address module: {e}")
+                    addresses_synced.append(None)
+        
         # Sync CompanyInfo to Company module via connector
         company = None
         if company_info and company_info.id:
             logger.info(f"Syncing CompanyInfo to Company module for QboCompanyInfo ID: {company_info.id}")
             try:
-                company = connector.sync_from_qbo_to_company(
+                company = company_connector.sync_from_qbo_to_company(
                     qbo_company_info_id=company_info.id,
                     realm_id=realm_id
                 )
@@ -153,6 +172,7 @@ def sync_qbo_company_info() -> dict:
             "success": True,
             "company_info": company_info.to_dict(),
             "company": company.to_dict() if company else None,
+            "addresses_synced": addresses_synced,
             "sync_record": updated_sync.to_dict(),
             "start_time": start_time_str,
             "end_time": end_time_str,

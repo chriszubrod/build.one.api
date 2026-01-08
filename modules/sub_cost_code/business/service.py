@@ -17,7 +17,7 @@ class SubCostCodeService:
         """Initialize the SubCostCodeService."""
         self.repo = repo or SubCostCodeRepository()
 
-    def create(self, *, number: str, name: str, description: Optional[str] = None, cost_code_id: str) -> SubCostCode:
+    def create(self, *, number: str, name: str, description: Optional[str] = None, cost_code_id: int) -> SubCostCode:
         """
         Create a new sub cost code.
         """
@@ -65,4 +65,6 @@ class SubCostCodeService:
         Soft delete a sub cost code by public ID.
         """
         _sub_cost_code = self.read_by_public_id(public_id=public_id)
+        if not _sub_cost_code:
+            return None
         return self.repo.delete_by_id(_sub_cost_code.id)

@@ -1,3 +1,5 @@
+DROP TABLE dbo.SubCostCode;
+
 IF OBJECT_ID('dbo.SubCostCode', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.SubCostCode
@@ -10,15 +12,10 @@ BEGIN
         [Number] NVARCHAR(50) NOT NULL,
         [Name] NVARCHAR(255) NOT NULL,
         [Description] NVARCHAR(255) NULL,
-        [CostCodeId] UNIQUEIDENTIFIER NOT NULL
+        [CostCodeId] BIGINT NOT NULL
     );
-
 END;
 GO
-
-DROP TABLE IF EXISTS dbo.SubCostCode;
-GO
-
 
 
 DROP PROCEDURE IF EXISTS CreateSubCostCode;
@@ -29,7 +26,7 @@ CREATE PROCEDURE CreateSubCostCode
     @Number NVARCHAR(50),
     @Name NVARCHAR(255),
     @Description NVARCHAR(255) = NULL,
-    @CostCodeId UNIQUEIDENTIFIER
+    @CostCodeId BIGINT
 )
 AS
 BEGIN
@@ -98,13 +95,16 @@ BEGIN
 END;
 GO
 
+EXEC ReadSubCostCodes;
+GO
+
 
 DROP PROCEDURE IF EXISTS ReadSubCostCodeById;
 GO
 
 CREATE PROCEDURE ReadSubCostCodeById
 (
-    @Id UNIQUEIDENTIFIER
+    @Id BIGINT
 )
 AS
 BEGIN
@@ -122,8 +122,7 @@ BEGIN
         [Description],
         [CostCodeId]
     FROM dbo.SubCostCode
-    WHERE [Id] = @Id
-    ORDER BY [Number] ASC;
+    WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
 END;
@@ -153,8 +152,7 @@ BEGIN
         [Description],
         [CostCodeId]
     FROM dbo.SubCostCode
-    WHERE [PublicId] = @PublicId
-    ORDER BY [Number] ASC;
+    WHERE [PublicId] = @PublicId;
 
     COMMIT TRANSACTION;
 END;
@@ -184,13 +182,11 @@ BEGIN
         [Description],
         [CostCodeId]
     FROM dbo.SubCostCode
-    WHERE [Number] = @Number
-    ORDER BY [Number] ASC;
+    WHERE [Number] = @Number;
 
     COMMIT TRANSACTION;
 END;
 GO
-
 
 
 DROP PROCEDURE IF EXISTS ReadSubCostCodeByCostCodeId;
@@ -198,7 +194,7 @@ GO
 
 CREATE PROCEDURE ReadSubCostCodeByCostCodeId
 (
-    @CostCodeId UNIQUEIDENTIFIER
+    @CostCodeId BIGINT
 )
 AS
 BEGIN
@@ -222,7 +218,6 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
-    
 
 
 DROP PROCEDURE IF EXISTS UpdateSubCostCodeById;
@@ -230,12 +225,12 @@ GO
 
 CREATE PROCEDURE UpdateSubCostCodeById
 (
-    @Id UNIQUEIDENTIFIER,
+    @Id BIGINT,
     @RowVersion BINARY(8),
     @Number NVARCHAR(50),
     @Name NVARCHAR(255),
     @Description NVARCHAR(255) = NULL,
-    @CostCodeId UNIQUEIDENTIFIER
+    @CostCodeId BIGINT
 )
 AS
 BEGIN
@@ -249,7 +244,8 @@ BEGIN
         [ModifiedDatetime] = @Now,
         [Number] = @Number,
         [Name] = @Name,
-        [Description] = @Description
+        [Description] = @Description,
+        [CostCodeId] = @CostCodeId
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -273,7 +269,7 @@ GO
 
 CREATE PROCEDURE DeleteSubCostCodeById
 (
-    @Id UNIQUEIDENTIFIER
+    @Id BIGINT
 )
 AS
 BEGIN
@@ -296,3 +292,5 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+SELECT * FROM dbo.SubCostCode;

@@ -18,7 +18,7 @@ class SubCostCode:
     number: Optional[str]
     name: Optional[str]
     description: Optional[str]
-    cost_code_id: Optional[str]
+    cost_code_id: Optional[int]
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

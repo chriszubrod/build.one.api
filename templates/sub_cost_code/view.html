@@ -1,186 +1,89 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ sub_cost_code.name or 'Sub Cost Code' }} - Build.One</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        .detail-container {
-            max-width: 800px;
-        }
-        .info-card {
-            border-left: 4px solid #343a40;
-        }
-        .status-badge {
-            font-size: 0.9rem;
-        }
-        .detail-row {
-            border-bottom: 1px solid #dee2e6;
-            padding: 0.75rem 0;
-        }
-        .detail-row:last-child {
-            border-bottom: none;
-        }
-    </style>
-</head>
-<body>
-    <div class="container-fluid">
-        <!-- Header -->
-        <div class="row bg-dark text-white py-3 mb-4">
-            <div class="col">
-                <div class="d-flex justify-content-between align-items-center">
-                    <h1 class="h3 mb-0">
-                        <i class="fas fa-layer-group me-2"></i>{{ sub_cost_code.name or 'Sub Cost Code Details' }}
-                    </h1>
-                    <div>
-                        <a href="/sub-cost-code/{{ sub_cost_code.public_id }}/edit" class="btn btn-light me-2">
-                            <i class="fas fa-edit me-1"></i>Edit
-                        </a>
-                        <a href="/sub-cost-code/list" class="btn btn-outline-light">
-                            <i class="fas fa-arrow-left me-1"></i>Back to List
-                        </a>
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}{{ sub_cost_code.name or 'Sub Cost Code' }} - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/sub_cost_code.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="sub-cost-code-page-header">
+        <h1>{{ sub_cost_code.number or 'Sub Cost Code Details' }}</h1>
+        <div style="display: flex; gap: 0.5rem;">
+            <a href="/sub-cost-code/{{ sub_cost_code.public_id }}/edit" class="btn btn-primary">Edit</a>
+            <a href="/sub-cost-code/list" class="btn btn-secondary">Back to List</a>
+        </div>
+    </div>
+
+    <div class="sub-cost-code-detail-container">
+        <div class="sub-cost-code-detail-card">
+            <div class="sub-cost-code-detail-card-header">
+                <h5>Sub Cost Code Information</h5>
+            </div>
+            <div class="sub-cost-code-detail-card-body">
+                <div class="sub-cost-code-detail-row">
+                    <div class="sub-cost-code-detail-label">Number:</div>
+                    <div class="sub-cost-code-detail-value">{{ sub_cost_code.number or 'Not specified' }}</div>
+                </div>
+
+                <div class="sub-cost-code-detail-row">
+                    <div class="sub-cost-code-detail-label">Name:</div>
+                    <div class="sub-cost-code-detail-value">{{ sub_cost_code.name or 'Not specified' }}</div>
+                </div>
+
+                <div class="sub-cost-code-detail-row">
+                    <div class="sub-cost-code-detail-label">Description:</div>
+                    <div class="sub-cost-code-detail-value">{{ sub_cost_code.description or 'Not specified' }}</div>
+                </div>
+
+                <div class="sub-cost-code-detail-row">
+                    <div class="sub-cost-code-detail-label">Parent Cost Code:</div>
+                    <div class="sub-cost-code-detail-value">
+                        {% if cost_code %}
+                            <a href="/cost-code/{{ cost_code.public_id }}">{{ cost_code.number }} - {{ cost_code.name }}</a>
+                        {% else %}
+                            <span>Not specified</span>
+                        {% endif %}
                     </div>
+                </div>
+
+                <div class="sub-cost-code-detail-row">
+                    <div class="sub-cost-code-detail-label">Public ID:</div>
+                    <div class="sub-cost-code-detail-value">
+                        <code>{{ sub_cost_code.public_id or 'Not available' }}</code>
+                    </div>
+                </div>
+
+                <div class="sub-cost-code-detail-row">
+                    <div class="sub-cost-code-detail-label">Created:</div>
+                    <div class="sub-cost-code-detail-value">{{ sub_cost_code.created_datetime or 'Unknown' }}</div>
+                </div>
+
+                <div class="sub-cost-code-detail-row">
+                    <div class="sub-cost-code-detail-label">Last Modified:</div>
+                    <div class="sub-cost-code-detail-value">{{ sub_cost_code.modified_datetime or 'Unknown' }}</div>
                 </div>
             </div>
         </div>
 
-        <!-- Content -->
-        <div class="container">
-            <div class="row justify-content-center">
-                <div class="col detail-container">
-                    <div class="card info-card">
-                        <div class="card-header">
-                            <div class="d-flex justify-content-between align-items-center">
-                                <h5 class="card-title mb-0">
-                                    <i class="fas fa-info-circle me-2"></i>Sub Cost Code Information
-                                </h5>
-                                <span class="badge bg-info status-badge">Active</span>
-                            </div>
-                        </div>
-                        <div class="card-body">
-                            <div class="detail-row">
-                                <div class="row">
-                                    <div class="col-sm-3">
-                                        <strong><i class="fas fa-barcode me-1"></i>Number:</strong>
-                                    </div>
-                                    <div class="col-sm-9">
-                                        {{ sub_cost_code.number or 'Not specified' }}
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="detail-row">
-                                <div class="row">
-                                    <div class="col-sm-3">
-                                        <strong><i class="fas fa-folder-tree me-1"></i>Name:</strong>
-                                    </div>
-                                    <div class="col-sm-9">
-                                        {% if sub_cost_code.name %}
-                                            {{ sub_cost_code.name }}
-                                        {% else %}
-                                            <span class="text-muted">Not specified</span>
-                                        {% endif %}
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="detail-row">
-                                <div class="row">
-                                    <div class="col-sm-3">
-                                        <strong><i class="fas fa-align-left me-1"></i>Description:</strong>
-                                    </div>
-                                    <div class="col-sm-9">
-                                        {% if sub_cost_code.description %}
-                                            {{ sub_cost_code.description }}
-                                        {% else %}
-                                            <span class="text-muted">Not specified</span>
-                                        {% endif %}
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="detail-row">
-                                <div class="row">
-                                    <div class="col-sm-3">
-                                        <strong><i class="fas fa-fingerprint me-1"></i>Public ID:</strong>
-                                    </div>
-                                    <div class="col-sm-9">
-                                        <code>{{ sub_cost_code.public_id or 'Not available' }}</code>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="detail-row">
-                                <div class="row">
-                                    <div class="col-sm-3">
-                                        <strong><i class="fas fa-project-diagram me-1"></i>Parent Cost Code:</strong>
-                                    </div>
-                                    <div class="col-sm-9">
-                                        {% if cost_code.name %}
-                                            <code>{{ cost_code.name }}</code>
-                                        {% else %}
-                                            <span class="text-muted">Not specified</span>
-                                        {% endif %}
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="detail-row">
-                                <div class="row">
-                                    <div class="col-sm-3">
-                                        <strong><i class="fas fa-calendar-plus me-1"></i>Created:</strong>
-                                    </div>
-                                    <div class="col-sm-9">
-                                        {{ sub_cost_code.created_datetime or 'Unknown' }}
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="detail-row">
-                                <div class="row">
-                                    <div class="col-sm-3">
-                                        <strong><i class="fas fa-calendar-edit me-1"></i>Last Modified:</strong>
-                                    </div>
-                                    <div class="col-sm-9">
-                                        {{ sub_cost_code.modified_datetime or 'Unknown' }}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Action Buttons -->
-                    <div class="card mt-4">
-                        <div class="card-body">
-                            <h6 class="card-title">
-                                <i class="fas fa-cogs me-2"></i>Actions
-                            </h6>
-                            <div class="d-flex flex-wrap gap-2">
-                                <a href="/sub-cost-code/{{ sub_cost_code.public_id }}/edit" class="btn btn-dark">
-                                    <i class="fas fa-edit me-1"></i>Edit Sub Cost Code
-                                </a>
-                                <a href="/sub-cost-code/list" class="btn btn-outline-secondary">
-                                    <i class="fas fa-list me-1"></i>View All Sub Cost Codes
-                                </a>
-                                <button type="button" class="btn btn-danger" onclick="deleteSubCostCode()">
-                                    <i class="fas fa-trash me-1"></i>Delete Sub Cost Code
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+        <div class="sub-cost-code-actions-card">
+            <h6>Actions</h6>
+            <div class="sub-cost-code-actions-list">
+                <a href="/sub-cost-code/{{ sub_cost_code.public_id }}/edit" class="btn btn-primary">Edit Sub Cost Code</a>
+                <a href="/sub-cost-code/list" class="btn btn-secondary">View All Sub Cost Codes</a>
+                <button type="button" class="btn btn-danger" onclick="deleteSubCostCode()">Delete Sub Cost Code</button>
             </div>
         </div>
     </div>
 
-    <!-- Scripts -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+{% endblock %}
+
+{% block scripts %}
     <script>
         async function deleteSubCostCode() {
             if (confirm('Are you sure you want to delete this sub cost code? This action cannot be undone.')) {
-                const data = {
+                const payload = {
                     row_version: "{{ sub_cost_code.row_version }}"
                 };
 
@@ -189,8 +92,9 @@
                         method: 'DELETE',
                         headers: {
                             'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
-                        body: JSON.stringify(data)
+                        body: JSON.stringify(payload)
                     });
 
                     if (response.ok) {
@@ -199,28 +103,26 @@
                         const contentType = response.headers.get('content-type');
                         if (contentType && contentType.includes('application/json')) {
                             const error = await response.json();
-                            let errorMessage = 'Unknown error';
+                            let message = 'Unknown error';
                             if (error.detail) {
-                                errorMessage = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                                message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
                             } else if (error.message) {
-                                errorMessage = error.message;
+                                message = error.message;
                             } else if (typeof error === 'string') {
-                                errorMessage = error;
+                                message = error;
                             } else {
-                                errorMessage = JSON.stringify(error);
+                                message = JSON.stringify(error);
                             }
-                            alert('Error deleting sub cost code: ' + errorMessage);
+                            alert('Error deleting sub cost code: ' + message);
                         } else {
                             const errorText = await response.text();
                             alert('Error deleting sub cost code: ' + errorText);
                         }
                     }
                 } catch (error) {
-                    console.error('Delete error:', error);
                     alert('Error deleting sub cost code: ' + error.message);
                 }
             }
         }
     </script>
-</body>
-</html>
+{% endblock %}

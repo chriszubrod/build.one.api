@@ -69,7 +69,7 @@ class SubCostCodeRepository:
         number: str,
         name: str,
         description: Optional[str] = None,
-        cost_code_id: str,
+        cost_code_id: int,
     ) -> SubCostCode:
         """
         Create a new sub cost code.

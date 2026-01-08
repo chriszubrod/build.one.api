@@ -64,4 +64,6 @@ class CostCodeService:
         Soft delete a cost code by public ID.
         """
         _cost_code = self.read_by_public_id(public_id=public_id)
+        if not _cost_code:
+            return None
         return self.repo.delete_by_id(_cost_code.id)

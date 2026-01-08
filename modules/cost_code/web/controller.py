@@ -49,6 +49,8 @@ async def view_cost_code(request: Request, public_id: str, current_user: dict = 
     View a cost code.
     """
     cost_code = CostCodeService().read_by_public_id(public_id=public_id)
+    if not cost_code:
+        raise HTTPException(status_code=404, detail="Cost code not found.")
     return templates.TemplateResponse(
         "view.html",
         {
@@ -65,6 +67,8 @@ async def edit_cost_code(request: Request, public_id: str, current_user: dict = 
     Edit a cost code.
     """
     cost_code = CostCodeService().read_by_public_id(public_id=public_id)
+    if not cost_code:
+        raise HTTPException(status_code=404, detail="Cost code not found.")
     return templates.TemplateResponse(
         "edit.html",
         {

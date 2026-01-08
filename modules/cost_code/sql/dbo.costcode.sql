@@ -91,6 +91,9 @@ BEGIN
 END;
 GO
 
+EXEC ReadCostCodes;
+GO
+
 
 
 DROP PROCEDURE IF EXISTS ReadCostCodeById;
@@ -98,7 +101,7 @@ GO
 
 CREATE PROCEDURE ReadCostCodeById
 (
-    @Id UNIQUEIDENTIFIER
+    @Id BIGINT
 )
 AS
 BEGIN
@@ -190,7 +193,7 @@ GO
 
 CREATE PROCEDURE UpdateCostCodeById
 (
-    @Id UNIQUEIDENTIFIER,
+    @Id BIGINT,
     @RowVersion BINARY(8),
     @Number NVARCHAR(50),
     @Name NVARCHAR(255),
@@ -231,7 +234,7 @@ GO
 
 CREATE PROCEDURE DeleteCostCodeById
 (
-    @Id UNIQUEIDENTIFIER
+    @Id BIGINT
 )
 AS
 BEGIN

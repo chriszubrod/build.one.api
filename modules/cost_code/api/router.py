@@ -34,8 +34,6 @@ def get_cost_codes_router(current_user: dict = Depends(get_current_user_api)):
     Read all cost codes.
     """
     cost_codes = service.read_all()
-    if not cost_codes:
-        raise HTTPException(status_code=404, detail="Cost codes not found.")
     return [cost_code.to_dict() for cost_code in cost_codes]
 
 

@@ -1,121 +1,71 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cost Codes - Build.One</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        .cost-code-card {
-            transition: transform 0.2s ease-in-out;
-        }
-        .cost-code-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-        }
-        .status-badge {
-            font-size: 0.75rem;
-        }
-    </style>
-</head>
-<body>
-    <div class="container-fluid">
-        <!-- Header -->
-        <div class="row bg-secondary text-white py-3 mb-4">
-            <div class="col">
+{% extends 'shared/layout/base.html' %}
 
-                {% if current_user %}
-                <div class="user-info text-light">
-                    <i class="fas fa-user me-1"></i>
-                    Welcome, {{ current_user.username }} 
-                    <span class="text-muted">|</span>
-                    <a href="#" onclick="logout(); window.location.href='/auth/logout'; return false;" class="text-light text-decoration-none">
-                        <i class="fas fa-sign-out-alt me-1"></i>Logout
-                    </a>
-                </div>
-                {% endif %}
+{% block title %}Cost Codes - Build.One{% endblock %}
 
-                <div class="d-flex justify-content-between align-items-center">
-                    <h1 class="h3 mb-0">
-                        <i class="fas fa-tags me-2"></i>Cost Codes
-                    </h1>
-                    <a href="/cost-code/create" class="btn btn-light">
-                        <i class="fas fa-plus me-1"></i>Add Cost Code
-                    </a>
-                </div>
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/cost_code.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
 
-            </div>
-        </div>
+{% block content %}
 
-        <!-- Content -->
-        <div class="container">
-            {% if cost_codes %}
-                <!-- Cost Code Grid -->
-                <div class="row">
-                    {% for cost_code in cost_codes %}
-                    <div class="col-lg-4 col-md-6 mb-4">
-                        <div class="card cost-code-card h-100">
-                            <div class="card-body">
-                                <div class="d-flex justify-content-between align-items-start mb-3">
-                                    <h5 class="card-title mb-0">{{ cost_code.number or 'Unnamed Cost Code' }}</h5>
-                                    <span class="badge bg-success status-badge">Active</span>
-                                </div>
-
-                                {% if cost_code.name %}
-                                <p class="card-text text-muted mb-2">
-                                    <i class="fas fa-align-left me-1"></i>{{ cost_code.name }}
-                                </p>
-                                {% endif %}
-
-                                {% if cost_code.description %}
-                                <p class="card-text text-muted mb-2">
-                                    <i class="fas fa-align-left me-1"></i>{{ cost_code.description }}
-                                </p>
-                                {% endif %}
-
-                                <div class="text-muted small mb-3">
-                                    <div><i class="fas fa-calendar-plus me-1"></i>Created: {{ cost_code.created_datetime or 'Unknown' }}</div>
-                                    <div><i class="fas fa-calendar-edit me-1"></i>Modified: {{ cost_code.modified_datetime }}</div>
-                                </div>
-                            </div>
-
-                            <div class="card-footer bg-transparent">
-                                <div class="btn-group w-100" role="group">
-                                    <a href="/cost-code/{{ cost_code.public_id }}" class="btn btn-outline-secondary btn-sm">
-                                        <i class="fas fa-eye me-1"></i>View
-                                    </a>
-                                    <a href="/cost-code/{{ cost_code.public_id }}/edit" class="btn btn-outline-primary btn-sm">
-                                        <i class="fas fa-edit me-1"></i>Edit
-                                    </a>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    {% endfor %}
-                </div>
-            {% else %}
-                <!-- Empty State -->
-                <div class="row justify-content-center">
-                    <div class="col-md-6 text-center">
-                        <div class="py-5">
-                            <i class="fas fa-tags fa-4x text-muted mb-4"></i>
-                            <h3 class="text-muted">No Cost Codes Found</h3>
-                            <p class="text-muted mb-4">Get started by creating your first cost code.</p>
-                            <a href="/cost-code/create" class="btn btn-secondary">
-                                <i class="fas fa-plus me-1"></i>Create Cost Code
-                            </a>
-                        </div>
-                    </div>
-                </div>
-            {% endif %}
-        </div>
+    <div class="cost-code-page-header">
+        <h1>Cost Codes</h1>
+        <a href="/cost-code/create" class="btn btn-primary">Add Cost Code</a>
     </div>
 
-    <!-- Scripts -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    {% if cost_codes %}
+        <div class="cost-code-grid">
+            {% for cost_code in cost_codes %}
+            <div class="cost-code-card">
+                <div class="cost-code-card-body">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
+                        <h5 class="cost-code-card-title">
+                            {{ cost_code.number or 'Unnamed Cost Code' }}
+                        </h5>
+                    </div>
+                    {% if cost_code.name %}
+                    <div class="cost-code-metadata">
+                        <div class="cost-code-metadata-item">
+                            <span>Name: {{ cost_code.name }}</span>
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% if cost_code.description %}
+                    <div class="cost-code-metadata">
+                        <div class="cost-code-metadata-item">
+                            <span>{{ cost_code.description }}</span>
+                        </div>
+                    </div>
+                    {% endif %}
+                    <div class="cost-code-metadata" style="margin-top: 1rem;">
+                        <div class="cost-code-metadata-item">
+                            <span>Created: {{ cost_code.created_datetime or 'Unknown' }}</span>
+                        </div>
+                        <div class="cost-code-metadata-item">
+                            <span>Modified: {{ cost_code.modified_datetime or 'Unknown' }}</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="cost-code-card-footer">
+                    <div class="cost-code-btn-group">
+                        <a href="/cost-code/{{ cost_code.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
+                        <a href="/cost-code/{{ cost_code.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="cost-code-empty-state">
+            <div class="cost-code-empty-state-icon">🏷️</div>
+            <h3>No Cost Codes Found</h3>
+            <p>Create your first cost code to get started.</p>
+            <a href="/cost-code/create" class="btn btn-primary">Create Cost Code</a>
+        </div>
+    {% endif %}
 
+{% endblock %}
+
+{% block scripts %}
     <script src="/static/js/auth.js"></script>
-
-</body>
-</html>
+{% endblock %}

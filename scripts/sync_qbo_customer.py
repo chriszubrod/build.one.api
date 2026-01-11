@@ -16,17 +16,19 @@ from scripts.sync_helper import _normalize_last_sync
 from shared.database import with_retry, is_transient_error
 from integrations.sync.business.service import SyncService
 from integrations.sync.business.model import Sync
-from integrations.intuit.qbo.vendor.business.service import QboVendorService
-from integrations.intuit.qbo.vendor.business.model import QboVendor
-from integrations.intuit.qbo.vendor.connector.vendor.business.service import VendorVendorConnector
-from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
-from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
+from integrations.intuit.qbo.customer.business.service import QboCustomerService
+from integrations.intuit.qbo.customer.business.model import QboCustomer
+from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
+from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
+from integrations.intuit.qbo.customer.connector.customer.persistence.repo import CustomerCustomerRepository
+from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
+from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 
 logger = logging.getLogger(__name__)
 
 # Sync configuration
-BATCH_SIZE = 10  # Process vendors in batches
+BATCH_SIZE = 10  # Process customers in batches
 BATCH_DELAY = 0.5  # Delay between batches (seconds)
 MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
@@ -119,87 +121,122 @@ def _update_sync_record(sync_service: SyncService, sync_record: Sync, end_time_s
 def sync_qbo_to_local(
     realm_id: str,
     last_sync_time: Optional[str],
-    qbo_vendor_service: QboVendorService,
-    vendor_connector: VendorVendorConnector,
+    qbo_customer_service: QboCustomerService,
+    customer_connector: CustomerCustomerConnector,
+    project_connector: CustomerProjectConnector,
 ) -> dict:
     """
-    Sync Vendors from QBO API to local database and modules.
+    Sync Customers from QBO API to local database and modules.
     
     Args:
         realm_id: QBO realm ID
         last_sync_time: Last sync timestamp for incremental sync
-        qbo_vendor_service: QboVendorService instance
-        vendor_connector: VendorVendorConnector instance
+        qbo_customer_service: QboCustomerService instance
+        customer_connector: CustomerCustomerConnector instance
+        project_connector: CustomerProjectConnector instance
     
     Returns:
-        dict: Sync results including vendors synced
+        dict: Sync results including customers synced
     """
-    logger.info(f"Syncing Vendors from QBO API for realm_id: {realm_id}")
+    logger.info(f"Syncing Customers from QBO API for realm_id: {realm_id}")
     
-    # Fetch vendors from QBO and store locally (without auto-syncing to modules)
-    vendors = qbo_vendor_service.sync_from_qbo(
+    # Fetch customers from QBO and store locally (without auto-syncing to modules)
+    customers = qbo_customer_service.sync_from_qbo(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
         sync_to_modules=False  # We'll handle module sync separately for better control
     )
     
-    if not vendors:
-        logger.info(f"No Vendor updates found since {last_sync_time or 'beginning'}")
+    if not customers:
+        logger.info(f"No Customer updates found since {last_sync_time or 'beginning'}")
         return {
-            "vendors_synced": 0,
-            "vendors_module_synced": 0,
-            "vendors": [],
+            "customers_synced": 0,
+            "customers_module_synced": 0,
+            "projects_synced": 0,
+            "customers": [],
         }
     
-    logger.info(f"Retrieved {len(vendors)} vendors from QBO")
+    logger.info(f"Retrieved {len(customers)} customers from QBO")
     
-    # Sync vendors to Vendor module
-    vendors_module_synced = 0
-    failed_vendors = []
+    # Separate parent customers and job customers
+    parent_customers = [customer for customer in customers if customer.is_parent_customer]
+    job_customers = [customer for customer in customers if customer.is_job]
     
-    for i, vendor in enumerate(vendors):
+    # Sync parent customers to Customer module first
+    customers_module_synced = 0
+    failed_parents = []
+    
+    for i, customer in enumerate(parent_customers):
         try:
             # Use retry logic for transient errors
-            vendor_module = with_retry(
-                vendor_connector.sync_from_qbo_vendor,
-                vendor,
+            customer_module = with_retry(
+                customer_connector.sync_from_qbo_customer,
+                customer,
                 max_retries=MAX_RETRIES,
                 initial_delay=INITIAL_RETRY_DELAY,
             )
-            vendors_module_synced += 1
-            logger.info(f"Synced QboVendor {vendor.id} to Vendor {vendor_module.id}")
+            customers_module_synced += 1
+            logger.info(f"Synced QboCustomer {customer.id} to Customer {customer_module.id}")
         except Exception as e:
-            logger.error(f"Failed to sync QboVendor {vendor.id} to Vendor: {e}")
-            failed_vendors.append(vendor.id)
+            logger.error(f"Failed to sync parent QboCustomer {customer.id} to Customer: {e}")
+            failed_parents.append(customer.id)
         
         # Add delay between batches to keep connection alive
-        if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(vendors):
-            logger.debug(f"Processed {i + 1}/{len(vendors)} vendors, pausing...")
+        if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(parent_customers):
+            logger.debug(f"Processed {i + 1}/{len(parent_customers)} parent customers, pausing...")
             time.sleep(BATCH_DELAY)
     
-    if failed_vendors:
-        logger.warning(f"Failed to sync {len(failed_vendors)} vendors: {failed_vendors}")
+    # Sync job customers to Project module
+    projects_synced = 0
+    failed_jobs = []
+    
+    for i, customer in enumerate(job_customers):
+        try:
+            # Use retry logic for transient errors
+            project = with_retry(
+                project_connector.sync_from_qbo_customer,
+                customer,
+                max_retries=MAX_RETRIES,
+                initial_delay=INITIAL_RETRY_DELAY,
+            )
+            projects_synced += 1
+            logger.info(f"Synced QboCustomer {customer.id} to Project {project.id}")
+        except Exception as e:
+            logger.error(f"Failed to sync job QboCustomer {customer.id} to Project: {e}")
+            failed_jobs.append(customer.id)
+        
+        # Add delay between batches to keep connection alive
+        if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(job_customers):
+            logger.debug(f"Processed {i + 1}/{len(job_customers)} job customers, pausing...")
+            time.sleep(BATCH_DELAY)
+    
+    if failed_parents:
+        logger.warning(f"Failed to sync {len(failed_parents)} parent customers: {failed_parents}")
+    if failed_jobs:
+        logger.warning(f"Failed to sync {len(failed_jobs)} job customers: {failed_jobs}")
     
     return {
-        "vendors_synced": len(vendors),
-        "vendors_module_synced": vendors_module_synced,
-        "vendors": [vendor.to_dict() for vendor in vendors],
+        "customers_synced": len(customers),
+        "customers_module_synced": customers_module_synced,
+        "projects_synced": projects_synced,
+        "customers": [customer.to_dict() for customer in customers],
     }
 
 
 def sync_local_to_qbo(
     realm_id: str,
     last_sync_time: Optional[str],
-    qbo_vendor_service: QboVendorService,
-    vendor_mapping_repo: VendorVendorRepository,
-    qbo_vendor_repo: QboVendorRepository,
+    qbo_customer_service: QboCustomerService,
+    customer_mapping_repo: CustomerCustomerRepository,
+    project_mapping_repo: CustomerProjectRepository,
+    qbo_customer_repo: QboCustomerRepository,
 ) -> dict:
     """
-    Sync locally modified Vendors back to QBO.
+    Sync locally modified Customers/Projects back to QBO.
     
-    This is the reverse sync: local changes -> QBO Vendors.
+    This is the reverse sync: local changes -> QBO Customers.
     
-    Note: Currently, Vendor module modifications are not tracked,
+    Note: Currently, Customer and Project modules are not implemented,
     so this function is a placeholder for future implementation.
     
     Args:
@@ -210,44 +247,48 @@ def sync_local_to_qbo(
     Returns:
         dict: Sync results
     """
-    logger.info("Checking for local Vendor modifications to sync to QBO")
+    logger.info("Checking for local Customer/Project modifications to sync to QBO")
     
-    vendors_pushed = 0
+    customers_pushed = 0
+    projects_pushed = 0
     
-    # TODO: Implement reverse sync when Vendor module modification tracking is available
+    # TODO: Implement reverse sync when Customer and Project modules are available
     # This would involve:
-    # 1. Reading all Vendors modified since last_sync_time
-    # 2. Finding their QboVendor mappings
+    # 1. Reading all Customers/Projects modified since last_sync_time
+    # 2. Finding their QboCustomer mappings
     # 3. Comparing modification times
-    # 4. Updating QboVendor records if local is newer
+    # 4. Updating QboCustomer records if local is newer
     # 5. Optionally pushing to QBO API
     
-    logger.info("Reverse sync not yet implemented - Vendor module modification tracking not available")
+    logger.info("Reverse sync not yet implemented - Customer/Project modules not available")
     
     return {
-        "vendors_pushed": vendors_pushed,
+        "customers_pushed": customers_pushed,
+        "projects_pushed": projects_pushed,
     }
 
 
-def sync_qbo_vendor() -> dict:
+def sync_qbo_customer() -> dict:
     """
-    Two-way sync for QBO Vendors <-> Vendor module.
+    Two-way sync for QBO Customers <-> Customer/Project modules.
     
-    1. QBO -> Local: Fetch vendors modified since last sync, store locally, sync to Vendor
-    2. Local -> QBO: Check for locally modified Vendors, sync back to QboVendor
+    1. QBO -> Local: Fetch customers modified since last sync, store locally, sync to Customer/Project
+    2. Local -> QBO: Check for locally modified Customers/Projects, sync back to QboCustomer
     """
     try:
         # Create start time variable
         start_time = datetime.now(timezone.utc)
         start_time_str = _normalize_last_sync(start_time.isoformat())
-        logger.info(f"QBO Vendor sync triggered at: {start_time_str}")
+        logger.info(f"QBO Customer sync triggered at: {start_time_str}")
         
         # Initialize services
         sync_service = SyncService()
-        qbo_vendor_service = QboVendorService()
-        qbo_vendor_repo = QboVendorRepository()
-        vendor_connector = VendorVendorConnector()
-        vendor_mapping_repo = VendorVendorRepository()
+        qbo_customer_service = QboCustomerService()
+        qbo_customer_repo = QboCustomerRepository()
+        customer_connector = CustomerCustomerConnector()
+        project_connector = CustomerProjectConnector()
+        customer_mapping_repo = CustomerCustomerRepository()
+        project_mapping_repo = CustomerProjectRepository()
         auth_service = QboAuthService()
         
         # Get realm ID
@@ -259,7 +300,7 @@ def sync_qbo_vendor() -> dict:
         
         # Get or create Sync record
         provider = 'qbo'
-        entity = 'vendor'
+        entity = 'customer'
         env = 'prod'
         
         sync_record = _get_or_create_sync_record(sync_service, provider, env, entity)
@@ -276,17 +317,19 @@ def sync_qbo_vendor() -> dict:
         qbo_to_local_result = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
-            qbo_vendor_service=qbo_vendor_service,
-            vendor_connector=vendor_connector,
+            qbo_customer_service=qbo_customer_service,
+            customer_connector=customer_connector,
+            project_connector=project_connector,
         )
         
         # Step 2: Sync from local to QBO (reverse sync)
         local_to_qbo_result = sync_local_to_qbo(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
-            qbo_vendor_service=qbo_vendor_service,
-            vendor_mapping_repo=vendor_mapping_repo,
-            qbo_vendor_repo=qbo_vendor_repo,
+            qbo_customer_service=qbo_customer_service,
+            customer_mapping_repo=customer_mapping_repo,
+            project_mapping_repo=project_mapping_repo,
+            qbo_customer_repo=qbo_customer_repo,
         )
         
         # Update Sync record
@@ -304,9 +347,11 @@ def sync_qbo_vendor() -> dict:
             "local_to_qbo": local_to_qbo_result,
         }
         
-        logger.info(f"QBO Vendor sync completed. Vendors from QBO: {qbo_to_local_result['vendors_synced']}, "
-                    f"Vendors module synced: {qbo_to_local_result['vendors_module_synced']}, "
-                    f"Vendors pushed: {local_to_qbo_result['vendors_pushed']}")
+        logger.info(f"QBO Customer sync completed. Customers from QBO: {qbo_to_local_result['customers_synced']}, "
+                    f"Customers module synced: {qbo_to_local_result['customers_module_synced']}, "
+                    f"Projects synced: {qbo_to_local_result['projects_synced']}, "
+                    f"Customers pushed: {local_to_qbo_result['customers_pushed']}, "
+                    f"Projects pushed: {local_to_qbo_result['projects_pushed']}")
         
         return {
             "result": result,
@@ -314,7 +359,7 @@ def sync_qbo_vendor() -> dict:
         }
 
     except Exception as e:
-        error_msg = f"Error syncing QBO Vendors: {str(e)}"
+        error_msg = f"Error syncing QBO Customers: {str(e)}"
         logger.exception(error_msg)
         return {
             "result": {
@@ -326,5 +371,5 @@ def sync_qbo_vendor() -> dict:
 
 
 if __name__ == "__main__":
-    result = sync_qbo_vendor()
+    result = sync_qbo_customer()
     print(result)

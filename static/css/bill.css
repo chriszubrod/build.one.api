@@ -1,0 +1,1022 @@
+/* Bill module styles - matches app design system */
+
+/* Page header */
+.bill-page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 0;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.bill-page-header h1 {
+    font-size: var(--font-size-action);
+    font-weight: var(--font-weight-regular);
+    color: var(--color-text);
+    margin: 0;
+}
+
+/* Buttons */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    font-size: var(--font-size-action);
+    font-weight: var(--font-weight-regular);
+    font-family: inherit;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+    text-decoration: none;
+    background-color: transparent;
+}
+
+.btn-primary {
+    background-color: var(--color-text);
+    color: #ffffff;
+    border-color: var(--color-text);
+}
+
+.btn-primary:hover {
+    background-color: var(--color-text-secondary);
+    border-color: var(--color-text-secondary);
+}
+
+.btn-secondary {
+    background-color: var(--color-surface);
+    color: var(--color-text);
+    border-color: #e0e0e0;
+}
+
+.btn-secondary:hover {
+    background-color: #e8e8e8;
+    border-color: #d0d0d0;
+}
+
+.btn-danger {
+    background-color: #dc3545;
+    color: #ffffff;
+    border-color: #dc3545;
+}
+
+.btn-danger:hover {
+    background-color: #c82333;
+    border-color: #bd2130;
+}
+
+.btn-outline-primary {
+    background-color: transparent;
+    color: var(--color-text);
+    border-color: var(--color-text);
+}
+
+.btn-outline-primary:hover {
+    background-color: var(--color-text);
+    color: #ffffff;
+}
+
+.btn-outline-secondary {
+    background-color: transparent;
+    color: var(--color-text-secondary);
+    border-color: #e0e0e0;
+}
+
+.btn-outline-secondary:hover {
+    background-color: var(--color-surface);
+    border-color: #d0d0d0;
+}
+
+.btn-sm {
+    padding: 0.375rem 0.75rem;
+    font-size: var(--font-size-base);
+}
+
+/* Cards */
+.bill-card {
+    background-color: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 1rem 1.5rem;
+    transition: box-shadow 0.2s ease, transform 0.2s ease;
+    min-height: 60px;
+}
+
+.bill-card:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    transform: translateY(-1px);
+}
+
+.bill-card-content {
+    display: flex;
+    align-items: center;
+    gap: 2rem;
+    width: 100%;
+    flex: 1;
+}
+
+.bill-card-title {
+    font-size: var(--font-size-action-lg);
+    font-weight: var(--font-weight-regular);
+    color: var(--color-text);
+    margin: 0;
+    flex: 0 0 auto;
+    min-width: 200px;
+}
+
+.bill-card-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex: 0 0 auto;
+}
+
+/* Badges */
+.badge {
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-regular);
+    border-radius: 4px;
+    line-height: 1;
+}
+
+.badge-success {
+    background-color: #28a745;
+    color: #ffffff;
+}
+
+.status-badge {
+    font-size: var(--font-size-base);
+}
+
+/* List container */
+.bill-list-container {
+    max-height: calc(100vh - 300px);
+    overflow-y: auto;
+    padding-right: 0.5rem;
+    padding-bottom: 2rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+/* Minimal scrollbar styling for list container - WebKit browsers */
+.bill-list-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.bill-list-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.bill-list-container::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+}
+
+.bill-list-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
+}
+
+/* Grid layout */
+.bill-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+@media (min-width: 768px) {
+    .bill-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (min-width: 1024px) {
+    .bill-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Full-page create layout */
+.bill-create-fullpage {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: var(--color-background);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.bill-create-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1.5rem 2rem;
+    border-bottom: 1px solid #e0e0e0;
+    flex-shrink: 0;
+    background-color: var(--color-background);
+}
+
+.bill-create-header h1 {
+    font-size: var(--font-size-action);
+    font-weight: var(--font-weight-regular);
+    color: var(--color-text);
+    margin: 0;
+}
+
+/* Full-page content layout */
+.bill-create-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 2rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+/* Minimal scrollbar styling for create content - WebKit browsers */
+.bill-create-content::-webkit-scrollbar {
+    width: 6px;
+}
+
+.bill-create-content::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.bill-create-content::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+}
+
+.bill-create-content::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
+}
+
+/* Sidebar navigation layout (kept for edit page) */
+.bill-create-layout {
+    display: flex;
+    gap: 2rem;
+    flex: 1;
+    overflow: hidden;
+    padding: 0 2rem 2rem 2rem;
+}
+
+.bill-sidebar {
+    width: 250px;
+    flex-shrink: 0;
+    background-color: var(--color-background);
+    border-right: 1px solid #e0e0e0;
+    padding: 1.5rem 0;
+}
+
+.bill-sidebar-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.bill-nav-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1.5rem;
+    text-decoration: none;
+    color: var(--color-text);
+    border-left: 3px solid transparent;
+    transition: all 0.2s ease;
+}
+
+.bill-nav-item:hover {
+    background-color: var(--color-surface);
+}
+
+.bill-nav-item.active {
+    background-color: var(--color-surface);
+    border-left-color: var(--color-text);
+    font-weight: 600;
+}
+
+.bill-nav-label {
+    flex: 1;
+}
+
+.bill-save-status-icon {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-left: 0.5rem;
+}
+
+.bill-save-status-icon.saving {
+    background-color: #ffc107;
+    animation: pulse 1.5s infinite;
+}
+
+.bill-save-status-icon.saved {
+    background-color: #28a745;
+}
+
+.bill-save-status-icon.error {
+    background-color: #dc3545;
+}
+
+.bill-main-content {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    padding-right: 0.5rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+/* Minimal scrollbar styling for main content - WebKit browsers */
+.bill-main-content::-webkit-scrollbar {
+    width: 6px;
+}
+
+.bill-main-content::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.bill-main-content::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+}
+
+.bill-main-content::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
+}
+
+.bill-section {
+    display: block;
+}
+
+/* For edit page with sidebar navigation */
+.bill-edit-layout .bill-section {
+    display: none;
+}
+
+.bill-edit-layout .bill-section.active {
+    display: block;
+}
+
+/* Form container */
+.bill-form-container {
+    width: 100%;
+    max-height: calc(100vh - 200px);
+    overflow-y: auto;
+    padding-right: 0.5rem;
+    padding-bottom: 2rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+/* Minimal scrollbar styling - WebKit browsers */
+.bill-form-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.bill-form-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.bill-form-container::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+}
+
+.bill-form-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
+}
+
+.bill-form-card {
+    background-color: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+}
+
+.bill-form-card-header {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid #e0e0e0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.bill-form-card-header h5 {
+    font-size: var(--font-size-action-lg);
+    font-weight: 600;
+    color: var(--color-text);
+    margin: 0;
+}
+
+/* Save status badge */
+.save-status {
+    font-size: var(--font-size-base);
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+}
+
+.save-status-saving {
+    color: #856404;
+    background-color: #fff3cd;
+}
+
+.save-status-saved {
+    color: #155724;
+    background-color: #d4edda;
+}
+
+.save-status-error {
+    color: #721c24;
+    background-color: #f8d7da;
+}
+
+/* Toast notifications */
+.toast-container {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-width: 400px;
+}
+
+.toast {
+    padding: 0.75rem 1rem;
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    font-size: var(--font-size-base);
+    opacity: 0;
+    transform: translateX(100%);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.toast-visible {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+.toast-info {
+    color: #004085;
+    background-color: #cce5ff;
+    border: 1px solid #b8daff;
+}
+
+.toast-success {
+    color: #155724;
+    background-color: #d4edda;
+    border: 1px solid #c3e6cb;
+}
+
+.toast-error {
+    color: #721c24;
+    background-color: #f8d7da;
+    border: 1px solid #f5c6cb;
+}
+
+.toast-warning {
+    color: #856404;
+    background-color: #fff3cd;
+    border: 1px solid #ffeeba;
+}
+
+.bill-form-card-body {
+    padding: 1.5rem;
+}
+
+/* Form fields */
+.bill-form-group {
+    margin-bottom: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-width: 400px;
+}
+
+/* Form group row for side-by-side fields */
+.bill-form-group-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+    max-width: 600px;
+}
+
+.bill-form-group-row .bill-form-group {
+    margin-bottom: 0;
+    max-width: none;
+}
+
+.bill-form-label {
+    display: flex;
+    align-items: center;
+    font-size: var(--font-size-action);
+    font-weight: var(--font-weight-regular);
+    color: var(--color-text);
+    width: 100%;
+}
+
+.bill-form-label .required {
+    color: #dc3545;
+}
+
+/* Warning label for form validation */
+.bill-warning-label {
+    font-size: var(--font-size-base);
+    color: #856404;
+    background-color: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 4px;
+    padding: 0.25rem 0.5rem;
+    white-space: nowrap;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.bill-form-value {
+    font-size: var(--font-size-base);
+    color: var(--color-text);
+    flex: 1;
+    padding: 0.5rem 0;
+}
+
+.bill-form-control {
+    width: 100%;
+    height: 2.5rem;
+    padding: 0.5rem 0.75rem;
+    font-size: var(--font-size-action);
+    font-family: inherit;
+    color: var(--color-text);
+    background-color: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.bill-form-control:focus {
+    outline: none;
+    border-color: var(--color-text);
+    box-shadow: 0 0 0 2px rgba(31, 31, 31, 0.1);
+}
+
+.bill-form-control-error {
+    border-color: #dc3545 !important;
+    box-shadow: 0 0 0 2px rgba(220, 53, 69, 0.1) !important;
+}
+
+.bill-form-control select {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23333' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    background-size: 12px;
+    padding-right: 2.5rem;
+}
+
+.bill-form-control select:focus {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%231f1f1f' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+}
+
+textarea.bill-form-control {
+    height: auto;
+    min-height: 2.5rem;
+    resize: vertical;
+}
+
+/* Checkbox styling */
+.bill-form-control[type="checkbox"] {
+    width: auto;
+    height: auto;
+    margin: 0;
+    cursor: pointer;
+    accent-color: var(--color-text);
+}
+
+/* Line item form grid - responsive */
+.bill-line-item-grid {
+    display: grid;
+    /* grid-template-columns will be set dynamically by JavaScript */
+    gap: 1rem;
+    margin-bottom: 1rem;
+    align-items: start;
+}
+
+/* Description field - narrower */
+/* Width controlled by JavaScript percentage calculation */
+
+/* Narrow fields for Quantity, Rate, Amount, Markup, Price */
+.bill-line-item-narrow {
+    max-width: 100px;
+}
+
+.bill-line-item-narrow .bill-form-control {
+    width: 100%;
+}
+
+/* Checkbox field - only as wide as label content */
+.bill-line-item-checkbox {
+    width: fit-content;
+    max-width: fit-content;
+    justify-self: start;
+}
+
+.bill-line-item-checkbox .bill-form-label {
+    white-space: nowrap;
+}
+
+@media (max-width: 1400px) {
+    .bill-line-item-grid {
+        grid-template-columns: 1fr 1.2fr 90px 90px 90px auto 90px 90px;
+    }
+}
+
+@media (max-width: 1200px) {
+    .bill-line-item-grid {
+        grid-template-columns: 1fr 1.2fr 80px 80px 80px auto 80px 80px;
+    }
+}
+
+@media (max-width: 768px) {
+    .bill-line-item-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .bill-line-item-narrow {
+        max-width: 100%;
+    }
+    
+    .bill-line-item-checkbox {
+        width: 100%;
+        max-width: 100%;
+    }
+}
+
+.bill-form-text {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: var(--font-size-base);
+    color: var(--color-text-secondary);
+    width: 100%;
+}
+
+/* Error message styling */
+.bill-form-error {
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background-color: #fee;
+    border: 1px solid #fcc;
+    border-radius: 4px;
+    color: #c33;
+    font-size: var(--font-size-base);
+}
+
+/* Form actions */
+.bill-form-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 2rem;
+    gap: 1rem;
+}
+
+.bill-form-actions-left {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.bill-form-actions-right {
+    display: flex;
+    gap: 0.5rem;
+}
+
+/* Detail view */
+.bill-detail-container {
+    max-width: 800px;
+    margin: 0 auto;
+    max-height: calc(100vh - 200px);
+    overflow-y: auto;
+    padding-right: 0.5rem;
+    padding-bottom: 2rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+/* Minimal scrollbar styling for detail container - WebKit browsers */
+.bill-detail-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.bill-detail-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.bill-detail-container::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+}
+
+.bill-detail-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
+}
+
+.bill-detail-card {
+    background-color: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-left: 4px solid var(--color-text);
+    border-radius: 4px;
+    margin-bottom: 1.5rem;
+}
+
+.bill-detail-card-header {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid #e0e0e0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.bill-detail-card-header h5 {
+    font-size: var(--font-size-action-lg);
+    font-weight: var(--font-weight-regular);
+    color: var(--color-text);
+    margin: 0;
+}
+
+.bill-detail-card-body {
+    padding: 1.5rem;
+}
+
+.bill-detail-row {
+    display: flex;
+    padding: 0.75rem 0;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.bill-detail-row:last-child {
+    border-bottom: none;
+}
+
+.bill-detail-label {
+    flex: 0 0 30%;
+    font-weight: var(--font-weight-regular);
+    color: var(--color-text);
+    font-size: var(--font-size-action);
+}
+
+.bill-detail-value {
+    flex: 1;
+    color: var(--color-text);
+    font-size: var(--font-size-action);
+}
+
+.bill-detail-value code {
+    background-color: var(--color-surface);
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: var(--font-size-base);
+}
+
+/* Empty state */
+.bill-empty-state {
+    text-align: center;
+    padding: 3rem 1rem;
+}
+
+.bill-empty-state-icon {
+    font-size: 3rem;
+    color: var(--color-text-secondary);
+    margin-bottom: 1rem;
+}
+
+.bill-empty-state h3 {
+    font-size: var(--font-size-action-lg);
+    font-weight: var(--font-weight-regular);
+    color: var(--color-text-secondary);
+    margin: 0 0 1rem 0;
+}
+
+.bill-empty-state p {
+    font-size: var(--font-size-action);
+    color: var(--color-text-secondary);
+    margin: 0 0 1.5rem 0;
+}
+
+/* Metadata */
+.bill-metadata {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    font-size: var(--font-size-base);
+    color: var(--color-text-secondary);
+    margin-top: 1rem;
+}
+
+@media (min-width: 1440px) {
+    .bill-metadata {
+        gap: 0.25rem;
+        margin-top: 0.75rem;
+    }
+}
+
+.bill-metadata-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+/* Button groups */
+.bill-btn-group {
+    display: flex;
+    gap: 0.5rem;
+    width: 100%;
+}
+
+.bill-btn-group .btn {
+    flex: 1;
+}
+
+/* Actions card */
+.bill-actions-card {
+    background-color: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    padding: 1.5rem;
+}
+
+.bill-actions-card h6 {
+    font-size: var(--font-size-action-lg);
+    font-weight: var(--font-weight-regular);
+    color: var(--color-text);
+    margin: 0 0 1rem 0;
+}
+
+.bill-actions-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* Responsive adjustments */
+@media (max-width: 767px) {
+    .bill-create-header {
+        padding: 1rem 1.5rem;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+    }
+
+    .bill-create-content {
+        padding: 1.5rem;
+    }
+
+    .bill-create-layout {
+        flex-direction: column;
+        gap: 1rem;
+        padding: 0 1.5rem 1.5rem 1.5rem;
+    }
+
+    .bill-sidebar {
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid #e0e0e0;
+        padding: 1rem 0;
+    }
+
+    .bill-sidebar-nav {
+        flex-direction: row;
+        overflow-x: auto;
+        padding: 0 1rem;
+    }
+
+    .bill-nav-item {
+        padding: 0.5rem 1rem;
+        white-space: nowrap;
+        border-left: none;
+        border-bottom: 3px solid transparent;
+    }
+
+    .bill-nav-item.active {
+        border-left: none;
+        border-bottom-color: var(--color-text);
+    }
+
+    .bill-page-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+    }
+
+    .bill-card {
+        flex-direction: column;
+        align-items: flex-start;
+        padding: 1rem;
+    }
+
+    .bill-card-content {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+        width: 100%;
+    }
+
+    .bill-card-title {
+        min-width: auto;
+        width: 100%;
+    }
+
+    .bill-card-actions {
+        margin-left: 0;
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .bill-form-group-row {
+        grid-template-columns: 1fr;
+        max-width: 400px;
+    }
+
+    .bill-form-group {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+
+    .bill-form-label {
+        min-width: auto;
+        width: 100%;
+        margin-bottom: 0;
+    }
+
+    .bill-form-control {
+        width: 100%;
+    }
+
+    .bill-form-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .bill-form-actions-left,
+    .bill-form-actions-right {
+        width: 100%;
+    }
+
+    .bill-form-actions-left .btn,
+    .bill-form-actions-right .btn {
+        flex: 1;
+    }
+
+    .bill-detail-row {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .bill-detail-label {
+        flex: 1;
+    }
+}
+
+/* Minimal scrollbar styles */
+/* Webkit browsers (Chrome, Safari, Edge) */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
+}
+
+/* Firefox */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}

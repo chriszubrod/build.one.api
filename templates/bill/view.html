@@ -1,0 +1,192 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}{{ bill.bill_number or 'Bill' }} - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/bill.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="bill-page-header">
+        <h1>{{ bill.bill_number or 'Bill Details' }}</h1>
+        <div style="display: flex; gap: 0.5rem;">
+            <a href="/bill/{{ bill.public_id }}/edit" class="btn btn-primary">Edit</a>
+            <a href="/bill/list" class="btn btn-secondary">Back to List</a>
+        </div>
+    </div>
+
+    <div class="bill-detail-container">
+        <div class="bill-detail-card">
+            <div class="bill-detail-card-header">
+                <h5>Bill Information</h5>
+            </div>
+            <div class="bill-detail-card-body">
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Bill Number:</div>
+                    <div class="bill-detail-value">{{ bill.bill_number or 'Not specified' }}</div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Vendor:</div>
+                    <div class="bill-detail-value">{{ bill.vendor_name or (bill.vendor_id or 'Not specified') }}</div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Terms ID:</div>
+                    <div class="bill-detail-value">{{ bill.terms_id or 'Not specified' }}</div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Bill Date:</div>
+                    <div class="bill-detail-value">{{ bill.bill_date or 'Not specified' }}</div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Due Date:</div>
+                    <div class="bill-detail-value">{{ bill.due_date or 'Not specified' }}</div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Total Amount:</div>
+                    <div class="bill-detail-value">{% if bill.total_amount %}${{ "%.2f"|format(bill.total_amount) }}{% else %}Not specified{% endif %}</div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Memo:</div>
+                    <div class="bill-detail-value">{{ bill.memo or 'Not specified' }}</div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Public ID:</div>
+                    <div class="bill-detail-value">
+                        <code>{{ bill.public_id or 'Not available' }}</code>
+                    </div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Created:</div>
+                    <div class="bill-detail-value">{{ bill.created_datetime or 'Unknown' }}</div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Last Modified:</div>
+                    <div class="bill-detail-value">{{ bill.modified_datetime or 'Unknown' }}</div>
+                </div>
+            </div>
+        </div>
+
+        {% if line_items %}
+        <div class="bill-detail-card">
+            <div class="bill-detail-card-header">
+                <h5>Line Items</h5>
+            </div>
+            <div class="bill-detail-card-body">
+                <div class="line-item-grid" style="display: grid; grid-template-columns: 1fr; gap: 1rem;">
+                    {% for line_item in line_items %}
+                    <div class="line-item-card" style="border: 1px solid #e0e0e0; border-radius: 4px;">
+                        <div class="line-item-card-body" style="padding: 1rem;">
+                            <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem;">
+                                <h6 style="margin: 0; font-size: var(--font-size-action-lg);">{{ line_item.description or 'No Description' }}</h6>
+                                <div style="display: flex; gap: 0.5rem;">
+                                </div>
+                            </div>
+                            <div class="line-item-metadata" style="display: flex; flex-direction: column; gap: 0.25rem; font-size: var(--font-size-base); color: var(--color-text-secondary);">
+                                {% if line_item.quantity is not none %}
+                                <div class="line-item-metadata-item">
+                                    <span>Quantity: {{ line_item.quantity }}</span>
+                                </div>
+                                {% endif %}
+                                {% if line_item.rate is not none %}
+                                <div class="line-item-metadata-item">
+                                    <span>Rate: ${{ "%.4f"|format(line_item.rate) }}</span>
+                                </div>
+                                {% endif %}
+                                {% if line_item.amount is not none %}
+                                <div class="line-item-metadata-item">
+                                    <span>Amount: ${{ "%.2f"|format(line_item.amount) }}</span>
+                                </div>
+                                {% endif %}
+                                {% if line_item.price is not none %}
+                                <div class="line-item-metadata-item">
+                                    <span>Price: ${{ "%.2f"|format(line_item.price) }}</span>
+                                </div>
+                                {% endif %}
+                                {% if line_item.is_billable is not none %}
+                                <div class="line-item-metadata-item">
+                                    <span>Billable: {{ 'Yes' if line_item.is_billable else 'No' }}</span>
+                                </div>
+                                {% endif %}
+                                {% if line_item.markup is not none %}
+                                <div class="line-item-metadata-item">
+                                    <span>Markup: {{ "%.2f"|format(line_item.markup * 100) }}%</span>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="bill-actions-card">
+            <h6>Actions</h6>
+            <div class="bill-actions-list">
+                <a href="/bill/{{ bill.public_id }}/edit" class="btn btn-primary">Edit Bill</a>
+                <a href="/bill/list" class="btn btn-secondary">View All Bills</a>
+                <button type="button" class="btn btn-danger" onclick="deleteBill()">Delete Bill</button>
+            </div>
+        </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        async function deleteBill() {
+            if (confirm('Are you sure you want to delete this bill? This action cannot be undone.')) {
+                const payload = {
+                    row_version: "{{ bill.row_version }}"
+                };
+
+                try {
+                    const response = await fetch(`/api/v1/delete/bill/{{ bill.public_id }}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        window.location.href = '/bill/list';
+                    } else {
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const error = await response.json();
+                            let message = 'Unknown error';
+                            if (error.detail) {
+                                message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                            } else if (error.message) {
+                                message = error.message;
+                            } else if (typeof error === 'string') {
+                                message = error;
+                            } else {
+                                message = JSON.stringify(error);
+                            }
+                            alert('Error deleting bill: ' + message);
+                        } else {
+                            const errorText = await response.text();
+                            alert('Error deleting bill: ' + errorText);
+                        }
+                    }
+                } catch (error) {
+                    alert('Error deleting bill: ' + error.message);
+                }
+            }
+        }
+    </script>
+{% endblock %}

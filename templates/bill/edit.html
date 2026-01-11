@@ -1,0 +1,654 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Edit Bill - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/bill.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="bill-page-header">
+        <h1>Edit Bill</h1>
+        <a href="/bill/list" class="btn btn-secondary">Back to List</a>
+    </div>
+
+    <div class="bill-create-layout">
+        <aside class="bill-sidebar">
+            <nav class="bill-sidebar-nav">
+                <a href="#bill-details" class="bill-nav-item active" data-section="bill-details">
+                    <span class="bill-nav-label">Bill Details</span>
+                    <span class="bill-save-status-icon"></span>
+                </a>
+                <a href="#line-items" class="bill-nav-item" data-section="line-items">
+                    <span class="bill-nav-label">Line Items</span>
+                    <span class="bill-save-status-icon"></span>
+                </a>
+            </nav>
+        </aside>
+        
+        <main class="bill-main-content">
+            <form id="editBillForm" autocomplete="off">
+                <!-- Bill Details Section -->
+                <section id="bill-details" class="bill-section active">
+                    <div class="bill-form-card">
+                        <div class="bill-form-card-header">
+                            <h5>Bill Details</h5>
+                        </div>
+                        <div class="bill-form-card-body">
+                            <div class="bill-form-group">
+                                <label for="vendor_public_id" class="bill-form-label">
+                                    Vendor <span class="required">*</span>
+                                </label>
+                                <select class="bill-form-control"
+                                        id="vendor_public_id"
+                                        name="vendor_public_id"
+                                        required
+                                        autocomplete="off">
+                                    <option value="">-- Select a vendor --</option>
+                                    {% for vendor in vendors %}
+                                    <option value="{{ vendor.public_id }}"
+                                            {% if bill.vendor_public_id and vendor.public_id == bill.vendor_public_id %}selected{% endif %}>
+                                        {{ vendor.name or 'Unnamed Vendor' }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                                <div class="bill-form-text">Required field. Select a vendor for this bill.</div>
+                            </div>
+
+                            <div class="bill-form-group">
+                                <label for="terms_id" class="bill-form-label">
+                                    Terms ID
+                                </label>
+                                <input type="number"
+                                       class="bill-form-control"
+                                       id="terms_id"
+                                       name="terms_id"
+                                       value="{{ bill.terms_id or '' }}"
+                                       autocomplete="off"
+                                       placeholder="Enter terms ID">
+                                <div class="bill-form-text">Optional. Terms ID for this bill.</div>
+                            </div>
+
+                            <div class="bill-form-group">
+                                <label for="bill_date" class="bill-form-label">
+                                    Bill Date <span class="required">*</span>
+                                </label>
+                                <input type="date"
+                                       class="bill-form-control"
+                                       id="bill_date"
+                                       name="bill_date"
+                                       required
+                                       value="{{ bill.bill_date[:10] if bill.bill_date else '' }}"
+                                       autocomplete="off"
+                                       placeholder="Enter bill date">
+                                <div class="bill-form-text">Required field. Date of the bill.</div>
+                            </div>
+
+                            <div class="bill-form-group">
+                                <label for="due_date" class="bill-form-label">
+                                    Due Date <span class="required">*</span>
+                                </label>
+                                <input type="date"
+                                       class="bill-form-control"
+                                       id="due_date"
+                                       name="due_date"
+                                       required
+                                       value="{{ bill.due_date[:10] if bill.due_date else '' }}"
+                                       autocomplete="off"
+                                       placeholder="Enter due date">
+                                <div class="bill-form-text">Required field. Due date for payment.</div>
+                            </div>
+
+                            <div class="bill-form-group">
+                                <label for="bill_number" class="bill-form-label">
+                                    Bill Number <span class="required">*</span>
+                                </label>
+                                <input type="text"
+                                       class="bill-form-control"
+                                       id="bill_number"
+                                       name="bill_number"
+                                       required
+                                       maxlength="50"
+                                       value="{{ bill.bill_number or '' }}"
+                                       autocomplete="off"
+                                       placeholder="Enter bill number">
+                                <div class="bill-form-text">Required field. Maximum 50 characters.</div>
+                            </div>
+
+                            <div class="bill-form-group">
+                                <label for="total_amount" class="bill-form-label">
+                                    Total Amount
+                                </label>
+                                <input type="number"
+                                       class="bill-form-control"
+                                       id="total_amount"
+                                       name="total_amount"
+                                       step="0.01"
+                                       value="{{ bill.total_amount or '' }}"
+                                       autocomplete="off"
+                                       placeholder="Enter total amount">
+                                <div class="bill-form-text">Optional. Total amount of the bill.</div>
+                            </div>
+
+                            <div class="bill-form-group">
+                                <label for="memo" class="bill-form-label">
+                                    Memo
+                                </label>
+                                <textarea class="bill-form-control"
+                                          id="memo"
+                                          name="memo"
+                                          rows="4"
+                                          autocomplete="off"
+                                          placeholder="Enter memo">{{ bill.memo or '' }}</textarea>
+                                <div class="bill-form-text">Optional. Memo or notes for this bill.</div>
+                            </div>
+
+                            <div class="bill-metadata" style="margin-top: 1rem;">
+                                <div class="bill-metadata-item">
+                                    <span>Created: {{ bill.created_datetime or 'Unknown' }}</span>
+                                </div>
+                                <div class="bill-metadata-item">
+                                    <span>Modified: {{ bill.modified_datetime or 'Unknown' }}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Line Items Section -->
+                <section id="line-items" class="bill-section">
+                    <div class="bill-form-card">
+                        <div class="bill-form-card-header">
+                            <h5>Line Items</h5>
+                        </div>
+                        <div class="bill-form-card-body">
+                            <div style="display: flex; justify-content: flex-end; margin-bottom: 1rem;">
+                                <button type="button" class="btn btn-primary btn-sm" onclick="showAddLineItemForm()">Add Line Item</button>
+                            </div>
+                            
+                            <div id="line-items-list">
+                                {% if line_items %}
+                                    {% for line_item in line_items %}
+                                    <div class="line-item-card" style="border: 1px solid #e0e0e0; border-radius: 4px; margin-bottom: 1rem; padding: 1rem;">
+                                        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem;">
+                                            <div style="flex: 1;">
+                                                <h6 style="margin: 0 0 0.5rem 0; font-size: var(--font-size-action-lg);">{{ line_item.description or 'No Description' }}</h6>
+                                                <div style="display: flex; flex-direction: column; gap: 0.25rem; font-size: var(--font-size-base); color: var(--color-text-secondary);">
+                                                    {% if line_item.quantity is not none %}
+                                                    <span>Quantity: {{ line_item.quantity }}</span>
+                                                    {% endif %}
+                                                    {% if line_item.rate is not none %}
+                                                    <span>Rate: ${{ "%.4f"|format(line_item.rate) }}</span>
+                                                    {% endif %}
+                                                    {% if line_item.amount is not none %}
+                                                    <span>Amount: ${{ "%.2f"|format(line_item.amount) }}</span>
+                                                    {% endif %}
+                                                    {% if line_item.price is not none %}
+                                                    <span>Price: ${{ "%.2f"|format(line_item.price) }}</span>
+                                                    {% endif %}
+                                                    {% if line_item.markup is not none %}
+                                                    <span>Markup: {{ "%.2f"|format(line_item.markup * 100) }}%</span>
+                                                    {% endif %}
+                                                    {% if line_item.is_billable is not none %}
+                                                    <span>Billable: {{ 'Yes' if line_item.is_billable else 'No' }}</span>
+                                                    {% endif %}
+                                                </div>
+                                            </div>
+                                            <div style="display: flex; gap: 0.5rem;">
+                                                <button type="button" class="btn btn-outline-danger btn-sm" onclick="deleteLineItem('{{ line_item.public_id }}')">Delete</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {% endfor %}
+                                {% else %}
+                                    <div style="text-align: center; padding: 2rem; color: var(--color-text-secondary);">
+                                        <p>No line items added yet.</p>
+                                    </div>
+                                {% endif %}
+                            </div>
+
+                            <!-- Add Line Item Form (hidden by default) -->
+                            <div id="add-line-item-form" style="display: none; border: 1px solid #e0e0e0; border-radius: 4px; padding: 1.5rem; margin-top: 1rem; background-color: var(--color-surface);">
+                                <h6 style="margin-top: 0; margin-bottom: 1rem;">Add New Line Item</h6>
+                                <div class="bill-form-group" style="margin-bottom: 1rem;">
+                                    <label for="line_item_description" class="bill-form-label">Description</label>
+                                    <textarea class="bill-form-control" id="line_item_description" rows="2" placeholder="Enter description"></textarea>
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                                    <div class="bill-form-group" style="margin-bottom: 0;">
+                                        <label for="line_item_quantity" class="bill-form-label">Quantity</label>
+                                        <input type="number" class="bill-form-control" id="line_item_quantity" min="0" step="1" placeholder="Quantity">
+                                    </div>
+                                    <div class="bill-form-group" style="margin-bottom: 0;">
+                                        <label for="line_item_rate" class="bill-form-label">Rate</label>
+                                        <input type="number" class="bill-form-control" id="line_item_rate" min="0" step="0.0001" placeholder="Rate per unit">
+                                    </div>
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                                    <div class="bill-form-group" style="margin-bottom: 0;">
+                                        <label for="line_item_sub_cost_code_id" class="bill-form-label">Sub Cost Code</label>
+                                        <select class="bill-form-control" id="line_item_sub_cost_code_id">
+                                            <option value="">-- Select --</option>
+                                            {% for sub_cost_code in sub_cost_codes %}
+                                            <option value="{{ sub_cost_code.id }}">{{ sub_cost_code.name or sub_cost_code.number or 'Unnamed' }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                    <div class="bill-form-group" style="margin-bottom: 0;">
+                                        <label for="line_item_is_billable" class="bill-form-label">Is Billable</label>
+                                        <select class="bill-form-control" id="line_item_is_billable">
+                                            <option value="">-- Select --</option>
+                                            <option value="true">Yes</option>
+                                            <option value="false">No</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="bill-form-group" style="margin-bottom: 1rem;">
+                                    <label for="line_item_markup" class="bill-form-label">Markup (%)</label>
+                                    <input type="number" class="bill-form-control" id="line_item_markup" min="0" step="0.01" placeholder="Enter markup percentage (e.g., 0.10 for 10%)">
+                                    <div class="bill-form-text">Optional. Markup percentage as a decimal (e.g., 0.10 for 10%).</div>
+                                </div>
+                                <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+                                    <button type="button" class="btn btn-secondary" onclick="hideAddLineItemForm()">Cancel</button>
+                                    <button type="button" class="btn btn-primary" onclick="addLineItem()">Add Line Item</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <div class="bill-form-actions">
+                    <div class="bill-form-actions-left">
+                        <button type="button" class="btn btn-danger" onclick="deleteBill()">Delete</button>
+                    </div>
+                    <div class="bill-form-actions-right">
+                        <a href="/bill/list" class="btn btn-secondary">Cancel</a>
+                        <button type="submit" class="btn btn-primary">Complete Bill</button>
+                    </div>
+                </div>
+            </form>
+        </main>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        // Save status management
+        function updateSaveStatus(section, status) {
+            const navItem = document.querySelector(`[data-section="${section}"]`);
+            if (!navItem) return;
+            
+            const icon = navItem.querySelector('.bill-save-status-icon');
+            if (!icon) return;
+            
+            icon.className = 'bill-save-status-icon';
+            if (status === 'saving') {
+                icon.classList.add('saving');
+            } else if (status === 'saved') {
+                icon.classList.add('saved');
+            } else if (status === 'error') {
+                icon.classList.add('error');
+            }
+        }
+
+        // Sidebar navigation
+        function switchSection(sectionId) {
+            // Hide all sections
+            document.querySelectorAll('.bill-section').forEach(section => {
+                section.classList.remove('active');
+            });
+            
+            // Show selected section
+            const targetSection = document.getElementById(sectionId);
+            if (targetSection) {
+                targetSection.classList.add('active');
+            }
+            
+            // Update sidebar active state
+            document.querySelectorAll('.bill-nav-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            const navItem = document.querySelector(`[data-section="${sectionId}"]`);
+            if (navItem) {
+                navItem.classList.add('active');
+            }
+        }
+
+        // Initialize sidebar navigation
+        document.querySelectorAll('.bill-nav-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                e.preventDefault();
+                const sectionId = item.getAttribute('data-section');
+                switchSection(sectionId);
+            });
+        });
+
+        // Debounced backup save function
+        let backupSaveTimeout = null;
+
+        function setupBackupSave(saveFunction) {
+            if (backupSaveTimeout) {
+                clearTimeout(backupSaveTimeout);
+            }
+            backupSaveTimeout = setTimeout(() => {
+                saveFunction();
+                backupSaveTimeout = null;
+            }, 8000);
+        }
+
+        // Get row version helper
+        function getRowVersion() {
+            return document.getElementById('row_version').value;
+        }
+
+        // Save Bill
+        async function saveBill() {
+            const vendorPublicId = document.getElementById('vendor_public_id').value;
+            const billDate = document.getElementById('bill_date').value;
+            const dueDate = document.getElementById('due_date').value;
+            const billNumber = document.getElementById('bill_number').value.trim();
+            const billPublicId = document.getElementById('public_id').value;
+            
+            // Validate required fields
+            if (!vendorPublicId || !billDate || !dueDate || !billNumber || !billPublicId) {
+                return;
+            }
+            
+            updateSaveStatus('bill-details', 'saving');
+            
+            const payload = {
+                row_version: getRowVersion(),
+                vendor_public_id: vendorPublicId,
+                terms_id: document.getElementById('terms_id').value ? parseInt(document.getElementById('terms_id').value) : null,
+                bill_date: billDate,
+                due_date: dueDate,
+                bill_number: billNumber,
+                total_amount: document.getElementById('total_amount').value ? parseFloat(document.getElementById('total_amount').value) : null,
+                memo: document.getElementById('memo').value || null
+            };
+            
+            try {
+                const response = await fetch(`/api/v1/update/bill/${billPublicId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    },
+                    body: JSON.stringify(payload)
+                });
+                
+                if (response.ok) {
+                    const bill = await response.json();
+                    document.getElementById('row_version').value = bill.row_version;
+                    updateSaveStatus('bill-details', 'saved');
+                    if (backupSaveTimeout) {
+                        clearTimeout(backupSaveTimeout);
+                        backupSaveTimeout = null;
+                    }
+                } else {
+                    updateSaveStatus('bill-details', 'error');
+                    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                    console.error('Error saving bill:', error);
+                }
+            } catch (error) {
+                updateSaveStatus('bill-details', 'error');
+                console.error('Error saving bill:', error);
+            }
+        }
+
+        // Event listeners for auto-save
+        document.getElementById('vendor_public_id').addEventListener('change', () => {
+            saveBill();
+            setupBackupSave(saveBill);
+        });
+        
+        document.getElementById('bill_date').addEventListener('blur', saveBill);
+        document.getElementById('bill_date').addEventListener('change', () => setupBackupSave(saveBill));
+        
+        document.getElementById('due_date').addEventListener('blur', saveBill);
+        document.getElementById('due_date').addEventListener('change', () => setupBackupSave(saveBill));
+        
+        document.getElementById('bill_number').addEventListener('blur', saveBill);
+        document.getElementById('bill_number').addEventListener('input', () => setupBackupSave(saveBill));
+        
+        document.getElementById('terms_id').addEventListener('blur', saveBill);
+        document.getElementById('terms_id').addEventListener('input', () => setupBackupSave(saveBill));
+        
+        document.getElementById('total_amount').addEventListener('blur', saveBill);
+        document.getElementById('total_amount').addEventListener('input', () => setupBackupSave(saveBill));
+        
+        document.getElementById('memo').addEventListener('blur', saveBill);
+        document.getElementById('memo').addEventListener('input', () => setupBackupSave(saveBill));
+
+        // Navigation protection
+        window.addEventListener('beforeunload', (e) => {
+            saveBill();
+        });
+
+        // Final form submission
+        document.getElementById('editBillForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            // Save bill first
+            await saveBill();
+
+            const billPublicId = document.getElementById('public_id').value;
+            if (!billPublicId) {
+                alert('Bill not found.');
+                return;
+            }
+
+            // Validate required fields
+            const vendorPublicId = document.getElementById('vendor_public_id').value;
+            const billDate = document.getElementById('bill_date').value;
+            const dueDate = document.getElementById('due_date').value;
+            const billNumber = document.getElementById('bill_number').value.trim();
+            
+            if (!vendorPublicId || !billDate || !dueDate || !billNumber) {
+                alert('Vendor, Bill Date, Due Date, and Bill Number are required.');
+                return;
+            }
+
+            // Set is_draft to false and save
+            try {
+                const response = await fetch(`/api/v1/update/bill/${billPublicId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    },
+                    body: JSON.stringify({
+                        row_version: getRowVersion(),
+                        vendor_public_id: vendorPublicId,
+                        bill_date: billDate,
+                        due_date: dueDate,
+                        bill_number: billNumber,
+                        terms_id: document.getElementById('terms_id').value ? parseInt(document.getElementById('terms_id').value) : null,
+                        total_amount: document.getElementById('total_amount').value ? parseFloat(document.getElementById('total_amount').value) : null,
+                        memo: document.getElementById('memo').value || null,
+                        is_draft: false
+                    })
+                });
+
+                if (response.ok) {
+                    window.location.href = '/bill/list';
+                } else {
+                    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                    alert('Error completing bill: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error completing bill: ' + error.message);
+            }
+        });
+
+        // Line Item Management Functions
+        function showAddLineItemForm() {
+            document.getElementById('add-line-item-form').style.display = 'block';
+        }
+
+        function hideAddLineItemForm() {
+            document.getElementById('add-line-item-form').style.display = 'none';
+            // Clear form fields
+            document.getElementById('line_item_description').value = '';
+            document.getElementById('line_item_quantity').value = '';
+            document.getElementById('line_item_rate').value = '';
+            document.getElementById('line_item_sub_cost_code_id').value = '';
+            document.getElementById('line_item_is_billable').value = '';
+            document.getElementById('line_item_markup').value = '';
+        }
+
+        async function addLineItem() {
+            const billPublicId = document.getElementById('public_id').value;
+            if (!billPublicId) {
+                alert('Please save the bill first before adding line items.');
+                return;
+            }
+
+            updateSaveStatus('line-items', 'saving');
+
+            // Get bill to get the database ID
+            try {
+                const billResponse = await fetch(`/api/v1/get/bill/${billPublicId}`, {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    }
+                });
+                
+                if (!billResponse.ok) {
+                    updateSaveStatus('line-items', 'error');
+                    alert('Error fetching bill information.');
+                    return;
+                }
+                
+                const bill = await billResponse.json();
+                const billId = bill.id;
+
+                const payload = {
+                    bill_id: billId,
+                    description: document.getElementById('line_item_description').value || null,
+                    quantity: document.getElementById('line_item_quantity').value ? parseInt(document.getElementById('line_item_quantity').value) : null,
+                    rate: document.getElementById('line_item_rate').value ? parseFloat(document.getElementById('line_item_rate').value) : null,
+                    sub_cost_code_id: document.getElementById('line_item_sub_cost_code_id').value ? parseInt(document.getElementById('line_item_sub_cost_code_id').value) : null,
+                    is_billable: document.getElementById('line_item_is_billable').value === 'true' ? true : (document.getElementById('line_item_is_billable').value === 'false' ? false : null),
+                    markup: document.getElementById('line_item_markup').value ? parseFloat(document.getElementById('line_item_markup').value) : null
+                };
+
+                const response = await fetch('/api/v1/create/bill_line_item', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.ok) {
+                    hideAddLineItemForm();
+                    // Reload the page to show the new line item
+                    updateSaveStatus('line-items', 'saved');
+                    window.location.reload();
+                } else {
+                    updateSaveStatus('line-items', 'error');
+                    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                    alert('Error creating line item: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                updateSaveStatus('line-items', 'error');
+                alert('Error creating line item: ' + error.message);
+            }
+        }
+
+        async function deleteLineItem(lineItemPublicId) {
+            if (!confirm('Are you sure you want to delete this line item?')) {
+                return;
+            }
+
+            updateSaveStatus('line-items', 'saving');
+
+            try {
+                // First get the line item to get its row_version
+                const getResponse = await fetch(`/api/v1/get/bill_line_item/${lineItemPublicId}`, {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    }
+                });
+
+                if (!getResponse.ok) {
+                    updateSaveStatus('line-items', 'error');
+                    alert('Error fetching line item information.');
+                    return;
+                }
+
+                const lineItem = await getResponse.json();
+
+                const response = await fetch(`/api/v1/delete/bill_line_item/${lineItemPublicId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    },
+                    body: JSON.stringify({
+                        row_version: lineItem.row_version
+                    })
+                });
+
+                if (response.ok) {
+                    // Reload the page to update the line items list
+                    updateSaveStatus('line-items', 'saved');
+                    window.location.reload();
+                } else {
+                    updateSaveStatus('line-items', 'error');
+                    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                    alert('Error deleting line item: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                updateSaveStatus('line-items', 'error');
+                alert('Error deleting line item: ' + error.message);
+            }
+        }
+
+        async function deleteBill() {
+            if (confirm('Are you sure you want to delete this bill? This action cannot be undone.')) {
+                const formData = new FormData(document.getElementById('editBillForm'));
+
+                try {
+                    const response = await fetch(`/api/v1/delete/bill/${formData.get('public_id')}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        },
+                        body: JSON.stringify({ row_version: formData.get('row_version') })
+                    });
+
+                    if (response.ok) {
+                        window.location.href = '/bill/list';
+                    } else {
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const error = await response.json();
+                            let message = 'Unknown error';
+                            if (error.detail) {
+                                message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                            } else if (error.message) {
+                                message = error.message;
+                            } else if (typeof error === 'string') {
+                                message = error;
+                            } else {
+                                message = JSON.stringify(error);
+                            }
+                            alert('Error deleting bill: ' + message);
+                        } else {
+                            const errorText = await response.text();
+                            alert('Error deleting bill: ' + errorText);
+                        }
+                    }
+                } catch (error) {
+                    alert('Error deleting bill: ' + error.message);
+                }
+            }
+        }
+    </script>
+{% endblock %}

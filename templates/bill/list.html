@@ -1,0 +1,69 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Bills - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/bill.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="bill-page-header">
+        <h1>Bills</h1>
+        <a href="/bill/create?new=true" class="btn btn-primary">Add Bill</a>
+    </div>
+
+    {% if bills %}
+        <div class="bill-list-container">
+            <div class="bill-grid">
+                {% for bill in bills %}
+                <div class="bill-card">
+                    <div class="bill-card-content">
+                        <h5 class="bill-card-title">
+                            {{ bill.bill_number or 'No Bill Number' }}
+                        </h5>
+                        <div class="bill-metadata" style="flex: 1; display: flex; flex-direction: column; gap: 0.25rem;">
+                            {% if bill.vendor_name %}
+                            <div class="bill-metadata-item">
+                                <span>{{ bill.vendor_name }}</span>
+                            </div>
+                            {% elif bill.vendor_id %}
+                            <div class="bill-metadata-item">
+                                <span>Vendor ID: {{ bill.vendor_id }}</span>
+                            </div>
+                            {% endif %}
+                            {% if bill.bill_date %}
+                            <div class="bill-metadata-item">
+                                <span>Bill Date: {{ bill.bill_date }}</span>
+                            </div>
+                            {% endif %}
+                            {% if bill.due_date %}
+                            <div class="bill-metadata-item">
+                                <span>Due Date: {{ bill.due_date }}</span>
+                            </div>
+                            {% endif %}
+                            {% if bill.total_amount %}
+                            <div class="bill-metadata-item">
+                                <span>Amount: ${{ "%.2f"|format(bill.total_amount) }}</span>
+                            </div>
+                            {% endif %}
+                        </div>
+                        <div class="bill-card-actions">
+                            <a href="/bill/{{ bill.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
+                            <a href="/bill/{{ bill.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    {% else %}
+        <div class="bill-empty-state">
+            <div class="bill-empty-state-icon">📄</div>
+            <h3>No Bills Found</h3>
+            <p>Create your first bill to get started.</p>
+            <a href="/bill/create?new=true" class="btn btn-primary">Create Bill</a>
+        </div>
+    {% endif %}
+
+{% endblock %}

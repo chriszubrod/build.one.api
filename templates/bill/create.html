@@ -1,0 +1,998 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Create Bill - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/bill.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <!-- Toast notification container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <div class="bill-create-fullpage">
+        <div class="bill-create-header">
+            <h1>Create Bill</h1>
+            <a href="/bill/list" class="btn btn-secondary">Back to List</a>
+        </div>
+
+        <div class="bill-create-content">
+            <form id="createBillForm" autocomplete="off">
+                <!-- Hidden fields for tracking bill state -->
+                <input type="hidden" id="bill_public_id" name="bill_public_id" value="">
+                <input type="hidden" id="row_version" name="row_version" value="">
+                
+                <!-- Bill Details Section -->
+                <section id="bill-details" class="bill-section">
+                    <div class="bill-form-card">
+                        <div class="bill-form-card-header">
+                            <h5>Bill Details</h5>
+                            <span id="bill-save-status" class="save-status"></span>
+                        </div>
+                        <div class="bill-form-card-body">
+                            <div class="bill-form-group">
+                                <label for="vendor_public_id" class="bill-form-label">
+                                    Vendor <span class="required">*</span>
+                                </label>
+                                <select class="bill-form-control"
+                                        id="vendor_public_id"
+                                        name="vendor_public_id"
+                                        required
+                                        autocomplete="off">
+                                    <option value="">-- Select a vendor --</option>
+                                    {% for vendor in vendors %}
+                                    <option value="{{ vendor.public_id }}">{{ vendor.name or 'Unnamed Vendor' }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+
+                            <div class="bill-form-group-row">
+                                <div class="bill-form-group">
+                                    <label for="terms_id" class="bill-form-label">
+                                        Terms ID
+                                    </label>
+                                    <input type="number"
+                                           class="bill-form-control"
+                                           id="terms_id"
+                                           name="terms_id"
+                                           autocomplete="off"
+                                           placeholder="Enter terms ID">
+                                </div>
+
+                                <div class="bill-form-group">
+                                    <label for="bill_date" class="bill-form-label">
+                                        Bill Date <span class="required">*</span>
+                                    </label>
+                                    <input type="date"
+                                           class="bill-form-control"
+                                           id="bill_date"
+                                           name="bill_date"
+                                           required
+                                           autocomplete="off"
+                                           placeholder="Enter bill date">
+                                </div>
+
+                                <div class="bill-form-group">
+                                    <label for="due_date" class="bill-form-label">
+                                        Due Date <span class="required">*</span>
+                                    </label>
+                                    <input type="date"
+                                           class="bill-form-control"
+                                           id="due_date"
+                                           name="due_date"
+                                           required
+                                           autocomplete="off"
+                                           placeholder="Enter due date">
+                                </div>
+
+                                <div class="bill-form-group" style="position: relative;">
+                                    <label for="bill_number" class="bill-form-label">
+                                        Bill Number <span class="required">*</span>
+                                    </label>
+                                    <div style="position: relative; width: 100%;">
+                                        <input type="text"
+                                               class="bill-form-control"
+                                               id="bill_number"
+                                               name="bill_number"
+                                               required
+                                               maxlength="50"
+                                               autocomplete="off"
+                                               placeholder="Enter bill number"
+                                               style="width: 100%; padding-right: 0.5rem;">
+                                        <span id="bill_number_warning" class="bill-warning-label" style="display: none; position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%); z-index: 10; pointer-events: none;"></span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Line Items Section -->
+                            <div style="margin-top: 2rem; margin-bottom: 2rem; padding-top: 2rem; border-top: 1px solid #e0e0e0;">
+                                <h5 style="margin: 0 0 1rem 0; font-size: var(--font-size-action-lg); font-weight: 600; color: var(--color-text);">Line Items</h5>
+                                
+                                <div id="line-items-list"></div>
+
+                                <!-- Add Line Item Form (shown by default) -->
+                                <div id="add-line-item-form" style="display: block; border: 1px solid #e0e0e0; border-radius: 4px; padding: 1.5rem; margin-top: 1rem; background-color: var(--color-surface);">
+                                    <!-- Hidden fields for tracking line item state -->
+                                    <input type="hidden" class="line-item-public-id" value="">
+                                    <input type="hidden" class="line-item-row-version" value="">
+                                    <div class="bill-line-item-grid">
+                                        <!-- Sub Cost Code -->
+                                        <div class="bill-form-group" style="margin-bottom: 0;">
+                                            <label for="line_item_sub_cost_code_id" class="bill-form-label">Sub Cost Code <span class="required">*</span></label>
+                                            <select class="bill-form-control" id="line_item_sub_cost_code_id">
+                                                <option value="">-- Select --</option>
+                                                {% for sub_cost_code in sub_cost_codes %}
+                                                <option value="{{ sub_cost_code.id }}">
+                                                    {% if sub_cost_code.number and sub_cost_code.name %}
+                                                        {{ sub_cost_code.number }} - {{ sub_cost_code.name }}
+                                                    {% elif sub_cost_code.number %}
+                                                        {{ sub_cost_code.number }}
+                                                    {% elif sub_cost_code.name %}
+                                                        {{ sub_cost_code.name }}
+                                                    {% else %}
+                                                        Unnamed
+                                                    {% endif %}
+                                                </option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        
+                                        <!-- Description -->
+                                        <div class="bill-form-group bill-line-item-description" style="margin-bottom: 0;">
+                                            <label for="line_item_description" class="bill-form-label">Description <span class="required">*</span></label>
+                                            <textarea class="bill-form-control" id="line_item_description" rows="1" placeholder="Enter description" style="resize: vertical;"></textarea>
+                                        </div>
+                                        
+                                        <!-- Quantity -->
+                                        <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_quantity" class="bill-form-label">Quantity <span class="required">*</span></label>
+                                            <input type="number" class="bill-form-control" id="line_item_quantity" min="0" step="1" placeholder="1" value="1">
+                                        </div>
+                                        
+                                        <!-- Rate -->
+                                        <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_rate" class="bill-form-label">Rate <span class="required">*</span></label>
+                                            <input type="number" class="bill-form-control" id="line_item_rate" min="0" step="0.0001" placeholder="Rate">
+                                        </div>
+                                        
+                                        <!-- Amount (read-only, calculated) -->
+                                        <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_amount" class="bill-form-label">Amount</label>
+                                            <input type="number" class="bill-form-control" id="line_item_amount" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);">
+                                        </div>
+                                        
+                                        <!-- Is Billable (checkbox) -->
+                                        <div class="bill-form-group bill-line-item-checkbox" style="margin-bottom: 0;">
+                                            <label for="line_item_is_billable" class="bill-form-label">Is Billable</label>
+                                            <div style="display: flex; align-items: center; height: 2.5rem;">
+                                                <input type="checkbox" class="bill-form-control" id="line_item_is_billable" checked style="width: auto; height: auto; margin: 0;">
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Markup -->
+                                        <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_markup" class="bill-form-label">Markup (%)</label>
+                                            <input type="number" class="bill-form-control" id="line_item_markup" min="0" step="0.01" placeholder="0.00">
+                                        </div>
+                                        
+                                        <!-- Price (read-only, calculated) -->
+                                        <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_price" class="bill-form-label">Price</label>
+                                            <input type="number" class="bill-form-control" id="line_item_price" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);">
+                                        </div>
+                                    </div>
+                                    <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+                                        <button type="button" class="btn btn-secondary" onclick="handleCancelLineItemForm(this)">Cancel</button>
+                                        <button type="button" class="btn btn-primary" onclick="addLineItem()">Add Line Item</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="bill-form-group">
+                                <label for="total_amount" class="bill-form-label">
+                                    Total Amount
+                                </label>
+                                <input type="number"
+                                       class="bill-form-control"
+                                       id="total_amount"
+                                       name="total_amount"
+                                       step="0.01"
+                                       readonly
+                                       tabindex="-1"
+                                       style="background-color: var(--color-surface);">
+                            </div>
+
+                            <div class="bill-form-group">
+                                <label for="memo" class="bill-form-label">
+                                    Memo
+                                </label>
+                                <textarea class="bill-form-control"
+                                          id="memo"
+                                          name="memo"
+                                          rows="4"
+                                          autocomplete="off"
+                                          placeholder="Enter memo"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <div class="bill-form-actions">
+                    <div class="bill-form-actions-left"></div>
+                    <div class="bill-form-actions-right">
+                        <a href="/bill/list" class="btn btn-secondary">Cancel</a>
+                        <button type="submit" class="btn btn-primary">Complete Bill</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        // Focus Vendor select on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            const vendorSelect = document.getElementById('vendor_public_id');
+            if (vendorSelect) {
+                vendorSelect.focus();
+            }
+        });
+
+        // Set DueDate equal to BillDate when BillDate is set
+        function setDueDateFromBillDate() {
+            const billDateInput = document.getElementById('bill_date');
+            const dueDateInput = document.getElementById('due_date');
+            const billNumberInput = document.getElementById('bill_number');
+            
+            if (billDateInput && dueDateInput && billDateInput.value) {
+                dueDateInput.value = billDateInput.value;
+                // Focus on BillNumber to skip DueDate in tab order
+                if (billNumberInput) {
+                    billNumberInput.focus();
+                }
+            }
+        }
+
+        // Add listener to BillDate field
+        document.addEventListener('DOMContentLoaded', function() {
+            const billDateInput = document.getElementById('bill_date');
+            if (billDateInput) {
+                billDateInput.addEventListener('change', setDueDateFromBillDate);
+                billDateInput.addEventListener('blur', setDueDateFromBillDate);
+            }
+        });
+
+        // =====================
+        // Bill Auto-Save
+        // =====================
+
+        let autoSaveTimeout = null;
+        let isSaving = false;
+
+        // Update save status display (simple badge)
+        function updateSaveStatus(status, message) {
+            const statusElement = document.getElementById('bill-save-status');
+            if (!statusElement) return;
+            
+            statusElement.textContent = message || '';
+            statusElement.className = 'save-status';
+            
+            if (status === 'saving') {
+                statusElement.classList.add('save-status-saving');
+            } else if (status === 'saved') {
+                statusElement.classList.add('save-status-saved');
+            } else if (status === 'error') {
+                statusElement.classList.add('save-status-error');
+            }
+        }
+
+        // Show toast notification at top of page
+        function showToast(message, type = 'info', duration = 5000) {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.textContent = message;
+            
+            container.appendChild(toast);
+            
+            // Trigger animation
+            setTimeout(() => toast.classList.add('toast-visible'), 10);
+            
+            // Auto-remove after duration
+            setTimeout(() => {
+                toast.classList.remove('toast-visible');
+                setTimeout(() => toast.remove(), 300);
+            }, duration);
+        }
+
+        // Check if all required Bill fields have values
+        function canAutoSaveBill() {
+            const vendor = document.getElementById('vendor_public_id');
+            const billDate = document.getElementById('bill_date');
+            const dueDate = document.getElementById('due_date');
+            const billNumber = document.getElementById('bill_number');
+            
+            return vendor && vendor.value &&
+                   billDate && billDate.value &&
+                   dueDate && dueDate.value &&
+                   billNumber && billNumber.value.trim();
+        }
+
+        // Debounced auto-save trigger
+        function triggerAutoSaveBill() {
+            if (autoSaveTimeout) {
+                clearTimeout(autoSaveTimeout);
+            }
+            autoSaveTimeout = setTimeout(autoSaveBill, 300);
+        }
+
+        // Auto-save the Bill
+        async function autoSaveBill() {
+            if (!canAutoSaveBill() || isSaving) {
+                return;
+            }
+
+            isSaving = true;
+            updateSaveStatus('saving', 'Saving...');
+
+            const billPublicId = document.getElementById('bill_public_id').value;
+            const rowVersion = document.getElementById('row_version').value;
+
+            // Gather Bill data
+            const totalAmountEl = document.getElementById('total_amount');
+            const totalAmountValue = totalAmountEl && totalAmountEl.value ? parseFloat(totalAmountEl.value) : null;
+            console.log('Bill auto-save - total_amount element value:', totalAmountEl ? totalAmountEl.value : 'element not found');
+            console.log('Bill auto-save - total_amount parsed:', totalAmountValue);
+            
+            const billData = {
+                vendor_public_id: document.getElementById('vendor_public_id').value,
+                terms_id: document.getElementById('terms_id').value ? parseInt(document.getElementById('terms_id').value) : null,
+                bill_date: document.getElementById('bill_date').value,
+                due_date: document.getElementById('due_date').value,
+                bill_number: document.getElementById('bill_number').value.trim(),
+                total_amount: totalAmountValue,
+                memo: document.getElementById('memo').value || null,
+                is_draft: true
+            };
+            
+            console.log('Bill auto-save - billData:', billData);
+
+            try {
+                let response;
+                
+                if (billPublicId) {
+                    // Update existing Bill
+                    billData.row_version = rowVersion;
+                    response = await fetch(`/api/v1/update/bill/${billPublicId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(billData)
+                    });
+                } else {
+                    // Create new Bill
+                    response = await fetch('/api/v1/create/bill', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(billData)
+                    });
+                }
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    console.error('Bill auto-save failed:', error);
+                    updateSaveStatus('error', 'Error');
+                    // Show detailed message in toast
+                    if (error.detail) {
+                        showToast(error.detail, 'error');
+                    }
+                    return;
+                }
+
+                const bill = await response.json();
+                
+                // Store the Bill public_id and row_version for future updates
+                document.getElementById('bill_public_id').value = bill.public_id;
+                document.getElementById('row_version').value = bill.row_version;
+                
+                console.log('Bill auto-saved:', bill.public_id);
+                updateSaveStatus('saved', 'Saved');
+                
+            } catch (error) {
+                console.error('Bill auto-save error:', error);
+                updateSaveStatus('error', 'Error');
+                showToast(error.message || 'Save failed', 'error');
+            } finally {
+                isSaving = false;
+            }
+        }
+
+        // Add listeners to trigger auto-save when fields change
+        document.addEventListener('DOMContentLoaded', function() {
+            const fieldsToWatch = ['vendor_public_id', 'bill_date', 'due_date', 'bill_number', 'memo'];
+            
+            fieldsToWatch.forEach(fieldId => {
+                const field = document.getElementById(fieldId);
+                if (field) {
+                    field.addEventListener('change', triggerAutoSaveBill);
+                    field.addEventListener('blur', triggerAutoSaveBill);
+                }
+            });
+        });
+
+        // =====================
+        // BillLineItem Auto-Save
+        // =====================
+
+        let lineItemSaveTimeouts = new Map(); // Track debounce per form
+        let lineItemIsSaving = new Map(); // Track saving state per form
+
+        // Check if a line item form has required fields filled
+        function canAutoSaveLineItem(formElement) {
+            const billPublicId = document.getElementById('bill_public_id').value;
+            if (!billPublicId) return false; // Bill must be saved first
+            
+            const subCostCode = formElement.querySelector('[id^="line_item_sub_cost_code_id"]');
+            const description = formElement.querySelector('[id^="line_item_description"]');
+            const quantity = formElement.querySelector('[id^="line_item_quantity"]');
+            const rate = formElement.querySelector('[id^="line_item_rate"]');
+            
+            return subCostCode && subCostCode.value &&
+                   description && description.value.trim() &&
+                   quantity && quantity.value &&
+                   rate && rate.value;
+        }
+
+        // Debounced trigger for line item auto-save
+        function triggerAutoSaveLineItem(formElement) {
+            const formId = formElement.id;
+            
+            if (lineItemSaveTimeouts.has(formId)) {
+                clearTimeout(lineItemSaveTimeouts.get(formId));
+            }
+            
+            lineItemSaveTimeouts.set(formId, setTimeout(() => {
+                autoSaveLineItem(formElement);
+            }, 300));
+        }
+
+        // Auto-save a single line item
+        async function autoSaveLineItem(formElement) {
+            const formId = formElement.id;
+            
+            // Prevent concurrent saves for the same form
+            if (lineItemIsSaving.get(formId)) {
+                console.log('Line item save already in progress for:', formId);
+                return;
+            }
+            
+            if (!canAutoSaveLineItem(formElement)) {
+                return;
+            }
+
+            const billPublicId = document.getElementById('bill_public_id').value;
+            const publicIdField = formElement.querySelector('.line-item-public-id');
+            const rowVersionField = formElement.querySelector('.line-item-row-version');
+            
+            const publicId = publicIdField ? publicIdField.value : '';
+            const rowVersion = rowVersionField ? rowVersionField.value : '';
+
+            // Gather line item data
+            const subCostCode = formElement.querySelector('[id^="line_item_sub_cost_code_id"]');
+            const description = formElement.querySelector('[id^="line_item_description"]');
+            const quantity = formElement.querySelector('[id^="line_item_quantity"]');
+            const rate = formElement.querySelector('[id^="line_item_rate"]');
+            const amountInput = formElement.querySelector('[id^="line_item_amount"]');
+            const isBillable = formElement.querySelector('[id^="line_item_is_billable"]');
+            const markup = formElement.querySelector('[id^="line_item_markup"]');
+            const priceInput = formElement.querySelector('[id^="line_item_price"]');
+
+            const lineItemData = {
+                bill_public_id: billPublicId,
+                sub_cost_code_id: subCostCode && subCostCode.value ? parseInt(subCostCode.value) : null,
+                description: description ? description.value.trim() : null,
+                quantity: quantity && quantity.value ? parseInt(quantity.value) : null,
+                rate: rate && rate.value ? parseFloat(rate.value) : null,
+                amount: amountInput && amountInput.value ? parseFloat(amountInput.value) : null,
+                is_billable: isBillable ? isBillable.checked : true,
+                markup: markup && markup.value ? parseFloat(markup.value) : null,
+                price: priceInput && priceInput.value ? parseFloat(priceInput.value) : null,
+                is_draft: true
+            };
+
+            // Set saving flag and update badge
+            lineItemIsSaving.set(formId, true);
+            updateSaveStatus('saving', 'Saving...');
+
+            try {
+                let response;
+                
+                if (publicId) {
+                    // Update existing line item
+                    console.log('Updating existing line item:', publicId);
+                    lineItemData.row_version = rowVersion;
+                    response = await fetch(`/api/v1/update/bill_line_item/${publicId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(lineItemData)
+                    });
+                } else {
+                    // Create new line item
+                    console.log('Creating new line item for form:', formId);
+                    response = await fetch('/api/v1/create/bill_line_item', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(lineItemData)
+                    });
+                }
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    console.error('Line item auto-save failed:', error);
+                    updateSaveStatus('error', 'Error');
+                    showToast(error.detail || 'Line item save failed', 'error');
+                    return;
+                }
+
+                const lineItem = await response.json();
+                
+                // Store the public_id and row_version for future updates
+                if (publicIdField) publicIdField.value = lineItem.public_id;
+                if (rowVersionField) rowVersionField.value = lineItem.row_version;
+                
+                console.log('Line item auto-saved:', lineItem.public_id, 'for form:', formId);
+                updateSaveStatus('saved', 'Saved');
+                showToast('Line item saved', 'success', 2000);
+                
+            } catch (error) {
+                console.error('Line item auto-save error:', error);
+                updateSaveStatus('error', 'Error');
+                showToast(error.message || 'Line item save failed', 'error');
+            } finally {
+                // Clear saving flag
+                lineItemIsSaving.set(formId, false);
+            }
+        }
+
+        // Set up auto-save listeners for a line item form
+        function setupLineItemAutoSave(formElement) {
+            const fieldsToWatch = [
+                '[id^="line_item_sub_cost_code_id"]',
+                '[id^="line_item_description"]',
+                '[id^="line_item_quantity"]',
+                '[id^="line_item_rate"]',
+                '[id^="line_item_is_billable"]',
+                '[id^="line_item_markup"]'
+            ];
+            
+            fieldsToWatch.forEach(selector => {
+                const field = formElement.querySelector(selector);
+                if (field) {
+                    field.addEventListener('change', () => triggerAutoSaveLineItem(formElement));
+                    field.addEventListener('blur', () => triggerAutoSaveLineItem(formElement));
+                }
+            });
+        }
+
+        // Line Item Management
+        let lineItemCounter = 0;
+
+        // Generate unique IDs for line item elements
+        function generateLineItemId(baseId) {
+            return `${baseId}_${lineItemCounter}`;
+        }
+
+        // Clone and add a new line item form
+        function addLineItemForm() {
+            const originalForm = document.getElementById('add-line-item-form');
+            if (!originalForm) {
+                console.error('Line item form not found');
+                return;
+            }
+
+            // Clone the form
+            const clonedForm = originalForm.cloneNode(true);
+            lineItemCounter++;
+            
+            // Give the cloned form a unique ID
+            clonedForm.id = `add-line-item-form-${lineItemCounter}`;
+            
+            // Update all element IDs in the cloned form to be unique
+            const elementsWithId = clonedForm.querySelectorAll('[id]');
+            elementsWithId.forEach(element => {
+                const oldId = element.id;
+                element.id = `${oldId}_${lineItemCounter}`;
+            });
+            
+            // Update label 'for' attributes to match new IDs
+            const labels = clonedForm.querySelectorAll('label[for]');
+            labels.forEach(label => {
+                const oldFor = label.getAttribute('for');
+                label.setAttribute('for', `${oldFor}_${lineItemCounter}`);
+            });
+
+            // Clear all input values in the cloned form
+            clearLineItemFormInputs(clonedForm);
+
+            // Update button onclick handlers
+            const cancelButton = clonedForm.querySelector('button.btn-secondary');
+            const addButton = clonedForm.querySelector('button.btn-primary');
+            
+            if (cancelButton) {
+                cancelButton.onclick = function() {
+                    handleCancelLineItemForm(this);
+                };
+            }
+            
+            if (addButton) {
+                addButton.onclick = function() {
+                    addLineItemForm(); // Add another new form
+                };
+            }
+
+            // Set up event listeners for calculations on the cloned form
+            setupLineItemCalculations(clonedForm);
+            
+            // Set up auto-save listeners for the cloned form
+            setupLineItemAutoSave(clonedForm);
+
+            // Find all existing forms and insert after the last one
+            const allForms = getAllLineItemForms();
+            const lastForm = allForms[allForms.length - 1];
+            lastForm.parentNode.insertBefore(clonedForm, lastForm.nextSibling);
+            
+            console.log('Added new line item form:', clonedForm.id, 'Total forms:', countLineItemForms());
+        }
+
+        // Set up calculation listeners for a specific line item form
+        function setupLineItemCalculations(formElement) {
+            const quantityInput = formElement.querySelector('[id^="line_item_quantity"]');
+            const rateInput = formElement.querySelector('[id^="line_item_rate"]');
+            const markupInput = formElement.querySelector('[id^="line_item_markup"]');
+            const amountInput = formElement.querySelector('[id^="line_item_amount"]');
+            const priceInput = formElement.querySelector('[id^="line_item_price"]');
+
+            // Calculate Amount = Quantity * Rate
+            const calculateAmount = function() {
+                if (!quantityInput || !rateInput || !amountInput) {
+                    return;
+                }
+                
+                const quantity = parseFloat(quantityInput.value) || 0;
+                const rate = parseFloat(rateInput.value) || 0;
+                const amount = quantity * rate;
+                amountInput.value = amount.toFixed(2);
+                
+                // Also update Price when Amount changes
+                calculatePrice();
+            };
+
+            // Calculate Price = Amount * (1 + Markup)
+            const calculatePrice = function() {
+                if (!amountInput || !priceInput) {
+                    return;
+                }
+                
+                const amount = parseFloat(amountInput.value) || 0;
+                const markup = markupInput ? (parseFloat(markupInput.value) || 0) : 0;
+                const price = amount * (1 + markup);
+                priceInput.value = price.toFixed(2);
+                
+                // Update the bill's Total Amount
+                calculateTotalAmount();
+            };
+
+            // Add listeners to Quantity and Rate for Amount calculation
+            if (quantityInput) {
+                quantityInput.addEventListener('input', calculateAmount);
+                quantityInput.addEventListener('change', calculateAmount);
+            }
+            if (rateInput) {
+                rateInput.addEventListener('input', calculateAmount);
+                rateInput.addEventListener('change', calculateAmount);
+            }
+            
+            // Add listener to Markup for Price calculation
+            if (markupInput) {
+                markupInput.addEventListener('input', calculatePrice);
+                markupInput.addEventListener('change', calculatePrice);
+            }
+        }
+
+        // Add line item (placeholder - will be implemented later)
+        function addLineItem(formElement) {
+            console.log('Add line item called for form:', formElement);
+            // This will be implemented when we add the save functionality
+        }
+
+        // Get all line item forms
+        function getAllLineItemForms() {
+            return document.querySelectorAll('[id^="add-line-item-form"]');
+        }
+
+        // Count how many line item forms exist
+        function countLineItemForms() {
+            return getAllLineItemForms().length;
+        }
+
+        // Calculate Total Amount = sum of all BillLineItem.Price values
+        function calculateTotalAmount() {
+            const totalAmountInput = document.getElementById('total_amount');
+            if (!totalAmountInput) {
+                return;
+            }
+            
+            let total = 0;
+            const allForms = getAllLineItemForms();
+            
+            allForms.forEach(form => {
+                const priceInput = form.querySelector('[id^="line_item_price"]');
+                if (priceInput && priceInput.value) {
+                    total += parseFloat(priceInput.value) || 0;
+                }
+            });
+            
+            totalAmountInput.value = total.toFixed(2);
+            
+            // Trigger Bill auto-save to persist the new total
+            triggerAutoSaveBill();
+        }
+
+        // Clear a specific line item form (reset to defaults)
+        function clearLineItemFormInputs(formElement) {
+            if (!formElement) return;
+            
+            const inputs = formElement.querySelectorAll('input, select, textarea');
+            inputs.forEach(input => {
+                if (input.type === 'checkbox') {
+                    input.checked = true; // IsBillable defaults to checked
+                } else if (input.id && input.id.includes('quantity')) {
+                    input.value = '1'; // Quantity defaults to 1
+                } else if (input.id && (input.id.includes('amount') || input.id.includes('price'))) {
+                    input.value = ''; // Clear calculated fields
+                } else {
+                    input.value = ''; // Clear other fields
+                }
+            });
+        }
+
+        // Handle Cancel button click - remove the form if more than one exists, otherwise clear it
+        function handleCancelLineItemForm(buttonElement) {
+            if (!buttonElement) {
+                console.error('Button element not found');
+                return;
+            }
+            
+            // Find the parent form element
+            const formElement = buttonElement.closest('[id^="add-line-item-form"]');
+            if (!formElement) {
+                console.error('Form element not found from button');
+                return;
+            }
+            
+            const formCount = countLineItemForms();
+            console.log('Cancel clicked - Form count:', formCount, 'Form ID:', formElement.id);
+            
+            if (formCount > 1) {
+                // More than one form exists - remove this one
+                formElement.remove();
+            } else {
+                // Only one form exists - just clear it (don't remove)
+                clearLineItemFormInputs(formElement);
+            }
+            
+            // Recalculate total after removing or clearing
+            calculateTotalAmount();
+        }
+
+        // Set up initial line item form calculations and auto-save
+        document.addEventListener('DOMContentLoaded', function() {
+            const initialForm = document.getElementById('add-line-item-form');
+            if (initialForm) {
+                setupLineItemCalculations(initialForm);
+                setupLineItemAutoSave(initialForm);
+                
+                // Update the Add Line Item button to add a new form instead
+                const addButton = initialForm.querySelector('button.btn-primary');
+                if (addButton) {
+                    addButton.onclick = function() {
+                        addLineItemForm();
+                    };
+                }
+            }
+        });
+
+        // =====================
+        // Complete Bill (Final Submit)
+        // =====================
+
+        // Validate all required fields for final submission
+        function validateBillForm() {
+            const errors = [];
+            
+            if (!document.getElementById('vendor_public_id').value) {
+                errors.push('Vendor is required');
+            }
+            if (!document.getElementById('bill_date').value) {
+                errors.push('Bill Date is required');
+            }
+            if (!document.getElementById('due_date').value) {
+                errors.push('Due Date is required');
+            }
+            if (!document.getElementById('bill_number').value.trim()) {
+                errors.push('Bill Number is required');
+            }
+            
+            return errors;
+        }
+
+        // Save Bill with is_draft = false
+        async function saveBillFinal() {
+            const billPublicId = document.getElementById('bill_public_id').value;
+            const rowVersion = document.getElementById('row_version').value;
+            
+            if (!billPublicId) {
+                throw new Error('Bill must be saved before completing');
+            }
+            
+            const totalAmountEl = document.getElementById('total_amount');
+            const totalAmountValue = totalAmountEl && totalAmountEl.value ? parseFloat(totalAmountEl.value) : null;
+            
+            const billData = {
+                row_version: rowVersion,
+                vendor_public_id: document.getElementById('vendor_public_id').value,
+                terms_id: document.getElementById('terms_id').value ? parseInt(document.getElementById('terms_id').value) : null,
+                bill_date: document.getElementById('bill_date').value,
+                due_date: document.getElementById('due_date').value,
+                bill_number: document.getElementById('bill_number').value.trim(),
+                total_amount: totalAmountValue,
+                memo: document.getElementById('memo').value || null,
+                is_draft: false  // Mark as complete
+            };
+            
+            const response = await fetch(`/api/v1/update/bill/${billPublicId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(billData)
+            });
+            
+            if (!response.ok) {
+                let errorMessage = 'Failed to complete bill';
+                try {
+                    const error = await response.json();
+                    errorMessage = error.detail || errorMessage;
+                } catch (e) {
+                    errorMessage = `Server error: ${response.status}`;
+                }
+                throw new Error(errorMessage);
+            }
+            
+            const result = await response.json();
+            // Update row_version for any subsequent operations
+            if (result.row_version) {
+                document.getElementById('row_version').value = result.row_version;
+            }
+            return result;
+        }
+
+        // Save all line items with is_draft = false
+        async function saveAllLineItemsFinal() {
+            const billPublicId = document.getElementById('bill_public_id').value;
+            const allForms = getAllLineItemForms();
+            const errors = [];
+            
+            for (const formElement of allForms) {
+                const publicIdField = formElement.querySelector('.line-item-public-id');
+                const rowVersionField = formElement.querySelector('.line-item-row-version');
+                
+                const publicId = publicIdField ? publicIdField.value : '';
+                const rowVersion = rowVersionField ? rowVersionField.value : '';
+                
+                // Skip forms that haven't been saved yet (no public_id)
+                if (!publicId) {
+                    continue;
+                }
+                
+                const subCostCode = formElement.querySelector('[id^="line_item_sub_cost_code_id"]');
+                const description = formElement.querySelector('[id^="line_item_description"]');
+                const quantity = formElement.querySelector('[id^="line_item_quantity"]');
+                const rate = formElement.querySelector('[id^="line_item_rate"]');
+                const amountInput = formElement.querySelector('[id^="line_item_amount"]');
+                const isBillable = formElement.querySelector('[id^="line_item_is_billable"]');
+                const markup = formElement.querySelector('[id^="line_item_markup"]');
+                const priceInput = formElement.querySelector('[id^="line_item_price"]');
+                
+                const lineItemData = {
+                    row_version: rowVersion,
+                    bill_public_id: billPublicId,
+                    sub_cost_code_id: subCostCode && subCostCode.value ? parseInt(subCostCode.value) : null,
+                    description: description ? description.value.trim() : null,
+                    quantity: quantity && quantity.value ? parseInt(quantity.value) : null,
+                    rate: rate && rate.value ? parseFloat(rate.value) : null,
+                    amount: amountInput && amountInput.value ? parseFloat(amountInput.value) : null,
+                    is_billable: isBillable ? isBillable.checked : true,
+                    markup: markup && markup.value ? parseFloat(markup.value) : null,
+                    price: priceInput && priceInput.value ? parseFloat(priceInput.value) : null,
+                    is_draft: false  // Mark as complete
+                };
+                
+                try {
+                    const response = await fetch(`/api/v1/update/bill_line_item/${publicId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(lineItemData)
+                    });
+                    
+                    if (!response.ok) {
+                        const error = await response.json();
+                        errors.push(error.detail || `Failed to complete line item`);
+                    }
+                } catch (error) {
+                    errors.push(error.message);
+                }
+            }
+            
+            return errors;
+        }
+
+        // Handle Complete Bill form submission
+        async function handleCompleteBill(event) {
+            event.preventDefault();
+            
+            // Validate form
+            const validationErrors = validateBillForm();
+            if (validationErrors.length > 0) {
+                showToast(validationErrors.join(', '), 'error');
+                return;
+            }
+            
+            // Check if bill has been saved
+            const billPublicId = document.getElementById('bill_public_id').value;
+            if (!billPublicId) {
+                showToast('Please fill in all required fields and wait for the bill to save before completing.', 'error');
+                return;
+            }
+            
+            updateSaveStatus('saving', 'Completing...');
+            
+            try {
+                // Save Bill
+                await saveBillFinal();
+                
+                // Save Line Items
+                const lineItemErrors = await saveAllLineItemsFinal();
+                
+                // Show final result
+                if (lineItemErrors.length > 0) {
+                    updateSaveStatus('saved', 'Complete');
+                    showToast(`Bill completed with some line item warnings: ${lineItemErrors.join(', ')}`, 'warning');
+                } else {
+                    updateSaveStatus('saved', 'Complete');
+                    showToast('Bill completed successfully!', 'success');
+                }
+                
+                // Redirect to bill list after delay
+                setTimeout(() => {
+                    window.location.href = '/bill/list';
+                }, 1500);
+                
+            } catch (error) {
+                console.error('Complete bill error:', error);
+                updateSaveStatus('error', 'Error');
+                showToast(error.message || 'Failed to complete bill', 'error');
+            }
+        }
+
+        // Attach form submit handler
+        document.addEventListener('DOMContentLoaded', function() {
+            const form = document.getElementById('createBillForm');
+            if (form) {
+                form.addEventListener('submit', handleCompleteBill);
+            }
+        });
+    </script>
+{% endblock %}

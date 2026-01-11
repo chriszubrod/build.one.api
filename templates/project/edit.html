@@ -1,0 +1,187 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Edit Project - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/customer.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="customer-page-header">
+        <h1>Edit Project</h1>
+        <a href="/project/list" class="btn btn-secondary">Back to List</a>
+    </div>
+
+    <div class="customer-form-container">
+        <div class="customer-form-card">
+            <div class="customer-form-card-header">
+                <h5>Project Details</h5>
+            </div>
+            <div class="customer-form-card-body">
+                <form id="editProjectForm">
+                    <input type="hidden" id="public_id" name="public_id" value="{{ project.public_id }}">
+                    <input type="hidden" id="row_version" name="row_version" value="{{ project.row_version }}">
+
+                    <div class="customer-form-group">
+                        <label for="name" class="customer-form-label">
+                            Name <span class="required">*</span>
+                        </label>
+                        <input type="text"
+                               class="customer-form-control"
+                               id="name"
+                               name="name"
+                               required
+                               maxlength="50"
+                               value="{{ project.name or '' }}"
+                               placeholder="Enter project name">
+                        <div class="customer-form-text">Required field. Maximum 50 characters.</div>
+                    </div>
+
+                    <div class="customer-form-group">
+                        <label for="description" class="customer-form-label">
+                            Description <span class="required">*</span>
+                        </label>
+                        <textarea class="customer-form-control"
+                                  id="description"
+                                  name="description"
+                                  required
+                                  maxlength="500"
+                                  rows="4"
+                                  placeholder="Enter project description">{{ project.description or '' }}</textarea>
+                        <div class="customer-form-text">Required field. Maximum 500 characters.</div>
+                    </div>
+
+                    <div class="customer-form-group">
+                        <label for="status" class="customer-form-label">
+                            Status <span class="required">*</span>
+                        </label>
+                        <input type="text"
+                               class="customer-form-control"
+                               id="status"
+                               name="status"
+                               required
+                               maxlength="50"
+                               value="{{ project.status or '' }}"
+                               placeholder="Enter project status">
+                        <div class="customer-form-text">Required field. Maximum 50 characters.</div>
+                    </div>
+
+                    <div class="customer-metadata" style="margin-top: 1rem; margin-bottom: 1rem;">
+                        <div class="customer-metadata-item">
+                            <span>Created: {{ project.created_datetime or 'Unknown' }}</span>
+                        </div>
+                        <div class="customer-metadata-item">
+                            <span>Modified: {{ project.modified_datetime or 'Unknown' }}</span>
+                        </div>
+                    </div>
+
+                    <div class="customer-form-actions">
+                        <div class="customer-form-actions-left">
+                            <button type="button" class="btn btn-danger" onclick="deleteProject()">Delete</button>
+                        </div>
+                        <div class="customer-form-actions-right">
+                            <a href="/project/list" class="btn btn-secondary">Cancel</a>
+                            <button type="submit" class="btn btn-primary">Update Project</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        document.getElementById('editProjectForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            const data = {
+                name: formData.get('name'),
+                description: formData.get('description'),
+                status: formData.get('status'),
+                row_version: formData.get('row_version')
+            };
+
+            try {
+                const response = await fetch(`/api/v1/update/project/${formData.get('public_id')}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                if (response.ok) {
+                    window.location.href = '/project/list';
+                } else {
+                    const contentType = response.headers.get('content-type');
+                    if (contentType && contentType.includes('application/json')) {
+                        const error = await response.json();
+                        let message = 'Unknown error';
+                        if (error.detail) {
+                            message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                        } else if (error.message) {
+                            message = error.message;
+                        } else if (typeof error === 'string') {
+                            message = error;
+                        } else {
+                            message = JSON.stringify(error);
+                        }
+                        alert('Error updating project: ' + message);
+                    } else {
+                        const errorText = await response.text();
+                        alert('Error updating project: ' + errorText);
+                    }
+                }
+            } catch (error) {
+                alert('Error updating project: ' + error.message);
+            }
+        });
+
+        async function deleteProject() {
+            if (confirm('Are you sure you want to delete this project? This action cannot be undone.')) {
+                const formData = new FormData(document.getElementById('editProjectForm'));
+
+                try {
+                    const response = await fetch(`/api/v1/delete/project/${formData.get('public_id')}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        },
+                        body: JSON.stringify({ row_version: formData.get('row_version') })
+                    });
+
+                    if (response.ok) {
+                        window.location.href = '/project/list';
+                    } else {
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const error = await response.json();
+                            let message = 'Unknown error';
+                            if (error.detail) {
+                                message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                            } else if (error.message) {
+                                message = error.message;
+                            } else if (typeof error === 'string') {
+                                message = error;
+                            } else {
+                                message = JSON.stringify(error);
+                            }
+                            alert('Error deleting project: ' + message);
+                        } else {
+                            const errorText = await response.text();
+                            alert('Error deleting project: ' + errorText);
+                        }
+                    }
+                } catch (error) {
+                    alert('Error deleting project: ' + error.message);
+                }
+            }
+        }
+    </script>
+{% endblock %}
+

@@ -1,0 +1,118 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}{{ project.name or 'Project' }} - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/customer.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="customer-page-header">
+        <h1>{{ project.name or 'Project Details' }}</h1>
+        <div style="display: flex; gap: 0.5rem;">
+            <a href="/project/{{ project.public_id }}/edit" class="btn btn-primary">Edit</a>
+            <a href="/project/list" class="btn btn-secondary">Back to List</a>
+        </div>
+    </div>
+
+    <div class="customer-detail-container">
+        <div class="customer-detail-card">
+            <div class="customer-detail-card-header">
+                <h5>Project Information</h5>
+            </div>
+            <div class="customer-detail-card-body">
+                <div class="customer-detail-row">
+                    <div class="customer-detail-label">Name:</div>
+                    <div class="customer-detail-value">{{ project.name or 'Not specified' }}</div>
+                </div>
+
+                <div class="customer-detail-row">
+                    <div class="customer-detail-label">Description:</div>
+                    <div class="customer-detail-value">{{ project.description or 'Not specified' }}</div>
+                </div>
+
+                <div class="customer-detail-row">
+                    <div class="customer-detail-label">Status:</div>
+                    <div class="customer-detail-value">{{ project.status or 'Not specified' }}</div>
+                </div>
+
+                <div class="customer-detail-row">
+                    <div class="customer-detail-label">Public ID:</div>
+                    <div class="customer-detail-value">
+                        <code>{{ project.public_id or 'Not available' }}</code>
+                    </div>
+                </div>
+
+                <div class="customer-detail-row">
+                    <div class="customer-detail-label">Created:</div>
+                    <div class="customer-detail-value">{{ project.created_datetime or 'Unknown' }}</div>
+                </div>
+
+                <div class="customer-detail-row">
+                    <div class="customer-detail-label">Last Modified:</div>
+                    <div class="customer-detail-value">{{ project.modified_datetime or 'Unknown' }}</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="customer-actions-card">
+            <h6>Actions</h6>
+            <div class="customer-actions-list">
+                <a href="/project/{{ project.public_id }}/edit" class="btn btn-primary">Edit Project</a>
+                <a href="/project/list" class="btn btn-secondary">View All Projects</a>
+                <button type="button" class="btn btn-danger" onclick="deleteProject()">Delete Project</button>
+            </div>
+        </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        async function deleteProject() {
+            if (confirm('Are you sure you want to delete this project? This action cannot be undone.')) {
+                const payload = {
+                    row_version: "{{ project.row_version }}"
+                };
+
+                try {
+                    const response = await fetch(`/api/v1/delete/project/{{ project.public_id }}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        window.location.href = '/project/list';
+                    } else {
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const error = await response.json();
+                            let message = 'Unknown error';
+                            if (error.detail) {
+                                message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                            } else if (error.message) {
+                                message = error.message;
+                            } else if (typeof error === 'string') {
+                                message = error;
+                            } else {
+                                message = JSON.stringify(error);
+                            }
+                            alert('Error deleting project: ' + message);
+                        } else {
+                            const errorText = await response.text();
+                            alert('Error deleting project: ' + errorText);
+                        }
+                    }
+                } catch (error) {
+                    alert('Error deleting project: ' + error.message);
+                }
+            }
+        }
+    </script>
+{% endblock %}
+

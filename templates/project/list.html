@@ -1,0 +1,62 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Projects - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/customer.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="customer-page-header">
+        <h1>Projects</h1>
+        <a href="/project/create" class="btn btn-primary">Add Project</a>
+    </div>
+
+    {% if projects %}
+        <div class="customer-grid">
+            {% for project in projects %}
+            <div class="customer-card">
+                <div class="customer-card-body">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
+                        <h5 class="customer-card-title">
+                            {{ project.name or 'Unnamed Project' }}
+                        </h5>
+                    </div>
+                    <div class="customer-metadata">
+                        {% if project.description %}
+                        <div class="customer-metadata-item">
+                            <span>Description: {{ project.description }}</span>
+                        </div>
+                        {% endif %}
+                        {% if project.status %}
+                        <div class="customer-metadata-item">
+                            <span>Status: {{ project.status }}</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="customer-card-footer">
+                    <div class="customer-btn-group">
+                        <a href="/project/{{ project.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
+                        <a href="/project/{{ project.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="customer-empty-state">
+            <div class="customer-empty-state-icon">📁</div>
+            <h3>No Projects Found</h3>
+            <p>Create your first project to get started.</p>
+            <a href="/project/create" class="btn btn-primary">Create Project</a>
+        </div>
+    {% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/auth.js"></script>
+{% endblock %}
+

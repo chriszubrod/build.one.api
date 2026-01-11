@@ -1,3 +1,6 @@
+// Store original fetch before overriding
+const originalFetch = window.fetch;
+
 // Token refresh utility
 async function refreshAccessToken() {
     const refreshToken = localStorage.getItem('token.refresh_token');
@@ -9,7 +12,8 @@ async function refreshAccessToken() {
     }
 
     try {
-        const response = await fetch('/api/v1/auth/refresh', {
+        // Use originalFetch to avoid recursive interception
+        const response = await originalFetch('/api/v1/auth/refresh', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -61,7 +65,6 @@ function isTokenExpiringSoon() {
 }
 
 // Intercept fetch requests to add token and handle refresh
-const originalFetch = window.fetch;
 window.fetch = async function(...args) {
     const [url, options = {}] = args;
     

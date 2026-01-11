@@ -1,0 +1,62 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Customers - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/customer.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="customer-page-header">
+        <h1>Customers</h1>
+        <a href="/customer/create" class="btn btn-primary">Add Customer</a>
+    </div>
+
+    {% if customers %}
+        <div class="customer-grid">
+            {% for customer in customers %}
+            <div class="customer-card">
+                <div class="customer-card-body">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
+                        <h5 class="customer-card-title">
+                            {{ customer.name or 'Unnamed Customer' }}
+                        </h5>
+                    </div>
+                    <div class="customer-metadata">
+                        {% if customer.email %}
+                        <div class="customer-metadata-item">
+                            <span>Email: {{ customer.email }}</span>
+                        </div>
+                        {% endif %}
+                        {% if customer.phone %}
+                        <div class="customer-metadata-item">
+                            <span>Phone: {{ customer.phone }}</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="customer-card-footer">
+                    <div class="customer-btn-group">
+                        <a href="/customer/{{ customer.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
+                        <a href="/customer/{{ customer.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="customer-empty-state">
+            <div class="customer-empty-state-icon">👤</div>
+            <h3>No Customers Found</h3>
+            <p>Create your first customer to get started.</p>
+            <a href="/customer/create" class="btn btn-primary">Create Customer</a>
+        </div>
+    {% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/auth.js"></script>
+{% endblock %}
+

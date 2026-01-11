@@ -1,24 +1,46 @@
-DROP SCHEMA IF EXISTS [qbo];
-GO
-
-CREATE SCHEMA [qbo];
-GO
-
 DROP TABLE IF EXISTS [qbo].[Vendor];
 GO
 
 CREATE TABLE [qbo].[Vendor]
 (
-    [Id] NVARCHAR(MAX) NULL,
-    [SyncToken] NVARCHAR(MAX) NULL,
-    [DisplayName] NVARCHAR(MAX) NULL,
-    [Vendor1099] INT NULL,
-    [CompanyName] NVARCHAR(MAX) NULL,
-    [TaxIdentifier] NVARCHAR(MAX) NULL,
-    [PrintOnCheckName] NVARCHAR(MAX) NULL,
-    [BillAddrId] NVARCHAR(MAX) NULL
+    [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
+    [PublicId] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
+    [RowVersion] ROWVERSION NOT NULL,
+    [CreatedDatetime] DATETIME2(3) NOT NULL,
+    [ModifiedDatetime] DATETIME2(3) NULL,
+    [QboId] NVARCHAR(50) NULL,
+    [SyncToken] NVARCHAR(50) NULL,
+    [RealmId] NVARCHAR(50) NULL,
+    [DisplayName] NVARCHAR(500) NULL,
+    [Title] NVARCHAR(16) NULL,
+    [GivenName] NVARCHAR(100) NULL,
+    [MiddleName] NVARCHAR(100) NULL,
+    [FamilyName] NVARCHAR(100) NULL,
+    [Suffix] NVARCHAR(16) NULL,
+    [CompanyName] NVARCHAR(500) NULL,
+    [PrintOnCheckName] NVARCHAR(500) NULL,
+    [TaxIdentifier] NVARCHAR(50) NULL,
+    [Vendor1099] BIT NULL,
+    [Active] BIT NULL,
+    [PrimaryEmailAddr] NVARCHAR(255) NULL,
+    [PrimaryPhone] NVARCHAR(50) NULL,
+    [Mobile] NVARCHAR(50) NULL,
+    [Fax] NVARCHAR(50) NULL,
+    [BillAddrId] BIGINT NULL,
+    [Balance] DECIMAL(18,2) NULL,
+    [AcctNum] NVARCHAR(50) NULL,
+    [WebAddr] NVARCHAR(500) NULL
 );
+GO
 
+CREATE INDEX IX_QboVendor_QboId ON [qbo].[Vendor] ([QboId]);
+GO
+
+CREATE INDEX IX_QboVendor_RealmId ON [qbo].[Vendor] ([RealmId]);
+GO
+
+CREATE INDEX IX_QboVendor_BillAddrId ON [qbo].[Vendor] ([BillAddrId]);
+GO
 
 
 DROP PROCEDURE IF EXISTS CreateQboVendor;
@@ -26,37 +48,83 @@ GO
 
 CREATE PROCEDURE CreateQboVendor
 (
-    @Id NVARCHAR(MAX),
-    @SyncToken NVARCHAR(MAX),
-    @DisplayName NVARCHAR(MAX),
-    @Vendor1099 INT,
-    @CompanyName NVARCHAR(MAX),
-    @TaxIdentifier NVARCHAR(MAX),
-    @PrintOnCheckName NVARCHAR(MAX),
-    @BillAddrId NVARCHAR(MAX)
+    @QboId NVARCHAR(50),
+    @SyncToken NVARCHAR(50),
+    @RealmId NVARCHAR(50),
+    @DisplayName NVARCHAR(500),
+    @Title NVARCHAR(16),
+    @GivenName NVARCHAR(100),
+    @MiddleName NVARCHAR(100),
+    @FamilyName NVARCHAR(100),
+    @Suffix NVARCHAR(16),
+    @CompanyName NVARCHAR(500),
+    @PrintOnCheckName NVARCHAR(500),
+    @TaxIdentifier NVARCHAR(50),
+    @Vendor1099 BIT,
+    @Active BIT,
+    @PrimaryEmailAddr NVARCHAR(255),
+    @PrimaryPhone NVARCHAR(50),
+    @Mobile NVARCHAR(50),
+    @Fax NVARCHAR(50),
+    @BillAddrId BIGINT,
+    @Balance DECIMAL(18,2),
+    @AcctNum NVARCHAR(50),
+    @WebAddr NVARCHAR(500)
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
     BEGIN TRANSACTION;
 
-    INSERT INTO [qbo].[Vendor] ([Id], [SyncToken], [DisplayName], [Vendor1099], [CompanyName], [TaxIdentifier], [PrintOnCheckName], [BillAddrId])
+    INSERT INTO [qbo].[Vendor] (
+        [CreatedDatetime], [ModifiedDatetime], [QboId], [SyncToken], [RealmId],
+        [DisplayName], [Title], [GivenName], [MiddleName], [FamilyName], [Suffix],
+        [CompanyName], [PrintOnCheckName], [TaxIdentifier], [Vendor1099], [Active],
+        [PrimaryEmailAddr], [PrimaryPhone], [Mobile], [Fax],
+        [BillAddrId], [Balance], [AcctNum], [WebAddr]
+    )
     OUTPUT
         INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[RowVersion],
+        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        INSERTED.[QboId],
         INSERTED.[SyncToken],
+        INSERTED.[RealmId],
         INSERTED.[DisplayName],
-        INSERTED.[Vendor1099],
+        INSERTED.[Title],
+        INSERTED.[GivenName],
+        INSERTED.[MiddleName],
+        INSERTED.[FamilyName],
+        INSERTED.[Suffix],
         INSERTED.[CompanyName],
-        INSERTED.[TaxIdentifier],
         INSERTED.[PrintOnCheckName],
-        INSERTED.[BillAddrId]
-    VALUES (@Id, @SyncToken, @DisplayName, @Vendor1099, @CompanyName, @TaxIdentifier, @PrintOnCheckName, @BillAddrId);
+        INSERTED.[TaxIdentifier],
+        INSERTED.[Vendor1099],
+        INSERTED.[Active],
+        INSERTED.[PrimaryEmailAddr],
+        INSERTED.[PrimaryPhone],
+        INSERTED.[Mobile],
+        INSERTED.[Fax],
+        INSERTED.[BillAddrId],
+        INSERTED.[Balance],
+        INSERTED.[AcctNum],
+        INSERTED.[WebAddr]
+    VALUES (
+        @Now, @Now, @QboId, @SyncToken, @RealmId,
+        @DisplayName, @Title, @GivenName, @MiddleName, @FamilyName, @Suffix,
+        @CompanyName, @PrintOnCheckName, @TaxIdentifier, @Vendor1099, @Active,
+        @PrimaryEmailAddr, @PrimaryPhone, @Mobile, @Fax,
+        @BillAddrId, @Balance, @AcctNum, @WebAddr
+    );
 
     COMMIT TRANSACTION;
 END;
 GO
-
-EXEC CreateQboVendor @Id = '1', @SyncToken = '1', @DisplayName = 'Test Vendor', @Vendor1099 = 0, @CompanyName = 'Test Company', @TaxIdentifier = '1234567890', @PrintOnCheckName = 'Test Print On Check Name', @BillAddrId = '1';
-
 
 
 DROP PROCEDURE IF EXISTS ReadQboVendors;
@@ -69,13 +137,32 @@ BEGIN
 
     SELECT
         [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [QboId],
         [SyncToken],
+        [RealmId],
         [DisplayName],
-        [Vendor1099],
+        [Title],
+        [GivenName],
+        [MiddleName],
+        [FamilyName],
+        [Suffix],
         [CompanyName],
-        [TaxIdentifier],
         [PrintOnCheckName],
-        [BillAddrId]
+        [TaxIdentifier],
+        [Vendor1099],
+        [Active],
+        [PrimaryEmailAddr],
+        [PrimaryPhone],
+        [Mobile],
+        [Fax],
+        [BillAddrId],
+        [Balance],
+        [AcctNum],
+        [WebAddr]
     FROM [qbo].[Vendor]
     ORDER BY [DisplayName] ASC;
 
@@ -83,8 +170,53 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboVendors;
 
+DROP PROCEDURE IF EXISTS ReadQboVendorsByRealmId;
+GO
+
+CREATE PROCEDURE ReadQboVendorsByRealmId
+(
+    @RealmId NVARCHAR(50)
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [QboId],
+        [SyncToken],
+        [RealmId],
+        [DisplayName],
+        [Title],
+        [GivenName],
+        [MiddleName],
+        [FamilyName],
+        [Suffix],
+        [CompanyName],
+        [PrintOnCheckName],
+        [TaxIdentifier],
+        [Vendor1099],
+        [Active],
+        [PrimaryEmailAddr],
+        [PrimaryPhone],
+        [Mobile],
+        [Fax],
+        [BillAddrId],
+        [Balance],
+        [AcctNum],
+        [WebAddr]
+    FROM [qbo].[Vendor]
+    WHERE [RealmId] = @RealmId
+    ORDER BY [DisplayName] ASC;
+
+    COMMIT TRANSACTION;
+END;
+GO
 
 
 DROP PROCEDURE IF EXISTS ReadQboVendorById;
@@ -92,7 +224,7 @@ GO
 
 CREATE PROCEDURE ReadQboVendorById
 (
-    @Id NVARCHAR(MAX)
+    @Id BIGINT
 )
 AS
 BEGIN
@@ -100,13 +232,32 @@ BEGIN
 
     SELECT
         [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [QboId],
         [SyncToken],
+        [RealmId],
         [DisplayName],
-        [Vendor1099],
+        [Title],
+        [GivenName],
+        [MiddleName],
+        [FamilyName],
+        [Suffix],
         [CompanyName],
-        [TaxIdentifier],
         [PrintOnCheckName],
-        [BillAddrId]
+        [TaxIdentifier],
+        [Vendor1099],
+        [Active],
+        [PrimaryEmailAddr],
+        [PrimaryPhone],
+        [Mobile],
+        [Fax],
+        [BillAddrId],
+        [Balance],
+        [AcctNum],
+        [WebAddr]
     FROM [qbo].[Vendor]
     WHERE [Id] = @Id;
 
@@ -114,16 +265,13 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboVendorById @Id = '1';
 
-
-
-DROP PROCEDURE IF EXISTS ReadQboVendorBySyncToken;
+DROP PROCEDURE IF EXISTS ReadQboVendorByQboId;
 GO
 
-CREATE PROCEDURE ReadQboVendorBySyncToken
+CREATE PROCEDURE ReadQboVendorByQboId
 (
-    @SyncToken NVARCHAR(MAX)
+    @QboId NVARCHAR(50)
 )
 AS
 BEGIN
@@ -131,30 +279,47 @@ BEGIN
 
     SELECT
         [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [QboId],
         [SyncToken],
+        [RealmId],
         [DisplayName],
-        [Vendor1099],
+        [Title],
+        [GivenName],
+        [MiddleName],
+        [FamilyName],
+        [Suffix],
         [CompanyName],
-        [TaxIdentifier],
         [PrintOnCheckName],
-        [BillAddrId]
+        [TaxIdentifier],
+        [Vendor1099],
+        [Active],
+        [PrimaryEmailAddr],
+        [PrimaryPhone],
+        [Mobile],
+        [Fax],
+        [BillAddrId],
+        [Balance],
+        [AcctNum],
+        [WebAddr]
     FROM [qbo].[Vendor]
-    WHERE [SyncToken] = @SyncToken;
+    WHERE [QboId] = @QboId;
 
     COMMIT TRANSACTION;
 END;
 GO
 
-EXEC ReadQboVendorBySyncToken @SyncToken = '1';
 
-
-
-DROP PROCEDURE IF EXISTS ReadQboVendorByDisplayName;
+DROP PROCEDURE IF EXISTS ReadQboVendorByQboIdAndRealmId;
 GO
 
-CREATE PROCEDURE ReadQboVendorByDisplayName
+CREATE PROCEDURE ReadQboVendorByQboIdAndRealmId
 (
-    @DisplayName NVARCHAR(MAX)
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50)
 )
 AS
 BEGIN
@@ -162,138 +327,142 @@ BEGIN
 
     SELECT
         [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [QboId],
         [SyncToken],
+        [RealmId],
         [DisplayName],
-        [Vendor1099],
+        [Title],
+        [GivenName],
+        [MiddleName],
+        [FamilyName],
+        [Suffix],
         [CompanyName],
-        [TaxIdentifier],
         [PrintOnCheckName],
-        [BillAddrId]
+        [TaxIdentifier],
+        [Vendor1099],
+        [Active],
+        [PrimaryEmailAddr],
+        [PrimaryPhone],
+        [Mobile],
+        [Fax],
+        [BillAddrId],
+        [Balance],
+        [AcctNum],
+        [WebAddr]
     FROM [qbo].[Vendor]
-    WHERE [DisplayName] = @DisplayName;
+    WHERE [QboId] = @QboId AND [RealmId] = @RealmId;
 
     COMMIT TRANSACTION;
 END;
 GO
 
-EXEC ReadQboVendorByDisplayName @DisplayName = 'Test Vendor';
 
-
-
-DROP PROCEDURE IF EXISTS ReadQboVendorByCompanyName;
+DROP PROCEDURE IF EXISTS UpdateQboVendorByQboId;
 GO
 
-CREATE PROCEDURE ReadQboVendorByCompanyName
+CREATE PROCEDURE UpdateQboVendorByQboId
 (
-    @CompanyName NVARCHAR(MAX)
+    @QboId NVARCHAR(50),
+    @RowVersion BINARY(8),
+    @SyncToken NVARCHAR(50),
+    @RealmId NVARCHAR(50),
+    @DisplayName NVARCHAR(500),
+    @Title NVARCHAR(16),
+    @GivenName NVARCHAR(100),
+    @MiddleName NVARCHAR(100),
+    @FamilyName NVARCHAR(100),
+    @Suffix NVARCHAR(16),
+    @CompanyName NVARCHAR(500),
+    @PrintOnCheckName NVARCHAR(500),
+    @TaxIdentifier NVARCHAR(50),
+    @Vendor1099 BIT,
+    @Active BIT,
+    @PrimaryEmailAddr NVARCHAR(255),
+    @PrimaryPhone NVARCHAR(50),
+    @Mobile NVARCHAR(50),
+    @Fax NVARCHAR(50),
+    @BillAddrId BIGINT,
+    @Balance DECIMAL(18,2),
+    @AcctNum NVARCHAR(50),
+    @WebAddr NVARCHAR(500)
 )
 AS
 BEGIN
-    BEGIN TRANSACTION;
+    SET NOCOUNT ON;
 
-    SELECT
-        [Id],
-        [SyncToken],
-        [DisplayName],
-        [Vendor1099],
-        [CompanyName],
-        [TaxIdentifier],
-        [PrintOnCheckName],
-        [BillAddrId]
-    FROM [qbo].[Vendor]
-    WHERE [CompanyName] = @CompanyName;
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    COMMIT TRANSACTION;
-END;
-GO
-
-EXEC ReadQboVendorByCompanyName @CompanyName = 'Test Company';
-
-
-
-DROP PROCEDURE IF EXISTS ReadQboVendorByTaxIdentifier;
-GO
-
-CREATE PROCEDURE ReadQboVendorByTaxIdentifier
-(
-    @TaxIdentifier NVARCHAR(MAX)
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [SyncToken],
-        [DisplayName],
-        [Vendor1099],
-        [CompanyName],
-        [TaxIdentifier],
-        [PrintOnCheckName],
-        [BillAddrId]
-    FROM [qbo].[Vendor]
-    WHERE [TaxIdentifier] = @TaxIdentifier;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-EXEC ReadQboVendorByTaxIdentifier @TaxIdentifier = '1234567890';
-
-
-
-DROP PROCEDURE IF EXISTS UpdateQboVendorById;
-GO
-
-CREATE PROCEDURE UpdateQboVendorById
-(
-    @Id NVARCHAR(MAX),
-    @SyncToken NVARCHAR(MAX),
-    @DisplayName NVARCHAR(MAX),
-    @Vendor1099 INT,
-    @CompanyName NVARCHAR(MAX),
-    @TaxIdentifier NVARCHAR(MAX),
-    @PrintOnCheckName NVARCHAR(MAX),
-    @BillAddrId NVARCHAR(MAX)
-)
-AS
-BEGIN
     BEGIN TRANSACTION;
 
     UPDATE [qbo].[Vendor]
-    SET [Id] = @Id,
+    SET
+        [ModifiedDatetime] = @Now,
         [SyncToken] = @SyncToken,
+        [RealmId] = @RealmId,
         [DisplayName] = @DisplayName,
-        [Vendor1099] = @Vendor1099,
+        [Title] = @Title,
+        [GivenName] = @GivenName,
+        [MiddleName] = @MiddleName,
+        [FamilyName] = @FamilyName,
+        [Suffix] = @Suffix,
         [CompanyName] = @CompanyName,
-        [TaxIdentifier] = @TaxIdentifier,
         [PrintOnCheckName] = @PrintOnCheckName,
-        [BillAddrId] = @BillAddrId
+        [TaxIdentifier] = @TaxIdentifier,
+        [Vendor1099] = @Vendor1099,
+        [Active] = @Active,
+        [PrimaryEmailAddr] = @PrimaryEmailAddr,
+        [PrimaryPhone] = @PrimaryPhone,
+        [Mobile] = @Mobile,
+        [Fax] = @Fax,
+        [BillAddrId] = @BillAddrId,
+        [Balance] = @Balance,
+        [AcctNum] = @AcctNum,
+        [WebAddr] = @WebAddr
     OUTPUT
         INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[RowVersion],
+        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        INSERTED.[QboId],
         INSERTED.[SyncToken],
+        INSERTED.[RealmId],
         INSERTED.[DisplayName],
-        INSERTED.[Vendor1099],
+        INSERTED.[Title],
+        INSERTED.[GivenName],
+        INSERTED.[MiddleName],
+        INSERTED.[FamilyName],
+        INSERTED.[Suffix],
         INSERTED.[CompanyName],
-        INSERTED.[TaxIdentifier],
         INSERTED.[PrintOnCheckName],
-        INSERTED.[BillAddrId]
-    WHERE [Id] = @Id;
+        INSERTED.[TaxIdentifier],
+        INSERTED.[Vendor1099],
+        INSERTED.[Active],
+        INSERTED.[PrimaryEmailAddr],
+        INSERTED.[PrimaryPhone],
+        INSERTED.[Mobile],
+        INSERTED.[Fax],
+        INSERTED.[BillAddrId],
+        INSERTED.[Balance],
+        INSERTED.[AcctNum],
+        INSERTED.[WebAddr]
+    WHERE [QboId] = @QboId AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
 END;
 GO
 
-EXEC UpdateVendorById @Id = '1', @SyncToken = '1', @DisplayName = 'Test Vendor', @Vendor1099 = 0, @CompanyName = 'Test Company', @TaxIdentifier = '1234567890', @PrintOnCheckName = 'Test Print On Check Name', @BillAddrId = '1';
 
-
-
-DROP PROCEDURE IF EXISTS DeleteQboVendorById;
+DROP PROCEDURE IF EXISTS DeleteQboVendorByQboId;
 GO
 
-CREATE PROCEDURE DeleteQboVendorById
+CREATE PROCEDURE DeleteQboVendorByQboId
 (
-    @Id NVARCHAR(MAX)
+    @QboId NVARCHAR(50)
 )
 AS
 BEGIN
@@ -302,17 +471,34 @@ BEGIN
     DELETE FROM [qbo].[Vendor]
     OUTPUT
         DELETED.[Id],
+        DELETED.[PublicId],
+        DELETED.[RowVersion],
+        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        DELETED.[QboId],
         DELETED.[SyncToken],
+        DELETED.[RealmId],
         DELETED.[DisplayName],
-        DELETED.[Vendor1099],
+        DELETED.[Title],
+        DELETED.[GivenName],
+        DELETED.[MiddleName],
+        DELETED.[FamilyName],
+        DELETED.[Suffix],
         DELETED.[CompanyName],
-        DELETED.[TaxIdentifier],
         DELETED.[PrintOnCheckName],
-        DELETED.[BillAddrId]
-    WHERE [Id] = @Id;
+        DELETED.[TaxIdentifier],
+        DELETED.[Vendor1099],
+        DELETED.[Active],
+        DELETED.[PrimaryEmailAddr],
+        DELETED.[PrimaryPhone],
+        DELETED.[Mobile],
+        DELETED.[Fax],
+        DELETED.[BillAddrId],
+        DELETED.[Balance],
+        DELETED.[AcctNum],
+        DELETED.[WebAddr]
+    WHERE [QboId] = @QboId;
 
     COMMIT TRANSACTION;
 END;
 GO
-
-EXEC DeleteVendorById @Id = '1';

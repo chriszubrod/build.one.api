@@ -89,3 +89,17 @@ class QboVendorUpdate(BaseModel):
         max_length=50,
         description="The bill address ID of the QBO vendor.",
     )
+
+
+class QboVendorSync(BaseModel):
+    realm_id: str = Field(
+        description="QBO company realm ID.",
+    )
+    last_updated_time: Optional[str] = Field(
+        default=None,
+        description="Optional ISO format datetime. If provided, only sync vendors updated after this time.",
+    )
+    sync_to_modules: bool = Field(
+        default=False,
+        description="If True, also sync to Vendor module.",
+    )

@@ -4,12 +4,43 @@
 from fastapi import APIRouter, Depends
 
 # Local Imports
-from integrations.intuit.qbo.vendor.api.schemas import QboVendorCreate, QboVendorUpdate
+from integrations.intuit.qbo.vendor.api.schemas import QboVendorCreate, QboVendorUpdate, QboVendorSync
 from integrations.intuit.qbo.vendor.business.service import QboVendorService
 from modules.auth.business.service import get_current_user_api as get_current_qbo_vendor_api
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-vendor"])
 service = QboVendorService()
+
+
+@router.post("/sync/qbo-vendors")
+def sync_qbo_vendors_router(body: QboVendorSync, current_user: dict = Depends(get_current_qbo_vendor_api)):
+    """
+    Sync Vendors from QBO.
+    """
+    vendors = service.sync_from_qbo(
+        realm_id=body.realm_id,
+        last_updated_time=body.last_updated_time,
+        sync_to_modules=body.sync_to_modules
+    )
+    return [vendor.to_dict() for vendor in vendors]
+
+
+@router.get("/get/qbo-vendors/realm/{realm_id}")
+def get_qbo_vendors_by_realm_id_router(realm_id: str, current_user: dict = Depends(get_current_qbo_vendor_api)):
+    """
+    Read all QBO vendors by realm ID.
+    """
+    vendors = service.read_by_realm_id(realm_id=realm_id)
+    return [vendor.to_dict() for vendor in vendors]
+
+
+@router.get("/get/qbo-vendor/qbo-id/{qbo_id}")
+def get_qbo_vendor_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(get_current_qbo_vendor_api)):
+    """
+    Read a QBO vendor by QBO ID.
+    """
+    vendor = service.read_by_qbo_id(qbo_id=qbo_id)
+    return vendor.to_dict() if vendor else None
 
 
 @router.post("/create/qbo-vendor")

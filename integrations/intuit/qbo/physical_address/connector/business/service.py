@@ -139,12 +139,12 @@ class PhysicalAddressAddressConnector:
                 else:
                     logger.debug("Updating Address ModifiedDatetime to reflect sync time (data unchanged)")
             
-            # Update Address
-            address.street_one = street_one
-            address.street_two = street_two
-            address.city = city
-            address.state = state
-            address.zip = zip_code
+            # Update Address (use empty string fallback for required NOT NULL fields)
+            address.street_one = street_one or ""
+            address.street_two = street_two or ""
+            address.city = city or ""
+            address.state = state or ""
+            address.zip = zip_code or ""
             address = self.address_service.repo.update_by_id(address)
             if address:
                 logger.info(f"Successfully updated Address {address.id}. New ModifiedDatetime: {address.modified_datetime}")
@@ -156,7 +156,7 @@ class PhysicalAddressAddressConnector:
             logger.info(f"No existing Address found. Creating new Address from QboPhysicalAddress {qbo_physical_address_id}")
             address = self.address_service.create(
                 street_one=street_one or "",
-                street_two=street_two,
+                street_two=street_two or "",
                 city=city or "",
                 state=state or "",
                 zip=zip_code or ""

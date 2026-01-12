@@ -275,6 +275,42 @@ async def upload_attachment_router(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/view/attachment/{public_id}")
+def view_attachment_router(public_id: str, current_user: dict = Depends(get_current_attachment_api)):
+    """
+    View a file in the browser (displays inline instead of downloading).
+    """
+    try:
+        attachment = service.read_by_public_id(public_id=public_id)
+        if not attachment:
+            raise HTTPException(status_code=404, detail="Attachment not found")
+        
+        # Check if archived
+        if attachment.is_archived:
+            raise HTTPException(status_code=404, detail="Attachment is archived")
+        
+        # Download from Azure Blob Storage
+        storage = AzureBlobStorage()
+        file_content, metadata = storage.download_file(attachment.blob_url)
+        
+        # Return file with inline disposition (viewable in browser)
+        return StreamingResponse(
+            io.BytesIO(file_content),
+            media_type=metadata.get("content_type", attachment.content_type or "application/octet-stream"),
+            headers={
+                "Content-Disposition": f'inline; filename="{attachment.original_filename or attachment.filename}"',
+            },
+        )
+    except HTTPException:
+        raise
+    except AzureBlobStorageError as e:
+        logger.error(f"Error viewing blob: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to view from blob storage: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error viewing attachment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/download/attachment/{public_id}")
 def download_attachment_router(public_id: str, current_user: dict = Depends(get_current_attachment_api)):
     """

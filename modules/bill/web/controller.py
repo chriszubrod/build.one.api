@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+from decimal import Decimal
 from fastapi import APIRouter, Request, Depends
 from fastapi.templating import Jinja2Templates
 
@@ -8,6 +9,8 @@ from fastapi.templating import Jinja2Templates
 from modules.bill.business.service import BillService
 from modules.vendor.business.service import VendorService
 from modules.bill_line_item.business.service import BillLineItemService
+from modules.bill_line_item_attachment.business.service import BillLineItemAttachmentService
+from modules.attachment.business.service import AttachmentService
 from modules.sub_cost_code.business.service import SubCostCodeService
 from modules.project.business.service import ProjectService
 from modules.auth.business.service import get_current_user_web
@@ -85,8 +88,30 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
     
     # Fetch line items associated with this bill
     line_items = []
+    line_items_with_attachments = []
     if bill and bill.id:
         line_items = BillLineItemService().read_by_bill_id(bill_id=bill.id)
+        
+        # Fetch attachments for each line item
+        bill_line_item_attachment_service = BillLineItemAttachmentService()
+        attachment_service = AttachmentService()
+        
+        for line_item in line_items:
+            line_item_dict = line_item.to_dict()
+            
+            # Get attachment for this line item (1-1 relationship)
+            if line_item.public_id:
+                attachment_link = bill_line_item_attachment_service.read_by_bill_line_item_id(
+                    bill_line_item_public_id=line_item.public_id
+                )
+                
+                if attachment_link and attachment_link.attachment_id:
+                    # Fetch the actual attachment
+                    attachment = attachment_service.read_by_id(id=attachment_link.attachment_id)
+                    if attachment:
+                        line_item_dict['attachment'] = attachment.to_dict()
+            
+            line_items_with_attachments.append(line_item_dict)
     
     bill_dict = bill.to_dict()
     if vendor_name:
@@ -97,7 +122,7 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
         {
             "request": request,
             "bill": bill_dict,
-            "line_items": [line_item.to_dict() for line_item in line_items],
+            "line_items": line_items_with_attachments,
             "current_user": current_user,
             "current_path": request.url.path,
         },
@@ -124,10 +149,49 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
     
     # Fetch line items associated with this bill
     line_items = []
+    line_items_with_attachments = []
     if bill and bill.id:
         line_items = BillLineItemService().read_by_bill_id(bill_id=bill.id)
+        
+        # Fetch attachments for each line item
+        bill_line_item_attachment_service = BillLineItemAttachmentService()
+        attachment_service = AttachmentService()
+        
+        for line_item in line_items:
+            line_item_dict = line_item.to_dict()
+            
+            # Convert Decimal values to floats for JSON serialization
+            for key, value in line_item_dict.items():
+                if isinstance(value, Decimal):
+                    line_item_dict[key] = float(value)
+            
+            # Get attachment for this line item (1-1 relationship)
+            if line_item.public_id:
+                attachment_link = bill_line_item_attachment_service.read_by_bill_line_item_id(
+                    bill_line_item_public_id=line_item.public_id
+                )
+                
+                if attachment_link and attachment_link.attachment_id:
+                    # Fetch the actual attachment
+                    attachment = attachment_service.read_by_id(id=attachment_link.attachment_id)
+                    if attachment:
+                        attachment_dict = attachment.to_dict()
+                        # Convert Decimal values in attachment if any
+                        for key, value in attachment_dict.items():
+                            if isinstance(value, Decimal):
+                                attachment_dict[key] = float(value)
+                        line_item_dict['attachment'] = attachment_dict
+                        line_item_dict['attachment_link'] = attachment_link.to_dict()
+            
+            line_items_with_attachments.append(line_item_dict)
     
     bill_dict = bill.to_dict()
+    
+    # Convert Decimal values to floats for JSON serialization
+    for key, value in bill_dict.items():
+        if isinstance(value, Decimal):
+            bill_dict[key] = float(value)
+    
     if vendor_public_id:
         bill_dict['vendor_public_id'] = vendor_public_id
     
@@ -137,7 +201,7 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
             "request": request,
             "bill": bill_dict,
             "vendors": vendors,
-            "line_items": [line_item.to_dict() for line_item in line_items],
+            "line_items": line_items_with_attachments,
             "sub_cost_codes": sub_cost_codes,
             "projects": projects,
             "current_user": current_user,

@@ -123,6 +123,17 @@
                                 </div>
                                 {% endif %}
                             </div>
+                            
+                            {% if line_item.attachment %}
+                            <div class="line-item-attachment-display" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed #e0e0e0;">
+                                <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background-color: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px;">
+                                    <span style="font-size: 1.2rem; flex-shrink: 0;">📎</span>
+                                    <a href="/attachment/view/{{ line_item.attachment.public_id }}" target="_blank" style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-primary, #1976d2); text-decoration: none; font-size: 0.9rem;">
+                                        {{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}
+                                    </a>
+                                </div>
+                            </div>
+                            {% endif %}
                         </div>
                     </div>
                     {% endfor %}

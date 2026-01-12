@@ -1020,3 +1020,86 @@ textarea.bill-form-control {
     scrollbar-width: thin;
     scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
 }
+
+/* Line Item Attachment styles */
+.line-item-attachment-section {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px dashed #e0e0e0;
+}
+
+.attachment-upload-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.attachment-upload-btn {
+    white-space: nowrap;
+}
+
+.attachment-upload-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.attachment-status {
+    font-size: 0.85rem;
+    color: var(--color-text-muted, #6c757d);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.attachment-display {
+    flex: 1;
+    min-width: 200px;
+}
+
+.attachment-display > div {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background-color: #e8f5e9;
+    border: 1px solid #c8e6c9;
+    border-radius: 4px;
+}
+
+.attachment-icon {
+    font-size: 1.2rem;
+    flex-shrink: 0;
+}
+
+.attachment-filename {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-primary, #1976d2);
+    text-decoration: none;
+    font-size: 0.9rem;
+}
+
+.attachment-filename:hover {
+    text-decoration: underline;
+}
+
+.attachment-remove-btn {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+    flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+    .line-item-attachment-section > div {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .attachment-upload-wrapper,
+    .attachment-display {
+        width: 100%;
+        min-width: auto;
+    }
+}

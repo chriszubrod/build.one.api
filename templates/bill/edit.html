@@ -8,32 +8,27 @@
 
 {% block content %}
 
-    <div class="bill-page-header">
-        <h1>Edit Bill</h1>
-        <a href="/bill/list" class="btn btn-secondary">Back to List</a>
-    </div>
+    <!-- Toast notification container -->
+    <div id="toast-container" class="toast-container"></div>
 
-    <div class="bill-create-layout">
-        <aside class="bill-sidebar">
-            <nav class="bill-sidebar-nav">
-                <a href="#bill-details" class="bill-nav-item active" data-section="bill-details">
-                    <span class="bill-nav-label">Bill Details</span>
-                    <span class="bill-save-status-icon"></span>
-                </a>
-                <a href="#line-items" class="bill-nav-item" data-section="line-items">
-                    <span class="bill-nav-label">Line Items</span>
-                    <span class="bill-save-status-icon"></span>
-                </a>
-            </nav>
-        </aside>
-        
-        <main class="bill-main-content">
+    <div class="bill-create-fullpage">
+        <div class="bill-create-header">
+            <h1>Edit Bill</h1>
+            <a href="/bill/list" class="btn btn-secondary">Back to List</a>
+        </div>
+
+        <div class="bill-create-content">
             <form id="editBillForm" autocomplete="off">
+                <!-- Hidden fields for tracking bill state -->
+                <input type="hidden" id="bill_public_id" name="bill_public_id" value="{{ bill.public_id }}">
+                <input type="hidden" id="row_version" name="row_version" value="{{ bill.row_version }}">
+                
                 <!-- Bill Details Section -->
-                <section id="bill-details" class="bill-section active">
+                <section id="bill-details" class="bill-section">
                     <div class="bill-form-card">
                         <div class="bill-form-card-header">
                             <h5>Bill Details</h5>
+                            <span id="bill-save-status" class="save-status"></span>
                         </div>
                         <div class="bill-form-card-body">
                             <div class="bill-form-group">
@@ -47,73 +42,295 @@
                                         autocomplete="off">
                                     <option value="">-- Select a vendor --</option>
                                     {% for vendor in vendors %}
-                                    <option value="{{ vendor.public_id }}"
-                                            {% if bill.vendor_public_id and vendor.public_id == bill.vendor_public_id %}selected{% endif %}>
+                                    <option value="{{ vendor.public_id }}" {% if bill.vendor_public_id and vendor.public_id == bill.vendor_public_id %}selected{% endif %}>
                                         {{ vendor.name or 'Unnamed Vendor' }}
                                     </option>
                                     {% endfor %}
                                 </select>
-                                <div class="bill-form-text">Required field. Select a vendor for this bill.</div>
                             </div>
 
-                            <div class="bill-form-group">
-                                <label for="terms_id" class="bill-form-label">
-                                    Terms ID
-                                </label>
-                                <input type="number"
-                                       class="bill-form-control"
-                                       id="terms_id"
-                                       name="terms_id"
-                                       value="{{ bill.terms_id or '' }}"
-                                       autocomplete="off"
-                                       placeholder="Enter terms ID">
-                                <div class="bill-form-text">Optional. Terms ID for this bill.</div>
+                            <div class="bill-form-group-row">
+                                <div class="bill-form-group">
+                                    <label for="terms_id" class="bill-form-label">
+                                        Terms ID
+                                    </label>
+                                    <input type="number"
+                                           class="bill-form-control"
+                                           id="terms_id"
+                                           name="terms_id"
+                                           value="{{ bill.terms_id or '' }}"
+                                           autocomplete="off"
+                                           placeholder="Enter terms ID">
+                                </div>
+
+                                <div class="bill-form-group">
+                                    <label for="bill_date" class="bill-form-label">
+                                        Bill Date <span class="required">*</span>
+                                    </label>
+                                    <input type="date"
+                                           class="bill-form-control"
+                                           id="bill_date"
+                                           name="bill_date"
+                                           required
+                                           value="{{ bill.bill_date[:10] if bill.bill_date else '' }}"
+                                           autocomplete="off"
+                                           placeholder="Enter bill date">
+                                </div>
+
+                                <div class="bill-form-group">
+                                    <label for="due_date" class="bill-form-label">
+                                        Due Date <span class="required">*</span>
+                                    </label>
+                                    <input type="date"
+                                           class="bill-form-control"
+                                           id="due_date"
+                                           name="due_date"
+                                           required
+                                           value="{{ bill.due_date[:10] if bill.due_date else '' }}"
+                                           autocomplete="off"
+                                           placeholder="Enter due date">
+                                </div>
+
+                                <div class="bill-form-group" style="position: relative;">
+                                    <label for="bill_number" class="bill-form-label">
+                                        Bill Number <span class="required">*</span>
+                                    </label>
+                                    <div style="position: relative; width: 100%;">
+                                        <input type="text"
+                                               class="bill-form-control"
+                                               id="bill_number"
+                                               name="bill_number"
+                                               required
+                                               maxlength="50"
+                                               value="{{ bill.bill_number or '' }}"
+                                               autocomplete="off"
+                                               placeholder="Enter bill number"
+                                               style="width: 100%; padding-right: 0.5rem;">
+                                        <span id="bill_number_warning" class="bill-warning-label" style="display: none; position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%); z-index: 10; pointer-events: none;"></span>
+                                    </div>
+                                </div>
                             </div>
 
-                            <div class="bill-form-group">
-                                <label for="bill_date" class="bill-form-label">
-                                    Bill Date <span class="required">*</span>
-                                </label>
-                                <input type="date"
-                                       class="bill-form-control"
-                                       id="bill_date"
-                                       name="bill_date"
-                                       required
-                                       value="{{ bill.bill_date[:10] if bill.bill_date else '' }}"
-                                       autocomplete="off"
-                                       placeholder="Enter bill date">
-                                <div class="bill-form-text">Required field. Date of the bill.</div>
-                            </div>
+                            <!-- Line Items Section -->
+                            <div style="margin-top: 2rem; margin-bottom: 2rem; padding-top: 2rem; border-top: 1px solid #e0e0e0;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                                    <h5 style="margin: 0; font-size: var(--font-size-action-lg); font-weight: 600; color: var(--color-text);">Line Items</h5>
+                                    <button type="button" class="btn btn-primary btn-sm" onclick="showAddLineItemForm()" id="add-line-item-button">Add Line Item</button>
+                                </div>
+                                
+                                <div id="line-items-list">
+                                    {% if line_items %}
+                                        {% for line_item in line_items %}
+                                        <div id="line-item-form-{{ loop.index0 }}" class="line-item-existing-form" style="display: block; border: 1px solid #e0e0e0; border-radius: 4px; padding: 1.5rem; margin-bottom: 1rem; background-color: var(--color-surface);">
+                                            <!-- Hidden fields for tracking line item state -->
+                                            <input type="hidden" class="line-item-public-id" value="{{ line_item.public_id }}">
+                                            <input type="hidden" class="line-item-row-version" value="{{ line_item.row_version }}">
+                                            <div class="bill-line-item-grid">
+                                                <!-- Sub Cost Code -->
+                                                <div class="bill-form-group" style="margin-bottom: 0;">
+                                                    <label class="bill-form-label">Sub Cost Code <span class="required">*</span></label>
+                                                    <select class="bill-form-control line-item-sub-cost-code-id">
+                                                        <option value="">-- Select --</option>
+                                                        {% for sub_cost_code in sub_cost_codes %}
+                                                        <option value="{{ sub_cost_code.id }}" {% if line_item.sub_cost_code_id and line_item.sub_cost_code_id == sub_cost_code.id %}selected{% endif %}>
+                                                            {% if sub_cost_code.number and sub_cost_code.name %}
+                                                                {{ sub_cost_code.number }} - {{ sub_cost_code.name }}
+                                                            {% elif sub_cost_code.number %}
+                                                                {{ sub_cost_code.number }}
+                                                            {% elif sub_cost_code.name %}
+                                                                {{ sub_cost_code.name }}
+                                                            {% else %}
+                                                                Unnamed
+                                                            {% endif %}
+                                                        </option>
+                                                        {% endfor %}
+                                                    </select>
+                                                </div>
+                                                
+                                                <!-- Description -->
+                                                <div class="bill-form-group bill-line-item-description" style="margin-bottom: 0;">
+                                                    <label class="bill-form-label">Description <span class="required">*</span></label>
+                                                    <textarea class="bill-form-control line-item-description" rows="1" placeholder="Enter description" style="resize: vertical;">{{ line_item.description or '' }}</textarea>
+                                                </div>
+                                                
+                                                <!-- Quantity -->
+                                                <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                                    <label class="bill-form-label">Quantity <span class="required">*</span></label>
+                                                    <input type="number" class="bill-form-control line-item-quantity" min="0" step="1" placeholder="1" value="{{ line_item.quantity or '1' }}">
+                                                </div>
+                                                
+                                                <!-- Rate -->
+                                                <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                                    <label class="bill-form-label">Rate <span class="required">*</span></label>
+                                                    <input type="number" class="bill-form-control line-item-rate" min="0" step="0.0001" placeholder="Rate" value="{{ line_item.rate or '' }}">
+                                                </div>
+                                                
+                                                <!-- Amount (read-only, calculated) -->
+                                                <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                                    <label class="bill-form-label">Amount</label>
+                                                    <input type="number" class="bill-form-control line-item-amount" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);" value="{{ line_item.amount or '' }}">
+                                                </div>
+                                                
+                                                <!-- Is Billable (checkbox) -->
+                                                <div class="bill-form-group bill-line-item-checkbox" style="margin-bottom: 0;">
+                                                    <label class="bill-form-label">Is Billable</label>
+                                                    <div style="display: flex; align-items: center; height: 2.5rem;">
+                                                        <input type="checkbox" class="bill-form-control line-item-is-billable" {% if line_item.is_billable is none or line_item.is_billable %}checked{% endif %} style="width: auto; height: auto; margin: 0;">
+                                                    </div>
+                                                </div>
+                                                
+                                                <!-- Markup -->
+                                                <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                                    <label class="bill-form-label">Markup (%)</label>
+                                                    <input type="number" class="bill-form-control line-item-markup" min="0" step="0.01" placeholder="0.00" value="{{ line_item.markup or '' }}">
+                                                </div>
+                                                
+                                                <!-- Price (read-only, calculated) -->
+                                                <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                                    <label class="bill-form-label">Price</label>
+                                                    <input type="number" class="bill-form-control line-item-price" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);" value="{{ line_item.price or '' }}">
+                                                </div>
+                                            </div>
+                                            
+                                            <!-- Attachment Section -->
+                                            <div class="line-item-attachment-section" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed #e0e0e0;">
+                                                <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                                                    <div class="bill-form-group" style="margin-bottom: 0; flex: 1; min-width: 200px;">
+                                                        <label class="bill-form-label">Attachment</label>
+                                                        <div class="attachment-upload-wrapper" style="display: {% if line_item.attachment %}none{% else %}flex{% endif %}; align-items: center; gap: 0.5rem;">
+                                                            <input type="file" class="line-item-file-input" style="display: none;" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt">
+                                                            <button type="button" class="btn btn-secondary btn-sm attachment-upload-btn" onclick="triggerFileInput(this)" style="white-space: nowrap;">
+                                                                <span class="attachment-btn-text">Choose File</span>
+                                                            </button>
+                                                            <span class="attachment-status" style="font-size: 0.85rem; color: var(--color-text-muted);">No file attached</span>
+                                                        </div>
+                                                    </div>
+                                                    <div class="attachment-display" style="display: {% if line_item.attachment %}block{% else %}none{% endif %}; flex: 1; min-width: 200px;">
+                                                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background-color: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px;">
+                                                            <span class="attachment-icon" style="font-size: 1.2rem;">📎</span>
+                                                            <a href="/attachment/view/{{ line_item.attachment.public_id }}" class="attachment-filename" target="_blank" style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-primary); text-decoration: none;">
+                                                                {{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}
+                                                            </a>
+                                                            <button type="button" class="btn btn-danger btn-sm attachment-remove-btn" onclick="removeAttachment(this)" title="Remove attachment" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">✕</button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <!-- Hidden fields for attachment tracking -->
+                                                <input type="hidden" class="line-item-attachment-public-id" value="{{ line_item.attachment.public_id if line_item.attachment else '' }}">
+                                                <input type="hidden" class="line-item-attachment-link-public-id" value="{{ line_item.attachment_link.public_id if line_item.attachment_link else '' }}">
+                                            </div>
+                                            
+                                            <div style="display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem;">
+                                                <button type="button" class="btn btn-danger btn-sm" onclick="deleteLineItemForm(this)">Delete Line Item</button>
+                                            </div>
+                                        </div>
+                                        {% endfor %}
+                                    {% endif %}
+                                </div>
 
-                            <div class="bill-form-group">
-                                <label for="due_date" class="bill-form-label">
-                                    Due Date <span class="required">*</span>
-                                </label>
-                                <input type="date"
-                                       class="bill-form-control"
-                                       id="due_date"
-                                       name="due_date"
-                                       required
-                                       value="{{ bill.due_date[:10] if bill.due_date else '' }}"
-                                       autocomplete="off"
-                                       placeholder="Enter due date">
-                                <div class="bill-form-text">Required field. Due date for payment.</div>
-                            </div>
-
-                            <div class="bill-form-group">
-                                <label for="bill_number" class="bill-form-label">
-                                    Bill Number <span class="required">*</span>
-                                </label>
-                                <input type="text"
-                                       class="bill-form-control"
-                                       id="bill_number"
-                                       name="bill_number"
-                                       required
-                                       maxlength="50"
-                                       value="{{ bill.bill_number or '' }}"
-                                       autocomplete="off"
-                                       placeholder="Enter bill number">
-                                <div class="bill-form-text">Required field. Maximum 50 characters.</div>
+                                <!-- Add Line Item Form (hidden by default) -->
+                                <div id="add-line-item-form" style="display: none; border: 1px solid #e0e0e0; border-radius: 4px; padding: 1.5rem; margin-top: 1rem; background-color: var(--color-surface);">
+                                    <!-- Hidden fields for tracking line item state -->
+                                    <input type="hidden" class="line-item-public-id" value="">
+                                    <input type="hidden" class="line-item-row-version" value="">
+                                    <div class="bill-line-item-grid">
+                                        <!-- Sub Cost Code -->
+                                        <div class="bill-form-group" style="margin-bottom: 0;">
+                                            <label for="line_item_sub_cost_code_id" class="bill-form-label">Sub Cost Code <span class="required">*</span></label>
+                                            <select class="bill-form-control" id="line_item_sub_cost_code_id">
+                                                <option value="">-- Select --</option>
+                                                {% for sub_cost_code in sub_cost_codes %}
+                                                <option value="{{ sub_cost_code.id }}">
+                                                    {% if sub_cost_code.number and sub_cost_code.name %}
+                                                        {{ sub_cost_code.number }} - {{ sub_cost_code.name }}
+                                                    {% elif sub_cost_code.number %}
+                                                        {{ sub_cost_code.number }}
+                                                    {% elif sub_cost_code.name %}
+                                                        {{ sub_cost_code.name }}
+                                                    {% else %}
+                                                        Unnamed
+                                                    {% endif %}
+                                                </option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        
+                                        <!-- Description -->
+                                        <div class="bill-form-group bill-line-item-description" style="margin-bottom: 0;">
+                                            <label for="line_item_description" class="bill-form-label">Description <span class="required">*</span></label>
+                                            <textarea class="bill-form-control" id="line_item_description" rows="1" placeholder="Enter description" style="resize: vertical;"></textarea>
+                                        </div>
+                                        
+                                        <!-- Quantity -->
+                                        <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_quantity" class="bill-form-label">Quantity <span class="required">*</span></label>
+                                            <input type="number" class="bill-form-control" id="line_item_quantity" min="0" step="1" placeholder="1" value="1">
+                                        </div>
+                                        
+                                        <!-- Rate -->
+                                        <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_rate" class="bill-form-label">Rate <span class="required">*</span></label>
+                                            <input type="number" class="bill-form-control" id="line_item_rate" min="0" step="0.0001" placeholder="Rate">
+                                        </div>
+                                        
+                                        <!-- Amount (read-only, calculated) -->
+                                        <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_amount" class="bill-form-label">Amount</label>
+                                            <input type="number" class="bill-form-control" id="line_item_amount" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);">
+                                        </div>
+                                        
+                                        <!-- Is Billable (checkbox) -->
+                                        <div class="bill-form-group bill-line-item-checkbox" style="margin-bottom: 0;">
+                                            <label for="line_item_is_billable" class="bill-form-label">Is Billable</label>
+                                            <div style="display: flex; align-items: center; height: 2.5rem;">
+                                                <input type="checkbox" class="bill-form-control" id="line_item_is_billable" checked style="width: auto; height: auto; margin: 0;">
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Markup -->
+                                        <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_markup" class="bill-form-label">Markup (%)</label>
+                                            <input type="number" class="bill-form-control" id="line_item_markup" min="0" step="0.01" placeholder="0.00">
+                                        </div>
+                                        
+                                        <!-- Price (read-only, calculated) -->
+                                        <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_price" class="bill-form-label">Price</label>
+                                            <input type="number" class="bill-form-control" id="line_item_price" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);">
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Attachment Section -->
+                                    <div class="line-item-attachment-section" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed #e0e0e0;">
+                                        <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                                            <div class="bill-form-group" style="margin-bottom: 0; flex: 1; min-width: 200px;">
+                                                <label class="bill-form-label">Attachment</label>
+                                                <div class="attachment-upload-wrapper" style="display: flex; align-items: center; gap: 0.5rem;">
+                                                    <input type="file" class="line-item-file-input" id="line_item_attachment" style="display: none;" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt">
+                                                    <button type="button" class="btn btn-secondary btn-sm attachment-upload-btn" onclick="triggerFileInput(this)" style="white-space: nowrap;">
+                                                        <span class="attachment-btn-text">Choose File</span>
+                                                    </button>
+                                                    <span class="attachment-status" style="font-size: 0.85rem; color: var(--color-text-muted);">No file attached</span>
+                                                </div>
+                                            </div>
+                                            <div class="attachment-display" style="display: none; flex: 1; min-width: 200px;">
+                                                <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background-color: var(--color-success-bg, #e8f5e9); border-radius: 4px;">
+                                                    <span class="attachment-icon" style="font-size: 1.2rem;">📎</span>
+                                                    <a href="#" class="attachment-filename" target="_blank" style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-primary);"></a>
+                                                    <button type="button" class="btn btn-danger btn-sm attachment-remove-btn" onclick="removeAttachment(this)" title="Remove attachment" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">✕</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <!-- Hidden fields for attachment tracking -->
+                                        <input type="hidden" class="line-item-attachment-public-id" value="">
+                                        <input type="hidden" class="line-item-attachment-link-public-id" value="">
+                                    </div>
+                                    
+                                    <div style="display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem;">
+                                        <button type="button" class="btn btn-secondary" onclick="handleCancelLineItemForm(this)">Cancel</button>
+                                        <button type="button" class="btn btn-primary" onclick="addLineItem()">Add Line Item</button>
+                                    </div>
+                                </div>
                             </div>
 
                             <div class="bill-form-group">
@@ -125,10 +342,10 @@
                                        id="total_amount"
                                        name="total_amount"
                                        step="0.01"
+                                       readonly
+                                       tabindex="-1"
                                        value="{{ bill.total_amount or '' }}"
-                                       autocomplete="off"
-                                       placeholder="Enter total amount">
-                                <div class="bill-form-text">Optional. Total amount of the bill.</div>
+                                       style="background-color: var(--color-surface);">
                             </div>
 
                             <div class="bill-form-group">
@@ -141,118 +358,6 @@
                                           rows="4"
                                           autocomplete="off"
                                           placeholder="Enter memo">{{ bill.memo or '' }}</textarea>
-                                <div class="bill-form-text">Optional. Memo or notes for this bill.</div>
-                            </div>
-
-                            <div class="bill-metadata" style="margin-top: 1rem;">
-                                <div class="bill-metadata-item">
-                                    <span>Created: {{ bill.created_datetime or 'Unknown' }}</span>
-                                </div>
-                                <div class="bill-metadata-item">
-                                    <span>Modified: {{ bill.modified_datetime or 'Unknown' }}</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </section>
-
-                <!-- Line Items Section -->
-                <section id="line-items" class="bill-section">
-                    <div class="bill-form-card">
-                        <div class="bill-form-card-header">
-                            <h5>Line Items</h5>
-                        </div>
-                        <div class="bill-form-card-body">
-                            <div style="display: flex; justify-content: flex-end; margin-bottom: 1rem;">
-                                <button type="button" class="btn btn-primary btn-sm" onclick="showAddLineItemForm()">Add Line Item</button>
-                            </div>
-                            
-                            <div id="line-items-list">
-                                {% if line_items %}
-                                    {% for line_item in line_items %}
-                                    <div class="line-item-card" style="border: 1px solid #e0e0e0; border-radius: 4px; margin-bottom: 1rem; padding: 1rem;">
-                                        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem;">
-                                            <div style="flex: 1;">
-                                                <h6 style="margin: 0 0 0.5rem 0; font-size: var(--font-size-action-lg);">{{ line_item.description or 'No Description' }}</h6>
-                                                <div style="display: flex; flex-direction: column; gap: 0.25rem; font-size: var(--font-size-base); color: var(--color-text-secondary);">
-                                                    {% if line_item.quantity is not none %}
-                                                    <span>Quantity: {{ line_item.quantity }}</span>
-                                                    {% endif %}
-                                                    {% if line_item.rate is not none %}
-                                                    <span>Rate: ${{ "%.4f"|format(line_item.rate) }}</span>
-                                                    {% endif %}
-                                                    {% if line_item.amount is not none %}
-                                                    <span>Amount: ${{ "%.2f"|format(line_item.amount) }}</span>
-                                                    {% endif %}
-                                                    {% if line_item.price is not none %}
-                                                    <span>Price: ${{ "%.2f"|format(line_item.price) }}</span>
-                                                    {% endif %}
-                                                    {% if line_item.markup is not none %}
-                                                    <span>Markup: {{ "%.2f"|format(line_item.markup * 100) }}%</span>
-                                                    {% endif %}
-                                                    {% if line_item.is_billable is not none %}
-                                                    <span>Billable: {{ 'Yes' if line_item.is_billable else 'No' }}</span>
-                                                    {% endif %}
-                                                </div>
-                                            </div>
-                                            <div style="display: flex; gap: 0.5rem;">
-                                                <button type="button" class="btn btn-outline-danger btn-sm" onclick="deleteLineItem('{{ line_item.public_id }}')">Delete</button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    {% endfor %}
-                                {% else %}
-                                    <div style="text-align: center; padding: 2rem; color: var(--color-text-secondary);">
-                                        <p>No line items added yet.</p>
-                                    </div>
-                                {% endif %}
-                            </div>
-
-                            <!-- Add Line Item Form (hidden by default) -->
-                            <div id="add-line-item-form" style="display: none; border: 1px solid #e0e0e0; border-radius: 4px; padding: 1.5rem; margin-top: 1rem; background-color: var(--color-surface);">
-                                <h6 style="margin-top: 0; margin-bottom: 1rem;">Add New Line Item</h6>
-                                <div class="bill-form-group" style="margin-bottom: 1rem;">
-                                    <label for="line_item_description" class="bill-form-label">Description</label>
-                                    <textarea class="bill-form-control" id="line_item_description" rows="2" placeholder="Enter description"></textarea>
-                                </div>
-                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
-                                    <div class="bill-form-group" style="margin-bottom: 0;">
-                                        <label for="line_item_quantity" class="bill-form-label">Quantity</label>
-                                        <input type="number" class="bill-form-control" id="line_item_quantity" min="0" step="1" placeholder="Quantity">
-                                    </div>
-                                    <div class="bill-form-group" style="margin-bottom: 0;">
-                                        <label for="line_item_rate" class="bill-form-label">Rate</label>
-                                        <input type="number" class="bill-form-control" id="line_item_rate" min="0" step="0.0001" placeholder="Rate per unit">
-                                    </div>
-                                </div>
-                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
-                                    <div class="bill-form-group" style="margin-bottom: 0;">
-                                        <label for="line_item_sub_cost_code_id" class="bill-form-label">Sub Cost Code</label>
-                                        <select class="bill-form-control" id="line_item_sub_cost_code_id">
-                                            <option value="">-- Select --</option>
-                                            {% for sub_cost_code in sub_cost_codes %}
-                                            <option value="{{ sub_cost_code.id }}">{{ sub_cost_code.name or sub_cost_code.number or 'Unnamed' }}</option>
-                                            {% endfor %}
-                                        </select>
-                                    </div>
-                                    <div class="bill-form-group" style="margin-bottom: 0;">
-                                        <label for="line_item_is_billable" class="bill-form-label">Is Billable</label>
-                                        <select class="bill-form-control" id="line_item_is_billable">
-                                            <option value="">-- Select --</option>
-                                            <option value="true">Yes</option>
-                                            <option value="false">No</option>
-                                        </select>
-                                    </div>
-                                </div>
-                                <div class="bill-form-group" style="margin-bottom: 1rem;">
-                                    <label for="line_item_markup" class="bill-form-label">Markup (%)</label>
-                                    <input type="number" class="bill-form-control" id="line_item_markup" min="0" step="0.01" placeholder="Enter markup percentage (e.g., 0.10 for 10%)">
-                                    <div class="bill-form-text">Optional. Markup percentage as a decimal (e.g., 0.10 for 10%).</div>
-                                </div>
-                                <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
-                                    <button type="button" class="btn btn-secondary" onclick="hideAddLineItemForm()">Cancel</button>
-                                    <button type="button" class="btn btn-primary" onclick="addLineItem()">Add Line Item</button>
-                                </div>
                             </div>
                         </div>
                     </div>
@@ -260,7 +365,7 @@
 
                 <div class="bill-form-actions">
                     <div class="bill-form-actions-left">
-                        <button type="button" class="btn btn-danger" onclick="deleteBill()">Delete</button>
+                        <button type="button" class="btn btn-danger" onclick="deleteBill()">Delete Bill</button>
                     </div>
                     <div class="bill-form-actions-right">
                         <a href="/bill/list" class="btn btn-secondary">Cancel</a>
@@ -268,386 +373,1065 @@
                     </div>
                 </div>
             </form>
-        </main>
+        </div>
     </div>
 
 {% endblock %}
 
 {% block scripts %}
     <script>
-        // Save status management
-        function updateSaveStatus(section, status) {
-            const navItem = document.querySelector(`[data-section="${section}"]`);
-            if (!navItem) return;
+        // Focus Vendor select on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            const vendorSelect = document.getElementById('vendor_public_id');
+            if (vendorSelect) {
+                vendorSelect.focus();
+            }
+        });
+
+        // Set DueDate equal to BillDate when BillDate is set
+        function setDueDateFromBillDate() {
+            const billDateInput = document.getElementById('bill_date');
+            const dueDateInput = document.getElementById('due_date');
+            const billNumberInput = document.getElementById('bill_number');
             
-            const icon = navItem.querySelector('.bill-save-status-icon');
-            if (!icon) return;
+            if (billDateInput && dueDateInput && billDateInput.value) {
+                dueDateInput.value = billDateInput.value;
+                // Focus on BillNumber to skip DueDate in tab order
+                if (billNumberInput) {
+                    billNumberInput.focus();
+                }
+            }
+        }
+
+        // Add listener to BillDate field
+        document.addEventListener('DOMContentLoaded', function() {
+            const billDateInput = document.getElementById('bill_date');
+            if (billDateInput) {
+                billDateInput.addEventListener('change', setDueDateFromBillDate);
+                billDateInput.addEventListener('blur', setDueDateFromBillDate);
+            }
+        });
+
+        // =====================
+        // Bill Auto-Save
+        // =====================
+
+        let autoSaveTimeout = null;
+        let isSaving = false;
+
+        // Update save status display (simple badge)
+        function updateSaveStatus(status, message) {
+            const statusElement = document.getElementById('bill-save-status');
+            if (!statusElement) return;
             
-            icon.className = 'bill-save-status-icon';
+            statusElement.textContent = message || '';
+            statusElement.className = 'save-status';
+            
             if (status === 'saving') {
-                icon.classList.add('saving');
+                statusElement.classList.add('save-status-saving');
             } else if (status === 'saved') {
-                icon.classList.add('saved');
+                statusElement.classList.add('save-status-saved');
             } else if (status === 'error') {
-                icon.classList.add('error');
+                statusElement.classList.add('save-status-error');
             }
         }
 
-        // Sidebar navigation
-        function switchSection(sectionId) {
-            // Hide all sections
-            document.querySelectorAll('.bill-section').forEach(section => {
-                section.classList.remove('active');
-            });
+        // Show toast notification at top of page
+        function showToast(message, type = 'info', duration = 5000) {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
             
-            // Show selected section
-            const targetSection = document.getElementById(sectionId);
-            if (targetSection) {
-                targetSection.classList.add('active');
-            }
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.textContent = message;
             
-            // Update sidebar active state
-            document.querySelectorAll('.bill-nav-item').forEach(item => {
-                item.classList.remove('active');
-            });
-            const navItem = document.querySelector(`[data-section="${sectionId}"]`);
-            if (navItem) {
-                navItem.classList.add('active');
-            }
-        }
-
-        // Initialize sidebar navigation
-        document.querySelectorAll('.bill-nav-item').forEach(item => {
-            item.addEventListener('click', (e) => {
-                e.preventDefault();
-                const sectionId = item.getAttribute('data-section');
-                switchSection(sectionId);
-            });
-        });
-
-        // Debounced backup save function
-        let backupSaveTimeout = null;
-
-        function setupBackupSave(saveFunction) {
-            if (backupSaveTimeout) {
-                clearTimeout(backupSaveTimeout);
-            }
-            backupSaveTimeout = setTimeout(() => {
-                saveFunction();
-                backupSaveTimeout = null;
-            }, 8000);
-        }
-
-        // Get row version helper
-        function getRowVersion() {
-            return document.getElementById('row_version').value;
-        }
-
-        // Save Bill
-        async function saveBill() {
-            const vendorPublicId = document.getElementById('vendor_public_id').value;
-            const billDate = document.getElementById('bill_date').value;
-            const dueDate = document.getElementById('due_date').value;
-            const billNumber = document.getElementById('bill_number').value.trim();
-            const billPublicId = document.getElementById('public_id').value;
+            container.appendChild(toast);
             
-            // Validate required fields
-            if (!vendorPublicId || !billDate || !dueDate || !billNumber || !billPublicId) {
+            // Trigger animation
+            setTimeout(() => toast.classList.add('toast-visible'), 10);
+            
+            // Auto-remove after duration
+            setTimeout(() => {
+                toast.classList.remove('toast-visible');
+                setTimeout(() => toast.remove(), 300);
+            }, duration);
+        }
+
+        // Check if all required Bill fields have values
+        function canAutoSaveBill() {
+            const vendor = document.getElementById('vendor_public_id');
+            const billDate = document.getElementById('bill_date');
+            const dueDate = document.getElementById('due_date');
+            const billNumber = document.getElementById('bill_number');
+            
+            return vendor && vendor.value &&
+                   billDate && billDate.value &&
+                   dueDate && dueDate.value &&
+                   billNumber && billNumber.value.trim();
+        }
+
+        // Debounced auto-save trigger
+        function triggerAutoSaveBill() {
+            if (autoSaveTimeout) {
+                clearTimeout(autoSaveTimeout);
+            }
+            autoSaveTimeout = setTimeout(autoSaveBill, 300);
+        }
+
+        // Auto-save the Bill
+        async function autoSaveBill() {
+            if (!canAutoSaveBill() || isSaving) {
                 return;
             }
+
+            isSaving = true;
+            updateSaveStatus('saving', 'Saving...');
+
+            const billPublicId = document.getElementById('bill_public_id').value;
+            const rowVersion = document.getElementById('row_version').value;
+
+            // Gather Bill data
+            const totalAmountEl = document.getElementById('total_amount');
+            const totalAmountValue = totalAmountEl && totalAmountEl.value ? parseFloat(totalAmountEl.value) : null;
             
-            updateSaveStatus('bill-details', 'saving');
-            
-            const payload = {
-                row_version: getRowVersion(),
-                vendor_public_id: vendorPublicId,
+            const billData = {
+                row_version: rowVersion,
+                vendor_public_id: document.getElementById('vendor_public_id').value,
                 terms_id: document.getElementById('terms_id').value ? parseInt(document.getElementById('terms_id').value) : null,
-                bill_date: billDate,
-                due_date: dueDate,
-                bill_number: billNumber,
-                total_amount: document.getElementById('total_amount').value ? parseFloat(document.getElementById('total_amount').value) : null,
-                memo: document.getElementById('memo').value || null
+                bill_date: document.getElementById('bill_date').value,
+                due_date: document.getElementById('due_date').value,
+                bill_number: document.getElementById('bill_number').value.trim(),
+                total_amount: totalAmountValue,
+                memo: document.getElementById('memo').value || null,
+                is_draft: true
             };
-            
+
             try {
                 const response = await fetch(`/api/v1/update/bill/${billPublicId}`, {
                     method: 'PUT',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
-                    },
-                    body: JSON.stringify(payload)
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(billData)
                 });
-                
-                if (response.ok) {
-                    const bill = await response.json();
-                    document.getElementById('row_version').value = bill.row_version;
-                    updateSaveStatus('bill-details', 'saved');
-                    if (backupSaveTimeout) {
-                        clearTimeout(backupSaveTimeout);
-                        backupSaveTimeout = null;
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    console.error('Bill auto-save failed:', error);
+                    updateSaveStatus('error', 'Error');
+                    if (error.detail) {
+                        showToast(error.detail, 'error');
                     }
-                } else {
-                    updateSaveStatus('bill-details', 'error');
-                    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-                    console.error('Error saving bill:', error);
+                    return;
                 }
+
+                const bill = await response.json();
+                
+                // Store the row_version for future updates
+                document.getElementById('row_version').value = bill.row_version;
+                
+                console.log('Bill auto-saved:', bill.public_id);
+                updateSaveStatus('saved', 'Saved');
+                
             } catch (error) {
-                updateSaveStatus('bill-details', 'error');
-                console.error('Error saving bill:', error);
+                console.error('Bill auto-save error:', error);
+                updateSaveStatus('error', 'Error');
+                showToast(error.message || 'Save failed', 'error');
+            } finally {
+                isSaving = false;
             }
         }
 
-        // Event listeners for auto-save
-        document.getElementById('vendor_public_id').addEventListener('change', () => {
-            saveBill();
-            setupBackupSave(saveBill);
-        });
-        
-        document.getElementById('bill_date').addEventListener('blur', saveBill);
-        document.getElementById('bill_date').addEventListener('change', () => setupBackupSave(saveBill));
-        
-        document.getElementById('due_date').addEventListener('blur', saveBill);
-        document.getElementById('due_date').addEventListener('change', () => setupBackupSave(saveBill));
-        
-        document.getElementById('bill_number').addEventListener('blur', saveBill);
-        document.getElementById('bill_number').addEventListener('input', () => setupBackupSave(saveBill));
-        
-        document.getElementById('terms_id').addEventListener('blur', saveBill);
-        document.getElementById('terms_id').addEventListener('input', () => setupBackupSave(saveBill));
-        
-        document.getElementById('total_amount').addEventListener('blur', saveBill);
-        document.getElementById('total_amount').addEventListener('input', () => setupBackupSave(saveBill));
-        
-        document.getElementById('memo').addEventListener('blur', saveBill);
-        document.getElementById('memo').addEventListener('input', () => setupBackupSave(saveBill));
-
-        // Navigation protection
-        window.addEventListener('beforeunload', (e) => {
-            saveBill();
-        });
-
-        // Final form submission
-        document.getElementById('editBillForm').addEventListener('submit', async function(e) {
-            e.preventDefault();
-
-            // Save bill first
-            await saveBill();
-
-            const billPublicId = document.getElementById('public_id').value;
-            if (!billPublicId) {
-                alert('Bill not found.');
-                return;
-            }
-
-            // Validate required fields
-            const vendorPublicId = document.getElementById('vendor_public_id').value;
-            const billDate = document.getElementById('bill_date').value;
-            const dueDate = document.getElementById('due_date').value;
-            const billNumber = document.getElementById('bill_number').value.trim();
+        // Add listeners to trigger auto-save when fields change
+        document.addEventListener('DOMContentLoaded', function() {
+            const fieldsToWatch = ['vendor_public_id', 'bill_date', 'due_date', 'bill_number', 'memo'];
             
-            if (!vendorPublicId || !billDate || !dueDate || !billNumber) {
-                alert('Vendor, Bill Date, Due Date, and Bill Number are required.');
-                return;
-            }
-
-            // Set is_draft to false and save
-            try {
-                const response = await fetch(`/api/v1/update/bill/${billPublicId}`, {
-                    method: 'PUT',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
-                    },
-                    body: JSON.stringify({
-                        row_version: getRowVersion(),
-                        vendor_public_id: vendorPublicId,
-                        bill_date: billDate,
-                        due_date: dueDate,
-                        bill_number: billNumber,
-                        terms_id: document.getElementById('terms_id').value ? parseInt(document.getElementById('terms_id').value) : null,
-                        total_amount: document.getElementById('total_amount').value ? parseFloat(document.getElementById('total_amount').value) : null,
-                        memo: document.getElementById('memo').value || null,
-                        is_draft: false
-                    })
-                });
-
-                if (response.ok) {
-                    window.location.href = '/bill/list';
-                } else {
-                    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-                    alert('Error completing bill: ' + (error.detail || 'Unknown error'));
+            fieldsToWatch.forEach(fieldId => {
+                const field = document.getElementById(fieldId);
+                if (field) {
+                    field.addEventListener('change', triggerAutoSaveBill);
+                    field.addEventListener('blur', triggerAutoSaveBill);
                 }
-            } catch (error) {
-                alert('Error completing bill: ' + error.message);
-            }
+            });
         });
 
-        // Line Item Management Functions
-        function showAddLineItemForm() {
-            document.getElementById('add-line-item-form').style.display = 'block';
+        // =====================
+        // BillLineItem Auto-Save
+        // =====================
+
+        let lineItemSaveTimeouts = new Map();
+        let lineItemIsSaving = new Map();
+
+        // Check if a line item form has required fields filled
+        function canAutoSaveLineItem(formElement) {
+            const billPublicId = document.getElementById('bill_public_id').value;
+            if (!billPublicId) return false;
+            
+            const subCostCode = formElement.querySelector('.line-item-sub-cost-code-id, [id^="line_item_sub_cost_code_id"]');
+            const description = formElement.querySelector('.line-item-description, [id^="line_item_description"]');
+            const quantity = formElement.querySelector('.line-item-quantity, [id^="line_item_quantity"]');
+            const rate = formElement.querySelector('.line-item-rate, [id^="line_item_rate"]');
+            
+            return subCostCode && subCostCode.value &&
+                   description && description.value.trim() &&
+                   quantity && quantity.value &&
+                   rate && rate.value;
         }
 
-        function hideAddLineItemForm() {
-            document.getElementById('add-line-item-form').style.display = 'none';
-            // Clear form fields
-            document.getElementById('line_item_description').value = '';
-            document.getElementById('line_item_quantity').value = '';
-            document.getElementById('line_item_rate').value = '';
-            document.getElementById('line_item_sub_cost_code_id').value = '';
-            document.getElementById('line_item_is_billable').value = '';
-            document.getElementById('line_item_markup').value = '';
+        // Debounced trigger for line item auto-save
+        function triggerAutoSaveLineItem(formElement) {
+            const formId = formElement.id || formElement.closest('[id^="line-item-form"], [id^="add-line-item-form"]').id;
+            
+            if (lineItemSaveTimeouts.has(formId)) {
+                clearTimeout(lineItemSaveTimeouts.get(formId));
+            }
+            
+            lineItemSaveTimeouts.set(formId, setTimeout(() => {
+                autoSaveLineItem(formElement);
+            }, 300));
         }
 
-        async function addLineItem() {
-            const billPublicId = document.getElementById('public_id').value;
-            if (!billPublicId) {
-                alert('Please save the bill first before adding line items.');
+        // Auto-save a single line item
+        async function autoSaveLineItem(formElement) {
+            const formId = formElement.id || formElement.closest('[id^="line-item-form"], [id^="add-line-item-form"]').id;
+            
+            if (lineItemIsSaving.get(formId)) {
+                return;
+            }
+            
+            if (!canAutoSaveLineItem(formElement)) {
                 return;
             }
 
-            updateSaveStatus('line-items', 'saving');
+            const billPublicId = document.getElementById('bill_public_id').value;
+            const publicIdField = formElement.querySelector('.line-item-public-id');
+            const rowVersionField = formElement.querySelector('.line-item-row-version');
+            
+            const publicId = publicIdField ? publicIdField.value : '';
+            const rowVersion = rowVersionField ? rowVersionField.value : '';
 
-            // Get bill to get the database ID
+            // Gather line item data
+            const subCostCode = formElement.querySelector('.line-item-sub-cost-code-id, [id^="line_item_sub_cost_code_id"]');
+            const description = formElement.querySelector('.line-item-description, [id^="line_item_description"]');
+            const quantity = formElement.querySelector('.line-item-quantity, [id^="line_item_quantity"]');
+            const rate = formElement.querySelector('.line-item-rate, [id^="line_item_rate"]');
+            const amountInput = formElement.querySelector('.line-item-amount, [id^="line_item_amount"]');
+            const isBillable = formElement.querySelector('.line-item-is-billable, [id^="line_item_is_billable"]');
+            const markup = formElement.querySelector('.line-item-markup, [id^="line_item_markup"]');
+            const priceInput = formElement.querySelector('.line-item-price, [id^="line_item_price"]');
+
+            const lineItemData = {
+                bill_public_id: billPublicId,
+                sub_cost_code_id: subCostCode && subCostCode.value ? parseInt(subCostCode.value) : null,
+                description: description ? description.value.trim() : null,
+                quantity: quantity && quantity.value ? parseInt(quantity.value) : null,
+                rate: rate && rate.value ? parseFloat(rate.value) : null,
+                amount: amountInput && amountInput.value ? parseFloat(amountInput.value) : null,
+                is_billable: isBillable ? isBillable.checked : true,
+                markup: markup && markup.value ? parseFloat(markup.value) : null,
+                price: priceInput && priceInput.value ? parseFloat(priceInput.value) : null,
+                is_draft: true
+            };
+
+            lineItemIsSaving.set(formId, true);
+            updateSaveStatus('saving', 'Saving...');
+
             try {
-                const billResponse = await fetch(`/api/v1/get/bill/${billPublicId}`, {
-                    headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
-                    }
-                });
+                let response;
                 
-                if (!billResponse.ok) {
-                    updateSaveStatus('line-items', 'error');
-                    alert('Error fetching bill information.');
+                if (publicId) {
+                    // Update existing line item
+                    lineItemData.row_version = rowVersion;
+                    response = await fetch(`/api/v1/update/bill_line_item/${publicId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(lineItemData)
+                    });
+                } else {
+                    // Create new line item
+                    response = await fetch('/api/v1/create/bill_line_item', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(lineItemData)
+                    });
+                }
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    console.error('Line item auto-save failed:', error);
+                    updateSaveStatus('error', 'Error');
+                    showToast(error.detail || 'Line item save failed', 'error');
+                    return;
+                }
+
+                const lineItem = await response.json();
+                
+                // Store the public_id and row_version for future updates
+                if (publicIdField) publicIdField.value = lineItem.public_id;
+                if (rowVersionField) rowVersionField.value = lineItem.row_version;
+                
+                // If this was a new line item, check for pending attachments to link
+                if (!publicId) {
+                    await linkPendingAttachment(formElement, lineItem.public_id);
+                    
+                    // If this was the template "add-line-item-form", hide it after save and show the button
+                    // The new line item will appear in the existing line items list after page refresh
+                    if (formElement.id === 'add-line-item-form') {
+                        formElement.style.display = 'none';
+                        clearLineItemFormInputs(formElement);
+                        const button = document.getElementById('add-line-item-button');
+                        if (button) {
+                            button.style.display = 'inline-flex';
+                        }
+                    }
+                }
+                
+                console.log('Line item auto-saved:', lineItem.public_id);
+                updateSaveStatus('saved', 'Saved');
+                showToast('Line item saved', 'success', 2000);
+                
+            } catch (error) {
+                console.error('Line item auto-save error:', error);
+                updateSaveStatus('error', 'Error');
+                showToast(error.message || 'Line item save failed', 'error');
+            } finally {
+                lineItemIsSaving.set(formId, false);
+            }
+        }
+
+        // Set up auto-save listeners for a line item form
+        function setupLineItemAutoSave(formElement) {
+            const fieldsToWatch = [
+                '.line-item-sub-cost-code-id, [id^="line_item_sub_cost_code_id"]',
+                '.line-item-description, [id^="line_item_description"]',
+                '.line-item-quantity, [id^="line_item_quantity"]',
+                '.line-item-rate, [id^="line_item_rate"]',
+                '.line-item-is-billable, [id^="line_item_is_billable"]',
+                '.line-item-markup, [id^="line_item_markup"]'
+            ];
+            
+            fieldsToWatch.forEach(selector => {
+                const field = formElement.querySelector(selector);
+                if (field) {
+                    field.addEventListener('change', () => triggerAutoSaveLineItem(formElement));
+                    field.addEventListener('blur', () => triggerAutoSaveLineItem(formElement));
+                }
+            });
+        }
+
+        // Line Item Management
+        let lineItemCounter = {{ line_items | length if line_items else 0 }};
+
+        // Generate unique IDs for line item elements
+        function generateLineItemId(baseId) {
+            return `${baseId}_${lineItemCounter}`;
+        }
+
+        // Clone and add a new line item form
+        function addLineItemForm() {
+            const originalForm = document.getElementById('add-line-item-form');
+            if (!originalForm) {
+                console.error('Line item form not found');
+                return;
+            }
+
+            const clonedForm = originalForm.cloneNode(true);
+            lineItemCounter++;
+            
+            clonedForm.id = `add-line-item-form-${lineItemCounter}`;
+            clonedForm.style.display = 'block'; // Make sure cloned form is visible
+            
+            const elementsWithId = clonedForm.querySelectorAll('[id]');
+            elementsWithId.forEach(element => {
+                const oldId = element.id;
+                element.id = `${oldId}_${lineItemCounter}`;
+            });
+            
+            const labels = clonedForm.querySelectorAll('label[for]');
+            labels.forEach(label => {
+                const oldFor = label.getAttribute('for');
+                if (oldFor) {
+                    label.setAttribute('for', `${oldFor}_${lineItemCounter}`);
+                }
+            });
+
+            clearLineItemFormInputs(clonedForm);
+
+            const cancelButton = clonedForm.querySelector('button.btn-secondary');
+            const addButton = clonedForm.querySelector('button.btn-primary');
+            
+            if (cancelButton) {
+                cancelButton.onclick = function() {
+                    handleCancelLineItemForm(this);
+                };
+            }
+            
+            if (addButton) {
+                addButton.onclick = function() {
+                    addLineItemForm();
+                };
+            }
+
+            setupLineItemCalculations(clonedForm);
+            setupLineItemAutoSave(clonedForm);
+            setupLineItemAttachment(clonedForm);
+            resetAttachmentDisplay(clonedForm);
+
+            const allForms = getAllLineItemForms();
+            const lastForm = allForms[allForms.length - 1];
+            lastForm.parentNode.insertBefore(clonedForm, lastForm.nextSibling);
+            
+            console.log('Added new line item form:', clonedForm.id);
+        }
+
+        // Set up calculation listeners for a specific line item form
+        function setupLineItemCalculations(formElement) {
+            const quantityInput = formElement.querySelector('.line-item-quantity, [id^="line_item_quantity"]');
+            const rateInput = formElement.querySelector('.line-item-rate, [id^="line_item_rate"]');
+            const markupInput = formElement.querySelector('.line-item-markup, [id^="line_item_markup"]');
+            const amountInput = formElement.querySelector('.line-item-amount, [id^="line_item_amount"]');
+            const priceInput = formElement.querySelector('.line-item-price, [id^="line_item_price"]');
+
+            const calculateAmount = function() {
+                if (!quantityInput || !rateInput || !amountInput) {
                     return;
                 }
                 
-                const bill = await billResponse.json();
-                const billId = bill.id;
+                const quantity = parseFloat(quantityInput.value) || 0;
+                const rate = parseFloat(rateInput.value) || 0;
+                const amount = quantity * rate;
+                amountInput.value = amount.toFixed(2);
+                calculatePrice();
+            };
 
-                const payload = {
-                    bill_id: billId,
-                    description: document.getElementById('line_item_description').value || null,
-                    quantity: document.getElementById('line_item_quantity').value ? parseInt(document.getElementById('line_item_quantity').value) : null,
-                    rate: document.getElementById('line_item_rate').value ? parseFloat(document.getElementById('line_item_rate').value) : null,
-                    sub_cost_code_id: document.getElementById('line_item_sub_cost_code_id').value ? parseInt(document.getElementById('line_item_sub_cost_code_id').value) : null,
-                    is_billable: document.getElementById('line_item_is_billable').value === 'true' ? true : (document.getElementById('line_item_is_billable').value === 'false' ? false : null),
-                    markup: document.getElementById('line_item_markup').value ? parseFloat(document.getElementById('line_item_markup').value) : null
-                };
-
-                const response = await fetch('/api/v1/create/bill_line_item', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
-                    },
-                    body: JSON.stringify(payload)
-                });
-
-                if (response.ok) {
-                    hideAddLineItemForm();
-                    // Reload the page to show the new line item
-                    updateSaveStatus('line-items', 'saved');
-                    window.location.reload();
-                } else {
-                    updateSaveStatus('line-items', 'error');
-                    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-                    alert('Error creating line item: ' + (error.detail || 'Unknown error'));
+            const calculatePrice = function() {
+                if (!amountInput || !priceInput) {
+                    return;
                 }
-            } catch (error) {
-                updateSaveStatus('line-items', 'error');
-                alert('Error creating line item: ' + error.message);
+                
+                const amount = parseFloat(amountInput.value) || 0;
+                const markup = markupInput ? (parseFloat(markupInput.value) || 0) : 0;
+                const price = amount * (1 + markup);
+                priceInput.value = price.toFixed(2);
+                calculateTotalAmount();
+            };
+
+            if (quantityInput) {
+                quantityInput.addEventListener('input', calculateAmount);
+                quantityInput.addEventListener('change', calculateAmount);
+            }
+            if (rateInput) {
+                rateInput.addEventListener('input', calculateAmount);
+                rateInput.addEventListener('change', calculateAmount);
+            }
+            if (markupInput) {
+                markupInput.addEventListener('input', calculatePrice);
+                markupInput.addEventListener('change', calculatePrice);
             }
         }
 
-        async function deleteLineItem(lineItemPublicId) {
+        // Get all line item forms
+        function getAllLineItemForms() {
+            return document.querySelectorAll('[id^="line-item-form"], [id^="add-line-item-form"]');
+        }
+
+        // Calculate Total Amount = sum of all BillLineItem.Price values
+        function calculateTotalAmount() {
+            const totalAmountInput = document.getElementById('total_amount');
+            if (!totalAmountInput) {
+                return;
+            }
+            
+            let total = 0;
+            const allForms = getAllLineItemForms();
+            
+            allForms.forEach(form => {
+                const priceInput = form.querySelector('.line-item-price, [id^="line_item_price"]');
+                if (priceInput && priceInput.value) {
+                    total += parseFloat(priceInput.value) || 0;
+                }
+            });
+            
+            totalAmountInput.value = total.toFixed(2);
+            triggerAutoSaveBill();
+        }
+
+        // Clear a specific line item form
+        function clearLineItemFormInputs(formElement) {
+            if (!formElement) return;
+            
+            const inputs = formElement.querySelectorAll('input, select, textarea');
+            inputs.forEach(input => {
+                if (input.type === 'checkbox') {
+                    input.checked = true;
+                } else if (input.type === 'file') {
+                    input.value = '';
+                } else if (input.id && input.id.includes('quantity')) {
+                    input.value = '1';
+                } else if (input.id && (input.id.includes('amount') || input.id.includes('price'))) {
+                    input.value = '';
+                } else {
+                    input.value = '';
+                }
+            });
+            
+            resetAttachmentDisplay(formElement);
+        }
+
+        // Show the add line item form
+        function showAddLineItemForm() {
+            const form = document.getElementById('add-line-item-form');
+            const button = document.getElementById('add-line-item-button');
+            
+            if (form) {
+                form.style.display = 'block';
+                form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+            
+            if (button) {
+                button.style.display = 'none';
+            }
+        }
+
+        // Handle Cancel button click
+        function handleCancelLineItemForm(buttonElement) {
+            if (!buttonElement) return;
+            
+            const formElement = buttonElement.closest('[id^="add-line-item-form"]');
+            if (!formElement) return;
+            
+            const formCount = getAllLineItemForms().length;
+            const button = document.getElementById('add-line-item-button');
+            
+            if (formCount > 1) {
+                formElement.remove();
+            } else {
+                clearLineItemFormInputs(formElement);
+                formElement.style.display = 'none';
+            }
+            
+            // Show the Add Line Item button again
+            if (button) {
+                button.style.display = 'inline-flex';
+            }
+            
+            calculateTotalAmount();
+        }
+
+        // Delete line item form (for existing line items)
+        async function deleteLineItemForm(buttonElement) {
             if (!confirm('Are you sure you want to delete this line item?')) {
                 return;
             }
-
-            updateSaveStatus('line-items', 'saving');
-
-            try {
-                // First get the line item to get its row_version
-                const getResponse = await fetch(`/api/v1/get/bill_line_item/${lineItemPublicId}`, {
-                    headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+            
+            const formElement = buttonElement.closest('[id^="line-item-form"]');
+            if (!formElement) return;
+            
+            const publicIdField = formElement.querySelector('.line-item-public-id');
+            const publicId = publicIdField ? publicIdField.value : '';
+            
+            if (publicId) {
+                // Delete from server
+                try {
+                    const rowVersionField = formElement.querySelector('.line-item-row-version');
+                    const rowVersion = rowVersionField ? rowVersionField.value : '';
+                    
+                    const response = await fetch(`/api/v1/delete/bill_line_item/${publicId}`, {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ row_version: rowVersion })
+                    });
+                    
+                    if (!response.ok) {
+                        const error = await response.json();
+                        showToast(error.detail || 'Failed to delete line item', 'error');
+                        return;
                     }
-                });
-
-                if (!getResponse.ok) {
-                    updateSaveStatus('line-items', 'error');
-                    alert('Error fetching line item information.');
+                } catch (error) {
+                    showToast(error.message || 'Failed to delete line item', 'error');
                     return;
                 }
+            }
+            
+            // Remove from DOM
+            formElement.remove();
+            calculateTotalAmount();
+            showToast('Line item deleted', 'success', 2000);
+        }
 
-                const lineItem = await getResponse.json();
-
-                const response = await fetch(`/api/v1/delete/bill_line_item/${lineItemPublicId}`, {
-                    method: 'DELETE',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
-                    },
-                    body: JSON.stringify({
-                        row_version: lineItem.row_version
-                    })
-                });
-
-                if (response.ok) {
-                    // Reload the page to update the line items list
-                    updateSaveStatus('line-items', 'saved');
-                    window.location.reload();
-                } else {
-                    updateSaveStatus('line-items', 'error');
-                    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-                    alert('Error deleting line item: ' + (error.detail || 'Unknown error'));
+        // Set up initial line item form calculations and auto-save
+        document.addEventListener('DOMContentLoaded', function() {
+            // Set up existing line item forms
+            document.querySelectorAll('.line-item-existing-form').forEach(form => {
+                setupLineItemCalculations(form);
+                setupLineItemAutoSave(form);
+                setupLineItemAttachment(form);
+            });
+            
+            // Set up new line item form
+            const initialForm = document.getElementById('add-line-item-form');
+            if (initialForm) {
+                setupLineItemCalculations(initialForm);
+                setupLineItemAutoSave(initialForm);
+                setupLineItemAttachment(initialForm);
+                
+                const addButton = initialForm.querySelector('button.btn-primary');
+                if (addButton) {
+                    addButton.onclick = function() {
+                        addLineItemForm();
+                    };
                 }
-            } catch (error) {
-                updateSaveStatus('line-items', 'error');
-                alert('Error deleting line item: ' + error.message);
+            }
+            
+            // Calculate initial total
+            calculateTotalAmount();
+        });
+
+        // =====================
+        // Line Item Attachment Handling
+        // =====================
+
+        function triggerFileInput(buttonElement) {
+            const formElement = buttonElement.closest('[id^="line-item-form"], [id^="add-line-item-form"]');
+            if (!formElement) return;
+            
+            const fileInput = formElement.querySelector('.line-item-file-input');
+            if (fileInput) {
+                fileInput.click();
             }
         }
 
-        async function deleteBill() {
-            if (confirm('Are you sure you want to delete this bill? This action cannot be undone.')) {
-                const formData = new FormData(document.getElementById('editBillForm'));
+        function setupLineItemAttachment(formElement) {
+            const fileInput = formElement.querySelector('.line-item-file-input');
+            if (fileInput) {
+                fileInput.addEventListener('change', function(e) {
+                    handleFileSelect(e, formElement);
+                });
+            }
+        }
 
+        async function handleFileSelect(event, formElement) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const statusElement = formElement.querySelector('.attachment-status');
+            const uploadBtn = formElement.querySelector('.attachment-upload-btn');
+            const btnText = uploadBtn.querySelector('.attachment-btn-text');
+            
+            statusElement.textContent = 'Uploading...';
+            btnText.textContent = 'Uploading...';
+            uploadBtn.disabled = true;
+            
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('category', 'bill_line_item');
+                
+                const uploadResponse = await fetch('/api/v1/upload/attachment', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!uploadResponse.ok) {
+                    const error = await uploadResponse.json();
+                    throw new Error(error.detail || 'Failed to upload file');
+                }
+                
+                const attachment = await uploadResponse.json();
+                console.log('File uploaded:', attachment.public_id);
+                
+                formElement.querySelector('.line-item-attachment-public-id').value = attachment.public_id;
+                
+                const lineItemPublicId = formElement.querySelector('.line-item-public-id').value;
+                if (lineItemPublicId) {
+                    await createAttachmentLink(formElement, lineItemPublicId, attachment.public_id);
+                } else {
+                    console.log('Attachment uploaded, pending link (line item not saved yet)');
+                }
+                
+                updateAttachmentDisplay(formElement, attachment);
+                showToast('File uploaded successfully', 'success', 2000);
+                
+            } catch (error) {
+                console.error('Attachment error:', error);
+                statusElement.textContent = 'Upload failed';
+                showToast(error.message || 'Failed to upload file', 'error');
+            } finally {
+                btnText.textContent = 'Choose File';
+                uploadBtn.disabled = false;
+                event.target.value = '';
+            }
+        }
+
+        async function createAttachmentLink(formElement, lineItemPublicId, attachmentPublicId) {
+            try {
+                const linkResponse = await fetch('/api/v1/create/bill-line-item-attachment', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        bill_line_item_public_id: lineItemPublicId,
+                        attachment_public_id: attachmentPublicId
+                    })
+                });
+                
+                if (!linkResponse.ok) {
+                    const error = await linkResponse.json();
+                    throw new Error(error.detail || 'Failed to link attachment');
+                }
+                
+                const attachmentLink = await linkResponse.json();
+                console.log('Attachment linked:', attachmentLink.public_id);
+                
+                formElement.querySelector('.line-item-attachment-link-public-id').value = attachmentLink.public_id;
+                updateAttachmentLinkedState(formElement);
+                
+                return attachmentLink;
+            } catch (error) {
+                console.error('Failed to create attachment link:', error);
+                throw error;
+            }
+        }
+
+        async function linkPendingAttachment(formElement, lineItemPublicId) {
+            const attachmentPublicId = formElement.querySelector('.line-item-attachment-public-id').value;
+            const linkPublicId = formElement.querySelector('.line-item-attachment-link-public-id').value;
+            
+            if (attachmentPublicId && !linkPublicId) {
+                console.log('Creating link for pending attachment:', attachmentPublicId);
                 try {
-                    const response = await fetch(`/api/v1/delete/bill/${formData.get('public_id')}`, {
-                        method: 'DELETE',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
-                        },
-                        body: JSON.stringify({ row_version: formData.get('row_version') })
-                    });
+                    await createAttachmentLink(formElement, lineItemPublicId, attachmentPublicId);
+                    showToast('Attachment linked to line item', 'success', 2000);
+                } catch (error) {
+                    showToast('Failed to link attachment: ' + error.message, 'error');
+                }
+            }
+        }
 
-                    if (response.ok) {
-                        window.location.href = '/bill/list';
-                    } else {
-                        const contentType = response.headers.get('content-type');
-                        if (contentType && contentType.includes('application/json')) {
-                            const error = await response.json();
-                            let message = 'Unknown error';
-                            if (error.detail) {
-                                message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
-                            } else if (error.message) {
-                                message = error.message;
-                            } else if (typeof error === 'string') {
-                                message = error;
-                            } else {
-                                message = JSON.stringify(error);
-                            }
-                            alert('Error deleting bill: ' + message);
-                        } else {
-                            const errorText = await response.text();
-                            alert('Error deleting bill: ' + errorText);
-                        }
+        function updateAttachmentDisplay(formElement, attachment) {
+            const uploadWrapper = formElement.querySelector('.attachment-upload-wrapper');
+            const displayWrapper = formElement.querySelector('.attachment-display');
+            const filenameLink = formElement.querySelector('.attachment-filename');
+            const displayContainer = displayWrapper ? displayWrapper.querySelector('div') : null;
+            
+            if (uploadWrapper) uploadWrapper.style.display = 'none';
+            if (displayWrapper) displayWrapper.style.display = 'block';
+            
+            if (filenameLink) {
+                filenameLink.textContent = attachment.original_filename || attachment.filename || 'Attachment';
+                filenameLink.href = `/attachment/view/${attachment.public_id}`;
+            }
+            
+            const lineItemPublicId = formElement.querySelector('.line-item-public-id').value;
+            const linkPublicId = formElement.querySelector('.line-item-attachment-link-public-id').value;
+            
+            if (displayContainer) {
+                if (!lineItemPublicId || !linkPublicId) {
+                    displayContainer.style.backgroundColor = '#fff3cd';
+                    displayContainer.style.borderColor = '#ffc107';
+                    displayContainer.title = 'File uploaded - will be linked when line item is saved';
+                } else {
+                    displayContainer.style.backgroundColor = '#e8f5e9';
+                    displayContainer.style.borderColor = '#c8e6c9';
+                    displayContainer.title = 'File attached to line item';
+                }
+            }
+        }
+
+        function updateAttachmentLinkedState(formElement) {
+            const displayWrapper = formElement.querySelector('.attachment-display');
+            const displayContainer = displayWrapper ? displayWrapper.querySelector('div') : null;
+            
+            if (displayContainer) {
+                displayContainer.style.backgroundColor = '#e8f5e9';
+                displayContainer.style.borderColor = '#c8e6c9';
+                displayContainer.title = 'File attached to line item';
+            }
+        }
+
+        async function removeAttachment(buttonElement) {
+            const formElement = buttonElement.closest('[id^="line-item-form"], [id^="add-line-item-form"]');
+            if (!formElement) return;
+            
+            const linkPublicId = formElement.querySelector('.line-item-attachment-link-public-id').value;
+            const attachmentPublicId = formElement.querySelector('.line-item-attachment-public-id').value;
+            
+            try {
+                if (linkPublicId) {
+                    const linkResponse = await fetch(`/api/v1/delete/bill-line-item-attachment/${linkPublicId}`, {
+                        method: 'DELETE'
+                    });
+                    
+                    if (!linkResponse.ok) {
+                        const error = await linkResponse.json();
+                        throw new Error(error.detail || 'Failed to remove attachment link');
+                    }
+                }
+                
+                if (attachmentPublicId) {
+                    try {
+                        await fetch(`/api/v1/delete/attachment/${attachmentPublicId}`, { method: 'DELETE' });
+                        console.log('Deleted attachment file:', attachmentPublicId);
+                    } catch (e) {
+                        console.warn('Could not delete attachment file:', e);
+                    }
+                }
+                
+                resetAttachmentDisplay(formElement);
+                showToast('Attachment removed', 'success', 2000);
+                
+            } catch (error) {
+                console.error('Remove attachment error:', error);
+                showToast(error.message || 'Failed to remove attachment', 'error');
+            }
+        }
+
+        function resetAttachmentDisplay(formElement) {
+            const uploadWrapper = formElement.querySelector('.attachment-upload-wrapper');
+            const displayWrapper = formElement.querySelector('.attachment-display');
+            const statusElement = formElement.querySelector('.attachment-status');
+            
+            if (uploadWrapper) uploadWrapper.style.display = 'flex';
+            if (displayWrapper) displayWrapper.style.display = 'none';
+            if (statusElement) statusElement.textContent = 'No file attached';
+            
+            const attachmentPublicId = formElement.querySelector('.line-item-attachment-public-id');
+            const linkPublicId = formElement.querySelector('.line-item-attachment-link-public-id');
+            if (attachmentPublicId) attachmentPublicId.value = '';
+            if (linkPublicId) linkPublicId.value = '';
+        }
+
+        // =====================
+        // Complete Bill (Final Submit)
+        // =====================
+
+        function validateBillForm() {
+            const errors = [];
+            
+            if (!document.getElementById('vendor_public_id').value) {
+                errors.push('Vendor is required');
+            }
+            if (!document.getElementById('bill_date').value) {
+                errors.push('Bill Date is required');
+            }
+            if (!document.getElementById('due_date').value) {
+                errors.push('Due Date is required');
+            }
+            if (!document.getElementById('bill_number').value.trim()) {
+                errors.push('Bill Number is required');
+            }
+            
+            return errors;
+        }
+
+        function validatePendingAttachments() {
+            const pendingAttachments = [];
+            const allForms = getAllLineItemForms();
+            
+            allForms.forEach((formElement, index) => {
+                const attachmentPublicId = formElement.querySelector('.line-item-attachment-public-id').value;
+                const lineItemPublicId = formElement.querySelector('.line-item-public-id').value;
+                
+                if (attachmentPublicId && !lineItemPublicId) {
+                    pendingAttachments.push({
+                        formIndex: index + 1,
+                        formElement: formElement
+                    });
+                }
+            });
+            
+            return pendingAttachments;
+        }
+
+        async function saveBillFinal() {
+            const billPublicId = document.getElementById('bill_public_id').value;
+            const rowVersion = document.getElementById('row_version').value;
+            
+            if (!billPublicId) {
+                throw new Error('Bill must be saved before completing');
+            }
+            
+            const totalAmountEl = document.getElementById('total_amount');
+            const totalAmountValue = totalAmountEl && totalAmountEl.value ? parseFloat(totalAmountEl.value) : null;
+            
+            const billData = {
+                row_version: rowVersion,
+                vendor_public_id: document.getElementById('vendor_public_id').value,
+                terms_id: document.getElementById('terms_id').value ? parseInt(document.getElementById('terms_id').value) : null,
+                bill_date: document.getElementById('bill_date').value,
+                due_date: document.getElementById('due_date').value,
+                bill_number: document.getElementById('bill_number').value.trim(),
+                total_amount: totalAmountValue,
+                memo: document.getElementById('memo').value || null,
+                is_draft: false
+            };
+            
+            const response = await fetch(`/api/v1/update/bill/${billPublicId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(billData)
+            });
+            
+            if (!response.ok) {
+                let errorMessage = 'Failed to complete bill';
+                try {
+                    const error = await response.json();
+                    errorMessage = error.detail || errorMessage;
+                } catch (e) {
+                    errorMessage = `Server error: ${response.status}`;
+                }
+                throw new Error(errorMessage);
+            }
+            
+            const result = await response.json();
+            if (result.row_version) {
+                document.getElementById('row_version').value = result.row_version;
+            }
+            return result;
+        }
+
+        async function saveAllLineItemsFinal() {
+            const billPublicId = document.getElementById('bill_public_id').value;
+            const allForms = getAllLineItemForms();
+            const errors = [];
+            
+            for (const formElement of allForms) {
+                const publicIdField = formElement.querySelector('.line-item-public-id');
+                const rowVersionField = formElement.querySelector('.line-item-row-version');
+                
+                const publicId = publicIdField ? publicIdField.value : '';
+                const rowVersion = rowVersionField ? rowVersionField.value : '';
+                
+                if (!publicId) {
+                    continue;
+                }
+                
+                const subCostCode = formElement.querySelector('.line-item-sub-cost-code-id, [id^="line_item_sub_cost_code_id"]');
+                const description = formElement.querySelector('.line-item-description, [id^="line_item_description"]');
+                const quantity = formElement.querySelector('.line-item-quantity, [id^="line_item_quantity"]');
+                const rate = formElement.querySelector('.line-item-rate, [id^="line_item_rate"]');
+                const amountInput = formElement.querySelector('.line-item-amount, [id^="line_item_amount"]');
+                const isBillable = formElement.querySelector('.line-item-is-billable, [id^="line_item_is_billable"]');
+                const markup = formElement.querySelector('.line-item-markup, [id^="line_item_markup"]');
+                const priceInput = formElement.querySelector('.line-item-price, [id^="line_item_price"]');
+                
+                const lineItemData = {
+                    row_version: rowVersion,
+                    bill_public_id: billPublicId,
+                    sub_cost_code_id: subCostCode && subCostCode.value ? parseInt(subCostCode.value) : null,
+                    description: description ? description.value.trim() : null,
+                    quantity: quantity && quantity.value ? parseInt(quantity.value) : null,
+                    rate: rate && rate.value ? parseFloat(rate.value) : null,
+                    amount: amountInput && amountInput.value ? parseFloat(amountInput.value) : null,
+                    is_billable: isBillable ? isBillable.checked : true,
+                    markup: markup && markup.value ? parseFloat(markup.value) : null,
+                    price: priceInput && priceInput.value ? parseFloat(priceInput.value) : null,
+                    is_draft: false
+                };
+                
+                try {
+                    const response = await fetch(`/api/v1/update/bill_line_item/${publicId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(lineItemData)
+                    });
+                    
+                    if (!response.ok) {
+                        const error = await response.json();
+                        errors.push(error.detail || `Failed to complete line item`);
                     }
                 } catch (error) {
-                    alert('Error deleting bill: ' + error.message);
+                    errors.push(error.message);
                 }
+            }
+            
+            return errors;
+        }
+
+        async function handleCompleteBill(event) {
+            event.preventDefault();
+            
+            const validationErrors = validateBillForm();
+            if (validationErrors.length > 0) {
+                showToast(validationErrors.join(', '), 'error');
+                return;
+            }
+            
+            const billPublicId = document.getElementById('bill_public_id').value;
+            if (!billPublicId) {
+                showToast('Please fill in all required fields and wait for the bill to save before completing.', 'error');
+                return;
+            }
+            
+            const pendingAttachments = validatePendingAttachments();
+            if (pendingAttachments.length > 0) {
+                const message = pendingAttachments.length === 1
+                    ? 'Line item #' + pendingAttachments[0].formIndex + ' has an attachment but is not saved. Please fill in the required fields (Sub Cost Code, Description, Quantity, Rate) or remove the attachment.'
+                    : pendingAttachments.length + ' line items have attachments but are not saved. Please fill in their required fields or remove the attachments.';
+                showToast(message, 'error', 8000);
+                
+                const firstForm = pendingAttachments[0].formElement;
+                firstForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                firstForm.style.boxShadow = '0 0 0 2px #dc3545';
+                setTimeout(() => {
+                    firstForm.style.boxShadow = '';
+                }, 3000);
+                return;
+            }
+            
+            updateSaveStatus('saving', 'Completing...');
+            
+            try {
+                await saveBillFinal();
+                const lineItemErrors = await saveAllLineItemsFinal();
+                
+                if (lineItemErrors.length > 0) {
+                    updateSaveStatus('saved', 'Complete');
+                    showToast(`Bill completed with some line item warnings: ${lineItemErrors.join(', ')}`, 'warning');
+                } else {
+                    updateSaveStatus('saved', 'Complete');
+                    showToast('Bill completed successfully!', 'success');
+                }
+                
+                setTimeout(() => {
+                    window.location.href = '/bill/list';
+                }, 1500);
+                
+            } catch (error) {
+                console.error('Complete bill error:', error);
+                updateSaveStatus('error', 'Error');
+                showToast(error.message || 'Failed to complete bill', 'error');
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const form = document.getElementById('editBillForm');
+            if (form) {
+                form.addEventListener('submit', handleCompleteBill);
+            }
+        });
+
+        // Delete Bill function
+        async function deleteBill() {
+            if (!confirm('Are you sure you want to delete this bill? This action cannot be undone.')) {
+                return;
+            }
+            
+            const billPublicId = document.getElementById('bill_public_id').value;
+            const rowVersion = document.getElementById('row_version').value;
+            
+            try {
+                const response = await fetch(`/api/v1/delete/bill/${billPublicId}`, {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ row_version: rowVersion })
+                });
+                
+                if (response.ok) {
+                    window.location.href = '/bill/list';
+                } else {
+                    const error = await response.json();
+                    showToast(error.detail || 'Failed to delete bill', 'error');
+                }
+            } catch (error) {
+                showToast(error.message || 'Failed to delete bill', 'error');
             }
         }
     </script>

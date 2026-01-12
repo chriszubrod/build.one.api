@@ -55,6 +55,7 @@ from modules.attachment.web.controller import router as attachment_web_router
 from modules.bill.api.router import router as bill_api_router
 from modules.bill.web.controller import router as bill_web_router
 from modules.bill_line_item.api.router import router as bill_line_item_api_router
+from modules.bill_line_item_attachment.api.router import router as bill_line_item_attachment_api_router
 from modules.taxpayer_attachment.api.router import router as taxpayer_attachment_api_router
 from modules.taxpayer_attachment.web.controller import router as taxpayer_attachment_web_router
 from modules.legal.web.controller import router as legal_web_router
@@ -140,6 +141,7 @@ app.include_router(attachment_web_router)
 app.include_router(bill_api_router)
 app.include_router(bill_web_router)
 app.include_router(bill_line_item_api_router)
+app.include_router(bill_line_item_attachment_api_router)
 app.include_router(taxpayer_attachment_api_router)
 app.include_router(taxpayer_attachment_web_router)
 app.include_router(legal_web_router)

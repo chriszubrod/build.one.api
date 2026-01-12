@@ -263,7 +263,7 @@ EXEC DeleteSyncById
 GO
 
 UPDATE dbo.[Sync]
-SET [LastSyncDatetime] = NULL
-WHERE [Id] = 10 AND [RowVersion] = 0x0000000000023B40;
+SET [LastSyncDatetime] = '2026-01-01 00:00:00.000'
+WHERE [Id] = 2 AND [RowVersion] = 0x0000000000025CCF;
 
 SELECT * FROM dbo.[Sync];

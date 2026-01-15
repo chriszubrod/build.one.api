@@ -7,13 +7,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 # Third-party Imports
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from typing_extensions import Annotated
 
 # Local Imports
 import config
+from modules.auth.business.service import WebAuthenticationRequired
 
 from modules.address.api.router import router as address_api_router
 from modules.address.web.controller import router as address_web_router
@@ -69,6 +70,7 @@ from integrations.intuit.qbo.vendor.api.router import router as qbo_vendor_api_r
 from integrations.intuit.qbo.vendor.web.controller import router as qbo_vendor_web_router
 from integrations.intuit.qbo.client.api.router import router as qbo_client_api_router
 from integrations.intuit.qbo.client.web.controller import router as qbo_client_web_router
+from integrations.ms.auth.api.router import router as ms_auth_api_router
 
 
 app = FastAPI()
@@ -89,6 +91,15 @@ class ProxyHeadersMiddleware(BaseHTTPMiddleware):
 
 # Enable proxy headers middleware to handle HTTPS correctly in Azure
 app.add_middleware(ProxyHeadersMiddleware)
+
+
+@app.exception_handler(WebAuthenticationRequired)
+async def web_authentication_required_handler(request: Request, exc: WebAuthenticationRequired):
+    """
+    Exception handler for web authentication failures.
+    Redirects to login page when authentication is required.
+    """
+    return RedirectResponse(url="/auth/login", status_code=303)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -129,6 +140,7 @@ app.include_router(qbo_vendor_api_router)
 app.include_router(qbo_vendor_web_router)
 app.include_router(qbo_client_api_router)
 app.include_router(qbo_client_web_router)
+app.include_router(ms_auth_api_router)
 app.include_router(vendor_type_api_router)
 app.include_router(vendor_type_web_router)
 app.include_router(taxpayer_api_router)

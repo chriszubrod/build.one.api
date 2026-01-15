@@ -192,3 +192,6 @@ END;
 EXEC DeleteBillLineItemAttachmentById
     @Id = 2;
 GO
+
+
+SELECT * FROM dbo.BillLineItemAttachment;

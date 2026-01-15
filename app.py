@@ -71,6 +71,9 @@ from integrations.intuit.qbo.vendor.web.controller import router as qbo_vendor_w
 from integrations.intuit.qbo.client.api.router import router as qbo_client_api_router
 from integrations.intuit.qbo.client.web.controller import router as qbo_client_web_router
 from integrations.ms.auth.api.router import router as ms_auth_api_router
+from integrations.ms.sharepoint.site.api.router import router as ms_sharepoint_site_api_router
+from integrations.ms.sharepoint.drive.api.router import router as ms_sharepoint_drive_api_router
+from integrations.ms.sharepoint.driveitem.api.router import router as ms_sharepoint_driveitem_api_router
 
 
 app = FastAPI()
@@ -141,6 +144,9 @@ app.include_router(qbo_vendor_web_router)
 app.include_router(qbo_client_api_router)
 app.include_router(qbo_client_web_router)
 app.include_router(ms_auth_api_router)
+app.include_router(ms_sharepoint_site_api_router)
+app.include_router(ms_sharepoint_drive_api_router)
+app.include_router(ms_sharepoint_driveitem_api_router)
 app.include_router(vendor_type_api_router)
 app.include_router(vendor_type_web_router)
 app.include_router(taxpayer_api_router)

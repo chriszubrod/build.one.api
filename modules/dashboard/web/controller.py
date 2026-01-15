@@ -2,7 +2,6 @@
 import logging
 from fastapi import APIRouter, Request, Depends
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import RedirectResponse
 
 # Third-party Imports
 
@@ -22,10 +21,6 @@ async def dashboard(request: Request, current_user: dict = Depends(get_current_u
     """
     Dashboard.
     """
-    # Check if current_user is a RedirectResponse (authentication failed)
-    if isinstance(current_user, RedirectResponse):
-        return current_user
-
     # Initialize the variables for dashboard data
     flash_message = None
     flash_type = None

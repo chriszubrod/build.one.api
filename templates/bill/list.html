@@ -13,57 +13,190 @@
         <a href="/bill/create?new=true" class="btn btn-primary">Add Bill</a>
     </div>
 
-    {% if bills %}
-        <div class="bill-list-container">
-            <div class="bill-grid">
-                {% for bill in bills %}
-                <div class="bill-card">
-                    <div class="bill-card-content">
-                        <h5 class="bill-card-title">
-                            {{ bill.bill_number or 'No Bill Number' }}
-                        </h5>
-                        <div class="bill-metadata" style="flex: 1; display: flex; flex-direction: column; gap: 0.25rem;">
-                            {% if bill.vendor_name %}
-                            <div class="bill-metadata-item">
-                                <span>{{ bill.vendor_name }}</span>
-                            </div>
-                            {% elif bill.vendor_id %}
-                            <div class="bill-metadata-item">
-                                <span>Vendor ID: {{ bill.vendor_id }}</span>
-                            </div>
-                            {% endif %}
-                            {% if bill.bill_date %}
-                            <div class="bill-metadata-item">
-                                <span>Bill Date: {{ bill.bill_date }}</span>
-                            </div>
-                            {% endif %}
-                            {% if bill.due_date %}
-                            <div class="bill-metadata-item">
-                                <span>Due Date: {{ bill.due_date }}</span>
-                            </div>
-                            {% endif %}
-                            {% if bill.total_amount %}
-                            <div class="bill-metadata-item">
-                                <span>Amount: ${{ "%.2f"|format(bill.total_amount) }}</span>
-                            </div>
-                            {% endif %}
-                        </div>
-                        <div class="bill-card-actions">
-                            <a href="/bill/{{ bill.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
-                            <a href="/bill/{{ bill.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
-                        </div>
-                    </div>
+    <!-- Search and Filters -->
+    <div class="bill-filters-container">
+        <form method="get" action="/bill/list" id="bill-filters-form" class="bill-filters-form">
+            <div class="bill-filters-row">
+                <!-- Search -->
+                <div class="bill-filter-group">
+                    <label for="search" class="bill-filter-label">Search</label>
+                    <input type="text"
+                           id="search"
+                           name="search"
+                           class="bill-filter-input"
+                           placeholder="Search bills, vendors, dates, amounts..."
+                           value="{{ search }}"
+                           autocomplete="off">
                 </div>
-                {% endfor %}
+
+                <!-- Sort By -->
+                <div class="bill-filter-group">
+                    <label for="sort_by" class="bill-filter-label">Sort</label>
+                    <select id="sort_by" name="sort_by" class="bill-filter-select">
+                        <option value="BillDate" {% if sort_by == 'BillDate' %}selected{% endif %}>Bill Date</option>
+                        <option value="BillNumber" {% if sort_by == 'BillNumber' %}selected{% endif %}>Bill Number</option>
+                        <option value="TotalAmount" {% if sort_by == 'TotalAmount' %}selected{% endif %}>Amount</option>
+                    </select>
+                </div>
+
+                <!-- Hidden fields to preserve pagination and sort direction -->
+                <input type="hidden" id="page" name="page" value="{{ page }}">
+                <input type="hidden" id="page_size" name="page_size" value="{{ page_size }}">
+                <input type="hidden" id="sort_direction" name="sort_direction" value="{{ sort_direction }}">
+
+                <!-- Clear Button -->
+                <div class="bill-filter-actions">
+                    <a href="/bill/list" class="btn btn-secondary">Clear</a>
+                </div>
             </div>
+        </form>
+    </div>
+
+    <!-- Results Summary -->
+    <div class="bill-results-summary">
+        <span>Showing {{ bills|length }} of {{ total_count }} bills</span>
+        {% if total_pages > 1 %}
+        <span>• Page {{ page }} of {{ total_pages }}</span>
+        {% endif %}
+    </div>
+
+    <!-- Bills Table -->
+    {% if bills %}
+        <div class="bill-table-wrapper">
+            <div class="bill-table-container">
+                <table class="bill-table">
+                <thead>
+                    <tr>
+                        <th>Bill Number</th>
+                        <th>Vendor</th>
+                        <th>Bill Date</th>
+                        <th>Amount</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for bill in bills %}
+                    <tr>
+                        <td>
+                            <strong>{{ bill.bill_number or 'No Bill Number' }}</strong>
+                        </td>
+                        <td>{{ bill.vendor_name or (bill.vendor_id or 'N/A') }}</td>
+                        <td>
+                            {% if bill.bill_date %}
+                                {{ bill.bill_date[:10] }}
+                            {% else %}
+                                N/A
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if bill.total_amount %}
+                                ${{ "%.2f"|format(bill.total_amount) }}
+                            {% else %}
+                                $0.00
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if bill.is_draft %}
+                                <span class="bill-status-badge bill-status-draft">Draft</span>
+                            {% else %}
+                                <span class="bill-status-badge bill-status-finalized">Finalized</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="bill-table-actions">
+                                <a href="/bill/{{ bill.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
+                                <a href="/bill/{{ bill.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            </div>
+
+            <!-- Pagination -->
+        {% if total_pages > 1 %}
+        <div class="bill-pagination">
+            <div class="bill-pagination-info">
+                <span>Page {{ page }} of {{ total_pages }}</span>
+            </div>
+            <div class="bill-pagination-controls">
+                {% if has_previous %}
+                    <a href="?page=1&page_size={{ page_size }}&search={{ search }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
+                       class="btn btn-secondary btn-sm">First</a>
+                    <a href="?page={{ page - 1 }}&page_size={{ page_size }}&search={{ search }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
+                       class="btn btn-secondary btn-sm">Previous</a>
+                {% else %}
+                    <span class="btn btn-secondary btn-sm" style="opacity: 0.5; cursor: not-allowed;">First</span>
+                    <span class="btn btn-secondary btn-sm" style="opacity: 0.5; cursor: not-allowed;">Previous</span>
+                {% endif %}
+
+                <!-- Page Numbers -->
+                {% set start_page = [1, page - 2]|max %}
+                {% set end_page = [total_pages, page + 2]|min %}
+                {% for p in range(start_page, end_page + 1) %}
+                    {% if p == page %}
+                        <span class="btn btn-primary btn-sm" style="cursor: default;">{{ p }}</span>
+                    {% else %}
+                        <a href="?page={{ p }}&page_size={{ page_size }}&search={{ search }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
+                           class="btn btn-secondary btn-sm">{{ p }}</a>
+                    {% endif %}
+                {% endfor %}
+
+                {% if has_next %}
+                    <a href="?page={{ page + 1 }}&page_size={{ page_size }}&search={{ search }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
+                       class="btn btn-secondary btn-sm">Next</a>
+                    <a href="?page={{ total_pages }}&page_size={{ page_size }}&search={{ search }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
+                       class="btn btn-secondary btn-sm">Last</a>
+                {% else %}
+                    <span class="btn btn-secondary btn-sm" style="opacity: 0.5; cursor: not-allowed;">Next</span>
+                    <span class="btn btn-secondary btn-sm" style="opacity: 0.5; cursor: not-allowed;">Last</span>
+                {% endif %}
+            </div>
+        {% endif %}
         </div>
     {% else %}
         <div class="bill-empty-state">
             <div class="bill-empty-state-icon">📄</div>
             <h3>No Bills Found</h3>
-            <p>Create your first bill to get started.</p>
+            <p>{% if search %}Try adjusting your search.{% else %}Create your first bill to get started.{% endif %}</p>
+            {% if not search %}
             <a href="/bill/create?new=true" class="btn btn-primary">Create Bill</a>
+            {% else %}
+            <a href="/bill/list" class="btn btn-secondary">Clear Filters</a>
+            {% endif %}
         </div>
     {% endif %}
 
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const form = document.getElementById('bill-filters-form');
+        const searchInput = document.getElementById('search');
+        const sortSelect = document.getElementById('sort_by');
+        
+        // Debounce function for search input
+        let searchTimeout;
+        function debounceSearch() {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(function() {
+                // Reset to page 1 when filter changes
+                document.getElementById('page').value = '1';
+                form.submit();
+            }, 500); // Wait 500ms after user stops typing
+        }
+        
+        // Auto-submit on search input (with debounce)
+        searchInput.addEventListener('input', debounceSearch);
+        
+        // Auto-submit on sort change
+        sortSelect.addEventListener('change', function() {
+            document.getElementById('page').value = '1';
+            form.submit();
+        });
+    });
+</script>
 {% endblock %}

@@ -92,6 +92,11 @@
                                 </div>
                             </div>
                             <div class="line-item-metadata" style="display: flex; flex-direction: column; gap: 0.25rem; font-size: var(--font-size-base); color: var(--color-text-secondary);">
+                                {% if line_item.project_name %}
+                                <div class="line-item-metadata-item">
+                                    <span>Project: {{ line_item.project_name }}</span>
+                                </div>
+                                {% endif %}
                                 {% if line_item.quantity is not none %}
                                 <div class="line-item-metadata-item">
                                     <span>Quantity: {{ line_item.quantity }}</span>

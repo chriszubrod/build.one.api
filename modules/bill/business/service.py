@@ -62,6 +62,54 @@ class BillService:
         """
         return self.repo.read_all()
 
+    def read_paginated(
+        self,
+        *,
+        page_number: int = 1,
+        page_size: int = 50,
+        search_term: Optional[str] = None,
+        vendor_id: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        is_draft: Optional[bool] = None,
+        sort_by: str = "BillDate",
+        sort_direction: str = "DESC",
+    ) -> list[Bill]:
+        """
+        Read bills with pagination and filtering.
+        """
+        return self.repo.read_paginated(
+            page_number=page_number,
+            page_size=page_size,
+            search_term=search_term,
+            vendor_id=vendor_id,
+            start_date=start_date,
+            end_date=end_date,
+            is_draft=is_draft,
+            sort_by=sort_by,
+            sort_direction=sort_direction,
+        )
+
+    def count(
+        self,
+        *,
+        search_term: Optional[str] = None,
+        vendor_id: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        is_draft: Optional[bool] = None,
+    ) -> int:
+        """
+        Count bills matching the filter criteria.
+        """
+        return self.repo.count(
+            search_term=search_term,
+            vendor_id=vendor_id,
+            start_date=start_date,
+            end_date=end_date,
+            is_draft=is_draft,
+        )
+
     def read_by_id(self, id: int) -> Optional[Bill]:
         """
         Read a bill by ID.

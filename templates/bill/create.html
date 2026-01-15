@@ -116,7 +116,19 @@
                                     <!-- Hidden fields for tracking line item state -->
                                     <input type="hidden" class="line-item-public-id" value="">
                                     <input type="hidden" class="line-item-row-version" value="">
-                                    <div class="bill-line-item-grid">
+                                    <!-- Row 1: Project, SubCostCode, Description -->
+                                    <div class="bill-line-item-grid bill-line-item-row-1">
+                                        <!-- Project -->
+                                        <div class="bill-form-group" style="margin-bottom: 0;">
+                                            <label for="line_item_project_public_id" class="bill-form-label">Project</label>
+                                            <select class="bill-form-control" id="line_item_project_public_id">
+                                                <option value="">-- Select --</option>
+                                                {% for project in projects %}
+                                                <option value="{{ project.public_id }}">{{ project.name }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        
                                         <!-- Sub Cost Code -->
                                         <div class="bill-form-group" style="margin-bottom: 0;">
                                             <label for="line_item_sub_cost_code_id" class="bill-form-label">Sub Cost Code <span class="required">*</span></label>
@@ -143,7 +155,10 @@
                                             <label for="line_item_description" class="bill-form-label">Description <span class="required">*</span></label>
                                             <textarea class="bill-form-control" id="line_item_description" rows="1" placeholder="Enter description" style="resize: vertical;"></textarea>
                                         </div>
-                                        
+                                    </div>
+                                    
+                                    <!-- Row 2: Quantity, Rate, Amount, IsBillable, Markup, Price -->
+                                    <div class="bill-line-item-grid bill-line-item-row-2">
                                         <!-- Quantity -->
                                         <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
                                             <label for="line_item_quantity" class="bill-form-label">Quantity <span class="required">*</span></label>
@@ -183,35 +198,34 @@
                                         </div>
                                     </div>
                                     
-                                    <!-- Attachment Section -->
+                                    <!-- Attachment Section with Buttons -->
                                     <div class="line-item-attachment-section" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed #e0e0e0;">
                                         <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
-                                            <div class="bill-form-group" style="margin-bottom: 0; flex: 1; min-width: 200px;">
-                                                <label class="bill-form-label">Attachment</label>
+                                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                                <label class="bill-form-label" style="margin-bottom: 0;">Attachment</label>
                                                 <div class="attachment-upload-wrapper" style="display: flex; align-items: center; gap: 0.5rem;">
                                                     <input type="file" class="line-item-file-input" id="line_item_attachment" style="display: none;" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt">
                                                     <button type="button" class="btn btn-secondary btn-sm attachment-upload-btn" onclick="triggerFileInput(this)" style="white-space: nowrap;">
                                                         <span class="attachment-btn-text">Choose File</span>
                                                     </button>
-                                                    <span class="attachment-status" style="font-size: 0.85rem; color: var(--color-text-muted);">No file attached</span>
+                                                    <span class="attachment-status" style="font-size: 0.85rem; color: var(--color-text-muted); white-space: nowrap;">No file attached</span>
                                                 </div>
                                             </div>
-                                            <div class="attachment-display" style="display: none; flex: 1; min-width: 200px;">
-                                                <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background-color: var(--color-success-bg, #e8f5e9); border-radius: 4px;">
+                                            <div class="attachment-display" style="display: none;">
+                                                <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background-color: var(--color-success-bg, #e8f5e9); border-radius: 4px; width: fit-content;">
                                                     <span class="attachment-icon" style="font-size: 1.2rem;">📎</span>
-                                                    <a href="#" class="attachment-filename" target="_blank" style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-primary);"></a>
+                                                    <a href="#" class="attachment-filename" target="_blank" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-primary); max-width: 200px;"></a>
                                                     <button type="button" class="btn btn-danger btn-sm attachment-remove-btn" onclick="removeAttachment(this)" title="Remove attachment" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">✕</button>
                                                 </div>
+                                            </div>
+                                            <div style="display: flex; gap: 0.5rem; margin-left: auto;">
+                                                <button type="button" class="btn btn-secondary" onclick="handleCancelLineItemForm(this)">Cancel</button>
+                                                <button type="button" class="btn btn-primary" onclick="addLineItem()">Add Line Item</button>
                                             </div>
                                         </div>
                                         <!-- Hidden fields for attachment tracking -->
                                         <input type="hidden" class="line-item-attachment-public-id" value="">
                                         <input type="hidden" class="line-item-attachment-link-public-id" value="">
-                                    </div>
-                                    
-                                    <div style="display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem;">
-                                        <button type="button" class="btn btn-secondary" onclick="handleCancelLineItemForm(this)">Cancel</button>
-                                        <button type="button" class="btn btn-primary" onclick="addLineItem()">Add Line Item</button>
                                     </div>
                                 </div>
                             </div>
@@ -510,6 +524,7 @@
 
             // Gather line item data
             const subCostCode = formElement.querySelector('[id^="line_item_sub_cost_code_id"]');
+            const projectSelect = formElement.querySelector('[id^="line_item_project_public_id"]');
             const description = formElement.querySelector('[id^="line_item_description"]');
             const quantity = formElement.querySelector('[id^="line_item_quantity"]');
             const rate = formElement.querySelector('[id^="line_item_rate"]');
@@ -521,6 +536,7 @@
             const lineItemData = {
                 bill_public_id: billPublicId,
                 sub_cost_code_id: subCostCode && subCostCode.value ? parseInt(subCostCode.value) : null,
+                project_public_id: projectSelect && projectSelect.value ? projectSelect.value : null,
                 description: description ? description.value.trim() : null,
                 quantity: quantity && quantity.value ? parseInt(quantity.value) : null,
                 rate: rate && rate.value ? parseFloat(rate.value) : null,
@@ -595,6 +611,7 @@
         function setupLineItemAutoSave(formElement) {
             const fieldsToWatch = [
                 '[id^="line_item_sub_cost_code_id"]',
+                '[id^="line_item_project_public_id"]',
                 '[id^="line_item_description"]',
                 '[id^="line_item_quantity"]',
                 '[id^="line_item_rate"]',
@@ -885,10 +902,9 @@
             const uploadBtn = formElement.querySelector('.attachment-upload-btn');
             const btnText = uploadBtn.querySelector('.attachment-btn-text');
             
-            // Update UI to show uploading state
+            // Update UI to show uploading state - hide button, show only message in span
             statusElement.textContent = 'Uploading...';
-            btnText.textContent = 'Uploading...';
-            uploadBtn.disabled = true;
+            uploadBtn.style.display = 'none';
             
             try {
                 // Step 1: Upload file to storage immediately
@@ -928,10 +944,13 @@
                 console.error('Attachment error:', error);
                 statusElement.textContent = 'Upload failed';
                 showToast(error.message || 'Failed to upload file', 'error');
+                // Restore button on error
+                uploadBtn.style.display = '';
             } finally {
-                // Reset button state
-                btnText.textContent = 'Choose File';
-                uploadBtn.disabled = false;
+                // Reset button state if still visible (upload succeeded, button was hidden by updateAttachmentDisplay)
+                if (uploadBtn.style.display !== 'none') {
+                    btnText.textContent = 'Choose File';
+                }
                 event.target.value = ''; // Clear file input for future uploads
             }
         }
@@ -1079,10 +1098,12 @@
             const uploadWrapper = formElement.querySelector('.attachment-upload-wrapper');
             const displayWrapper = formElement.querySelector('.attachment-display');
             const statusElement = formElement.querySelector('.attachment-status');
+            const uploadBtn = formElement.querySelector('.attachment-upload-btn');
             
             if (uploadWrapper) uploadWrapper.style.display = 'flex';
             if (displayWrapper) displayWrapper.style.display = 'none';
             if (statusElement) statusElement.textContent = 'No file attached';
+            if (uploadBtn) uploadBtn.style.display = ''; // Ensure button is visible
             
             // Clear hidden fields
             const attachmentPublicId = formElement.querySelector('.line-item-attachment-public-id');
@@ -1204,6 +1225,7 @@
                 }
                 
                 const subCostCode = formElement.querySelector('[id^="line_item_sub_cost_code_id"]');
+                const projectSelect = formElement.querySelector('[id^="line_item_project_public_id"]');
                 const description = formElement.querySelector('[id^="line_item_description"]');
                 const quantity = formElement.querySelector('[id^="line_item_quantity"]');
                 const rate = formElement.querySelector('[id^="line_item_rate"]');
@@ -1216,6 +1238,7 @@
                     row_version: rowVersion,
                     bill_public_id: billPublicId,
                     sub_cost_code_id: subCostCode && subCostCode.value ? parseInt(subCostCode.value) : null,
+                    project_public_id: projectSelect && projectSelect.value ? projectSelect.value : null,
                     description: description ? description.value.trim() : null,
                     quantity: quantity && quantity.value ? parseInt(quantity.value) : null,
                     rate: rate && rate.value ? parseFloat(rate.value) : null,

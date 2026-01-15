@@ -360,3 +360,135 @@ SELECT * FROM dbo.Bill;
 
 ALTER TABLE [dbo].[Bill] DROP COLUMN [LineItemId];
 GO
+
+-- Pagination and filtering procedures
+DROP PROCEDURE IF EXISTS ReadBillsPaginated;
+GO
+
+CREATE PROCEDURE ReadBillsPaginated
+(
+    @PageNumber INT = 1,
+    @PageSize INT = 50,
+    @SearchTerm NVARCHAR(255) = NULL,
+    @VendorId BIGINT = NULL,
+    @StartDate DATETIME2(3) = NULL,
+    @EndDate DATETIME2(3) = NULL,
+    @IsDraft BIT = NULL,
+    @SortBy NVARCHAR(50) = 'BillDate',
+    @SortDirection NVARCHAR(4) = 'DESC'
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+    
+    DECLARE @Offset INT = (@PageNumber - 1) * @PageSize;
+    
+    -- Validate sort column to prevent SQL injection
+    DECLARE @SortColumn NVARCHAR(50);
+    SET @SortColumn = CASE @SortBy
+        WHEN 'BillNumber' THEN 'BillNumber'
+        WHEN 'BillDate' THEN 'BillDate'
+        WHEN 'DueDate' THEN 'DueDate'
+        WHEN 'TotalAmount' THEN 'TotalAmount'
+        WHEN 'VendorId' THEN 'VendorId'
+        ELSE 'BillDate'
+    END;
+    
+    -- Validate sort direction
+    DECLARE @SortDir NVARCHAR(4);
+    SET @SortDir = CASE WHEN UPPER(@SortDirection) = 'ASC' THEN 'ASC' ELSE 'DESC' END;
+    
+    SELECT
+        b.[Id],
+        b.[PublicId],
+        b.[RowVersion],
+        CONVERT(VARCHAR(19), b.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), b.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        b.[VendorId],
+        b.[TermsId],
+        CONVERT(VARCHAR(19), b.[BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(19), b.[DueDate], 120) AS [DueDate],
+        b.[BillNumber],
+        b.[TotalAmount],
+        b.[Memo],
+        b.[IsDraft]
+    FROM dbo.[Bill] b
+    LEFT JOIN dbo.[Vendor] v ON b.[VendorId] = v.[Id]
+    WHERE
+        (@SearchTerm IS NULL OR 
+         b.[BillNumber] LIKE '%' + @SearchTerm + '%' OR
+         b.[Memo] LIKE '%' + @SearchTerm + '%' OR
+         v.[Name] LIKE '%' + @SearchTerm + '%' OR
+         CONVERT(VARCHAR(10), b.[BillDate], 120) LIKE '%' + @SearchTerm + '%' OR
+         CONVERT(VARCHAR(10), b.[DueDate], 120) LIKE '%' + @SearchTerm + '%' OR
+         CONVERT(VARCHAR(50), b.[TotalAmount]) LIKE '%' + @SearchTerm + '%')
+        AND (@VendorId IS NULL OR b.[VendorId] = @VendorId)
+        AND (@StartDate IS NULL OR b.[BillDate] >= @StartDate)
+        AND (@EndDate IS NULL OR b.[BillDate] <= @EndDate)
+        AND (@IsDraft IS NULL OR b.[IsDraft] = @IsDraft)
+    ORDER BY 
+        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'BillNumber' THEN b.[BillNumber] END ASC,
+        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'BillNumber' THEN b.[BillNumber] END DESC,
+        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'BillDate' THEN b.[BillDate] END ASC,
+        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'BillDate' THEN b.[BillDate] END DESC,
+        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'DueDate' THEN b.[DueDate] END ASC,
+        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'DueDate' THEN b.[DueDate] END DESC,
+        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'TotalAmount' THEN b.[TotalAmount] END ASC,
+        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'TotalAmount' THEN b.[TotalAmount] END DESC,
+        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'VendorId' THEN b.[VendorId] END ASC,
+        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'VendorId' THEN b.[VendorId] END DESC
+    OFFSET @Offset ROWS
+    FETCH NEXT @PageSize ROWS ONLY;
+    
+    COMMIT TRANSACTION;
+END;
+GO
+
+DROP PROCEDURE IF EXISTS CountBills;
+GO
+
+CREATE PROCEDURE CountBills
+(
+    @SearchTerm NVARCHAR(255) = NULL,
+    @VendorId BIGINT = NULL,
+    @StartDate DATETIME2(3) = NULL,
+    @EndDate DATETIME2(3) = NULL,
+    @IsDraft BIT = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+    
+    SELECT COUNT(*) AS [TotalCount]
+    FROM dbo.[Bill] b
+    LEFT JOIN dbo.[Vendor] v ON b.[VendorId] = v.[Id]
+    WHERE
+        (@SearchTerm IS NULL OR 
+         b.[BillNumber] LIKE '%' + @SearchTerm + '%' OR
+         b.[Memo] LIKE '%' + @SearchTerm + '%' OR
+         v.[Name] LIKE '%' + @SearchTerm + '%' OR
+         CONVERT(VARCHAR(10), b.[BillDate], 120) LIKE '%' + @SearchTerm + '%' OR
+         CONVERT(VARCHAR(10), b.[DueDate], 120) LIKE '%' + @SearchTerm + '%' OR
+         CONVERT(VARCHAR(50), b.[TotalAmount]) LIKE '%' + @SearchTerm + '%')
+        AND (@VendorId IS NULL OR b.[VendorId] = @VendorId)
+        AND (@StartDate IS NULL OR b.[BillDate] >= @StartDate)
+        AND (@EndDate IS NULL OR b.[BillDate] <= @EndDate)
+        AND (@IsDraft IS NULL OR b.[IsDraft] = @IsDraft);
+    
+    COMMIT TRANSACTION;
+END;
+GO
+
+SELECT COUNT(Bill.Id) AS BillCount
+FROM dbo.Bill;
+
+SELECT
+    CONVERT(VARCHAR(7), Bill.BillDate, 120) AS BillMonth,
+    COUNT(Bill.Id) AS BillCount
+FROM dbo.Bill
+GROUP BY
+    CONVERT(VARCHAR(7), Bill.BillDate, 120)
+ORDER BY
+    BillMonth;
+
+

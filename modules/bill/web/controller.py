@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 from decimal import Decimal
+from typing import Optional
 from fastapi import APIRouter, Request, Depends
 from fastapi.templating import Jinja2Templates
 
@@ -20,11 +21,73 @@ templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
-async def list_bills(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def list_bills(
+    request: Request,
+    current_user: dict = Depends(get_current_user_web),
+    page: int = 1,
+    page_size: int = 50,
+    search: Optional[str] = None,
+    vendor_id: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    is_draft: Optional[str] = None,
+    sort_by: str = "BillDate",
+    sort_direction: str = "DESC",
+):
     """
-    List all bills.
+    List bills with pagination, search, and filtering.
     """
-    bills = BillService().read_all()
+    # Validate page number
+    if page < 1:
+        page = 1
+    
+    # Validate page size (limit to reasonable range)
+    if page_size < 10:
+        page_size = 10
+    elif page_size > 100:
+        page_size = 100
+    
+    # Parse vendor_id - handle empty strings
+    vendor_id_int = None
+    if vendor_id and vendor_id.strip():
+        try:
+            vendor_id_int = int(vendor_id)
+        except (ValueError, TypeError):
+            vendor_id_int = None
+    
+    # Parse is_draft filter
+    is_draft_filter = None
+    if is_draft is not None:
+        is_draft_filter = is_draft.lower() in ('true', '1', 'yes')
+    
+    # Get bills with pagination
+    bills = BillService().read_paginated(
+        page_number=page,
+        page_size=page_size,
+        search_term=search,
+        vendor_id=vendor_id_int,
+        start_date=start_date,
+        end_date=end_date,
+        is_draft=is_draft_filter,
+        sort_by=sort_by,
+        sort_direction=sort_direction,
+    )
+    
+    # Get total count for pagination
+    total_count = BillService().count(
+        search_term=search,
+        vendor_id=vendor_id_int,
+        start_date=start_date,
+        end_date=end_date,
+        is_draft=is_draft_filter,
+    )
+    
+    # Calculate pagination info
+    total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 1
+    has_previous = page > 1
+    has_next = page < total_pages
+    
+    # Get vendors for filter dropdown
     vendors = VendorService().read_all()
     
     # Create a mapping of vendor_id to vendor_name
@@ -43,8 +106,22 @@ async def list_bills(request: Request, current_user: dict = Depends(get_current_
         {
             "request": request,
             "bills": bills_with_vendors,
+            "vendors": vendors,
             "current_user": current_user,
             "current_path": request.url.path,
+            "page": page,
+            "page_size": page_size,
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "has_previous": has_previous,
+            "has_next": has_next,
+            "search": search or "",
+            "vendor_id": vendor_id_int if vendor_id_int else None,
+            "start_date": start_date or "",
+            "end_date": end_date or "",
+            "is_draft": is_draft or "",
+            "sort_by": sort_by,
+            "sort_direction": sort_direction,
         },
     )
 
@@ -77,6 +154,7 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
     """
     bill = BillService().read_by_public_id(public_id=public_id)
     vendors = VendorService().read_all()
+    projects = ProjectService().read_all()
     
     # Find the vendor name if bill has a vendor_id
     vendor_name = None
@@ -98,6 +176,13 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
         
         for line_item in line_items:
             line_item_dict = line_item.to_dict()
+            
+            # Get project name if line item has a project_id
+            if line_item.project_id:
+                for project in projects:
+                    if project.id == line_item.project_id:
+                        line_item_dict['project_name'] = project.name
+                        break
             
             # Get attachment for this line item (1-1 relationship)
             if line_item.public_id:

@@ -1,7 +1,7 @@
 # Python Standard Library Imports
 import base64
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 from decimal import Decimal
 
 # Third-party Imports
@@ -211,6 +211,80 @@ class BillRepository:
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during update bill by ID: {error}")
+            raise map_database_error(error)
+
+    def read_paginated(
+        self,
+        *,
+        page_number: int = 1,
+        page_size: int = 50,
+        search_term: Optional[str] = None,
+        vendor_id: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        is_draft: Optional[bool] = None,
+        sort_by: str = "BillDate",
+        sort_direction: str = "DESC",
+    ) -> list[Bill]:
+        """
+        Read bills with pagination and filtering.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                params = {
+                    "PageNumber": page_number,
+                    "PageSize": page_size,
+                    "SearchTerm": search_term,
+                    "VendorId": vendor_id,
+                    "StartDate": start_date,
+                    "EndDate": end_date,
+                    "IsDraft": 1 if is_draft else (0 if is_draft is False else None),
+                    "SortBy": sort_by,
+                    "SortDirection": sort_direction,
+                }
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadBillsPaginated",
+                    params=params,
+                )
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(f"Error during read paginated bills: {error}")
+            raise map_database_error(error)
+
+    def count(
+        self,
+        *,
+        search_term: Optional[str] = None,
+        vendor_id: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        is_draft: Optional[bool] = None,
+    ) -> int:
+        """
+        Count bills matching the filter criteria.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                params = {
+                    "SearchTerm": search_term,
+                    "VendorId": vendor_id,
+                    "StartDate": start_date,
+                    "EndDate": end_date,
+                    "IsDraft": 1 if is_draft else (0 if is_draft is False else None),
+                }
+                call_procedure(
+                    cursor=cursor,
+                    name="CountBills",
+                    params=params,
+                )
+                row = cursor.fetchone()
+                return row.TotalCount if row else 0
+        except Exception as error:
+            logger.error(f"Error during count bills: {error}")
             raise map_database_error(error)
 
     def delete_by_id(self, id: int) -> Optional[Bill]:

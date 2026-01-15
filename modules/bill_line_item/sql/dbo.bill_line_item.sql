@@ -10,16 +10,19 @@ CREATE TABLE [dbo].[BillLineItem]
     [ModifiedDatetime] DATETIME2(3) NULL,
     [BillId] BIGINT NOT NULL,
     [SubCostCodeId] BIGINT NULL,
+    [ProjectId] BIGINT NULL,
     [Description] NVARCHAR(MAX) NULL,
     [Quantity] INT NULL,
     [Rate] DECIMAL(18,4) NULL,
     [Amount] DECIMAL(18,2) NULL,
     [IsBillable] BIT NULL,
+    [IsBilled] BIT NULL,
     [Markup] DECIMAL(18,4) NULL,
     [Price] DECIMAL(18,2) NULL,
     [IsDraft] BIT NOT NULL DEFAULT 1,
     CONSTRAINT [FK_BillLineItem_Bill] FOREIGN KEY ([BillId]) REFERENCES [dbo].[Bill]([Id]),
-    CONSTRAINT [FK_BillLineItem_SubCostCode] FOREIGN KEY ([SubCostCodeId]) REFERENCES [dbo].[SubCostCode]([Id])
+    CONSTRAINT [FK_BillLineItem_SubCostCode] FOREIGN KEY ([SubCostCodeId]) REFERENCES [dbo].[SubCostCode]([Id]),
+    CONSTRAINT [FK_BillLineItem_Project] FOREIGN KEY ([ProjectId]) REFERENCES [dbo].[Project]([Id])
 );
 GO
 
@@ -29,8 +32,12 @@ GO
 CREATE INDEX IX_BillLineItem_SubCostCodeId ON [dbo].[BillLineItem] ([SubCostCodeId]);
 GO
 
+CREATE INDEX IX_BillLineItem_ProjectId ON [dbo].[BillLineItem] ([ProjectId]);
+GO
+
 CREATE INDEX IX_BillLineItem_PublicId ON [dbo].[BillLineItem] ([PublicId]);
 GO
+
 
 DROP PROCEDURE IF EXISTS CreateBillLineItem;
 GO
@@ -39,11 +46,13 @@ CREATE PROCEDURE CreateBillLineItem
 (
     @BillId BIGINT,
     @SubCostCodeId BIGINT NULL,
+    @ProjectId BIGINT NULL,
     @Description NVARCHAR(MAX) NULL,
     @Quantity INT NULL,
     @Rate DECIMAL(18,4) NULL,
     @Amount DECIMAL(18,2) NULL,
     @IsBillable BIT NULL,
+    @IsBilled BIT NULL,
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
     @IsDraft BIT = 1
@@ -54,7 +63,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[BillLineItem] ([CreatedDatetime], [ModifiedDatetime], [BillId], [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [IsBillable], [Markup], [Price], [IsDraft])
+    INSERT INTO dbo.[BillLineItem] ([CreatedDatetime], [ModifiedDatetime], [BillId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [Rate], [Amount], [IsBillable], [IsBilled], [Markup], [Price], [IsDraft])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -63,15 +72,17 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[BillId],
         INSERTED.[SubCostCodeId],
+        INSERTED.[ProjectId],
         INSERTED.[Description],
         INSERTED.[Quantity],
         INSERTED.[Rate],
         INSERTED.[Amount],
         INSERTED.[IsBillable],
+        INSERTED.[IsBilled],
         INSERTED.[Markup],
         INSERTED.[Price],
         INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @BillId, @SubCostCodeId, @Description, @Quantity, @Rate, @Amount, @IsBillable, @Markup, @Price, @IsDraft);
+    VALUES (@Now, @Now, @BillId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @Rate, @Amount, @IsBillable, @IsBilled, @Markup, @Price, @IsDraft);
 
     COMMIT TRANSACTION;
 END;
@@ -83,6 +94,7 @@ EXEC CreateBillLineItem
     @Quantity = 10,
     @Rate = 50.00,
     @IsBillable = 1,
+    @IsBilled = 0,
     @Markup = 0.10,
     @IsDraft = 0;
 GO
@@ -103,11 +115,13 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [BillId],
         [SubCostCodeId],
+        [ProjectId],
         [Description],
         [Quantity],
         [Rate],
         [Amount],
         [IsBillable],
+        [IsBilled],
         [Markup],
         [Price],
         [IsDraft]
@@ -139,11 +153,13 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [BillId],
         [SubCostCodeId],
+        [ProjectId],
         [Description],
         [Quantity],
         [Rate],
         [Amount],
         [IsBillable],
+        [IsBilled],
         [Markup],
         [Price],
         [IsDraft]
@@ -176,11 +192,13 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [BillId],
         [SubCostCodeId],
+        [ProjectId],
         [Description],
         [Quantity],
         [Rate],
         [Amount],
         [IsBillable],
+        [IsBilled],
         [Markup],
         [Price],
         [IsDraft]
@@ -213,11 +231,13 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [BillId],
         [SubCostCodeId],
+        [ProjectId],
         [Description],
         [Quantity],
         [Rate],
         [Amount],
         [IsBillable],
+        [IsBilled],
         [Markup],
         [Price],
         [IsDraft]
@@ -241,11 +261,13 @@ CREATE PROCEDURE UpdateBillLineItemById
     @RowVersion BINARY(8),
     @BillId BIGINT,
     @SubCostCodeId BIGINT NULL,
+    @ProjectId BIGINT NULL,
     @Description NVARCHAR(MAX) NULL,
     @Quantity INT NULL,
     @Rate DECIMAL(18,4) NULL,
     @Amount DECIMAL(18,2) NULL,
     @IsBillable BIT NULL,
+    @IsBilled BIT NULL,
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
     @IsDraft BIT = NULL
@@ -261,11 +283,13 @@ BEGIN
         [ModifiedDatetime] = @Now,
         [BillId] = @BillId,
         [SubCostCodeId] = @SubCostCodeId,
+        [ProjectId] = @ProjectId,
         [Description] = @Description,
         [Quantity] = @Quantity,
         [Rate] = @Rate,
         [Amount] = @Amount,
         [IsBillable] = @IsBillable,
+        [IsBilled] = @IsBilled,
         [Markup] = @Markup,
         [Price] = @Price,
         [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END
@@ -277,11 +301,13 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[BillId],
         INSERTED.[SubCostCodeId],
+        INSERTED.[ProjectId],
         INSERTED.[Description],
         INSERTED.[Quantity],
         INSERTED.[Rate],
         INSERTED.[Amount],
         INSERTED.[IsBillable],
+        INSERTED.[IsBilled],
         INSERTED.[Markup],
         INSERTED.[Price],
         INSERTED.[IsDraft]
@@ -299,6 +325,7 @@ EXEC UpdateBillLineItemById
     @Quantity = 15,
     @Rate = 60.00,
     @IsBillable = 1,
+    @IsBilled = 0,
     @Markup = 0.15;
 GO
 
@@ -322,11 +349,13 @@ BEGIN
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.[BillId],
         DELETED.[SubCostCodeId],
+        DELETED.[ProjectId],
         DELETED.[Description],
         DELETED.[Quantity],
         DELETED.[Rate],
         DELETED.[Amount],
         DELETED.[IsBillable],
+        DELETED.[IsBilled],
         DELETED.[Markup],
         DELETED.[Price],
         DELETED.[IsDraft]
@@ -340,3 +369,4 @@ EXEC DeleteBillLineItemById
 GO
 
 SELECT * FROM dbo.BillLineItem;
+

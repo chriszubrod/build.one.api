@@ -16,6 +16,10 @@ class BillLineItemCreate(BaseModel):
         default=None,
         description="The sub cost code ID of the bill line item."
     )
+    project_public_id: Optional[str] = Field(
+        default=None,
+        description="The project public ID of the bill line item."
+    )
     description: Optional[str] = Field(
         default=None,
         description="The description of the bill line item."
@@ -35,6 +39,10 @@ class BillLineItemCreate(BaseModel):
     is_billable: Optional[bool] = Field(
         default=None,
         description="Whether the bill line item is billable."
+    )
+    is_billed: Optional[bool] = Field(
+        default=None,
+        description="Whether the bill line item has been billed."
     )
     markup: Optional[Decimal] = Field(
         default=None,
@@ -61,6 +69,10 @@ class BillLineItemUpdate(BaseModel):
         default=None,
         description="The sub cost code ID of the bill line item."
     )
+    project_public_id: Optional[str] = Field(
+        default=None,
+        description="The project public ID of the bill line item."
+    )
     description: Optional[str] = Field(
         default=None,
         description="The description of the bill line item."
@@ -80,6 +92,10 @@ class BillLineItemUpdate(BaseModel):
     is_billable: Optional[bool] = Field(
         default=None,
         description="Whether the bill line item is billable."
+    )
+    is_billed: Optional[bool] = Field(
+        default=None,
+        description="Whether the bill line item has been billed."
     )
     markup: Optional[Decimal] = Field(
         default=None,

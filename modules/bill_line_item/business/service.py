@@ -8,6 +8,7 @@ from decimal import Decimal
 from modules.bill_line_item.business.model import BillLineItem
 from modules.bill_line_item.persistence.repo import BillLineItemRepository
 from modules.sub_cost_code.business.service import SubCostCodeService
+from modules.project.business.service import ProjectService
 from modules.bill.business.service import BillService
 
 
@@ -20,7 +21,7 @@ class BillLineItemService:
         """Initialize the BillLineItemService."""
         self.repo = repo or BillLineItemRepository()
 
-    def create(self, *, bill_public_id: str, sub_cost_code_id: Optional[int] = None, description: Optional[str] = None, quantity: Optional[int] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True) -> BillLineItem:
+    def create(self, *, bill_public_id: str, sub_cost_code_id: Optional[int] = None, project_public_id: Optional[str] = None, description: Optional[str] = None, quantity: Optional[int] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True) -> BillLineItem:
         """
         Create a new bill line item.
         """
@@ -36,14 +37,24 @@ class BillLineItemService:
             if not sub_cost_code:
                 raise ValueError(f"SubCostCode with id '{sub_cost_code_id}' not found.")
         
+        # Validate Project exists if provided and get internal ID
+        project_id = None
+        if project_public_id is not None:
+            project = ProjectService().read_by_public_id(public_id=project_public_id)
+            if not project:
+                raise ValueError(f"Project with public_id '{project_public_id}' not found.")
+            project_id = project.id
+        
         return self.repo.create(
             bill_id=bill.id,
             sub_cost_code_id=sub_cost_code_id,
+            project_id=project_id,
             description=description,
             quantity=quantity,
             rate=rate,
             amount=amount,
             is_billable=is_billable,
+            is_billed=is_billed,
             markup=markup,
             price=price,
             is_draft=is_draft,
@@ -97,6 +108,16 @@ class BillLineItemService:
                         raise ValueError(f"SubCostCode with id '{bill_line_item.sub_cost_code_id}' not found.")
                 existing.sub_cost_code_id = bill_line_item.sub_cost_code_id
             
+            # Validate Project exists if provided (or allow None to clear the relationship)
+            if hasattr(bill_line_item, 'project_public_id'):
+                if bill_line_item.project_public_id is not None:
+                    project = ProjectService().read_by_public_id(public_id=bill_line_item.project_public_id)
+                    if not project:
+                        raise ValueError(f"Project with public_id '{bill_line_item.project_public_id}' not found.")
+                    existing.project_id = project.id
+                else:
+                    existing.project_id = None
+            
             # Update fields
             if hasattr(bill_line_item, 'description'):
                 existing.description = bill_line_item.description
@@ -108,6 +129,8 @@ class BillLineItemService:
                 existing.amount = bill_line_item.amount
             if hasattr(bill_line_item, 'is_billable'):
                 existing.is_billable = bill_line_item.is_billable
+            if hasattr(bill_line_item, 'is_billed'):
+                existing.is_billed = bill_line_item.is_billed
             if hasattr(bill_line_item, 'markup'):
                 existing.markup = bill_line_item.markup
             if hasattr(bill_line_item, 'price'):

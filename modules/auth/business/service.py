@@ -30,9 +30,16 @@ from shared.database import (
 )
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from fastapi.responses import RedirectResponse
 
 security = HTTPBearer()
+
+
+class WebAuthenticationRequired(Exception):
+    """
+    Exception raised when web authentication is required.
+    This will be caught by an exception handler that redirects to login.
+    """
+    pass
 
 
 def _hash_password(password: str) -> str:
@@ -100,6 +107,8 @@ def get_current_user_web(request: Request):
     """
     Dependency for web routes that reads token from cookies or headers only.
     Security: Does not read from query parameters to prevent token leakage.
+    Raises WebAuthenticationRequired exception if authentication fails,
+    which will be caught by an exception handler that redirects to login.
     """
     auth_token = request.cookies.get("token.access_token")
 
@@ -109,7 +118,7 @@ def get_current_user_web(request: Request):
             auth_token = auth_header[7:]
 
     if not auth_token:
-        return RedirectResponse(url="/auth/login", status_code=303)
+        raise WebAuthenticationRequired()
 
     try:
         auth_payload = verify_token(token=auth_token)
@@ -137,7 +146,7 @@ def get_current_user_web(request: Request):
 
         return auth_payload
     except ValueError as e:
-        return RedirectResponse(url="/auth/login", status_code=303)
+        raise WebAuthenticationRequired()
 
 
 class AuthService:

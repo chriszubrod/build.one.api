@@ -1,0 +1,229 @@
+# Python Standard Library Imports
+import logging
+import uuid
+from typing import Optional
+
+# Third-party Imports
+
+# Local Imports
+from integrations.intuit.qbo.attachable.connector.attachment.business.model import AttachableAttachment
+from integrations.intuit.qbo.attachable.connector.attachment.persistence.repo import AttachableAttachmentRepository
+from integrations.intuit.qbo.attachable.business.model import QboAttachable
+from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
+from integrations.intuit.qbo.auth.business.service import QboAuthService
+from modules.attachment.business.service import AttachmentService
+from modules.attachment.business.model import Attachment
+from shared.storage import AzureBlobStorage
+
+logger = logging.getLogger(__name__)
+
+
+class AttachableAttachmentConnector:
+    """
+    Connector service for synchronization between QboAttachable and Attachment modules.
+    """
+
+    def __init__(
+        self,
+        mapping_repo: Optional[AttachableAttachmentRepository] = None,
+        attachment_service: Optional[AttachmentService] = None,
+        auth_service: Optional[QboAuthService] = None,
+    ):
+        """Initialize the AttachableAttachmentConnector."""
+        self.mapping_repo = mapping_repo or AttachableAttachmentRepository()
+        self.attachment_service = attachment_service or AttachmentService()
+        self.auth_service = auth_service or QboAuthService()
+
+    def sync_from_qbo_attachable(
+        self,
+        qbo_attachable: QboAttachable,
+        realm_id: str,
+    ) -> Attachment:
+        """
+        Sync data from QboAttachable to Attachment module.
+        
+        This method:
+        1. Checks if a mapping already exists
+        2. Downloads the file from QBO if needed
+        3. Uploads to Azure Blob Storage
+        4. Creates or updates the Attachment accordingly
+        
+        Args:
+            qbo_attachable: QboAttachable record from local database
+            realm_id: QBO realm ID for API access
+        
+        Returns:
+            Attachment: The synced Attachment record
+        """
+        # Check for existing mapping
+        mapping = self.mapping_repo.read_by_qbo_attachable_id(qbo_attachable.id)
+        
+        if mapping:
+            # Found existing mapping - return the existing Attachment
+            attachment = self.attachment_service.read_by_id(mapping.attachment_id)
+            if attachment:
+                logger.info(f"Found existing Attachment {attachment.id} for QboAttachable {qbo_attachable.id}")
+                # Optionally update metadata here if needed
+                return attachment
+            else:
+                # Mapping exists but Attachment not found - recreate
+                logger.warning(f"Mapping exists but Attachment {mapping.attachment_id} not found. Creating new.")
+                self.mapping_repo.delete_by_id(mapping.id)
+                mapping = None
+        
+        # Download file from QBO
+        file_content = self._download_from_qbo(qbo_attachable, realm_id)
+        
+        if not file_content:
+            raise ValueError(f"Failed to download file for QboAttachable {qbo_attachable.id}")
+        
+        # Calculate file hash
+        file_hash = self.attachment_service.calculate_hash(file_content)
+        
+        # Check for duplicate by hash
+        existing_by_hash = self.attachment_service.read_by_hash(file_hash)
+        if existing_by_hash:
+            logger.info(f"Found existing Attachment by hash for QboAttachable {qbo_attachable.id}")
+            # Create mapping to existing attachment
+            self._create_mapping(attachment_id=existing_by_hash.id, qbo_attachable_id=qbo_attachable.id)
+            return existing_by_hash
+        
+        # Upload to Azure Blob Storage
+        blob_url = self._upload_to_blob(
+            file_content=file_content,
+            file_name=qbo_attachable.file_name or f"attachment_{qbo_attachable.qbo_id}",
+            content_type=qbo_attachable.content_type or "application/octet-stream",
+        )
+        
+        # Extract file extension
+        file_extension = self.attachment_service.extract_extension(qbo_attachable.file_name or "")
+        
+        # Create Attachment record
+        logger.info(f"Creating new Attachment from QboAttachable {qbo_attachable.id}")
+        attachment = self.attachment_service.create(
+            filename=qbo_attachable.file_name,
+            original_filename=qbo_attachable.file_name,
+            file_extension=file_extension,
+            content_type=qbo_attachable.content_type or "application/octet-stream",
+            file_size=len(file_content),
+            file_hash=file_hash,
+            blob_url=blob_url,
+            description=qbo_attachable.note,
+            category=qbo_attachable.category or "qbo_import",
+            tags=None,
+            is_archived=False,
+            status="active",
+            expiration_date=None,
+            storage_tier="Hot",
+        )
+        
+        # Create mapping
+        self._create_mapping(attachment_id=attachment.id, qbo_attachable_id=qbo_attachable.id)
+        logger.info(f"Created mapping: Attachment {attachment.id} <-> QboAttachable {qbo_attachable.id}")
+        
+        return attachment
+
+    def _download_from_qbo(
+        self,
+        qbo_attachable: QboAttachable,
+        realm_id: str,
+    ) -> Optional[bytes]:
+        """
+        Download file content from QBO.
+        
+        Note: We fetch the attachable fresh from QBO to get a current TempDownloadUri,
+        as the stored URI expires after a few minutes.
+        
+        Args:
+            qbo_attachable: QboAttachable record
+            realm_id: QBO realm ID
+            
+        Returns:
+            File content as bytes, or None if download fails
+        """
+        # Get QBO auth
+        qbo_auth = self.auth_service.ensure_valid_token(realm_id=realm_id)
+        if not qbo_auth or not qbo_auth.access_token:
+            logger.error(f"No valid QBO auth found for realm {realm_id}")
+            return None
+
+        if not qbo_attachable.qbo_id:
+            logger.error(f"QboAttachable {qbo_attachable.id} has no qbo_id")
+            return None
+
+        with QboAttachableClient(
+            access_token=qbo_auth.access_token,
+            realm_id=realm_id
+        ) as client:
+            # Fetch fresh attachable from QBO to get a current TempDownloadUri
+            # (the stored URI expires after a few minutes)
+            try:
+                fresh_attachable = client.get_attachable(qbo_attachable.qbo_id)
+                logger.debug(f"Fetched fresh attachable {qbo_attachable.qbo_id} for download")
+            except Exception as e:
+                logger.error(f"Failed to fetch fresh attachable {qbo_attachable.qbo_id}: {e}")
+                return None
+            
+            return client.download_attachable(fresh_attachable)
+
+    def _upload_to_blob(
+        self,
+        file_content: bytes,
+        file_name: str,
+        content_type: str,
+    ) -> str:
+        """
+        Upload file to Azure Blob Storage.
+        
+        Args:
+            file_content: File content as bytes
+            file_name: Original file name
+            content_type: MIME content type
+            
+        Returns:
+            Blob URL
+        """
+        # Generate unique blob name
+        public_id = str(uuid.uuid4())
+        blob_name = f"{public_id}_{file_name}"
+        
+        storage = AzureBlobStorage()
+        blob_url = storage.upload_file(
+            blob_name=blob_name,
+            file_content=file_content,
+            content_type=content_type,
+        )
+        
+        logger.debug(f"Uploaded file to blob: {blob_url}")
+        return blob_url
+
+    def _create_mapping(self, attachment_id: int, qbo_attachable_id: int) -> AttachableAttachment:
+        """
+        Create a mapping between Attachment and QboAttachable.
+        """
+        # Validate 1:1 constraints
+        existing_by_attachment = self.mapping_repo.read_by_attachment_id(attachment_id)
+        if existing_by_attachment:
+            raise ValueError(
+                f"Attachment {attachment_id} is already mapped to QboAttachable {existing_by_attachment.qbo_attachable_id}"
+            )
+        
+        existing_by_qbo = self.mapping_repo.read_by_qbo_attachable_id(qbo_attachable_id)
+        if existing_by_qbo:
+            raise ValueError(
+                f"QboAttachable {qbo_attachable_id} is already mapped to Attachment {existing_by_qbo.attachment_id}"
+            )
+        
+        return self.mapping_repo.create(attachment_id=attachment_id, qbo_attachable_id=qbo_attachable_id)
+
+    def get_mapping_by_attachment_id(self, attachment_id: int) -> Optional[AttachableAttachment]:
+        """
+        Get mapping by Attachment ID.
+        """
+        return self.mapping_repo.read_by_attachment_id(attachment_id)
+
+    def get_mapping_by_qbo_attachable_id(self, qbo_attachable_id: int) -> Optional[AttachableAttachment]:
+        """
+        Get mapping by QboAttachable ID.
+        """
+        return self.mapping_repo.read_by_qbo_attachable_id(qbo_attachable_id)

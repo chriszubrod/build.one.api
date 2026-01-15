@@ -500,3 +500,7 @@ END;
 EXEC IncrementDownloadCount
     @Id = 1;
 GO
+
+
+SELECT COUNT(Id) AS TotalCount
+FROM dbo.Attachment;

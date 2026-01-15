@@ -10,6 +10,10 @@ from integrations.intuit.qbo.auth.external.client import (
     connect_intuit_oauth_2_endpoint,
     connect_intuit_oauth_2_token_endpoint_revoke
 )
+from integrations.ms.auth.external.client import (
+    connect_ms_oauth_2_endpoint,
+    connect_ms_oauth_2_token_endpoint_revoke
+)
 
 
 class IntegrationHandler(ABC):
@@ -139,27 +143,102 @@ class QuickBooksOnlineHandler(IntegrationHandler):
 class Microsoft365Handler(IntegrationHandler):
     """
     Handler for Microsoft 365 integration.
-    Example implementation for future integrations.
     """
     
     def connect(self, integration: Integration) -> Dict[str, Any]:
         """
-        Connect Microsoft 365 (placeholder for future implementation).
+        Connect Microsoft 365 by generating OAuth authorization URL.
         """
-        return {
-            "success": False,
-            "redirect_url": None,
-            "message": "Microsoft 365 integration not yet implemented"
-        }
+        try:
+            result = connect_ms_oauth_2_endpoint()
+            
+            # The function returns a dict with "message" (the URL) and "status_code"
+            if isinstance(result, dict):
+                if result.get("status_code") == 201 or result.get("status_code") == 200:
+                    auth_url = result.get("message")
+                    if auth_url:
+                        return {
+                            "success": True,
+                            "redirect_url": auth_url,
+                            "message": "Authorization URL generated successfully"
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "redirect_url": None,
+                            "message": "No authorization URL in response"
+                        }
+                else:
+                    return {
+                        "success": False,
+                        "redirect_url": None,
+                        "message": result.get("message", "Failed to generate authorization URL")
+                    }
+            elif isinstance(result, str):
+                # Handle case where it returns a string directly
+                return {
+                    "success": True,
+                    "redirect_url": result,
+                    "message": "Authorization URL generated successfully"
+                }
+            else:
+                return {
+                    "success": False,
+                    "redirect_url": None,
+                    "message": "Unexpected response format from OAuth endpoint"
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "redirect_url": None,
+                "message": f"Error generating authorization URL: {str(e)}"
+            }
     
     def disconnect(self, integration: Integration) -> Dict[str, Any]:
         """
-        Disconnect Microsoft 365 (placeholder for future implementation).
+        Disconnect Microsoft 365 by revoking OAuth tokens.
         """
-        return {
-            "success": False,
-            "message": "Microsoft 365 disconnect not yet implemented"
-        }
+        try:
+            result = connect_ms_oauth_2_token_endpoint_revoke()
+            
+            if isinstance(result, dict):
+                if result.get("status_code") == 200 or result.get("status_code") == 201:
+                    return {
+                        "success": True,
+                        "message": "Integration disconnected successfully",
+                        "callback_url": f"/integration/disconnect/callback?success=true&message=Integration disconnected successfully&integration_id={integration.public_id}"
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": result.get("message", "Failed to disconnect"),
+                        "callback_url": f"/integration/disconnect/callback?success=false&message={result.get('message', 'Failed to disconnect')}&integration_id={integration.public_id}"
+                    }
+            elif isinstance(result, str):
+                if "error" not in result.lower():
+                    return {
+                        "success": True,
+                        "message": "Integration disconnected successfully",
+                        "callback_url": f"/integration/disconnect/callback?success=true&message=Integration disconnected successfully&integration_id={integration.public_id}"
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": result,
+                        "callback_url": f"/integration/disconnect/callback?success=false&message={result}&integration_id={integration.public_id}"
+                    }
+            else:
+                return {
+                    "success": False,
+                    "message": "Unexpected response from disconnect endpoint",
+                    "callback_url": f"/integration/disconnect/callback?success=false&message=Unexpected response from disconnect endpoint&integration_id={integration.public_id}"
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Error disconnecting: {str(e)}",
+                "callback_url": f"/integration/disconnect/callback?success=false&message=Error disconnecting: {str(e)}&integration_id={integration.public_id}"
+            }
 
 
 class IntegrationHandlerFactory:

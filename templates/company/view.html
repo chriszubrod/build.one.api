@@ -4,6 +4,7 @@
 
 {% block head %}
     <link rel="stylesheet" href="{{ url_for('static', path='css/company.css') }}?v={{ range(1000, 9999) | random }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='css/aside.css') }}?v={{ range(1000, 9999) | random }}">
 {% endblock %}
 
 {% block content %}
@@ -51,6 +52,45 @@
             </div>
         </div>
 
+        <!-- Cloud Storage Section -->
+        <div class="company-detail-card">
+            <div class="company-detail-card-header">
+                <h5>Cloud Storage</h5>
+            </div>
+            <div class="company-detail-card-body">
+                <div id="linked-drive-container">
+                    {% if linked_drive %}
+                        <div class="company-detail-row">
+                            <div class="company-detail-label">Drive Name:</div>
+                            <div class="company-detail-value">{{ linked_drive.name }}</div>
+                        </div>
+                        <div class="company-detail-row">
+                            <div class="company-detail-label">Type:</div>
+                            <div class="company-detail-value">{{ linked_drive.drive_type }}</div>
+                        </div>
+                        <div class="company-detail-row">
+                            <div class="company-detail-label">URL:</div>
+                            <div class="company-detail-value">
+                                <a href="{{ linked_drive.web_url }}" target="_blank" rel="noopener noreferrer">
+                                    {{ linked_drive.web_url }}
+                                </a>
+                            </div>
+                        </div>
+                        <div style="margin-top: 1rem;">
+                            <button type="button" class="btn btn-danger btn-sm" onclick="unlinkDrive()">
+                                Unlink Storage
+                            </button>
+                        </div>
+                    {% else %}
+                        <p class="text-muted" style="margin-bottom: 1rem;">No cloud storage linked to this company.</p>
+                        <button type="button" class="btn btn-primary" onclick="openSitePicker()">
+                            Link Storage
+                        </button>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
         <div class="company-actions-card">
             <h6>Actions</h6>
             <div class="company-actions-list">
@@ -63,8 +103,39 @@
 
 {% endblock %}
 
+{% block aside %}
+    <div class="aside-panel" id="storage-picker-panel">
+        <div class="aside-panel-header">
+            <h5 id="picker-title">Select SharePoint Site</h5>
+            <button type="button" class="aside-close-btn" onclick="closePicker()">&times;</button>
+        </div>
+        <div class="aside-panel-body">
+            <div class="aside-search-container">
+                <input 
+                    type="text" 
+                    id="search-input" 
+                    class="aside-search-input" 
+                    placeholder="Filter..."
+                    oninput="filterResults()"
+                >
+            </div>
+            <div id="picker-results" class="aside-results-container">
+                <p class="text-muted">Loading followed sites...</p>
+            </div>
+            <div id="picker-nav" class="aside-nav" style="display: none;">
+                <button type="button" class="btn btn-sm btn-secondary" onclick="backToSites()">
+                    &larr; Back to Sites
+                </button>
+            </div>
+        </div>
+    </div>
+{% endblock %}
+
 {% block scripts %}
     <script>
+        // Company ID for API calls
+        const companyId = {{ company.id }};
+
         async function deleteCompany() {
             if (confirm('Are you sure you want to delete this company? This action cannot be undone.')) {
                 const payload = {
@@ -107,6 +178,250 @@
                     alert('Error deleting company: ' + error.message);
                 }
             }
+        }
+
+        // Storage Picker - Two-step: Site -> Drive
+        
+        let cachedSites = [];
+        let cachedDrives = [];
+        let currentView = 'sites'; // 'sites' or 'drives'
+        let selectedSiteId = null;
+
+        function openSitePicker() {
+            const panel = document.getElementById('storage-picker-panel');
+            const sidebar = document.querySelector('.sidebar-right');
+            if (panel) {
+                panel.classList.add('aside-panel-open');
+            }
+            if (sidebar) {
+                sidebar.classList.add('sidebar-right-open');
+            }
+            // Reset to sites view
+            currentView = 'sites';
+            selectedSiteId = null;
+            document.getElementById('picker-title').textContent = 'Select SharePoint Site';
+            document.getElementById('picker-nav').style.display = 'none';
+            document.getElementById('search-input').value = '';
+            document.getElementById('search-input').placeholder = 'Filter sites...';
+            // Load followed sites
+            loadFollowedSites();
+        }
+
+        function closePicker() {
+            const panel = document.getElementById('storage-picker-panel');
+            const sidebar = document.querySelector('.sidebar-right');
+            if (panel) {
+                panel.classList.remove('aside-panel-open');
+            }
+            if (sidebar) {
+                sidebar.classList.remove('sidebar-right-open');
+            }
+            // Reset state
+            cachedSites = [];
+            cachedDrives = [];
+            currentView = 'sites';
+            selectedSiteId = null;
+        }
+
+        function filterResults() {
+            const query = document.getElementById('search-input').value.trim().toLowerCase();
+            if (currentView === 'sites') {
+                const filtered = cachedSites.filter(site => {
+                    const name = (site.display_name || site.name || '').toLowerCase();
+                    const hostname = (site.hostname || '').toLowerCase();
+                    return name.includes(query) || hostname.includes(query);
+                });
+                renderSites(filtered);
+            } else {
+                const filtered = cachedDrives.filter(drive => {
+                    const name = (drive.name || '').toLowerCase();
+                    return name.includes(query);
+                });
+                renderDrives(filtered);
+            }
+        }
+
+        async function loadFollowedSites() {
+            const resultsContainer = document.getElementById('picker-results');
+            resultsContainer.innerHTML = '<p class="text-muted">Loading followed sites...</p>';
+
+            try {
+                const response = await fetch('/api/v1/ms/sharepoint/site/followed', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    }
+                });
+
+                const data = await response.json();
+
+                if (data.status_code === 200) {
+                    cachedSites = data.sites || [];
+                    renderSites(cachedSites);
+                } else {
+                    resultsContainer.innerHTML = `<p class="text-danger">${escapeHtml(data.message || 'Error loading sites')}</p>`;
+                }
+            } catch (error) {
+                resultsContainer.innerHTML = `<p class="text-danger">Error: ${escapeHtml(error.message)}</p>`;
+            }
+        }
+
+        function renderSites(sites) {
+            const resultsContainer = document.getElementById('picker-results');
+            
+            if (sites && sites.length > 0) {
+                let html = '<ul class="aside-results-list">';
+                for (const site of sites) {
+                    html += `
+                        <li class="aside-result-item">
+                            <div class="aside-result-info">
+                                <div class="aside-result-name">${escapeHtml(site.display_name || site.name || 'Unknown')}</div>
+                                <div class="aside-result-detail">${escapeHtml(site.hostname || '')}</div>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="selectSite('${escapeHtml(site.site_id)}', '${escapeHtml(site.display_name || site.name || 'Site')}')">
+                                Select
+                            </button>
+                        </li>
+                    `;
+                }
+                html += '</ul>';
+                resultsContainer.innerHTML = html;
+            } else {
+                resultsContainer.innerHTML = '<p class="text-muted">No followed sites found. Follow a site in SharePoint to see it here.</p>';
+            }
+        }
+
+        async function selectSite(siteId, siteName) {
+            selectedSiteId = siteId;
+            currentView = 'drives';
+            document.getElementById('picker-title').textContent = 'Select Drive: ' + siteName;
+            document.getElementById('picker-nav').style.display = 'block';
+            document.getElementById('search-input').value = '';
+            document.getElementById('search-input').placeholder = 'Filter drives...';
+            
+            // Load drives for this site
+            await loadDrivesForSite(siteId);
+        }
+
+        function backToSites() {
+            currentView = 'sites';
+            selectedSiteId = null;
+            document.getElementById('picker-title').textContent = 'Select SharePoint Site';
+            document.getElementById('picker-nav').style.display = 'none';
+            document.getElementById('search-input').value = '';
+            document.getElementById('search-input').placeholder = 'Filter sites...';
+            renderSites(cachedSites);
+        }
+
+        async function loadDrivesForSite(siteId) {
+            const resultsContainer = document.getElementById('picker-results');
+            resultsContainer.innerHTML = '<p class="text-muted">Loading drives...</p>';
+
+            try {
+                const response = await fetch(`/api/v1/ms/sharepoint/site/${siteId}/drives`, {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    }
+                });
+
+                const data = await response.json();
+
+                if (data.status_code === 200) {
+                    cachedDrives = data.drives || [];
+                    renderDrives(cachedDrives);
+                } else {
+                    resultsContainer.innerHTML = `<p class="text-danger">${escapeHtml(data.message || 'Error loading drives')}</p>`;
+                }
+            } catch (error) {
+                resultsContainer.innerHTML = `<p class="text-danger">Error: ${escapeHtml(error.message)}</p>`;
+            }
+        }
+
+        function renderDrives(drives) {
+            const resultsContainer = document.getElementById('picker-results');
+            
+            if (drives && drives.length > 0) {
+                let html = '<ul class="aside-results-list">';
+                for (const drive of drives) {
+                    html += `
+                        <li class="aside-result-item">
+                            <div class="aside-result-info">
+                                <div class="aside-result-name">${escapeHtml(drive.name || 'Unknown')}</div>
+                                <div class="aside-result-detail">${escapeHtml(drive.drive_type || '')}</div>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="linkDrive('${escapeHtml(drive.drive_id)}')">
+                                Link
+                            </button>
+                        </li>
+                    `;
+                }
+                html += '</ul>';
+                resultsContainer.innerHTML = html;
+            } else {
+                resultsContainer.innerHTML = '<p class="text-muted">No drives found for this site.</p>';
+            }
+        }
+
+        async function linkDrive(graphDriveId) {
+            try {
+                const response = await fetch('/api/v1/ms/sharepoint/drive/connector/company', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    },
+                    body: JSON.stringify({
+                        company_id: companyId,
+                        graph_site_id: selectedSiteId,
+                        graph_drive_id: graphDriveId
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.status_code === 201 || data.status_code === 200) {
+                    // Success - reload page to show linked drive
+                    window.location.reload();
+                } else {
+                    alert('Error linking drive: ' + (data.message || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error linking drive: ' + error.message);
+            }
+        }
+
+        async function unlinkDrive() {
+            if (!confirm('Are you sure you want to unlink this storage from the company?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/v1/ms/sharepoint/drive/connector/company/${companyId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    }
+                });
+
+                const data = await response.json();
+
+                if (data.status_code === 200) {
+                    // Success - reload page to show unlinked state
+                    window.location.reload();
+                } else {
+                    alert('Error unlinking storage: ' + (data.message || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error unlinking storage: ' + error.message);
+            }
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
         }
     </script>
 {% endblock %}

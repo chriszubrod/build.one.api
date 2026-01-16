@@ -7,6 +7,7 @@ from fastapi.templating import Jinja2Templates
 # Local Imports
 from modules.company.business.service import CompanyService
 from modules.auth.business.service import get_current_user_web
+from integrations.ms.sharepoint.drive.connector.company.business.service import DriveCompanyConnector
 
 router = APIRouter(prefix="/company", tags=["web", "company"])
 templates = Jinja2Templates(directory="templates")
@@ -50,11 +51,19 @@ async def view_company(request: Request, public_id: str, current_user: dict = De
     View a company.
     """
     company = CompanyService().read_by_public_id(public_id=public_id)
+    
+    # Get linked drive if any
+    linked_drive = None
+    if company and company.id:
+        connector = DriveCompanyConnector()
+        linked_drive = connector.get_drive_for_company(company_id=int(company.id))
+    
     return templates.TemplateResponse(
         "company/view.html",
         {
             "request": request,
             "company": company.to_dict(),
+            "linked_drive": linked_drive,  # Already a dict from get_drive_for_company
             "current_user": current_user,
             "current_path": request.url.path,
         },

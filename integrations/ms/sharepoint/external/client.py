@@ -97,6 +97,129 @@ def search_sites(query: str) -> dict:
         }
 
 
+def get_my_drive() -> dict:
+    """
+    Get the current user's OneDrive.
+    Uses the /me/drive endpoint (user-delegated auth required).
+    
+    Returns:
+        Dict with status_code, message, and drive data
+    """
+    try:
+        headers = _get_auth_headers()
+        if not headers:
+            return {
+                "message": "No valid MS access token available. Please authenticate first.",
+                "status_code": 401,
+                "drive": None
+            }
+        
+        endpoint = f"{GRAPH_API_BASE}/me/drive"
+        
+        logger.info("Getting current user's OneDrive")
+        resp = requests.get(url=endpoint, headers=headers)
+        
+        if resp.status_code == 200:
+            drive = resp.json()
+            
+            formatted_drive = {
+                "drive_id": drive.get("id"),
+                "name": drive.get("name"),
+                "web_url": drive.get("webUrl"),
+                "drive_type": drive.get("driveType"),
+                "description": drive.get("description", ""),
+                "owner": drive.get("owner", {}),
+            }
+            
+            return {
+                "message": "OneDrive retrieved successfully",
+                "status_code": 200,
+                "drive": formatted_drive
+            }
+        elif resp.status_code == 401:
+            return {
+                "message": "Access token expired or invalid. Try refreshing the token.",
+                "status_code": 401,
+                "drive": None
+            }
+        else:
+            logger.error(f"Graph API get my drive failed: {resp.text}")
+            return {
+                "message": f"Graph API call failed: {resp.text}",
+                "status_code": resp.status_code,
+                "drive": None
+            }
+    except Exception as e:
+        logger.exception("Error getting user's OneDrive")
+        return {
+            "message": f"An error occurred: {str(e)}",
+            "status_code": 500,
+            "drive": None
+        }
+
+
+def get_followed_sites() -> dict:
+    """
+    Get SharePoint sites that the current user follows.
+    Uses the /me/followedSites endpoint (user-delegated auth required).
+    
+    Returns:
+        Dict with status_code, message, and sites list
+    """
+    try:
+        headers = _get_auth_headers()
+        if not headers:
+            return {
+                "message": "No valid MS access token available. Please authenticate first.",
+                "status_code": 401,
+                "sites": []
+            }
+        
+        endpoint = f"{GRAPH_API_BASE}/me/followedSites"
+        
+        logger.info("Getting followed SharePoint sites for current user")
+        resp = requests.get(url=endpoint, headers=headers)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            sites = data.get("value", [])
+            
+            formatted_sites = []
+            for site in sites:
+                formatted_sites.append({
+                    "site_id": site.get("id"),
+                    "display_name": site.get("displayName"),
+                    "web_url": site.get("webUrl"),
+                    "hostname": site.get("siteCollection", {}).get("hostname", "")
+                })
+            
+            return {
+                "message": f"Found {len(formatted_sites)} followed sites",
+                "status_code": 200,
+                "sites": formatted_sites
+            }
+        elif resp.status_code == 401:
+            return {
+                "message": "Access token expired or invalid. Try refreshing the token.",
+                "status_code": 401,
+                "sites": []
+            }
+        else:
+            logger.error(f"Graph API get followed sites failed: {resp.text}")
+            return {
+                "message": f"Graph API call failed: {resp.text}",
+                "status_code": resp.status_code,
+                "sites": []
+            }
+    except Exception as e:
+        logger.exception("Error getting followed SharePoint sites")
+        return {
+            "message": f"An error occurred: {str(e)}",
+            "status_code": 500,
+            "sites": []
+        }
+
+
 def get_site_by_id(site_id: str) -> dict:
     """
     Get a SharePoint site by its MS Graph ID.

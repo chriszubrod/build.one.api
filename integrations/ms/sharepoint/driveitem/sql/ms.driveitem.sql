@@ -113,8 +113,6 @@ BEGIN
 END;
 GO
 
-EXEC ReadMsDriveItems;
-
 DROP PROCEDURE IF EXISTS ReadMsDriveItemsByMsDriveId;
 GO
 
@@ -358,3 +356,10 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+
+EXEC DeleteMsDriveItemByPublicId
+    @PublicId = '0143726e-1155-47b4-9750-f5ea4362a605';
+
+
+EXEC ReadMsDriveItems;

@@ -124,3 +124,34 @@ class DriveLinkResponse(BaseModel):
         default=None,
         description="The linked drive data"
     )
+
+
+# Drive-Company Connector Schemas
+
+class DriveCompanyLinkRequest(BaseModel):
+    """Request model for linking a drive to a company."""
+    company_id: int = Field(
+        description="The database ID of the company to link"
+    )
+    graph_site_id: str = Field(
+        min_length=1,
+        description="The MS Graph site ID that the drive belongs to"
+    )
+    graph_drive_id: str = Field(
+        min_length=1,
+        description="The MS Graph drive ID to link to the company"
+    )
+
+
+class DriveCompanyResponse(BaseModel):
+    """Response model for drive-company link operations."""
+    message: str = Field(
+        description="Status message"
+    )
+    status_code: int = Field(
+        description="HTTP status code"
+    )
+    mapping: Optional[dict] = Field(
+        default=None,
+        description="The drive-company mapping data"
+    )

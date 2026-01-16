@@ -160,6 +160,26 @@ class MsDriveRepository:
             logger.error("Error during read ms drive by drive ID: %s", error)
             raise map_database_error(error)
 
+    def read_by_id(self, id: int) -> Optional[MsDrive]:
+        """
+        Read a MsDrive by database ID.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadMsDriveById",
+                    params={
+                        "Id": id,
+                    },
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error("Error during read ms drive by ID: %s", error)
+            raise map_database_error(error)
+
     def update_by_public_id(
         self,
         *,

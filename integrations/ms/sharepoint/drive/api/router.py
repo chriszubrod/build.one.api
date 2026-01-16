@@ -8,14 +8,29 @@ from fastapi import APIRouter, Depends, HTTPException
 from integrations.ms.sharepoint.drive.api.schemas import (
     DriveLinkRequest,
     DriveUpdateRequest,
+    DriveCompanyLinkRequest,
 )
 from integrations.ms.sharepoint.drive.business.service import MsDriveService
+from integrations.ms.sharepoint.drive.connector.company.business.service import DriveCompanyConnector
+from integrations.ms.sharepoint.external.client import get_my_drive
 from modules.auth.business.service import get_current_user_api
 
 logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api/v1/ms/sharepoint/drive", tags=["api", "ms-sharepoint-drive"])
+
+
+@router.get("/me")
+def get_my_drive_router(
+    current_user: dict = Depends(get_current_user_api)
+):
+    """
+    Get the current user's OneDrive.
+    Uses user-delegated authentication.
+    """
+    result = get_my_drive()
+    return result
 
 
 @router.get("/site/{site_public_id}/available")
@@ -181,6 +196,84 @@ def refresh_linked_drive_router(
         raise HTTPException(
             status_code=result.get("status_code", 500),
             detail=result.get("message", "Failed to refresh drive")
+        )
+    
+    return result
+
+
+# =============================================================================
+# Drive-Company Connector Endpoints
+# =============================================================================
+
+
+@router.post("/connector/company")
+def link_drive_to_company_router(
+    body: DriveCompanyLinkRequest,
+    current_user: dict = Depends(get_current_user_api)
+):
+    """
+    Link a Drive (OneDrive or SharePoint) to a Company.
+    This will:
+    1. Store the Site in ms.Site (if not already stored)
+    2. Store the Drive in ms.Drive (if not already stored)
+    3. Create the mapping in ms.DriveCompany
+    """
+    connector = DriveCompanyConnector()
+    result = connector.link_drive_to_company(
+        company_id=body.company_id,
+        graph_site_id=body.graph_site_id,
+        graph_drive_id=body.graph_drive_id
+    )
+    
+    if result.get("status_code") >= 400:
+        raise HTTPException(
+            status_code=result.get("status_code", 500),
+            detail=result.get("message", "Failed to link drive to company")
+        )
+    
+    return result
+
+
+@router.get("/connector/company/{company_id}")
+def get_drive_for_company_router(
+    company_id: int,
+    current_user: dict = Depends(get_current_user_api)
+):
+    """
+    Get the linked Drive for a Company.
+    """
+    connector = DriveCompanyConnector()
+    mapping = connector.get_drive_for_company(company_id=company_id)
+    
+    if not mapping:
+        return {
+            "message": "No linked drive found for this company",
+            "status_code": 404,
+            "mapping": None
+        }
+    
+    return {
+        "message": "Drive mapping retrieved successfully",
+        "status_code": 200,
+        "mapping": mapping.to_dict()
+    }
+
+
+@router.delete("/connector/company/{company_id}")
+def unlink_drive_from_company_router(
+    company_id: int,
+    current_user: dict = Depends(get_current_user_api)
+):
+    """
+    Unlink the Drive from a Company.
+    """
+    connector = DriveCompanyConnector()
+    result = connector.unlink_by_company_id(company_id=company_id)
+    
+    if result.get("status_code") >= 400:
+        raise HTTPException(
+            status_code=result.get("status_code", 500),
+            detail=result.get("message", "Failed to unlink drive from company")
         )
     
     return result

@@ -91,6 +91,38 @@ GO
 
 EXEC ReadMsSites;
 
+
+DROP PROCEDURE IF EXISTS ReadMsSiteById;
+GO
+
+CREATE PROCEDURE ReadMsSiteById
+(
+    @Id BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [SiteId],
+        [DisplayName],
+        [WebUrl],
+        [Hostname]
+    FROM ms.Site
+    WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
 DROP PROCEDURE IF EXISTS ReadMsSiteByPublicId;
 GO
 
@@ -224,3 +256,9 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+
+EXEC DeleteMsSiteByPublicId
+    @PublicId = '0143726e-1155-47b4-9750-f5ea4362a605';
+
+EXEC ReadMsSites;

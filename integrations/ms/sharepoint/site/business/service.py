@@ -11,6 +11,7 @@ from integrations.ms.sharepoint.external.client import (
     search_sites as graph_search_sites,
     get_site_by_id as graph_get_site_by_id,
     get_site_by_path as graph_get_site_by_path,
+    get_followed_sites as graph_get_followed_sites,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,16 @@ class MsSiteService:
             Dict with status_code, message, and sites list
         """
         return graph_search_sites(query)
+
+    def get_followed_sites(self) -> dict:
+        """
+        Get SharePoint sites that the current user follows.
+        Uses user-delegated authentication.
+        
+        Returns:
+            Dict with status_code, message, and sites list
+        """
+        return graph_get_followed_sites()
 
     def get_site_by_path(self, hostname: str, site_path: str) -> dict:
         """
@@ -117,6 +128,12 @@ class MsSiteService:
         Read all linked MsSites from the database.
         """
         return self.repo.read_all()
+
+    def read_by_id(self, id: int) -> Optional[MsSite]:
+        """
+        Read a linked MsSite by database ID.
+        """
+        return self.repo.read_by_id(id)
 
     def read_by_public_id(self, public_id: str) -> Optional[MsSite]:
         """

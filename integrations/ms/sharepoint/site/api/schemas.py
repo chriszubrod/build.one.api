@@ -116,3 +116,34 @@ class SiteLinkResponse(BaseModel):
         default=None,
         description="The linked site data"
     )
+
+
+# Site-Company Connector Schemas
+
+class SiteCompanyLinkRequest(BaseModel):
+    """Request model for linking a SharePoint site to a company."""
+    company_id: int = Field(
+        description="The database ID of the company to link"
+    )
+    ms_graph_site_id: str = Field(
+        min_length=1,
+        description="The MS Graph site ID to link to the company"
+    )
+
+
+class SiteCompanyResponse(BaseModel):
+    """Response model for site-company link operations."""
+    message: str = Field(
+        description="Status message"
+    )
+    status_code: int = Field(
+        description="HTTP status code"
+    )
+    mapping: Optional[dict] = Field(
+        default=None,
+        description="The site-company mapping data"
+    )
+    site: Optional[dict] = Field(
+        default=None,
+        description="The linked site data"
+    )

@@ -96,6 +96,26 @@ class MsSiteRepository:
             logger.error("Error during read all ms sites: %s", error)
             raise map_database_error(error)
 
+    def read_by_id(self, id: int) -> Optional[MsSite]:
+        """
+        Read a MsSite by database ID.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadMsSiteById",
+                    params={
+                        "Id": id,
+                    },
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error("Error during read ms site by ID: %s", error)
+            raise map_database_error(error)
+
     def read_by_public_id(self, public_id: str) -> Optional[MsSite]:
         """
         Read a MsSite by public ID.

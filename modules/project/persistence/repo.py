@@ -44,6 +44,7 @@ class ProjectRepository:
                 description=row.Description,
                 status=row.Status,
                 customer_id=row.CustomerId,
+                abbreviation=row.Abbreviation,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during project mapping: {error}")
@@ -52,7 +53,7 @@ class ProjectRepository:
             logger.error(f"Unexpected error during project mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, name: str, description: str, status: str, customer_id: Optional[int] = None) -> Project:
+    def create(self, *, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None) -> Project:
         """
         Create a new project.
         """
@@ -67,6 +68,7 @@ class ProjectRepository:
                         "Description": description,
                         "Status": status,
                         "CustomerId": customer_id,
+                        "Abbreviation": abbreviation,
                     },
                 )
                 row = cursor.fetchone()
@@ -167,6 +169,7 @@ class ProjectRepository:
                         "Description": project.description,
                         "Status": project.status,
                         "CustomerId": project.customer_id,
+                        "Abbreviation": project.abbreviation,
                     },
                 )
                 row = cursor.fetchone()

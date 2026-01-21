@@ -15,6 +15,7 @@ CREATE TABLE [dbo].[Project]
     [Description] NVARCHAR(500) NULL,
     [Status] NVARCHAR(50) NULL,
     [CustomerId] BIGINT NULL,
+    [Abbreviation] NVARCHAR(20) NULL,
     CONSTRAINT [FK_Project_Customer] FOREIGN KEY ([CustomerId]) REFERENCES [dbo].[Customer]([Id])
 );
 GO
@@ -28,7 +29,8 @@ CREATE PROCEDURE CreateProject
     @Name NVARCHAR(50),
     @Description NVARCHAR(500),
     @Status NVARCHAR(50),
-    @CustomerId BIGINT NULL
+    @CustomerId BIGINT NULL,
+    @Abbreviation NVARCHAR(20) NULL
 )
 AS
 BEGIN
@@ -36,7 +38,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Project] ([CreatedDatetime], [ModifiedDatetime], [Name], [Description], [Status], [CustomerId])
+    INSERT INTO dbo.[Project] ([CreatedDatetime], [ModifiedDatetime], [Name], [Description], [Status], [CustomerId], [Abbreviation])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -46,8 +48,9 @@ BEGIN
         INSERTED.[Name],
         INSERTED.[Description],
         INSERTED.[Status],
-        INSERTED.[CustomerId]
-    VALUES (@Now, @Now, @Name, @Description, @Status, @CustomerId);
+        INSERTED.[CustomerId],
+        INSERTED.[Abbreviation]
+    VALUES (@Now, @Now, @Name, @Description, @Status, @CustomerId, @Abbreviation);
 
     COMMIT TRANSACTION;
 END;
@@ -77,7 +80,8 @@ BEGIN
         [Name],
         [Description],
         [Status],
-        [CustomerId]
+        [CustomerId],
+        [Abbreviation]
     FROM dbo.[Project]
     ORDER BY [Name] ASC;
 
@@ -108,7 +112,8 @@ BEGIN
         [Name],
         [Description],
         [Status],
-        [CustomerId]
+        [CustomerId],
+        [Abbreviation]
     FROM dbo.[Project]
     WHERE [Id] = @Id;
 
@@ -140,7 +145,8 @@ BEGIN
         [Name],
         [Description],
         [Status],
-        [CustomerId]
+        [CustomerId],
+        [Abbreviation]
     FROM dbo.[Project]
     WHERE [PublicId] = @PublicId;
 
@@ -172,7 +178,8 @@ BEGIN
         [Name],
         [Description],
         [Status],
-        [CustomerId]
+        [CustomerId],
+        [Abbreviation]
     FROM dbo.[Project]
     WHERE [Name] = @Name;
 
@@ -194,7 +201,8 @@ CREATE PROCEDURE UpdateProjectById
     @Name NVARCHAR(50),
     @Description NVARCHAR(500),
     @Status NVARCHAR(50),
-    @CustomerId BIGINT NULL
+    @CustomerId BIGINT NULL,
+    @Abbreviation NVARCHAR(20) NULL
 )
 AS
 BEGIN
@@ -208,7 +216,8 @@ BEGIN
         [Name] = @Name,
         [Description] = @Description,
         [Status] = @Status,
-        [CustomerId] = @CustomerId
+        [CustomerId] = @CustomerId,
+        [Abbreviation] = @Abbreviation
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -218,7 +227,8 @@ BEGIN
         INSERTED.[Name],
         INSERTED.[Description],
         INSERTED.[Status],
-        INSERTED.[CustomerId]
+        INSERTED.[CustomerId],
+        INSERTED.[Abbreviation]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -255,7 +265,8 @@ BEGIN
         DELETED.[Name],
         DELETED.[Description],
         DELETED.[Status],
-        DELETED.[CustomerId]
+        DELETED.[CustomerId],
+        DELETED.[Abbreviation]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
@@ -266,3 +277,7 @@ EXEC DeleteProjectById
 GO
 
 SELECT * FROM dbo.Project;
+
+ALTER TABLE [dbo].[Project]
+ADD [Abbreviation] NVARCHAR(20) NULL;
+GO

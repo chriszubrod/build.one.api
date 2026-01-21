@@ -21,6 +21,7 @@ def create_project_router(body: ProjectCreate, current_user: dict = Depends(get_
         description=body.description,
         status=body.status,
         customer_id=body.customer_id,
+        abbreviation=body.abbreviation,
     )
     return project.to_dict()
 

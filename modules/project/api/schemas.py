@@ -27,6 +27,11 @@ class ProjectCreate(BaseModel):
         default=None,
         description="The ID of the customer associated with the project."
     )
+    abbreviation: Optional[str] = Field(
+        default=None,
+        max_length=20,
+        description="The abbreviation of the project."
+    )
 
 
 class ProjectUpdate(BaseModel):
@@ -51,4 +56,9 @@ class ProjectUpdate(BaseModel):
     customer_id: Optional[int] = Field(
         default=None,
         description="The ID of the customer associated with the project."
+    )
+    abbreviation: Optional[str] = Field(
+        default=None,
+        max_length=20,
+        description="The abbreviation of the project."
     )

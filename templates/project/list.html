@@ -24,6 +24,11 @@
                         </h5>
                     </div>
                     <div class="customer-metadata">
+                        {% if project.abbreviation %}
+                        <div class="customer-metadata-item">
+                            <span>Abbreviation: {{ project.abbreviation }}</span>
+                        </div>
+                        {% endif %}
                         {% if project.description %}
                         <div class="customer-metadata-item">
                             <span>Description: {{ project.description }}</span>

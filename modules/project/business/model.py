@@ -19,6 +19,7 @@ class Project:
     description: Optional[str]
     status: Optional[str]
     customer_id: Optional[int]
+    abbreviation: Optional[str]
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

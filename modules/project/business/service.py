@@ -17,11 +17,11 @@ class ProjectService:
         """Initialize the ProjectService."""
         self.repo = repo or ProjectRepository()
 
-    def create(self, *, name: str, description: str, status: str, customer_id: Optional[int] = None) -> Project:
+    def create(self, *, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None) -> Project:
         """
         Create a new project.
         """
-        return self.repo.create(name=name, description=description, status=status, customer_id=customer_id)
+        return self.repo.create(name=name, description=description, status=status, customer_id=customer_id, abbreviation=abbreviation)
 
     def read_all(self) -> list[Project]:
         """
@@ -58,6 +58,7 @@ class ProjectService:
             existing.description = project.description
             existing.status = project.status
             existing.customer_id = project.customer_id
+            existing.abbreviation = project.abbreviation
         return self.repo.update_by_id(existing)
 
     def delete_by_public_id(self, public_id: str) -> Optional[Project]:

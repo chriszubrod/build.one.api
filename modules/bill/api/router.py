@@ -7,6 +7,7 @@ from decimal import Decimal
 # Local Imports
 from modules.bill.api.schemas import BillCreate, BillUpdate
 from modules.bill.business.service import BillService
+from modules.bill.business.complete_service import BillCompleteService
 from modules.auth.business.service import get_current_user_api
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill"])
@@ -20,7 +21,7 @@ def create_bill_router(body: BillCreate, current_user: dict = Depends(get_curren
     try:
         bill = BillService().create(
             vendor_public_id=body.vendor_public_id,
-            terms_id=body.terms_id,
+            payment_term_public_id=body.payment_term_public_id,
             bill_date=body.bill_date,
             due_date=body.due_date,
             bill_number=body.bill_number,
@@ -72,11 +73,19 @@ def get_bill_by_public_id_router(public_id: str, current_user: dict = Depends(ge
 def update_bill_by_public_id_router(public_id: str, body: BillUpdate, current_user: dict = Depends(get_current_user_api)):
     """
     Update a bill by public ID.
+    If the bill is being completed (is_draft changing to False), attachments will be synced to SharePoint.
     """
     bill = BillService().update_by_public_id(public_id=public_id, bill=body)
     if not bill:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bill not found")
-    return bill.to_dict()
+    
+    result = bill.to_dict()
+    
+    # Include sync result if available (when bill was completed)
+    if hasattr(bill, '_sync_result') and bill._sync_result:
+        result['sharepoint_sync'] = bill._sync_result
+    
+    return result
 
 
 @router.delete("/delete/bill/{public_id}")
@@ -88,3 +97,33 @@ def delete_bill_by_public_id_router(public_id: str, current_user: dict = Depends
     if not bill:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bill not found")
     return bill.to_dict()
+
+
+@router.post("/complete/bill/{public_id}")
+def complete_bill_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+    """
+    Complete a bill: finalize, upload attachments to module folders, and sync to Excel workbooks.
+    """
+    print(f"\n{'='*60}")
+    print(f"=== COMPLETE BILL API CALLED: {public_id} ===")
+    print(f"{'='*60}")
+    
+    service = BillCompleteService()
+    result = service.complete_bill(public_id=public_id)
+    
+    print(f"\n--- COMPLETE BILL RESULT ---")
+    print(f"  status_code: {result.get('status_code')}")
+    print(f"  bill_finalized: {result.get('bill_finalized')}")
+    print(f"  file_uploads: {result.get('file_uploads')}")
+    print(f"  excel_syncs: {result.get('excel_syncs')}")
+    if result.get('errors'):
+        print(f"  ERRORS: {result.get('errors')}")
+    print(f"{'='*60}\n")
+    
+    if result.get("status_code") >= 400:
+        raise HTTPException(
+            status_code=result.get("status_code", 500),
+            detail=result.get("message", "Failed to complete bill")
+        )
+    
+    return result

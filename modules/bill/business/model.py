@@ -17,7 +17,7 @@ class Bill:
     created_datetime: Optional[str]
     modified_datetime: Optional[str]
     vendor_id: Optional[int]
-    terms_id: Optional[int]
+    payment_term_id: Optional[int]
     bill_date: Optional[str]
     due_date: Optional[str]
     bill_number: Optional[str]

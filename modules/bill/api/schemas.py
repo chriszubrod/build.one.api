@@ -12,9 +12,9 @@ class BillCreate(BaseModel):
     vendor_public_id: str = Field(
         description="The vendor public ID of the bill."
     )
-    terms_id: Optional[int] = Field(
+    payment_term_public_id: Optional[str] = Field(
         default=None,
-        description="The terms ID of the bill."
+        description="The payment term public ID of the bill."
     )
     bill_date: str = Field(
         description="The bill date of the bill."
@@ -47,9 +47,9 @@ class BillUpdate(BaseModel):
     vendor_public_id: str = Field(
         description="The vendor public ID of the bill."
     )
-    terms_id: Optional[int] = Field(
+    payment_term_public_id: Optional[str] = Field(
         default=None,
-        description="The terms ID of the bill."
+        description="The payment term public ID of the bill."
     )
     bill_date: str = Field(
         description="The bill date of the bill."

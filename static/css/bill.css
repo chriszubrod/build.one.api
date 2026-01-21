@@ -443,6 +443,94 @@
     background-color: #f8d7da;
 }
 
+/* Process Status Container */
+.process-status-container {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+/* Process Status Badges */
+.process-status-badges {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.process-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.375rem 0.625rem;
+    border-radius: 16px;
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    transition: all 0.3s ease;
+    border: 1px solid transparent;
+}
+
+/* Idle state - subtle gray */
+.process-badge[data-status="idle"] {
+    background-color: #f0f0f0;
+    color: #666;
+    border-color: #e0e0e0;
+}
+
+.process-badge[data-status="idle"] .process-badge-icon::before {
+    content: "○";
+    font-size: 0.75rem;
+}
+
+/* Running state - animated spinner */
+.process-badge[data-status="running"] {
+    background-color: #e3f2fd;
+    color: #1565c0;
+    border-color: #90caf9;
+}
+
+.process-badge[data-status="running"] .process-badge-icon::before {
+    content: "";
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid #1565c0;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+/* Completed state - green with checkmark */
+.process-badge[data-status="completed"] {
+    background-color: #e8f5e9;
+    color: #2e7d32;
+    border-color: #a5d6a7;
+}
+
+.process-badge[data-status="completed"] .process-badge-icon::before {
+    content: "✓";
+    font-weight: bold;
+    font-size: 0.875rem;
+}
+
+/* Error state - red with X */
+.process-badge[data-status="error"] {
+    background-color: #ffebee;
+    color: #c62828;
+    border-color: #ef9a9a;
+}
+
+.process-badge[data-status="error"] .process-badge-icon::before {
+    content: "✕";
+    font-weight: bold;
+    font-size: 0.875rem;
+}
+
+/* Spinner animation */
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
 /* Toast notifications */
 .toast-container {
     position: fixed;
@@ -1363,5 +1451,374 @@ textarea.bill-form-control {
     
     .bill-table {
         min-width: 800px;
+    }
+}
+
+/* ============================================
+   Drag and Drop Upload Zone
+   ============================================ */
+
+.bill-upload-section {
+    margin-bottom: 1.5rem;
+}
+
+.bill-drop-zone {
+    border: 2px dashed var(--color-border, #d0d0d0);
+    border-radius: 8px;
+    padding: 2rem;
+    text-align: center;
+    background-color: var(--color-surface, #fafafa);
+    transition: all 0.2s ease;
+    cursor: pointer;
+}
+
+.bill-drop-zone:hover {
+    border-color: var(--color-primary, #4a90d9);
+    background-color: rgba(74, 144, 217, 0.05);
+}
+
+.bill-drop-zone-active {
+    border-color: var(--color-primary, #4a90d9);
+    background-color: rgba(74, 144, 217, 0.1);
+    border-style: solid;
+}
+
+.bill-drop-zone-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.bill-drop-zone-icon {
+    font-size: 3rem;
+    opacity: 0.6;
+}
+
+.bill-drop-zone-text {
+    font-size: 1.1rem;
+    font-weight: 500;
+    color: var(--color-text, #333);
+    margin: 0;
+}
+
+.bill-drop-zone-subtext {
+    font-size: 0.9rem;
+    color: var(--color-text-muted, #666);
+    margin: 0;
+}
+
+.bill-drop-zone-browse {
+    color: var(--color-primary, #4a90d9);
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.bill-drop-zone-browse:hover {
+    color: var(--color-primary-dark, #357abd);
+}
+
+/* Compact drop zone (when bills exist) */
+.bill-drop-zone-compact {
+    padding: 1rem 2rem;
+}
+
+.bill-drop-zone-compact .bill-drop-zone-content {
+    flex-direction: row;
+    gap: 1rem;
+}
+
+.bill-drop-zone-compact .bill-drop-zone-icon {
+    font-size: 1.5rem;
+    margin: 0;
+}
+
+.bill-drop-zone-compact .bill-drop-zone-text {
+    font-size: 0.95rem;
+    margin: 0;
+}
+
+.bill-drop-zone-compact .bill-drop-zone-subtext {
+    margin: 0;
+}
+
+/* Expanded drop zone (empty state) */
+.bill-drop-zone-expanded {
+    padding: 3rem 2rem;
+    min-height: 300px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.bill-drop-zone-expanded .bill-drop-zone-icon {
+    font-size: 4rem;
+    margin-bottom: 0.5rem;
+}
+
+.bill-drop-zone-title {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--color-text, #333);
+    margin: 0 0 0.5rem 0;
+}
+
+.bill-drop-zone-message {
+    font-size: 1rem;
+    color: var(--color-text-muted, #666);
+    margin: 0 0 0.5rem 0;
+    max-width: 400px;
+    text-align: center;
+}
+
+.bill-drop-zone-actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+}
+
+.bill-upload-section-empty {
+    margin-top: 1rem;
+}
+
+/* ============================================
+   Toast Notifications
+   ============================================ */
+
+.toast-container {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-width: 400px;
+}
+
+.toast {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+.toast-success {
+    background-color: #d4edda;
+    border: 1px solid #c3e6cb;
+    color: #155724;
+}
+
+.toast-error {
+    background-color: #f8d7da;
+    border: 1px solid #f5c6cb;
+    color: #721c24;
+}
+
+.toast-warning {
+    background-color: #fff3cd;
+    border: 1px solid #ffeeba;
+    color: #856404;
+}
+
+.toast-info {
+    background-color: #d1ecf1;
+    border: 1px solid #bee5eb;
+    color: #0c5460;
+}
+
+.toast-message {
+    flex: 1;
+    font-size: 0.9rem;
+    line-height: 1.4;
+}
+
+.toast-close {
+    background: none;
+    border: none;
+    font-size: 1.25rem;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.5;
+    padding: 0;
+    margin-left: 0.5rem;
+}
+
+.toast-close:hover {
+    opacity: 1;
+}
+
+/* ============================================
+   Pending Completions Banner
+   ============================================ */
+
+.bill-pending-banner {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 0.75rem 1.5rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.85;
+    }
+}
+
+.bill-pending-banner-content {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.bill-pending-banner-icon {
+    font-size: 1.25rem;
+    animation: spin 1.5s linear infinite;
+}
+
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.bill-pending-banner-text {
+    font-weight: 500;
+}
+
+.bill-pending-banner-count {
+    opacity: 0.9;
+    font-size: 0.9rem;
+}
+
+/* Banner state variations */
+.bill-pending-banner-processing {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.bill-pending-banner-processing .bill-pending-banner-icon {
+    animation: spin 1.5s linear infinite;
+}
+
+.bill-pending-banner-success {
+    background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+    animation: none;
+}
+
+.bill-pending-banner-success .bill-pending-banner-icon {
+    animation: none;
+}
+
+/* Uploaded Files Container */
+.bill-uploaded-files-container {
+    margin-top: 1rem;
+    border: 1px solid var(--color-border, #e0e0e0);
+    border-radius: 8px;
+    background-color: var(--color-background, #fff);
+    overflow: hidden;
+}
+
+.bill-uploaded-files-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 1.5rem;
+    background-color: var(--color-surface, #f5f5f5);
+    border-bottom: 1px solid var(--color-border, #e0e0e0);
+}
+
+.bill-uploaded-files-header h3 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--color-text, #333);
+}
+
+.bill-uploaded-files-table {
+    margin: 0;
+}
+
+.bill-uploaded-files-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.bill-file-type-badge {
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background-color: var(--color-surface, #e8e8e8);
+    color: var(--color-text-secondary, #555);
+    border-radius: 4px;
+    text-transform: uppercase;
+}
+
+/* Responsive adjustments for drop zone */
+@media (max-width: 768px) {
+    .bill-drop-zone {
+        padding: 1.5rem;
+    }
+    
+    .bill-drop-zone-icon {
+        font-size: 2rem;
+    }
+    
+    .bill-drop-zone-text {
+        font-size: 1rem;
+    }
+    
+    .bill-uploaded-files-header {
+        flex-direction: column;
+        gap: 0.75rem;
+        align-items: stretch;
+    }
+    
+    .bill-drop-zone-compact .bill-drop-zone-content {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+    
+    .bill-drop-zone-expanded {
+        padding: 2rem 1rem;
+        min-height: 250px;
+    }
+    
+    .bill-drop-zone-expanded .bill-drop-zone-icon {
+        font-size: 3rem;
+    }
+    
+    .bill-drop-zone-title {
+        font-size: 1.25rem;
+    }
+    
+    .bill-drop-zone-actions {
+        flex-direction: column;
+        width: 100%;
+    }
+    
+    .bill-drop-zone-actions .btn {
+        width: 100%;
     }
 }

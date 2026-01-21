@@ -351,6 +351,9 @@
     flex: 1;
     color: var(--color-text);
     font-size: var(--font-size-action);
+    word-break: break-word;
+    overflow-wrap: break-word;
+    min-width: 0;
 }
 
 .customer-detail-value code {

@@ -8,8 +8,20 @@
 
 {% block content %}
 
+    <!-- Toast notification container -->
+    <div id="toast-container" class="toast-container"></div>
+    
+    <!-- Background completion notifications -->
+    <div id="pending-completions-banner" class="bill-pending-banner" style="display: none;">
+        <div class="bill-pending-banner-content">
+            <span class="bill-pending-banner-icon">⏳</span>
+            <span class="bill-pending-banner-text">Processing bills in background...</span>
+            <span class="bill-pending-banner-count"></span>
+        </div>
+    </div>
+
     <div class="bill-page-header">
-        <h1>Bills</h1>
+        <h1>{% if search %}Search Results{% elif is_draft == 'true' or is_draft == '' %}Draft Bills{% elif is_draft == 'false' %}Completed Bills{% else %}All Bills{% endif %}</h1>
         <a href="/bill/create?new=true" class="btn btn-primary">Add Bill</a>
     </div>
 
@@ -27,6 +39,16 @@
                            placeholder="Search bills, vendors, dates, amounts..."
                            value="{{ search }}"
                            autocomplete="off">
+                </div>
+
+                <!-- Status Filter -->
+                <div class="bill-filter-group">
+                    <label for="is_draft" class="bill-filter-label">Status</label>
+                    <select id="is_draft" name="is_draft" class="bill-filter-select">
+                        <option value="true" {% if is_draft == 'true' or is_draft == '' %}selected{% endif %}>Drafts</option>
+                        <option value="false" {% if is_draft == 'false' %}selected{% endif %}>Completed</option>
+                        <option value="all" {% if is_draft == 'all' %}selected{% endif %}>All Bills</option>
+                    </select>
                 </div>
 
                 <!-- Sort By -->
@@ -52,13 +74,51 @@
         </form>
     </div>
 
+    <!-- Drag and Drop Upload Zone - Compact when bills exist -->
+    {% if bills %}
+    <div class="bill-upload-section">
+        <div id="drop-zone" class="bill-drop-zone bill-drop-zone-compact">
+            <div class="bill-drop-zone-content">
+                <span class="bill-drop-zone-icon">📁</span>
+                <p class="bill-drop-zone-text">Drag & drop bill files here</p>
+                <p class="bill-drop-zone-subtext">or <label for="file-input" class="bill-drop-zone-browse">browse files</label></p>
+                <input type="file" id="file-input" multiple accept=".pdf,.png,.jpg,.jpeg,.gif,.webp" style="display: none;">
+            </div>
+        </div>
+
+        <!-- Uploaded Files Table -->
+        <div id="uploaded-files-container" class="bill-uploaded-files-container" style="display: none;">
+            <div class="bill-uploaded-files-header">
+                <h3>Files Ready for Import</h3>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="clearAllFiles()">Clear All</button>
+            </div>
+            <table class="bill-table bill-uploaded-files-table">
+                <thead>
+                    <tr>
+                        <th style="width: 40px;"></th>
+                        <th>File Name</th>
+                        <th>Size</th>
+                        <th>Type</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="uploaded-files-list">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
     <!-- Results Summary -->
     <div class="bill-results-summary">
-        <span>Showing {{ bills|length }} of {{ total_count }} bills</span>
+        <span>Showing {{ bills|length }} of {{ total_count }} {% if search %}matching {% elif is_draft == 'true' or is_draft == '' %}draft {% elif is_draft == 'false' %}completed {% endif %}bills</span>
+        {% if search %}
+        <span>• Searching all bills</span>
+        {% endif %}
         {% if total_pages > 1 %}
         <span>• Page {{ page }} of {{ total_pages }}</span>
         {% endif %}
     </div>
+    {% endif %}
 
     <!-- Bills Table -->
     {% if bills %}
@@ -157,15 +217,51 @@
         {% endif %}
         </div>
     {% else %}
-        <div class="bill-empty-state">
-            <div class="bill-empty-state-icon">📄</div>
-            <h3>No Bills Found</h3>
-            <p>{% if search %}Try adjusting your search.{% else %}Create your first bill to get started.{% endif %}</p>
-            {% if not search %}
-            <a href="/bill/create?new=true" class="btn btn-primary">Create Bill</a>
-            {% else %}
-            <a href="/bill/list" class="btn btn-secondary">Clear Filters</a>
-            {% endif %}
+        <!-- Combined Empty State + Drop Zone -->
+        <div class="bill-upload-section bill-upload-section-empty">
+            <div id="drop-zone" class="bill-drop-zone bill-drop-zone-expanded">
+                <div class="bill-drop-zone-content">
+                    <span class="bill-drop-zone-icon">📄</span>
+                    <h3 class="bill-drop-zone-title">{% if search %}No Bills Found{% else %}No Draft Bills{% endif %}</h3>
+                    <p class="bill-drop-zone-message">
+                        {% if search %}
+                            Try adjusting your search, or drop files here to create new bills.
+                        {% else %}
+                            Drag & drop bill files here to get started
+                        {% endif %}
+                    </p>
+                    <p class="bill-drop-zone-subtext">or <label for="file-input" class="bill-drop-zone-browse">browse files</label></p>
+                    <input type="file" id="file-input" multiple accept=".pdf,.png,.jpg,.jpeg,.gif,.webp" style="display: none;">
+                    
+                    <div class="bill-drop-zone-actions">
+                        <a href="/bill/create?new=true" class="btn btn-primary">Create Bill Manually</a>
+                        {% if search %}
+                        <a href="/bill/list" class="btn btn-secondary">Clear Filters</a>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Uploaded Files Table -->
+            <div id="uploaded-files-container" class="bill-uploaded-files-container" style="display: none;">
+                <div class="bill-uploaded-files-header">
+                    <h3>Files Ready for Import</h3>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="clearAllFiles()">Clear All</button>
+                </div>
+                <table class="bill-table bill-uploaded-files-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 40px;"></th>
+                            <th>File Name</th>
+                            <th>Size</th>
+                            <th>Type</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="uploaded-files-list">
+                    </tbody>
+                </table>
+            </div>
         </div>
     {% endif %}
 
@@ -173,10 +269,212 @@
 
 {% block scripts %}
 <script>
+    // Store uploaded files as objects with base64 data (persists across navigation)
+    let uploadedFiles = [];
+    
+    // Polling interval for checking pending completions
+    let completionPollInterval = null;
+
+    // Show toast notification
+    function showToast(message, type = 'info', duration = 5000) {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+        
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.innerHTML = `
+            <span class="toast-message">${message}</span>
+            <button class="toast-close" onclick="this.parentElement.remove()">×</button>
+        `;
+        container.appendChild(toast);
+        
+        // Auto-remove after duration
+        setTimeout(() => {
+            if (toast.parentElement) {
+                toast.remove();
+            }
+        }, duration);
+    }
+
+    // Check for pending bill completions and show appropriate notifications
+    async function checkPendingCompletions() {
+        console.log('[List] checkPendingCompletions called');
+        const pendingBillsRaw = sessionStorage.getItem('pendingBillCompletions');
+        console.log('[List] pendingBillCompletions raw:', pendingBillsRaw);
+        
+        const pendingBills = JSON.parse(pendingBillsRaw || '[]');
+        console.log('[List] pendingBills parsed:', pendingBills);
+        
+        if (pendingBills.length === 0) {
+            console.log('[List] No pending bills, hiding banner');
+            hidePendingBanner();
+            return;
+        }
+        
+        console.log('[List] Found', pendingBills.length, 'pending bills, showing banner');
+        
+        // Check each processing bill's actual status via API
+        for (const bill of pendingBills) {
+            if (bill.status === 'processing') {
+                try {
+                    const response = await fetch(`/api/v1/get/bill/${bill.publicId}`, {
+                        method: 'GET',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        }
+                    });
+                    
+                    if (response.ok) {
+                        const billData = await response.json();
+                        // If is_draft is false, the bill was completed
+                        if (billData.is_draft === false) {
+                            bill.status = 'completed';
+                            bill.endTime = Date.now();
+                        } else {
+                            // Check timeout (if processing for more than 2 minutes, mark as possibly stuck)
+                            const elapsed = Date.now() - bill.startTime;
+                            if (elapsed > 120000) {  // 2 minutes
+                                bill.status = 'timeout';
+                                bill.error = 'Processing is taking longer than expected. Check the bill status manually.';
+                                bill.endTime = Date.now();
+                            }
+                        }
+                    } else if (response.status === 404) {
+                        // Bill not found - might have been deleted
+                        bill.status = 'error';
+                        bill.error = 'Bill not found';
+                        bill.endTime = Date.now();
+                    }
+                } catch (error) {
+                    console.error('Error checking bill status:', error);
+                }
+            }
+        }
+        
+        // Update storage with new statuses
+        sessionStorage.setItem('pendingBillCompletions', JSON.stringify(pendingBills));
+        
+        // Separate completed/error from still processing
+        const completed = pendingBills.filter(b => b.status === 'completed' && !b.notified);
+        const errors = pendingBills.filter(b => (b.status === 'error' || b.status === 'timeout') && !b.notified);
+        const stillProcessing = pendingBills.filter(b => b.status === 'processing');
+        
+        // Show notifications for completed bills
+        completed.forEach(bill => {
+            const elapsed = bill.endTime ? Math.round((bill.endTime - bill.startTime) / 1000) : 0;
+            showToast(`✓ Bill "${bill.billNumber}" completed! (${elapsed}s)`, 'success', 8000);
+            bill.notified = true;
+            bill.notifiedAt = Date.now();
+        });
+        
+        // Show notifications for errors/timeouts
+        errors.forEach(bill => {
+            if (bill.status === 'timeout') {
+                showToast(`⚠ Bill "${bill.billNumber}": ${bill.error}`, 'warning', 10000);
+            } else {
+                showToast(`✗ Bill "${bill.billNumber}" failed: ${bill.error}`, 'error', 10000);
+            }
+            bill.notified = true;
+            bill.notifiedAt = Date.now();
+        });
+        
+        // Keep bills that are still processing OR were just notified (within last 5 seconds)
+        const now = Date.now();
+        const recentlyNotified = pendingBills.filter(b => b.notified && (now - b.notifiedAt) < 5000);
+        const billsToKeep = [...stillProcessing, ...recentlyNotified];
+        
+        sessionStorage.setItem('pendingBillCompletions', JSON.stringify(billsToKeep));
+        
+        // Show/hide banner based on processing or recently completed bills
+        if (billsToKeep.length > 0) {
+            // Update banner message based on state
+            if (stillProcessing.length > 0) {
+                showPendingBanner(stillProcessing.length, 'processing');
+            } else {
+                // All done, show completion message briefly
+                showPendingBanner(recentlyNotified.length, 'completed');
+            }
+            // Poll every 2 seconds to check for updates
+            if (!completionPollInterval) {
+                completionPollInterval = setInterval(checkPendingCompletions, 2000);
+            }
+        } else {
+            hidePendingBanner();
+            if (completionPollInterval) {
+                clearInterval(completionPollInterval);
+                completionPollInterval = null;
+            }
+        }
+    }
+    
+    function showPendingBanner(count, status = 'processing') {
+        console.log('[List] showPendingBanner called with count:', count, 'status:', status);
+        const banner = document.getElementById('pending-completions-banner');
+        console.log('[List] Banner element found:', !!banner);
+        if (banner) {
+            banner.style.display = 'block';
+            
+            const iconSpan = banner.querySelector('.bill-pending-banner-icon');
+            const textSpan = banner.querySelector('.bill-pending-banner-text');
+            const countSpan = banner.querySelector('.bill-pending-banner-count');
+            
+            if (status === 'completed') {
+                if (iconSpan) iconSpan.textContent = '✅';
+                if (textSpan) textSpan.textContent = 'Bills completed successfully!';
+                if (countSpan) countSpan.textContent = `(${count} bill${count > 1 ? 's' : ''})`;
+                banner.classList.remove('bill-pending-banner-processing');
+                banner.classList.add('bill-pending-banner-success');
+            } else {
+                if (iconSpan) iconSpan.textContent = '⏳';
+                if (textSpan) textSpan.textContent = 'Processing bills in background...';
+                if (countSpan) countSpan.textContent = `(${count} bill${count > 1 ? 's' : ''})`;
+                banner.classList.remove('bill-pending-banner-success');
+                banner.classList.add('bill-pending-banner-processing');
+            }
+            
+            console.log('[List] Banner should now be visible');
+        }
+    }
+    
+    function hidePendingBanner() {
+        const banner = document.getElementById('pending-completions-banner');
+        if (banner) {
+            banner.style.display = 'none';
+        }
+    }
+
+    // Load persisted files from sessionStorage on page load
+    function loadPersistedFiles() {
+        const stored = sessionStorage.getItem('billUploadQueue');
+        if (stored) {
+            try {
+                uploadedFiles = JSON.parse(stored);
+                updateUploadedFilesTable();
+            } catch (e) {
+                console.error('Error loading persisted files:', e);
+                sessionStorage.removeItem('billUploadQueue');
+            }
+        }
+    }
+
+    // Save files to sessionStorage
+    function persistFiles() {
+        sessionStorage.setItem('billUploadQueue', JSON.stringify(uploadedFiles));
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
+        console.log('[List] DOMContentLoaded - checking for pending completions');
+        // Check for pending bill completions and show notifications
+        checkPendingCompletions();
+        
+        // Load any persisted files first
+        loadPersistedFiles();
+        
         const form = document.getElementById('bill-filters-form');
         const searchInput = document.getElementById('search');
         const sortSelect = document.getElementById('sort_by');
+        const statusSelect = document.getElementById('is_draft');
         
         // Debounce function for search input
         let searchTimeout;
@@ -190,13 +488,195 @@
         }
         
         // Auto-submit on search input (with debounce)
-        searchInput.addEventListener('input', debounceSearch);
+        if (searchInput) searchInput.addEventListener('input', debounceSearch);
         
         // Auto-submit on sort change
-        sortSelect.addEventListener('change', function() {
-            document.getElementById('page').value = '1';
-            form.submit();
-        });
+        if (sortSelect) {
+            sortSelect.addEventListener('change', function() {
+                document.getElementById('page').value = '1';
+                form.submit();
+            });
+        }
+        
+        // Auto-submit on status filter change
+        if (statusSelect) {
+            statusSelect.addEventListener('change', function() {
+                document.getElementById('page').value = '1';
+                form.submit();
+            });
+        }
+
+        // Drag and Drop Setup
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+
+        if (dropZone) {
+            // Prevent default drag behaviors
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, preventDefaults, false);
+                document.body.addEventListener(eventName, preventDefaults, false);
+            });
+
+            // Highlight drop zone when dragging over
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropZone.addEventListener(eventName, highlight, false);
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, unhighlight, false);
+            });
+
+            // Handle dropped files
+            dropZone.addEventListener('drop', handleDrop, false);
+        }
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        function highlight(e) {
+            dropZone.classList.add('bill-drop-zone-active');
+        }
+
+        function unhighlight(e) {
+            dropZone.classList.remove('bill-drop-zone-active');
+        }
+
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            handleFiles(files);
+        }
+
+        // Handle file input change
+        if (fileInput) {
+            fileInput.addEventListener('change', function() {
+                handleFiles(this.files);
+                this.value = ''; // Reset input so same file can be selected again
+            });
+        }
     });
+
+    function handleFiles(files) {
+        const validTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+        
+        Array.from(files).forEach(file => {
+            if (validTypes.includes(file.type)) {
+                // Check if file already added (by name and size)
+                const exists = uploadedFiles.some(f => f.name === file.name && f.size === file.size);
+                if (!exists) {
+                    // Convert file to base64 for persistence
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        uploadedFiles.push({
+                            name: file.name,
+                            type: file.type,
+                            size: file.size,
+                            data: e.target.result
+                        });
+                        persistFiles();
+                        updateUploadedFilesTable();
+                    };
+                    reader.readAsDataURL(file);
+                }
+            }
+        });
+    }
+
+    function updateUploadedFilesTable() {
+        const container = document.getElementById('uploaded-files-container');
+        const tbody = document.getElementById('uploaded-files-list');
+        
+        if (uploadedFiles.length === 0) {
+            container.style.display = 'none';
+            tbody.innerHTML = '';
+            return;
+        }
+        
+        container.style.display = 'block';
+        tbody.innerHTML = '';
+        
+        uploadedFiles.forEach((file, index) => {
+            const row = document.createElement('tr');
+            
+            // Icon based on file type
+            const icon = file.type === 'application/pdf' ? '📄' : '🖼️';
+            
+            // Format file size
+            const sizeStr = formatFileSize(file.size);
+            
+            // Get file extension
+            const ext = file.name.split('.').pop().toUpperCase();
+            
+            row.innerHTML = `
+                <td style="text-align: center; font-size: 1.5rem;">${icon}</td>
+                <td>
+                    <strong>${escapeHtml(file.name)}</strong>
+                </td>
+                <td>${sizeStr}</td>
+                <td><span class="bill-file-type-badge">${ext}</span></td>
+                <td>
+                    <div class="bill-table-actions">
+                        <button type="button" class="btn btn-primary btn-sm" onclick="createBillFromFile(${index})">
+                            Create Bill
+                        </button>
+                        <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeFile(${index})">
+                            Remove
+                        </button>
+                    </div>
+                </td>
+            `;
+            
+            tbody.appendChild(row);
+        });
+    }
+
+    function formatFileSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function removeFile(index) {
+        uploadedFiles.splice(index, 1);
+        persistFiles();
+        updateUploadedFilesTable();
+    }
+
+    function clearAllFiles() {
+        uploadedFiles = [];
+        persistFiles();
+        updateUploadedFilesTable();
+    }
+
+    function createBillFromFile(index) {
+        const file = uploadedFiles[index];
+        if (!file) return;
+        
+        // File data is already in base64 format from persistence
+        const fileData = {
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            data: file.data
+        };
+        sessionStorage.setItem('pendingBillFile', JSON.stringify(fileData));
+        
+        // Remove from queue and persist
+        uploadedFiles.splice(index, 1);
+        persistFiles();
+        
+        // Navigate to create bill page with file flag
+        window.location.href = '/bill/create?new=true&hasFile=true';
+    }
 </script>
 {% endblock %}

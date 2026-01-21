@@ -42,7 +42,7 @@ class BillRepository:
                 created_datetime=row.CreatedDatetime,
                 modified_datetime=row.ModifiedDatetime,
                 vendor_id=getattr(row, "VendorId", None),
-                terms_id=getattr(row, "TermsId", None),
+                payment_term_id=getattr(row, "PaymentTermId", None),
                 bill_date=getattr(row, "BillDate", None),
                 due_date=getattr(row, "DueDate", None),
                 bill_number=getattr(row, "BillNumber", None),
@@ -57,7 +57,7 @@ class BillRepository:
             logger.error(f"Unexpected error during bill mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, vendor_id: Optional[int] = None, terms_id: Optional[int] = None, bill_date: Optional[str] = None, due_date: Optional[str] = None, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True) -> Bill:
+    def create(self, *, vendor_id: Optional[int] = None, payment_term_id: Optional[int] = None, bill_date: Optional[str] = None, due_date: Optional[str] = None, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True) -> Bill:
         """
         Create a new bill.
         """
@@ -69,7 +69,7 @@ class BillRepository:
                     name="CreateBill",
                     params={
                         "VendorId": vendor_id,
-                        "TermsId": terms_id,
+                        "PaymentTermId": payment_term_id,
                         "BillDate": bill_date,
                         "DueDate": due_date,
                         "BillNumber": bill_number,
@@ -191,7 +191,7 @@ class BillRepository:
                     "Id": bill.id,
                     "RowVersion": bill.row_version_bytes,
                     "VendorId": bill.vendor_id,
-                    "TermsId": bill.terms_id,
+                    "PaymentTermId": bill.payment_term_id,
                     "BillDate": bill.bill_date,
                     "DueDate": bill.due_date,
                     "BillNumber": bill.bill_number,

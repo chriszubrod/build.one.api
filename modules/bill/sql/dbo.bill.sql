@@ -9,14 +9,15 @@ CREATE TABLE [dbo].[Bill]
     [CreatedDatetime] DATETIME2(3) NOT NULL,
     [ModifiedDatetime] DATETIME2(3) NULL,
     [VendorId] BIGINT NOT NULL,
-    [TermsId] BIGINT NULL,
+    [PaymentTermId] BIGINT NULL,
     [BillDate] DATETIME2(3) NOT NULL,
     [DueDate] DATETIME2(3) NOT NULL,
     [BillNumber] NVARCHAR(50) NOT NULL,
     [TotalAmount] DECIMAL(18,2) NULL,
     [Memo] NVARCHAR(MAX) NULL,
     [IsDraft] BIT NOT NULL DEFAULT 1,
-    CONSTRAINT [FK_Bill_Vendor] FOREIGN KEY ([VendorId]) REFERENCES [dbo].[Vendor]([Id])
+    CONSTRAINT [FK_Bill_Vendor] FOREIGN KEY ([VendorId]) REFERENCES [dbo].[Vendor]([Id]),
+    CONSTRAINT [FK_Bill_PaymentTerm] FOREIGN KEY ([PaymentTermId]) REFERENCES [dbo].[PaymentTerm]([Id])
 );
 GO
 
@@ -27,6 +28,9 @@ CREATE INDEX IX_Bill_BillDate ON [dbo].[Bill] ([BillDate]);
 GO
 
 CREATE INDEX IX_Bill_BillNumber ON [dbo].[Bill] ([BillNumber]);
+GO
+
+CREATE INDEX IX_Bill_PaymentTermId ON [dbo].[Bill] ([PaymentTermId]);
 GO
 
 -- Unique constraint to prevent duplicate BillNumber for the same VendorId
@@ -40,7 +44,7 @@ GO
 CREATE PROCEDURE CreateBill
 (
     @VendorId BIGINT,
-    @TermsId BIGINT NULL,
+    @PaymentTermId BIGINT NULL,
     @BillDate DATETIME2(3),
     @DueDate DATETIME2(3),
     @BillNumber NVARCHAR(50),
@@ -54,7 +58,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Bill] ([CreatedDatetime], [ModifiedDatetime], [VendorId], [TermsId], [BillDate], [DueDate], [BillNumber], [TotalAmount], [Memo], [IsDraft])
+    INSERT INTO dbo.[Bill] ([CreatedDatetime], [ModifiedDatetime], [VendorId], [PaymentTermId], [BillDate], [DueDate], [BillNumber], [TotalAmount], [Memo], [IsDraft])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -62,26 +66,17 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[VendorId],
-        INSERTED.[TermsId],
+        INSERTED.[PaymentTermId],
         CONVERT(VARCHAR(19), INSERTED.[BillDate], 120) AS [BillDate],
         CONVERT(VARCHAR(19), INSERTED.[DueDate], 120) AS [DueDate],
         INSERTED.[BillNumber],
         INSERTED.[TotalAmount],
         INSERTED.[Memo],
         INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @VendorId, @TermsId, @BillDate, @DueDate, @BillNumber, @TotalAmount, @Memo, @IsDraft);
+    VALUES (@Now, @Now, @VendorId, @PaymentTermId, @BillDate, @DueDate, @BillNumber, @TotalAmount, @Memo, @IsDraft);
 
     COMMIT TRANSACTION;
 END;
-
-EXEC CreateBill
-    @VendorId = 1,
-    @TermsId = NULL,
-    @BillDate = '2024-01-15',
-    @DueDate = '2024-02-15',
-    @BillNumber = 'BILL-001',
-    @TotalAmount = 1000.00,
-    @Memo = 'Sample bill';
 GO
 
 DROP PROCEDURE IF EXISTS ReadBills;
@@ -99,7 +94,7 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [VendorId],
-        [TermsId],
+        [PaymentTermId],
         CONVERT(VARCHAR(19), [BillDate], 120) AS [BillDate],
         CONVERT(VARCHAR(19), [DueDate], 120) AS [DueDate],
         [BillNumber],
@@ -111,8 +106,6 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-EXEC ReadBills;
 GO
 
 DROP PROCEDURE IF EXISTS ReadBillById;
@@ -133,7 +126,7 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [VendorId],
-        [TermsId],
+        [PaymentTermId],
         CONVERT(VARCHAR(19), [BillDate], 120) AS [BillDate],
         CONVERT(VARCHAR(19), [DueDate], 120) AS [DueDate],
         [BillNumber],
@@ -145,9 +138,6 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-EXEC ReadBillById
-    @Id = 1;
 GO
 
 DROP PROCEDURE IF EXISTS ReadBillByPublicId;
@@ -168,7 +158,7 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [VendorId],
-        [TermsId],
+        [PaymentTermId],
         CONVERT(VARCHAR(19), [BillDate], 120) AS [BillDate],
         CONVERT(VARCHAR(19), [DueDate], 120) AS [DueDate],
         [BillNumber],
@@ -180,9 +170,6 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-EXEC ReadBillByPublicId
-    @PublicId = '00000000-0000-0000-0000-000000000000';
 GO
 
 DROP PROCEDURE IF EXISTS ReadBillByBillNumber;
@@ -203,7 +190,7 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [VendorId],
-        [TermsId],
+        [PaymentTermId],
         CONVERT(VARCHAR(19), [BillDate], 120) AS [BillDate],
         CONVERT(VARCHAR(19), [DueDate], 120) AS [DueDate],
         [BillNumber],
@@ -215,9 +202,6 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-EXEC ReadBillByBillNumber
-    @BillNumber = 'BILL-001';
 GO
 
 DROP PROCEDURE IF EXISTS ReadBillByBillNumberAndVendorId;
@@ -239,7 +223,7 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [VendorId],
-        [TermsId],
+        [PaymentTermId],
         CONVERT(VARCHAR(19), [BillDate], 120) AS [BillDate],
         CONVERT(VARCHAR(19), [DueDate], 120) AS [DueDate],
         [BillNumber],
@@ -251,10 +235,6 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-EXEC ReadBillByBillNumberAndVendorId
-    @BillNumber = 'BILL-001',
-    @VendorId = 1;
 GO
 
 DROP PROCEDURE IF EXISTS UpdateBillById;
@@ -265,7 +245,7 @@ CREATE PROCEDURE UpdateBillById
     @Id BIGINT,
     @RowVersion BINARY(8),
     @VendorId BIGINT,
-    @TermsId BIGINT NULL,
+    @PaymentTermId BIGINT NULL,
     @BillDate DATETIME2(3),
     @DueDate DATETIME2(3),
     @BillNumber NVARCHAR(50),
@@ -283,7 +263,7 @@ BEGIN
     SET
         [ModifiedDatetime] = @Now,
         [VendorId] = @VendorId,
-        [TermsId] = @TermsId,
+        [PaymentTermId] = @PaymentTermId,
         [BillDate] = @BillDate,
         [DueDate] = @DueDate,
         [BillNumber] = @BillNumber,
@@ -297,7 +277,7 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[VendorId],
-        INSERTED.[TermsId],
+        INSERTED.[PaymentTermId],
         CONVERT(VARCHAR(19), INSERTED.[BillDate], 120) AS [BillDate],
         CONVERT(VARCHAR(19), INSERTED.[DueDate], 120) AS [DueDate],
         INSERTED.[BillNumber],
@@ -308,17 +288,6 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-EXEC UpdateBillById
-    @Id = 2,
-    @RowVersion = 0x0000000000020B74,
-    @VendorId = 1,
-    @TermsId = NULL,
-    @BillDate = '2024-01-20',
-    @DueDate = '2024-02-20',
-    @BillNumber = 'BILL-002',
-    @TotalAmount = 1500.00,
-    @Memo = 'Updated bill';
 GO
 
 DROP PROCEDURE IF EXISTS DeleteBillById;
@@ -340,7 +309,7 @@ BEGIN
         CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.[VendorId],
-        DELETED.[TermsId],
+        DELETED.[PaymentTermId],
         CONVERT(VARCHAR(19), DELETED.[BillDate], 120) AS [BillDate],
         CONVERT(VARCHAR(19), DELETED.[DueDate], 120) AS [DueDate],
         DELETED.[BillNumber],
@@ -351,14 +320,6 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-EXEC DeleteBillById
-    @Id = 3;
-GO
-
-SELECT * FROM dbo.Bill;
-
-ALTER TABLE [dbo].[Bill] DROP COLUMN [LineItemId];
 GO
 
 -- Pagination and filtering procedures
@@ -405,7 +366,7 @@ BEGIN
         CONVERT(VARCHAR(19), b.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), b.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         b.[VendorId],
-        b.[TermsId],
+        b.[PaymentTermId],
         CONVERT(VARCHAR(19), b.[BillDate], 120) AS [BillDate],
         CONVERT(VARCHAR(19), b.[DueDate], 120) AS [DueDate],
         b.[BillNumber],
@@ -478,17 +439,3 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
-
-SELECT COUNT(Bill.Id) AS BillCount
-FROM dbo.Bill;
-
-SELECT
-    CONVERT(VARCHAR(7), Bill.BillDate, 120) AS BillMonth,
-    COUNT(Bill.Id) AS BillCount
-FROM dbo.Bill
-GROUP BY
-    CONVERT(VARCHAR(7), Bill.BillDate, 120)
-ORDER BY
-    BillMonth;
-
-

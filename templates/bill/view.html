@@ -33,8 +33,8 @@
                 </div>
 
                 <div class="bill-detail-row">
-                    <div class="bill-detail-label">Terms ID:</div>
-                    <div class="bill-detail-value">{{ bill.terms_id or 'Not specified' }}</div>
+                    <div class="bill-detail-label">Payment Terms:</div>
+                    <div class="bill-detail-value">{{ bill.payment_term_name or 'Not specified' }}</div>
                 </div>
 
                 <div class="bill-detail-row">
@@ -131,12 +131,75 @@
                             
                             {% if line_item.attachment %}
                             <div class="line-item-attachment-display" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed #e0e0e0;">
-                                <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background-color: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px;">
+                                <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background-color: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px; margin-bottom: 0.75rem;">
                                     <span style="font-size: 1.2rem; flex-shrink: 0;">📎</span>
                                     <a href="/attachment/view/{{ line_item.attachment.public_id }}" target="_blank" style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-primary, #1976d2); text-decoration: none; font-size: 0.9rem;">
                                         {{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}
                                     </a>
                                 </div>
+                                
+                                {% if line_item.sharepoint_location %}
+                                <div class="line-item-sharepoint-location" style="padding: 0.75rem; {% if line_item.sharepoint_location.file_found %}background-color: #e8f5e9; border: 1px solid #c8e6c9;{% else %}background-color: #fff3e0; border: 1px solid #ffcc80;{% endif %} border-radius: 4px;">
+                                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                                        <span style="font-size: 1.2rem; flex-shrink: 0;">📁</span>
+                                        <div style="flex: 1;">
+                                            <div style="font-weight: 600; font-size: 0.85rem; color: var(--color-text-primary, #333); margin-bottom: 0.25rem;">
+                                                SharePoint Location
+                                                {% if line_item.sharepoint_location.file_found %}
+                                                <span style="color: #2e7d32; font-size: 0.75rem; margin-left: 0.5rem;">✓ File Found</span>
+                                                {% else %}
+                                                <span style="color: #e65100; font-size: 0.75rem; margin-left: 0.5rem;">⚠ File Not Found</span>
+                                                {% endif %}
+                                            </div>
+                                            <div style="font-size: 0.8rem; color: var(--color-text-secondary, #666);">
+                                                <div style="margin-bottom: 0.25rem;">
+                                                    <strong>Module:</strong> {{ line_item.sharepoint_location.module_name }}
+                                                </div>
+                                                <div style="margin-bottom: 0.25rem;">
+                                                    <strong>Folder:</strong> {{ line_item.sharepoint_location.folder_name }}
+                                                </div>
+                                                {% if line_item.sharepoint_location.actual_filename %}
+                                                <div style="margin-bottom: 0.5rem; padding: 0.5rem; background-color: rgba(0,0,0,0.03); border-radius: 3px;">
+                                                    <div style="margin-bottom: 0.25rem;">
+                                                        <strong>Actual Filename:</strong> 
+                                                        <code style="background-color: rgba(0,0,0,0.05); padding: 0.125rem 0.25rem; border-radius: 2px; font-size: 0.75rem; color: #2e7d32;">
+                                                            {{ line_item.sharepoint_location.actual_filename }}
+                                                        </code>
+                                                    </div>
+                                                    {% if line_item.sharepoint_location.actual_file_web_url %}
+                                                    <div>
+                                                        <a href="{{ line_item.sharepoint_location.actual_file_web_url }}" target="_blank" 
+                                                           style="color: var(--color-primary, #1976d2); text-decoration: none; font-size: 0.85rem; display: inline-flex; align-items: center; gap: 0.25rem; font-weight: 500;">
+                                                            <span>🔗</span>
+                                                            <span>Open File in SharePoint</span>
+                                                        </a>
+                                                    </div>
+                                                    {% endif %}
+                                                </div>
+                                                {% elif line_item.sharepoint_location.expected_filename %}
+                                                <div style="margin-bottom: 0.5rem; padding: 0.5rem; background-color: rgba(0,0,0,0.03); border-radius: 3px;">
+                                                    <div>
+                                                        <strong>Expected Filename:</strong> 
+                                                        <code style="background-color: rgba(0,0,0,0.05); padding: 0.125rem 0.25rem; border-radius: 2px; font-size: 0.75rem;">
+                                                            {{ line_item.sharepoint_location.expected_filename }}
+                                                        </code>
+                                                    </div>
+                                                </div>
+                                                {% endif %}
+                                                {% if line_item.sharepoint_location.folder_web_url %}
+                                                <div style="margin-top: 0.5rem;">
+                                                    <a href="{{ line_item.sharepoint_location.folder_web_url }}" target="_blank" 
+                                                       style="color: var(--color-text-secondary, #666); text-decoration: none; font-size: 0.8rem; display: inline-flex; align-items: center; gap: 0.25rem;">
+                                                        <span>📂</span>
+                                                        <span>Open SharePoint Folder</span>
+                                                    </a>
+                                                </div>
+                                                {% endif %}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                {% endif %}
                             </div>
                             {% endif %}
                         </div>

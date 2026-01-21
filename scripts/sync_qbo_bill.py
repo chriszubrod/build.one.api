@@ -24,8 +24,10 @@ from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBil
 from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, QboBillLineRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.attachable.business.service import QboAttachableService
+from integrations.intuit.qbo.attachable.connector.attachment.business.service import AttachableAttachmentConnector
 from integrations.intuit.qbo.attachable.connector.attachment.persistence.repo import AttachableAttachmentRepository
 from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import BillLineItemBillLineRepository
+from modules.bill.business.service import BillService
 from modules.bill_line_item.business.service import BillLineItemService
 from modules.bill_line_item_attachment.business.service import BillLineItemAttachmentService
 from modules.attachment.business.service import AttachmentService
@@ -311,40 +313,256 @@ def sync_local_to_qbo(
     qbo_bill_service: QboBillService,
     bill_mapping_repo: BillBillRepository,
     qbo_bill_repo: QboBillRepository,
+    sync_attachments: bool = True,
 ) -> dict:
     """
-    Sync locally modified Bills back to QBO.
+    Sync finalized local Bills to QBO.
     
-    This is the reverse sync: local changes -> QBO Bills.
+    This is the reverse sync: local Bills -> QBO Bills.
     
-    Note: Currently, Bill module modifications are not tracked,
-    so this function is a placeholder for future implementation.
+    This method:
+    1. Reads finalized Bills (is_draft = False) modified since last_sync_time
+    2. Filters to bills without existing QBO mapping
+    3. Creates Bill in QBO via API
+    4. Optionally syncs attachments to QBO
     
     Args:
         realm_id: QBO realm ID
-        last_sync_time: Last sync timestamp to detect local modifications
-        Various service/repo instances
+        last_sync_time: Last sync timestamp - only bills modified after this time will be considered
+        qbo_bill_service: QboBillService instance
+        bill_mapping_repo: BillBillRepository instance
+        qbo_bill_repo: QboBillRepository instance
+        sync_attachments: If True, also sync attachments for each bill
     
     Returns:
-        dict: Sync results
+        dict: Sync results including bills_pushed, attachments_pushed, errors
     """
-    logger.info("Checking for local Bill modifications to sync to QBO")
+    logger.info("Checking for local Bills to push to QBO")
     
     bills_pushed = 0
+    attachments_pushed = 0
+    errors = []
     
-    # TODO: Implement reverse sync when Bill module modification tracking is available
-    # This would involve:
-    # 1. Reading all Bills modified since last_sync_time
-    # 2. Finding their QboBill mappings
-    # 3. Comparing modification times
-    # 4. Updating QboBill records if local is newer
-    # 5. Optionally pushing to QBO API
+    # Initialize services
+    bill_service = BillService()
+    bill_connector = BillBillConnector()
+    bill_line_item_service = BillLineItemService()
+    bill_line_item_attachment_service = BillLineItemAttachmentService()
+    attachment_service = AttachmentService()
+    attachment_connector = AttachableAttachmentConnector()
     
-    logger.info("Reverse sync not yet implemented - Bill module modification tracking not available")
+    # Get all finalized bills (is_draft = False)
+    logger.info("Loading all bills from database...")
+    all_bills = bill_service.read_all()
+    finalized_bills = [b for b in all_bills if b.is_draft is False]
+    logger.info(f"Found {len(finalized_bills)} finalized bills")
+    
+    def parse_modified_datetime(dt_str):
+        """Parse modified_datetime string to datetime for comparison."""
+        if not dt_str:
+            return None
+        try:
+            # Handle format "YYYY-MM-DD HH:MM:SS" from database
+            return datetime.strptime(dt_str[:19], "%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            return None
+    
+    # Load ALL existing mappings in ONE query (optimization - avoid N+1 queries)
+    logger.info("Loading existing QBO Bill mappings...")
+    mapped_bill_ids = bill_mapping_repo.read_all_bill_ids()
+    logger.info(f"Found {len(mapped_bill_ids)} existing mappings")
+    
+    # Find finalized bills without QBO mapping - these are candidates for push
+    # This includes bills that failed on previous runs (retry mechanism)
+    unmapped_bills = []
+    for bill in finalized_bills:
+        bill_id = int(bill.id) if isinstance(bill.id, str) else bill.id
+        if bill_id not in mapped_bill_ids:
+            unmapped_bills.append(bill)
+    
+    logger.info(f"Found {len(unmapped_bills)} finalized bills without QBO mapping")
+    
+    # Safety check for first run: if too many unmapped bills and no sync time, limit scope
+    if not last_sync_time:
+        if len(unmapped_bills) > 100:
+            logger.warning(f"No last_sync_time and {len(unmapped_bills)} unmapped bills - skipping to avoid processing all historical bills")
+            return {
+                "bills_pushed": 0,
+                "attachments_pushed": 0,
+                "errors": [],
+            }
+        else:
+            # Small number of unmapped bills is OK to process
+            logger.info(f"No last_sync_time but only {len(unmapped_bills)} unmapped bills - processing all")
+            bills_to_push = unmapped_bills
+    else:
+        # With a sync time, we process:
+        # 1. All unmapped bills modified after last_sync_time (new bills)
+        # 2. Plus any unmapped bills that were modified before (retry failed bills)
+        # To prevent infinite retries of truly broken bills, limit retry batch size
+        
+        new_bills = []
+        retry_bills = []
+        
+        for bill in unmapped_bills:
+            mod_dt = parse_modified_datetime(bill.modified_datetime) if bill.modified_datetime else None
+            if mod_dt and mod_dt > last_sync_time:
+                new_bills.append(bill)
+            else:
+                retry_bills.append(bill)
+        
+        logger.info(f"New bills (modified after last sync): {len(new_bills)}")
+        logger.info(f"Retry candidates (unmapped, modified before last sync): {len(retry_bills)}")
+        
+        # Process all new bills, plus up to 20 retry bills per run
+        MAX_RETRIES_PER_RUN = 20
+        if len(retry_bills) > MAX_RETRIES_PER_RUN:
+            logger.info(f"Limiting retry bills to {MAX_RETRIES_PER_RUN} per run")
+            retry_bills = retry_bills[:MAX_RETRIES_PER_RUN]
+        
+        bills_to_push = new_bills + retry_bills
+    
+    logger.info(f"Total bills to push: {len(bills_to_push)}")
+    
+    if not bills_to_push:
+        return {
+            "bills_pushed": 0,
+            "attachments_pushed": 0,
+            "errors": [],
+        }
+    
+    # Process each bill
+    for i, bill in enumerate(bills_to_push):
+        try:
+            logger.info(f"Pushing Bill {bill.id} ({bill.bill_number}) to QBO ({i+1}/{len(bills_to_push)})")
+            
+            # Create Bill in QBO
+            qbo_bill = with_retry(
+                bill_connector.sync_to_qbo_bill,
+                bill,
+                realm_id,
+                max_retries=MAX_RETRIES,
+                initial_delay=INITIAL_RETRY_DELAY,
+            )
+            
+            bills_pushed += 1
+            logger.info(f"Created QBO Bill {qbo_bill.qbo_id} for local Bill {bill.id}")
+            
+            # Sync attachments if requested
+            if sync_attachments and qbo_bill.qbo_id:
+                try:
+                    att_count = _sync_bill_attachments_to_qbo(
+                        bill=bill,
+                        qbo_bill_id=qbo_bill.qbo_id,
+                        realm_id=realm_id,
+                        bill_line_item_service=bill_line_item_service,
+                        bill_line_item_attachment_service=bill_line_item_attachment_service,
+                        attachment_service=attachment_service,
+                        attachment_connector=attachment_connector,
+                    )
+                    attachments_pushed += att_count
+                except Exception as att_e:
+                    logger.error(f"Failed to sync attachments for Bill {bill.id}: {att_e}")
+                    errors.append({
+                        "bill_id": bill.id,
+                        "bill_number": bill.bill_number,
+                        "error": f"Attachment sync failed: {str(att_e)}",
+                    })
+            
+        except Exception as e:
+            logger.error(f"Failed to push Bill {bill.id} to QBO: {e}")
+            errors.append({
+                "bill_id": bill.id,
+                "bill_number": bill.bill_number,
+                "error": str(e),
+            })
+        
+        # Add delay between batches
+        if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(bills_to_push):
+            logger.debug(f"Processed {i + 1}/{len(bills_to_push)} bills, pausing...")
+            time.sleep(BATCH_DELAY)
+    
+    logger.info(f"Pushed {bills_pushed} bills and {attachments_pushed} attachments to QBO")
+    if errors:
+        logger.warning(f"Encountered {len(errors)} errors during push")
     
     return {
         "bills_pushed": bills_pushed,
+        "attachments_pushed": attachments_pushed,
+        "errors": errors,
     }
+
+
+def _sync_bill_attachments_to_qbo(
+    bill,
+    qbo_bill_id: str,
+    realm_id: str,
+    bill_line_item_service: BillLineItemService,
+    bill_line_item_attachment_service: BillLineItemAttachmentService,
+    attachment_service: AttachmentService,
+    attachment_connector: AttachableAttachmentConnector,
+) -> int:
+    """
+    Sync all attachments for a Bill's line items to QBO.
+    
+    Args:
+        bill: Local Bill record
+        qbo_bill_id: QBO Bill ID (string)
+        realm_id: QBO realm ID
+        Various service instances
+    
+    Returns:
+        int: Number of attachments successfully synced
+    """
+    bill_id = int(bill.id) if isinstance(bill.id, str) else bill.id
+    
+    # Get all line items for this bill
+    line_items = bill_line_item_service.read_by_bill_id(bill_id=bill_id)
+    if not line_items:
+        return 0
+    
+    attachments_synced = 0
+    synced_attachment_ids = set()  # Track to avoid duplicates
+    
+    for line_item in line_items:
+        if not line_item.public_id:
+            continue
+        
+        # Get attachment for this line item
+        attachment_link = bill_line_item_attachment_service.read_by_bill_line_item_id(
+            bill_line_item_public_id=line_item.public_id
+        )
+        
+        if not attachment_link or not attachment_link.attachment_id:
+            continue
+        
+        # Skip if already synced (same attachment on multiple line items)
+        if attachment_link.attachment_id in synced_attachment_ids:
+            continue
+        
+        # Get attachment record
+        attachment = attachment_service.read_by_id(id=attachment_link.attachment_id)
+        if not attachment or not attachment.blob_url:
+            logger.warning(f"Attachment {attachment_link.attachment_id} not found or missing blob_url")
+            continue
+        
+        try:
+            # Sync attachment to QBO
+            attachment_connector.sync_attachment_to_qbo(
+                attachment=attachment,
+                realm_id=realm_id,
+                entity_type="Bill",
+                entity_id=qbo_bill_id,
+            )
+            
+            synced_attachment_ids.add(attachment_link.attachment_id)
+            attachments_synced += 1
+            logger.debug(f"Synced attachment {attachment.id} to QBO Bill {qbo_bill_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to sync attachment {attachment.id} to QBO: {e}")
+    
+    return attachments_synced
 
 
 def sync_qbo_bill(
@@ -425,18 +643,39 @@ def sync_qbo_bill(
         )
         
         # Step 2: Sync from local to QBO (reverse sync)
+        # Use a SEPARATE sync record for push operations to avoid conflicts with pull
+        push_entity = 'bill_push'
+        push_sync_record = _get_or_create_sync_record(sync_service, provider, env, push_entity)
+        
+        push_last_sync_time = None
+        if push_sync_record and push_sync_record.last_sync_datetime:
+            push_last_sync_time = push_sync_record.last_sync_datetime
+            logger.info(f"Push sync - last sync time: {push_last_sync_time}")
+        else:
+            logger.info("No previous push sync found. Will only sync bills from now onward.")
+            # For first run, set the cutoff to NOW to avoid syncing historical bills
+            # Only bills finalized AFTER this point will be pushed to QBO
+            push_last_sync_time = start_time_str
+        
         local_to_qbo_result = sync_local_to_qbo(
             realm_id=realm_id,
-            last_sync_time=last_sync_time,
+            last_sync_time=push_last_sync_time,
             qbo_bill_service=qbo_bill_service,
             bill_mapping_repo=bill_mapping_repo,
             qbo_bill_repo=qbo_bill_repo,
+            sync_attachments=sync_attachments,
         )
         
-        # Update Sync record
+        # Update Sync records
         end_time = datetime.now(timezone.utc)
         end_time_str = _normalize_last_sync(end_time.isoformat())
         
+        # Update Push Sync record (separate from pull sync record)
+        if not skip_sync_record_update:
+            _update_sync_record(sync_service, push_sync_record, end_time_str)
+            logger.info(f"Updated push sync record to: {end_time_str}")
+        
+        # Update Pull Sync record
         if skip_sync_record_update:
             logger.info("Skipping sync record update (--skip-sync-update flag)")
             updated_sync = sync_record

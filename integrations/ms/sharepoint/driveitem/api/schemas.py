@@ -160,3 +160,126 @@ class DriveItemLinkResponse(BaseModel):
         default=None,
         description="The linked item data"
     )
+
+
+# DriveItem-Project Connector Schemas
+
+class DriveItemProjectLinkRequest(BaseModel):
+    """Request model for linking a driveitem (folder) to a project."""
+    project_id: int = Field(
+        description="The database ID of the project to link"
+    )
+    drive_public_id: str = Field(
+        min_length=1,
+        description="The public ID of the linked drive"
+    )
+    graph_item_id: str = Field(
+        min_length=1,
+        description="The MS Graph item ID (folder) to link to the project"
+    )
+
+
+class DriveItemProjectResponse(BaseModel):
+    """Response model for driveitem-project link operations."""
+    message: str = Field(
+        description="Status message"
+    )
+    status_code: int = Field(
+        description="HTTP status code"
+    )
+    mapping: Optional[dict] = Field(
+        default=None,
+        description="The driveitem-project mapping data"
+    )
+
+
+# DriveItem-ProjectModule Connector Schemas
+
+class DriveItemProjectModuleLinkRequest(BaseModel):
+    """Request model for linking a driveitem (folder) to a project module."""
+    project_id: int = Field(
+        description="The database ID of the project to link"
+    )
+    module_id: int = Field(
+        description="The database ID of the module to link"
+    )
+    graph_item_id: str = Field(
+        min_length=1,
+        description="The MS Graph item ID (folder) to link to the project module"
+    )
+
+
+class DriveItemProjectModuleResponse(BaseModel):
+    """Response model for driveitem-project-module link operations."""
+    message: str = Field(
+        description="Status message"
+    )
+    status_code: int = Field(
+        description="HTTP status code"
+    )
+    mapping: Optional[dict] = Field(
+        default=None,
+        description="The driveitem-project-module mapping data"
+    )
+
+
+# DriveItem-ProjectExcel Connector Schemas
+
+class DriveItemProjectExcelLinkRequest(BaseModel):
+    """Request model for linking an Excel workbook to a project."""
+    project_id: int = Field(
+        description="The database ID of the project to link"
+    )
+    drive_public_id: str = Field(
+        min_length=1,
+        description="The public ID of the linked drive"
+    )
+    graph_item_id: str = Field(
+        min_length=1,
+        description="The MS Graph item ID (Excel .xlsx file) to link to the project"
+    )
+    worksheet_name: str = Field(
+        min_length=1,
+        max_length=255,
+        description="The name of the worksheet to target for data operations"
+    )
+
+
+class DriveItemProjectExcelResponse(BaseModel):
+    """Response model for driveitem-project-excel link operations."""
+    message: str = Field(
+        description="Status message"
+    )
+    status_code: int = Field(
+        description="HTTP status code"
+    )
+    mapping: Optional[dict] = Field(
+        default=None,
+        description="The driveitem-project-excel mapping data"
+    )
+
+
+class DriveItemProjectExcelPushDataRequest(BaseModel):
+    """Request model for pushing data to an Excel worksheet."""
+    data: List[List] = Field(
+        description="2D array of values to push [[row1], [row2], ...]"
+    )
+    range_address: Optional[str] = Field(
+        default=None,
+        description="Optional Excel range address (e.g., 'A1:D4'). If not provided, starts at A1."
+    )
+
+
+class DriveItemProjectExcelAppendRowsRequest(BaseModel):
+    """Request model for appending rows to an Excel worksheet."""
+    rows: List[List] = Field(
+        description="2D array of values to append [[row1], [row2], ...]"
+    )
+
+
+class DriveItemProjectExcelClearRangeRequest(BaseModel):
+    """Request model for clearing a range in an Excel worksheet."""
+    range_address: str = Field(
+        min_length=1,
+        description="Excel range address to clear (e.g., 'A1:D4')"
+    )

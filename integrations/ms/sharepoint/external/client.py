@@ -921,3 +921,538 @@ def create_folder(drive_id: str, parent_item_id: str, folder_name: str) -> dict:
             "status_code": 500,
             "item": None
         }
+
+
+# =============================================================================
+# Excel Workbook API Functions
+# =============================================================================
+
+
+def get_excel_worksheets(drive_id: str, item_id: str) -> dict:
+    """
+    Get list of worksheets in an Excel workbook.
+    
+    Args:
+        drive_id: The MS Graph drive ID
+        item_id: The MS Graph item ID of the Excel workbook (.xlsx file)
+    
+    Returns:
+        Dict with status_code, message, and worksheets list
+    """
+    try:
+        headers = _get_auth_headers()
+        if not headers:
+            return {
+                "message": "No valid MS access token available. Please authenticate first.",
+                "status_code": 401,
+                "worksheets": []
+            }
+        
+        endpoint = f"{GRAPH_API_BASE}/drives/{drive_id}/items/{item_id}/workbook/worksheets"
+        
+        logger.info(f"Getting worksheets for Excel workbook: {item_id} in drive: {drive_id}")
+        resp = requests.get(url=endpoint, headers=headers)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            worksheets = data.get("value", [])
+            
+            formatted_worksheets = []
+            for ws in worksheets:
+                formatted_worksheets.append({
+                    "id": ws.get("id"),
+                    "name": ws.get("name"),
+                    "position": ws.get("position"),
+                    "visibility": ws.get("visibility")
+                })
+            
+            return {
+                "message": f"Found {len(formatted_worksheets)} worksheets",
+                "status_code": 200,
+                "worksheets": formatted_worksheets
+            }
+        elif resp.status_code == 401:
+            return {
+                "message": "Access token expired or invalid. Try refreshing the token.",
+                "status_code": 401,
+                "worksheets": []
+            }
+        elif resp.status_code == 404:
+            return {
+                "message": f"Workbook not found: {item_id}",
+                "status_code": 404,
+                "worksheets": []
+            }
+        else:
+            logger.error(f"Graph API get excel worksheets failed: {resp.text}")
+            return {
+                "message": f"Graph API call failed: {resp.text}",
+                "status_code": resp.status_code,
+                "worksheets": []
+            }
+    except Exception as e:
+        logger.exception("Error getting excel worksheets")
+        return {
+            "message": f"An error occurred: {str(e)}",
+            "status_code": 500,
+            "worksheets": []
+        }
+
+
+def get_excel_worksheet(drive_id: str, item_id: str, worksheet_name: str) -> dict:
+    """
+    Get a specific worksheet by name from an Excel workbook.
+    
+    Args:
+        drive_id: The MS Graph drive ID
+        item_id: The MS Graph item ID of the Excel workbook
+        worksheet_name: The name of the worksheet
+    
+    Returns:
+        Dict with status_code, message, and worksheet data
+    """
+    try:
+        headers = _get_auth_headers()
+        if not headers:
+            return {
+                "message": "No valid MS access token available. Please authenticate first.",
+                "status_code": 401,
+                "worksheet": None
+            }
+        
+        # URL encode worksheet name
+        import urllib.parse
+        encoded_name = urllib.parse.quote(worksheet_name)
+        endpoint = f"{GRAPH_API_BASE}/drives/{drive_id}/items/{item_id}/workbook/worksheets/{encoded_name}"
+        
+        logger.info(f"Getting worksheet '{worksheet_name}' from workbook: {item_id} in drive: {drive_id}")
+        resp = requests.get(url=endpoint, headers=headers)
+        
+        if resp.status_code == 200:
+            worksheet = resp.json()
+            return {
+                "message": "Worksheet retrieved successfully",
+                "status_code": 200,
+                "worksheet": {
+                    "id": worksheet.get("id"),
+                    "name": worksheet.get("name"),
+                    "position": worksheet.get("position"),
+                    "visibility": worksheet.get("visibility")
+                }
+            }
+        elif resp.status_code == 401:
+            return {
+                "message": "Access token expired or invalid. Try refreshing the token.",
+                "status_code": 401,
+                "worksheet": None
+            }
+        elif resp.status_code == 404:
+            return {
+                "message": f"Worksheet '{worksheet_name}' not found in workbook",
+                "status_code": 404,
+                "worksheet": None
+            }
+        else:
+            logger.error(f"Graph API get excel worksheet failed: {resp.text}")
+            return {
+                "message": f"Graph API call failed: {resp.text}",
+                "status_code": resp.status_code,
+                "worksheet": None
+            }
+    except Exception as e:
+        logger.exception("Error getting excel worksheet")
+        return {
+            "message": f"An error occurred: {str(e)}",
+            "status_code": 500,
+            "worksheet": None
+        }
+
+
+def update_excel_range(drive_id: str, item_id: str, worksheet_name: str, range_address: str, values: list) -> dict:
+    """
+    Update a range of cells in an Excel worksheet.
+    
+    Args:
+        drive_id: The MS Graph drive ID
+        item_id: The MS Graph item ID of the Excel workbook
+        worksheet_name: The name of the worksheet
+        range_address: Excel range address (e.g., "A1:D4")
+        values: 2D array of values [[row1], [row2], ...]
+    
+    Returns:
+        Dict with status_code, message, and updated range data
+    """
+    try:
+        headers = _get_auth_headers()
+        if not headers:
+            return {
+                "message": "No valid MS access token available. Please authenticate first.",
+                "status_code": 401,
+                "range": None
+            }
+        
+        # URL encode worksheet name and range address
+        import urllib.parse
+        encoded_name = urllib.parse.quote(worksheet_name)
+        encoded_range = urllib.parse.quote(range_address)
+        endpoint = f"{GRAPH_API_BASE}/drives/{drive_id}/items/{item_id}/workbook/worksheets/{encoded_name}/range(address='{encoded_range}')"
+        
+        payload = {
+            "values": values
+        }
+        
+        logger.info(f"Updating range '{range_address}' in worksheet '{worksheet_name}' of workbook: {item_id}")
+        resp = requests.patch(url=endpoint, headers=headers, json=payload)
+        
+        if resp.status_code == 200:
+            range_data = resp.json()
+            return {
+                "message": "Range updated successfully",
+                "status_code": 200,
+                "range": {
+                    "address": range_data.get("address"),
+                    "addressLocal": range_data.get("addressLocal"),
+                    "cellCount": range_data.get("cellCount"),
+                    "columnCount": range_data.get("columnCount"),
+                    "rowCount": range_data.get("rowCount"),
+                    "values": range_data.get("values")
+                }
+            }
+        elif resp.status_code == 401:
+            return {
+                "message": "Access token expired or invalid. Try refreshing the token.",
+                "status_code": 401,
+                "range": None
+            }
+        elif resp.status_code == 404:
+            return {
+                "message": f"Worksheet '{worksheet_name}' or range '{range_address}' not found",
+                "status_code": 404,
+                "range": None
+            }
+        else:
+            logger.error(f"Graph API update excel range failed: {resp.text}")
+            return {
+                "message": f"Graph API call failed: {resp.text}",
+                "status_code": resp.status_code,
+                "range": None
+            }
+    except Exception as e:
+        logger.exception("Error updating excel range")
+        return {
+            "message": f"An error occurred: {str(e)}",
+            "status_code": 500,
+            "range": None
+        }
+
+
+def append_excel_rows(drive_id: str, item_id: str, worksheet_name: str, values: list) -> dict:
+    """
+    Append rows to an Excel worksheet. Appends to the first empty row after existing data.
+    
+    Args:
+        drive_id: The MS Graph drive ID
+        item_id: The MS Graph item ID of the Excel workbook
+        worksheet_name: The name of the worksheet
+        values: 2D array of values to append [[row1], [row2], ...]
+    
+    Returns:
+        Dict with status_code, message, and appended range data
+    """
+    try:
+        headers = _get_auth_headers()
+        if not headers:
+            return {
+                "message": "No valid MS access token available. Please authenticate first.",
+                "status_code": 401,
+                "range": None
+            }
+        
+        # URL encode worksheet name
+        import urllib.parse
+        encoded_name = urllib.parse.quote(worksheet_name)
+        # Use usedRange to find the end, then append after it
+        # First, get the used range to find where to append
+        get_range_endpoint = f"{GRAPH_API_BASE}/drives/{drive_id}/items/{item_id}/workbook/worksheets/{encoded_name}/usedRange"
+        
+        logger.info(f"Getting used range for worksheet '{worksheet_name}' to determine append location")
+        get_resp = requests.get(url=get_range_endpoint, headers=headers)
+        
+        start_row = 1
+        if get_resp.status_code == 200:
+            used_range = get_resp.json()
+            # Get the last row number from the used range
+            address = used_range.get("address", "")
+            # Parse address like "Sheet1!A1:D10" to get row number
+            if "!" in address:
+                range_part = address.split("!")[1]
+                if ":" in range_part:
+                    end_cell = range_part.split(":")[1]
+                    # Extract row number (e.g., "10" from "D10")
+                    import re
+                    match = re.search(r'(\d+)$', end_cell)
+                    if match:
+                        start_row = int(match.group(1)) + 1
+        
+        # Now append the data starting at the calculated row
+        # We'll use update_excel_range with a calculated range
+        num_rows = len(values)
+        num_cols = len(values[0]) if values else 1
+        
+        # Convert column number to letter (1 -> A, 2 -> B, etc.)
+        def col_num_to_letter(n):
+            result = ""
+            while n > 0:
+                n -= 1
+                result = chr(65 + (n % 26)) + result
+                n //= 26
+            return result
+        
+        start_col = col_num_to_letter(1)
+        end_col = col_num_to_letter(num_cols)
+        range_address = f"{start_col}{start_row}:{end_col}{start_row + num_rows - 1}"
+        
+        # Use update_excel_range to append
+        return update_excel_range(drive_id, item_id, worksheet_name, range_address, values)
+        
+    except Exception as e:
+        logger.exception("Error appending excel rows")
+        return {
+            "message": f"An error occurred: {str(e)}",
+            "status_code": 500,
+            "range": None
+        }
+
+
+def get_excel_used_range_values(drive_id: str, item_id: str, worksheet_name: str) -> dict:
+    """
+    Get the used range of a worksheet with all cell values.
+    
+    Args:
+        drive_id: The MS Graph drive ID
+        item_id: The MS Graph item ID of the Excel workbook
+        worksheet_name: The name of the worksheet
+    
+    Returns:
+        Dict with status_code, message, and range data including:
+        - values: 2D array of cell values
+        - address: Range address (e.g., "Sheet1!A1:N50")
+        - row_count: Number of rows
+        - column_count: Number of columns
+    """
+    try:
+        headers = _get_auth_headers()
+        if not headers:
+            return {
+                "message": "No valid MS access token available. Please authenticate first.",
+                "status_code": 401,
+                "range": None
+            }
+        
+        # URL encode worksheet name
+        import urllib.parse
+        encoded_name = urllib.parse.quote(worksheet_name)
+        endpoint = f"{GRAPH_API_BASE}/drives/{drive_id}/items/{item_id}/workbook/worksheets/{encoded_name}/usedRange"
+        
+        logger.info(f"Getting used range values for worksheet '{worksheet_name}' in workbook: {item_id}")
+        resp = requests.get(url=endpoint, headers=headers)
+        
+        if resp.status_code == 200:
+            range_data = resp.json()
+            return {
+                "message": "Used range retrieved successfully",
+                "status_code": 200,
+                "range": {
+                    "address": range_data.get("address"),
+                    "values": range_data.get("values", []),
+                    "row_count": range_data.get("rowCount", 0),
+                    "column_count": range_data.get("columnCount", 0)
+                }
+            }
+        elif resp.status_code == 401:
+            return {
+                "message": "Access token expired or invalid. Try refreshing the token.",
+                "status_code": 401,
+                "range": None
+            }
+        elif resp.status_code == 404:
+            return {
+                "message": f"Worksheet '{worksheet_name}' not found",
+                "status_code": 404,
+                "range": None
+            }
+        else:
+            logger.error(f"Graph API get excel used range failed: {resp.text}")
+            return {
+                "message": f"Graph API call failed: {resp.text}",
+                "status_code": resp.status_code,
+                "range": None
+            }
+    except Exception as e:
+        logger.exception("Error getting excel used range")
+        return {
+            "message": f"An error occurred: {str(e)}",
+            "status_code": 500,
+            "range": None
+        }
+
+
+def insert_excel_rows(drive_id: str, item_id: str, worksheet_name: str, row_index: int, values: list) -> dict:
+    """
+    Insert rows at a specific position in a worksheet, shifting existing rows down.
+    
+    Args:
+        drive_id: The MS Graph drive ID
+        item_id: The MS Graph item ID of the Excel workbook
+        worksheet_name: The name of the worksheet
+        row_index: The 1-based row number where new rows should be inserted
+        values: 2D array of values to insert [[row1], [row2], ...]
+    
+    Returns:
+        Dict with status_code, message, and inserted range data
+    """
+    try:
+        headers = _get_auth_headers()
+        if not headers:
+            return {
+                "message": "No valid MS access token available. Please authenticate first.",
+                "status_code": 401,
+                "range": None
+            }
+        
+        import urllib.parse
+        encoded_name = urllib.parse.quote(worksheet_name)
+        
+        num_rows = len(values)
+        num_cols = len(values[0]) if values else 1
+        
+        # Convert column number to letter
+        def col_num_to_letter(n):
+            result = ""
+            while n > 0:
+                n -= 1
+                result = chr(65 + (n % 26)) + result
+                n //= 26
+            return result
+        
+        end_col = col_num_to_letter(num_cols)
+        end_row = row_index + num_rows - 1
+        
+        # Range to insert (will shift down)
+        insert_range = f"A{row_index}:{end_col}{end_row}"
+        encoded_range = urllib.parse.quote(insert_range)
+        
+        # Step 1: Insert blank rows at the position (shift down)
+        insert_endpoint = f"{GRAPH_API_BASE}/drives/{drive_id}/items/{item_id}/workbook/worksheets/{encoded_name}/range(address='{encoded_range}')/insert"
+        
+        insert_payload = {
+            "shift": "Down"
+        }
+        
+        logger.info(f"Inserting {num_rows} row(s) at row {row_index} in worksheet '{worksheet_name}'")
+        insert_resp = requests.post(url=insert_endpoint, headers=headers, json=insert_payload)
+        
+        if insert_resp.status_code not in [200, 201]:
+            if insert_resp.status_code == 401:
+                return {
+                    "message": "Access token expired or invalid. Try refreshing the token.",
+                    "status_code": 401,
+                    "range": None
+                }
+            elif insert_resp.status_code == 404:
+                return {
+                    "message": f"Worksheet '{worksheet_name}' not found",
+                    "status_code": 404,
+                    "range": None
+                }
+            else:
+                logger.error(f"Graph API insert rows failed: {insert_resp.text}")
+                return {
+                    "message": f"Graph API insert failed: {insert_resp.text}",
+                    "status_code": insert_resp.status_code,
+                    "range": None
+                }
+        
+        # Step 2: Update the inserted rows with values
+        return update_excel_range(drive_id, item_id, worksheet_name, insert_range, values)
+        
+    except Exception as e:
+        logger.exception("Error inserting excel rows")
+        return {
+            "message": f"An error occurred: {str(e)}",
+            "status_code": 500,
+            "range": None
+        }
+
+
+def clear_excel_range(drive_id: str, item_id: str, worksheet_name: str, range_address: str) -> dict:
+    """
+    Clear a range of cells in an Excel worksheet.
+    
+    Args:
+        drive_id: The MS Graph drive ID
+        item_id: The MS Graph item ID of the Excel workbook
+        worksheet_name: The name of the worksheet
+        range_address: Excel range address (e.g., "A1:D4")
+    
+    Returns:
+        Dict with status_code, message, and cleared range data
+    """
+    try:
+        headers = _get_auth_headers()
+        if not headers:
+            return {
+                "message": "No valid MS access token available. Please authenticate first.",
+                "status_code": 401,
+                "range": None
+            }
+        
+        # URL encode worksheet name and range address
+        import urllib.parse
+        encoded_name = urllib.parse.quote(worksheet_name)
+        encoded_range = urllib.parse.quote(range_address)
+        endpoint = f"{GRAPH_API_BASE}/drives/{drive_id}/items/{item_id}/workbook/worksheets/{encoded_name}/range(address='{encoded_range}')/clear"
+        
+        payload = {
+            "applyTo": "All"  # Options: "All", "Formats", "Contents"
+        }
+        
+        logger.info(f"Clearing range '{range_address}' in worksheet '{worksheet_name}' of workbook: {item_id}")
+        resp = requests.post(url=endpoint, headers=headers, json=payload)
+        
+        if resp.status_code == 200:
+            range_data = resp.json()
+            return {
+                "message": "Range cleared successfully",
+                "status_code": 200,
+                "range": {
+                    "address": range_data.get("address"),
+                    "addressLocal": range_data.get("addressLocal")
+                }
+            }
+        elif resp.status_code == 401:
+            return {
+                "message": "Access token expired or invalid. Try refreshing the token.",
+                "status_code": 401,
+                "range": None
+            }
+        elif resp.status_code == 404:
+            return {
+                "message": f"Worksheet '{worksheet_name}' or range '{range_address}' not found",
+                "status_code": 404,
+                "range": None
+            }
+        else:
+            logger.error(f"Graph API clear excel range failed: {resp.text}")
+            return {
+                "message": f"Graph API call failed: {resp.text}",
+                "status_code": resp.status_code,
+                "range": None
+            }
+    except Exception as e:
+        logger.exception("Error clearing excel range")
+        return {
+            "message": f"An error occurred: {str(e)}",
+            "status_code": 500,
+            "range": None
+        }

@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -286,3 +287,126 @@ class QboAttachableClient:
         except httpx.RequestError as e:
             logger.error(f"Failed to download attachable {attachable.id}: {e}")
             return None
+
+    def upload_attachable(
+        self,
+        file_content: bytes,
+        filename: str,
+        content_type: str,
+        entity_type: str,
+        entity_id: str,
+        note: Optional[str] = None,
+    ) -> QboAttachable:
+        """
+        Upload a file to QBO and link it to an entity (e.g., Bill).
+        
+        Uses multipart/form-data upload to /v3/company/{realmId}/upload endpoint.
+        
+        Args:
+            file_content: File content as bytes
+            filename: Name of the file (including extension)
+            content_type: MIME type of the file (e.g., "application/pdf")
+            entity_type: Type of entity to link to (e.g., "Bill", "Invoice")
+            entity_id: QBO ID of the entity to link to
+            note: Optional note/description for the attachment
+            
+        Returns:
+            QboAttachable: The created attachable record
+            
+        Raises:
+            QboValidationError: If upload fails
+            QboAuthError: If authentication fails
+        """
+        # Build the upload URL
+        upload_url = f"/v3/company/{self.realm_id}/upload"
+        if self.minor_version:
+            upload_url = f"{upload_url}?minorversion={self.minor_version}"
+        
+        # Build the AttachableRef metadata as JSON
+        attachable_metadata = {
+            "AttachableRef": [
+                {
+                    "EntityRef": {
+                        "type": entity_type,
+                        "value": entity_id,
+                    }
+                }
+            ],
+            "FileName": filename,
+            "ContentType": content_type,
+        }
+        
+        if note:
+            attachable_metadata["Note"] = note
+        
+        logger.debug(f"Uploading attachable '{filename}' to {entity_type} {entity_id}")
+        
+        try:
+            # Build multipart form data
+            # QBO expects:
+            # - 'file_metadata_01': JSON metadata including AttachableRef
+            # - 'file_content_01': The actual file content
+            files = {
+                "file_metadata_01": (
+                    None,
+                    json.dumps(attachable_metadata),
+                    "application/json",
+                ),
+                "file_content_01": (
+                    filename,
+                    file_content,
+                    content_type,
+                ),
+            }
+            
+            # Create a new client for multipart upload (different headers)
+            with httpx.Client(
+                base_url=self._client.base_url,
+                timeout=120.0,  # Longer timeout for uploads
+            ) as upload_client:
+                response = upload_client.post(
+                    upload_url,
+                    files=files,
+                    headers={
+                        "Authorization": f"Bearer {self.access_token}",
+                        "Accept": "application/json",
+                        # Note: Content-Type is set automatically for multipart
+                    },
+                )
+                
+                logger.debug(f"Upload response status: {response.status_code}")
+                
+                if response.status_code == 401:
+                    raise QboAuthError("Authentication failed. Access token may be expired.")
+                elif response.status_code == 403:
+                    raise QboAuthError("Access forbidden. Check API permissions.")
+                elif response.status_code == 429:
+                    raise QboRateLimitError("Rate limit exceeded. Try again later.")
+                elif response.status_code >= 400:
+                    error_body = response.text
+                    logger.error(f"QBO upload error: {response.status_code} - {error_body}")
+                    raise QboValidationError(f"Upload failed {response.status_code}: {error_body}")
+                
+                data = response.json()
+                
+                # Response contains AttachableResponse wrapper
+                attachable_response = data.get("AttachableResponse", [])
+                if attachable_response and len(attachable_response) > 0:
+                    attachable_data = attachable_response[0].get("Attachable")
+                    if attachable_data:
+                        attachable = QboAttachable(**attachable_data)
+                        logger.info(f"Successfully uploaded attachable {attachable.id} for {entity_type} {entity_id}")
+                        return attachable
+                
+                # Fallback: try direct Attachable key
+                if "Attachable" in data:
+                    attachable = QboAttachable(**data["Attachable"])
+                    logger.info(f"Successfully uploaded attachable {attachable.id} for {entity_type} {entity_id}")
+                    return attachable
+                
+                logger.error(f"Unexpected upload response format: {data}")
+                raise QboValidationError(f"Unexpected upload response format")
+                
+        except httpx.RequestError as e:
+            logger.error(f"HTTP request failed during upload: {e}")
+            raise QboError(f"HTTP request failed: {e}")

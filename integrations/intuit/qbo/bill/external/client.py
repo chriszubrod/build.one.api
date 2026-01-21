@@ -122,7 +122,7 @@ class QboBillClient:
         """
         Create a bill in QuickBooks.
         """
-        payload = bill.model_dump(by_alias=True, exclude_none=True)
+        payload = bill.model_dump(by_alias=True, exclude_none=True, mode='json')
         data = self._request("POST", "/bill", json=payload)
         return QboBillResponse(**data).bill
 
@@ -130,7 +130,7 @@ class QboBillClient:
         """
         Update a bill in QuickBooks.
         """
-        payload = bill.model_dump(by_alias=True, exclude_none=True)
+        payload = bill.model_dump(by_alias=True, exclude_none=True, mode='json')
         data = self._request("POST", "/bill", json=payload)
         return QboBillResponse(**data).bill
 

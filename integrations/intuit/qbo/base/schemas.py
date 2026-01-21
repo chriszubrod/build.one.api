@@ -2,13 +2,14 @@
 from typing import Optional
 
 # Third-party Imports
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 # Local Imports
 
 
 class _QboBaseModel(BaseModel):
-    class Config:
-        allow_population_by_field_name = True
-        anystr_strip_whitespace = True
-        extra = "ignore"
+    model_config = ConfigDict(
+        populate_by_name=True,
+        str_strip_whitespace=True,
+        extra="ignore",
+    )

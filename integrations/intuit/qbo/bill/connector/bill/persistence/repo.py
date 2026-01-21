@@ -81,6 +81,27 @@ class BillBillRepository:
             logger.error(f"Error during create bill bill: {error}")
             raise map_database_error(error)
 
+    def read_all_bill_ids(self) -> set:
+        """
+        Read all Bill IDs that have a BillBill mapping.
+        Returns a set of bill_id values for fast lookup.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("SELECT [BillId] FROM [qbo].[BillBill]")
+                    rows = cursor.fetchall()
+                    return {row.BillId for row in rows if row.BillId}
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read all bill ids: {error}")
+            raise map_database_error(error)
+
     def read_by_id(self, id: int) -> Optional[BillBill]:
         """
         Read a BillBill mapping record by ID.

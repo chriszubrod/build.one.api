@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 from decimal import Decimal
 
 # Third-party Imports
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Local Imports
 from integrations.intuit.qbo.base.schemas import _QboBaseModel
@@ -11,15 +11,16 @@ from integrations.intuit.qbo.base.schemas import _QboBaseModel
 
 class QboReferenceType(BaseModel):
     """Reference type used in QBO API for linking entities."""
+    model_config = ConfigDict(populate_by_name=True)
+    
     value: Optional[str] = Field(default=None, alias="value")
     name: Optional[str] = Field(default=None, alias="name")
-
-    class Config:
-        populate_by_name = True
 
 
 class QboItemBasedExpenseLineDetail(BaseModel):
     """Item-based expense line detail for Bill line items."""
+    model_config = ConfigDict(populate_by_name=True)
+    
     item_ref: Optional[QboReferenceType] = Field(default=None, alias="ItemRef")
     customer_ref: Optional[QboReferenceType] = Field(default=None, alias="CustomerRef")
     class_ref: Optional[QboReferenceType] = Field(default=None, alias="ClassRef")
@@ -30,12 +31,11 @@ class QboItemBasedExpenseLineDetail(BaseModel):
     qty: Optional[Decimal] = Field(default=None, alias="Qty")
     unit_price: Optional[Decimal] = Field(default=None, alias="UnitPrice")
 
-    class Config:
-        populate_by_name = True
-
 
 class QboAccountBasedExpenseLineDetail(BaseModel):
     """Account-based expense line detail for Bill line items."""
+    model_config = ConfigDict(populate_by_name=True)
+    
     account_ref: Optional[QboReferenceType] = Field(default=None, alias="AccountRef")
     customer_ref: Optional[QboReferenceType] = Field(default=None, alias="CustomerRef")
     class_ref: Optional[QboReferenceType] = Field(default=None, alias="ClassRef")
@@ -43,15 +43,14 @@ class QboAccountBasedExpenseLineDetail(BaseModel):
     tax_code_ref: Optional[QboReferenceType] = Field(default=None, alias="TaxCodeRef")
     markup_info: Optional[Dict[str, Any]] = Field(default=None, alias="MarkupInfo")
 
-    class Config:
-        populate_by_name = True
-
 
 class QboBillLine(BaseModel):
     """
     Bill Line item from QBO API.
     Can be ItemBasedExpenseLine or AccountBasedExpenseLine.
     """
+    model_config = ConfigDict(populate_by_name=True)
+    
     id: Optional[str] = Field(default=None, alias="Id")
     line_num: Optional[int] = Field(default=None, alias="LineNum")
     description: Optional[str] = Field(default=None, alias="Description")
@@ -64,9 +63,6 @@ class QboBillLine(BaseModel):
         default=None, alias="AccountBasedExpenseLineDetail"
     )
 
-    class Config:
-        populate_by_name = True
-
     @field_validator('id', mode='before')
     @classmethod
     def convert_id_to_string(cls, v):
@@ -77,11 +73,10 @@ class QboBillLine(BaseModel):
 
 class QboLinkedTxn(BaseModel):
     """Linked transaction reference."""
+    model_config = ConfigDict(populate_by_name=True)
+    
     txn_id: Optional[str] = Field(default=None, alias="TxnId")
     txn_type: Optional[str] = Field(default=None, alias="TxnType")
-
-    class Config:
-        populate_by_name = True
 
 
 class QboBillBase(_QboBaseModel):

@@ -19,3 +19,14 @@ class QboBillSync(BaseModel):
         default=False,
         description="If True, also sync to Bill/BillLineItem modules.",
     )
+
+
+class QboBillPush(BaseModel):
+    """Request schema for pushing a local Bill to QBO."""
+    realm_id: str = Field(
+        description="QBO company realm ID.",
+    )
+    sync_attachments: bool = Field(
+        default=True,
+        description="If True, also sync attachments for the bill to QBO.",
+    )

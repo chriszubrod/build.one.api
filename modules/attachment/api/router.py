@@ -235,9 +235,9 @@ async def upload_attachment_router(
         # Extract file extension
         file_extension = service.extract_extension(file.filename or "")
         
-        # Generate unique blob name using public_id
+        # Generate unique blob name using public_id only (with extension)
         public_id = str(uuid.uuid4())
-        blob_name = f"{public_id}_{file.filename or 'file'}"
+        blob_name = f"{public_id}{file_extension}" if file_extension else public_id
         
         # Upload to Azure Blob Storage
         storage = AzureBlobStorage()
@@ -272,6 +272,72 @@ async def upload_attachment_router(
         raise HTTPException(status_code=500, detail=f"Failed to upload to blob storage: {str(e)}")
     except Exception as e:
         logger.error(f"Error uploading attachment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/upload/bill-line-item-attachment")
+async def upload_bill_line_item_attachment_router(
+    file: UploadFile = File(...),
+    description: Optional[str] = Form(None),
+    current_user: dict = Depends(get_current_attachment_api),
+):
+    """
+    Upload a bill line item attachment to Azure Blob Storage only.
+    SharePoint upload happens later when 'Complete Bill' is clicked (using final Bill/BillLineItem values).
+    """
+    try:
+        # Read file content
+        file_content = await file.read()
+        file_size = len(file_content)
+        
+        # Validate file size
+        service.validate_file_size(file_size)
+        
+        # Calculate hash
+        file_hash = service.calculate_hash(file_content)
+        
+        # Extract file extension
+        file_extension = service.extract_extension(file.filename or "")
+        
+        # Generate unique blob name using public_id only (with extension)
+        public_id = str(uuid.uuid4())
+        blob_name = f"{public_id}{file_extension}" if file_extension else public_id
+        
+        # Upload to Azure Blob Storage
+        storage = AzureBlobStorage()
+        blob_url = storage.upload_file(
+            blob_name=blob_name,
+            file_content=file_content,
+            content_type=file.content_type or "application/octet-stream",
+        )
+        logger.info(f"Uploaded bill line item attachment to Azure Blob: {blob_url}")
+        
+        # Create attachment record in database
+        attachment = service.create(
+            filename=file.filename,
+            original_filename=file.filename,
+            file_extension=file_extension,
+            content_type=file.content_type or "application/octet-stream",
+            file_size=file_size,
+            file_hash=file_hash,
+            blob_url=blob_url,
+            description=description,
+            category="bill_line_item",
+            tags=None,
+            is_archived=False,
+            status=None,
+            expiration_date=None,
+            storage_tier="Hot",
+        )
+        
+        return attachment.to_dict()
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except AzureBlobStorageError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload to blob storage: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error uploading bill line item attachment: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

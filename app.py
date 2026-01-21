@@ -36,6 +36,8 @@ from modules.sub_cost_code.api.router import router as sub_cost_code_api_router
 from modules.sub_cost_code.web.controller import router as sub_cost_code_web_router
 from modules.module.api.router import router as module_api_router
 from modules.module.web.controller import router as module_web_router
+from modules.project.api.router import router as project_api_router
+from modules.project.web.controller import router as project_web_router
 from modules.user.api.router import router as user_api_router
 from modules.user.web.controller import router as user_web_router
 from modules.user_role.api.router import router as user_role_api_router
@@ -60,6 +62,8 @@ from modules.bill_line_item_attachment.api.router import router as bill_line_ite
 from modules.taxpayer_attachment.api.router import router as taxpayer_attachment_api_router
 from modules.taxpayer_attachment.web.controller import router as taxpayer_attachment_web_router
 from modules.legal.web.controller import router as legal_web_router
+from modules.payment_term.api.router import router as payment_term_api_router
+from modules.payment_term.web.controller import router as payment_term_web_router
 
 from integrations.intuit.qbo.auth.api.router import router as intuit_qbo_auth_api_router
 from integrations.intuit.qbo.company_info.api.router import router as intuit_qbo_company_info_api_router
@@ -74,6 +78,7 @@ from integrations.ms.auth.api.router import router as ms_auth_api_router
 from integrations.ms.sharepoint.site.api.router import router as ms_sharepoint_site_api_router
 from integrations.ms.sharepoint.drive.api.router import router as ms_sharepoint_drive_api_router
 from integrations.ms.sharepoint.driveitem.api.router import router as ms_sharepoint_driveitem_api_router
+from integrations.intuit.qbo.account.api.router import router as qbo_account_api_router
 
 
 app = FastAPI()
@@ -126,6 +131,8 @@ app.include_router(sub_cost_code_api_router)
 app.include_router(sub_cost_code_web_router)
 app.include_router(module_api_router)
 app.include_router(module_web_router)
+app.include_router(project_api_router)
+app.include_router(project_web_router)
 app.include_router(user_api_router)
 app.include_router(user_web_router)
 app.include_router(user_role_api_router)
@@ -143,6 +150,7 @@ app.include_router(qbo_vendor_api_router)
 app.include_router(qbo_vendor_web_router)
 app.include_router(qbo_client_api_router)
 app.include_router(qbo_client_web_router)
+app.include_router(qbo_account_api_router)
 app.include_router(ms_auth_api_router)
 app.include_router(ms_sharepoint_site_api_router)
 app.include_router(ms_sharepoint_drive_api_router)
@@ -163,6 +171,8 @@ app.include_router(bill_line_item_attachment_api_router)
 app.include_router(taxpayer_attachment_api_router)
 app.include_router(taxpayer_attachment_web_router)
 app.include_router(legal_web_router)
+app.include_router(payment_term_api_router)
+app.include_router(payment_term_web_router)
 
 
 def get_settings():

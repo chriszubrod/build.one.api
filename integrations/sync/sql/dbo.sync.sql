@@ -264,6 +264,6 @@ GO
 
 UPDATE dbo.[Sync]
 SET [LastSyncDatetime] = '2026-01-01 00:00:00.000'
-WHERE [Id] = 2 AND [RowVersion] = 0x0000000000025CCF;
+WHERE [Id] = 14 AND [RowVersion] = 0x000000000004A864;
 
 SELECT * FROM dbo.[Sync];

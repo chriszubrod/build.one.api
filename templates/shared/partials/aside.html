@@ -1,3 +1,2 @@
-{% block head %}
-    <link rel="stylesheet" href="{{ url_for('static', path='css/aside.css') }}?v={{ range(1000, 9999) | random }}">
-{% endblock %}
+<!-- Default aside content: AI Copilot -->
+{% include 'shared/partials/copilot.html' %}

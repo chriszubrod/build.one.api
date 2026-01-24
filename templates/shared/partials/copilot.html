@@ -1,0 +1,284 @@
+<!-- AI Copilot Chat Panel -->
+<div id="copilot-panel" class="aside-panel">
+    <div class="aside-panel-header">
+        <h5>AI Assistant</h5>
+        <div class="copilot-header-actions">
+            <button type="button" class="copilot-new-chat-btn" onclick="newCopilotChat()" aria-label="New Chat" title="New Chat">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 5v14M5 12h14"/>
+                </svg>
+            </button>
+            <button type="button" class="aside-close-btn" onclick="toggleCopilot()" aria-label="Close">&times;</button>
+        </div>
+    </div>
+    
+    <div class="aside-panel-body copilot-body">
+        <!-- Quick Actions -->
+        <div id="copilot-quick-actions" class="copilot-quick-actions">
+            <button type="button" class="copilot-quick-btn" onclick="sendQuickAction('What\\'s the current status?')">
+                📊 Status
+            </button>
+            <button type="button" class="copilot-quick-btn" onclick="sendQuickAction('Show me documents that need review')">
+                📄 Pending
+            </button>
+            <button type="button" class="copilot-quick-btn" onclick="sendQuickAction('What can you help me with?')">
+                ❓ Help
+            </button>
+        </div>
+        
+        <!-- Chat Messages -->
+        <div id="copilot-messages" class="copilot-messages">
+            <div class="copilot-message copilot-message-assistant">
+                <div class="copilot-message-content">
+                    Hello! I'm your Build.One AI assistant. How can I help you today?
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Input Area -->
+    <div class="copilot-input-area">
+        <form id="copilot-form" onsubmit="sendCopilotMessage(event)">
+            <div class="copilot-input-container">
+                <input 
+                    type="text" 
+                    id="copilot-input" 
+                    class="copilot-input" 
+                    placeholder="Ask me anything..."
+                    autocomplete="off"
+                >
+                <button type="submit" class="copilot-send-btn" aria-label="Send">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                    </svg>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+let copilotConversationId = null;
+let copilotOpen = false;
+
+function toggleCopilot() {
+    const sidebar = document.querySelector('.sidebar-right');
+    const copilotPanel = document.getElementById('copilot-panel');
+    const toggleBtn = document.getElementById('copilot-toggle-btn');
+    
+    // Close any other open panels first
+    const otherPanels = sidebar.querySelectorAll('.aside-panel.aside-panel-open');
+    otherPanels.forEach(panel => {
+        if (panel.id !== 'copilot-panel') {
+            panel.classList.remove('aside-panel-open');
+        }
+    });
+    
+    copilotOpen = !copilotOpen;
+    
+    if (copilotOpen) {
+        sidebar.classList.add('sidebar-right-open');
+        copilotPanel.classList.add('aside-panel-open');
+        toggleBtn.classList.add('copilot-toggle-hidden');
+        document.getElementById('copilot-input').focus();
+    } else {
+        copilotPanel.classList.remove('aside-panel-open');
+        toggleBtn.classList.remove('copilot-toggle-hidden');
+        // Only close sidebar if no other panels are open
+        const openPanels = sidebar.querySelectorAll('.aside-panel.aside-panel-open');
+        if (openPanels.length === 0) {
+            sidebar.classList.remove('sidebar-right-open');
+        }
+    }
+}
+
+function sendQuickAction(message) {
+    document.getElementById('copilot-input').value = message;
+    sendCopilotMessage(new Event('submit'));
+}
+
+async function sendCopilotMessage(event) {
+    event.preventDefault();
+    
+    const input = document.getElementById('copilot-input');
+    const message = input.value.trim();
+    
+    if (!message) return;
+    
+    // Add user message to chat
+    addCopilotMessage(message, 'user');
+    input.value = '';
+    
+    // Show typing indicator
+    const typingId = addCopilotTypingIndicator('Thinking...');
+    
+    // Set up timeout
+    const timeoutMs = 30000; // 30 seconds
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    
+    try {
+        // Update status to show we're working
+        updateCopilotTypingStatus(typingId, 'Processing...');
+        
+        const response = await fetch('/api/v1/copilot/chat', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${getCopilotAuthToken()}`
+            },
+            body: JSON.stringify({
+                message: message,
+                conversation_id: copilotConversationId
+            }),
+            signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+            throw new Error(`Server error: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        // Store conversation ID for context
+        copilotConversationId = data.conversation_id;
+        
+        // Remove typing indicator and add response
+        removeCopilotTypingIndicator(typingId);
+        addCopilotMessage(data.message, 'assistant', data.suggestions, data.sources);
+        
+    } catch (error) {
+        clearTimeout(timeoutId);
+        removeCopilotTypingIndicator(typingId);
+        
+        if (error.name === 'AbortError') {
+            addCopilotMessage('⏱️ Request timed out. The server took too long to respond. Please try again.', 'assistant');
+        } else {
+            addCopilotMessage(`❌ Error: ${error.message}. Please try again.`, 'assistant');
+        }
+        console.error('Copilot error:', error);
+    }
+}
+
+function addCopilotMessage(content, role, suggestions = [], sources = []) {
+    const messagesContainer = document.getElementById('copilot-messages');
+    
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `copilot-message copilot-message-${role}`;
+    
+    // Convert markdown-style formatting
+    let formattedContent = content
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\n/g, '<br>');
+    
+    let html = `<div class="copilot-message-content">${formattedContent}</div>`;
+    
+    // Add suggestions if present
+    if (suggestions && suggestions.length > 0) {
+        html += '<div class="copilot-suggestions">';
+        suggestions.forEach(suggestion => {
+            html += `<button type="button" class="copilot-suggestion-btn" onclick="sendQuickAction('${suggestion.replace(/'/g, "\\'")}')">${suggestion}</button>`;
+        });
+        html += '</div>';
+    }
+    
+    // Add sources if present
+    if (sources && sources.length > 0) {
+        html += '<div class="copilot-sources"><small>Sources: ';
+        sources.forEach((source, i) => {
+            if (i > 0) html += ', ';
+            html += `<span class="copilot-source">${source.filename || 'Document'}</span>`;
+        });
+        html += '</small></div>';
+    }
+    
+    messageDiv.innerHTML = html;
+    messagesContainer.appendChild(messageDiv);
+    
+    // Scroll to bottom
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function addCopilotTypingIndicator(statusText = 'Thinking...') {
+    const id = 'typing-' + Date.now();
+    const messagesContainer = document.getElementById('copilot-messages');
+    
+    const typingDiv = document.createElement('div');
+    typingDiv.id = id;
+    typingDiv.className = 'copilot-message copilot-message-assistant copilot-typing';
+    typingDiv.innerHTML = `
+        <div class="copilot-message-content">
+            <div class="copilot-typing-status">
+                <span class="copilot-typing-dot"></span>
+                <span class="copilot-typing-dot"></span>
+                <span class="copilot-typing-dot"></span>
+                <span class="copilot-typing-text">${statusText}</span>
+            </div>
+        </div>
+    `;
+    
+    messagesContainer.appendChild(typingDiv);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    
+    return id;
+}
+
+function updateCopilotTypingStatus(id, statusText) {
+    const element = document.getElementById(id);
+    if (element) {
+        const textSpan = element.querySelector('.copilot-typing-text');
+        if (textSpan) {
+            textSpan.textContent = statusText;
+        }
+    }
+}
+
+function removeCopilotTypingIndicator(id) {
+    const element = document.getElementById(id);
+    if (element) {
+        element.remove();
+    }
+}
+
+function getCopilotAuthToken() {
+    // Get token from localStorage (consistent with other pages)
+    return localStorage.getItem('token.access_token') || '';
+}
+
+function newCopilotChat() {
+    // Reset conversation ID to start fresh
+    copilotConversationId = null;
+    
+    // Clear messages and show welcome message
+    const messagesContainer = document.getElementById('copilot-messages');
+    messagesContainer.innerHTML = `
+        <div class="copilot-message copilot-message-assistant">
+            <div class="copilot-message-content">
+                Hello! I'm your Build.One AI assistant. How can I help you today?
+            </div>
+        </div>
+    `;
+    
+    // Focus input
+    document.getElementById('copilot-input').focus();
+}
+
+// Close copilot when another panel opens (called from picker functions)
+function closeCopilotPanel() {
+    const copilotPanel = document.getElementById('copilot-panel');
+    const toggleBtn = document.getElementById('copilot-toggle-btn');
+    
+    if (copilotPanel) {
+        copilotPanel.classList.remove('aside-panel-open');
+    }
+    if (toggleBtn) {
+        toggleBtn.classList.remove('copilot-toggle-hidden');
+    }
+    copilotOpen = false;
+}
+
+// Make closeCopilotPanel available globally for picker scripts
+window.closeCopilotPanel = closeCopilotPanel;
+</script>

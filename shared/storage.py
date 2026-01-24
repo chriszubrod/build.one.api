@@ -135,10 +135,11 @@ class AzureBlobStorage:
         
         return headers
 
-    def _build_url(self, blob_name: str, use_sas: bool = False) -> str:
+    def _build_url(self, blob_name: str, use_sas: bool = False, container_name: Optional[str] = None) -> str:
         """Build the full URL for a blob."""
+        container = container_name or self.container_name
         blob_name_encoded = quote(blob_name, safe="/")
-        url = f"{self.base_url}/{self.container_name}/{blob_name_encoded}"
+        url = f"{self.base_url}/{container}/{blob_name_encoded}"
         
         if use_sas and self.sas_token:
             separator = "&" if "?" in url else "?"
@@ -150,7 +151,8 @@ class AzureBlobStorage:
         self,
         blob_name: str,
         file_content: bytes,
-        content_type: str = "application/octet-stream"
+        content_type: str = "application/octet-stream",
+        container_name: Optional[str] = None
     ) -> str:
         """
         Upload a file to Azure Blob Storage.
@@ -159,6 +161,7 @@ class AzureBlobStorage:
             blob_name: Name of the blob (can include path)
             file_content: File content as bytes
             content_type: MIME type of the file
+            container_name: Optional container name (defaults to configured container)
             
         Returns:
             Full URL of the uploaded blob
@@ -167,7 +170,8 @@ class AzureBlobStorage:
             AzureBlobStorageError: If upload fails
         """
         try:
-            url = self._build_url(blob_name, use_sas=bool(self.sas_token))
+            container = container_name or self.container_name
+            url = self._build_url(blob_name, use_sas=bool(self.sas_token), container_name=container)
             content_length = len(file_content)
             headers = self._get_headers("PUT", content_type, content_length)
             
@@ -176,20 +180,20 @@ class AzureBlobStorage:
             
             # Add authentication
             if self.account_key and not self.sas_token:
-                url_path = f"/{self.container_name}/{quote(blob_name, safe='/')}"
+                url_path = f"/{container}/{quote(blob_name, safe='/')}"
                 headers["Authorization"] = self._generate_shared_key_signature(
                     "PUT", url_path, headers, content_length
                 )
             
             # Ensure container exists (create if needed) - must succeed before upload
-            self._ensure_container_exists()
+            self._ensure_container_exists(container)
             
             # Upload blob
             with httpx.Client(timeout=30.0) as client:
                 response = client.put(url, content=file_content, headers=headers)
                 response.raise_for_status()
             
-            return self._build_url(blob_name, use_sas=False)  # Return URL without SAS token
+            return self._build_url(blob_name, use_sas=False, container_name=container)  # Return URL without SAS token
             
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP error uploading blob {blob_name}: {e.response.status_code} - {e.response.text}")
@@ -197,6 +201,27 @@ class AzureBlobStorage:
         except Exception as e:
             logger.error(f"Error uploading blob {blob_name}: {e}")
             raise AzureBlobStorageError(f"Failed to upload blob: {str(e)}")
+
+    def _parse_blob_url(self, blob_url: str) -> Tuple[str, str]:
+        """
+        Parse a blob URL to extract container name and blob name.
+        
+        Args:
+            blob_url: Full URL of the blob
+            
+        Returns:
+            Tuple of (container_name, blob_name)
+        """
+        parsed = urlparse(blob_url)
+        # Path format: /container_name/blob_name
+        path_parts = parsed.path.lstrip("/").split("/", 1)
+        if len(path_parts) == 2:
+            return path_parts[0], path_parts[1]
+        elif len(path_parts) == 1:
+            # Assume default container if only blob name in path
+            return self.container_name, path_parts[0]
+        else:
+            raise AzureBlobStorageError(f"Invalid blob URL format: {blob_url}")
 
     def download_file(self, blob_url: str) -> Tuple[bytes, dict]:
         """
@@ -212,16 +237,15 @@ class AzureBlobStorage:
             AzureBlobStorageError: If download fails
         """
         try:
-            # Parse URL to extract blob name
-            parsed = urlparse(blob_url)
-            blob_name = parsed.path.split(f"/{self.container_name}/", 1)[-1] if f"/{self.container_name}/" in parsed.path else parsed.path.lstrip("/")
+            # Parse URL to extract container and blob name
+            container, blob_name = self._parse_blob_url(blob_url)
             
-            url = self._build_url(blob_name, use_sas=bool(self.sas_token))
+            url = self._build_url(blob_name, use_sas=bool(self.sas_token), container_name=container)
             headers = self._get_headers("GET")
             
             # Add authentication if using Shared Key
             if self.account_key and not self.sas_token:
-                url_path = f"/{self.container_name}/{quote(blob_name, safe='/')}"
+                url_path = f"/{container}/{quote(blob_name, safe='/')}"
                 headers["Authorization"] = self._generate_shared_key_signature("GET", url_path, headers)
             
             with httpx.Client(timeout=30.0) as client:
@@ -256,16 +280,15 @@ class AzureBlobStorage:
             AzureBlobStorageError: If deletion fails
         """
         try:
-            # Parse URL to extract blob name
-            parsed = urlparse(blob_url)
-            blob_name = parsed.path.split(f"/{self.container_name}/", 1)[-1] if f"/{self.container_name}/" in parsed.path else parsed.path.lstrip("/")
+            # Parse URL to extract container and blob name
+            container, blob_name = self._parse_blob_url(blob_url)
             
-            url = self._build_url(blob_name, use_sas=bool(self.sas_token))
+            url = self._build_url(blob_name, use_sas=bool(self.sas_token), container_name=container)
             headers = self._get_headers("DELETE")
             
             # Add authentication if using Shared Key
             if self.account_key and not self.sas_token:
-                url_path = f"/{self.container_name}/{quote(blob_name, safe='/')}"
+                url_path = f"/{container}/{quote(blob_name, safe='/')}"
                 headers["Authorization"] = self._generate_shared_key_signature("DELETE", url_path, headers)
             
             with httpx.Client(timeout=30.0) as client:
@@ -284,10 +307,11 @@ class AzureBlobStorage:
             logger.error(f"Error deleting blob {blob_url}: {e}")
             raise AzureBlobStorageError(f"Failed to delete blob: {str(e)}")
 
-    def _ensure_container_exists(self) -> None:
+    def _ensure_container_exists(self, container_name: Optional[str] = None) -> None:
         """Ensure the container exists, create if it doesn't."""
         try:
-            url = f"{self.base_url}/{self.container_name}?restype=container"
+            container = container_name or self.container_name
+            url = f"{self.base_url}/{container}?restype=container"
             headers = self._get_headers("PUT")
             
             # Container creation doesn't need content-type or content-length
@@ -296,7 +320,7 @@ class AzureBlobStorage:
             headers.pop("Content-Length", None)
             
             if self.account_key and not self.sas_token:
-                url_path = f"/{self.container_name}?restype=container"
+                url_path = f"/{container}?restype=container"
                 # For container creation, content_length is 0
                 headers["Authorization"] = self._generate_shared_key_signature("PUT", url_path, headers, content_length=0)
             elif self.sas_token:
@@ -310,7 +334,7 @@ class AzureBlobStorage:
                     error_text = response.text if hasattr(response, 'text') else str(response.status_code)
                     logger.error(f"Failed to create container: {response.status_code} - {error_text}")
                     response.raise_for_status()
-                logger.info(f"Container '{self.container_name}' exists or was created successfully")
+                logger.info(f"Container '{container}' exists or was created successfully")
         except httpx.HTTPStatusError as e:
             error_text = e.response.text if hasattr(e.response, 'text') else str(e.response.status_code)
             logger.error(f"HTTP error creating container: {e.response.status_code} - {error_text}")

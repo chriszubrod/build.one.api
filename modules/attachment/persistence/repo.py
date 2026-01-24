@@ -34,6 +34,19 @@ class AttachmentRepository:
             return None
 
         try:
+            # Handle extraction fields with backwards compatibility
+            extraction_status = getattr(row, 'ExtractionStatus', None)
+            extracted_text_blob_url = getattr(row, 'ExtractedTextBlobUrl', None)
+            extraction_error = getattr(row, 'ExtractionError', None)
+            extracted_datetime = getattr(row, 'ExtractedDatetime', None)
+            # Handle categorization fields with backwards compatibility
+            ai_category = getattr(row, 'AICategory', None)
+            ai_category_confidence = getattr(row, 'AICategoryConfidence', None)
+            ai_category_status = getattr(row, 'AICategoryStatus', None)
+            ai_category_reasoning = getattr(row, 'AICategoryReasoning', None)
+            ai_extracted_fields = getattr(row, 'AIExtractedFields', None)
+            categorized_datetime = getattr(row, 'CategorizedDatetime', None)
+
             return Attachment(
                 id=row.Id,
                 public_id=row.PublicId,
@@ -56,6 +69,16 @@ class AttachmentRepository:
                 last_downloaded_datetime=row.LastDownloadedDatetime,
                 expiration_date=row.ExpirationDate,
                 storage_tier=row.StorageTier,
+                extraction_status=extraction_status,
+                extracted_text_blob_url=extracted_text_blob_url,
+                extraction_error=extraction_error,
+                extracted_datetime=extracted_datetime,
+                ai_category=ai_category,
+                ai_category_confidence=float(ai_category_confidence) if ai_category_confidence else None,
+                ai_category_status=ai_category_status,
+                ai_category_reasoning=ai_category_reasoning,
+                ai_extracted_fields=ai_extracted_fields,
+                categorized_datetime=categorized_datetime,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during attachment mapping: {error}")
@@ -305,5 +328,187 @@ class AttachmentRepository:
                     cursor.close()
         except Exception as error:
             logger.error(f"Error during increment download count: {error}")
+            raise map_database_error(error)
+
+    def update_extraction(
+        self,
+        id: int,
+        extraction_status: str,
+        extracted_text_blob_url: Optional[str] = None,
+        extraction_error: Optional[str] = None,
+    ) -> Optional[Attachment]:
+        """
+        Update extraction status and results for an attachment.
+
+        Args:
+            id: Attachment ID
+            extraction_status: 'pending', 'processing', 'completed', or 'failed'
+            extracted_text_blob_url: URL to JSON extraction results in blob storage
+            extraction_error: Error message (for failed status)
+
+        Returns:
+            Updated Attachment or None if not found
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    params = {
+                        "Id": id,
+                        "ExtractionStatus": extraction_status,
+                        "ExtractedTextBlobUrl": extracted_text_blob_url,
+                        "ExtractionError": extraction_error,
+                    }
+                    call_procedure(
+                        cursor=cursor,
+                        name="UpdateAttachmentExtraction",
+                        params=params,
+                    )
+                    row = cursor.fetchone()
+                    return self._from_db(row)
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error during update extraction: {error}")
+            raise map_database_error(error)
+
+    def read_pending_extraction(self) -> list[Attachment]:
+        """
+        Read all attachments pending extraction.
+
+        Returns:
+            List of Attachments with extraction_status = 'pending' or NULL
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadAttachmentsPendingExtraction",
+                        params={},
+                    )
+                    rows = cursor.fetchall()
+                    return [self._from_db(row) for row in rows if row]
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error during read pending extraction: {error}")
+            raise map_database_error(error)
+
+    def update_categorization(
+        self,
+        id: int,
+        ai_category: str,
+        ai_category_confidence: float,
+        ai_category_status: str,
+        ai_category_reasoning: Optional[str] = None,
+        ai_extracted_fields: Optional[str] = None,
+    ) -> Optional[Attachment]:
+        """
+        Update AI categorization for an attachment.
+
+        Args:
+            id: Attachment ID
+            ai_category: The determined category
+            ai_category_confidence: Confidence score (0.0-1.0)
+            ai_category_status: 'auto_assigned', 'suggested', 'manual', etc.
+            ai_category_reasoning: Explanation for the categorization
+            ai_extracted_fields: JSON string of extracted fields
+
+        Returns:
+            Updated Attachment or None if not found
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    params = {
+                        "Id": id,
+                        "AICategory": ai_category,
+                        "AICategoryConfidence": ai_category_confidence,
+                        "AICategoryStatus": ai_category_status,
+                        "AICategoryReasoning": ai_category_reasoning,
+                        "AIExtractedFields": ai_extracted_fields,
+                    }
+                    call_procedure(
+                        cursor=cursor,
+                        name="UpdateAttachmentCategorization",
+                        params=params,
+                    )
+                    row = cursor.fetchone()
+                    # Re-fetch to get full attachment data
+                    if row:
+                        return self.read_by_id(id)
+                    return None
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error during update categorization: {error}")
+            raise map_database_error(error)
+
+    def read_pending_categorization(self, limit: int = 50) -> list[Attachment]:
+        """
+        Read attachments pending categorization.
+
+        Returns:
+            List of Attachments that are extracted but not yet categorized
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadAttachmentsPendingCategorization",
+                        params={"Limit": limit},
+                    )
+                    rows = cursor.fetchall()
+                    return [self._from_db(row) for row in rows if row]
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error during read pending categorization: {error}")
+            raise map_database_error(error)
+
+    def confirm_categorization(
+        self,
+        id: int,
+        confirmed: bool,
+        manual_category: Optional[str] = None,
+    ) -> Optional[Attachment]:
+        """
+        Confirm or reject AI categorization.
+
+        Args:
+            id: Attachment ID
+            confirmed: True to confirm AI suggestion, False to reject
+            manual_category: If rejecting, the correct category to assign
+
+        Returns:
+            Updated Attachment or None if not found
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    params = {
+                        "Id": id,
+                        "Confirmed": 1 if confirmed else 0,
+                        "ManualCategory": manual_category,
+                    }
+                    call_procedure(
+                        cursor=cursor,
+                        name="ConfirmAttachmentCategorization",
+                        params=params,
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        return self.read_by_id(id)
+                    return None
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error during confirm categorization: {error}")
             raise map_database_error(error)
 

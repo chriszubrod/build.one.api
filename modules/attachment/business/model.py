@@ -31,6 +31,18 @@ class Attachment:
     last_downloaded_datetime: Optional[str]
     expiration_date: Optional[str]
     storage_tier: Optional[str]
+    # AI Extraction fields
+    extraction_status: Optional[str] = None  # pending, processing, completed, failed
+    extracted_text_blob_url: Optional[str] = None  # URL to JSON file in blob storage
+    extraction_error: Optional[str] = None
+    extracted_datetime: Optional[str] = None
+    # AI Categorization fields
+    ai_category: Optional[str] = None  # DocumentCategory value
+    ai_category_confidence: Optional[float] = None  # 0.0 to 1.0
+    ai_category_status: Optional[str] = None  # auto_assigned, suggested, manual, confirmed
+    ai_category_reasoning: Optional[str] = None
+    ai_extracted_fields: Optional[str] = None  # JSON string
+    categorized_datetime: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

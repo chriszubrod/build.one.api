@@ -53,6 +53,24 @@ class Settings(BaseSettings):
     azure_storage_sas_token: Optional[str] = None
     azure_storage_container_name: str = "attachments"
 
+    # Azure OpenAI Configuration
+    azure_openai_endpoint: Optional[str] = None
+    azure_openai_api_key: Optional[str] = None
+    azure_openai_deployment_name: str = "gpt-4o-mini"
+    azure_openai_api_version: str = "2024-02-01"
+
+    # Azure AI Document Intelligence Configuration
+    azure_document_intelligence_endpoint: Optional[str] = None
+    azure_document_intelligence_key: Optional[str] = None
+
+    # Azure AI Search Configuration
+    azure_search_endpoint: Optional[str] = None
+    azure_search_api_key: Optional[str] = None
+    azure_search_index_name: str = "documents-index"
+
+    # Local AI Configuration
+    local_embedding_model: str = "all-MiniLM-L6-v2"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"  # This allows extra fields to be ignored

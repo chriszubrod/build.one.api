@@ -1,0 +1,776 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Create Bill from Time Entry - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/contract_labor.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <!-- Toast notification container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <div class="cl-page-header">
+        <h1>Create Bill from Time Entry</h1>
+        <a href="/contract-labor/list" class="btn btn-secondary" id="back-to-list-btn">Back to List</a>
+    </div>
+
+    <div class="cl-edit-container">
+        <form id="editForm" class="cl-edit-form">
+            <input type="hidden" id="public_id" value="{{ entry.public_id }}">
+            <input type="hidden" id="row_version" value="{{ entry.row_version }}">
+            <input type="hidden" id="contract_labor_id" value="{{ entry.id }}">
+
+            <!-- Source Info -->
+            <div class="cl-form-section cl-source-info">
+                <div class="cl-source-row">
+                    <span><strong>Source:</strong> {{ entry.source_file or 'Manual' }}</span>
+                    {% if entry.source_row %}
+                    <span><strong>Row:</strong> {{ entry.source_row }}</span>
+                    {% endif %}
+                    <span><strong>Status:</strong> 
+                        {% if entry.status == 'pending_review' %}
+                            <span class="cl-status-badge cl-status-pending">Pending Review</span>
+                        {% elif entry.status == 'ready' %}
+                            <span class="cl-status-badge cl-status-ready">Ready</span>
+                        {% elif entry.status == 'billed' %}
+                            <span class="cl-status-badge cl-status-billed">Billed</span>
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
+
+            <!-- Time Entry Details (Read-Only from Import) -->
+            <div class="cl-form-section">
+                <h3>Time Entry Details <span class="cl-section-badge">From Import</span></h3>
+                
+                <div class="cl-readonly-grid">
+                    <div class="cl-readonly-item">
+                        <label>Work Date</label>
+                        <span>{{ entry.work_date or 'N/A' }}</span>
+                    </div>
+                    <div class="cl-readonly-item">
+                        <label>Worker Name</label>
+                        <span>{{ entry.employee_name or 'N/A' }}</span>
+                    </div>
+                    <div class="cl-readonly-item">
+                        <label>Job</label>
+                        <span>{{ entry.job_name or 'N/A' }}</span>
+                    </div>
+                    <div class="cl-readonly-item">
+                        <label>Time In</label>
+                        <span>{{ entry.time_in or 'N/A' }}</span>
+                    </div>
+                    <div class="cl-readonly-item">
+                        <label>Time Out</label>
+                        <span>{{ entry.time_out or 'N/A' }}</span>
+                    </div>
+                    <div class="cl-readonly-item">
+                        <label>Break</label>
+                        <span>{{ entry.break_time or 'N/A' }}</span>
+                    </div>
+                    <div class="cl-readonly-item">
+                        <label>Regular Hours</label>
+                        <span>{{ '%.2f'|format(entry.regular_hours or 0) }}</span>
+                    </div>
+                    <div class="cl-readonly-item">
+                        <label>Overtime Hours</label>
+                        <span>{{ '%.2f'|format(entry.overtime_hours or 0) }}</span>
+                    </div>
+                    <div class="cl-readonly-item cl-readonly-highlight">
+                        <label>Total Hours</label>
+                        <span>{{ '%.2f'|format(entry.total_hours or 0) }}</span>
+                    </div>
+                </div>
+                
+                {% if entry.description %}
+                <div class="cl-readonly-notes">
+                    <label>Notes from Import</label>
+                    <p>{{ entry.description }}</p>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Bill Header -->
+            <div class="cl-form-section">
+                <h3>Bill Information</h3>
+                
+                <div class="cl-form-row">
+                    <div class="cl-form-group">
+                        <label for="bill_vendor_id" class="cl-form-label">Vendor <span class="required">*</span></label>
+                        <select id="bill_vendor_id" class="cl-form-control" required>
+                            <option value="">-- Select Vendor --</option>
+                            {% for vendor in vendors %}
+                            <option value="{{ vendor.id }}" 
+                                {% if entry.bill_vendor_id == vendor.id %}selected{% endif %}
+                                data-name="{{ vendor.name|lower }}">
+                                {{ vendor.name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        {% if entry.employee_name %}
+                        <p class="cl-form-hint">Imported as: "{{ entry.employee_name }}"</p>
+                        {% endif %}
+                    </div>
+
+                    <div class="cl-form-group">
+                        <label for="bill_number" class="cl-form-label">Bill Number <span class="required">*</span></label>
+                        <input type="text" 
+                               id="bill_number" 
+                               class="cl-form-control"
+                               value="{{ entry.bill_number or '' }}"
+                               placeholder="e.g., CL-2026-001"
+                               required>
+                    </div>
+                </div>
+
+                <div class="cl-form-row">
+                    <div class="cl-form-group">
+                        <label for="bill_date" class="cl-form-label">Bill Date <span class="required">*</span></label>
+                        <input type="date" 
+                               id="bill_date" 
+                               class="cl-form-control"
+                               value="{{ entry.bill_date or '' }}"
+                               required>
+                    </div>
+
+                    <div class="cl-form-group">
+                        <label for="due_date" class="cl-form-label">Due Date</label>
+                        <input type="date" 
+                               id="due_date" 
+                               class="cl-form-control"
+                               value="{{ entry.due_date or '' }}">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Daily Hours Summary -->
+            <div class="cl-form-section cl-hours-summary">
+                <h3>Daily Hours Summary for {{ entry.employee_name or 'Worker' }}</h3>
+                <div class="cl-hours-grid">
+                    <div class="cl-hours-item">
+                        <span class="cl-hours-label">Work Date</span>
+                        <span class="cl-hours-value" id="summary-work-date">{{ entry.work_date or 'N/A' }}</span>
+                    </div>
+                    <div class="cl-hours-item">
+                        <span class="cl-hours-label">Daily Total ({{ daily_summary.entry_count }})</span>
+                        <span class="cl-hours-value" id="summary-daily-total">{{ '%.2f'|format(daily_summary.total_imported_hours or 0) }}</span>
+                    </div>
+                    <div class="cl-hours-item">
+                        <span class="cl-hours-label">Allocated</span>
+                        <span class="cl-hours-value" id="summary-allocated-other">{{ '%.2f'|format(daily_summary.allocated_other_entries or 0) }}</span>
+                    </div>
+                    <div class="cl-hours-item">
+                        <span class="cl-hours-label">This Entry</span>
+                        <span class="cl-hours-value" id="summary-allocated-this">{{ '%.2f'|format(daily_summary.allocated_this_entry or 0) }}</span>
+                    </div>
+                    <div class="cl-hours-item">
+                        <span class="cl-hours-label">Remaining</span>
+                        <span class="cl-hours-value" id="summary-remaining">{{ '%.2f'|format(8 - (daily_summary.allocated_other_entries or 0) - (daily_summary.allocated_this_entry or 0)) }}</span>
+                    </div>
+                </div>
+                <div id="hours-warning" class="cl-hours-warning" style="display: none;"></div>
+            </div>
+
+            <!-- Line Items -->
+            <div class="cl-form-section">
+                <h3>
+                    Line Items
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="addLineItem()">+ Add Line Item</button>
+                </h3>
+                
+                <div id="line-items-container">
+                    {% if line_items %}
+                        {% for item in line_items %}
+                        <div class="cl-line-item" data-line-item-id="{{ item.id }}" data-public-id="{{ item.public_id }}" data-row-version="{{ item.row_version }}">
+                            <div class="cl-line-item-header">
+                                <span class="cl-line-item-number">Line {{ loop.index }}</span>
+                                <button type="button" class="btn btn-sm btn-danger" onclick="removeLineItem(this)">Remove</button>
+                            </div>
+                            <div class="cl-form-row">
+                                <div class="cl-form-group cl-form-group-sm">
+                                    <label class="cl-form-label">Date</label>
+                                    <input type="date" class="cl-form-control line-date" 
+                                           value="{{ item.line_date or entry.work_date or '' }}">
+                                </div>
+                                <div class="cl-form-group">
+                                    <label class="cl-form-label">Project</label>
+                                    <select class="cl-form-control line-project-id">
+                                        <option value="">-- Select Project --</option>
+                                        {% for project in projects %}
+                                        <option value="{{ project.id }}" {% if item.project_id == project.id %}selected{% endif %}>
+                                            {% if project.abbreviation %}{{ project.abbreviation }} - {% endif %}{{ project.name }}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <div class="cl-form-group">
+                                    <label class="cl-form-label">SubCostCode</label>
+                                    <select class="cl-form-control line-sub-cost-code-id">
+                                        <option value="">-- Select SubCostCode --</option>
+                                        {% for scc in sub_cost_codes %}
+                                        <option value="{{ scc.id }}" {% if item.sub_cost_code_id == scc.id %}selected{% endif %}>
+                                            {{ scc.number }} - {{ scc.description or scc.name or '' }}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="cl-form-row">
+                                <div class="cl-form-group cl-form-group-sm">
+                                    <label class="cl-form-label">Hours</label>
+                                    <input type="number" class="cl-form-control line-hours" step="0.01" min="0" max="24"
+                                           value="{{ item.hours or '' }}" placeholder="0.00" onchange="calculateLinePrice(this)">
+                                </div>
+                                <div class="cl-form-group cl-form-group-sm">
+                                    <label class="cl-form-label">Rate (per day)</label>
+                                    <div class="cl-input-group">
+                                        <span class="cl-input-prefix">$</span>
+                                        <input type="number" class="cl-form-control line-rate" step="0.01" min="0" 
+                                               value="{{ item.rate or '' }}" placeholder="0.00" onchange="calculateLinePrice(this)">
+                                    </div>
+                                </div>
+                                <div class="cl-form-group cl-form-group-sm">
+                                    <label class="cl-form-label">Markup (%)</label>
+                                    <input type="number" class="cl-form-control line-markup" step="0.01" min="0" max="100" 
+                                           value="{{ (item.markup * 100) if item.markup else '' }}" placeholder="0" onchange="calculateLinePrice(this)">
+                                </div>
+                                <div class="cl-form-group cl-form-group-sm">
+                                    <label class="cl-form-label">Price</label>
+                                    <div class="cl-input-group">
+                                        <span class="cl-input-prefix">$</span>
+                                        <input type="text" class="cl-form-control line-price cl-calculated" 
+                                               value="{{ '%.2f'|format(item.price or 0) }}" readonly>
+                                    </div>
+                                </div>
+                                <div class="cl-form-group cl-form-group-sm">
+                                    <label class="cl-form-label">Billable</label>
+                                    <input type="checkbox" class="line-is-billable" {% if item.is_billable %}checked{% endif %}>
+                                </div>
+                            </div>
+                            <div class="cl-form-row">
+                                <div class="cl-form-group cl-form-group-full">
+                                    <label class="cl-form-label">Description</label>
+                                    <input type="text" class="cl-form-control line-description" 
+                                           value="{{ item.description or '' }}" placeholder="e.g., We removed lights in ceiling.">
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <p class="cl-empty-line-items">No line items yet. Click "Add Line Item" to add billing details.</p>
+                    {% endif %}
+                </div>
+                
+                <div class="cl-line-items-total">
+                    <strong>Total:</strong> $<span id="line-items-total">0.00</span>
+                </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="cl-form-actions">
+                <div class="cl-form-actions-left">
+                    <button type="button" class="btn btn-primary" onclick="saveEntry()">Save Changes</button>
+                    <button type="button" class="btn btn-outline-primary" onclick="saveAndMarkReady()" id="mark-ready-btn"
+                            {% if entry.status == 'billed' %}disabled{% endif %}>
+                        Save &amp; Mark Ready
+                    </button>
+                </div>
+                <div class="cl-form-actions-right">
+                    <a href="/contract-labor/list" class="btn btn-secondary" id="cancel-btn">Cancel</a>
+                    {% if entry.status != 'billed' %}
+                    <button type="button" class="btn btn-danger" onclick="deleteEntry()">Delete</button>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div id="save-status" class="cl-save-status"></div>
+        </form>
+    </div>
+
+    <!-- Line Item Template (hidden) -->
+    <template id="line-item-template">
+        <div class="cl-line-item" data-line-item-id="" data-public-id="" data-row-version="">
+            <div class="cl-line-item-header">
+                <span class="cl-line-item-number">Line #</span>
+                <button type="button" class="btn btn-sm btn-danger" onclick="removeLineItem(this)">Remove</button>
+            </div>
+            <div class="cl-form-row">
+                <div class="cl-form-group cl-form-group-sm">
+                    <label class="cl-form-label">Date</label>
+                    <input type="date" class="cl-form-control line-date" value="{{ entry.work_date or '' }}">
+                </div>
+                <div class="cl-form-group">
+                    <label class="cl-form-label">Project</label>
+                    <select class="cl-form-control line-project-id">
+                        <option value="">-- Select Project --</option>
+                        {% for project in projects %}
+                        <option value="{{ project.id }}">
+                            {% if project.abbreviation %}{{ project.abbreviation }} - {% endif %}{{ project.name }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="cl-form-group">
+                    <label class="cl-form-label">SubCostCode</label>
+                    <select class="cl-form-control line-sub-cost-code-id">
+                        <option value="">-- Select SubCostCode --</option>
+                        {% for scc in sub_cost_codes %}
+                        <option value="{{ scc.id }}">
+                            {{ scc.number }} - {{ scc.description or scc.name or '' }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="cl-form-row">
+                <div class="cl-form-group cl-form-group-sm">
+                    <label class="cl-form-label">Hours</label>
+                    <input type="number" class="cl-form-control line-hours" step="0.01" min="0" max="24" placeholder="0.00" onchange="calculateLinePrice(this)">
+                </div>
+                <div class="cl-form-group cl-form-group-sm">
+                    <label class="cl-form-label">Rate (per day)</label>
+                    <div class="cl-input-group">
+                        <span class="cl-input-prefix">$</span>
+                        <input type="number" class="cl-form-control line-rate" step="0.01" min="0" placeholder="0.00" onchange="calculateLinePrice(this)">
+                    </div>
+                </div>
+                <div class="cl-form-group cl-form-group-sm">
+                    <label class="cl-form-label">Markup (%)</label>
+                    <input type="number" class="cl-form-control line-markup" step="0.01" min="0" max="100" placeholder="0" onchange="calculateLinePrice(this)">
+                </div>
+                <div class="cl-form-group cl-form-group-sm">
+                    <label class="cl-form-label">Price</label>
+                    <div class="cl-input-group">
+                        <span class="cl-input-prefix">$</span>
+                        <input type="text" class="cl-form-control line-price cl-calculated" value="0.00" readonly>
+                    </div>
+                </div>
+                <div class="cl-form-group cl-form-group-sm">
+                    <label class="cl-form-label">Billable</label>
+                    <input type="checkbox" class="line-is-billable" checked>
+                </div>
+            </div>
+            <div class="cl-form-row">
+                <div class="cl-form-group cl-form-group-full">
+                    <label class="cl-form-label">Description</label>
+                    <input type="text" class="cl-form-control line-description" placeholder="e.g., We removed lights in ceiling.">
+                </div>
+            </div>
+        </div>
+    </template>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let lineItemCounter = {{ line_items|length if line_items else 0 }};
+    const employeeName = "{{ entry.employee_name if entry.employee_name else '' }}";
+    const employeeNameLower = employeeName.toLowerCase();
+
+    // Hardcoded employee -> vendor name mappings
+    const EMPLOYEE_VENDOR_MAP = {
+        'denis marcia izaguirre': 'Denis Samuel Marcia Izaguirre',
+        'wilmer  diaz': 'Wilmer Diaz',
+        'wilmer diaz': 'Wilmer Diaz',
+        'elmer cordova': 'Elmer Cordova',
+        'emilson  cordova': 'Emilson O. Cordova Tercero',
+        'emilson cordova': 'Emilson O. Cordova Tercero',
+        'selvin cordova': 'Selvin Humberto Cordova Tercero',
+        'michael jacobson': 'Michael Jacobson',
+    };
+
+    // Hardcoded vendor -> rate (per 8-hour day) mappings
+    // Note: Michael Jacobson is $30/hour, converted to day rate ($30 * 8 = $240)
+    const VENDOR_RATE_MAP = {
+        'Denis Samuel Marcia Izaguirre': 230.00,
+        'Wilmer Diaz': 260.00,
+        'Elmer Cordova': 260.00,
+        'Emilson O. Cordova Tercero': 370.00,
+        'Selvin Humberto Cordova Tercero': 500.00,
+        'Michael Jacobson': 240.00,  // $30/hour * 8 hours
+    };
+
+    // Hardcoded vendor -> markup (as decimal) mappings
+    const VENDOR_MARKUP_MAP = {
+        'Denis Samuel Marcia Izaguirre': 0.50,
+        'Wilmer Diaz': 0.50,
+        'Elmer Cordova': 0.50,
+        'Emilson O. Cordova Tercero': 0.50,
+        'Selvin Humberto Cordova Tercero': 0.35,
+        'Michael Jacobson': 0.50,
+    };
+
+    // Get matched vendor name for this employee
+    function getMatchedVendorName() {
+        return EMPLOYEE_VENDOR_MAP[employeeNameLower] || null;
+    }
+
+    // Get default rate for the matched vendor
+    function getDefaultRate() {
+        const vendorName = getMatchedVendorName();
+        return vendorName ? VENDOR_RATE_MAP[vendorName] : null;
+    }
+
+    // Get default markup for the matched vendor (as percentage for display)
+    function getDefaultMarkupPercent() {
+        const vendorName = getMatchedVendorName();
+        return vendorName ? (VENDOR_MARKUP_MAP[vendorName] * 100) : null;
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        // Debug: Log entry data from server
+        console.log('Entry data from server:', {
+            bill_vendor_id: {{ entry.bill_vendor_id|tojson }},
+            bill_date: {{ entry.bill_date|tojson }},
+            due_date: {{ entry.due_date|tojson }},
+            bill_number: {{ entry.bill_number|tojson }},
+            status: {{ entry.status|tojson }}
+        });
+        
+        // Try to match vendor by employee name
+        const vendorSelect = document.getElementById('bill_vendor_id');
+        if (!vendorSelect.value && employeeNameLower) {
+            const matchedVendorName = getMatchedVendorName();
+            if (matchedVendorName) {
+                // Find option with matching text
+                for (let option of vendorSelect.options) {
+                    if (option.text.includes(matchedVendorName)) {
+                        option.selected = true;
+                        break;
+                    }
+                }
+            } else {
+                // Fallback: try data-name match
+                for (let option of vendorSelect.options) {
+                    if (option.dataset.name && option.dataset.name === employeeNameLower) {
+                        option.selected = true;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        calculateTotal();
+        
+        // Update Back to List and Cancel links to preserve filter state
+        updateListLinks();
+    });
+    
+    // Get list URL with saved filter state from sessionStorage
+    function getListUrl() {
+        const saved = sessionStorage.getItem('clFilterState');
+        if (!saved) return '/contract-labor/list';
+        
+        const state = JSON.parse(saved);
+        const params = new URLSearchParams();
+        
+        if (state.status) params.append('status', state.status);
+        if (state.billing_period) params.append('billing_period', state.billing_period);
+        if (state.vendor_id) params.append('vendor_id', state.vendor_id);
+        if (state.search) params.append('search', state.search);
+        if (state.page) params.append('page', state.page);
+        if (state.page_size) params.append('page_size', state.page_size);
+        if (state.sort_by) params.append('sort_by', state.sort_by);
+        if (state.sort_direction) params.append('sort_direction', state.sort_direction);
+        
+        const queryString = params.toString();
+        return queryString ? `/contract-labor/list?${queryString}` : '/contract-labor/list';
+    }
+    
+    function updateListLinks() {
+        const listUrl = getListUrl();
+        const backBtn = document.getElementById('back-to-list-btn');
+        const cancelBtn = document.getElementById('cancel-btn');
+        
+        if (backBtn) backBtn.href = listUrl;
+        if (cancelBtn) cancelBtn.href = listUrl;
+    }
+
+    function addLineItem() {
+        const container = document.getElementById('line-items-container');
+        const template = document.getElementById('line-item-template');
+        const clone = template.content.cloneNode(true);
+        
+        // Remove empty message if present
+        const emptyMsg = container.querySelector('.cl-empty-line-items');
+        if (emptyMsg) emptyMsg.remove();
+        
+        lineItemCounter++;
+        const lineItem = clone.querySelector('.cl-line-item');
+        lineItem.querySelector('.cl-line-item-number').textContent = `Line ${lineItemCounter}`;
+        
+        // Auto-populate rate and markup based on employee/vendor
+        const defaultRate = getDefaultRate();
+        const defaultMarkup = getDefaultMarkupPercent();
+        
+        if (defaultRate !== null) {
+            lineItem.querySelector('.line-rate').value = defaultRate.toFixed(2);
+        }
+        if (defaultMarkup !== null) {
+            lineItem.querySelector('.line-markup').value = defaultMarkup;
+        }
+        
+        container.appendChild(clone);
+        updateLineNumbers();
+    }
+
+    function removeLineItem(button) {
+        const lineItem = button.closest('.cl-line-item');
+        lineItem.remove();
+        updateLineNumbers();
+        calculateTotal();
+        
+        // Show empty message if no items
+        const container = document.getElementById('line-items-container');
+        if (container.querySelectorAll('.cl-line-item').length === 0) {
+            container.innerHTML = '<p class="cl-empty-line-items">No line items yet. Click "Add Line Item" to add billing details.</p>';
+        }
+    }
+
+    function updateLineNumbers() {
+        const items = document.querySelectorAll('.cl-line-item');
+        items.forEach((item, index) => {
+            item.querySelector('.cl-line-item-number').textContent = `Line ${index + 1}`;
+        });
+    }
+
+    function calculateLinePrice(input) {
+        const lineItem = input.closest('.cl-line-item');
+        const hours = parseFloat(lineItem.querySelector('.line-hours').value) || 0;
+        const rate = parseFloat(lineItem.querySelector('.line-rate').value) || 0;
+        const markupPercent = parseFloat(lineItem.querySelector('.line-markup').value) || 0;
+        
+        const markup = markupPercent / 100;
+        // Formula: (Hours / 8 * Rate) * (1 + Markup)
+        // Rate is per 8-hour day, so we calculate percentage of day worked
+        const price = (hours / 8 * rate) * (1 + markup);
+        
+        lineItem.querySelector('.line-price').value = price.toFixed(2);
+        calculateTotal();
+    }
+
+    function calculateTotal() {
+        const priceInputs = document.querySelectorAll('.line-price');
+        let total = 0;
+        priceInputs.forEach(input => {
+            total += parseFloat(input.value) || 0;
+        });
+        document.getElementById('line-items-total').textContent = total.toFixed(2);
+        
+        // Update hours summary
+        updateHoursSummary();
+    }
+    
+    // Daily summary data from server
+    const dailySummary = {
+        totalImportedHours: {{ daily_summary.total_imported_hours or 0 }},
+        entryCount: {{ daily_summary.entry_count or 0 }},
+        allocatedOtherEntries: {{ daily_summary.allocated_other_entries or 0 }},
+    };
+    const thisEntryHours = {{ entry.total_hours or 0 }};
+    const MAX_DAILY_HOURS = 8;
+    
+    function updateHoursSummary() {
+        // Calculate current allocated hours from line items in this entry
+        const hoursInputs = document.querySelectorAll('.line-hours');
+        let allocatedThisEntry = 0;
+        hoursInputs.forEach(input => {
+            allocatedThisEntry += parseFloat(input.value) || 0;
+        });
+        
+        // Calculate total allocated and remaining (based on 8-hour day)
+        const totalAllocated = dailySummary.allocatedOtherEntries + allocatedThisEntry;
+        const remaining = MAX_DAILY_HOURS - totalAllocated;
+        
+        // Update display
+        document.getElementById('summary-allocated-this').textContent = allocatedThisEntry.toFixed(2);
+        document.getElementById('summary-remaining').textContent = remaining.toFixed(2);
+        
+        // Warning logic
+        const warningEl = document.getElementById('hours-warning');
+        const remainingEl = document.getElementById('summary-remaining');
+        
+        if (remaining < -0.01) {
+            // Over 8 hours
+            warningEl.innerHTML = `<strong>Warning:</strong> Over-allocated by ${Math.abs(remaining).toFixed(2)} hours (exceeds 8-hour day).`;
+            warningEl.className = 'cl-hours-warning cl-hours-error';
+            warningEl.style.display = 'block';
+            remainingEl.className = 'cl-hours-value cl-hours-over';
+        } else if (allocatedThisEntry > thisEntryHours + 0.01) {
+            warningEl.innerHTML = `<strong>Warning:</strong> This entry's allocation (${allocatedThisEntry.toFixed(2)}) exceeds its imported hours (${thisEntryHours.toFixed(2)}).`;
+            warningEl.className = 'cl-hours-warning cl-hours-warn';
+            warningEl.style.display = 'block';
+            remainingEl.className = 'cl-hours-value';
+        } else if (remaining > 0.01) {
+            warningEl.innerHTML = `<strong>Note:</strong> ${remaining.toFixed(2)} hours remaining to reach 8-hour day.`;
+            warningEl.className = 'cl-hours-warning cl-hours-info';
+            warningEl.style.display = 'block';
+            remainingEl.className = 'cl-hours-value';
+        } else {
+            // Fully allocated (remaining ~= 0)
+            warningEl.innerHTML = `<strong>✓</strong> 8-hour day fully allocated.`;
+            warningEl.className = 'cl-hours-warning cl-hours-success';
+            warningEl.style.display = 'block';
+            remainingEl.className = 'cl-hours-value cl-hours-ok';
+        }
+    }
+
+    function collectLineItems() {
+        const items = [];
+        document.querySelectorAll('.cl-line-item').forEach(item => {
+            const markupPercent = parseFloat(item.querySelector('.line-markup').value) || 0;
+            items.push({
+                id: item.dataset.lineItemId ? parseInt(item.dataset.lineItemId) : null,
+                public_id: item.dataset.publicId || null,
+                row_version: item.dataset.rowVersion || null,
+                line_date: item.querySelector('.line-date').value || null,
+                project_id: parseInt(item.querySelector('.line-project-id').value) || null,
+                sub_cost_code_id: parseInt(item.querySelector('.line-sub-cost-code-id').value) || null,
+                description: item.querySelector('.line-description').value || null,
+                hours: parseFloat(item.querySelector('.line-hours').value) || null,
+                rate: parseFloat(item.querySelector('.line-rate').value) || null,
+                markup: markupPercent / 100 || null,
+                price: parseFloat(item.querySelector('.line-price').value) || null,
+                is_billable: item.querySelector('.line-is-billable').checked,
+            });
+        });
+        return items;
+    }
+
+    async function saveEntry(markAsReady = false) {
+        const publicId = document.getElementById('public_id').value;
+        const rowVersion = document.getElementById('row_version').value;
+        
+        const data = {
+            row_version: rowVersion,
+            bill_vendor_id: parseInt(document.getElementById('bill_vendor_id').value) || null,
+            bill_date: document.getElementById('bill_date').value || null,
+            due_date: document.getElementById('due_date').value || null,
+            bill_number: document.getElementById('bill_number').value || null,
+            line_items: collectLineItems(),
+        };
+
+        if (markAsReady) {
+            data.status = 'ready';
+        }
+
+        console.log('Saving data:', JSON.stringify(data, null, 2));
+
+        try {
+            const response = await fetch(`/api/v1/contract-labor/${publicId}/bill`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                },
+                body: JSON.stringify(data)
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                console.log('Save response:', JSON.stringify(result, null, 2));
+                // Update row version for next save
+                document.getElementById('row_version').value = result.row_version;
+                showStatus('Saved successfully!', 'success');
+                
+                if (markAsReady) {
+                    setTimeout(() => {
+                        window.location.href = getListUrl();
+                    }, 1000);
+                } else {
+                    // Reload to get updated line item IDs
+                    setTimeout(() => window.location.reload(), 1500);
+                }
+            } else {
+                const error = await response.json();
+                showStatus(`Error: ${error.detail || 'Failed to save'}`, 'error');
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            showStatus('Error saving entry', 'error');
+        }
+    }
+
+    function saveAndMarkReady() {
+        // Validate required fields
+        const vendorId = document.getElementById('bill_vendor_id').value;
+        const billDate = document.getElementById('bill_date').value;
+        const billNumber = document.getElementById('bill_number').value;
+        const lineItems = document.querySelectorAll('.cl-line-item');
+
+        const missing = [];
+        if (!vendorId) missing.push('Vendor');
+        if (!billDate) missing.push('Bill Date');
+        if (!billNumber) missing.push('Bill Number');
+        if (lineItems.length === 0) missing.push('At least one Line Item');
+
+        if (missing.length > 0) {
+            showStatus(`Missing required fields: ${missing.join(', ')}`, 'error');
+            return;
+        }
+
+        saveEntry(true);
+    }
+
+    async function deleteEntry() {
+        if (!confirm('Are you sure you want to delete this entry and all its line items?')) {
+            return;
+        }
+
+        const publicId = document.getElementById('public_id').value;
+
+        try {
+            const response = await fetch(`/api/v1/contract-labor/${publicId}`, {
+                method: 'DELETE',
+                headers: {
+                    'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                }
+            });
+
+            if (response.ok) {
+                showStatus('Deleted successfully!', 'success');
+                setTimeout(() => {
+                    window.location.href = getListUrl();
+                }, 1000);
+            } else {
+                showStatus('Error deleting entry', 'error');
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            showStatus('Error deleting entry', 'error');
+        }
+    }
+
+    function showStatus(message, type) {
+        const status = document.getElementById('save-status');
+        status.textContent = message;
+        status.className = `cl-save-status cl-save-status-${type}`;
+        status.style.display = 'block';
+        
+        if (type === 'success') {
+            setTimeout(() => {
+                status.style.display = 'none';
+            }, 3000);
+        }
+    }
+
+    function showToast(message, type = 'info', duration = 5000) {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+        
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.innerHTML = `
+            <span class="toast-message">${message}</span>
+            <button class="toast-close" onclick="this.parentElement.remove()">×</button>
+        `;
+        container.appendChild(toast);
+        
+        setTimeout(() => {
+            if (toast.parentElement) toast.remove();
+        }, duration);
+    }
+</script>
+{% endblock %}

@@ -1,0 +1,191 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Generate Bills - Contract Labor - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/contract_labor.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div id="toast-container" class="toast-container"></div>
+
+    <div class="cl-page-header">
+        <h1>Generate Bills</h1>
+        <div class="cl-page-actions">
+            <a href="/contract-labor/list?status=ready" class="btn btn-secondary">Back to List</a>
+        </div>
+    </div>
+
+    {% if not vendors_with_entries %}
+    <div class="cl-empty-state">
+        <p>No entries are ready for billing.</p>
+        <a href="/contract-labor/list?status=ready" class="btn btn-primary">View Ready Entries</a>
+    </div>
+    {% else %}
+    
+    <p class="cl-bills-intro">
+        Review and generate bills for entries marked as "Ready". Entries are grouped by vendor.
+    </p>
+
+    {% for vendor_data in vendors_with_entries %}
+    <div class="cl-bill-card">
+        <div class="cl-bill-card-header">
+            <div class="cl-bill-vendor-info">
+                <h3>{{ vendor_data.vendor_name or 'Unknown Vendor' }}</h3>
+                <span class="cl-bill-entry-count">{{ vendor_data.line_items|length }} line items</span>
+            </div>
+            <div class="cl-bill-card-actions">
+                {% if vendor_data.vendor_id and vendor_data.vendor_id != 'None' and vendor_data.vendor_id|string != 'None' %}
+                <a href="/api/v1/contract-labor/preview-pdf/{{ vendor_data.vendor_id }}" 
+                   target="_blank" 
+                   class="btn btn-secondary">
+                    Preview PDF
+                </a>
+                <button type="button" class="btn btn-primary" onclick="generatePdf('{{ vendor_data.vendor_id }}')">
+                    Generate Bills
+                </button>
+                {% else %}
+                <span class="btn btn-secondary" style="opacity: 0.5; cursor: not-allowed;">Preview PDF</span>
+                <span class="btn btn-primary" style="opacity: 0.5; cursor: not-allowed;">Generate Bills</span>
+                <p class="text-muted" style="margin-top: 0.5rem; font-size: 0.85rem;">Assign a vendor to entries first</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="cl-bill-summary">
+            <div class="cl-bill-summary-item">
+                <span class="cl-bill-summary-label">Total Hours</span>
+                <span class="cl-bill-summary-value">{{ '%.2f'|format(vendor_data.total_hours) }}</span>
+            </div>
+            <div class="cl-bill-summary-item">
+                <span class="cl-bill-summary-label">Total Amount</span>
+                <span class="cl-bill-summary-value">${{ '%.2f'|format(vendor_data.total_amount) }}</span>
+            </div>
+            <div class="cl-bill-summary-item">
+                <span class="cl-bill-summary-label">Date Range</span>
+                <span class="cl-bill-summary-value">{{ vendor_data.min_date }} - {{ vendor_data.max_date }}</span>
+            </div>
+        </div>
+
+        <div class="cl-bill-entries-toggle">
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleEntries(this, 'vendor-{{ loop.index }}')">
+                Show Line Items
+            </button>
+        </div>
+
+        <div class="cl-bill-entries" id="entries-vendor-{{ loop.index }}" style="display: none;">
+            <table class="cl-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>SubCostCode</th>
+                        <th>Description</th>
+                        <th>Amount</th>
+                        <th>Project</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in vendor_data.line_items %}
+                    <tr>
+                        <td>{{ item.date }}</td>
+                        <td>{{ item.sub_cost_code }}</td>
+                        <td>{{ item.description }}</td>
+                        <td>${{ '%.2f'|format(item.amount or 0) }}</td>
+                        <td>{{ item.project }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endfor %}
+
+    {% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function toggleEntries(button, vendorId) {
+        const entriesDiv = document.getElementById('entries-' + vendorId);
+        if (entriesDiv.style.display === 'none') {
+            entriesDiv.style.display = 'block';
+            button.textContent = 'Hide Line Items';
+        } else {
+            entriesDiv.style.display = 'none';
+            button.textContent = 'Show Line Items';
+        }
+    }
+
+    async function generatePdf(vendorId) {
+        if (!vendorId || vendorId === 'None') {
+            showToast('Cannot generate bills: No vendor assigned', 'error');
+            return;
+        }
+
+        const button = event.target;
+        const originalText = button.textContent;
+        button.textContent = 'Generating...';
+        button.disabled = true;
+
+        try {
+            const response = await fetch(`/api/v1/contract-labor/generate-bills/${vendorId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+
+            const result = await response.json();
+
+            if (response.ok) {
+                let message = `Generated ${result.bills_created} bill(s) with ${result.line_items_created} line items.`;
+                if (result.entries_billed > 0) {
+                    message += ` Marked ${result.entries_billed} entries as billed.`;
+                }
+                if (result.pdf_urls && result.pdf_urls.length > 0) {
+                    message += ` ${result.pdf_urls.length} PDF(s) uploaded.`;
+                }
+                if (result.errors && result.errors.length > 0) {
+                    message += ` Warnings: ${result.errors.join(', ')}`;
+                    showToast(message, 'warning', 10000);
+                } else {
+                    showToast(message, 'success', 5000);
+                }
+
+                // Reload page after a short delay to show updated status
+                setTimeout(() => {
+                    window.location.reload();
+                }, 2000);
+            } else {
+                showToast(`Error: ${result.detail || 'Failed to generate bills'}`, 'error');
+                button.textContent = originalText;
+                button.disabled = false;
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            showToast('Error generating bills. Please try again.', 'error');
+            button.textContent = originalText;
+            button.disabled = false;
+        }
+    }
+
+    function showToast(message, type = 'info', duration = 5000) {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+        
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.innerHTML = `
+            <span class="toast-message">${message}</span>
+            <button class="toast-close" onclick="this.parentElement.remove()">×</button>
+        `;
+        container.appendChild(toast);
+        
+        setTimeout(() => {
+            if (toast.parentElement) toast.remove();
+        }, duration);
+    }
+</script>
+{% endblock %}

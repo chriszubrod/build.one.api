@@ -1,0 +1,1 @@
+# Contract Labor Business Logic

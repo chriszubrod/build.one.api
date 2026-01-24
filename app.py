@@ -64,6 +64,13 @@ from modules.taxpayer_attachment.web.controller import router as taxpayer_attach
 from modules.legal.web.controller import router as legal_web_router
 from modules.payment_term.api.router import router as payment_term_api_router
 from modules.payment_term.web.controller import router as payment_term_web_router
+from modules.contract_labor.api.router import router as contract_labor_api_router
+from modules.contract_labor.web.controller import router as contract_labor_web_router
+from modules.search.api.router import router as search_api_router
+from modules.qa.api.router import router as qa_api_router
+from modules.anomaly.api.router import router as anomaly_api_router
+from modules.categorization.api.router import router as categorization_api_router
+from modules.copilot.api.router import router as copilot_api_router
 
 from integrations.intuit.qbo.auth.api.router import router as intuit_qbo_auth_api_router
 from integrations.intuit.qbo.company_info.api.router import router as intuit_qbo_company_info_api_router
@@ -173,6 +180,13 @@ app.include_router(taxpayer_attachment_web_router)
 app.include_router(legal_web_router)
 app.include_router(payment_term_api_router)
 app.include_router(payment_term_web_router)
+app.include_router(contract_labor_api_router)
+app.include_router(contract_labor_web_router)
+app.include_router(search_api_router)
+app.include_router(qa_api_router)
+app.include_router(anomaly_api_router)
+app.include_router(categorization_api_router)
+app.include_router(copilot_api_router)
 
 
 def get_settings():

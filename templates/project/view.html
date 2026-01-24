@@ -204,6 +204,7 @@
 {% endblock %}
 
 {% block aside %}
+    <!-- Folder/Excel Picker Panel -->
     <div class="aside-panel" id="folder-picker-panel">
         <div class="aside-panel-header">
             <h5 id="picker-title">Select Drive</h5>
@@ -230,6 +231,9 @@
             </div>
         </div>
     </div>
+    
+    <!-- AI Copilot Panel -->
+    {% include 'shared/partials/copilot.html' %}
 {% endblock %}
 
 {% block scripts %}
@@ -307,6 +311,9 @@
         let availableWorksheets = [];
 
         function openFolderPicker() {
+            // Close copilot if open
+            if (typeof closeCopilotPanel === 'function') closeCopilotPanel();
+            
             pickerMode = 'project';
             const panel = document.getElementById('folder-picker-panel');
             const sidebar = document.querySelector('.sidebar-right');
@@ -715,6 +722,9 @@
                 return;
             }
 
+            // Close copilot if open
+            if (typeof closeCopilotPanel === 'function') closeCopilotPanel();
+            
             pickerMode = 'module';
             currentModuleType = moduleId;
             currentModuleName = moduleName;
@@ -846,6 +856,9 @@
 
         // Excel Workbook Picker
         function openExcelPicker() {
+            // Close copilot if open
+            if (typeof closeCopilotPanel === 'function') closeCopilotPanel();
+            
             pickerMode = 'excel';
             const panel = document.getElementById('folder-picker-panel');
             const sidebar = document.querySelector('.sidebar-right');

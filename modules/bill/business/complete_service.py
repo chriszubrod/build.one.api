@@ -498,7 +498,14 @@ class BillCompleteService:
                     vendor_abbreviation = vendor.abbreviation or vendor.name or ""
                     bill_number = bill.bill_number or ""
                     description = line_item.description or ""
-                    price = str(line_item.price) if line_item.price is not None else ""
+                    # Format price with $ and commas (e.g., $10,000.00)
+                    price = ""
+                    if line_item.price is not None:
+                        try:
+                            price_val = float(line_item.price)
+                            price = f"${price_val:,.2f}"
+                        except (ValueError, TypeError):
+                            price = f"${line_item.price}"
                     # Format date as mm-dd-yyyy
                     bill_date = ""
                     if bill.bill_date:

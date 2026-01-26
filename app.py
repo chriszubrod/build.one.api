@@ -85,7 +85,10 @@ from integrations.ms.auth.api.router import router as ms_auth_api_router
 from integrations.ms.sharepoint.site.api.router import router as ms_sharepoint_site_api_router
 from integrations.ms.sharepoint.drive.api.router import router as ms_sharepoint_drive_api_router
 from integrations.ms.sharepoint.driveitem.api.router import router as ms_sharepoint_driveitem_api_router
+from integrations.ms.mail.message.api.router import router as ms_mail_api_router
 from integrations.intuit.qbo.account.api.router import router as qbo_account_api_router
+from agents.api.router import router as agents_api_router
+from agents.web.controller import router as agents_web_router
 
 
 app = FastAPI()
@@ -162,6 +165,7 @@ app.include_router(ms_auth_api_router)
 app.include_router(ms_sharepoint_site_api_router)
 app.include_router(ms_sharepoint_drive_api_router)
 app.include_router(ms_sharepoint_driveitem_api_router)
+app.include_router(ms_mail_api_router)
 app.include_router(vendor_type_api_router)
 app.include_router(vendor_type_web_router)
 app.include_router(taxpayer_api_router)
@@ -187,6 +191,8 @@ app.include_router(qa_api_router)
 app.include_router(anomaly_api_router)
 app.include_router(categorization_api_router)
 app.include_router(copilot_api_router)
+app.include_router(agents_api_router)
+app.include_router(agents_web_router)
 
 
 def get_settings():

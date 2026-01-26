@@ -2,6 +2,7 @@
 from decimal import Decimal
 from typing import Optional
 import re
+import logging
 from fastapi import APIRouter, Request, Depends
 from fastapi.templating import Jinja2Templates
 
@@ -17,6 +18,8 @@ from modules.sub_cost_code.business.service import SubCostCodeService
 from modules.project.business.service import ProjectService
 from modules.payment_term.business.service import PaymentTermService
 from modules.auth.business.service import get_current_user_web
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bill", tags=["web", "bill"])
 templates = Jinja2Templates(directory="templates")
@@ -113,12 +116,16 @@ async def list_bills(
             bill_dict['vendor_name'] = vendor_map[bill.vendor_id]
         bills_with_vendors.append(bill_dict)
     
+    # Get pending bill workflows (confirmed as "bill" but not yet processed)
+    pending_workflows = _get_pending_bill_workflows(current_user.get("tenant_id", 1))
+    
     return templates.TemplateResponse(
         "bill/list.html",
         {
             "request": request,
             "bills": bills_with_vendors,
             "vendors": vendors,
+            "pending_workflows": pending_workflows,
             "current_user": current_user,
             "current_path": request.url.path,
             "page": page,
@@ -136,6 +143,138 @@ async def list_bills(
             "sort_direction": sort_direction,
         },
     )
+
+
+def _get_pending_bill_workflows(tenant_id: int) -> list:
+    """
+    Get workflows confirmed as 'bill' that haven't been processed yet.
+    
+    Returns workflows that:
+    - Are in 'completed' state (email intake completed)
+    - Have confirmed_entity_type = 'bill'
+    - Don't have a completed child bill_processing workflow
+    """
+    try:
+        from agents.persistence.repo import WorkflowRepository
+        
+        repo = WorkflowRepository()
+        workflows = repo.read_by_tenant_and_state(tenant_id=tenant_id, state="completed")
+        
+        pending = []
+        for wf in workflows:
+            # Only process email_intake workflows, not child bill_processing workflows
+            if wf.workflow_type != "email_intake":
+                continue
+                
+            ctx = wf.context or {}
+            confirmed_type = ctx.get("confirmed_entity_type") or ctx.get("entity_type")
+            
+            if confirmed_type != "bill":
+                continue
+            
+            # Check if has completed child workflow
+            child_id = ctx.get("child_workflow_id")
+            child_state = None
+            created_bill_id = None
+            
+            if child_id:
+                # Normalize to lowercase for case-insensitive lookup
+                child = repo.read_by_public_id(child_id.lower())
+                if child:
+                    child_state = child.state
+                    if child.state == "completed":
+                        # Child workflow completed - skip this from pending list
+                        continue
+            
+            # Get email info for display
+            email = ctx.get("email", {})
+            classification = ctx.get("classification", {})
+            
+            pending.append({
+                "public_id": wf.public_id,
+                "subject": email.get("subject", "No subject"),
+                "from_address": email.get("from_address", "Unknown"),
+                "from_name": email.get("from_name"),
+                "received_at": email.get("received_at"),
+                "created_at": wf.created_at,
+                "confidence": classification.get("confidence", 0),
+                "child_workflow_id": child_id,
+                "child_state": child_state,
+                "has_error": child_state == "needs_review" if child_state else False,
+            })
+        
+        # Sort by created_at descending
+        pending.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+        
+        return pending
+        
+    except Exception as e:
+        logger.warning(f"Error getting pending bill workflows: {e}")
+        return []
+
+
+def _get_workflow_for_bill(bill_public_id: str) -> Optional[dict]:
+    """
+    Find the workflow that created this bill.
+    
+    Searches for bill_processing workflows with created_bill_public_id matching the bill.
+    Returns the workflow context including email conversation.
+    """
+    try:
+        from agents.persistence.repo import WorkflowRepository
+        from shared.database import get_connection
+        
+        repo = WorkflowRepository()
+        
+        # Use direct SQL to find the workflow with this bill in context
+        # More efficient than loading all workflows
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT PublicId
+                FROM agents.Workflow
+                WHERE WorkflowType = 'bill_processing'
+                  AND JSON_VALUE(Context, '$.created_bill_public_id') = ?
+            """, (bill_public_id,))
+            row = cursor.fetchone()
+            
+            if not row:
+                return None
+            
+            wf_public_id = row[0]
+        
+        # Now fetch the full workflow
+        wf = repo.read_by_public_id(str(wf_public_id).lower())
+        if not wf:
+            return None
+        
+        ctx = wf.context or {}
+        
+        # Get parent for full conversation
+        parent_id = ctx.get("parent_workflow_id")
+        parent_ctx = {}
+        
+        if parent_id:
+            parent = repo.read_by_public_id(parent_id.lower() if isinstance(parent_id, str) else parent_id)
+            if parent:
+                parent_ctx = parent.context or {}
+        
+        # Merge conversation from parent or child
+        conversation = parent_ctx.get("conversation") or ctx.get("conversation") or []
+        
+        return {
+            "workflow_id": wf.public_id,
+            "parent_workflow_id": parent_id,
+            "conversation": conversation,
+            "email": parent_ctx.get("email") or ctx.get("email", {}),
+            "classification": parent_ctx.get("classification") or ctx.get("classification", {}),
+            "extracted": ctx.get("extracted", {}),
+            "attachment_blob_urls": parent_ctx.get("attachment_blob_urls") or ctx.get("attachment_blob_urls", []),
+        }
+        
+    except Exception as e:
+        logger.warning(f"Error getting workflow for bill {bill_public_id}: {e}")
+        return None
 
 
 @router.get("/create")
@@ -206,6 +345,13 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
                     if project.id == line_item.project_id:
                         line_item_dict['project_name'] = project.name
                         break
+            
+            # Get sub_cost_code details if line item has a sub_cost_code_id
+            if line_item.sub_cost_code_id:
+                sub_cost_code = SubCostCodeService().read_by_id(id=str(line_item.sub_cost_code_id))
+                if sub_cost_code:
+                    line_item_dict['sub_cost_code_number'] = sub_cost_code.number
+                    line_item_dict['sub_cost_code_name'] = sub_cost_code.name
             
             # Get attachment for this line item (1-1 relationship)
             if line_item.public_id:
@@ -377,12 +523,22 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
     if payment_term_name:
         bill_dict['payment_term_name'] = payment_term_name
     
+    # Try to get workflow conversation if this bill was created from a workflow
+    workflow_conversation = None
+    workflow_data = None
+    if bill and bill.public_id:
+        workflow_data = _get_workflow_for_bill(bill.public_id)
+        if workflow_data:
+            workflow_conversation = workflow_data.get("conversation", [])
+    
     return templates.TemplateResponse(
         "bill/view.html",
         {
             "request": request,
             "bill": bill_dict,
             "line_items": line_items_with_attachments,
+            "workflow_conversation": workflow_conversation,
+            "workflow_data": workflow_data,
             "current_user": current_user,
             "current_path": request.url.path,
         },
@@ -466,6 +622,14 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
     if payment_term_public_id:
         bill_dict['payment_term_public_id'] = payment_term_public_id
     
+    # Fetch workflow data for email conversation display
+    workflow_conversation = None
+    workflow_data = None
+    if bill and bill.public_id:
+        workflow_data = _get_workflow_for_bill(bill.public_id)
+        if workflow_data:
+            workflow_conversation = workflow_data.get("conversation", [])
+    
     return templates.TemplateResponse(
         "bill/edit.html",
         {
@@ -476,6 +640,8 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
             "sub_cost_codes": sub_cost_codes,
             "projects": projects,
             "payment_terms": payment_terms,
+            "workflow_conversation": workflow_conversation,
+            "workflow_data": workflow_data,
             "current_user": current_user,
             "current_path": request.url.path,
         },

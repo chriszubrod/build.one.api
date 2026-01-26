@@ -4,6 +4,7 @@
 
 {% block head %}
     <link rel="stylesheet" href="{{ url_for('static', path='css/bill.css') }}?v={{ range(1000, 9999) | random }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='css/agent.css') }}?v={{ range(1000, 9999) | random }}">
 {% endblock %}
 
 {% block content %}
@@ -228,7 +229,7 @@
                                                 </div>
                                             </div>
                                             
-                                            <!-- Attachment Section with Buttons -->
+                                            <!-- Attachment Section -->
                                             <div class="line-item-attachment-section" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed #e0e0e0;">
                                                 <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
                                                     <div style="display: flex; align-items: center; gap: 0.5rem;">
@@ -241,15 +242,23 @@
                                                             <span class="attachment-status" style="font-size: 0.85rem; color: var(--color-text-muted); white-space: nowrap;">No file attached</span>
                                                         </div>
                                                     </div>
-                                                    <div class="attachment-display" style="display: {% if line_item.attachment %}block{% else %}none{% endif %};">
+                                                    <div class="attachment-display" style="display: {% if line_item.attachment %}flex{% else %}none{% endif %}; align-items: center; gap: 0.5rem;">
                                                         {% if line_item.attachment %}
-                                                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background-color: var(--color-success-bg, #e8f5e9); border-radius: 4px; width: fit-content; max-width: 100%;">
-                                                            <span class="attachment-icon" style="font-size: 1.2rem;">📎</span>
-                                                            <a href="/attachment/view/{{ line_item.attachment.public_id }}" class="attachment-filename" target="_blank" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-primary); max-width: 500px;" title="{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}">
+                                                        <a href="#" 
+                                                           class="attachment-preview-link" 
+                                                           onclick="showAttachmentPreview('{{ line_item.attachment.public_id }}', '{{ line_item.attachment.content_type or '' }}', '{{ line_item.attachment.file_extension or '' }}', '{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}'); return false;"
+                                                           style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background-color: var(--color-success-bg, #e8f5e9); border-radius: 4px; text-decoration: none; cursor: pointer;"
+                                                           data-attachment-id="{{ line_item.attachment.public_id }}"
+                                                           data-content-type="{{ line_item.attachment.content_type or '' }}"
+                                                           data-file-extension="{{ line_item.attachment.file_extension or '' }}"
+                                                           data-filename="{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}">
+                                                            <span class="attachment-icon" style="font-size: 1.1rem;">📎</span>
+                                                            <span class="attachment-filename" style="font-weight: 500; color: var(--color-primary); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}">
                                                                 {{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}
-                                                            </a>
-                                                            <button type="button" class="btn btn-danger btn-sm attachment-remove-btn" onclick="removeAttachment(this)" title="Remove attachment" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">✕</button>
-                                                        </div>
+                                                            </span>
+                                                        </a>
+                                                        <a href="/attachment/view/{{ line_item.attachment.public_id }}" class="btn btn-secondary btn-sm" target="_blank" title="Open in new tab" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">↗</a>
+                                                        <button type="button" class="btn btn-danger btn-sm attachment-remove-btn" onclick="removeAttachment(this)" title="Remove attachment" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">✕</button>
                                                         {% endif %}
                                                     </div>
                                                     <div style="display: flex; gap: 0.5rem; margin-left: auto;">
@@ -424,6 +433,129 @@
                     </div>
                 </div>
             </form>
+            
+            <!-- Email Conversation Section -->
+            {% if workflow_conversation %}
+            <div class="agent-card" style="margin-top: 2rem;">
+                <div class="agent-card-header">
+                    <h2>Email Conversation</h2>
+                    <div style="display: flex; gap: 1rem; align-items: center;">
+                        <span class="agent-badge agent-badge--neutral">{{ workflow_conversation|length }} message{{ 's' if workflow_conversation|length != 1 else '' }}</span>
+                        {% if workflow_data and workflow_data.parent_workflow_id %}
+                        <a href="/agent/{{ workflow_data.parent_workflow_id }}" class="agent-link-subtle" target="_blank">View Workflow</a>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="agent-card-body" style="padding: 0;">
+                    <!-- Conversation controls -->
+                    <div style="padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--border-color, #e2e8f0); display: flex; gap: 1rem;">
+                        <a href="#" class="agent-link-subtle" onclick="expandAllBillMessages(); return false;">Expand All</a>
+                        <a href="#" class="agent-link-subtle" onclick="collapseAllBillMessages(); return false;">Collapse All</a>
+                    </div>
+                    
+                    <!-- Conversation thread -->
+                    <div class="agent-conversation-thread" id="bill-conversation-thread">
+                        {% for msg in workflow_conversation %}
+                        <div class="agent-conversation-message agent-message--collapsed {% if loop.last %}agent-conversation-message--selected{% endif %}" data-bill-msg-index="{{ loop.index0 }}">
+                            <div class="agent-message-header" onclick="toggleBillMessage({{ loop.index0 }})">
+                                <div class="agent-message-header-left">
+                                    <span class="agent-message-toggle">▶</span>
+                                    <div class="agent-message-from">
+                                        <strong>{{ msg.from_name or msg.from_address or 'Unknown' }}</strong>
+                                        {% if msg.has_attachments or (msg.attachments and msg.attachments|length > 0) %}
+                                        <span class="agent-header-attachment">📎</span>
+                                        {% endif %}
+                                        {% if loop.last %}
+                                        <span class="agent-badge agent-badge--info" style="margin-left: 0.5rem;">Final/Approval</span>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                <div class="agent-message-date">{{ msg.received_at[:10] if msg.received_at else '' }}</div>
+                            </div>
+                            <div class="agent-message-preview">{% set clean_body = (msg.body or '')|striptags|replace('\n', ' ')|replace('\r', '')|trim %}{{ (clean_body[:120] + '...') if clean_body|length > 120 else clean_body }}</div>
+                            <div class="agent-message-content">
+                                <div class="agent-message-envelope">
+                                    <div class="agent-envelope-row">
+                                        <span class="agent-envelope-label">From:</span>
+                                        <span class="agent-envelope-value">{{ msg.from_name or '' }} &lt;{{ msg.from_address }}&gt;</span>
+                                    </div>
+                                    {% if msg.to_recipients %}
+                                    <div class="agent-envelope-row">
+                                        <span class="agent-envelope-label">To:</span>
+                                        <span class="agent-envelope-value">{{ msg.to_recipients|join(', ') }}</span>
+                                    </div>
+                                    {% endif %}
+                                    {% if msg.subject %}
+                                    <div class="agent-envelope-row">
+                                        <span class="agent-envelope-label">Subject:</span>
+                                        <span class="agent-envelope-value">{{ msg.subject }}</span>
+                                    </div>
+                                    {% endif %}
+                                </div>
+                                
+                                <div class="agent-message-body-section">
+                                    <div class="agent-message-body {{ 'agent-email-body--html' if msg.body_type == 'html' else '' }}">
+                                        {% if msg.body_type == 'html' %}
+                                            {{ msg.body | safe }}
+                                        {% else %}
+                                            <pre style="white-space: pre-wrap; font-family: inherit; margin: 0;">{{ msg.body or '' }}</pre>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    
+                    {% if workflow_data and workflow_data.extracted %}
+                    <!-- Extracted Fields Section -->
+                    <div style="padding: 1rem 1.25rem; border-top: 1px solid var(--border-color, #e2e8f0); background: var(--bg-muted, #f8f9fa);">
+                        <h6 style="margin: 0 0 0.75rem 0; font-size: 0.9rem; color: var(--text-muted, #6c757d);">Extracted from Email</h6>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.75rem; font-size: 0.9rem;">
+                            {% if workflow_data.extracted.sub_cost_code %}
+                            <div class="agent-badge agent-badge--neutral" style="padding: 0.5rem 0.75rem;">
+                                <strong>Sub Cost Code:</strong> {{ workflow_data.extracted.sub_cost_code }}
+                            </div>
+                            {% endif %}
+                            {% if workflow_data.extracted.line_description %}
+                            <div class="agent-badge agent-badge--neutral" style="padding: 0.5rem 0.75rem;">
+                                <strong>Description:</strong> {{ workflow_data.extracted.line_description[:50] }}{% if workflow_data.extracted.line_description|length > 50 %}...{% endif %}
+                            </div>
+                            {% endif %}
+                            {% if workflow_data.extracted.project_address %}
+                            <div class="agent-badge agent-badge--neutral" style="padding: 0.5rem 0.75rem;">
+                                <strong>Project:</strong> {{ workflow_data.extracted.project_address[:40] }}{% if workflow_data.extracted.project_address|length > 40 %}...{% endif %}
+                            </div>
+                            {% endif %}
+                            {% if workflow_data.extracted.is_billable is not none %}
+                            <div class="agent-badge {% if workflow_data.extracted.is_billable %}agent-badge--success{% else %}agent-badge--warning{% endif %}" style="padding: 0.5rem 0.75rem;">
+                                <strong>Billable:</strong> {{ 'Yes' if workflow_data.extracted.is_billable else 'No' }}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+            
+            <!-- Attachment Preview Section (below form) -->
+            <div id="attachment-preview-section" class="bill-form-card" style="margin-top: 2rem; display: none;">
+                <div class="bill-form-card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h5 style="margin: 0; display: flex; align-items: center; gap: 0.5rem;">
+                        <span>📎</span>
+                        <span id="attachment-preview-filename">Attachment Preview</span>
+                    </h5>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <a id="attachment-preview-newtab" href="#" target="_blank" class="btn btn-secondary btn-sm" title="Open in new tab">↗ Open in New Tab</a>
+                    </div>
+                </div>
+                <div class="bill-form-card-body" style="padding: 0;">
+                    <div id="attachment-preview-content" style="min-height: 500px; background: #f8f9fa;">
+                        <!-- Preview content inserted by JavaScript -->
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -431,12 +563,155 @@
 
 {% block scripts %}
     <script>
+        // =====================
+        // Email Conversation Toggle Functions
+        // =====================
+        
+        function toggleBillMessage(index) {
+            const msg = document.querySelector(`[data-bill-msg-index="${index}"]`);
+            if (!msg) return;
+            
+            const isExpanded = msg.classList.contains('agent-message--expanded');
+            const toggle = msg.querySelector('.agent-message-toggle');
+            
+            if (isExpanded) {
+                msg.classList.remove('agent-message--expanded');
+                msg.classList.add('agent-message--collapsed');
+                if (toggle) toggle.textContent = '▶';
+            } else {
+                msg.classList.remove('agent-message--collapsed');
+                msg.classList.add('agent-message--expanded');
+                if (toggle) toggle.textContent = '▼';
+            }
+        }
+
+        function expandAllBillMessages() {
+            document.querySelectorAll('#bill-conversation-thread .agent-conversation-message').forEach(msg => {
+                msg.classList.remove('agent-message--collapsed');
+                msg.classList.add('agent-message--expanded');
+                const toggle = msg.querySelector('.agent-message-toggle');
+                if (toggle) toggle.textContent = '▼';
+            });
+        }
+
+        function collapseAllBillMessages() {
+            document.querySelectorAll('#bill-conversation-thread .agent-conversation-message').forEach(msg => {
+                msg.classList.remove('agent-message--expanded');
+                msg.classList.add('agent-message--collapsed');
+                const toggle = msg.querySelector('.agent-message-toggle');
+                if (toggle) toggle.textContent = '▶';
+            });
+        }
+
+        // =====================
+        // Attachment Preview Functions
+        // =====================
+        
+        let currentPreviewAttachmentId = null;
+        
+        function showAttachmentPreview(publicId, contentType, fileExtension, filename) {
+            const section = document.getElementById('attachment-preview-section');
+            const content = document.getElementById('attachment-preview-content');
+            const filenameEl = document.getElementById('attachment-preview-filename');
+            const newTabLink = document.getElementById('attachment-preview-newtab');
+            
+            if (!section || !content) return;
+            
+            // Update current preview tracking
+            currentPreviewAttachmentId = publicId;
+            
+            // Update filename display
+            if (filenameEl) filenameEl.textContent = filename || 'Attachment';
+            
+            // Update new tab link
+            if (newTabLink) newTabLink.href = `/attachment/view/${publicId}`;
+            
+            // Determine file type
+            const isPdf = (contentType || '').toLowerCase().includes('pdf') || 
+                          (fileExtension || '').toLowerCase() === '.pdf';
+            const isImage = (contentType || '').toLowerCase().startsWith('image/');
+            
+            // Generate preview content
+            if (isPdf) {
+                // PDF with toolbar hidden and no sidebar (navpanes=0)
+                content.innerHTML = `
+                    <iframe 
+                        src="/attachment/view/${publicId}#toolbar=0&navpanes=0&scrollbar=1&view=FitH"
+                        style="width: 100%; height: 600px; border: none;"
+                        title="PDF Preview">
+                    </iframe>`;
+            } else if (isImage) {
+                content.innerHTML = `
+                    <div style="padding: 1rem; text-align: center; background: #fff;">
+                        <img 
+                            src="/attachment/view/${publicId}" 
+                            alt="${filename || 'Attachment'}"
+                            style="max-width: 100%; max-height: 600px; object-fit: contain; border-radius: 4px;">
+                    </div>`;
+            } else {
+                content.innerHTML = `
+                    <div style="padding: 3rem; text-align: center; color: var(--color-text-muted);">
+                        <div style="font-size: 4rem; margin-bottom: 1rem;">📄</div>
+                        <div style="font-size: 1rem; margin-bottom: 0.5rem;">${filename || 'Attachment'}</div>
+                        <div style="font-size: 0.9rem; margin-bottom: 1.5rem; color: var(--color-text-muted);">Preview not available for this file type</div>
+                        <a href="/attachment/view/${publicId}" target="_blank" class="btn btn-primary">
+                            Open File
+                        </a>
+                    </div>`;
+            }
+            
+            // Show the section
+            section.style.display = 'block';
+            
+            // Highlight the clicked attachment link
+            document.querySelectorAll('.attachment-preview-link').forEach(link => {
+                if (link.dataset.attachmentId === publicId) {
+                    link.style.outline = '2px solid var(--color-primary)';
+                    link.style.outlineOffset = '2px';
+                } else {
+                    link.style.outline = 'none';
+                }
+            });
+            
+            // Scroll to preview section
+            section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+        
+        // Hide the attachment preview section
+        function hideAttachmentPreview() {
+            const section = document.getElementById('attachment-preview-section');
+            const content = document.getElementById('attachment-preview-content');
+            
+            if (section) section.style.display = 'none';
+            if (content) content.innerHTML = '';
+            currentPreviewAttachmentId = null;
+            
+            // Remove highlight from all attachment links
+            document.querySelectorAll('.attachment-preview-link').forEach(link => {
+                link.style.outline = 'none';
+            });
+        }
+        
+        // Auto-show first attachment on page load
+        function initializeFirstAttachmentPreview() {
+            const firstAttachmentLink = document.querySelector('.attachment-preview-link');
+            if (firstAttachmentLink) {
+                const { attachmentId, contentType, fileExtension, filename } = firstAttachmentLink.dataset;
+                if (attachmentId) {
+                    showAttachmentPreview(attachmentId, contentType, fileExtension, filename);
+                }
+            }
+        }
+        
         // Focus Vendor select on page load
         document.addEventListener('DOMContentLoaded', function() {
             const vendorSelect = document.getElementById('vendor_public_id');
             if (vendorSelect) {
                 vendorSelect.focus();
             }
+            
+            // Show first attachment preview if available
+            initializeFirstAttachmentPreview();
         });
 
         // Set DueDate equal to BillDate when BillDate is set
@@ -1173,9 +1448,18 @@
             if (uploadWrapper) uploadWrapper.style.display = 'none';
             if (displayWrapper) displayWrapper.style.display = 'block';
             
+            const filename = attachment.original_filename || attachment.filename || 'Attachment';
+            const contentType = attachment.content_type || '';
+            const fileExtension = attachment.file_extension || '';
+            
             if (filenameLink) {
-                filenameLink.textContent = attachment.original_filename || attachment.filename || 'Attachment';
+                filenameLink.textContent = filename;
                 filenameLink.href = `/attachment/view/${attachment.public_id}`;
+                // Make clicking the filename show the preview
+                filenameLink.onclick = function(e) {
+                    e.preventDefault();
+                    showAttachmentPreview(attachment.public_id, contentType, fileExtension, filename);
+                };
             }
             
             const lineItemPublicId = formElement.querySelector('.line-item-public-id').value;
@@ -1192,6 +1476,9 @@
                     displayContainer.title = 'File attached to line item';
                 }
             }
+            
+            // Show the new attachment in the preview section
+            showAttachmentPreview(attachment.public_id, contentType, fileExtension, filename);
         }
 
         function updateAttachmentLinkedState(formElement) {
@@ -1231,6 +1518,11 @@
                     } catch (e) {
                         console.warn('Could not delete attachment file:', e);
                     }
+                }
+                
+                // If the preview was showing this attachment, hide it
+                if (currentPreviewAttachmentId === attachmentPublicId) {
+                    hideAttachmentPreview();
                 }
                 
                 resetAttachmentDisplay(formElement);
@@ -1452,6 +1744,12 @@
         async function handleCompleteBill(event) {
             event.preventDefault();
             
+            // Cancel any pending auto-save to prevent race conditions
+            if (autoSaveTimeout) {
+                clearTimeout(autoSaveTimeout);
+                autoSaveTimeout = null;
+            }
+            
             const validationErrors = validateBillForm();
             if (validationErrors.length > 0) {
                 showToast(validationErrors.join(', '), 'error');
@@ -1481,28 +1779,41 @@
                 return;
             }
             
-            // Store pending completion info for background processing
-            const pendingBills = JSON.parse(sessionStorage.getItem('pendingBillCompletions') || '[]');
+            // Clean up stale pending entries (older than 5 minutes)
+            const now = Date.now();
+            const STALE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
+            let pendingBills = JSON.parse(sessionStorage.getItem('pendingBillCompletions') || '[]');
+            pendingBills = pendingBills.filter(b => (now - b.startTime) < STALE_THRESHOLD);
+            
+            // Check if this bill is already being processed (prevent duplicates)
+            const existingBill = pendingBills.find(b => b.publicId === billPublicId && b.status === 'processing');
+            if (existingBill) {
+                showToast(`Bill "${billNumber}" is already being processed.`, 'warning', 3000);
+                window.location.href = '/bill/list';
+                return;
+            }
+            
+            // Add pending completion info
             pendingBills.push({
                 publicId: billPublicId,
                 billNumber: billNumber,
-                startTime: Date.now(),
+                startTime: now,
                 status: 'processing'
             });
             sessionStorage.setItem('pendingBillCompletions', JSON.stringify(pendingBills));
             
-            // Start the Complete Bill API call in background (fire-and-forget with keepalive)
-            console.log('[Complete Bill] Starting background API call for:', billPublicId);
+            // Start the Complete Bill API call (fire and forget)
+            console.log('[Complete Bill] Starting API call for:', billPublicId);
             
+            // Fire the API call without waiting - let it complete in background
             fetch(`/api/v1/complete/bill/${billPublicId}`, {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
-                },
-                keepalive: true  // Ensures request completes even if page navigates
+                    'Content-Type': 'application/json'
+                }
             }).then(async response => {
                 console.log('[Complete Bill] Response received:', response.status);
+                
                 // Update the pending bill status in sessionStorage
                 const bills = JSON.parse(sessionStorage.getItem('pendingBillCompletions') || '[]');
                 const billIndex = bills.findIndex(b => b.publicId === billPublicId);
@@ -1528,6 +1839,8 @@
                     sessionStorage.setItem('pendingBillCompletions', JSON.stringify(bills));
                 }
             }).catch(error => {
+                console.error('[Complete Bill] Error:', error);
+                
                 // Update status on network error
                 const bills = JSON.parse(sessionStorage.getItem('pendingBillCompletions') || '[]');
                 const billIndex = bills.findIndex(b => b.publicId === billPublicId);
@@ -1539,15 +1852,9 @@
                 }
             });
             
-            // Show brief confirmation and navigate
-            showToast(`Bill "${billNumber}" submitted for completion. Syncing in background...`, 'info', 2000);
-            console.log('[Complete Bill] Request initiated, navigating to list page...');
-            
-            // Navigate to list page after a brief delay to ensure request is sent
-            setTimeout(() => {
-                console.log('[Complete Bill] Navigating now');
-                window.location.href = '/bill/list';
-            }, 1000);  // Increased from 500ms to ensure request is sent
+            // Immediately redirect to list page - don't wait for API response
+            showToast(`Processing "${billNumber}"... Redirecting to list.`, 'info', 2000);
+            window.location.href = '/bill/list';
             
             return;  // Skip the old synchronous flow below
             

@@ -1,0 +1,184 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Workflow Inbox - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/agent.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+<div class="agent-inbox">
+    <!-- Header -->
+    <div class="agent-header">
+        <div class="agent-header-left">
+            <h1>Workflow Inbox</h1>
+            <button id="poll-btn" class="btn btn-primary agent-poll-btn" onclick="pollInbox()">
+                <span class="agent-poll-icon">↻</span> Poll Inbox
+            </button>
+        </div>
+        <div class="agent-header-actions">
+            <a href="/agent/browse" class="btn btn-secondary">Browse Inbox</a>
+            <div class="agent-header-stats">
+                <span class="agent-stat">
+                    <span class="agent-stat-value">{{ metrics.active_workflows }}</span>
+                    <span class="agent-stat-label">Active</span>
+                </span>
+                <span class="agent-stat">
+                    <span class="agent-stat-value">{{ state_counts.get('awaiting_confirmation', 0) }}</span>
+                    <span class="agent-stat-label">Awaiting</span>
+                </span>
+                <span class="agent-stat agent-stat--alert">
+                    <span class="agent-stat-value">{{ state_counts.get('needs_review', 0) }}</span>
+                    <span class="agent-stat-label">Needs Review</span>
+                </span>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Poll Status Banner -->
+    <div id="poll-status" class="agent-poll-status" style="display: none;">
+        <span id="poll-status-icon">⏳</span>
+        <span id="poll-status-text">Polling inbox...</span>
+    </div>
+
+    <!-- Filter Tabs -->
+    <div class="agent-filters">
+        <a href="/agent/list" class="agent-filter-tab {{ 'active' if not selected_state else '' }}">
+            All
+            <span class="agent-filter-count">{{ workflows|length if not selected_state else state_counts.values()|sum }}</span>
+        </a>
+        <a href="/agent/list?state=awaiting_confirmation" class="agent-filter-tab {{ 'active' if selected_state == 'awaiting_confirmation' else '' }}">
+            Awaiting Confirmation
+            <span class="agent-filter-count">{{ state_counts.get('awaiting_confirmation', 0) }}</span>
+        </a>
+        <a href="/agent/list?state=needs_review" class="agent-filter-tab agent-filter-tab--alert {{ 'active' if selected_state == 'needs_review' else '' }}">
+            Needs Review
+            <span class="agent-filter-count">{{ state_counts.get('needs_review', 0) }}</span>
+        </a>
+        <a href="/agent/list?state=completed" class="agent-filter-tab {{ 'active' if selected_state == 'completed' else '' }}">
+            Completed
+            <span class="agent-filter-count">{{ state_counts.get('completed', 0) }}</span>
+        </a>
+    </div>
+
+    <!-- Workflow List -->
+    <div class="agent-list">
+        {% if workflows %}
+            {% for wf in workflows %}
+            <a href="/agent/{{ wf.public_id }}" class="agent-list-item {{ 'agent-list-item--alert' if wf.needs_attention else '' }}">
+                <div class="agent-list-item-status">
+                    {% if wf.state == 'completed' %}
+                        <span class="agent-status-icon agent-status-icon--completed">✓</span>
+                    {% elif wf.state == 'needs_review' %}
+                        <span class="agent-status-icon agent-status-icon--alert">!</span>
+                    {% elif wf.state == 'awaiting_approval' %}
+                        <span class="agent-status-icon agent-status-icon--waiting">○</span>
+                    {% else %}
+                        <span class="agent-status-icon agent-status-icon--processing">●</span>
+                    {% endif %}
+                </div>
+                <div class="agent-list-item-content">
+                    <div class="agent-list-item-header">
+                        <span class="agent-list-item-subject">{{ wf.subject or 'No subject' }}</span>
+                    </div>
+                    <div class="agent-list-item-details">
+                        <span class="agent-list-item-from">{{ wf.from_name or wf.from_address or 'Unknown sender' }}</span>
+                        <span class="agent-list-item-entity">
+                            {{ wf.entity_label }}
+                            {% if wf.confidence %}
+                            <span class="agent-confidence-small">({{ '{:.0%}'.format(wf.confidence) }})</span>
+                            {% endif %}
+                        </span>
+                    </div>
+                    <div class="agent-list-item-meta">
+                        {% if wf.has_attachments %}
+                            <span class="agent-list-item-attachment">📎</span>
+                        {% endif %}
+                        <span class="agent-list-item-state">{{ wf.state|replace('_', ' ')|title }}</span>
+                        <span class="agent-list-item-time">
+                            {% if wf.days_ago == 0 %}Today{% elif wf.days_ago == 1 %}Yesterday{% elif wf.days_ago %}{{ wf.days_ago }} days ago{% endif %}
+                        </span>
+                    </div>
+                </div>
+            </a>
+            {% endfor %}
+        {% else %}
+            <div class="agent-empty-state">
+                <div class="agent-empty-icon">📭</div>
+                <h3>No workflows found</h3>
+                <p>{% if selected_state %}No workflows with status "{{ selected_state|replace('_', ' ')|title }}"{% else %}Your inbox is empty{% endif %}</p>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+async function pollInbox() {
+    const btn = document.getElementById('poll-btn');
+    const status = document.getElementById('poll-status');
+    const statusIcon = document.getElementById('poll-status-icon');
+    const statusText = document.getElementById('poll-status-text');
+    
+    // Disable button and show status
+    btn.disabled = true;
+    btn.innerHTML = '<span class="agent-poll-icon agent-poll-spinning">↻</span> Polling...';
+    status.style.display = 'flex';
+    status.className = 'agent-poll-status agent-poll-status--loading';
+    statusIcon.textContent = '⏳';
+    statusText.textContent = 'Polling inbox for new emails...';
+    
+    try {
+        const response = await fetch('/api/v1/agents/poll/run', {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Bearer ' + getToken(),
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({})
+        });
+        
+        if (response.ok) {
+            const result = await response.json();
+            
+            // Show success
+            status.className = 'agent-poll-status agent-poll-status--success';
+            statusIcon.textContent = '✓';
+            
+            const parts = [];
+            if (result.new_workflows > 0) parts.push(`${result.new_workflows} new workflow(s)`);
+            if (result.replies_processed > 0) parts.push(`${result.replies_processed} reply(s) processed`);
+            if (result.reminders_sent > 0) parts.push(`${result.reminders_sent} reminder(s) sent`);
+            
+            if (parts.length > 0) {
+                statusText.textContent = parts.join(', ');
+                // Reload page after short delay to show new items
+                setTimeout(() => location.reload(), 1500);
+            } else {
+                statusText.textContent = 'No new items found';
+                setTimeout(() => { status.style.display = 'none'; }, 3000);
+            }
+        } else {
+            const error = await response.json();
+            status.className = 'agent-poll-status agent-poll-status--error';
+            statusIcon.textContent = '✗';
+            statusText.textContent = error.detail || 'Polling failed';
+        }
+    } catch (e) {
+        status.className = 'agent-poll-status agent-poll-status--error';
+        statusIcon.textContent = '✗';
+        statusText.textContent = 'Error: ' + e.message;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="agent-poll-icon">↻</span> Poll Inbox';
+    }
+}
+
+function getToken() {
+    // Get token from cookie
+    const match = document.cookie.match(/access_token=([^;]+)/);
+    return match ? match[1] : '';
+}
+</script>
+
+{% endblock %}

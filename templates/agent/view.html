@@ -1,0 +1,546 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}{{ workflow.entity_label or 'Workflow' }} - {{ workflow.vendor_name or 'Unknown' }} - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/agent.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+<div class="agent-detail-layout agent-detail-layout--single">
+    <!-- Back link -->
+    <div class="agent-back-link">
+        <a href="/agent/list">← Back to Workflows</a>
+    </div>
+
+    <!-- Main Content: Workflow Detail -->
+    <main class="agent-detail agent-detail--full">
+        <!-- Status Banner -->
+        {% if workflow.state == 'needs_review' %}
+        <div class="agent-alert-banner">
+            <div class="agent-alert-content">
+                <span class="agent-alert-icon">⚠️</span>
+                <span class="agent-alert-text">
+                    This workflow needs your attention.
+                    {% if workflow.triage_error %}Classification failed: {{ workflow.triage_error }}{% endif %}
+                    {% if workflow.parse_error %}Could not parse response: {{ workflow.parse_error }}{% endif %}
+                    {% if workflow.entity_error %}Entity creation failed: {{ workflow.entity_error }}{% endif %}
+                </span>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="retryWorkflow('{{ workflow.public_id }}')">Retry Classification</button>
+        </div>
+        {% endif %}
+
+        <!-- Entity Type Confirmation Card (for awaiting_confirmation state) -->
+        {% if workflow.state == 'awaiting_confirmation' %}
+        <div class="agent-card agent-card--highlight">
+            <div class="agent-card-header">
+                <h2>Confirm Entity Type</h2>
+            </div>
+            <div class="agent-card-body">
+                <p style="margin-bottom: 1rem;">
+                    The system classified this email as 
+                    <strong>{{ workflow.entity_label or 'Unknown' }}</strong>
+                    with {{ '{:.0%}'.format(workflow.classification_confidence or 0) }} confidence.
+                </p>
+                {% if workflow.classification_reasoning %}
+                <p style="margin-bottom: 1rem; color: var(--text-muted); font-size: 0.9rem;">
+                    <em>{{ workflow.classification_reasoning }}</em>
+                </p>
+                {% endif %}
+                
+                <div class="agent-confirm-form">
+                    <label for="entity-type-select" style="font-weight: 500; margin-bottom: 0.5rem; display: block;">
+                        Select entity type:
+                    </label>
+                    <select id="entity-type-select" class="agent-select" style="margin-bottom: 1rem;">
+                        <option value="bill" {% if workflow.entity_type == 'bill' %}selected{% endif %}>Bill (Vendor Invoice)</option>
+                        <option value="expense" {% if workflow.entity_type == 'expense' %}selected{% endif %}>Expense (Receipt/Reimbursement)</option>
+                        <option value="invoice" {% if workflow.entity_type == 'invoice' %}selected{% endif %}>Invoice (Customer Invoice)</option>
+                        <option value="contract" {% if workflow.entity_type == 'contract' %}selected{% endif %}>Contract (Agreement)</option>
+                        <option value="change_order" {% if workflow.entity_type == 'change_order' %}selected{% endif %}>Change Order</option>
+                        <option value="other" {% if workflow.entity_type == 'other' %}selected{% endif %}>Other (General Document)</option>
+                    </select>
+                    
+                    <button class="btn btn-primary" onclick="confirmEntityType('{{ workflow.public_id }}')">
+                        Confirm Type
+                    </button>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Completed Confirmation Card -->
+        {% if workflow.state == 'completed' and workflow.confirmed_entity_type %}
+        <div class="agent-card">
+            <div class="agent-card-header">
+                <h2>Classification Complete</h2>
+                <span class="agent-state-badge agent-state-badge--completed">Confirmed</span>
+            </div>
+            <div class="agent-card-body">
+                <p>
+                    This email was confirmed as: <strong>{{ workflow.entity_label or workflow.confirmed_entity_type }}</strong>
+                </p>
+                <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 0.5rem;">
+                    Entity-specific processing can now be triggered.
+                </p>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Email Conversation Card -->
+        <div class="agent-card">
+            <div class="agent-card-header">
+                <h2>Email Conversation</h2>
+                <div style="display: flex; gap: 1rem; align-items: center;">
+                    {% if workflow.message_count > 0 %}
+                    <span class="agent-badge agent-badge--neutral">💬 {{ workflow.message_count }} message{{ 's' if workflow.message_count != 1 else '' }}</span>
+                    {% endif %}
+                    {% if workflow.attachment_count > 0 %}
+                    <span class="agent-badge agent-badge--info">📎 {{ workflow.attachment_count }} attachment{{ 's' if workflow.attachment_count != 1 else '' }}</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="agent-card-body" style="padding: 0;">
+                {% if workflow.conversation and workflow.conversation|length > 0 %}
+                <!-- Conversation controls -->
+                <div style="padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--border-color, #e2e8f0); display: flex; gap: 1rem;">
+                    <a href="#" class="agent-link-subtle" onclick="expandAllMessages(); return false;">Expand All</a>
+                    <a href="#" class="agent-link-subtle" onclick="collapseAllMessages(); return false;">Collapse All</a>
+                </div>
+                
+                <!-- Conversation thread -->
+                <div class="agent-conversation-thread" id="conversation-thread">
+                    {% for msg in workflow.conversation %}
+                    <div class="agent-conversation-message agent-message--collapsed" data-msg-index="{{ loop.index0 }}">
+                        <div class="agent-message-header" onclick="toggleMessage({{ loop.index0 }})">
+                            <div class="agent-message-header-left">
+                                <span class="agent-message-toggle">▶</span>
+                                <div class="agent-message-from">
+                                    <strong>{{ msg.from_name or msg.from_address }}</strong>
+                                    {% if msg.has_attachments or (msg.attachments and msg.attachments|length > 0) %}
+                                    <span class="agent-header-attachment">📎</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <div class="agent-message-date">{{ msg.received_at[:10] if msg.received_at else '' }}</div>
+                        </div>
+                        <div class="agent-message-preview">{{ (msg.body[:120] + '...') if msg.body and msg.body|length > 120 else (msg.body or '') }}</div>
+                        <div class="agent-message-content">
+                            <div class="agent-message-envelope">
+                                <div class="agent-envelope-row">
+                                    <span class="agent-envelope-label">From:</span>
+                                    <span class="agent-envelope-value">{{ msg.from_name or '' }} &lt;{{ msg.from_address }}&gt;</span>
+                                </div>
+                                <div class="agent-envelope-row">
+                                    <span class="agent-envelope-label">To:</span>
+                                    <span class="agent-envelope-value">{{ msg.to_recipients|join(', ') if msg.to_recipients else '(none)' }}</span>
+                                </div>
+                                {% if msg.cc_recipients and msg.cc_recipients|length > 0 %}
+                                <div class="agent-envelope-row">
+                                    <span class="agent-envelope-label">CC:</span>
+                                    <span class="agent-envelope-value">{{ msg.cc_recipients|join(', ') }}</span>
+                                </div>
+                                {% endif %}
+                                <div class="agent-envelope-row">
+                                    <span class="agent-envelope-label">Date:</span>
+                                    <span class="agent-envelope-value">{{ msg.received_at or '' }}</span>
+                                </div>
+                                <div class="agent-envelope-row">
+                                    <span class="agent-envelope-label">Subject:</span>
+                                    <span class="agent-envelope-value"><strong>{{ msg.subject or '' }}</strong></span>
+                                </div>
+                            </div>
+
+                            {% if msg.attachments and msg.attachments|length > 0 %}
+                            <div class="agent-message-attachments">
+                                <div class="agent-attachments-grid">
+                                    {% for att in msg.attachments %}
+                                    <div class="agent-attachment-card" 
+                                         data-message-id="{{ msg.id }}"
+                                         data-attachment-idx="{{ loop.index0 }}"
+                                         data-name="{{ att.name or 'attachment' }}"
+                                         data-content-type="{{ att.contentType or att.content_type or 'application/octet-stream' }}">
+                                        <div class="agent-attachment-icon">📎</div>
+                                        <div class="agent-attachment-name">{{ att.name or 'Attachment' }}</div>
+                                        <div class="agent-attachment-size">{{ att.contentType or att.content_type or '' }}</div>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            {% endif %}
+                            
+                            <div class="agent-message-body-section">
+                                <div class="agent-message-body {{ 'agent-email-body--html' if msg.body_type == 'html' else '' }}">
+                                    {% if msg.body_type == 'html' %}
+                                        {{ msg.body | safe }}
+                                    {% else %}
+                                        <pre style="white-space: pre-wrap; font-family: inherit; margin: 0;">{{ msg.body or '' }}</pre>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <!-- Fallback to single email display -->
+                <div style="padding: 1.25rem;">
+                    <div class="agent-email">
+                        <div class="agent-email-header">
+                            <div class="agent-email-from">
+                                <strong>From:</strong> {{ workflow.email_from or 'Unknown' }}
+                            </div>
+                            <div class="agent-email-subject">
+                                <strong>Subject:</strong> {{ workflow.email_subject or 'No subject' }}
+                            </div>
+                        </div>
+                        {% if workflow.email_body %}
+                            {% if workflow.email_body_type == 'html' %}
+                            <div class="agent-email-body agent-email-body--html">
+                                {{ workflow.email_body | safe }}
+                            </div>
+                            {% else %}
+                            <div class="agent-email-body">
+                                <pre style="white-space: pre-wrap; font-family: inherit;">{{ workflow.email_body }}</pre>
+                            </div>
+                            {% endif %}
+                        {% else %}
+                        <div class="agent-email-body">
+                            <em>Email body not available</em>
+                        </div>
+                        {% endif %}
+                        
+                        {% if workflow.attachments %}
+                        <div class="agent-attachments" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border-subtle);">
+                            <strong>Attachments:</strong>
+                            <ul style="margin: 0.5rem 0; padding-left: 1.5rem;">
+                                {% for att in workflow.attachments %}
+                                <li>📎 {{ att.name }} <span style="color: var(--text-muted);">({{ att.content_type }})</span></li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Approval Status Card (if applicable) -->
+        {% if workflow.approval_sent_to %}
+        <div class="agent-card">
+            <div class="agent-card-header">
+                <h2>Approval Status</h2>
+            </div>
+            <div class="agent-card-body">
+                <div class="agent-detail-grid">
+                    <div class="agent-detail-row">
+                        <span class="agent-detail-label">Sent To</span>
+                        <span class="agent-detail-value">{{ workflow.approval_sent_to }}</span>
+                    </div>
+                    <div class="agent-detail-row">
+                        <span class="agent-detail-label">Sent At</span>
+                        <span class="agent-detail-value">{{ workflow.approval_sent_at or 'Unknown' }}</span>
+                    </div>
+                    {% if workflow.approval_decision %}
+                    <div class="agent-detail-row">
+                        <span class="agent-detail-label">Decision</span>
+                        <span class="agent-detail-value agent-decision--{{ workflow.approval_decision }}">
+                            {{ workflow.approval_decision|title }}
+                        </span>
+                    </div>
+                    {% endif %}
+                    {% if workflow.cost_code %}
+                    <div class="agent-detail-row">
+                        <span class="agent-detail-label">Cost Code</span>
+                        <span class="agent-detail-value">{{ workflow.cost_code }}</span>
+                    </div>
+                    {% endif %}
+                    {% if workflow.reminder_count > 0 %}
+                    <div class="agent-detail-row">
+                        <span class="agent-detail-label">Reminders Sent</span>
+                        <span class="agent-detail-value">{{ workflow.reminder_count }}</span>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Timeline Card -->
+        <div class="agent-card">
+            <div class="agent-card-header">
+                <h2>Timeline</h2>
+            </div>
+            <div class="agent-card-body">
+                <div class="agent-timeline">
+                    {% for event in workflow.events %}
+                    <div class="agent-timeline-item">
+                        <div class="agent-timeline-dot"></div>
+                        <div class="agent-timeline-content">
+                            <div class="agent-timeline-title">
+                                {% if event.to_state %}
+                                    {{ event.from_state or 'start' }} → {{ event.to_state }}
+                                {% elif event.step_name %}
+                                    {{ event.step_name }}
+                                {% else %}
+                                    {{ event.type }}
+                                {% endif %}
+                            </div>
+                            <div class="agent-timeline-meta">
+                                {{ event.created_at }} • {{ event.created_by or 'system' }}
+                            </div>
+                        </div>
+                    </div>
+                    {% else %}
+                    <div class="agent-empty-state agent-empty-state--small">
+                        No events recorded yet
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+    </main>
+</div>
+
+<script>
+async function sendReminder(publicId) {
+    if (!confirm('Send a reminder email for this invoice?')) return;
+    
+    try {
+        const response = await fetch(`/api/v1/agents/workflows/${publicId}/reminder`, {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Bearer ' + getToken(),
+                'Content-Type': 'application/json'
+            }
+        });
+        if (response.ok) {
+            alert('Reminder sent successfully');
+            location.reload();
+        } else {
+            alert('Failed to send reminder');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+async function retryWorkflow(publicId) {
+    if (!confirm('Retry this workflow?')) return;
+    
+    try {
+        const response = await fetch(`/api/v1/agents/workflows/${publicId}/retry`, {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Bearer ' + getToken(),
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({})
+        });
+        if (response.ok) {
+            alert('Workflow queued for retry');
+            location.reload();
+        } else {
+            alert('Failed to retry workflow');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+async function confirmEntityType(publicId) {
+    const entityType = document.getElementById('entity-type-select').value;
+    
+    try {
+        const response = await fetch(`/api/v1/agents/workflows/${publicId}/confirm-type`, {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Bearer ' + getToken(),
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ entity_type: entityType })
+        });
+        if (response.ok) {
+            window.location.href = '/agent/list';
+        } else {
+            const data = await response.json();
+            alert('Failed to confirm type: ' + (data.detail || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+function getToken() {
+    // Get token from cookie or session storage
+    return document.cookie.split('; ').find(row => row.startsWith('access_token='))?.split('=')[1] || '';
+}
+
+// Message toggle functions
+function toggleMessage(index) {
+    const msg = document.querySelector(`[data-msg-index="${index}"]`);
+    if (!msg) return;
+    
+    const isExpanded = msg.classList.contains('agent-message--expanded');
+    const toggle = msg.querySelector('.agent-message-toggle');
+    
+    if (isExpanded) {
+        msg.classList.remove('agent-message--expanded');
+        msg.classList.add('agent-message--collapsed');
+        if (toggle) toggle.textContent = '▶';
+    } else {
+        msg.classList.remove('agent-message--collapsed');
+        msg.classList.add('agent-message--expanded');
+        if (toggle) toggle.textContent = '▼';
+    }
+}
+
+function expandAllMessages() {
+    document.querySelectorAll('.agent-conversation-message').forEach(msg => {
+        msg.classList.remove('agent-message--collapsed');
+        msg.classList.add('agent-message--expanded');
+        const toggle = msg.querySelector('.agent-message-toggle');
+        if (toggle) toggle.textContent = '▼';
+    });
+}
+
+function collapseAllMessages() {
+    document.querySelectorAll('.agent-conversation-message').forEach(msg => {
+        msg.classList.remove('agent-message--expanded');
+        msg.classList.add('agent-message--collapsed');
+        const toggle = msg.querySelector('.agent-message-toggle');
+        if (toggle) toggle.textContent = '▶';
+    });
+}
+
+// Attachment preview
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+async function previewAttachment(messageId, attachmentIndex, name, contentType) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('attachment-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'attachment-modal';
+        modal.className = 'agent-modal';
+        modal.innerHTML = `
+            <div class="agent-modal-backdrop" onclick="closeAttachmentModal()"></div>
+            <div class="agent-modal-content">
+                <div class="agent-modal-header">
+                    <h3 id="attachment-modal-title">Attachment</h3>
+                    <button class="agent-modal-close" onclick="closeAttachmentModal()">×</button>
+                </div>
+                <div class="agent-modal-body" id="attachment-modal-body">
+                    <div class="agent-detail-loading">
+                        <span class="agent-poll-icon agent-poll-spinning">↻</span> Loading attachment...
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal with loading state
+    modal.classList.add('agent-modal--visible');
+    document.getElementById('attachment-modal-title').textContent = name;
+    const modalBody = document.getElementById('attachment-modal-body');
+    modalBody.innerHTML = `
+        <div class="agent-detail-loading">
+            <span class="agent-poll-icon agent-poll-spinning">↻</span> Loading attachment...
+        </div>
+    `;
+    
+    try {
+        // Fetch attachment content
+        const response = await fetch(`/api/v1/agents/inbox/email/${encodeURIComponent(messageId)}/attachment/${attachmentIndex}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': 'Bearer ' + getToken(),
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error('Failed to load attachment');
+        }
+        
+        const isImage = contentType.startsWith('image/');
+        const isPdf = contentType === 'application/pdf';
+        const isText = contentType.startsWith('text/') || contentType === 'application/json';
+        
+        if (isImage) {
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            modalBody.innerHTML = `
+                <div class="agent-attachment-preview agent-attachment-preview--image">
+                    <img src="${url}" alt="${escapeHtml(name)}" onload="this.parentElement.classList.add('loaded')">
+                </div>
+            `;
+        } else if (isPdf) {
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            modalBody.innerHTML = `
+                <div class="agent-attachment-preview agent-attachment-preview--pdf">
+                    <iframe src="${url}#navpanes=0&scrollbar=1&view=FitH" title="${escapeHtml(name)}"></iframe>
+                </div>
+            `;
+        } else if (isText) {
+            const text = await response.text();
+            modalBody.innerHTML = `
+                <div class="agent-attachment-preview agent-attachment-preview--text">
+                    <pre>${escapeHtml(text)}</pre>
+                </div>
+            `;
+        } else {
+            // Can't preview, offer download
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            modalBody.innerHTML = `
+                <div class="agent-attachment-preview agent-attachment-preview--unsupported">
+                    <div class="agent-unsupported-icon">📎</div>
+                    <p>Preview not available for this file type.</p>
+                    <p class="agent-file-type">${contentType}</p>
+                    <a href="${url}" download="${escapeHtml(name)}" class="btn btn-primary">Download File</a>
+                </div>
+            `;
+        }
+    } catch (e) {
+        modalBody.innerHTML = `
+            <div class="agent-attachment-preview agent-attachment-preview--error">
+                <div class="agent-empty-icon">⚠️</div>
+                <p>Could not load attachment</p>
+                <p class="agent-error-detail">${escapeHtml(e.message)}</p>
+            </div>
+        `;
+    }
+}
+
+function closeAttachmentModal() {
+    const modal = document.getElementById('attachment-modal');
+    if (modal) {
+        modal.classList.remove('agent-modal--visible');
+    }
+}
+
+// Attachment click handler via event delegation
+document.addEventListener('click', (e) => {
+    const card = e.target.closest('.agent-attachment-card');
+    if (card) {
+        const messageId = card.dataset.messageId;
+        const attachmentIdx = parseInt(card.dataset.attachmentIdx, 10);
+        const name = card.dataset.name;
+        const contentType = card.dataset.contentType;
+        previewAttachment(messageId, attachmentIdx, name, contentType);
+    }
+});
+</script>
+
+{% endblock %}

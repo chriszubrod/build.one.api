@@ -4,6 +4,9 @@
 
 {% block head %}
     <link rel="stylesheet" href="{{ url_for('static', path='css/bill.css') }}?v={{ range(1000, 9999) | random }}">
+    {% if workflow_conversation %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/agent.css') }}?v={{ range(1000, 9999) | random }}">
+    {% endif %}
 {% endblock %}
 
 {% block content %}
@@ -97,6 +100,11 @@
                                     <span>Project: {{ line_item.project_name }}</span>
                                 </div>
                                 {% endif %}
+                                {% if line_item.sub_cost_code_number %}
+                                <div class="line-item-metadata-item">
+                                    <span>Sub Cost Code: {{ line_item.sub_cost_code_number }}{% if line_item.sub_cost_code_name %} - {{ line_item.sub_cost_code_name }}{% endif %}</span>
+                                </div>
+                                {% endif %}
                                 {% if line_item.quantity is not none %}
                                 <div class="line-item-metadata-item">
                                     <span>Quantity: {{ line_item.quantity }}</span>
@@ -122,11 +130,9 @@
                                     <span>Billable: {{ 'Yes' if line_item.is_billable else 'No' }}</span>
                                 </div>
                                 {% endif %}
-                                {% if line_item.markup is not none %}
                                 <div class="line-item-metadata-item">
-                                    <span>Markup: {{ "%.2f"|format(line_item.markup * 100) }}%</span>
+                                    <span>Markup: {% if line_item.markup is not none and line_item.markup != 0 %}{{ "%.2f"|format(line_item.markup * 100) }}%{% else %}N/A{% endif %}</span>
                                 </div>
-                                {% endif %}
                             </div>
                             
                             {% if line_item.attachment %}
@@ -210,6 +216,110 @@
         </div>
         {% endif %}
 
+        {% if workflow_conversation %}
+        <div class="agent-card">
+            <div class="agent-card-header">
+                <h2>Email Conversation</h2>
+                <div style="display: flex; gap: 1rem; align-items: center;">
+                    <span class="agent-badge agent-badge--neutral">💬 {{ workflow_conversation|length }} message{{ 's' if workflow_conversation|length != 1 else '' }}</span>
+                    {% if workflow_data and workflow_data.parent_workflow_id %}
+                    <a href="/agent/{{ workflow_data.parent_workflow_id }}" class="agent-link-subtle" target="_blank">View Workflow →</a>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="agent-card-body" style="padding: 0;">
+                <!-- Conversation controls -->
+                <div style="padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--border-color, #e2e8f0); display: flex; gap: 1rem;">
+                    <a href="#" class="agent-link-subtle" onclick="expandAllBillMessages(); return false;">Expand All</a>
+                    <a href="#" class="agent-link-subtle" onclick="collapseAllBillMessages(); return false;">Collapse All</a>
+                </div>
+                
+                <!-- Conversation thread -->
+                <div class="agent-conversation-thread" id="bill-conversation-thread">
+                    {% for msg in workflow_conversation %}
+                    <div class="agent-conversation-message agent-message--collapsed {% if loop.last %}agent-conversation-message--selected{% endif %}" data-bill-msg-index="{{ loop.index0 }}">
+                        <div class="agent-message-header" onclick="toggleBillMessage({{ loop.index0 }})">
+                            <div class="agent-message-header-left">
+                                <span class="agent-message-toggle">▶</span>
+                                <div class="agent-message-from">
+                                    <strong>{{ msg.from_name or msg.from_address or 'Unknown' }}</strong>
+                                    {% if msg.has_attachments or (msg.attachments and msg.attachments|length > 0) %}
+                                    <span class="agent-header-attachment">📎</span>
+                                    {% endif %}
+                                    {% if loop.last %}
+                                    <span class="agent-badge agent-badge--info" style="margin-left: 0.5rem;">Final/Approval</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <div class="agent-message-date">{{ msg.received_at[:10] if msg.received_at else '' }}</div>
+                        </div>
+                        <div class="agent-message-preview">{% set clean_body = (msg.body or '')|striptags|replace('\n', ' ')|replace('\r', '')|trim %}{{ (clean_body[:120] + '...') if clean_body|length > 120 else clean_body }}</div>
+                        <div class="agent-message-content">
+                            <div class="agent-message-envelope">
+                                <div class="agent-envelope-row">
+                                    <span class="agent-envelope-label">From:</span>
+                                    <span class="agent-envelope-value">{{ msg.from_name or '' }} &lt;{{ msg.from_address }}&gt;</span>
+                                </div>
+                                {% if msg.to_recipients %}
+                                <div class="agent-envelope-row">
+                                    <span class="agent-envelope-label">To:</span>
+                                    <span class="agent-envelope-value">{{ msg.to_recipients|join(', ') }}</span>
+                                </div>
+                                {% endif %}
+                                {% if msg.subject %}
+                                <div class="agent-envelope-row">
+                                    <span class="agent-envelope-label">Subject:</span>
+                                    <span class="agent-envelope-value">{{ msg.subject }}</span>
+                                </div>
+                                {% endif %}
+                            </div>
+                            
+                            <div class="agent-message-body-section">
+                                <div class="agent-message-body {{ 'agent-email-body--html' if msg.body_type == 'html' else '' }}">
+                                    {% if msg.body_type == 'html' %}
+                                        {{ msg.body | safe }}
+                                    {% else %}
+                                        <pre style="white-space: pre-wrap; font-family: inherit; margin: 0;">{{ msg.body or '' }}</pre>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                
+                {% if workflow_data and workflow_data.extracted %}
+                <!-- Extracted Fields Section -->
+                <div style="padding: 1rem 1.25rem; border-top: 1px solid var(--border-color, #e2e8f0); background: var(--bg-muted, #f8f9fa);">
+                    <h6 style="margin: 0 0 0.75rem 0; font-size: 0.9rem; color: var(--text-muted, #6c757d);">📋 Extracted from Email</h6>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.75rem; font-size: 0.9rem;">
+                        {% if workflow_data.extracted.sub_cost_code %}
+                        <div class="agent-badge agent-badge--neutral" style="padding: 0.5rem 0.75rem;">
+                            <strong>Sub Cost Code:</strong> {{ workflow_data.extracted.sub_cost_code }}
+                        </div>
+                        {% endif %}
+                        {% if workflow_data.extracted.line_description %}
+                        <div class="agent-badge agent-badge--neutral" style="padding: 0.5rem 0.75rem;">
+                            <strong>Description:</strong> {{ workflow_data.extracted.line_description[:50] }}{% if workflow_data.extracted.line_description|length > 50 %}...{% endif %}
+                        </div>
+                        {% endif %}
+                        {% if workflow_data.extracted.project_address %}
+                        <div class="agent-badge agent-badge--neutral" style="padding: 0.5rem 0.75rem;">
+                            <strong>Project:</strong> {{ workflow_data.extracted.project_address[:40] }}{% if workflow_data.extracted.project_address|length > 40 %}...{% endif %}
+                        </div>
+                        {% endif %}
+                        {% if workflow_data.extracted.is_billable is not none %}
+                        <div class="agent-badge {% if workflow_data.extracted.is_billable %}agent-badge--success{% else %}agent-badge--warning{% endif %}" style="padding: 0.5rem 0.75rem;">
+                            <strong>Billable:</strong> {{ 'Yes' if workflow_data.extracted.is_billable else 'No' }}
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+
         <div class="bill-actions-card">
             <h6>Actions</h6>
             <div class="bill-actions-list">
@@ -224,6 +334,43 @@
 
 {% block scripts %}
     <script>
+        // Message toggle functions for email conversation
+        function toggleBillMessage(index) {
+            const msg = document.querySelector(`[data-bill-msg-index="${index}"]`);
+            if (!msg) return;
+            
+            const isExpanded = msg.classList.contains('agent-message--expanded');
+            const toggle = msg.querySelector('.agent-message-toggle');
+            
+            if (isExpanded) {
+                msg.classList.remove('agent-message--expanded');
+                msg.classList.add('agent-message--collapsed');
+                if (toggle) toggle.textContent = '▶';
+            } else {
+                msg.classList.remove('agent-message--collapsed');
+                msg.classList.add('agent-message--expanded');
+                if (toggle) toggle.textContent = '▼';
+            }
+        }
+
+        function expandAllBillMessages() {
+            document.querySelectorAll('#bill-conversation-thread .agent-conversation-message').forEach(msg => {
+                msg.classList.remove('agent-message--collapsed');
+                msg.classList.add('agent-message--expanded');
+                const toggle = msg.querySelector('.agent-message-toggle');
+                if (toggle) toggle.textContent = '▼';
+            });
+        }
+
+        function collapseAllBillMessages() {
+            document.querySelectorAll('#bill-conversation-thread .agent-conversation-message').forEach(msg => {
+                msg.classList.remove('agent-message--expanded');
+                msg.classList.add('agent-message--collapsed');
+                const toggle = msg.querySelector('.agent-message-toggle');
+                if (toggle) toggle.textContent = '▶';
+            });
+        }
+
         async function deleteBill() {
             if (confirm('Are you sure you want to delete this bill? This action cannot be undone.')) {
                 const payload = {

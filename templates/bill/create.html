@@ -1392,6 +1392,12 @@
         async function handleCompleteBill(event) {
             event.preventDefault();
             
+            // Cancel any pending auto-save to prevent race conditions
+            if (autoSaveTimeout) {
+                clearTimeout(autoSaveTimeout);
+                autoSaveTimeout = null;
+            }
+            
             // Validate form
             const validationErrors = validateBillForm();
             if (validationErrors.length > 0) {
@@ -1425,28 +1431,43 @@
                 return;
             }
             
-            // Store pending completion info for background processing
-            const pendingBills = JSON.parse(sessionStorage.getItem('pendingBillCompletions') || '[]');
+            // Clean up stale pending entries (older than 5 minutes)
+            const now = Date.now();
+            const STALE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
+            let pendingBills = JSON.parse(sessionStorage.getItem('pendingBillCompletions') || '[]');
+            pendingBills = pendingBills.filter(b => (now - b.startTime) < STALE_THRESHOLD);
+            
+            // Check if this bill is already being processed (prevent duplicates)
+            const existingBill = pendingBills.find(b => b.publicId === billPublicId && b.status === 'processing');
+            if (existingBill) {
+                showToast(`Bill "${billNumber}" is already being processed.`, 'warning', 3000);
+                window.location.href = '/bill/list';
+                return;
+            }
+            
+            // Add pending completion info
             pendingBills.push({
                 publicId: billPublicId,
                 billNumber: billNumber,
-                startTime: Date.now(),
+                startTime: now,
                 status: 'processing'
             });
             sessionStorage.setItem('pendingBillCompletions', JSON.stringify(pendingBills));
             
-            // Start the Complete Bill API call in background (fire-and-forget with keepalive)
-            console.log('[Complete Bill] Starting background API call for:', billPublicId);
+            // Start the Complete Bill API call
+            console.log('[Complete Bill] Starting API call for:', billPublicId);
             
-            fetch(`/api/v1/complete/bill/${billPublicId}`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
-                },
-                keepalive: true  // Ensures request completes even if page navigates
-            }).then(async response => {
+            try {
+                // Use fetch (which goes through auth.js wrapper for token refresh)
+                const response = await fetch(`/api/v1/complete/bill/${billPublicId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
                 console.log('[Complete Bill] Response received:', response.status);
+                
                 // Update the pending bill status in sessionStorage
                 const bills = JSON.parse(sessionStorage.getItem('pendingBillCompletions') || '[]');
                 const billIndex = bills.findIndex(b => b.publicId === billPublicId);
@@ -1457,6 +1478,9 @@
                         bills[billIndex].status = 'completed';
                         bills[billIndex].result = result;
                         bills[billIndex].endTime = Date.now();
+                        sessionStorage.setItem('pendingBillCompletions', JSON.stringify(bills));
+                        
+                        showToast(`Bill "${billNumber}" completed successfully!`, 'success', 3000);
                     } else {
                         let errorMessage = 'Failed to complete bill';
                         try {
@@ -1468,10 +1492,20 @@
                         bills[billIndex].status = 'error';
                         bills[billIndex].error = errorMessage;
                         bills[billIndex].endTime = Date.now();
+                        sessionStorage.setItem('pendingBillCompletions', JSON.stringify(bills));
+                        
+                        showToast(`Failed: ${errorMessage}`, 'error', 5000);
                     }
-                    sessionStorage.setItem('pendingBillCompletions', JSON.stringify(bills));
                 }
-            }).catch(error => {
+                
+                // Navigate to list page after showing result
+                setTimeout(() => {
+                    window.location.href = '/bill/list';
+                }, 1500);
+                
+            } catch (error) {
+                console.error('[Complete Bill] Error:', error);
+                
                 // Update status on network error
                 const bills = JSON.parse(sessionStorage.getItem('pendingBillCompletions') || '[]');
                 const billIndex = bills.findIndex(b => b.publicId === billPublicId);
@@ -1481,17 +1515,9 @@
                     bills[billIndex].endTime = Date.now();
                     sessionStorage.setItem('pendingBillCompletions', JSON.stringify(bills));
                 }
-            });
-            
-            // Show brief confirmation and navigate
-            showToast(`Bill "${billNumber}" submitted for completion. Syncing in background...`, 'info', 2000);
-            console.log('[Complete Bill] Request initiated, navigating to list page...');
-            
-            // Navigate to list page after a brief delay to ensure request is sent
-            setTimeout(() => {
-                console.log('[Complete Bill] Navigating now');
-                window.location.href = '/bill/list';
-            }, 1000);  // Increased from 500ms to ensure request is sent
+                
+                showToast(`Error: ${error.message || 'Network error'}`, 'error', 5000);
+            }
             
             return;  // Skip the old synchronous flow below
             

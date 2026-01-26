@@ -5,7 +5,7 @@ import hmac
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Tuple
-from urllib.parse import quote, urlparse, parse_qs
+from urllib.parse import quote, unquote, urlparse, parse_qs
 
 # Third-party Imports
 import httpx
@@ -216,10 +216,13 @@ class AzureBlobStorage:
         # Path format: /container_name/blob_name
         path_parts = parsed.path.lstrip("/").split("/", 1)
         if len(path_parts) == 2:
-            return path_parts[0], path_parts[1]
+            # URL-decode the blob name to avoid double-encoding
+            blob_name = unquote(path_parts[1])
+            return path_parts[0], blob_name
         elif len(path_parts) == 1:
             # Assume default container if only blob name in path
-            return self.container_name, path_parts[0]
+            blob_name = unquote(path_parts[0])
+            return self.container_name, blob_name
         else:
             raise AzureBlobStorageError(f"Invalid blob URL format: {blob_url}")
 

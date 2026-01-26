@@ -1822,3 +1822,83 @@ textarea.bill-form-control {
         width: 100%;
     }
 }
+
+/* ============================================
+   Pending Bill Imports Section
+   ============================================ */
+
+.bill-pending-imports-section {
+    background-color: var(--color-surface);
+    border: 2px dashed var(--color-primary, #3b82f6);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.bill-pending-imports-header {
+    margin-bottom: 1rem;
+}
+
+.bill-pending-imports-header h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--color-text);
+    margin: 0 0 0.25rem 0;
+}
+
+.bill-pending-imports-subtext {
+    font-size: 0.875rem;
+    color: var(--color-text-secondary);
+    margin: 0;
+}
+
+.bill-pending-table {
+    margin-bottom: 0;
+}
+
+.bill-pending-imports-actions {
+    margin-top: 1rem;
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+/* Confidence badges */
+.bill-confidence-badge {
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.bill-confidence-high {
+    background-color: #dcfce7;
+    color: #166534;
+}
+
+.bill-confidence-medium {
+    background-color: #fef3c7;
+    color: #92400e;
+}
+
+.bill-confidence-low {
+    background-color: #fee2e2;
+    color: #991b1b;
+}
+
+/* Status badges for pending section */
+.bill-status-pending {
+    background-color: #e0e7ff;
+    color: #3730a3;
+}
+
+.bill-status-processing {
+    background-color: #fef3c7;
+    color: #92400e;
+}
+
+.bill-status-error {
+    background-color: #fee2e2;
+    color: #991b1b;
+}

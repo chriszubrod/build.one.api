@@ -43,9 +43,7 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
-EXEC CreateModule
-    @Name = 'Modules',
-    @Route = '/module/list';
+-- Note: Workflow Inbox module is created in agents/persistence/sql/seed.WorkflowInboxModule.sql
 GO
 
 

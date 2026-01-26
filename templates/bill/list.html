@@ -74,6 +74,95 @@
         </form>
     </div>
 
+    <!-- Pending Bill Imports from Workflow -->
+    {% if pending_workflows %}
+    <div class="bill-pending-imports-section">
+        <div class="bill-pending-imports-header">
+            <h3>📥 Pending Bill Imports ({{ pending_workflows|length }})</h3>
+            <p class="bill-pending-imports-subtext">These emails have been confirmed as bills and are ready for processing.</p>
+        </div>
+        <div class="bill-table-container">
+            <table class="bill-table bill-pending-table">
+                <thead>
+                    <tr>
+                        <th>Email Subject</th>
+                        <th>From</th>
+                        <th>Received</th>
+                        <th>Confidence</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for wf in pending_workflows %}
+                    <tr data-workflow-id="{{ wf.public_id }}">
+                        <td>
+                            <strong>{{ wf.subject[:50] }}{% if wf.subject|length > 50 %}...{% endif %}</strong>
+                        </td>
+                        <td>{{ wf.from_name or wf.from_address }}</td>
+                        <td>
+                            {% if wf.received_at %}
+                                {{ wf.received_at[:10] }}
+                            {% else %}
+                                N/A
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if wf.confidence >= 0.8 %}
+                                <span class="bill-confidence-badge bill-confidence-high">{{ (wf.confidence * 100)|int }}%</span>
+                            {% elif wf.confidence >= 0.5 %}
+                                <span class="bill-confidence-badge bill-confidence-medium">{{ (wf.confidence * 100)|int }}%</span>
+                            {% else %}
+                                <span class="bill-confidence-badge bill-confidence-low">{{ (wf.confidence * 100)|int }}%</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if wf.child_state == 'needs_review' %}
+                                <span class="bill-status-badge bill-status-error">Error</span>
+                            {% elif wf.child_state == 'completed' %}
+                                <span class="bill-status-badge bill-status-finalized">Done</span>
+                            {% elif wf.child_state %}
+                                <span class="bill-status-badge bill-status-processing">{{ wf.child_state }}</span>
+                            {% else %}
+                                <span class="bill-status-badge bill-status-pending">Ready</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="bill-table-actions">
+                                {% if wf.child_state == 'needs_review' %}
+                                    <button type="button" class="btn btn-warning btn-sm" onclick="processBillWorkflow('{{ wf.public_id }}', this)">
+                                        Retry
+                                    </button>
+                                {% elif wf.child_state == 'completed' %}
+                                    <span class="bill-status-badge bill-status-finalized">✓ Complete</span>
+                                {% elif not wf.child_state %}
+                                    <button type="button" class="btn btn-primary btn-sm" onclick="processBillWorkflow('{{ wf.public_id }}', this)">
+                                        Process
+                                    </button>
+                                {% else %}
+                                    <span class="btn btn-secondary btn-sm" style="opacity: 0.5;">Processing...</span>
+                                {% endif %}
+                                <a href="/agent/{{ wf.public_id }}" class="btn btn-outline-secondary btn-sm" target="_blank">
+                                    View
+                                </a>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        {% if pending_workflows|length > 1 %}
+        <div class="bill-pending-imports-actions">
+            <button type="button" class="btn btn-primary" onclick="processAllPendingBills()">
+                Process All ({{ pending_workflows|length }})
+            </button>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
     <!-- Drag and Drop Upload Zone - Compact when bills exist -->
     {% if bills %}
     <div class="bill-upload-section">
@@ -302,7 +391,19 @@
         const pendingBillsRaw = sessionStorage.getItem('pendingBillCompletions');
         console.log('[List] pendingBillCompletions raw:', pendingBillsRaw);
         
-        const pendingBills = JSON.parse(pendingBillsRaw || '[]');
+        let pendingBills = JSON.parse(pendingBillsRaw || '[]');
+        
+        // Clean up stale entries (older than 5 minutes)
+        const currentTime = Date.now();
+        const STALE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
+        const originalLength = pendingBills.length;
+        pendingBills = pendingBills.filter(b => (currentTime - b.startTime) < STALE_THRESHOLD);
+        
+        if (pendingBills.length !== originalLength) {
+            console.log('[List] Cleaned up', originalLength - pendingBills.length, 'stale entries');
+            sessionStorage.setItem('pendingBillCompletions', JSON.stringify(pendingBills));
+        }
+        
         console.log('[List] pendingBills parsed:', pendingBills);
         
         if (pendingBills.length === 0) {
@@ -380,8 +481,8 @@
         });
         
         // Keep bills that are still processing OR were just notified (within last 5 seconds)
-        const now = Date.now();
-        const recentlyNotified = pendingBills.filter(b => b.notified && (now - b.notifiedAt) < 5000);
+        const checkTime = Date.now();
+        const recentlyNotified = pendingBills.filter(b => b.notified && (checkTime - b.notifiedAt) < 5000);
         const billsToKeep = [...stillProcessing, ...recentlyNotified];
         
         sessionStorage.setItem('pendingBillCompletions', JSON.stringify(billsToKeep));
@@ -646,19 +747,19 @@
         return div.innerHTML;
     }
 
-    function removeFile(index) {
+    window.removeFile = function(index) {
         uploadedFiles.splice(index, 1);
         persistFiles();
         updateUploadedFilesTable();
     }
 
-    function clearAllFiles() {
+    window.clearAllFiles = function() {
         uploadedFiles = [];
         persistFiles();
         updateUploadedFilesTable();
     }
 
-    function createBillFromFile(index) {
+    window.createBillFromFile = function(index) {
         const file = uploadedFiles[index];
         if (!file) return;
         
@@ -677,6 +778,149 @@
         
         // Navigate to create bill page with file flag
         window.location.href = '/bill/create?new=true&hasFile=true';
+    }
+
+    // Process a single workflow into a bill
+    window.processBillWorkflow = async function(workflowId, button) {
+        console.log('[ProcessBill] Called with workflowId:', workflowId, 'button:', button);
+        if (!workflowId) {
+            console.error('[ProcessBill] No workflowId provided');
+            return;
+        }
+        
+        // Disable button and show loading state
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Processing...';
+        
+        const token = localStorage.getItem('token.access_token');
+        console.log('[ProcessBill] Token available:', !!token);
+        
+        try {
+            console.log('[ProcessBill] Making fetch request to:', `/api/v1/agents/workflows/${workflowId}/process-bill`);
+            const response = await fetch(`/api/v1/agents/workflows/${workflowId}/process-bill`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+            console.log('[ProcessBill] Response status:', response.status);
+            
+            const data = await response.json();
+            
+            if (response.ok) {
+                showToast(`✓ Bill processing started for workflow ${workflowId}`, 'success');
+                
+                // Update the row to show processing state
+                const row = button.closest('tr');
+                if (row) {
+                    const statusCell = row.querySelector('td:nth-child(5)');
+                    if (statusCell) {
+                        statusCell.innerHTML = '<span class="bill-status-badge bill-status-processing">processing</span>';
+                    }
+                    const actionsCell = row.querySelector('td:nth-child(6)');
+                    if (actionsCell) {
+                        actionsCell.innerHTML = `
+                            <div class="bill-table-actions">
+                                <span class="btn btn-secondary btn-sm" style="opacity: 0.5;">Processing...</span>
+                                <a href="/agent/${workflowId}" class="btn btn-outline-secondary btn-sm" target="_blank">View</a>
+                            </div>
+                        `;
+                    }
+                }
+                
+                // Poll for completion
+                pollWorkflowCompletion(workflowId, data.child_workflow_id);
+            } else {
+                showToast(`✗ Error: ${data.detail || 'Failed to process workflow'}`, 'error');
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        } catch (error) {
+            console.error('[ProcessBill] Error processing workflow:', error);
+            showToast(`✗ Error: ${error.message}`, 'error');
+            button.disabled = false;
+            button.textContent = originalText;
+        }
+    }
+    
+    // Poll for workflow completion
+    async function pollWorkflowCompletion(parentId, childId) {
+        if (!childId) return;
+        
+        const maxAttempts = 60; // 2 minutes at 2 second intervals
+        let attempts = 0;
+        
+        const poll = async () => {
+            attempts++;
+            
+            try {
+                const response = await fetch(`/api/v1/agents/workflows/${childId}`, {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                    }
+                });
+                
+                if (response.ok) {
+                    const workflow = await response.json();
+                    
+                    if (workflow.state === 'completed') {
+                        showToast(`✓ Bill created successfully!`, 'success', 8000);
+                        // Reload the page to show updated list
+                        setTimeout(() => window.location.reload(), 1500);
+                        return;
+                    } else if (workflow.state === 'needs_review') {
+                        showToast(`⚠ Bill processing needs review. Check the workflow for details.`, 'warning', 10000);
+                        setTimeout(() => window.location.reload(), 2000);
+                        return;
+                    }
+                }
+            } catch (error) {
+                console.error('Error polling workflow:', error);
+            }
+            
+            if (attempts < maxAttempts) {
+                setTimeout(poll, 2000);
+            } else {
+                showToast(`⚠ Processing is taking longer than expected. Check the workflow status.`, 'warning', 10000);
+            }
+        };
+        
+        // Start polling after a short delay
+        setTimeout(poll, 2000);
+    }
+    
+    // Process all pending workflows
+    window.processAllPendingBills = async function() {
+        const rows = document.querySelectorAll('.bill-pending-table tbody tr');
+        const workflowIds = [];
+        
+        rows.forEach(row => {
+            const workflowId = row.dataset.workflowId;
+            const processBtn = row.querySelector('button.btn-primary, button.btn-warning');
+            if (workflowId && processBtn && !processBtn.disabled) {
+                workflowIds.push({ id: workflowId, button: processBtn });
+            }
+        });
+        
+        if (workflowIds.length === 0) {
+            showToast('No workflows ready to process', 'info');
+            return;
+        }
+        
+        showToast(`Processing ${workflowIds.length} workflow(s)...`, 'info');
+        
+        // Process each workflow with a small delay between them
+        for (let i = 0; i < workflowIds.length; i++) {
+            const { id, button } = workflowIds[i];
+            await processBillWorkflow(id, button);
+            
+            // Small delay between requests
+            if (i < workflowIds.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+        }
     }
 </script>
 {% endblock %}

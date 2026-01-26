@@ -53,3 +53,4 @@ websockets==15.0.1
 openpyxl==3.1.2
 xlrd==2.0.2
 reportlab==4.2.5
+transitions>=0.9.0

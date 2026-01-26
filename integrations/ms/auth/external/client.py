@@ -71,8 +71,8 @@ def connect_ms_oauth_2_endpoint():
         # Microsoft Graph API OAuth 2.0 authorization endpoint
         authorization_endpoint = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize"
         
-        # Scopes - full access: user profile, email, SharePoint, and files/Excel
-        scopes = "openid profile User.Read Mail.Read Mail.Send Sites.ReadWrite.All Files.ReadWrite.All offline_access"
+        # Scopes - full access: user profile, email (read/write), SharePoint, and files/Excel
+        scopes = "openid profile User.Read Mail.ReadWrite Mail.Send Sites.ReadWrite.All Files.ReadWrite.All offline_access"
         
         # Build authorization URL with PKCE
         params = {

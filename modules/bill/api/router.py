@@ -116,6 +116,11 @@ def complete_bill_router(public_id: str, current_user: dict = Depends(get_curren
     print(f"  bill_finalized: {result.get('bill_finalized')}")
     print(f"  file_uploads: {result.get('file_uploads')}")
     print(f"  excel_syncs: {result.get('excel_syncs')}")
+    qbo_sync = result.get('qbo_sync', {})
+    if qbo_sync:
+        qbo_status = "✓" if qbo_sync.get('success') else "✗"
+        qbo_bill_id = qbo_sync.get('qbo_bill_id')
+        print(f"  qbo_sync: {qbo_status} {qbo_sync.get('message', '')} (QBO Bill ID: {qbo_bill_id})")
     if result.get('errors'):
         print(f"  ERRORS: {result.get('errors')}")
     print(f"{'='*60}\n")

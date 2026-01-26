@@ -20,6 +20,8 @@ from integrations.ms.sharepoint.driveitem.connector.project_excel.business.servi
 from integrations.ms.sharepoint.driveitem.business.service import MsDriveItemService
 from integrations.ms.sharepoint.drive.persistence.repo import MsDriveRepository
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
+from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
+from integrations.intuit.qbo.auth.business.service import QboAuthService
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +133,7 @@ class BillCompleteService:
     1. Finalize Bill and BillLineItems
     2. Upload attachments to SharePoint module folders
     3. Sync Bill data to Excel workbooks
+    4. Push Bill to Intuit QuickBooks Online
     """
 
     def __init__(self):
@@ -147,6 +150,8 @@ class BillCompleteService:
         self.project_excel_connector = DriveItemProjectExcelConnector()
         self.driveitem_service = MsDriveItemService()
         self.drive_repo = MsDriveRepository()
+        self.qbo_bill_connector = BillBillConnector()
+        self.qbo_auth_service = QboAuthService()
 
     def complete_bill(self, public_id: str) -> dict:
         """
@@ -167,6 +172,7 @@ class BillCompleteService:
                 "bill_finalized": False,
                 "file_uploads": {},
                 "excel_syncs": {},
+                "qbo_sync": {},
                 "errors": []
             }
         
@@ -175,51 +181,83 @@ class BillCompleteService:
             logger.info(f"Bill {public_id} is already finalized")
         
         # Finalize Bill (set is_draft=False)
+        # Use retry logic to handle race conditions with auto-save
         try:
-            # Get vendor to get vendor_public_id
-            vendor = None
-            if bill.vendor_id:
-                vendor = self.vendor_service.read_by_id(id=bill.vendor_id)
-            
-            if not vendor or not vendor.public_id:
-                return {
-                    "status_code": 400,
-                    "message": "Vendor not found for bill",
-                    "bill_finalized": False,
-                    "file_uploads": {},
-                    "excel_syncs": {},
-                    "errors": [{"step": "finalize_bill", "error": "Vendor not found"}]
-                }
-            
-            # Get payment term public_id if set
-            payment_term_public_id = None
-            if bill.payment_term_id:
-                from modules.payment_term.business.service import PaymentTermService
-                payment_term = PaymentTermService().read_by_id(id=bill.payment_term_id)
-                if payment_term:
-                    payment_term_public_id = payment_term.public_id
-            
             from modules.bill.api.schemas import BillUpdate
-            bill_update = BillUpdate(
-                row_version=bill.row_version,
-                vendor_public_id=vendor.public_id,
-                payment_term_public_id=payment_term_public_id,
-                bill_date=bill.bill_date,
-                due_date=bill.due_date,
-                bill_number=bill.bill_number,
-                total_amount=bill.total_amount,
-                memo=bill.memo,
-                is_draft=False
-            )
-            finalized_bill = self.bill_service.update_by_public_id(public_id=public_id, bill=bill_update)
+            import time
+            
+            finalized_bill = None
+            max_retries = 3
+            
+            for attempt in range(max_retries):
+                # Re-read bill to get latest row_version (handles auto-save race condition)
+                bill = self.bill_service.read_by_public_id(public_id=public_id)
+                if not bill:
+                    return {
+                        "status_code": 404,
+                        "message": "Bill not found during finalization",
+                        "bill_finalized": False,
+                        "file_uploads": {},
+                        "excel_syncs": {},
+                        "qbo_sync": {},
+                        "errors": []
+                    }
+                
+                # Get vendor to get vendor_public_id
+                vendor = None
+                if bill.vendor_id:
+                    vendor = self.vendor_service.read_by_id(id=bill.vendor_id)
+                
+                if not vendor or not vendor.public_id:
+                    return {
+                        "status_code": 400,
+                        "message": "Vendor not found for bill",
+                        "bill_finalized": False,
+                        "file_uploads": {},
+                        "excel_syncs": {},
+                        "qbo_sync": {},
+                        "errors": [{"step": "finalize_bill", "error": "Vendor not found"}]
+                    }
+                
+                # Get payment term public_id if set
+                payment_term_public_id = None
+                if bill.payment_term_id:
+                    from modules.payment_term.business.service import PaymentTermService
+                    payment_term = PaymentTermService().read_by_id(id=bill.payment_term_id)
+                    if payment_term:
+                        payment_term_public_id = payment_term.public_id
+                
+                bill_update = BillUpdate(
+                    row_version=bill.row_version,
+                    vendor_public_id=vendor.public_id,
+                    payment_term_public_id=payment_term_public_id,
+                    bill_date=bill.bill_date,
+                    due_date=bill.due_date,
+                    bill_number=bill.bill_number,
+                    total_amount=bill.total_amount,
+                    memo=bill.memo,
+                    is_draft=False
+                )
+                
+                finalized_bill = self.bill_service.update_by_public_id(public_id=public_id, bill=bill_update)
+                
+                if finalized_bill:
+                    logger.info(f"Bill {public_id} finalized on attempt {attempt + 1}")
+                    break
+                else:
+                    logger.warning(f"Bill {public_id} finalize attempt {attempt + 1} failed (row_version conflict?), retrying...")
+                    if attempt < max_retries - 1:
+                        time.sleep(0.2)  # Brief delay before retry
+            
             if not finalized_bill:
                 return {
                     "status_code": 500,
-                    "message": "Failed to finalize bill",
+                    "message": "Failed to finalize bill after retries (concurrent modification)",
                     "bill_finalized": False,
                     "file_uploads": {},
                     "excel_syncs": {},
-                    "errors": []
+                    "qbo_sync": {},
+                    "errors": [{"step": "finalize_bill", "error": "Row version conflict after retries"}]
                 }
         except Exception as e:
             logger.exception(f"Error finalizing bill {public_id}")
@@ -229,6 +267,7 @@ class BillCompleteService:
                 "bill_finalized": False,
                 "file_uploads": {},
                 "excel_syncs": {},
+                "qbo_sync": {},
                 "errors": [{"step": "finalize_bill", "error": str(e)}]
             }
         
@@ -323,6 +362,11 @@ class BillCompleteService:
             if excel_result.get("errors"):
                 all_errors.extend(excel_result["errors"])
         
+        # Step 5: Push Bill to Intuit QuickBooks Online
+        qbo_sync_result = self._sync_to_qbo(bill=finalized_bill)
+        if qbo_sync_result.get("errors"):
+            all_errors.extend(qbo_sync_result["errors"])
+        
         # Determine overall status
         has_errors = len(all_errors) > 0
         status_code = 200 if not has_errors else 207  # 207 = Multi-Status (partial success)
@@ -336,6 +380,7 @@ class BillCompleteService:
             "bill_finalized": True,
             "file_uploads": file_upload_results,
             "excel_syncs": excel_sync_results,
+            "qbo_sync": qbo_sync_result,
             "errors": all_errors
         }
 
@@ -909,4 +954,81 @@ class BillCompleteService:
                 "message": f"Error syncing to Excel: {str(e)}",
                 "synced_count": 0,
                 "errors": [{"error": str(e)}]
+            }
+
+    def _sync_to_qbo(self, bill) -> dict:
+        """
+        Push a completed Bill to Intuit QuickBooks Online.
+        
+        Args:
+            bill: The finalized Bill record
+            
+        Returns:
+            Dict with success, message, qbo_bill_id, and errors
+        """
+        try:
+            # Get valid QBO auth token (will auto-refresh if expired)
+            qbo_auth = self.qbo_auth_service.ensure_valid_token()
+            if not qbo_auth:
+                logger.warning("No valid QBO auth found, skipping QBO sync")
+                return {
+                    "success": False,
+                    "message": "No valid QBO authentication found",
+                    "qbo_bill_id": None,
+                    "errors": [{"step": "qbo_sync", "error": "No valid QBO authentication"}]
+                }
+            
+            realm_id = qbo_auth.realm_id
+            if not realm_id:
+                logger.warning("QBO auth has no realm_id, skipping QBO sync")
+                return {
+                    "success": False,
+                    "message": "QBO auth missing realm_id",
+                    "qbo_bill_id": None,
+                    "errors": [{"step": "qbo_sync", "error": "QBO auth missing realm_id"}]
+                }
+            
+            logger.info(f"Syncing Bill {bill.public_id} to QBO realm {realm_id}")
+            print(f"  QBO sync: Pushing bill to QuickBooks Online...")
+            
+            # Push to QBO
+            qbo_bill = self.qbo_bill_connector.sync_to_qbo_bill(bill=bill, realm_id=realm_id)
+            
+            if qbo_bill:
+                logger.info(f"Successfully synced Bill {bill.public_id} to QBO as QboBill {qbo_bill.id} (qbo_id: {qbo_bill.qbo_id})")
+                print(f"      -> Created QBO Bill {qbo_bill.qbo_id}")
+                return {
+                    "success": True,
+                    "message": f"Synced to QBO Bill {qbo_bill.qbo_id}",
+                    "qbo_bill_id": qbo_bill.qbo_id,
+                    "errors": []
+                }
+            else:
+                logger.error(f"QBO sync returned None for Bill {bill.public_id}")
+                return {
+                    "success": False,
+                    "message": "QBO sync returned no result",
+                    "qbo_bill_id": None,
+                    "errors": [{"step": "qbo_sync", "error": "QBO sync returned no result"}]
+                }
+                
+        except ValueError as e:
+            # Expected errors (missing mappings, etc.)
+            error_msg = str(e)
+            logger.warning(f"QBO sync skipped for Bill {bill.public_id}: {error_msg}")
+            print(f"      -> QBO sync skipped: {error_msg}")
+            return {
+                "success": False,
+                "message": f"QBO sync skipped: {error_msg}",
+                "qbo_bill_id": None,
+                "errors": [{"step": "qbo_sync", "error": error_msg}]
+            }
+        except Exception as e:
+            logger.exception(f"Error syncing Bill {bill.public_id} to QBO")
+            print(f"      -> QBO sync error: {str(e)}")
+            return {
+                "success": False,
+                "message": f"QBO sync error: {str(e)}",
+                "qbo_bill_id": None,
+                "errors": [{"step": "qbo_sync", "error": str(e)}]
             }

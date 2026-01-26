@@ -51,7 +51,7 @@ async def view_sub_cost_code(request: Request, public_id: str, current_user: dic
     View a sub cost code.
     """
     sub_cost_code = SubCostCodeService().read_by_public_id(public_id=public_id)
-    cost_code = CostCodeService().read_by_public_id(public_id=sub_cost_code.cost_code_id)
+    cost_code = CostCodeService().read_by_id(id=sub_cost_code.cost_code_id)
     return templates.TemplateResponse(
         "view.html",
         {

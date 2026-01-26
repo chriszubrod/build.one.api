@@ -1,5 +1,3 @@
-DROP TABLE dbo.SubCostCode;
-
 IF OBJECT_ID('dbo.SubCostCode', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.SubCostCode
@@ -93,9 +91,6 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-GO
-
-EXEC ReadSubCostCodes;
 GO
 
 
@@ -292,5 +287,3 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
-
-SELECT * FROM dbo.SubCostCode;

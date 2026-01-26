@@ -159,13 +159,23 @@ class AzureDocumentIntelligence:
         """
         Start document analysis and return the operation location for polling.
         """
+        import base64
+        
         url = self._build_url("documentModels/prebuilt-layout:analyze")
-        headers = self._get_headers(content_type)
+        headers = self._get_headers()
+        headers["Content-Type"] = "application/json"
 
+        # Encode content as base64 for the API
+        base64_content = base64.b64encode(file_content).decode("utf-8")
+        
         logger.debug(f"Starting document analysis, content size: {len(file_content)} bytes")
 
         with httpx.Client(timeout=30.0) as client:
-            response = client.post(url, headers=headers, content=file_content)
+            response = client.post(
+                url, 
+                headers=headers, 
+                json={"base64Source": base64_content}
+            )
 
             if response.status_code != 202:
                 error_text = response.text if hasattr(response, "text") else str(response.status_code)

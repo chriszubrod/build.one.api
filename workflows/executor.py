@@ -359,8 +359,31 @@ class BillIntakeExecutor:
         if len(detected_bills) > 1:
             await self._create_child_workflows(workflow, detected_bills, access_token)
 
-        # When user chose Bill at Create Task, spawn draft bill creation after triage (so attachment_blob_urls are set)
+        # When user chose Bill at Create Task, auto-confirm and spawn bill processing
         if (workflow.context or {}).get("confirmed_entity_type") == "bill":
+            # Transition parent workflow: awaiting_confirmation → confirmed → completed
+            try:
+                workflow = self.orchestrator.transition(
+                    public_id=workflow.public_id,
+                    trigger="confirm_type",
+                    context_updates={"confirmed_by": "auto", "auto_confirmed": True},
+                    created_by="system",
+                )
+                workflow = self.orchestrator.transition(
+                    public_id=workflow.public_id,
+                    trigger="complete",
+                    created_by="system",
+                )
+            except Exception as e:
+                logger.warning("Auto-confirm transition failed for workflow %s: %s", workflow.public_id, e)
+
+            # Sync task status after auto-confirm
+            try:
+                from services.tasks.business.service import TaskService
+                TaskService().sync_status_from_workflow(workflow.id, workflow.state)
+            except Exception as e:
+                logger.warning("Failed to sync task status after auto-confirm for workflow %s: %s", workflow.public_id, e)
+
             asyncio.create_task(self.spawn_bill_processing(workflow, access_token))
 
         return workflow

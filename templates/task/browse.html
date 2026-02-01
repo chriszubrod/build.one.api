@@ -8,43 +8,43 @@
 
 {% block content %}
 
-<div class="agent-inbox agent-inbox--split">
+<div class="task-inbox task-inbox--split">
     <!-- Header -->
-    <div class="agent-header">
-        <div class="agent-header-left">
+    <div class="task-header">
+        <div class="task-header-left">
             <h1>Browse Inbox</h1>
-            <span id="mailbox-badge" class="agent-folder-badge">📥 Inbox</span>
-            <span class="agent-folder-badge">🚩 Read + Flagged</span>
-            <button id="fetch-btn" class="btn btn-primary agent-poll-btn" onclick="fetchEmails()">
-                <span class="agent-poll-icon">↻</span> Fetch Emails
+            <span id="mailbox-badge" class="task-folder-badge">📥 Inbox</span>
+            <span class="task-folder-badge">🚩 Read + Flagged</span>
+            <button id="fetch-btn" class="btn btn-primary task-poll-btn" onclick="fetchEmails()">
+                <span class="task-poll-icon">↻</span> Fetch Emails
             </button>
         </div>
-        <div class="agent-header-actions">
+        <div class="task-header-actions">
             <a href="/tasks/list" class="btn btn-secondary">View Tasks</a>
         </div>
     </div>
     
     <!-- Status Banner -->
-    <div id="status-banner" class="agent-poll-status agent-poll-status--loading" style="display: none;">
+    <div id="status-banner" class="task-poll-status task-poll-status--loading" style="display: none;">
         <span id="status-icon">⏳</span>
         <span id="status-text">Fetching emails...</span>
     </div>
 
     <!-- Split View Container -->
-    <div class="agent-split-view">
+    <div class="task-split-view">
         <!-- Email List (Left Panel) -->
-        <div id="email-list" class="agent-list agent-split-list">
-            <div class="agent-empty-state">
-                <div class="agent-empty-icon">📧</div>
+        <div id="email-list" class="task-list task-split-list">
+            <div class="task-empty-state">
+                <div class="task-empty-icon">📧</div>
                 <h3>Click "Fetch Emails" to load your inbox</h3>
                 <p>Emails will be displayed here for review</p>
             </div>
         </div>
         
         <!-- Email Detail (Right Panel) -->
-        <div id="email-detail" class="agent-detail-panel">
-            <div class="agent-empty-state">
-                <div class="agent-empty-icon">👈</div>
+        <div id="email-detail" class="task-detail-panel">
+            <div class="task-empty-state">
+                <div class="task-empty-icon">👈</div>
                 <h3>Select an email</h3>
                 <p>Click an email from the list to view details</p>
             </div>
@@ -104,9 +104,9 @@ async function fetchEmails() {
     
     // Show loading state
     btn.disabled = true;
-    btn.innerHTML = '<span class="agent-poll-icon agent-poll-spinning">↻</span> Fetching...';
+    btn.innerHTML = '<span class="task-poll-icon task-poll-spinning">↻</span> Fetching...';
     status.style.display = 'flex';
-    status.className = 'agent-poll-status agent-poll-status--loading';
+    status.className = 'task-poll-status task-poll-status--loading';
     statusIcon.textContent = '⏳';
     statusText.textContent = 'Fetching emails from your inbox...';
     
@@ -130,7 +130,7 @@ async function fetchEmails() {
             }
             
             // Show success
-            status.className = 'agent-poll-status agent-poll-status--success';
+            status.className = 'task-poll-status task-poll-status--success';
             statusIcon.textContent = '✓';
             statusText.textContent = `Found ${result.count} conversation(s)`;
             
@@ -140,15 +140,15 @@ async function fetchEmails() {
                     // Build badges for thread info
                     const badges = [];
                     if (conv.message_count > 1) {
-                        badges.push(`<span class="agent-thread-badge">💬${conv.message_count}</span>`);
+                        badges.push(`<span class="task-thread-badge">💬${conv.message_count}</span>`);
                     }
                     if (conv.has_attachments) {
-                        badges.push(`<span class="agent-thread-badge">📎</span>`);
+                        badges.push(`<span class="task-thread-badge">📎</span>`);
                     }
                     if (conv.flagged_count > 1) {
-                        badges.push(`<span class="agent-thread-badge agent-thread-badge--flagged">🚩${conv.flagged_count}</span>`);
+                        badges.push(`<span class="task-thread-badge task-thread-badge--flagged">🚩${conv.flagged_count}</span>`);
                     }
-                    const badgeHtml = badges.length > 0 ? `<span class="agent-thread-badges">${badges.join('')}</span>` : '';
+                    const badgeHtml = badges.length > 0 ? `<span class="task-thread-badges">${badges.join('')}</span>` : '';
                     
                     // Show first participant (sender)
                     const sender = conv.participants[0] || 'Unknown';
@@ -158,20 +158,20 @@ async function fetchEmails() {
                         : escapeHtml(sender);
                     
                     return `
-                    <div class="agent-list-item agent-email-item" data-index="${index}" onclick="selectConversation(${index})">
-                        <div class="agent-list-item-status">
-                            <span class="agent-status-icon agent-status-icon--alert">🚩</span>
+                    <div class="task-list-item task-email-item" data-index="${index}" onclick="selectConversation(${index})">
+                        <div class="task-list-item-status">
+                            <span class="task-status-icon task-status-icon--alert">🚩</span>
                         </div>
-                        <div class="agent-list-item-content">
-                            <div class="agent-list-item-header">
-                                <span class="agent-list-item-vendor">${participantDisplay}</span>
-                                <span class="agent-list-item-time">${formatDate(conv.latest_received_at)}</span>
+                        <div class="task-list-item-content">
+                            <div class="task-list-item-header">
+                                <span class="task-list-item-vendor">${participantDisplay}</span>
+                                <span class="task-list-item-time">${formatDate(conv.latest_received_at)}</span>
                             </div>
-                            <div class="agent-list-item-subject">
+                            <div class="task-list-item-subject">
                                 <strong>${escapeHtml(conv.subject)}</strong>
                                 ${badgeHtml}
                             </div>
-                            <div class="agent-list-item-preview">
+                            <div class="task-list-item-preview">
                                 ${escapeHtml(conv.preview)}
                             </div>
                         </div>
@@ -180,17 +180,17 @@ async function fetchEmails() {
                 
                 // Add "Load More" button at the bottom
                 emailList.innerHTML += `
-                    <div class="agent-load-more">
+                    <div class="task-load-more">
                         <button class="btn btn-secondary" onclick="loadMoreConversations()">
                             Load More Conversations
                         </button>
-                        <span class="agent-load-more-hint">Currently showing ${result.count} conversations</span>
+                        <span class="task-load-more-hint">Currently showing ${result.count} conversations</span>
                     </div>
                 `;
             } else {
                 emailList.innerHTML = `
-                    <div class="agent-empty-state">
-                        <div class="agent-empty-icon">📭</div>
+                    <div class="task-empty-state">
+                        <div class="task-empty-icon">📭</div>
                         <h3>No conversations found</h3>
                         <p>No flagged emails in your inbox</p>
                     </div>
@@ -203,26 +203,26 @@ async function fetchEmails() {
             prefetchThreads(result.conversations, 3);
         } else {
             const error = await response.json();
-            status.className = 'agent-poll-status agent-poll-status--error';
+            status.className = 'task-poll-status task-poll-status--error';
             statusIcon.textContent = '✗';
             statusText.textContent = error.detail || 'Failed to fetch emails';
             
             emailList.innerHTML = `
-                <div class="agent-empty-state">
-                    <div class="agent-empty-icon">⚠️</div>
+                <div class="task-empty-state">
+                    <div class="task-empty-icon">⚠️</div>
                     <h3>Error fetching emails</h3>
                     <p>${escapeHtml(error.detail || 'Unknown error')}</p>
-                    <p class="agent-help-text">Make sure you're connected to Microsoft. <a href="/integration/list">Check integrations</a></p>
+                    <p class="task-help-text">Make sure you're connected to Microsoft. <a href="/integration/list">Check integrations</a></p>
                 </div>
             `;
         }
     } catch (e) {
-        status.className = 'agent-poll-status agent-poll-status--error';
+        status.className = 'task-poll-status task-poll-status--error';
         statusIcon.textContent = '✗';
         statusText.textContent = 'Error: ' + e.message;
     } finally {
         btn.disabled = false;
-        btn.innerHTML = '<span class="agent-poll-icon">↻</span> Fetch Emails';
+        btn.innerHTML = '<span class="task-poll-icon">↻</span> Fetch Emails';
     }
 }
 
@@ -233,8 +233,8 @@ async function selectConversation(index) {
     const latestMessageId = conv.latest_message_id;
     
     // Highlight selected conversation
-    document.querySelectorAll('.agent-email-item').forEach(el => el.classList.remove('agent-list-item--active'));
-    document.querySelector(`[data-index="${index}"]`).classList.add('agent-list-item--active');
+    document.querySelectorAll('.task-email-item').forEach(el => el.classList.remove('task-list-item--active'));
+    document.querySelector(`[data-index="${index}"]`).classList.add('task-list-item--active');
     
     // Check cache first for instant load
     if (threadCache[conversationId]) {
@@ -248,22 +248,22 @@ async function selectConversation(index) {
     // Show immediate skeleton with conversation info while loading
     const participantList = conv.participants.join(', ');
     detailPanel.innerHTML = `
-        <div class="agent-detail-header">
-            <div class="agent-detail-subject">${escapeHtml(conv.subject)}</div>
+        <div class="task-detail-header">
+            <div class="task-detail-subject">${escapeHtml(conv.subject)}</div>
         </div>
-        <div class="agent-conversation-info">
-            <span class="agent-badge agent-badge--neutral">💬 ${conv.message_count} message${conv.message_count !== 1 ? 's' : ''}</span>
-            ${conv.has_attachments ? '<span class="agent-badge agent-badge--info">📎 Has attachments</span>' : ''}
-            ${conv.flagged_count > 0 ? '<span class="agent-badge agent-badge--alert">🚩 Flagged</span>' : ''}
+        <div class="task-conversation-info">
+            <span class="task-badge task-badge--neutral">💬 ${conv.message_count} message${conv.message_count !== 1 ? 's' : ''}</span>
+            ${conv.has_attachments ? '<span class="task-badge task-badge--info">📎 Has attachments</span>' : ''}
+            ${conv.flagged_count > 0 ? '<span class="task-badge task-badge--alert">🚩 Flagged</span>' : ''}
         </div>
-        <div class="agent-detail-loading" style="margin-top: 1rem;">
-            <span class="agent-poll-icon agent-poll-spinning">↻</span> Loading ${conv.message_count} message${conv.message_count !== 1 ? 's' : ''}...
+        <div class="task-detail-loading" style="margin-top: 1rem;">
+            <span class="task-poll-icon task-poll-spinning">↻</span> Loading ${conv.message_count} message${conv.message_count !== 1 ? 's' : ''}...
         </div>
-        <div class="agent-skeleton-messages">
+        <div class="task-skeleton-messages">
             ${Array(Math.min(conv.message_count, 5)).fill(0).map(() => `
-                <div class="agent-skeleton-message">
-                    <div class="agent-skeleton-header"></div>
-                    <div class="agent-skeleton-preview"></div>
+                <div class="task-skeleton-message">
+                    <div class="task-skeleton-header"></div>
+                    <div class="task-skeleton-preview"></div>
                 </div>
             `).join('')}
         </div>
@@ -308,8 +308,8 @@ async function selectConversation(index) {
         
     } catch (e) {
         detailPanel.innerHTML = `
-            <div class="agent-empty-state">
-                <div class="agent-empty-icon">⚠️</div>
+            <div class="task-empty-state">
+                <div class="task-empty-icon">⚠️</div>
                 <h3>Error loading conversation</h3>
                 <p>${escapeHtml(e.message)}</p>
             </div>
@@ -357,9 +357,9 @@ function renderConversation(thread, selectedEmail, selectedId) {
         
         // Build attachments with preview capability
         const attachmentsList = msg.attachments && msg.attachments.length > 0
-            ? `<div class="agent-message-attachments">
-                <div class="agent-attachments-label">Attachments (${msg.attachments.length}):</div>
-                <div class="agent-attachments-grid">
+            ? `<div class="task-message-attachments">
+                <div class="task-attachments-label">Attachments (${msg.attachments.length}):</div>
+                <div class="task-attachments-grid">
                 ${msg.attachments.map((att, attIdx) => {
                     const name = att.name || att.Name || 'Attachment';
                     const size = att.size || att.Size || 0;
@@ -370,16 +370,16 @@ function renderConversation(thread, selectedEmail, selectedId) {
                     
                     // Use data attributes to avoid quote escaping issues
                     return `
-                        <div class="agent-attachment-card" 
+                        <div class="task-attachment-card" 
                              data-message-id="${msg.id}"
                              data-attachment-idx="${attIdx}"
                              data-attachment-name="${escapeHtml(name).replace(/"/g, '&quot;')}"
                              data-content-type="${contentType}"
                              title="Click to preview">
-                            <div class="agent-attachment-icon">${icon}</div>
-                            <div class="agent-attachment-info">
-                                <div class="agent-attachment-name">${escapeHtml(name)}</div>
-                                <div class="agent-attachment-meta">${formatSize(size)} • ${contentType.split('/')[1] || 'file'}</div>
+                            <div class="task-attachment-icon">${icon}</div>
+                            <div class="task-attachment-info">
+                                <div class="task-attachment-name">${escapeHtml(name)}</div>
+                                <div class="task-attachment-meta">${formatSize(size)} • ${contentType.split('/')[1] || 'file'}</div>
                             </div>
                         </div>
                     `;
@@ -398,52 +398,52 @@ function renderConversation(thread, selectedEmail, selectedId) {
             : (msg.body || '').substring(0, 120) + ((msg.body || '').length > 120 ? '...' : '');
         
         return `
-            <div class="agent-conversation-message ${isSelected ? 'agent-conversation-message--selected' : ''} ${isExpanded ? 'agent-message--expanded' : 'agent-message--collapsed'}" data-msg-index="${index}">
-                <div class="agent-message-header" onclick="toggleMessage(${index})">
-                    <div class="agent-message-header-left">
-                        <span class="agent-message-toggle">${isExpanded ? '▼' : '▶'}</span>
-                        <div class="agent-message-from">
+            <div class="task-conversation-message ${isSelected ? 'task-conversation-message--selected' : ''} ${isExpanded ? 'task-message--expanded' : 'task-message--collapsed'}" data-msg-index="${index}">
+                <div class="task-message-header" onclick="toggleMessage(${index})">
+                    <div class="task-message-header-left">
+                        <span class="task-message-toggle">${isExpanded ? '▼' : '▶'}</span>
+                        <div class="task-message-from">
                             <strong>${escapeHtml(msg.from_name || msg.from_address)}</strong>
-                            ${msg.has_attachments ? '<span class="agent-header-attachment">📎</span>' : ''}
+                            ${msg.has_attachments ? '<span class="task-header-attachment">📎</span>' : ''}
                         </div>
                     </div>
-                    <div class="agent-message-date">${formatDate(msg.received_at)}</div>
+                    <div class="task-message-date">${formatDate(msg.received_at)}</div>
                 </div>
-                <div class="agent-message-preview">${escapeHtml(bodyPreview)}</div>
-                <div class="agent-message-content">
-                    <div class="agent-message-envelope">
-                        <div class="agent-envelope-row">
-                            <span class="agent-envelope-label">From:</span>
-                            <span class="agent-envelope-value">${escapeHtml(msg.from_name || '')} &lt;${escapeHtml(msg.from_address)}&gt;</span>
+                <div class="task-message-preview">${escapeHtml(bodyPreview)}</div>
+                <div class="task-message-content">
+                    <div class="task-message-envelope">
+                        <div class="task-envelope-row">
+                            <span class="task-envelope-label">From:</span>
+                            <span class="task-envelope-value">${escapeHtml(msg.from_name || '')} &lt;${escapeHtml(msg.from_address)}&gt;</span>
                         </div>
-                        <div class="agent-envelope-row">
-                            <span class="agent-envelope-label">To:</span>
-                            <span class="agent-envelope-value">${escapeHtml(toList) || '(none)'}</span>
+                        <div class="task-envelope-row">
+                            <span class="task-envelope-label">To:</span>
+                            <span class="task-envelope-value">${escapeHtml(toList) || '(none)'}</span>
                         </div>
                         ${ccList ? `
-                        <div class="agent-envelope-row">
-                            <span class="agent-envelope-label">CC:</span>
-                            <span class="agent-envelope-value">${escapeHtml(ccList)}</span>
+                        <div class="task-envelope-row">
+                            <span class="task-envelope-label">CC:</span>
+                            <span class="task-envelope-value">${escapeHtml(ccList)}</span>
                         </div>
                         ` : ''}
-                        <div class="agent-envelope-row">
-                            <span class="agent-envelope-label">Date:</span>
-                            <span class="agent-envelope-value">${formatFullDate(msg.received_at)}</span>
+                        <div class="task-envelope-row">
+                            <span class="task-envelope-label">Date:</span>
+                            <span class="task-envelope-value">${formatFullDate(msg.received_at)}</span>
                         </div>
-                        <div class="agent-envelope-row">
-                            <span class="agent-envelope-label">Subject:</span>
-                            <span class="agent-envelope-value"><strong>${escapeHtml(msg.subject)}</strong></span>
+                        <div class="task-envelope-row">
+                            <span class="task-envelope-label">Subject:</span>
+                            <span class="task-envelope-value"><strong>${escapeHtml(msg.subject)}</strong></span>
                         </div>
                         ${msg.web_link ? `
-                        <div class="agent-envelope-row">
-                            <span class="agent-envelope-label"></span>
-                            <span class="agent-envelope-value"><a href="${msg.web_link}" target="_blank" class="agent-link-subtle">Open in Outlook ↗</a></span>
+                        <div class="task-envelope-row">
+                            <span class="task-envelope-label"></span>
+                            <span class="task-envelope-value"><a href="${msg.web_link}" target="_blank" class="task-link-subtle">Open in Outlook ↗</a></span>
                         </div>
                         ` : ''}
                     </div>
                     ${attachmentsList}
-                    <div class="agent-message-body-section">
-                        <div class="agent-message-body ${msg.body_type === 'html' ? 'agent-email-body--html' : ''}">
+                    <div class="task-message-body-section">
+                        <div class="task-message-body ${msg.body_type === 'html' ? 'task-email-body--html' : ''}">
                             ${msg.body_type === 'html' ? msg.body : `<pre style="white-space: pre-wrap; font-family: inherit; margin: 0;">${escapeHtml(msg.body)}</pre>`}
                         </div>
                     </div>
@@ -453,39 +453,39 @@ function renderConversation(thread, selectedEmail, selectedId) {
     }).join('');
     
     detailPanel.innerHTML = `
-        <div class="agent-detail-header">
-            <div class="agent-detail-subject">
+        <div class="task-detail-header">
+            <div class="task-detail-subject">
                 ${selectedEmail.is_flagged ? '🚩 ' : ''}${escapeHtml(selectedEmail.subject)}
             </div>
-            <div class="agent-detail-actions">
-                ${selectedEmail.web_link ? `<a href="${selectedEmail.web_link}" target="_blank" class="agent-link-subtle">Open in Outlook ↗</a>` : ''}
-                <a href="#" class="agent-link-subtle" onclick="createWorkflow('${selectedEmail.id}'); return false;">Create Workflow</a>
-                ${selectedEmail.is_flagged ? `<a href="#" class="agent-link-subtle" onclick="removeFlag('${selectedEmail.id}'); return false;">Remove Flag</a>` : ''}
+            <div class="task-detail-actions">
+                ${selectedEmail.web_link ? `<a href="${selectedEmail.web_link}" target="_blank" class="task-link-subtle">Open in Outlook ↗</a>` : ''}
+                <a href="#" class="task-link-subtle" onclick="createWorkflow('${selectedEmail.id}'); return false;">Create Workflow</a>
+                ${selectedEmail.is_flagged ? `<a href="#" class="task-link-subtle" onclick="removeFlag('${selectedEmail.id}'); return false;">Remove Flag</a>` : ''}
             </div>
         </div>
         
-        <div class="agent-conversation-info">
-            <span class="agent-badge agent-badge--neutral">💬 ${thread.count} message${thread.count !== 1 ? 's' : ''}</span>
-            ${totalAttachments > 0 ? `<span class="agent-badge agent-badge--info">📎 ${totalAttachments} attachment${totalAttachments !== 1 ? 's' : ''}</span>` : ''}
-            ${selectedEmail.is_flagged ? '<span class="agent-badge agent-badge--alert">🚩 Flagged</span>' : ''}
+        <div class="task-conversation-info">
+            <span class="task-badge task-badge--neutral">💬 ${thread.count} message${thread.count !== 1 ? 's' : ''}</span>
+            ${totalAttachments > 0 ? `<span class="task-badge task-badge--info">📎 ${totalAttachments} attachment${totalAttachments !== 1 ? 's' : ''}</span>` : ''}
+            ${selectedEmail.is_flagged ? '<span class="task-badge task-badge--alert">🚩 Flagged</span>' : ''}
         </div>
-        <div class="agent-conversation-actions">
+        <div class="task-conversation-actions">
             <button class="btn btn-sm btn-secondary" onclick="expandAllMessages()">Expand All</button>
             <button class="btn btn-sm btn-secondary" onclick="collapseAllMessages()">Collapse All</button>
         </div>
         
-        <div class="agent-conversation-thread">
+        <div class="task-conversation-thread">
             ${messagesHtml}
         </div>
         
-        <div id="tasks-from-email-container" class="agent-tasks-from-email" style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color, #e0e0e0);">
-            <h3 class="agent-tasks-from-email-title" style="font-size: 1rem; margin-bottom: 0.5rem;">Tasks created from this email</h3>
-            <div id="tasks-from-email-list"><span class="agent-detail-loading">Loading...</span></div>
+        <div id="tasks-from-email-container" class="task-tasks-from-email" style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color, #e0e0e0);">
+            <h3 class="task-tasks-from-email-title" style="font-size: 1rem; margin-bottom: 0.5rem;">Tasks created from this email</h3>
+            <div id="tasks-from-email-list"><span class="task-detail-loading">Loading...</span></div>
         </div>
     `;
     
     // Scroll to selected message
-    const selected = detailPanel.querySelector('.agent-conversation-message--selected');
+    const selected = detailPanel.querySelector('.task-conversation-message--selected');
     if (selected) {
         selected.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
@@ -498,26 +498,26 @@ async function fetchAndRenderTasksFromEmail(conversationId) {
         const url = `/api/v1/tasks?source_type=email&source_id=${encodeURIComponent(conversationId)}&open_only=false`;
         const response = await fetch(url, { method: 'GET', headers: { 'Content-Type': 'application/json' } });
         if (!response.ok) {
-            listEl.innerHTML = '<span class="agent-help-text">Could not load tasks.</span>';
+            listEl.innerHTML = '<span class="task-help-text">Could not load tasks.</span>';
             return;
         }
         const tasks = await response.json();
         if (!tasks || tasks.length === 0) {
-            listEl.innerHTML = '<span class="agent-help-text">No tasks created from this email yet.</span>';
+            listEl.innerHTML = '<span class="task-help-text">No tasks created from this email yet.</span>';
             return;
         }
         listEl.innerHTML = `
-            <ul class="agent-tasks-from-email-list" style="list-style: none; padding: 0; margin: 0;">
+            <ul class="task-tasks-from-email-list" style="list-style: none; padding: 0; margin: 0;">
                 ${tasks.map(t => `
                     <li style="margin-bottom: 0.5rem;">
-                        <a href="/tasks/${t.public_id}" class="agent-link-subtle">${escapeHtml(t.subject || t.title || 'Task')}</a>
-                        <span class="agent-badge agent-badge--neutral" style="margin-left: 0.25rem; font-size: 0.75rem;">${escapeHtml((t.state || t.status || '').replace(/_/g, ' '))}</span>
+                        <a href="/tasks/${t.public_id}" class="task-link-subtle">${escapeHtml(t.subject || t.title || 'Task')}</a>
+                        <span class="task-badge task-badge--neutral" style="margin-left: 0.25rem; font-size: 0.75rem;">${escapeHtml((t.state || t.status || '').replace(/_/g, ' '))}</span>
                     </li>
                 `).join('')}
             </ul>
         `;
     } catch (e) {
-        listEl.innerHTML = '<span class="agent-help-text">Could not load tasks.</span>';
+        listEl.innerHTML = '<span class="task-help-text">Could not load tasks.</span>';
     }
 }
 
@@ -525,34 +525,34 @@ function toggleMessage(index) {
     const msg = document.querySelector(`[data-msg-index="${index}"]`);
     if (!msg) return;
     
-    const isExpanded = msg.classList.contains('agent-message--expanded');
-    const toggle = msg.querySelector('.agent-message-toggle');
+    const isExpanded = msg.classList.contains('task-message--expanded');
+    const toggle = msg.querySelector('.task-message-toggle');
     
     if (isExpanded) {
-        msg.classList.remove('agent-message--expanded');
-        msg.classList.add('agent-message--collapsed');
+        msg.classList.remove('task-message--expanded');
+        msg.classList.add('task-message--collapsed');
         toggle.textContent = '▶';
     } else {
-        msg.classList.remove('agent-message--collapsed');
-        msg.classList.add('agent-message--expanded');
+        msg.classList.remove('task-message--collapsed');
+        msg.classList.add('task-message--expanded');
         toggle.textContent = '▼';
     }
 }
 
 function expandAllMessages() {
-    document.querySelectorAll('.agent-conversation-message').forEach(msg => {
-        msg.classList.remove('agent-message--collapsed');
-        msg.classList.add('agent-message--expanded');
-        const toggle = msg.querySelector('.agent-message-toggle');
+    document.querySelectorAll('.task-conversation-message').forEach(msg => {
+        msg.classList.remove('task-message--collapsed');
+        msg.classList.add('task-message--expanded');
+        const toggle = msg.querySelector('.task-message-toggle');
         if (toggle) toggle.textContent = '▼';
     });
 }
 
 function collapseAllMessages() {
-    document.querySelectorAll('.agent-conversation-message').forEach(msg => {
-        msg.classList.remove('agent-message--expanded');
-        msg.classList.add('agent-message--collapsed');
-        const toggle = msg.querySelector('.agent-message-toggle');
+    document.querySelectorAll('.task-conversation-message').forEach(msg => {
+        msg.classList.remove('task-message--expanded');
+        msg.classList.add('task-message--collapsed');
+        const toggle = msg.querySelector('.task-message-toggle');
         if (toggle) toggle.textContent = '▶';
     });
 }
@@ -569,17 +569,17 @@ async function previewAttachment(messageId, attachmentIndex, name, contentType) 
     if (!modal) {
         modal = document.createElement('div');
         modal.id = 'attachment-modal';
-        modal.className = 'agent-modal';
+        modal.className = 'task-modal';
         modal.innerHTML = `
-            <div class="agent-modal-backdrop" onclick="closeAttachmentModal()"></div>
-            <div class="agent-modal-content">
-                <div class="agent-modal-header">
+            <div class="task-modal-backdrop" onclick="closeAttachmentModal()"></div>
+            <div class="task-modal-content">
+                <div class="task-modal-header">
                     <h3 id="attachment-modal-title">Attachment</h3>
-                    <button class="agent-modal-close" onclick="closeAttachmentModal()">×</button>
+                    <button class="task-modal-close" onclick="closeAttachmentModal()">×</button>
                 </div>
-                <div class="agent-modal-body" id="attachment-modal-body">
-                    <div class="agent-detail-loading">
-                        <span class="agent-poll-icon agent-poll-spinning">↻</span> Loading attachment...
+                <div class="task-modal-body" id="attachment-modal-body">
+                    <div class="task-detail-loading">
+                        <span class="task-poll-icon task-poll-spinning">↻</span> Loading attachment...
                     </div>
                 </div>
             </div>
@@ -588,12 +588,12 @@ async function previewAttachment(messageId, attachmentIndex, name, contentType) 
     }
     
     // Show modal with loading state
-    modal.classList.add('agent-modal--visible');
+    modal.classList.add('task-modal--visible');
     document.getElementById('attachment-modal-title').textContent = name;
     const modalBody = document.getElementById('attachment-modal-body');
     modalBody.innerHTML = `
-        <div class="agent-detail-loading">
-            <span class="agent-poll-icon agent-poll-spinning">↻</span> Loading attachment...
+        <div class="task-detail-loading">
+            <span class="task-poll-icon task-poll-spinning">↻</span> Loading attachment...
         </div>
     `;
     
@@ -617,7 +617,7 @@ async function previewAttachment(messageId, attachmentIndex, name, contentType) 
             const blob = await response.blob();
             const url = URL.createObjectURL(blob);
             modalBody.innerHTML = `
-                <div class="agent-attachment-preview agent-attachment-preview--image">
+                <div class="task-attachment-preview task-attachment-preview--image">
                     <img src="${url}" alt="${escapeHtml(name)}" onload="this.parentElement.classList.add('loaded')">
                 </div>
             `;
@@ -626,14 +626,14 @@ async function previewAttachment(messageId, attachmentIndex, name, contentType) 
             const url = URL.createObjectURL(blob);
             // Add PDF viewer parameters to hide sidebar and fit to width
             modalBody.innerHTML = `
-                <div class="agent-attachment-preview agent-attachment-preview--pdf">
+                <div class="task-attachment-preview task-attachment-preview--pdf">
                     <iframe src="${url}#navpanes=0&scrollbar=1&view=FitH" title="${escapeHtml(name)}"></iframe>
                 </div>
             `;
         } else if (isText) {
             const text = await response.text();
             modalBody.innerHTML = `
-                <div class="agent-attachment-preview agent-attachment-preview--text">
+                <div class="task-attachment-preview task-attachment-preview--text">
                     <pre>${escapeHtml(text)}</pre>
                 </div>
             `;
@@ -642,20 +642,20 @@ async function previewAttachment(messageId, attachmentIndex, name, contentType) 
             const blob = await response.blob();
             const url = URL.createObjectURL(blob);
             modalBody.innerHTML = `
-                <div class="agent-attachment-preview agent-attachment-preview--unsupported">
-                    <div class="agent-unsupported-icon">📎</div>
+                <div class="task-attachment-preview task-attachment-preview--unsupported">
+                    <div class="task-unsupported-icon">📎</div>
                     <p>Preview not available for this file type.</p>
-                    <p class="agent-file-type">${contentType}</p>
+                    <p class="task-file-type">${contentType}</p>
                     <a href="${url}" download="${escapeHtml(name)}" class="btn btn-primary">Download File</a>
                 </div>
             `;
         }
     } catch (e) {
         modalBody.innerHTML = `
-            <div class="agent-attachment-preview agent-attachment-preview--error">
-                <div class="agent-empty-icon">⚠️</div>
+            <div class="task-attachment-preview task-attachment-preview--error">
+                <div class="task-empty-icon">⚠️</div>
                 <p>Could not load attachment</p>
-                <p class="agent-error-detail">${escapeHtml(e.message)}</p>
+                <p class="task-error-detail">${escapeHtml(e.message)}</p>
             </div>
         `;
     }
@@ -664,7 +664,7 @@ async function previewAttachment(messageId, attachmentIndex, name, contentType) 
 function closeAttachmentModal() {
     const modal = document.getElementById('attachment-modal');
     if (modal) {
-        modal.classList.remove('agent-modal--visible');
+        modal.classList.remove('task-modal--visible');
     }
 }
 
@@ -677,7 +677,7 @@ document.addEventListener('keydown', (e) => {
 
 // Event delegation for attachment cards
 document.addEventListener('click', (e) => {
-    const card = e.target.closest('.agent-attachment-card');
+    const card = e.target.closest('.task-attachment-card');
     if (card) {
         e.preventDefault();
         e.stopPropagation();
@@ -694,60 +694,60 @@ function renderEmailDetail(detail, preview) {
     
     const attachmentsList = detail.attachments && detail.attachments.length > 0
         ? detail.attachments.map(att => `
-            <div class="agent-attachment-item">
+            <div class="task-attachment-item">
                 <span>📎</span>
-                <span class="agent-attachment-name" title="${escapeHtml(att.name || att.Name || 'Attachment')}">${escapeHtml(att.name || att.Name || 'Attachment')}</span>
-                <span class="agent-attachment-size">${formatSize(att.size || att.Size || 0)}</span>
+                <span class="task-attachment-name" title="${escapeHtml(att.name || att.Name || 'Attachment')}">${escapeHtml(att.name || att.Name || 'Attachment')}</span>
+                <span class="task-attachment-size">${formatSize(att.size || att.Size || 0)}</span>
             </div>
         `).join('')
-        : '<p class="agent-no-attachments">No attachments</p>';
+        : '<p class="task-no-attachments">No attachments</p>';
     
     detailPanel.innerHTML = `
-        <div class="agent-detail-header">
-            <div class="agent-detail-subject">
+        <div class="task-detail-header">
+            <div class="task-detail-subject">
                 ${detail.is_flagged ? '🚩 ' : ''}${escapeHtml(detail.subject)}
             </div>
-            <div class="agent-detail-actions">
-                ${detail.web_link ? `<a href="${detail.web_link}" target="_blank" class="agent-link-subtle">Open in Outlook ↗</a>` : ''}
-                <a href="#" class="agent-link-subtle" onclick="createWorkflow('${detail.id}'); return false;">Create Workflow</a>
-                ${detail.is_flagged ? `<a href="#" class="agent-link-subtle" onclick="removeFlag('${detail.id}'); return false;">Remove Flag</a>` : ''}
+            <div class="task-detail-actions">
+                ${detail.web_link ? `<a href="${detail.web_link}" target="_blank" class="task-link-subtle">Open in Outlook ↗</a>` : ''}
+                <a href="#" class="task-link-subtle" onclick="createWorkflow('${detail.id}'); return false;">Create Workflow</a>
+                ${detail.is_flagged ? `<a href="#" class="task-link-subtle" onclick="removeFlag('${detail.id}'); return false;">Remove Flag</a>` : ''}
             </div>
         </div>
         
-        <div class="agent-detail-meta">
-            <div class="agent-detail-meta-row">
+        <div class="task-detail-meta">
+            <div class="task-detail-meta-row">
                 <strong>From:</strong> ${escapeHtml(detail.from_name || detail.from_address)} ${detail.from_name ? `<${escapeHtml(detail.from_address)}>` : ''}
             </div>
-            <div class="agent-detail-meta-row">
+            <div class="task-detail-meta-row">
                 <strong>To:</strong> ${detail.to_recipients.map(r => escapeHtml(r)).join(', ')}
             </div>
             ${detail.cc_recipients.length > 0 ? `
-            <div class="agent-detail-meta-row">
+            <div class="task-detail-meta-row">
                 <strong>CC:</strong> ${detail.cc_recipients.map(r => escapeHtml(r)).join(', ')}
             </div>
             ` : ''}
-            <div class="agent-detail-meta-row">
+            <div class="task-detail-meta-row">
                 <strong>Date:</strong> ${formatFullDate(detail.received_at)}
             </div>
-            <div class="agent-detail-meta-row agent-detail-badges">
-                ${detail.is_flagged ? '<span class="agent-badge agent-badge--alert">🚩 Flagged</span>' : ''}
-                ${detail.has_attachments ? '<span class="agent-badge agent-badge--info">📎 Has Attachments</span>' : ''}
-                ${detail.importance !== 'normal' ? `<span class="agent-badge agent-badge--warning">${detail.importance}</span>` : ''}
+            <div class="task-detail-meta-row task-detail-badges">
+                ${detail.is_flagged ? '<span class="task-badge task-badge--alert">🚩 Flagged</span>' : ''}
+                ${detail.has_attachments ? '<span class="task-badge task-badge--info">📎 Has Attachments</span>' : ''}
+                ${detail.importance !== 'normal' ? `<span class="task-badge task-badge--warning">${detail.importance}</span>` : ''}
             </div>
         </div>
         
         ${detail.has_attachments ? `
-        <div class="agent-detail-section">
+        <div class="task-detail-section">
             <h4>Attachments</h4>
-            <div class="agent-attachments-list">
+            <div class="task-attachments-list">
                 ${attachmentsList}
             </div>
         </div>
         ` : ''}
         
-        <div class="agent-detail-section agent-detail-body">
+        <div class="task-detail-section task-detail-body">
             <h4>Message</h4>
-            <div class="agent-email-body ${detail.body_type === 'html' ? 'agent-email-body--html' : ''}">
+            <div class="task-email-body ${detail.body_type === 'html' ? 'task-email-body--html' : ''}">
                 ${detail.body_type === 'html' ? detail.body : `<pre>${escapeHtml(detail.body)}</pre>`}
             </div>
         </div>
@@ -769,7 +769,7 @@ async function removeFlag(emailId) {
         
         if (response.ok) {
             // Find the next email before removing current one
-            const emailItem = document.querySelector(`.agent-inbox-item[data-email-id="${emailId}"]`);
+            const emailItem = document.querySelector(`.task-inbox-item[data-email-id="${emailId}"]`);
             const nextEmail = emailItem?.nextElementSibling || emailItem?.previousElementSibling;
             
             // Remove email from list
@@ -778,13 +778,13 @@ async function removeFlag(emailId) {
             }
             
             // Select the next email if available
-            if (nextEmail && nextEmail.classList.contains('agent-inbox-item')) {
+            if (nextEmail && nextEmail.classList.contains('task-inbox-item')) {
                 nextEmail.click();
             } else {
                 // No more emails, clear the panel
                 const detailPanel = document.getElementById('email-detail');
                 detailPanel.innerHTML = `
-                    <div class="agent-no-selection">
+                    <div class="task-no-selection">
                         <p>No more emails to process</p>
                     </div>
                 `;
@@ -807,14 +807,14 @@ async function createWorkflow(emailId) {
     
     const detailPanel = document.getElementById('email-detail');
     const buttons = detailPanel.querySelectorAll('button');
-    const links = detailPanel.querySelectorAll('a.agent-link-subtle');
+    const links = detailPanel.querySelectorAll('a.task-link-subtle');
     
     // Show loading overlay
     const overlay = document.createElement('div');
-    overlay.className = 'agent-workflow-creating';
+    overlay.className = 'task-workflow-creating';
     overlay.innerHTML = `
-        <div class="agent-workflow-creating-content">
-            <span class="agent-poll-icon agent-poll-spinning">↻</span>
+        <div class="task-workflow-creating-content">
+            <span class="task-poll-icon task-poll-spinning">↻</span>
             <span>Creating workflow...</span>
         </div>
     `;
@@ -875,7 +875,7 @@ async function createWorkflow(emailId) {
             
             if (convIndex !== -1) {
                 // Find the DOM element
-                const convItem = document.querySelector(`.agent-email-item[data-index="${convIndex}"]`);
+                const convItem = document.querySelector(`.task-email-item[data-index="${convIndex}"]`);
                 const nextItem = convItem?.nextElementSibling || convItem?.previousElementSibling;
                 
                 // Remove from array and cache
@@ -888,13 +888,13 @@ async function createWorkflow(emailId) {
                 }
                 
                 // Re-index remaining items
-                document.querySelectorAll('.agent-email-item').forEach((el, idx) => {
+                document.querySelectorAll('.task-email-item').forEach((el, idx) => {
                     el.setAttribute('data-index', idx);
                     el.onclick = () => selectConversation(idx);
                 });
                 
                 // Select next conversation or clear panel
-                if (nextItem && nextItem.classList.contains('agent-email-item')) {
+                if (nextItem && nextItem.classList.contains('task-email-item')) {
                     const newIndex = parseInt(nextItem.getAttribute('data-index'));
                     selectConversation(newIndex);
                 } else if (currentConversations.length > 0) {
@@ -903,8 +903,8 @@ async function createWorkflow(emailId) {
                     // No more conversations
                     const detailPanel = document.getElementById('email-detail');
                     detailPanel.innerHTML = `
-                        <div class="agent-empty-state">
-                            <div class="agent-empty-icon">✅</div>
+                        <div class="task-empty-state">
+                            <div class="task-empty-icon">✅</div>
                             <h3>All done!</h3>
                             <p>No more flagged conversations to process</p>
                         </div>
@@ -919,7 +919,7 @@ async function createWorkflow(emailId) {
         }
     } catch (e) {
         // Remove overlay on error
-        const overlay = detailPanel.querySelector('.agent-workflow-creating');
+        const overlay = detailPanel.querySelector('.task-workflow-creating');
         if (overlay) overlay.remove();
         showToast('Error: ' + e.message, 'error');
     } finally {
@@ -934,16 +934,16 @@ async function createWorkflow(emailId) {
 // Toast notification helper
 function showToast(message, type = 'info') {
     const toast = document.createElement('div');
-    toast.className = `agent-toast agent-toast--${type}`;
+    toast.className = `task-toast task-toast--${type}`;
     toast.innerHTML = `<span>${escapeHtml(message)}</span>`;
     document.body.appendChild(toast);
     
     // Animate in
-    setTimeout(() => toast.classList.add('agent-toast--visible'), 10);
+    setTimeout(() => toast.classList.add('task-toast--visible'), 10);
     
     // Remove after 4 seconds
     setTimeout(() => {
-        toast.classList.remove('agent-toast--visible');
+        toast.classList.remove('task-toast--visible');
         setTimeout(() => toast.remove(), 300);
     }, 4000);
 }

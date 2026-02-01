@@ -19,6 +19,13 @@ CREATE TABLE [dbo].[Task]
     [Status] NVARCHAR(50) NULL,
     [SourceType] NVARCHAR(50) NULL,
     [SourceId] NVARCHAR(200) NULL,
+    [Description] NVARCHAR(MAX) NULL,
+    [CreatedByUserId] BIGINT NULL,
+    [WorkflowId] INT NULL,
+    [VendorId] BIGINT NULL,
+    [ProjectId] BIGINT NULL,
+    [BillId] BIGINT NULL,
+    [Context] NVARCHAR(MAX) NULL,
 
     CONSTRAINT [UQ_Task_PublicId] UNIQUE ([PublicId]),
     CONSTRAINT [UQ_Task_TenantTypeReference] UNIQUE ([TenantId], [TaskType], [ReferenceId])
@@ -29,6 +36,7 @@ CREATE INDEX IX_Task_TenantId ON [dbo].[Task]([TenantId]);
 CREATE INDEX IX_Task_TaskType ON [dbo].[Task]([TaskType]);
 CREATE INDEX IX_Task_Status ON [dbo].[Task]([Status]);
 CREATE INDEX IX_Task_SourceTypeSourceId ON [dbo].[Task]([SourceType], [SourceId]);
+CREATE INDEX IX_Task_WorkflowId ON [dbo].[Task]([WorkflowId]);
 GO
 
 
@@ -47,7 +55,14 @@ CREATE PROCEDURE CreateTask
     @Title NVARCHAR(500) = NULL,
     @Status NVARCHAR(50) = NULL,
     @SourceType NVARCHAR(50) = NULL,
-    @SourceId NVARCHAR(200) = NULL
+    @SourceId NVARCHAR(200) = NULL,
+    @Description NVARCHAR(MAX) = NULL,
+    @CreatedByUserId BIGINT = NULL,
+    @WorkflowId INT = NULL,
+    @VendorId BIGINT = NULL,
+    @ProjectId BIGINT = NULL,
+    @BillId BIGINT = NULL,
+    @Context NVARCHAR(MAX) = NULL
 )
 AS
 BEGIN
@@ -57,7 +72,8 @@ BEGIN
 
     INSERT INTO dbo.[Task] (
         [CreatedDatetime], [ModifiedDatetime], [TenantId], [TaskType], [ReferenceId],
-        [Title], [Status], [SourceType], [SourceId]
+        [Title], [Status], [SourceType], [SourceId], [Description], [CreatedByUserId],
+        [WorkflowId], [VendorId], [ProjectId], [BillId], [Context]
     )
     OUTPUT
         INSERTED.[Id],
@@ -71,10 +87,18 @@ BEGIN
         INSERTED.[Title],
         INSERTED.[Status],
         INSERTED.[SourceType],
-        INSERTED.[SourceId]
+        INSERTED.[SourceId],
+        INSERTED.[Description],
+        INSERTED.[CreatedByUserId],
+        INSERTED.[WorkflowId],
+        INSERTED.[VendorId],
+        INSERTED.[ProjectId],
+        INSERTED.[BillId],
+        INSERTED.[Context]
     VALUES (
         @Now, @Now, @TenantId, @TaskType, @ReferenceId,
-        @Title, @Status, @SourceType, @SourceId
+        @Title, @Status, @SourceType, @SourceId, @Description, @CreatedByUserId,
+        @WorkflowId, @VendorId, @ProjectId, @BillId, @Context
     );
 
     COMMIT TRANSACTION;
@@ -105,7 +129,14 @@ BEGIN
         [Title],
         [Status],
         [SourceType],
-        [SourceId]
+        [SourceId],
+        [Description],
+        [CreatedByUserId],
+        [WorkflowId],
+        [VendorId],
+        [ProjectId],
+        [BillId],
+        [Context]
     FROM dbo.[Task]
     WHERE [PublicId] = @PublicId;
 
@@ -137,7 +168,14 @@ BEGIN
         [Title],
         [Status],
         [SourceType],
-        [SourceId]
+        [SourceId],
+        [Description],
+        [CreatedByUserId],
+        [WorkflowId],
+        [VendorId],
+        [ProjectId],
+        [BillId],
+        [Context]
     FROM dbo.[Task]
     WHERE [Id] = @Id;
 
@@ -171,7 +209,14 @@ BEGIN
         [Title],
         [Status],
         [SourceType],
-        [SourceId]
+        [SourceId],
+        [Description],
+        [CreatedByUserId],
+        [WorkflowId],
+        [VendorId],
+        [ProjectId],
+        [BillId],
+        [Context]
     FROM dbo.[Task]
     WHERE [TenantId] = @TenantId
       AND [TaskType] = @TaskType
@@ -209,7 +254,14 @@ BEGIN
         [Title],
         [Status],
         [SourceType],
-        [SourceId]
+        [SourceId],
+        [Description],
+        [CreatedByUserId],
+        [WorkflowId],
+        [VendorId],
+        [ProjectId],
+        [BillId],
+        [Context]
     FROM dbo.[Task]
     WHERE [TenantId] = @TenantId
       AND (@Status IS NULL OR [Status] = @Status)
@@ -230,7 +282,9 @@ CREATE PROCEDURE UpdateTask
 (
     @PublicId UNIQUEIDENTIFIER,
     @Title NVARCHAR(500) = NULL,
-    @Status NVARCHAR(50) = NULL
+    @Status NVARCHAR(50) = NULL,
+    @Description NVARCHAR(MAX) = NULL,
+    @Context NVARCHAR(MAX) = NULL
 )
 AS
 BEGIN
@@ -242,6 +296,8 @@ BEGIN
     SET
         [Title] = COALESCE(@Title, [Title]),
         [Status] = COALESCE(@Status, [Status]),
+        [Description] = COALESCE(@Description, [Description]),
+        [Context] = COALESCE(@Context, [Context]),
         [ModifiedDatetime] = @Now
     OUTPUT
         INSERTED.[Id],
@@ -255,8 +311,54 @@ BEGIN
         INSERTED.[Title],
         INSERTED.[Status],
         INSERTED.[SourceType],
-        INSERTED.[SourceId]
+        INSERTED.[SourceId],
+        INSERTED.[Description],
+        INSERTED.[CreatedByUserId],
+        INSERTED.[WorkflowId],
+        INSERTED.[VendorId],
+        INSERTED.[ProjectId],
+        INSERTED.[BillId],
+        INSERTED.[Context]
     WHERE [PublicId] = @PublicId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+DROP PROCEDURE IF EXISTS ReadTaskByWorkflowId;
+GO
+
+CREATE PROCEDURE ReadTaskByWorkflowId
+(
+    @WorkflowId INT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [TenantId],
+        [TaskType],
+        [ReferenceId],
+        [Title],
+        [Status],
+        [SourceType],
+        [SourceId],
+        [Description],
+        [CreatedByUserId],
+        [WorkflowId],
+        [VendorId],
+        [ProjectId],
+        [BillId],
+        [Context]
+    FROM dbo.[Task]
+    WHERE [WorkflowId] = @WorkflowId;
 
     COMMIT TRANSACTION;
 END;

@@ -1,0 +1,341 @@
+{# Workflow-specific section - extracted from original view.html #}
+
+<!-- Status Banner -->
+{% if workflow.state == 'needs_review' %}
+<div class="task-alert-banner">
+    <div class="task-alert-content">
+        <span class="task-alert-icon">⚠️</span>
+        <span class="task-alert-text">
+            This workflow needs your attention.
+            {% if workflow.triage_error %}Classification failed: {{ workflow.triage_error }}{% endif %}
+        </span>
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="retryWorkflow('{{ task.public_id }}')">Retry Classification</button>
+</div>
+{% endif %}
+
+<!-- Entity Type Confirmation Card -->
+{% if workflow.state == 'awaiting_confirmation' %}
+<div class="task-card task-card--highlight">
+    <div class="task-card-header">
+        <h2>Confirm Entity Type</h2>
+    </div>
+    <div class="task-card-body">
+        <p style="margin-bottom: 1rem;">
+            The system classified this email as
+            <strong>{{ workflow.entity_label or 'Unknown' }}</strong>
+            with {{ '{:.0%}'.format(workflow.classification_confidence or 0) }} confidence.
+        </p>
+
+        <div class="task-confirm-form">
+            <label for="entity-type-select" style="font-weight: 500; margin-bottom: 0.5rem; display: block;">
+                Select entity type:
+            </label>
+            <select id="entity-type-select" class="task-select" style="margin-bottom: 1rem;">
+                <option value="bill" {% if workflow.entity_type == 'bill' %}selected{% endif %}>Bill (Vendor Invoice)</option>
+                <option value="expense" {% if workflow.entity_type == 'expense' %}selected{% endif %}>Expense (Receipt/Reimbursement)</option>
+                <option value="invoice" {% if workflow.entity_type == 'invoice' %}selected{% endif %}>Invoice (Customer Invoice)</option>
+                <option value="contract" {% if workflow.entity_type == 'contract' %}selected{% endif %}>Contract (Agreement)</option>
+                <option value="change_order" {% if workflow.entity_type == 'change_order' %}selected{% endif %}>Change Order</option>
+                <option value="other" {% if workflow.entity_type == 'other' %}selected{% endif %}>Other (General Document)</option>
+            </select>
+
+            <button id="confirm-type-btn" class="btn btn-primary" onclick="confirmEntityType('{{ task.public_id }}')">
+                <span class="btn-text">Confirm Type</span>
+                <span class="btn-loading" style="display: none;">
+                    <span class="btn-spinner">↻</span> Processing...
+                </span>
+            </button>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Approval Card -->
+{% if workflow.state == 'awaiting_approval' %}
+<div class="task-card task-card--warning">
+    <div class="task-card-header">
+        <h2>Approval Required</h2>
+    </div>
+    <div class="task-card-body">
+        {% if workflow.approval_sent_to %}
+        <p style="margin-bottom: 1rem;">
+            Approval request sent to <strong>{{ workflow.approval_sent_to }}</strong>
+            {% if workflow.approval_sent_at %} on {{ workflow.approval_sent_at[:10] }}{% endif %}.
+        </p>
+        {% endif %}
+
+        <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+            <button class="btn btn-success btn-sm" onclick="approveWorkflow('{{ task.public_id }}')">Approve</button>
+            <button class="btn btn-danger btn-sm" onclick="rejectWorkflow('{{ task.public_id }}')">Reject</button>
+            <button class="btn btn-secondary btn-sm" onclick="sendReminder('{{ task.public_id }}')">Send Reminder</button>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Bill Processing Card -->
+{% if workflow.state == 'confirmed' and workflow.confirmed_entity_type == 'bill' %}
+<div class="task-card task-card--highlight">
+    <div class="task-card-header">
+        <h2>Bill Processing</h2>
+    </div>
+    <div class="task-card-body">
+        <p style="margin-bottom: 1rem;">
+            Entity confirmed as <strong>Bill</strong>. Ready to extract and process.
+        </p>
+        <button class="btn btn-primary btn-sm" onclick="processBill('{{ task.public_id }}')">
+            Process Bill
+        </button>
+    </div>
+</div>
+{% endif %}
+
+<!-- Email Conversation Card -->
+<div class="task-card">
+    <div class="task-card-header">
+        <h2>Email Conversation</h2>
+        <div style="display: flex; gap: 1rem; align-items: center;">
+            {% if workflow.message_count > 0 %}
+            <span class="task-badge task-badge--neutral">💬 {{ workflow.message_count }} message{{ 's' if workflow.message_count != 1 else '' }}</span>
+            {% endif %}
+            {% if workflow.attachment_count > 0 %}
+            <span class="task-badge task-badge--info">📎 {{ workflow.attachment_count }} attachment{{ 's' if workflow.attachment_count != 1 else '' }}</span>
+            {% endif %}
+        </div>
+    </div>
+    <div class="task-card-body" style="padding: 0;">
+        {# Email conversation rendering #}
+        {% if workflow.conversation and workflow.conversation|length > 0 %}
+        <div class="task-conversation-thread" id="conversation-thread">
+            {% for msg in workflow.conversation %}
+            <div class="task-conversation-message" data-msg-index="{{ loop.index0 }}">
+                <div class="task-message-header">
+                    <div class="task-message-from">
+                        <strong>{{ msg.from_name or msg.from_address }}</strong>
+                        {% if msg.has_attachments %}
+                        <span class="task-header-attachment">📎</span>
+                        {% endif %}
+                    </div>
+                    <div class="task-message-date">{{ msg.received_at[:10] if msg.received_at else '' }}</div>
+                </div>
+                <div class="task-message-preview">{{ msg.subject or 'No subject' }}</div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Workflow Actions Card -->
+{% if workflow.state and workflow.state not in ('completed', 'abandoned', 'cancelled') %}
+<div class="task-card">
+    <div class="task-card-header">
+        <h2>Actions</h2>
+    </div>
+    <div class="task-card-body">
+        <div class="task-actions">
+            {% if workflow.state == 'needs_review' %}
+                <button class="btn btn-primary btn-sm" onclick="retryWorkflow('{{ task.public_id }}')">Retry Classification</button>
+            {% endif %}
+            <button class="btn btn-outline-danger btn-sm" onclick="cancelWorkflow('{{ task.public_id }}')">Cancel Workflow</button>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Timeline Card -->
+<div class="task-card">
+    <div class="task-card-header">
+        <h2>Timeline</h2>
+    </div>
+    <div class="task-card-body">
+        <div class="task-timeline">
+            {% for event in events %}
+            <div class="task-timeline-item">
+                <div class="task-timeline-dot"></div>
+                <div class="task-timeline-content">
+                    <div class="task-timeline-title">
+                        {% if event.to_state %}
+                            {{ event.from_state or 'start' }} → {{ event.to_state }}
+                        {% else %}
+                            {{ event.step_name or event.type }}
+                        {% endif %}
+                    </div>
+                    <div class="task-timeline-meta">
+                        {{ event.created_at }} • {{ event.created_by or 'system' }}
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <div class="task-empty-state task-empty-state--small">
+                No events recorded yet
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<script>
+// Workflow action functions - all use /api/v1/tasks/{id}/workflow/* endpoints
+
+async function retryWorkflow(taskPublicId) {
+    if (!confirm('Retry this workflow?')) return;
+    try {
+        const response = await fetch(`/api/v1/tasks/${taskPublicId}/workflow/retry`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({})
+        });
+        if (response.ok) {
+            location.reload();
+        } else {
+            const data = await response.json();
+            alert('Failed to retry: ' + (data.detail || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+async function confirmEntityType(taskPublicId) {
+    const entityType = document.getElementById('entity-type-select').value;
+    const btn = document.getElementById('confirm-type-btn');
+    const btnText = btn.querySelector('.btn-text');
+    const btnLoading = btn.querySelector('.btn-loading');
+
+    btn.disabled = true;
+    btnText.style.display = 'none';
+    btnLoading.style.display = 'inline-flex';
+
+    try {
+        const response = await fetch(`/api/v1/tasks/${taskPublicId}/workflow/confirm-type`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ entity_type: entityType })
+        });
+
+        if (response.ok) {
+            const returnUrl = '{{ return_url or "/tasks/list" }}';
+            window.location.href = returnUrl;
+        } else {
+            const data = await response.json();
+            alert('Failed to confirm type: ' + (data.detail || 'Unknown error'));
+            btn.disabled = false;
+            btnText.style.display = 'inline';
+            btnLoading.style.display = 'none';
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+        btn.disabled = false;
+        btnText.style.display = 'inline';
+        btnLoading.style.display = 'none';
+    }
+}
+
+async function approveWorkflow(taskPublicId) {
+    const projectId = prompt('Enter project ID (optional):');
+    const costCode = prompt('Enter cost code (optional):');
+
+    try {
+        const response = await fetch(`/api/v1/tasks/${taskPublicId}/workflow/approve`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                project_id: projectId || null,
+                cost_code: costCode || null
+            })
+        });
+        if (response.ok) {
+            location.reload();
+        } else {
+            const data = await response.json();
+            alert('Failed to approve: ' + (data.detail || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+async function rejectWorkflow(taskPublicId) {
+    const reason = prompt('Reason for rejection:');
+    if (reason === null) return;
+
+    try {
+        const response = await fetch(`/api/v1/tasks/${taskPublicId}/workflow/reject`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ reason: reason })
+        });
+        if (response.ok) {
+            location.reload();
+        } else {
+            const data = await response.json();
+            alert('Failed to reject: ' + (data.detail || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+async function cancelWorkflow(taskPublicId) {
+    const reason = prompt('Reason for cancellation (optional):');
+    if (reason === null) return;
+
+    try {
+        const response = await fetch(`/api/v1/tasks/${taskPublicId}/workflow/cancel`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ reason: reason || '' })
+        });
+        if (response.ok) {
+            location.reload();
+        } else {
+            const data = await response.json();
+            alert('Failed to cancel: ' + (data.detail || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+async function processBill(taskPublicId) {
+    if (!confirm('Start bill processing for this workflow?')) return;
+
+    try {
+        const response = await fetch(`/api/v1/tasks/${taskPublicId}/workflow/process-bill`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({})
+        });
+        if (response.ok) {
+            location.reload();
+        } else {
+            const data = await response.json();
+            alert('Failed to process bill: ' + (data.detail || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+async function sendReminder(taskPublicId) {
+    if (!confirm('Send a reminder email for this approval?')) return;
+
+    try {
+        const response = await fetch(`/api/v1/tasks/${taskPublicId}/workflow/reminder`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({})
+        });
+        if (response.ok) {
+            alert('Reminder sent');
+        } else {
+            const data = await response.json();
+            alert('Failed to send reminder: ' + (data.detail || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+</script>

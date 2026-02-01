@@ -1,0 +1,95 @@
+{# Upload-specific section #}
+{# upload variable is passed from controller; fallback to task.context if not available #}
+{% set upload = upload or task.context or {} %}
+
+<div class="task-card">
+    <div class="task-card-header">
+        <h2>Uploaded File</h2>
+    </div>
+    <div class="task-card-body">
+        <div class="task-detail-grid">
+            {% if upload.filename %}
+            <div class="task-detail-row">
+                <span class="task-detail-label">Filename</span>
+                <span class="task-detail-value">{{ upload.filename }}</span>
+            </div>
+            {% endif %}
+
+            {% if upload.file_size %}
+            <div class="task-detail-row">
+                <span class="task-detail-label">Size</span>
+                <span class="task-detail-value">{{ upload.file_size }} bytes</span>
+            </div>
+            {% endif %}
+
+            {% if upload.row_count %}
+            <div class="task-detail-row">
+                <span class="task-detail-label">Rows</span>
+                <span class="task-detail-value">{{ upload.row_count }}</span>
+            </div>
+            {% endif %}
+
+            {% if upload.column_names %}
+            <div class="task-detail-row">
+                <span class="task-detail-label">Columns</span>
+                <span class="task-detail-value">{{ upload.column_names|join(', ') }}</span>
+            </div>
+            {% endif %}
+
+            {% if upload.parse_status %}
+            <div class="task-detail-row">
+                <span class="task-detail-label">Parse Status</span>
+                <span class="task-detail-value">
+                    {% if upload.parse_status == 'success' %}
+                        <span style="color: var(--success, #059669);">✓ {{ upload.parse_status|title }}</span>
+                    {% elif upload.parse_status == 'failed' %}
+                        <span style="color: var(--danger, #dc2626);">✗ {{ upload.parse_status|title }}</span>
+                    {% else %}
+                        {{ upload.parse_status|title }}
+                    {% endif %}
+                </span>
+            </div>
+            {% endif %}
+
+            {% if upload.parse_error %}
+            <div class="task-detail-row">
+                <span class="task-detail-label">Error</span>
+                <span class="task-detail-value" style="color: var(--danger, #dc2626);">{{ upload.parse_error }}</span>
+            </div>
+            {% endif %}
+        </div>
+
+        {% if upload.preview_rows %}
+        <div style="margin-top: 1.5rem;">
+            <h3>Preview</h3>
+            <div style="overflow-x: auto;">
+                <table class="task-table" style="margin-top: 0.5rem; width: 100%; border-collapse: collapse;">
+                    <thead>
+                        <tr>
+                            {% for col in upload.column_names %}
+                            <th style="text-align: left; padding: 0.5rem; border-bottom: 2px solid var(--border-color, #e2e8f0); font-size: 0.8125rem;">{{ col }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in upload.preview_rows[:10] %}
+                        <tr>
+                            {% for cell in row %}
+                            <td style="padding: 0.375rem 0.5rem; border-bottom: 1px solid var(--border-color, #e2e8f0); font-size: 0.8125rem;">{{ cell if cell is not none else '' }}</td>
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if not upload.filename and not upload.preview_rows %}
+        <div class="task-empty-state task-empty-state--small">
+            <div class="task-empty-icon">📊</div>
+            <p>Upload data is being processed or is not yet available.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>

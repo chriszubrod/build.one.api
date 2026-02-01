@@ -134,16 +134,16 @@ class BillIntakeExecutor:
             context=initial_context,
             created_by="email_intake_executor",
         )
-        # Create or update Task for list/detail UI
+        # Create Task entry for list/detail UI
         try:
             from services.tasks.business.service import TaskService
-            TaskService().upsert_task_for_workflow(
+            TaskService().create_from_workflow(
                 workflow,
                 source_type="email",
                 source_id=conversation_id,
             )
         except Exception as e:
-            logger.warning("Failed to upsert task for workflow %s: %s", workflow.public_id, e)
+            logger.warning("Failed to create task for workflow %s: %s", workflow.public_id, e)
         # Run triage in background - don't block the response
         import asyncio
         asyncio.create_task(self._run_triage_background(workflow, access_token))
@@ -216,6 +216,12 @@ class BillIntakeExecutor:
                 },
                 created_by="email_triage_agent",
             )
+            # Sync task status
+            try:
+                from services.tasks.business.service import TaskService
+                TaskService().sync_status_from_workflow(workflow)
+            except Exception as e:
+                logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e)
             return workflow
         
         # Update workflow with triage results
@@ -225,12 +231,19 @@ class BillIntakeExecutor:
             context_updates=result.context_updates,
             created_by="email_triage_agent",
         )
-        
+
+        # Sync task status
+        try:
+            from services.tasks.business.service import TaskService
+            TaskService().sync_status_from_workflow(workflow)
+        except Exception as e:
+            logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e)
+
         # Check if multiple bills detected - create child workflows
         detected_bills = result.context_updates.get("detected_bills", [])
         if len(detected_bills) > 1:
             await self._create_child_workflows(workflow, detected_bills, access_token)
-        
+
         return workflow
     
     async def _create_child_workflows(
@@ -524,10 +537,17 @@ class BillIntakeExecutor:
                 },
                 created_by="email_intake_executor",
             )
-            
+
+            # Sync task status
+            try:
+                from services.tasks.business.service import TaskService
+                TaskService().sync_status_from_workflow(workflow)
+            except Exception as e:
+                logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e)
+
             # Step 4: Sync to QBO (optional, non-blocking)
             await self.sync_to_qbo(workflow, access_token)
-            
+
             return workflow
             
         except WorkflowStepError as e:
@@ -545,7 +565,14 @@ class BillIntakeExecutor:
                 context_updates={"entity_error": str(e)},
                 created_by="email_intake_executor",
             )
-            
+
+            # Sync task status
+            try:
+                from services.tasks.business.service import TaskService
+                TaskService().sync_status_from_workflow(workflow)
+            except Exception as e_sync:
+                logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e_sync)
+
             return workflow
     
     async def sync_to_qbo(
@@ -1003,7 +1030,14 @@ class BillIntakeExecutor:
             },
             created_by="bill_intake_executor",
         )
-        
+
+        # Sync task status
+        try:
+            from services.tasks.business.service import TaskService
+            TaskService().sync_status_from_workflow(workflow)
+        except Exception as e:
+            logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e)
+
         self.orchestrator.log_step(
             workflow_id=workflow.id,
             step_name="create_draft_bill",

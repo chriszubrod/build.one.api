@@ -4,13 +4,19 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 # Third-party Imports
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, status
 from pydantic import BaseModel
 
 # Local Imports
 from services.auth.business.service import get_current_user_api
 from services.admin.api.schemas import ApproveRequest, CancelRequest, RejectRequest
-from services.tasks.api.schemas import StartWorkflowRequest, PollRunResponse
+from services.tasks.api.schemas import (
+    StartWorkflowRequest,
+    PollRunResponse,
+    TaskCreate,
+    TaskUpdate,
+    TaskStatusUpdate,
+)
 from services.tasks.business.service import TaskService
 from workflows.admin import WorkflowAdmin
 from workflows.executor import BillIntakeExecutor
@@ -22,13 +28,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/tasks", tags=["api", "tasks"])
 
 
-# -----------------------------------------------------------------------------
-# List and Detail
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Generic Task Endpoints
+# =============================================================================
 
 @router.get("")
 def list_tasks(
     status: Optional[str] = Query(default=None, description="Filter by task status"),
+    task_type: Optional[str] = Query(default=None, description="Filter by task type (workflow, manual, data_upload)"),
     source_type: Optional[str] = Query(default=None, description="Filter by source type (e.g. email)"),
     source_id: Optional[str] = Query(default=None, description="Filter by source id (e.g. conversation_id)"),
     open_only: bool = Query(default=True, description="Exclude completed/cancelled"),
@@ -59,9 +66,286 @@ def get_task_detail(
     return result
 
 
-# -----------------------------------------------------------------------------
-# Workflow Start and Poll
-# -----------------------------------------------------------------------------
+@router.post("")
+def create_task(
+    body: TaskCreate,
+    current_user: dict = Depends(get_current_user_api),
+) -> Dict:
+    """Create a new task (manual entry)."""
+    tenant_id = current_user.get("tenant_id", 1)
+    user_id = current_user.get("id")
+    svc = TaskService()
+
+    # For manual tasks, use a sequential reference_id (or could use 0)
+    # Since we don't have a separate table, we'll use the task id itself or 0 as placeholder
+    task = svc.create_task(
+        tenant_id=tenant_id,
+        task_type=body.task_type,
+        reference_id=0,  # Manual tasks don't reference another entity
+        title=body.title,
+        description=body.description,
+        status="new",
+        source_type=body.source_type or "manual",
+        created_by_user_id=user_id,
+        context=body.context,
+    )
+    return task.to_dict()
+
+
+@router.put("/{public_id}")
+def update_task(
+    public_id: str,
+    body: TaskUpdate,
+    current_user: dict = Depends(get_current_user_api),
+) -> Dict:
+    """Update a task's fields."""
+    svc = TaskService()
+    task = svc.update_task(
+        public_id=public_id,
+        title=body.title,
+        description=body.description,
+        status=body.status,
+        context=body.context,
+    )
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {public_id}")
+    return task.to_dict()
+
+
+@router.put("/{public_id}/status")
+def update_task_status(
+    public_id: str,
+    body: TaskStatusUpdate,
+    current_user: dict = Depends(get_current_user_api),
+) -> Dict:
+    """Quick status-only update."""
+    svc = TaskService()
+    task = svc.update_status(public_id=public_id, status=body.status)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {public_id}")
+    return task.to_dict()
+
+
+@router.delete("/{public_id}")
+def delete_task(
+    public_id: str,
+    current_user: dict = Depends(get_current_user_api),
+) -> Dict:
+    """Delete/cancel a task."""
+    svc = TaskService()
+    task = svc.update_status(public_id=public_id, status="cancelled")
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {public_id}")
+    return {"success": True, "message": "Task cancelled"}
+
+
+# =============================================================================
+# Workflow Action Endpoints (scoped under task)
+# =============================================================================
+
+@router.post("/{public_id}/workflow/retry")
+def task_workflow_retry(
+    public_id: str,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """Retry a failed workflow for this task."""
+    # First get the task to find the workflow
+    svc = TaskService()
+    task_detail = svc.get_task_detail(public_id)
+    if not task_detail or not task_detail.get("workflow"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Workflow task not found: {public_id}")
+
+    workflow = task_detail.get("workflow")
+    workflow_public_id = workflow.get("public_id")
+
+    user_id = current_user.get("id")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
+
+    admin = WorkflowAdmin()
+    try:
+        return admin.retry_workflow(workflow_public_id, user_id=user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/{public_id}/workflow/cancel")
+def task_workflow_cancel(
+    public_id: str,
+    body: CancelRequest,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """Cancel the workflow for this task."""
+    svc = TaskService()
+    task_detail = svc.get_task_detail(public_id)
+    if not task_detail or not task_detail.get("workflow"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Workflow task not found: {public_id}")
+
+    workflow = task_detail.get("workflow")
+    workflow_public_id = workflow.get("public_id")
+
+    user_id = current_user.get("id")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
+
+    admin = WorkflowAdmin()
+    try:
+        return admin.cancel_workflow(workflow_public_id, user_id=user_id, reason=body.reason)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/{public_id}/workflow/approve")
+def task_workflow_approve(
+    public_id: str,
+    body: ApproveRequest,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """Approve the workflow for this task."""
+    svc = TaskService()
+    task_detail = svc.get_task_detail(public_id)
+    if not task_detail or not task_detail.get("workflow"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Workflow task not found: {public_id}")
+
+    workflow = task_detail.get("workflow")
+    workflow_public_id = workflow.get("public_id")
+
+    user_id = current_user.get("id")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
+
+    admin = WorkflowAdmin()
+    try:
+        return admin.approve_workflow(workflow_public_id, user_id=user_id, project_id=body.project_id, cost_code=body.cost_code)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/{public_id}/workflow/reject")
+def task_workflow_reject(
+    public_id: str,
+    body: RejectRequest,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """Reject the workflow for this task."""
+    svc = TaskService()
+    task_detail = svc.get_task_detail(public_id)
+    if not task_detail or not task_detail.get("workflow"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Workflow task not found: {public_id}")
+
+    workflow = task_detail.get("workflow")
+    workflow_public_id = workflow.get("public_id")
+
+    user_id = current_user.get("id")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
+
+    admin = WorkflowAdmin()
+    try:
+        return admin.reject_workflow(workflow_public_id, user_id=user_id, reason=body.reason)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+class ConfirmTypeRequest(BaseModel):
+    entity_type: str
+
+
+@router.post("/{public_id}/workflow/confirm-type")
+def task_workflow_confirm_type(
+    public_id: str,
+    body: ConfirmTypeRequest,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """Confirm entity type for the workflow in this task."""
+    svc = TaskService()
+    task_detail = svc.get_task_detail(public_id)
+    if not task_detail or not task_detail.get("workflow"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Workflow task not found: {public_id}")
+
+    workflow = task_detail.get("workflow")
+    workflow_public_id = workflow.get("public_id")
+
+    from workflows.orchestrator import WorkflowOrchestrator
+    orchestrator = WorkflowOrchestrator()
+    try:
+        updated = orchestrator.transition(
+            public_id=workflow_public_id,
+            trigger="confirm_type",
+            context_updates={"confirmed_entity_type": body.entity_type},
+            created_by=f"user:{current_user.get('id', 0)}",
+        )
+        return {"success": True, "state": updated.state}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{public_id}/workflow/process-bill")
+async def task_workflow_process_bill(
+    public_id: str,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """Spawn bill_processing workflow from the workflow in this task."""
+    tenant_id = current_user.get("tenant_id", 1)
+    access_token = _get_ms_access_token(tenant_id)
+    if not access_token:
+        raise HTTPException(status_code=400, detail="MS Graph token not available.")
+
+    svc = TaskService()
+    task_detail = svc.get_task_detail(public_id)
+    if not task_detail or not task_detail.get("workflow"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Workflow task not found: {public_id}")
+
+    workflow = task_detail.get("workflow")
+    workflow_public_id = workflow.get("public_id")
+
+    wf_repo = WorkflowRepository()
+    workflow_obj = wf_repo.read_by_public_id(workflow_public_id)
+    if not workflow_obj:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    executor = BillIntakeExecutor()
+    child = await executor.spawn_bill_processing(workflow_obj, access_token=access_token)
+    try:
+        TaskService().upsert_task_for_workflow(child)
+    except Exception as e:
+        logger.warning("Failed to upsert task for bill_processing workflow: %s", e)
+
+    return {"success": True, "workflow_id": child.public_id, "state": child.state}
+
+
+@router.post("/{public_id}/workflow/reminder")
+async def task_workflow_send_reminder(
+    public_id: str,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """Send a reminder email for the workflow in this task."""
+    tenant_id = current_user.get("tenant_id", 1)
+    access_token = _get_ms_access_token(tenant_id)
+    if not access_token:
+        raise HTTPException(status_code=400, detail="MS Graph token not available.")
+
+    svc = TaskService()
+    task_detail = svc.get_task_detail(public_id)
+    if not task_detail or not task_detail.get("workflow"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Workflow task not found: {public_id}")
+
+    workflow = task_detail.get("workflow")
+    workflow_public_id = workflow.get("public_id")
+
+    wf_repo = WorkflowRepository()
+    workflow_obj = wf_repo.read_by_public_id(workflow_public_id)
+    if not workflow_obj:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    executor = BillIntakeExecutor()
+    await executor.send_reminder(workflow_obj, access_token=access_token)
+    return {"success": True, "message": "Reminder sent"}
+
+
+# =============================================================================
+# Workflow Start and Poll Endpoints
+# =============================================================================
 
 @router.post("/workflows/start")
 async def start_workflow(
@@ -127,9 +411,9 @@ def _get_ms_access_token(tenant_id: int) -> Optional[str]:
         return None
 
 
-# -----------------------------------------------------------------------------
-# Inbox Browse and Thread
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Inbox Browse and Thread Endpoints
+# =============================================================================
 
 @router.get("/inbox/browse")
 def inbox_browse(
@@ -237,144 +521,6 @@ def inbox_thread(
     return {"conversation_id": conversation_id, "messages": out, "count": len(out)}
 
 
-# -----------------------------------------------------------------------------
-# Workflow Action Proxies (task detail UI calls these)
-# -----------------------------------------------------------------------------
-
-@router.post("/workflows/{public_id}/retry")
-def workflow_retry(
-    public_id: str,
-    current_user: dict = Depends(get_current_user_api),
-):
-    """Retry a failed workflow."""
-    user_id = current_user.get("id")
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
-    admin = WorkflowAdmin()
-    try:
-        return admin.retry_workflow(public_id, user_id=user_id)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
-@router.post("/workflows/{public_id}/cancel")
-def workflow_cancel(
-    public_id: str,
-    body: CancelRequest,
-    current_user: dict = Depends(get_current_user_api),
-):
-    """Cancel a workflow."""
-    user_id = current_user.get("id")
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
-    admin = WorkflowAdmin()
-    try:
-        return admin.cancel_workflow(public_id, user_id=user_id, reason=body.reason)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
-@router.post("/workflows/{public_id}/approve")
-def workflow_approve(
-    public_id: str,
-    body: ApproveRequest,
-    current_user: dict = Depends(get_current_user_api),
-):
-    """Approve a workflow."""
-    user_id = current_user.get("id")
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
-    admin = WorkflowAdmin()
-    try:
-        return admin.approve_workflow(public_id, user_id=user_id, project_id=body.project_id, cost_code=body.cost_code)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
-@router.post("/workflows/{public_id}/reject")
-def workflow_reject(
-    public_id: str,
-    body: RejectRequest,
-    current_user: dict = Depends(get_current_user_api),
-):
-    """Reject a workflow."""
-    user_id = current_user.get("id")
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
-    admin = WorkflowAdmin()
-    try:
-        return admin.reject_workflow(public_id, user_id=user_id, reason=body.reason)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
-@router.post("/workflows/{public_id}/reminder")
-async def workflow_send_reminder(
-    public_id: str,
-    current_user: dict = Depends(get_current_user_api),
-):
-    """Send a reminder email for a workflow awaiting approval."""
-    tenant_id = current_user.get("tenant_id", 1)
-    access_token = _get_ms_access_token(tenant_id)
-    if not access_token:
-        raise HTTPException(status_code=400, detail="MS Graph token not available.")
-    wf_repo = WorkflowRepository()
-    workflow = wf_repo.read_by_public_id(public_id)
-    if not workflow:
-        raise HTTPException(status_code=404, detail="Workflow not found")
-    executor = BillIntakeExecutor()
-    await executor.send_reminder(workflow, access_token=access_token)
-    return {"success": True, "message": "Reminder sent"}
-
-
-class ConfirmTypeRequest(BaseModel):
-    entity_type: str
-
-
-@router.post("/workflows/{public_id}/confirm-type")
-def workflow_confirm_type(
-    public_id: str,
-    body: ConfirmTypeRequest,
-    current_user: dict = Depends(get_current_user_api),
-):
-    """Confirm entity type for a workflow in awaiting_confirmation state."""
-    from workflows.orchestrator import WorkflowOrchestrator
-    orchestrator = WorkflowOrchestrator()
-    try:
-        updated = orchestrator.transition(
-            public_id=public_id,
-            trigger="confirm_type",
-            context_updates={"confirmed_entity_type": body.entity_type},
-            created_by=f"user:{current_user.get('id', 0)}",
-        )
-        return {"success": True, "state": updated.state}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.post("/workflows/{public_id}/process-bill")
-async def workflow_process_bill(
-    public_id: str,
-    current_user: dict = Depends(get_current_user_api),
-):
-    """Spawn bill_processing workflow from a confirmed email_intake workflow."""
-    tenant_id = current_user.get("tenant_id", 1)
-    access_token = _get_ms_access_token(tenant_id)
-    if not access_token:
-        raise HTTPException(status_code=400, detail="MS Graph token not available.")
-    wf_repo = WorkflowRepository()
-    workflow = wf_repo.read_by_public_id(public_id)
-    if not workflow:
-        raise HTTPException(status_code=404, detail="Workflow not found")
-    executor = BillIntakeExecutor()
-    child = await executor.spawn_bill_processing(workflow, access_token=access_token)
-    try:
-        TaskService().upsert_task_for_workflow(child)
-    except Exception as e:
-        logger.warning("Failed to upsert task for bill_processing workflow: %s", e)
-    return {"success": True, "workflow_id": child.public_id, "state": child.state}
-
-
 @router.get("/inbox/email/{message_id}/attachment/{attachment_index:int}")
 def inbox_attachment(
     message_id: str,
@@ -428,3 +574,102 @@ def inbox_unflag(
     except Exception as e:
         logger.exception("inbox_unflag failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Upload Endpoint (Phase 6 - placeholder)
+# =============================================================================
+
+@router.post("/upload")
+async def upload_task_file(
+    file: UploadFile = File(...),
+    title: Optional[str] = Query(default=None, description="Task title"),
+    description: Optional[str] = Query(default=None, description="Task description"),
+    current_user: dict = Depends(get_current_user_api),
+) -> Dict:
+    """
+    Upload a CSV/Excel file and create a data_upload task.
+    The file will be parsed asynchronously.
+    """
+    tenant_id = current_user.get("tenant_id", 1)
+    user_id = current_user.get("id")
+
+    try:
+        # Read file content
+        file_content = await file.read()
+        filename = file.filename
+        content_type = file.content_type
+
+        # Parse the file
+        from services.tasks.business.upload_service import UploadParserService, UploadParseError
+
+        upload_svc = UploadParserService()
+        try:
+            parse_result = upload_svc.parse_upload(
+                file_content=file_content,
+                filename=filename,
+                content_type=content_type,
+            )
+        except UploadParseError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to parse file: {str(e)}"
+            )
+
+        # Build task title
+        task_title = title or f"Data Upload: {filename}"
+
+        # Build context with upload metadata
+        context = {
+            "filename": parse_result.get("filename"),
+            "file_size": parse_result.get("file_size"),
+            "row_count": parse_result.get("row_count"),
+            "column_names": parse_result.get("column_names"),
+            "column_count": parse_result.get("column_count"),
+            "preview_rows": parse_result.get("preview_rows"),
+            "data_types": parse_result.get("data_types"),
+            "parse_status": parse_result.get("parse_status"),
+            "parse_error": parse_result.get("parse_error"),
+        }
+
+        # Create the data_upload task
+        svc = TaskService()
+        task = svc.create_task(
+            tenant_id=tenant_id,
+            title=task_title,
+            description=description,
+            task_type="data_upload",
+            source_type="upload",
+            status="pending",
+            created_by_user_id=user_id,
+            context=context,
+        )
+
+        if not task:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create task"
+            )
+
+        return {
+            "success": True,
+            "task_id": task.public_id,
+            "parse_status": parse_result.get("parse_status"),
+            "row_count": parse_result.get("row_count"),
+            "column_count": parse_result.get("column_count"),
+        }
+
+    except UploadParseError as e:
+        logger.exception("Upload parse error")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Upload failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Upload failed: {str(e)}"
+        )

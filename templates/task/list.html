@@ -8,104 +8,132 @@
 
 {% block content %}
 
-<div class="agent-inbox">
+<div class="task-inbox">
     <!-- Header -->
-    <div class="agent-header">
-        <div class="agent-header-left">
+    <div class="task-header">
+        <div class="task-header-left">
             <h1>Tasks</h1>
-            <button id="poll-btn" class="btn btn-primary agent-poll-btn" onclick="pollInbox()">
-                <span class="agent-poll-icon">↻</span> Poll Inbox
+            <button id="poll-btn" class="btn btn-primary task-poll-btn" onclick="pollInbox()">
+                <span class="task-poll-icon">↻</span> Poll Inbox
             </button>
         </div>
-        <div class="agent-header-actions">
+        <div class="task-header-actions">
             <a href="/tasks/browse" class="btn btn-secondary">Browse Inbox</a>
-            <div class="agent-header-stats">
-                <span class="agent-stat">
-                    <span class="agent-stat-value">{{ metrics.active_workflows }}</span>
-                    <span class="agent-stat-label">Active</span>
+            <div class="task-header-stats">
+                <span class="task-stat">
+                    <span class="task-stat-value">{{ metrics.active_workflows }}</span>
+                    <span class="task-stat-label">Active</span>
                 </span>
-                <span class="agent-stat">
-                    <span class="agent-stat-value">{{ state_counts.get('awaiting_confirmation', 0) }}</span>
-                    <span class="agent-stat-label">Awaiting</span>
+                <span class="task-stat">
+                    <span class="task-stat-value">{{ state_counts.get('awaiting_confirmation', 0) }}</span>
+                    <span class="task-stat-label">Awaiting</span>
                 </span>
-                <span class="agent-stat agent-stat--alert">
-                    <span class="agent-stat-value">{{ state_counts.get('needs_review', 0) }}</span>
-                    <span class="agent-stat-label">Needs Review</span>
+                <span class="task-stat task-stat--alert">
+                    <span class="task-stat-value">{{ state_counts.get('needs_review', 0) }}</span>
+                    <span class="task-stat-label">Needs Review</span>
                 </span>
             </div>
         </div>
     </div>
     
     <!-- Poll Status Banner -->
-    <div id="poll-status" class="agent-poll-status" style="display: none;">
+    <div id="poll-status" class="task-poll-status" style="display: none;">
         <span id="poll-status-icon">⏳</span>
         <span id="poll-status-text">Polling inbox...</span>
     </div>
 
     <!-- Filter Tabs -->
-    <div class="agent-filters">
-        <a href="/tasks/list" class="agent-filter-tab {{ 'active' if not selected_state else '' }}">
+    <div class="task-filters">
+        <a href="/tasks/list" class="task-filter-tab {{ 'active' if not selected_state else '' }}">
             All
-            <span class="agent-filter-count">{{ workflows|length if not selected_state else state_counts.values()|sum }}</span>
+            <span class="task-filter-count">{{ tasks|length if not selected_state else state_counts.values()|sum }}</span>
         </a>
-        <a href="/tasks/list?state=awaiting_confirmation" class="agent-filter-tab {{ 'active' if selected_state == 'awaiting_confirmation' else '' }}">
+        <a href="/tasks/list?state=awaiting_confirmation" class="task-filter-tab {{ 'active' if selected_state == 'awaiting_confirmation' else '' }}">
             Awaiting Confirmation
-            <span class="agent-filter-count">{{ state_counts.get('awaiting_confirmation', 0) }}</span>
+            <span class="task-filter-count">{{ state_counts.get('awaiting_confirmation', 0) }}</span>
         </a>
-        <a href="/tasks/list?state=needs_review" class="agent-filter-tab agent-filter-tab--alert {{ 'active' if selected_state == 'needs_review' else '' }}">
+        <a href="/tasks/list?state=needs_review" class="task-filter-tab task-filter-tab--alert {{ 'active' if selected_state == 'needs_review' else '' }}">
             Needs Review
-            <span class="agent-filter-count">{{ state_counts.get('needs_review', 0) }}</span>
+            <span class="task-filter-count">{{ state_counts.get('needs_review', 0) }}</span>
         </a>
-        <a href="/tasks/list?state=completed" class="agent-filter-tab {{ 'active' if selected_state == 'completed' else '' }}">
+        <a href="/tasks/list?state=completed" class="task-filter-tab {{ 'active' if selected_state == 'completed' else '' }}">
             Completed
-            <span class="agent-filter-count">{{ state_counts.get('completed', 0) }}</span>
+            <span class="task-filter-count">{{ state_counts.get('completed', 0) }}</span>
         </a>
     </div>
 
-    <!-- Workflow List -->
-    <div class="agent-list">
-        {% if workflows %}
-            {% for wf in workflows %}
-            <a href="/tasks/{{ wf.public_id }}{% if selected_state %}?from_state={{ selected_state }}{% endif %}" class="agent-list-item {{ 'agent-list-item--alert' if wf.needs_attention else '' }}">
-                <div class="agent-list-item-status">
-                    {% if wf.state == 'completed' %}
-                        <span class="agent-status-icon agent-status-icon--completed">✓</span>
-                    {% elif wf.state == 'needs_review' %}
-                        <span class="agent-status-icon agent-status-icon--alert">!</span>
-                    {% elif wf.state == 'awaiting_approval' %}
-                        <span class="agent-status-icon agent-status-icon--waiting">○</span>
+    <!-- Task List -->
+    <div class="task-list">
+        {% if tasks %}
+            {% for task in tasks %}
+            {% set is_workflow = task.task_type == 'workflow' or task.get('entity_type') %}
+            {% set is_upload = task.task_type == 'data_upload' %}
+            {% set source_icon = '📧' if task.source_type == 'email' else '📊' if task.source_type == 'upload' else '✍️' %}
+            {% set effective_status = task.state or task.status or 'open' %}
+
+            <a href="/tasks/{{ task.public_id }}{% if selected_state %}?from_state={{ selected_state }}{% endif %}" class="task-list-item {{ 'task-list-item--alert' if task.needs_attention or effective_status == 'needs_review' else '' }}">
+                <div class="task-list-item-status">
+                    {% if effective_status == 'completed' %}
+                        <span class="task-status-icon task-status-icon--completed">✓</span>
+                    {% elif effective_status == 'needs_review' %}
+                        <span class="task-status-icon task-status-icon--alert">!</span>
+                    {% elif effective_status in ('awaiting_approval', 'awaiting_confirmation', 'pending_approval', 'pending') %}
+                        <span class="task-status-icon task-status-icon--waiting">○</span>
+                    {% elif effective_status == 'cancelled' %}
+                        <span class="task-status-icon task-status-icon--completed">✗</span>
                     {% else %}
-                        <span class="agent-status-icon agent-status-icon--processing">●</span>
+                        <span class="task-status-icon task-status-icon--processing">●</span>
                     {% endif %}
                 </div>
-                <div class="agent-list-item-content">
-                    <div class="agent-list-item-header">
-                        <span class="agent-list-item-subject">{{ wf.subject or 'No subject' }}</span>
-                    </div>
-                    <div class="agent-list-item-details">
-                        <span class="agent-list-item-from">{{ wf.from_name or wf.from_address or 'Unknown sender' }}</span>
-                        <span class="agent-list-item-entity">
-                            {{ wf.entity_label }}
-                            {% if wf.confidence %}
-                            <span class="agent-confidence-small">({{ '{:.0%}'.format(wf.confidence) }})</span>
-                            {% endif %}
-                        </span>
-                    </div>
-                    <div class="agent-list-item-meta">
-                        {% if wf.has_attachments %}
-                            <span class="agent-list-item-attachment">📎</span>
+                <div class="task-list-item-content">
+                    <div class="task-list-item-header">
+                        <span class="task-list-item-source-icon">{{ source_icon }}</span>
+                        {% if is_workflow %}
+                            <span class="task-list-item-subject">{{ task.subject or task.title or 'No subject' }}</span>
+                        {% else %}
+                            <span class="task-list-item-subject">{{ task.title or task.description or 'Untitled Task' }}</span>
                         {% endif %}
-                        <span class="agent-list-item-state">{{ wf.state|replace('_', ' ')|title }}</span>
-                        <span class="agent-list-item-time">
-                            {% if wf.days_ago == 0 %}Today{% elif wf.days_ago == 1 %}Yesterday{% elif wf.days_ago %}{{ wf.days_ago }} days ago{% endif %}
+                        {% if task.task_type %}
+                            <span class="task-badge task-badge--sm task-badge--neutral">{{ task.task_type|replace('_', ' ')|title }}</span>
+                        {% endif %}
+                    </div>
+                    <div class="task-list-item-details">
+                        {% if is_workflow %}
+                            <span class="task-list-item-from">{{ task.from_name or task.from_address or 'Unknown sender' }}</span>
+                            <span class="task-list-item-entity">
+                                {{ task.entity_label }}
+                                {% if task.confidence %}
+                                <span class="task-confidence-small">({{ '{:.0%}'.format(task.confidence) }})</span>
+                                {% endif %}
+                            </span>
+                        {% elif is_upload %}
+                            <span class="task-list-item-from">{{ task.filename or 'Uploaded file' }}</span>
+                            {% if task.row_count %}
+                                <span class="task-list-item-entity">{{ task.row_count }} rows</span>
+                            {% endif %}
+                        {% else %}
+                            {% if task.description %}
+                                <span class="task-list-item-from">{{ task.description[:100] }}{% if task.description|length > 100 %}...{% endif %}</span>
+                            {% else %}
+                                <span class="task-list-item-from">Manual task</span>
+                            {% endif %}
+                        {% endif %}
+                    </div>
+                    <div class="task-list-item-meta">
+                        {% if is_workflow and task.has_attachments %}
+                            <span class="task-list-item-attachment">📎</span>
+                        {% endif %}
+                        <span class="task-list-item-state">{{ effective_status|replace('_', ' ')|title }}</span>
+                        <span class="task-list-item-time">
+                            {% if task.days_ago == 0 %}Today{% elif task.days_ago == 1 %}Yesterday{% elif task.days_ago %}{{ task.days_ago }} days ago{% endif %}
                         </span>
                     </div>
                 </div>
             </a>
             {% endfor %}
         {% else %}
-            <div class="agent-empty-state">
-                <div class="agent-empty-icon">📭</div>
+            <div class="task-empty-state">
+                <div class="task-empty-icon">📭</div>
                 <h3>No tasks found</h3>
                 <p>{% if selected_state %}No tasks with status "{{ selected_state|replace('_', ' ')|title }}"{% else %}No tasks yet{% endif %}</p>
             </div>
@@ -122,9 +150,9 @@ async function pollInbox() {
     
     // Disable button and show status
     btn.disabled = true;
-    btn.innerHTML = '<span class="agent-poll-icon agent-poll-spinning">↻</span> Polling...';
+    btn.innerHTML = '<span class="task-poll-icon task-poll-spinning">↻</span> Polling...';
     status.style.display = 'flex';
-    status.className = 'agent-poll-status agent-poll-status--loading';
+    status.className = 'task-poll-status task-poll-status--loading';
     statusIcon.textContent = '⏳';
     statusText.textContent = 'Polling inbox for new emails...';
     
@@ -141,7 +169,7 @@ async function pollInbox() {
             const result = await response.json();
             
             // Show success
-            status.className = 'agent-poll-status agent-poll-status--success';
+            status.className = 'task-poll-status task-poll-status--success';
             statusIcon.textContent = '✓';
             
             const parts = [];
@@ -159,17 +187,17 @@ async function pollInbox() {
             }
         } else {
             const error = await response.json();
-            status.className = 'agent-poll-status agent-poll-status--error';
+            status.className = 'task-poll-status task-poll-status--error';
             statusIcon.textContent = '✗';
             statusText.textContent = error.detail || 'Polling failed';
         }
     } catch (e) {
-        status.className = 'agent-poll-status agent-poll-status--error';
+        status.className = 'task-poll-status task-poll-status--error';
         statusIcon.textContent = '✗';
         statusText.textContent = 'Error: ' + e.message;
     } finally {
         btn.disabled = false;
-        btn.innerHTML = '<span class="agent-poll-icon">↻</span> Poll Inbox';
+        btn.innerHTML = '<span class="task-poll-icon">↻</span> Poll Inbox';
     }
 }
 

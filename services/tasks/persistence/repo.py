@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 import base64
+import json
 import logging
 from typing import List, Optional
 
@@ -27,6 +28,16 @@ class TaskRepository:
         if not row:
             return None
         try:
+            # Parse Context JSON if present
+            context_json = getattr(row, "Context", None)
+            context = None
+            if context_json:
+                try:
+                    context = json.loads(context_json)
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Failed to parse Context JSON for task %s", getattr(row, "Id", None))
+                    context = None
+
             return Task(
                 id=getattr(row, "Id", None),
                 public_id=str(getattr(row, "PublicId", None)) if getattr(row, "PublicId", None) else None,
@@ -40,6 +51,13 @@ class TaskRepository:
                 status=getattr(row, "Status", None),
                 source_type=getattr(row, "SourceType", None),
                 source_id=getattr(row, "SourceId", None),
+                description=getattr(row, "Description", None),
+                created_by_user_id=getattr(row, "CreatedByUserId", None),
+                workflow_id=getattr(row, "WorkflowId", None),
+                vendor_id=getattr(row, "VendorId", None),
+                project_id=getattr(row, "ProjectId", None),
+                bill_id=getattr(row, "BillId", None),
+                context=context,
             )
         except Exception as error:
             logger.error("Error during Task mapping: %s", error)
@@ -55,8 +73,24 @@ class TaskRepository:
         status: Optional[str] = None,
         source_type: Optional[str] = None,
         source_id: Optional[str] = None,
+        description: Optional[str] = None,
+        created_by_user_id: Optional[int] = None,
+        workflow_id: Optional[int] = None,
+        vendor_id: Optional[int] = None,
+        project_id: Optional[int] = None,
+        bill_id: Optional[int] = None,
+        context: Optional[dict] = None,
     ) -> Task:
         try:
+            # Serialize context dict to JSON if present
+            context_json = None
+            if context:
+                try:
+                    context_json = json.dumps(context)
+                except (TypeError, ValueError) as e:
+                    logger.warning("Failed to serialize context to JSON: %s", e)
+                    context_json = None
+
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
@@ -70,6 +104,13 @@ class TaskRepository:
                         "Status": status,
                         "SourceType": source_type,
                         "SourceId": source_id,
+                        "Description": description,
+                        "CreatedByUserId": created_by_user_id,
+                        "WorkflowId": workflow_id,
+                        "VendorId": vendor_id,
+                        "ProjectId": project_id,
+                        "BillId": bill_id,
+                        "Context": context_json,
                     },
                 )
                 row = cursor.fetchone()
@@ -167,8 +208,19 @@ class TaskRepository:
         public_id: str,
         title: Optional[str] = None,
         status: Optional[str] = None,
+        description: Optional[str] = None,
+        context: Optional[dict] = None,
     ) -> Optional[Task]:
         try:
+            # Serialize context dict to JSON if present
+            context_json = None
+            if context is not None:
+                try:
+                    context_json = json.dumps(context)
+                except (TypeError, ValueError) as e:
+                    logger.warning("Failed to serialize context to JSON: %s", e)
+                    context_json = None
+
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
@@ -178,10 +230,27 @@ class TaskRepository:
                         "PublicId": public_id,
                         "Title": title,
                         "Status": status,
+                        "Description": description,
+                        "Context": context_json,
                     },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
         except Exception as error:
             logger.error("Error during update Task: %s", error)
+            raise map_database_error(error)
+
+    def read_by_workflow_id(self, workflow_id: int) -> Optional[Task]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadTaskByWorkflowId",
+                    params={"WorkflowId": workflow_id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error("Error during read Task by workflow ID: %s", error)
             raise map_database_error(error)

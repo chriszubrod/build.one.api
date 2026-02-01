@@ -37,8 +37,8 @@ async def list_tasks(
         status=state,
         open_only=open_only,
     )
-    state_counts = Counter(t.get("state") for t in tasks)
-    metrics = {"active_workflows": len([t for t in tasks if t.get("state") not in ("completed", "cancelled")])}
+    state_counts = Counter(t.get("state") or t.get("status") or "open" for t in tasks)
+    metrics = {"active_workflows": len([t for t in tasks if (t.get("state") or t.get("status")) not in ("completed", "cancelled")])}
     templates = _templates()
     return templates.TemplateResponse(
         "task/list.html",
@@ -134,6 +134,13 @@ async def task_detail(
         for e in events_raw
     ]
     wf_dict["events"] = events
+
+    # Extract upload data from task context for data_upload tasks
+    task_dict = result["task"]
+    upload_data = None
+    if task_dict.get("task_type") == "data_upload" and task_dict.get("context"):
+        upload_data = task_dict["context"] if isinstance(task_dict["context"], dict) else {}
+
     templates = _templates()
     return templates.TemplateResponse(
         "task/view.html",
@@ -141,8 +148,9 @@ async def task_detail(
             "request": request,
             "current_user": current_user,
             "current_path": request.url.path,
-            "task": result["task"],
+            "task": task_dict,
             "workflow": wf_dict,
+            "upload": upload_data,
             "events": events,
             "return_url": f"/tasks/list{f'?state={from_state}' if from_state else ''}",
         },

@@ -15,12 +15,19 @@ class Task:
     created_datetime: Optional[str] = None
     modified_datetime: Optional[str] = None
     tenant_id: Optional[int] = None
-    task_type: Optional[str] = None  # e.g. 'workflow'
+    task_type: Optional[str] = None  # e.g. 'workflow', 'data_upload', 'manual'
     reference_id: Optional[int] = None  # Id of the row in the table for TaskType (e.g. Workflow.Id)
     title: Optional[str] = None
     status: Optional[str] = None
-    source_type: Optional[str] = None  # e.g. 'email'
+    source_type: Optional[str] = None  # e.g. 'email', 'upload', 'manual'
     source_id: Optional[str] = None  # e.g. conversation_id for "tasks from this email"
+    description: Optional[str] = None
+    created_by_user_id: Optional[int] = None
+    workflow_id: Optional[int] = None
+    vendor_id: Optional[int] = None
+    project_id: Optional[int] = None
+    bill_id: Optional[int] = None
+    context: Optional[dict] = None  # parsed from JSON in repo layer
 
     def to_dict(self) -> dict:
         return asdict(self)

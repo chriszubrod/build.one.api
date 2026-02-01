@@ -18,3 +18,25 @@ class PollRunResponse(BaseModel):
     new_workflows: int = 0
     replies_processed: int = 0
     reminders_sent: int = 0
+
+
+class TaskCreate(BaseModel):
+    """Request to create a new task (manual entry)."""
+    title: str = Field(..., description="Task title")
+    description: Optional[str] = Field(default=None, description="Task description")
+    task_type: str = Field(default="manual", description="Task type (manual, workflow, data_upload)")
+    source_type: Optional[str] = Field(default=None, description="Source type (email, upload, manual)")
+    context: Optional[Dict[str, Any]] = Field(default=None, description="Type-specific context data")
+
+
+class TaskUpdate(BaseModel):
+    """Request to update a task."""
+    title: Optional[str] = Field(default=None, description="Task title")
+    description: Optional[str] = Field(default=None, description="Task description")
+    status: Optional[str] = Field(default=None, description="Task status")
+    context: Optional[Dict[str, Any]] = Field(default=None, description="Type-specific context data")
+
+
+class TaskStatusUpdate(BaseModel):
+    """Request to update only task status."""
+    status: str = Field(..., description="New task status")

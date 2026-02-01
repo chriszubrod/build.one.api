@@ -5,8 +5,8 @@ from fastapi.templating import Jinja2Templates
 # Third-party Imports
 
 # Local Imports
-from services.vendor_type.business.service import VendorTypeService
-from services.auth.business.service import get_current_user_web as get_current_vendor_type_web
+from entities.vendor_type.business.service import VendorTypeService
+from entities.auth.business.service import get_current_user_web as get_current_vendor_type_web
 
 router = APIRouter(prefix="/vendor-type", tags=["web", "vendor_type"])
 templates = Jinja2Templates(directory="templates/vendor_type")

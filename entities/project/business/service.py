@@ -4,8 +4,8 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.project.business.model import Project
-from services.project.persistence.repo import ProjectRepository
+from entities.project.business.model import Project
+from entities.project.persistence.repo import ProjectRepository
 
 
 class ProjectService:

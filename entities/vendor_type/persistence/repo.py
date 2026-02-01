@@ -7,7 +7,7 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
-from services.vendor_type.business.model import VendorType
+from entities.vendor_type.business.model import VendorType
 from shared.database import (
     call_procedure,
     get_connection,

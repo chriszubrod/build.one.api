@@ -5,11 +5,11 @@ from decimal import Decimal
 # Third-party Imports
 
 # Local Imports
-from services.expense_line_item.business.model import ExpenseLineItem
-from services.expense_line_item.persistence.repo import ExpenseLineItemRepository
-from services.sub_cost_code.business.service import SubCostCodeService
-from services.project.business.service import ProjectService
-from services.expense.business.service import ExpenseService
+from entities.expense_line_item.business.model import ExpenseLineItem
+from entities.expense_line_item.persistence.repo import ExpenseLineItemRepository
+from entities.sub_cost_code.business.service import SubCostCodeService
+from entities.project.business.service import ProjectService
+from entities.expense.business.service import ExpenseService
 
 
 class ExpenseLineItemService:

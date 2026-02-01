@@ -3,8 +3,8 @@
 # Third-party Imports
 
 # Local Imports
-from services.organization.persistence.repo import OrganizationRepository
-from services.organization.business.model import Organization
+from entities.organization.persistence.repo import OrganizationRepository
+from entities.organization.business.model import Organization
 from typing import Optional
 
 

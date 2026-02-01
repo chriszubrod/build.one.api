@@ -4,9 +4,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
-from services.user.api.schemas import UserCreate, UserUpdate
-from services.user.business.service import UserService
-from services.auth.business.service import get_current_user_api
+from entities.user.api.schemas import UserCreate, UserUpdate
+from entities.user.business.service import UserService
+from entities.auth.business.service import get_current_user_api
 from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "user"])

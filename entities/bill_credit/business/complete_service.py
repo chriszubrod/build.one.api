@@ -7,14 +7,14 @@ from collections import defaultdict
 # Third-party Imports
 
 # Local Imports
-from services.bill_credit.business.service import BillCreditService
-from services.bill_credit_line_item.business.service import BillCreditLineItemService
-from services.bill_credit_line_item_attachment.business.service import BillCreditLineItemAttachmentService
-from services.attachment.business.service import AttachmentService
-from services.project.business.service import ProjectService
-from services.vendor.business.service import VendorService
-from services.sub_cost_code.business.service import SubCostCodeService
-from services.module.business.service import ModuleService
+from entities.bill_credit.business.service import BillCreditService
+from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+from entities.bill_credit_line_item_attachment.business.service import BillCreditLineItemAttachmentService
+from entities.attachment.business.service import AttachmentService
+from entities.project.business.service import ProjectService
+from entities.vendor.business.service import VendorService
+from entities.sub_cost_code.business.service import SubCostCodeService
+from entities.module.business.service import ModuleService
 from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
 from integrations.ms.sharepoint.driveitem.business.service import MsDriveItemService
 from integrations.ms.sharepoint.drive.persistence.repo import MsDriveRepository
@@ -72,7 +72,7 @@ class BillCreditCompleteService:
         # Finalize BillCredit (set is_draft=False)
         # Use retry logic to handle race conditions with auto-save
         try:
-            from services.bill_credit.api.schemas import BillCreditUpdate
+            from entities.bill_credit.api.schemas import BillCreditUpdate
             import time
             
             finalized_bill_credit = None
@@ -154,7 +154,7 @@ class BillCreditCompleteService:
                         if project:
                             project_public_id = project.public_id
                     
-                    from services.bill_credit_line_item.api.schemas import BillCreditLineItemUpdate
+                    from entities.bill_credit_line_item.api.schemas import BillCreditLineItemUpdate
                     line_item_update = BillCreditLineItemUpdate(
                         row_version=line_item.row_version,
                         bill_credit_public_id=public_id,

@@ -4,9 +4,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
-from services.taxpayer_attachment.api.schemas import TaxpayerAttachmentCreate
-from services.taxpayer_attachment.business.service import TaxpayerAttachmentService
-from services.auth.business.service import get_current_user_api as get_current_taxpayer_attachment_api
+from entities.taxpayer_attachment.api.schemas import TaxpayerAttachmentCreate
+from entities.taxpayer_attachment.business.service import TaxpayerAttachmentService
+from entities.auth.business.service import get_current_user_api as get_current_taxpayer_attachment_api
 from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "taxpayer_attachment"])

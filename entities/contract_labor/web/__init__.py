@@ -1,2 +1,2 @@
 # Contract Labor Web Controllers
-from services.contract_labor.web.controller import router
+from entities.contract_labor.web.controller import router

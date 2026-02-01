@@ -39,19 +39,19 @@ class EntityCapabilities(Capability):
     
     def _get_bill_service(self):
         if self._bill_service is None:
-            from services.bill.business.service import BillService
+            from entities.bill.business.service import BillService
             self._bill_service = BillService()
         return self._bill_service
     
     def _get_vendor_service(self):
         if self._vendor_service is None:
-            from services.vendor.business.service import VendorService
+            from entities.vendor.business.service import VendorService
             self._vendor_service = VendorService()
         return self._vendor_service
     
     def _get_project_service(self):
         if self._project_service is None:
-            from services.project.business.service import ProjectService
+            from entities.project.business.service import ProjectService
             self._project_service = ProjectService()
         return self._project_service
     
@@ -442,7 +442,7 @@ class EntityCapabilities(Capability):
             The public_id of the first created line item (for attachment linking)
         """
         try:
-            from services.bill_line_item.business.service import BillLineItemService
+            from entities.bill_line_item.business.service import BillLineItemService
             from decimal import Decimal
             
             line_item_service = BillLineItemService()
@@ -511,8 +511,8 @@ class EntityCapabilities(Capability):
         )
         
         try:
-            from services.attachment.business.service import AttachmentService
-            from services.bill_line_item_attachment.business.service import BillLineItemAttachmentService
+            from entities.attachment.business.service import AttachmentService
+            from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
             import os
             
             attachment_service = AttachmentService()
@@ -633,7 +633,7 @@ class EntityCapabilities(Capability):
         Returns list of dicts with id, public_id, number, name, description.
         """
         try:
-            from services.sub_cost_code.business.service import SubCostCodeService
+            from entities.sub_cost_code.business.service import SubCostCodeService
             service = SubCostCodeService()
             codes = service.read_all()
             
@@ -673,7 +673,7 @@ class EntityCapabilities(Capability):
             return CapabilityResult.ok(data=None)
         
         try:
-            from services.sub_cost_code.business.service import SubCostCodeService
+            from entities.sub_cost_code.business.service import SubCostCodeService
             service = SubCostCodeService()
             
             # Normalize the code string (remove spaces, ensure consistent format)
@@ -724,7 +724,7 @@ class EntityCapabilities(Capability):
         Returns the payment term record or None.
         """
         try:
-            from services.payment_term.business.service import PaymentTermService
+            from entities.payment_term.business.service import PaymentTermService
             service = PaymentTermService()
             terms = service.read_all()
             

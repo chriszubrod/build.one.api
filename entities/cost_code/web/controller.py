@@ -6,8 +6,8 @@ from fastapi.templating import Jinja2Templates
 # Third-party Imports
 
 # Local Imports
-from services.cost_code.business.service import CostCodeService
-from services.auth.business.service import get_current_user_web
+from entities.cost_code.business.service import CostCodeService
+from entities.auth.business.service import get_current_user_web
 
 router = APIRouter(prefix="/cost-code", tags=["web", "cost-code"])
 templates = Jinja2Templates(directory="templates/cost_code")

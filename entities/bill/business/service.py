@@ -6,9 +6,9 @@ from decimal import Decimal
 # Third-party Imports
 
 # Local Imports
-from services.bill.business.model import Bill
-from services.bill.persistence.repo import BillRepository
-from services.vendor.business.service import VendorService
+from entities.bill.business.model import Bill
+from entities.bill.persistence.repo import BillRepository
+from entities.vendor.business.service import VendorService
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ class BillService:
         # Resolve payment_term_public_id to payment_term_id
         payment_term_id = None
         if payment_term_public_id:
-            from services.payment_term.business.service import PaymentTermService
+            from entities.payment_term.business.service import PaymentTermService
             payment_term = PaymentTermService().read_by_public_id(public_id=payment_term_public_id)
             if payment_term:
                 payment_term_id = payment_term.id
@@ -179,15 +179,15 @@ class BillService:
             - errors: list of dict with line_item info and error message
         """
         # Import here to avoid circular imports
-        from services.bill_line_item.business.service import BillLineItemService
-        from services.bill_line_item_attachment.business.service import BillLineItemAttachmentService
-        from services.attachment.business.service import AttachmentService
-        from services.project.business.service import ProjectService
-        from services.sub_cost_code.business.service import SubCostCodeService
+        from entities.bill_line_item.business.service import BillLineItemService
+        from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
+        from entities.attachment.business.service import AttachmentService
+        from entities.project.business.service import ProjectService
+        from entities.sub_cost_code.business.service import SubCostCodeService
         from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
         from integrations.ms.sharepoint.driveitem.business.service import MsDriveItemService
         from integrations.ms.sharepoint.drive.persistence.repo import MsDriveRepository
-        from services.module.business.service import ModuleService
+        from entities.module.business.service import ModuleService
         from shared.storage import AzureBlobStorage, AzureBlobStorageError
         
         bill = self.read_by_public_id(public_id=bill_public_id)
@@ -529,7 +529,7 @@ class BillService:
         
         # Resolve payment_term_public_id to payment_term_id
         if payment_term_public_id is not None:
-            from services.payment_term.business.service import PaymentTermService
+            from entities.payment_term.business.service import PaymentTermService
             payment_term = PaymentTermService().read_by_public_id(public_id=payment_term_public_id)
             existing.payment_term_id = payment_term.id if payment_term else None
         
@@ -579,10 +579,10 @@ class BillService:
         - Bill record
         """
         # Import here to avoid circular import
-        from services.bill_line_item.business.service import BillLineItemService
-        from services.bill_line_item_attachment.business.service import BillLineItemAttachmentService
-        from services.bill_line_item_attachment.persistence.repo import BillLineItemAttachmentRepository
-        from services.attachment.business.service import AttachmentService
+        from entities.bill_line_item.business.service import BillLineItemService
+        from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
+        from entities.bill_line_item_attachment.persistence.repo import BillLineItemAttachmentRepository
+        from entities.attachment.business.service import AttachmentService
         from shared.storage import AzureBlobStorage, AzureBlobStorageError
         
         # Step 1: Get the bill
@@ -659,7 +659,7 @@ class BillService:
                 elif line_item.id:
                     # Fallback: delete directly by ID if public_id is missing
                     try:
-                        from services.bill_line_item.persistence.repo import BillLineItemRepository
+                        from entities.bill_line_item.persistence.repo import BillLineItemRepository
                         bill_line_item_repo = BillLineItemRepository()
                         bill_line_item_repo.delete_by_id(id=line_item.id)
                         logger.info(f"Deleted bill line item {line_item.id} (by ID, no public_id)")

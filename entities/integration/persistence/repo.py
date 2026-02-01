@@ -7,7 +7,7 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
-from services.integration.business.model import Integration, IntegrationStatus
+from entities.integration.business.model import Integration, IntegrationStatus
 from shared.database import (
     call_procedure,
     get_connection,

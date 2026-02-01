@@ -4,12 +4,12 @@
 from fastapi import APIRouter, HTTPException, Depends, status
 
 # Local Imports
-from services.cost_code.business.service import CostCodeService
-from services.cost_code.api.schemas import (
+from entities.cost_code.business.service import CostCodeService
+from entities.cost_code.api.schemas import (
     CostCodeCreate,
     CostCodeUpdate,
 )
-from services.auth.business.service import get_current_user_api
+from entities.auth.business.service import get_current_user_api
 from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "cost-code"])

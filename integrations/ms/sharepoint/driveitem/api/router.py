@@ -20,7 +20,7 @@ from integrations.ms.sharepoint.driveitem.business.service import MsDriveItemSer
 from integrations.ms.sharepoint.driveitem.connector.project.business.service import DriveItemProjectConnector
 from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
 from integrations.ms.sharepoint.driveitem.connector.project_excel.business.service import DriveItemProjectExcelConnector
-from services.auth.business.service import get_current_user_api
+from entities.auth.business.service import get_current_user_api
 
 logger = logging.getLogger(__name__)
 

@@ -7,7 +7,7 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
-from services.expense_line_item_attachment.business.model import ExpenseLineItemAttachment
+from entities.expense_line_item_attachment.business.model import ExpenseLineItemAttachment
 from shared.database import (
     call_procedure,
     get_connection,

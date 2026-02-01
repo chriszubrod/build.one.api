@@ -7,14 +7,14 @@ from collections import defaultdict
 # Third-party Imports
 
 # Local Imports
-from services.expense.business.service import ExpenseService
-from services.expense_line_item.business.service import ExpenseLineItemService
-from services.expense_line_item_attachment.business.service import ExpenseLineItemAttachmentService
-from services.attachment.business.service import AttachmentService
-from services.project.business.service import ProjectService
-from services.vendor.business.service import VendorService
-from services.sub_cost_code.business.service import SubCostCodeService
-from services.module.business.service import ModuleService
+from entities.expense.business.service import ExpenseService
+from entities.expense_line_item.business.service import ExpenseLineItemService
+from entities.expense_line_item_attachment.business.service import ExpenseLineItemAttachmentService
+from entities.attachment.business.service import AttachmentService
+from entities.project.business.service import ProjectService
+from entities.vendor.business.service import VendorService
+from entities.sub_cost_code.business.service import SubCostCodeService
+from entities.module.business.service import ModuleService
 from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
 from integrations.ms.sharepoint.driveitem.business.service import MsDriveItemService
 from integrations.ms.sharepoint.drive.persistence.repo import MsDriveRepository

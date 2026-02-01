@@ -10,8 +10,8 @@ from integrations.intuit.qbo.physical_address.connector.business.model import Ph
 from integrations.intuit.qbo.physical_address.connector.persistence.repo import PhysicalAddressAddressRepository
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
 from integrations.intuit.qbo.physical_address.business.model import QboPhysicalAddress
-from services.address.business.service import AddressService
-from services.address.business.model import Address
+from entities.address.business.service import AddressService
+from entities.address.business.model import Address
 
 logger = logging.getLogger(__name__)
 

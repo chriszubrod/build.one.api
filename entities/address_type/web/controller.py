@@ -5,8 +5,8 @@ from fastapi.templating import Jinja2Templates
 # Third-party Imports
 
 # Local Imports
-from services.address_type.business.service import AddressTypeService
-from services.auth.business.service import get_current_user_web
+from entities.address_type.business.service import AddressTypeService
+from entities.auth.business.service import get_current_user_web
 
 router = APIRouter(prefix="/address_type", tags=["web", "address_type"])
 templates = Jinja2Templates(directory="templates")

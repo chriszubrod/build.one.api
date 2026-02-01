@@ -5,9 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from decimal import Decimal
 
 # Local Imports
-from services.bill_credit_line_item.api.schemas import BillCreditLineItemCreate, BillCreditLineItemUpdate
-from services.bill_credit_line_item.business.service import BillCreditLineItemService
-from services.auth.business.service import get_current_user_api
+from entities.bill_credit_line_item.api.schemas import BillCreditLineItemCreate, BillCreditLineItemUpdate
+from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+from entities.auth.business.service import get_current_user_api
 from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_credit_line_item"])
@@ -76,7 +76,7 @@ def get_bill_credit_line_items_by_bill_credit_router(bill_credit_public_id: str,
     """
     Read all bill credit line items for a specific bill credit.
     """
-    from services.bill_credit.business.service import BillCreditService
+    from entities.bill_credit.business.service import BillCreditService
     
     bill_credit = BillCreditService().read_by_public_id(public_id=bill_credit_public_id)
     if not bill_credit:

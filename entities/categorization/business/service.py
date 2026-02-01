@@ -6,15 +6,15 @@ from typing import Optional, Dict, Any, List
 # Third-party Imports
 
 # Local Imports
-from services.categorization.business.model import (
+from entities.categorization.business.model import (
     DocumentCategory,
     CategorizationResult,
     CategorizationStatus,
     ExtractedFields,
 )
-from services.attachment.business.model import Attachment
-from services.attachment.business.service import AttachmentService
-from services.attachment.business.extraction_service import ExtractionService
+from entities.attachment.business.model import Attachment
+from entities.attachment.business.service import AttachmentService
+from entities.attachment.business.extraction_service import ExtractionService
 from integrations.azure.ai import AzureOpenAIClient
 
 logger = logging.getLogger(__name__)

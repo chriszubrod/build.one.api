@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any, List
 # Third-party Imports
 
 # Local Imports
-from services.copilot.business.model import (
+from entities.copilot.business.model import (
     Conversation,
     ConversationMessage,
     MessageRole,
@@ -117,7 +117,7 @@ class CopilotService:
     def qa_service(self):
         """Lazy load Q&A service."""
         if self._qa_service is None:
-            from services.qa.business.service import get_qa_service
+            from entities.qa.business.service import get_qa_service
             self._qa_service = get_qa_service()
         return self._qa_service
 
@@ -125,7 +125,7 @@ class CopilotService:
     def search_service(self):
         """Lazy load search service."""
         if self._search_service is None:
-            from services.search.business.service import get_search_service
+            from entities.search.business.service import get_search_service
             self._search_service = get_search_service()
         return self._search_service
 
@@ -133,7 +133,7 @@ class CopilotService:
     def categorization_service(self):
         """Lazy load categorization service."""
         if self._categorization_service is None:
-            from services.categorization.business.service import get_categorization_service
+            from entities.categorization.business.service import get_categorization_service
             self._categorization_service = get_categorization_service()
         return self._categorization_service
 
@@ -141,7 +141,7 @@ class CopilotService:
     def anomaly_service(self):
         """Lazy load anomaly service."""
         if self._anomaly_service is None:
-            from services.anomaly.business.service import get_anomaly_service
+            from entities.anomaly.business.service import get_anomaly_service
             self._anomaly_service = get_anomaly_service()
         return self._anomaly_service
 
@@ -361,7 +361,7 @@ class CopilotService:
     ) -> CopilotResponse:
         """Handle status check requests."""
         try:
-            from services.attachment.persistence.repo import AttachmentRepository
+            from entities.attachment.persistence.repo import AttachmentRepository
             repo = AttachmentRepository()
 
             # Get pending categorizations

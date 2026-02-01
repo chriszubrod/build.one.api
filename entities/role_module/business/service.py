@@ -4,8 +4,8 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.role_module.business.model import RoleModule
-from services.role_module.persistence.repo import RoleModuleRepository
+from entities.role_module.business.model import RoleModule
+from entities.role_module.persistence.repo import RoleModuleRepository
 
 
 class RoleModuleService:

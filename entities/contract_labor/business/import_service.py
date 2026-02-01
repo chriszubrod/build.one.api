@@ -12,10 +12,10 @@ from openpyxl import load_workbook
 import xlrd  # For .xls files
 
 # Local Imports
-from services.contract_labor.business.model import ContractLabor
-from services.contract_labor.persistence.repo import ContractLaborRepository
-from services.vendor.business.service import VendorService
-from services.project.business.service import ProjectService
+from entities.contract_labor.business.model import ContractLabor
+from entities.contract_labor.persistence.repo import ContractLaborRepository
+from entities.vendor.business.service import VendorService
+from entities.project.business.service import ProjectService
 
 logger = logging.getLogger(__name__)
 

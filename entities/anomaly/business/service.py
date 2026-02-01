@@ -5,15 +5,15 @@ from typing import Optional, List, Dict, Any
 # Third-party Imports
 
 # Local Imports
-from services.anomaly.business.model import (
+from entities.anomaly.business.model import (
     AnomalyResult,
     AnomalyType,
     AnomalySeverity,
     RelatedDocument,
 )
-from services.attachment.business.model import Attachment
-from services.attachment.business.service import AttachmentService
-from services.attachment.business.extraction_service import ExtractionService
+from entities.attachment.business.model import Attachment
+from entities.attachment.business.service import AttachmentService
+from entities.attachment.business.extraction_service import ExtractionService
 from integrations.azure.ai import AzureSearchClient
 from shared.ai import get_embedding_service
 

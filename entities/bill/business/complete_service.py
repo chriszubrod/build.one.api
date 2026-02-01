@@ -7,14 +7,14 @@ from collections import defaultdict
 # Third-party Imports
 
 # Local Imports
-from services.bill.business.service import BillService
-from services.bill_line_item.business.service import BillLineItemService
-from services.bill_line_item_attachment.business.service import BillLineItemAttachmentService
-from services.attachment.business.service import AttachmentService
-from services.project.business.service import ProjectService
-from services.vendor.business.service import VendorService
-from services.sub_cost_code.business.service import SubCostCodeService
-from services.module.business.service import ModuleService
+from entities.bill.business.service import BillService
+from entities.bill_line_item.business.service import BillLineItemService
+from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
+from entities.attachment.business.service import AttachmentService
+from entities.project.business.service import ProjectService
+from entities.vendor.business.service import VendorService
+from entities.sub_cost_code.business.service import SubCostCodeService
+from entities.module.business.service import ModuleService
 from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
 from integrations.ms.sharepoint.driveitem.connector.project_excel.business.service import DriveItemProjectExcelConnector
 from integrations.ms.sharepoint.driveitem.business.service import MsDriveItemService
@@ -183,7 +183,7 @@ class BillCompleteService:
         # Finalize Bill (set is_draft=False)
         # Use retry logic to handle race conditions with auto-save
         try:
-            from services.bill.api.schemas import BillUpdate
+            from entities.bill.api.schemas import BillUpdate
             import time
             
             finalized_bill = None
@@ -222,7 +222,7 @@ class BillCompleteService:
                 # Get payment term public_id if set
                 payment_term_public_id = None
                 if bill.payment_term_id:
-                    from services.payment_term.business.service import PaymentTermService
+                    from entities.payment_term.business.service import PaymentTermService
                     payment_term = PaymentTermService().read_by_id(id=bill.payment_term_id)
                     if payment_term:
                         payment_term_public_id = payment_term.public_id
@@ -284,7 +284,7 @@ class BillCompleteService:
                         if project:
                             project_public_id = project.public_id
                     
-                    from services.bill_line_item.api.schemas import BillLineItemUpdate
+                    from entities.bill_line_item.api.schemas import BillLineItemUpdate
                     line_item_update = BillLineItemUpdate(
                         row_version=line_item.row_version,
                         bill_public_id=public_id,

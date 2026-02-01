@@ -4,8 +4,8 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.project_address.business.model import ProjectAddress
-from services.project_address.persistence.repo import ProjectAddressRepository
+from entities.project_address.business.model import ProjectAddress
+from entities.project_address.persistence.repo import ProjectAddressRepository
 
 
 class ProjectAddressService:

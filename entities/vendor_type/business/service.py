@@ -4,8 +4,8 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.vendor_type.business.model import VendorType
-from services.vendor_type.persistence.repo import VendorTypeRepository
+from entities.vendor_type.business.model import VendorType
+from entities.vendor_type.persistence.repo import VendorTypeRepository
 
 
 class VendorTypeService:

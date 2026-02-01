@@ -6,8 +6,8 @@ from typing import Optional, List, Dict, Any
 # Third-party Imports
 
 # Local Imports
-from services.attachment.business.model import Attachment
-from services.attachment.business.extraction_service import ExtractionService
+from entities.attachment.business.model import Attachment
+from entities.attachment.business.extraction_service import ExtractionService
 from integrations.azure.ai import AzureSearchClient
 from integrations.azure.ai.search_client import AzureSearchError
 from shared.ai import get_embedding_service

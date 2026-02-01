@@ -5,8 +5,8 @@ from fastapi.templating import Jinja2Templates
 # Third-party Imports
 
 # Local Imports
-from services.user_role.business.service import UserRoleService
-from services.auth.business.service import get_current_user_web
+from entities.user_role.business.service import UserRoleService
+from entities.auth.business.service import get_current_user_web
 
 router = APIRouter(prefix="/user_role", tags=["web", "user_role"])
 templates = Jinja2Templates(directory="templates/user_role")

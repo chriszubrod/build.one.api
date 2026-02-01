@@ -5,8 +5,8 @@ from fastapi.templating import Jinja2Templates
 # Third-party Imports
 
 # Local Imports
-from services.company.business.service import CompanyService
-from services.auth.business.service import get_current_user_web
+from entities.company.business.service import CompanyService
+from entities.auth.business.service import get_current_user_web
 from integrations.ms.sharepoint.drive.connector.company.business.service import DriveCompanyConnector
 
 router = APIRouter(prefix="/company", tags=["web", "company"])

@@ -9,11 +9,11 @@ from integrations.intuit.qbo.purchase.api.schemas import QboPurchaseSync, QboPur
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
 from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
 from integrations.intuit.qbo.attachable.connector.attachment.business.service import AttachableAttachmentConnector
-from services.expense.business.service import ExpenseService
-from services.expense_line_item.business.service import ExpenseLineItemService
-from services.expense_line_item_attachment.business.service import ExpenseLineItemAttachmentService
-from services.attachment.business.service import AttachmentService
-from services.auth.business.service import get_current_user_api as get_current_qbo_purchase_api
+from entities.expense.business.service import ExpenseService
+from entities.expense_line_item.business.service import ExpenseLineItemService
+from entities.expense_line_item_attachment.business.service import ExpenseLineItemAttachmentService
+from entities.attachment.business.service import AttachmentService
+from entities.auth.business.service import get_current_user_api as get_current_qbo_purchase_api
 
 logger = logging.getLogger(__name__)
 

@@ -6,9 +6,9 @@ from decimal import Decimal
 # Third-party Imports
 
 # Local Imports
-from services.bill_credit.business.model import BillCredit
-from services.bill_credit.persistence.repo import BillCreditRepository
-from services.vendor.business.service import VendorService
+from entities.bill_credit.business.model import BillCredit
+from entities.bill_credit.persistence.repo import BillCreditRepository
+from entities.vendor.business.service import VendorService
 
 logger = logging.getLogger(__name__)
 
@@ -202,10 +202,10 @@ class BillCreditService:
         4. Delete the BillCredit record
         """
         # Import here to avoid circular import
-        from services.bill_credit_line_item.business.service import BillCreditLineItemService
-        from services.bill_credit_line_item_attachment.business.service import BillCreditLineItemAttachmentService
-        from services.bill_credit_line_item_attachment.persistence.repo import BillCreditLineItemAttachmentRepository
-        from services.attachment.business.service import AttachmentService
+        from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+        from entities.bill_credit_line_item_attachment.business.service import BillCreditLineItemAttachmentService
+        from entities.bill_credit_line_item_attachment.persistence.repo import BillCreditLineItemAttachmentRepository
+        from entities.attachment.business.service import AttachmentService
         from shared.storage import AzureBlobStorage, AzureBlobStorageError
         
         # Step 1: Get the bill credit
@@ -282,7 +282,7 @@ class BillCreditService:
                 elif line_item.id:
                     # Fallback: delete directly by ID if public_id is missing
                     try:
-                        from services.bill_credit_line_item.persistence.repo import BillCreditLineItemRepository
+                        from entities.bill_credit_line_item.persistence.repo import BillCreditLineItemRepository
                         bill_credit_line_item_repo = BillCreditLineItemRepository()
                         bill_credit_line_item_repo.delete_by_id(id=line_item.id)
                         logger.info(f"Deleted bill credit line item {line_item.id} (by ID, no public_id)")

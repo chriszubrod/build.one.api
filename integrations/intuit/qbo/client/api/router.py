@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 # Local Imports
 from integrations.intuit.qbo.client.api.schemas import QboClientCreate, QboClientUpdate
 from integrations.intuit.qbo.client.business.service import QboClientService
-from services.auth.business.service import get_current_user_api as get_current_qbo_client_api
+from entities.auth.business.service import get_current_user_api as get_current_qbo_client_api
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-client"])
 service = QboClientService()

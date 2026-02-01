@@ -5,15 +5,15 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.vendor.business.model import Vendor
-from services.taxpayer.business.service import TaxpayerService
-from services.taxpayer.persistence.repo import TaxpayerRepository
-from services.vendor_type.business.service import VendorTypeService
-from services.vendor.persistence.repo import VendorRepository
-from services.vendor_address.persistence.repo import VendorAddressRepository
-from services.taxpayer_attachment.business.service import TaxpayerAttachmentService
-from services.taxpayer_attachment.persistence.repo import TaxpayerAttachmentRepository
-from services.attachment.business.service import AttachmentService
+from entities.vendor.business.model import Vendor
+from entities.taxpayer.business.service import TaxpayerService
+from entities.taxpayer.persistence.repo import TaxpayerRepository
+from entities.vendor_type.business.service import VendorTypeService
+from entities.vendor.persistence.repo import VendorRepository
+from entities.vendor_address.persistence.repo import VendorAddressRepository
+from entities.taxpayer_attachment.business.service import TaxpayerAttachmentService
+from entities.taxpayer_attachment.persistence.repo import TaxpayerAttachmentRepository
+from entities.attachment.business.service import AttachmentService
 from shared.storage import AzureBlobStorage
 
 

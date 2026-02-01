@@ -7,7 +7,7 @@ import base64
 import pyodbc
 
 # Local Imports
-from services.sub_cost_code.business.model import SubCostCode
+from entities.sub_cost_code.business.model import SubCostCode
 from shared.database import (
     call_procedure,
     get_connection,

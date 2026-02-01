@@ -24,9 +24,9 @@ from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCredi
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.attachable.business.service import QboAttachableService
 from integrations.intuit.qbo.attachable.connector.attachment.persistence.repo import AttachableAttachmentRepository
-from services.bill_credit_line_item.business.service import BillCreditLineItemService
-from services.attachment.business.service import AttachmentService
-from services.bill_credit_line_item_attachment.business.service import BillCreditLineItemAttachmentService
+from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+from entities.attachment.business.service import AttachmentService
+from entities.bill_credit_line_item_attachment.business.service import BillCreditLineItemAttachmentService
 
 logger = logging.getLogger(__name__)
 

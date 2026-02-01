@@ -7,10 +7,10 @@ from decimal import Decimal
 
 # Local Imports
 from integrations.intuit.qbo.vendorcredit.business.model import QboVendorCreditLine
-from services.bill_credit_line_item.business.service import BillCreditLineItemService
-from services.bill_credit_line_item.business.model import BillCreditLineItem
-from services.project.business.service import ProjectService
-from services.sub_cost_code.business.service import SubCostCodeService
+from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+from entities.bill_credit_line_item.business.model import BillCreditLineItem
+from entities.project.business.service import ProjectService
+from entities.sub_cost_code.business.service import SubCostCodeService
 
 logger = logging.getLogger(__name__)
 

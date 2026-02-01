@@ -4,8 +4,8 @@ from typing import Optional, List
 # Third-party Imports
 
 # Local Imports
-from services.cost_code.persistence.repo import CostCodeRepository
-from services.cost_code.business.model import CostCode
+from entities.cost_code.persistence.repo import CostCodeRepository
+from entities.cost_code.business.model import CostCode
 
 
 class CostCodeService:

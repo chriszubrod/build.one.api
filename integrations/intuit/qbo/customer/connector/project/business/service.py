@@ -11,9 +11,9 @@ from integrations.intuit.qbo.customer.connector.customer.persistence.repo import
 from integrations.intuit.qbo.customer.business.model import QboCustomer
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
-from services.project.business.service import ProjectService
-from services.project.business.model import Project
-from services.project_address.business.service import ProjectAddressService
+from entities.project.business.service import ProjectService
+from entities.project.business.model import Project
+from entities.project_address.business.service import ProjectAddressService
 
 logger = logging.getLogger(__name__)
 

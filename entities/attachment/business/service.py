@@ -7,8 +7,8 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.attachment.business.model import Attachment
-from services.attachment.persistence.repo import AttachmentRepository
+from entities.attachment.business.model import Attachment
+from entities.attachment.persistence.repo import AttachmentRepository
 
 logger = logging.getLogger(__name__)
 

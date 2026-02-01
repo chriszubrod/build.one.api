@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 # Local Imports
-from services.anomaly.business.service import get_anomaly_service
-from services.auth.business.service import get_current_user_api as get_current_anomaly_api
+from entities.anomaly.business.service import get_anomaly_service
+from entities.auth.business.service import get_current_user_api as get_current_anomaly_api
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ def scan_all_attachments_router(
     Useful for batch auditing.
     """
     try:
-        from services.attachment.business.service import AttachmentService
+        from entities.attachment.business.service import AttachmentService
         
         anomaly_service = get_anomaly_service()
         attachment_service = AttachmentService()

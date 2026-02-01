@@ -5,7 +5,7 @@ from typing import Optional, List, Dict, Any
 # Third-party Imports
 
 # Local Imports
-from services.search.business.service import get_search_service, SearchService
+from entities.search.business.service import get_search_service, SearchService
 from integrations.azure.ai import AzureOpenAIClient
 from integrations.azure.ai.openai_client import AzureOpenAIError
 

@@ -8,7 +8,7 @@ from decimal import Decimal
 import pyodbc
 
 # Local Imports
-from services.contract_labor.business.model import ContractLaborLineItem
+from entities.contract_labor.business.model import ContractLaborLineItem
 from shared.database import (
     call_procedure,
     get_connection,

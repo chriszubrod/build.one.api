@@ -4,10 +4,10 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.bill_line_item_attachment.business.model import BillLineItemAttachment
-from services.bill_line_item_attachment.persistence.repo import BillLineItemAttachmentRepository
-from services.bill_line_item.business.service import BillLineItemService
-from services.attachment.business.service import AttachmentService
+from entities.bill_line_item_attachment.business.model import BillLineItemAttachment
+from entities.bill_line_item_attachment.persistence.repo import BillLineItemAttachmentRepository
+from entities.bill_line_item.business.service import BillLineItemService
+from entities.attachment.business.service import AttachmentService
 
 
 class BillLineItemAttachmentService:

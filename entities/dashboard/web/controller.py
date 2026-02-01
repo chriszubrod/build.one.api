@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request, Depends
 from fastapi.templating import Jinja2Templates
 
 # Local Imports
-from services.auth.business.service import get_current_user_web
+from entities.auth.business.service import get_current_user_web
 
 
 logger = logging.getLogger(__name__)

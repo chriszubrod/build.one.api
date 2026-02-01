@@ -4,9 +4,9 @@ from typing import Optional, Dict, Any
 # Third-party Imports
 
 # Local Imports
-from services.integration.business.model import Integration, IntegrationStatus
-from services.integration.business.handlers import IntegrationHandlerFactory
-from services.integration.persistence.repo import IntegrationRepository
+from entities.integration.business.model import Integration, IntegrationStatus
+from entities.integration.business.handlers import IntegrationHandlerFactory
+from entities.integration.persistence.repo import IntegrationRepository
 
 
 class IntegrationService:

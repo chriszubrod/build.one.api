@@ -4,9 +4,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
-from services.vendor_type.api.schemas import VendorTypeCreate, VendorTypeUpdate
-from services.vendor_type.business.service import VendorTypeService
-from services.auth.business.service import get_current_user_api as get_current_vendor_type_api
+from entities.vendor_type.api.schemas import VendorTypeCreate, VendorTypeUpdate
+from entities.vendor_type.business.service import VendorTypeService
+from entities.auth.business.service import get_current_user_api as get_current_vendor_type_api
 from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "vendor-type"])

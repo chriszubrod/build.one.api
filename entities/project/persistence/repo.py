@@ -7,7 +7,7 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
-from services.project.business.model import Project
+from entities.project.business.model import Project
 from shared.database import (
     call_procedure,
     get_connection,

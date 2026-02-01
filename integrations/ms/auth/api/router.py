@@ -14,7 +14,7 @@ from integrations.ms.auth.external.client import (
     connect_ms_oauth_2_token_endpoint_revoke,
     test_ms_graph_connection
 )
-from services.auth.business.service import get_current_user_api
+from entities.auth.business.service import get_current_user_api
 
 logger = logging.getLogger(__name__)
 

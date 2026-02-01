@@ -4,9 +4,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
-from services.role_module.api.schemas import RoleModuleCreate, RoleModuleUpdate
-from services.role_module.business.service import RoleModuleService
-from services.auth.business.service import get_current_user_api
+from entities.role_module.api.schemas import RoleModuleCreate, RoleModuleUpdate
+from entities.role_module.business.service import RoleModuleService
+from entities.auth.business.service import get_current_user_api
 from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "role_module"])

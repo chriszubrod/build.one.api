@@ -15,14 +15,14 @@ from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 
 # Local Imports
-from services.contract_labor.persistence.repo import ContractLaborRepository
-from services.bill.business.service import BillService
-from services.bill_line_item.business.service import BillLineItemService
-from services.bill_line_item_attachment.business.service import BillLineItemAttachmentService
-from services.attachment.business.service import AttachmentService
-from services.vendor.business.service import VendorService
-from services.project.business.service import ProjectService
-from services.sub_cost_code.business.service import SubCostCodeService
+from entities.contract_labor.persistence.repo import ContractLaborRepository
+from entities.bill.business.service import BillService
+from entities.bill_line_item.business.service import BillLineItemService
+from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
+from entities.attachment.business.service import AttachmentService
+from entities.vendor.business.service import VendorService
+from entities.project.business.service import ProjectService
+from entities.sub_cost_code.business.service import SubCostCodeService
 from shared.storage import AzureBlobStorage
 
 logger = logging.getLogger(__name__)

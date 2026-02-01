@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 # Third-party Imports
 
 # Local Imports
-from services.integration.business.model import Integration
+from entities.integration.business.model import Integration
 from integrations.intuit.qbo.auth.external.client import (
     connect_intuit_oauth_2_endpoint,
     connect_intuit_oauth_2_token_endpoint_revoke

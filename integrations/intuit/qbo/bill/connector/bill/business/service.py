@@ -26,10 +26,10 @@ from integrations.intuit.qbo.customer.connector.project.persistence.repo import 
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.account.persistence.repo import QboAccountRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
-from services.bill.business.service import BillService
-from services.bill.business.model import Bill
-from services.bill_line_item.business.service import BillLineItemService
-from services.vendor.business.service import VendorService
+from entities.bill.business.service import BillService
+from entities.bill.business.model import Bill
+from entities.bill_line_item.business.service import BillLineItemService
+from entities.vendor.business.service import VendorService
 
 logger = logging.getLogger(__name__)
 

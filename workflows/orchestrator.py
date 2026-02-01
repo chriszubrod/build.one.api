@@ -148,7 +148,7 @@ class WorkflowStateMachine:
             self.workflow = updated
             # Keep Task in sync: update status/title on every transition; close when terminal
             try:
-                from services.tasks.business.service import TaskService
+                from entities.tasks.business.service import TaskService
                 TaskService().upsert_task_for_workflow(updated)
             except Exception as e:
                 logger.warning("Failed to upsert task for workflow %s: %s", updated.public_id, e)

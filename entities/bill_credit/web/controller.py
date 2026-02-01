@@ -8,14 +8,14 @@ from fastapi.templating import Jinja2Templates
 # Third-party Imports
 
 # Local Imports
-from services.bill_credit.business.service import BillCreditService
-from services.vendor.business.service import VendorService
-from services.bill_credit_line_item.business.service import BillCreditLineItemService
-from services.bill_credit_line_item_attachment.business.service import BillCreditLineItemAttachmentService
-from services.attachment.business.service import AttachmentService
-from services.sub_cost_code.business.service import SubCostCodeService
-from services.project.business.service import ProjectService
-from services.auth.business.service import get_current_user_web
+from entities.bill_credit.business.service import BillCreditService
+from entities.vendor.business.service import VendorService
+from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+from entities.bill_credit_line_item_attachment.business.service import BillCreditLineItemAttachmentService
+from entities.attachment.business.service import AttachmentService
+from entities.sub_cost_code.business.service import SubCostCodeService
+from entities.project.business.service import ProjectService
+from entities.auth.business.service import get_current_user_web
 
 logger = logging.getLogger(__name__)
 

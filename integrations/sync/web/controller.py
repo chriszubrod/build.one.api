@@ -6,7 +6,7 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from integrations.sync.business.service import SyncService
-from services.auth.business.service import get_current_user_web as get_current_sync_web
+from entities.auth.business.service import get_current_user_web as get_current_sync_web
 
 router = APIRouter(prefix="/sync", tags=["web", "sync"])
 templates = Jinja2Templates(directory="templates/sync")

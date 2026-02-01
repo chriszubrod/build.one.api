@@ -4,8 +4,8 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.user.business.model import User
-from services.user.persistence.repo import UserRepository
+from entities.user.business.model import User
+from entities.user.persistence.repo import UserRepository
 
 
 class UserService:

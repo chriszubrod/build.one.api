@@ -4,9 +4,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 # Local Imports
-from services.address.api.schemas import AddressCreate, AddressUpdate
-from services.address.business.service import AddressService
-from services.auth.business.service import get_current_user_api
+from entities.address.api.schemas import AddressCreate, AddressUpdate
+from entities.address.business.service import AddressService
+from entities.auth.business.service import get_current_user_api
 
 router = APIRouter(prefix="/api/v1", tags=["api", "address"])
 

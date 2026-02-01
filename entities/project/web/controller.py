@@ -5,9 +5,9 @@ from fastapi.templating import Jinja2Templates
 # Third-party Imports
 
 # Local Imports
-from services.project.business.service import ProjectService
-from services.module.business.service import ModuleService
-from services.auth.business.service import get_current_user_web
+from entities.project.business.service import ProjectService
+from entities.module.business.service import ModuleService
+from entities.auth.business.service import get_current_user_web
 from integrations.ms.sharepoint.driveitem.connector.project.business.service import DriveItemProjectConnector
 from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
 from integrations.ms.sharepoint.driveitem.connector.project_excel.business.service import DriveItemProjectExcelConnector

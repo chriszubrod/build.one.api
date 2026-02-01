@@ -7,7 +7,7 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
-from services.taxpayer_attachment.business.model import TaxpayerAttachment
+from entities.taxpayer_attachment.business.model import TaxpayerAttachment
 from shared.database import (
     call_procedure,
     get_connection,

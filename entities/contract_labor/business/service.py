@@ -6,11 +6,11 @@ from decimal import Decimal
 # Third-party Imports
 
 # Local Imports
-from services.contract_labor.business.model import ContractLabor
-from services.contract_labor.persistence.repo import ContractLaborRepository
-from services.vendor.business.service import VendorService
-from services.project.business.service import ProjectService
-from services.sub_cost_code.business.service import SubCostCodeService
+from entities.contract_labor.business.model import ContractLabor
+from entities.contract_labor.persistence.repo import ContractLaborRepository
+from entities.vendor.business.service import VendorService
+from entities.project.business.service import ProjectService
+from entities.sub_cost_code.business.service import SubCostCodeService
 
 logger = logging.getLogger(__name__)
 

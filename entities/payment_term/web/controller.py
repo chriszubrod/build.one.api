@@ -5,8 +5,8 @@ from fastapi.templating import Jinja2Templates
 # Third-party Imports
 
 # Local Imports
-from services.payment_term.business.service import PaymentTermService
-from services.auth.business.service import get_current_user_web as get_current_payment_term_web
+from entities.payment_term.business.service import PaymentTermService
+from entities.auth.business.service import get_current_user_web as get_current_payment_term_web
 
 router = APIRouter(prefix="/payment-term", tags=["web", "payment_term"])
 templates = Jinja2Templates(directory="templates")

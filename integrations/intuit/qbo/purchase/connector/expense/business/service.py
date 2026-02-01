@@ -11,10 +11,10 @@ from integrations.intuit.qbo.purchase.business.model import QboPurchase, QboPurc
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
 from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
 from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
-from services.expense.business.service import ExpenseService
-from services.expense.business.model import Expense
-from services.expense_line_item.business.service import ExpenseLineItemService
-from services.vendor.business.service import VendorService
+from entities.expense.business.service import ExpenseService
+from entities.expense.business.model import Expense
+from entities.expense_line_item.business.service import ExpenseLineItemService
+from entities.vendor.business.service import VendorService
 
 logger = logging.getLogger(__name__)
 

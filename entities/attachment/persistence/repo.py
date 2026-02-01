@@ -7,7 +7,7 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
-from services.attachment.business.model import Attachment
+from entities.attachment.business.model import Attachment
 from shared.database import (
     call_procedure,
     get_connection,

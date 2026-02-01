@@ -140,7 +140,7 @@ class SharePointCapabilities(Capability):
         
         try:
             # Get project SharePoint configuration
-            from services.project.business.service import ProjectService
+            from entities.project.business.service import ProjectService
             project_service = ProjectService()
             
             project_result = project_service.read_by_id(project_id)
@@ -260,7 +260,7 @@ class SharePointCapabilities(Capability):
         )
         
         try:
-            from services.project.business.service import ProjectService
+            from entities.project.business.service import ProjectService
             project_service = ProjectService()
             
             project_result = project_service.read_by_id(project_id)

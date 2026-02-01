@@ -4,8 +4,8 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.company.business.model import Company
-from services.company.persistence.repo import CompanyRepository
+from entities.company.business.model import Company
+from entities.company.persistence.repo import CompanyRepository
 
 
 class CompanyService:

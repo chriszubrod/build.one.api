@@ -5,7 +5,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 # Local Imports
-from services.integration.business.model import IntegrationStatus
+from entities.integration.business.model import IntegrationStatus
 
 
 class IntegrationCreate(BaseModel):

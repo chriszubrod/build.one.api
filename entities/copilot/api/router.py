@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 # Local Imports
-from services.copilot.business.service import get_copilot_service
-from services.auth.business.service import get_current_user_api as get_current_copilot_api
+from entities.copilot.business.service import get_copilot_service
+from entities.auth.business.service import get_current_user_api as get_current_copilot_api
 
 logger = logging.getLogger(__name__)
 

@@ -4,9 +4,9 @@
 from fastapi import APIRouter, Depends
 
 # Local Imports
-from services.address_type.api.schemas import AddressTypeCreate, AddressTypeUpdate
-from services.address_type.business.service import AddressTypeService
-from services.auth.business.service import get_current_user_api
+from entities.address_type.api.schemas import AddressTypeCreate, AddressTypeUpdate
+from entities.address_type.business.service import AddressTypeService
+from entities.auth.business.service import get_current_user_api
 
 router = APIRouter(prefix="/api/v1", tags=["api", "address_type"])
 

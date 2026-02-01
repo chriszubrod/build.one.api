@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Depends, Response, Request
 
 # Local Imports
 from config import Settings
-from services.auth.api.schemas import (
+from entities.auth.api.schemas import (
     AuthCreate,
     AuthUpdate,
     AuthUpdateUserId,
@@ -16,7 +16,7 @@ from services.auth.api.schemas import (
     AuthSignup,
     AuthRefreshRequest
 )
-from services.auth.business.service import (
+from entities.auth.business.service import (
     AuthService,
     get_current_user_api,
 )

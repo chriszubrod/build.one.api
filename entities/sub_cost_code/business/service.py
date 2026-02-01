@@ -4,8 +4,8 @@ from typing import List, Optional
 # Third-party Imports
 
 # Local Imports
-from services.sub_cost_code.persistence.repo import SubCostCodeRepository
-from services.sub_cost_code.business.model import SubCostCode
+from entities.sub_cost_code.persistence.repo import SubCostCodeRepository
+from entities.sub_cost_code.business.model import SubCostCode
 
 
 class SubCostCodeService:

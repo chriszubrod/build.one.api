@@ -8,7 +8,7 @@ import base64
 import pyodbc
 
 # Local Imports
-from services.organization.business.model import Organization
+from entities.organization.business.model import Organization
 from shared.database import (
     call_procedure,
     get_connection,

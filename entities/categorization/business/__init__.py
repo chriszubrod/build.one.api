@@ -1,11 +1,11 @@
 # Categorization business module
-from services.categorization.business.model import (
+from entities.categorization.business.model import (
     DocumentCategory,
     CategorizationResult,
     CategorizationStatus,
     ExtractedFields,
 )
-from services.categorization.business.service import (
+from entities.categorization.business.service import (
     CategorizationService,
     get_categorization_service,
 )

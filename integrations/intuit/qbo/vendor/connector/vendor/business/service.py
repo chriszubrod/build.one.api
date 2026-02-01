@@ -9,9 +9,9 @@ from integrations.intuit.qbo.vendor.connector.vendor.business.model import Vendo
 from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
 from integrations.intuit.qbo.vendor.business.model import QboVendor
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
-from services.vendor.business.service import VendorService
-from services.vendor.business.model import Vendor
-from services.vendor_address.business.service import VendorAddressService
+from entities.vendor.business.service import VendorService
+from entities.vendor.business.model import Vendor
+from entities.vendor_address.business.service import VendorAddressService
 
 logger = logging.getLogger(__name__)
 

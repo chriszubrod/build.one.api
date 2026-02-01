@@ -7,7 +7,7 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
-from services.role_module.business.model import RoleModule
+from entities.role_module.business.model import RoleModule
 from shared.database import (
     call_procedure,
     get_connection,

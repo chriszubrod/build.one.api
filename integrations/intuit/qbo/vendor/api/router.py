@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 # Local Imports
 from integrations.intuit.qbo.vendor.api.schemas import QboVendorCreate, QboVendorUpdate, QboVendorSync
 from integrations.intuit.qbo.vendor.business.service import QboVendorService
-from services.auth.business.service import get_current_user_api as get_current_qbo_vendor_api
+from entities.auth.business.service import get_current_user_api as get_current_qbo_vendor_api
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-vendor"])
 service = QboVendorService()

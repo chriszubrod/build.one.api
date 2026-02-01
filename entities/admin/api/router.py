@@ -6,8 +6,8 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 # Local Imports
-from services.auth.business.service import get_current_user_api
-from services.admin.api.schemas import ApproveRequest, CancelRequest, RejectRequest
+from entities.auth.business.service import get_current_user_api
+from entities.admin.api.schemas import ApproveRequest, CancelRequest, RejectRequest
 from workflows.admin import WorkflowAdmin
 
 router = APIRouter(prefix="/api/v1", tags=["api", "admin"])

@@ -6,8 +6,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 # Local Imports
-from services.search.business.service import get_search_service
-from services.auth.business.service import get_current_user_api as get_current_search_api
+from entities.search.business.service import get_search_service
+from entities.auth.business.service import get_current_user_api as get_current_search_api
 from integrations.azure.ai.search_client import AzureSearchError
 
 logger = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ def index_document_router(
     before search indexing was enabled.
     """
     try:
-        from services.attachment.business.service import AttachmentService
+        from entities.attachment.business.service import AttachmentService
         
         attachment_service = AttachmentService()
         search_service = get_search_service()

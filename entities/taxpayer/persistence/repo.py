@@ -7,7 +7,7 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
-from services.taxpayer.business.model import Taxpayer, TaxpayerClassification
+from entities.taxpayer.business.model import Taxpayer, TaxpayerClassification
 from shared.database import (
     call_procedure,
     get_connection,

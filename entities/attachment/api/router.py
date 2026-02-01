@@ -9,10 +9,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFi
 from fastapi.responses import StreamingResponse
 
 # Local Imports
-from services.attachment.api.schemas import AttachmentCreate, AttachmentUpdate
-from services.attachment.business.service import AttachmentService
-from services.attachment.business.extraction_service import ExtractionService
-from services.auth.business.service import get_current_user_api as get_current_attachment_api
+from entities.attachment.api.schemas import AttachmentCreate, AttachmentUpdate
+from entities.attachment.business.service import AttachmentService
+from entities.attachment.business.extraction_service import ExtractionService
+from entities.auth.business.service import get_current_user_api as get_current_attachment_api
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
 from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 

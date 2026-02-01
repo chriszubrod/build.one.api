@@ -5,7 +5,7 @@ from typing import List
 from fastapi import APIRouter, Depends
 
 # Local Imports
-from services.auth.business.service import get_current_user_api
+from entities.auth.business.service import get_current_user_api
 
 router = APIRouter(prefix="/api/v1", tags=["api", "dashboard"])
 

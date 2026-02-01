@@ -10,7 +10,7 @@ import logging
 import pyodbc
 
 # Local Imports
-from services.auth.business.model import Auth
+from entities.auth.business.model import Auth
 
 from shared.database import (
     call_procedure,

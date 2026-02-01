@@ -6,7 +6,7 @@ from fastapi.templating import Jinja2Templates
 # Third-party Imports
 
 # Local Imports
-from services.auth.business.service import get_current_user_web
+from entities.auth.business.service import get_current_user_web
 from workflows.admin import WorkflowAdmin
 
 

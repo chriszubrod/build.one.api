@@ -4,8 +4,8 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.vendor_address.business.model import VendorAddress
-from services.vendor_address.persistence.repo import VendorAddressRepository
+from entities.vendor_address.business.model import VendorAddress
+from entities.vendor_address.persistence.repo import VendorAddressRepository
 
 
 class VendorAddressService:

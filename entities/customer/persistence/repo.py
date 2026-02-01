@@ -7,7 +7,7 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
-from services.customer.business.model import Customer
+from entities.customer.business.model import Customer
 from shared.database import (
     call_procedure,
     get_connection,

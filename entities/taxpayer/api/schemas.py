@@ -5,7 +5,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 # Local Imports
-from services.taxpayer.business.model import TaxpayerClassification
+from entities.taxpayer.business.model import TaxpayerClassification
 
 
 class TaxpayerCreate(BaseModel):

@@ -7,8 +7,8 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 # Local Imports
-from services.integration.business.service import IntegrationService
-from services.auth.business.service import get_current_user_web
+from entities.integration.business.service import IntegrationService
+from entities.auth.business.service import get_current_user_web
 
 router = APIRouter(prefix="/integration", tags=["web", "integration"])
 templates = Jinja2Templates(directory="templates")

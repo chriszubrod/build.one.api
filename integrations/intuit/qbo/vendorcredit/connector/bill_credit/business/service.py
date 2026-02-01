@@ -8,10 +8,10 @@ from decimal import Decimal
 # Local Imports
 from integrations.intuit.qbo.vendorcredit.business.model import QboVendorCredit, QboVendorCreditLine
 from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import VendorCreditBillCreditMappingRepository
-from services.bill_credit.business.service import BillCreditService
-from services.bill_credit.business.model import BillCredit
-from services.bill_credit_line_item.business.service import BillCreditLineItemService
-from services.vendor.business.service import VendorService
+from entities.bill_credit.business.service import BillCreditService
+from entities.bill_credit.business.model import BillCredit
+from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+from entities.vendor.business.service import VendorService
 
 logger = logging.getLogger(__name__)
 

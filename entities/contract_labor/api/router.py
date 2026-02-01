@@ -7,9 +7,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form, status
 
 # Local Imports
-from services.contract_labor.business.service import ContractLaborService
-from services.contract_labor.business.import_service import ContractLaborImportService
-from services.contract_labor.api.schemas import (
+from entities.contract_labor.business.service import ContractLaborService
+from entities.contract_labor.business.import_service import ContractLaborImportService
+from entities.contract_labor.api.schemas import (
     ContractLaborCreate,
     ContractLaborUpdate,
     ContractLaborResponse,
@@ -22,8 +22,8 @@ from services.contract_labor.api.schemas import (
     ContractLaborBillUpdate,
     ContractLaborBillUpdateResponse,
 )
-from services.contract_labor.persistence.line_item_repo import ContractLaborLineItemRepository
-from services.auth.business.service import get_current_user_api
+from entities.contract_labor.persistence.line_item_repo import ContractLaborLineItemRepository
+from entities.auth.business.service import get_current_user_api
 from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 logger = logging.getLogger(__name__)
@@ -756,7 +756,7 @@ async def get_billing_summary():
     Useful for previewing what bills would be created.
     """
     try:
-        from services.contract_labor.business.bill_service import ContractLaborBillService
+        from entities.contract_labor.business.bill_service import ContractLaborBillService
         bill_service = ContractLaborBillService()
         summary = bill_service.get_ready_entries_summary()
         return summary
@@ -787,7 +787,7 @@ async def create_bills_from_ready_entries(
     - List of created bill public_ids
     """
     try:
-        from services.contract_labor.business.bill_service import ContractLaborBillService
+        from entities.contract_labor.business.bill_service import ContractLaborBillService
         bill_service = ContractLaborBillService()
         result = bill_service.create_bills_from_ready_entries(
             vendor_id=vendor_id,
@@ -815,7 +815,7 @@ async def generate_pdfs_for_bill(bill_public_id: str):
     {Project.Abbreviation} - {Vendor.Name} - {Bill.Date} - {Description} - {SubCostCode} - {Amount} - {Date}.pdf
     """
     try:
-        from services.contract_labor.business.pdf_service import ContractLaborPDFService
+        from entities.contract_labor.business.pdf_service import ContractLaborPDFService
         pdf_service = ContractLaborPDFService()
         result = pdf_service.generate_pdfs_for_bill(bill_public_id=bill_public_id)
         return result
@@ -835,7 +835,7 @@ async def generate_all_pdfs(
     Finds all billed entries, groups by bill, and generates PDFs for each.
     """
     try:
-        from services.contract_labor.business.pdf_service import ContractLaborPDFService
+        from entities.contract_labor.business.pdf_service import ContractLaborPDFService
         pdf_service = ContractLaborPDFService()
         result = pdf_service.generate_pdfs_for_billed_entries(
             vendor_id=vendor_id,
@@ -855,7 +855,7 @@ def generate_bills_for_vendor(vendor_id: int):
     Also generates invoice PDFs and uploads to Azure Blob Storage.
     """
     try:
-        from services.contract_labor.business.bill_service import ContractLaborBillService
+        from entities.contract_labor.business.bill_service import ContractLaborBillService
         bill_service = ContractLaborBillService()
         result = bill_service.generate_bills_for_vendor(vendor_id=vendor_id)
         return result
@@ -872,7 +872,7 @@ def preview_pdf_for_vendor(vendor_id: int, project_id: Optional[int] = None):
     """
     from fastapi.responses import Response
     try:
-        from services.contract_labor.business.bill_service import ContractLaborBillService
+        from entities.contract_labor.business.bill_service import ContractLaborBillService
         bill_service = ContractLaborBillService()
         result = bill_service.preview_pdf_for_vendor(vendor_id=vendor_id, project_id=project_id)
         

@@ -4,8 +4,8 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.taxpayer.business.model import Taxpayer, TaxpayerClassification
-from services.taxpayer.persistence.repo import TaxpayerRepository
+from entities.taxpayer.business.model import Taxpayer, TaxpayerClassification
+from entities.taxpayer.persistence.repo import TaxpayerRepository
 from shared.encryption import encrypt_sensitive_data, decrypt_sensitive_data
 
 

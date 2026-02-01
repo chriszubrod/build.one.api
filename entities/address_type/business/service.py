@@ -4,8 +4,8 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.address_type.business.model import AddressType
-from services.address_type.persistence.repo import AddressTypeRepository
+from entities.address_type.business.model import AddressType
+from entities.address_type.persistence.repo import AddressTypeRepository
 
 
 class AddressTypeService:

@@ -6,9 +6,9 @@ from decimal import Decimal
 # Third-party Imports
 
 # Local Imports
-from services.expense.business.model import Expense
-from services.expense.persistence.repo import ExpenseRepository
-from services.vendor.business.service import VendorService
+from entities.expense.business.model import Expense
+from entities.expense.persistence.repo import ExpenseRepository
+from entities.vendor.business.service import VendorService
 
 logger = logging.getLogger(__name__)
 
@@ -202,10 +202,10 @@ class ExpenseService:
         4. Delete the Expense record
         """
         # Import here to avoid circular import
-        from services.expense_line_item.business.service import ExpenseLineItemService
-        from services.expense_line_item_attachment.business.service import ExpenseLineItemAttachmentService
-        from services.expense_line_item_attachment.persistence.repo import ExpenseLineItemAttachmentRepository
-        from services.attachment.business.service import AttachmentService
+        from entities.expense_line_item.business.service import ExpenseLineItemService
+        from entities.expense_line_item_attachment.business.service import ExpenseLineItemAttachmentService
+        from entities.expense_line_item_attachment.persistence.repo import ExpenseLineItemAttachmentRepository
+        from entities.attachment.business.service import AttachmentService
         from shared.storage import AzureBlobStorage, AzureBlobStorageError
         
         # Step 1: Get the expense
@@ -282,7 +282,7 @@ class ExpenseService:
                 elif line_item.id:
                     # Fallback: delete directly by ID if public_id is missing
                     try:
-                        from services.expense_line_item.persistence.repo import ExpenseLineItemRepository
+                        from entities.expense_line_item.persistence.repo import ExpenseLineItemRepository
                         expense_line_item_repo = ExpenseLineItemRepository()
                         expense_line_item_repo.delete_by_id(id=line_item.id)
                         logger.info(f"Deleted expense line item {line_item.id} (by ID, no public_id)")

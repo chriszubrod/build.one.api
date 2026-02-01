@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 # Local Imports
-from services.qa.business.service import get_qa_service
-from services.auth.business.service import get_current_user_api as get_current_qa_api
+from entities.qa.business.service import get_qa_service
+from entities.auth.business.service import get_current_user_api as get_current_qa_api
 from integrations.azure.ai.openai_client import AzureOpenAIError
 
 logger = logging.getLogger(__name__)

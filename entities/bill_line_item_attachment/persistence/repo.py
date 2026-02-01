@@ -7,7 +7,7 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
-from services.bill_line_item_attachment.business.model import BillLineItemAttachment
+from entities.bill_line_item_attachment.business.model import BillLineItemAttachment
 from shared.database import (
     call_procedure,
     get_connection,

@@ -4,9 +4,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
-from services.payment_term.api.schemas import PaymentTermCreate, PaymentTermUpdate
-from services.payment_term.business.service import PaymentTermService
-from services.auth.business.service import get_current_user_api as get_current_payment_term_api
+from entities.payment_term.api.schemas import PaymentTermCreate, PaymentTermUpdate
+from entities.payment_term.business.service import PaymentTermService
+from entities.auth.business.service import get_current_user_api as get_current_payment_term_api
 from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "payment-term"])

@@ -9,14 +9,14 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import RedirectResponse
 
 # Local Imports
-from services.contract_labor.business.service import ContractLaborService
-from services.contract_labor.business.import_service import ContractLaborImportService
-from services.contract_labor.persistence.repo import ContractLaborRepository
-from services.contract_labor.persistence.line_item_repo import ContractLaborLineItemRepository
-from services.vendor.business.service import VendorService
-from services.project.business.service import ProjectService
-from services.sub_cost_code.business.service import SubCostCodeService
-from services.auth.business.service import get_current_user_web
+from entities.contract_labor.business.service import ContractLaborService
+from entities.contract_labor.business.import_service import ContractLaborImportService
+from entities.contract_labor.persistence.repo import ContractLaborRepository
+from entities.contract_labor.persistence.line_item_repo import ContractLaborLineItemRepository
+from entities.vendor.business.service import VendorService
+from entities.project.business.service import ProjectService
+from entities.sub_cost_code.business.service import SubCostCodeService
+from entities.auth.business.service import get_current_user_web
 
 logger = logging.getLogger(__name__)
 

@@ -5,11 +5,11 @@ from decimal import Decimal
 # Third-party Imports
 
 # Local Imports
-from services.bill_line_item.business.model import BillLineItem
-from services.bill_line_item.persistence.repo import BillLineItemRepository
-from services.sub_cost_code.business.service import SubCostCodeService
-from services.project.business.service import ProjectService
-from services.bill.business.service import BillService
+from entities.bill_line_item.business.model import BillLineItem
+from entities.bill_line_item.persistence.repo import BillLineItemRepository
+from entities.sub_cost_code.business.service import SubCostCodeService
+from entities.project.business.service import ProjectService
+from entities.bill.business.service import BillService
 
 
 class BillLineItemService:

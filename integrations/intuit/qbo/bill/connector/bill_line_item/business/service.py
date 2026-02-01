@@ -14,10 +14,10 @@ from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
 from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
-from services.bill_line_item.business.service import BillLineItemService
-from services.bill_line_item.business.model import BillLineItem
-from services.bill.business.service import BillService
-from services.project.business.service import ProjectService
+from entities.bill_line_item.business.service import BillLineItemService
+from entities.bill_line_item.business.model import BillLineItem
+from entities.bill.business.service import BillService
+from entities.project.business.service import ProjectService
 
 logger = logging.getLogger(__name__)
 

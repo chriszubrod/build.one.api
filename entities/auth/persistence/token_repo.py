@@ -8,7 +8,7 @@ import logging
 import pyodbc
 
 # Local Imports
-from services.auth.business.model import AuthRefreshTokenRecord
+from entities.auth.business.model import AuthRefreshTokenRecord
 from shared.database import (
     call_procedure,
     get_connection,

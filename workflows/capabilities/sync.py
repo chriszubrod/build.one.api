@@ -54,7 +54,7 @@ class SyncCapabilities(Capability):
         
         try:
             # Get the local bill
-            from services.bill.business.service import BillService
+            from entities.bill.business.service import BillService
             bill_service = BillService()
             
             bill_result = bill_service.read_by_id(bill_id)
@@ -76,7 +76,7 @@ class SyncCapabilities(Capability):
             
             # Get vendor QBO ID
             vendor_id = bill.get("vendor_id")
-            from services.vendor.business.service import VendorService
+            from entities.vendor.business.service import VendorService
             vendor_service = VendorService()
             
             vendor_result = vendor_service.read_by_id(vendor_id)

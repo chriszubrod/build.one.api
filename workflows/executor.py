@@ -208,7 +208,7 @@ class BillIntakeExecutor:
         task_created_or_updated = False
         task = None
         try:
-            from services.tasks.business.service import TaskService
+            from entities.tasks.business.service import TaskService
             task = TaskService().upsert_task_for_workflow(
                 workflow,
                 source_type="email",
@@ -328,7 +328,7 @@ class BillIntakeExecutor:
             )
             # Sync task status
             try:
-                from services.tasks.business.service import TaskService
+                from entities.tasks.business.service import TaskService
                 TaskService().sync_status_from_workflow(workflow.id, workflow.state)
             except Exception as e:
                 logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e)
@@ -349,7 +349,7 @@ class BillIntakeExecutor:
 
         # Sync task status
         try:
-            from services.tasks.business.service import TaskService
+            from entities.tasks.business.service import TaskService
             TaskService().sync_status_from_workflow(workflow.id, workflow.state)
         except Exception as e:
             logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e)
@@ -379,7 +379,7 @@ class BillIntakeExecutor:
 
             # Sync task status after auto-confirm
             try:
-                from services.tasks.business.service import TaskService
+                from entities.tasks.business.service import TaskService
                 TaskService().sync_status_from_workflow(workflow.id, workflow.state)
             except Exception as e:
                 logger.warning("Failed to sync task status after auto-confirm for workflow %s: %s", workflow.public_id, e)
@@ -682,7 +682,7 @@ class BillIntakeExecutor:
 
             # Sync task status
             try:
-                from services.tasks.business.service import TaskService
+                from entities.tasks.business.service import TaskService
                 TaskService().sync_status_from_workflow(workflow.id, workflow.state)
             except Exception as e:
                 logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e)
@@ -710,7 +710,7 @@ class BillIntakeExecutor:
 
             # Sync task status
             try:
-                from services.tasks.business.service import TaskService
+                from entities.tasks.business.service import TaskService
                 TaskService().sync_status_from_workflow(workflow.id, workflow.state)
             except Exception as e_sync:
                 logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e_sync)
@@ -1177,7 +1177,7 @@ class BillIntakeExecutor:
         parent_public_id = (workflow.context or {}).get("parent_workflow_id")
         if parent_public_id:
             try:
-                from services.tasks.business.service import TaskService
+                from entities.tasks.business.service import TaskService
                 TaskService().set_task_bill_for_parent_workflow(
                     parent_workflow_public_id=parent_public_id,
                     bill_id=bill_data.get("id"),

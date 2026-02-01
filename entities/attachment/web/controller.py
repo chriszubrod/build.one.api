@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import RedirectResponse, StreamingResponse
 
 # Local Imports
-from services.auth.business.service import get_current_user_web
-from services.attachment.business.service import AttachmentService
+from entities.auth.business.service import get_current_user_web
+from entities.attachment.business.service import AttachmentService
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
 
 logger = logging.getLogger(__name__)

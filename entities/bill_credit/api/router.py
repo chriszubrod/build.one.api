@@ -5,10 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from decimal import Decimal
 
 # Local Imports
-from services.bill_credit.api.schemas import BillCreditCreate, BillCreditUpdate
-from services.bill_credit.business.service import BillCreditService
-from services.bill_credit.business.complete_service import BillCreditCompleteService
-from services.auth.business.service import get_current_user_api
+from entities.bill_credit.api.schemas import BillCreditCreate, BillCreditUpdate
+from entities.bill_credit.business.service import BillCreditService
+from entities.bill_credit.business.complete_service import BillCreditCompleteService
+from entities.auth.business.service import get_current_user_api
 from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_credit"])

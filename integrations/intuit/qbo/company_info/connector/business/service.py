@@ -13,8 +13,8 @@ from integrations.intuit.qbo.company_info.business.model import QboCompanyInfo a
 from integrations.intuit.qbo.company_info.external.client import QboCompanyInfoClient
 from integrations.intuit.qbo.company_info.external.schemas import QboCompanyInfo as QboCompanyInfoExternalSchema
 from integrations.intuit.qbo.auth.business.service import QboAuthService
-from services.company.business.service import CompanyService
-from services.company.business.model import Company
+from entities.company.business.service import CompanyService
+from entities.company.business.model import Company
 
 logger = logging.getLogger(__name__)
 

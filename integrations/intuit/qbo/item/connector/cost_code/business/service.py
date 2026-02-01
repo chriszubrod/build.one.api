@@ -8,8 +8,8 @@ from typing import Optional
 from integrations.intuit.qbo.item.connector.cost_code.business.model import ItemCostCode
 from integrations.intuit.qbo.item.connector.cost_code.persistence.repo import ItemCostCodeRepository
 from integrations.intuit.qbo.item.business.model import QboItem
-from services.cost_code.business.service import CostCodeService
-from services.cost_code.business.model import CostCode
+from entities.cost_code.business.service import CostCodeService
+from entities.cost_code.business.model import CostCode
 
 logger = logging.getLogger(__name__)
 

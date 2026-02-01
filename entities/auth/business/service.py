@@ -15,17 +15,17 @@ import bcrypt
 
 # Local Imports
 from config import Settings
-from services.auth.business.model import (
+from entities.auth.business.model import (
     Auth,
     AuthToken,
     RefreshToken
 )
-from services.auth.persistence.repo import AuthRepository
-from services.auth.persistence.token_repo import AuthRefreshTokenRepository
-from services.organization.business.service import OrganizationService
-from services.company.business.service import CompanyService
-from services.user.business.service import UserService
-from services.module.business.service import ModuleService
+from entities.auth.persistence.repo import AuthRepository
+from entities.auth.persistence.token_repo import AuthRefreshTokenRepository
+from entities.organization.business.service import OrganizationService
+from entities.company.business.service import CompanyService
+from entities.user.business.service import UserService
+from entities.module.business.service import ModuleService
 from shared.database import (
     DatabaseConcurrencyError,
     DatabaseOperationError,

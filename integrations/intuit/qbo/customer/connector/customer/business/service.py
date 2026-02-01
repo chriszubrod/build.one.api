@@ -8,8 +8,8 @@ from typing import Optional
 from integrations.intuit.qbo.customer.connector.customer.business.model import CustomerCustomer
 from integrations.intuit.qbo.customer.connector.customer.persistence.repo import CustomerCustomerRepository
 from integrations.intuit.qbo.customer.business.model import QboCustomer
-from services.customer.business.service import CustomerService
-from services.customer.business.model import Customer
+from entities.customer.business.service import CustomerService
+from entities.customer.business.model import Customer
 
 logger = logging.getLogger(__name__)
 

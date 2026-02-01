@@ -10,7 +10,7 @@ from integrations.intuit.qbo.physical_address.api.schemas import (
     QboPhysicalAddressSyncRequest,
 )
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
-from services.auth.business.service import get_current_user_api as get_current_qbo_physical_address_api
+from entities.auth.business.service import get_current_user_api as get_current_qbo_physical_address_api
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-physical-address"])
 service = QboPhysicalAddressService()

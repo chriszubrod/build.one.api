@@ -6,7 +6,7 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from integrations.intuit.qbo.client.business.service import QboClientService
-from services.auth.business.service import get_current_user_web as get_current_qbo_client_web
+from entities.auth.business.service import get_current_user_web as get_current_qbo_client_web
 
 router = APIRouter(prefix="/qbo-client", tags=["web", "qbo-client"])
 templates = Jinja2Templates(directory="templates/qbo-client")

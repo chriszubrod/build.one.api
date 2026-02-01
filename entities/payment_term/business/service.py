@@ -4,8 +4,8 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.payment_term.business.model import PaymentTerm
-from services.payment_term.persistence.repo import PaymentTermRepository
+from entities.payment_term.business.model import PaymentTerm
+from entities.payment_term.persistence.repo import PaymentTermRepository
 
 
 class PaymentTermService:

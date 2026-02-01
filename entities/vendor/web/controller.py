@@ -5,15 +5,15 @@ from fastapi.templating import Jinja2Templates
 # Third-party Imports
 
 # Local Imports
-from services.address_type.business.service import AddressTypeService
-from services.vendor_type.business.service import VendorTypeService
-from services.vendor.business.service import VendorService
-from services.taxpayer.business.service import TaxpayerService
-from services.address.business.service import AddressService
-from services.vendor_address.business.service import VendorAddressService
-from services.taxpayer_attachment.business.service import TaxpayerAttachmentService
-from services.attachment.business.service import AttachmentService
-from services.auth.business.service import get_current_user_web as get_current_vendor_web
+from entities.address_type.business.service import AddressTypeService
+from entities.vendor_type.business.service import VendorTypeService
+from entities.vendor.business.service import VendorService
+from entities.taxpayer.business.service import TaxpayerService
+from entities.address.business.service import AddressService
+from entities.vendor_address.business.service import VendorAddressService
+from entities.taxpayer_attachment.business.service import TaxpayerAttachmentService
+from entities.attachment.business.service import AttachmentService
+from entities.auth.business.service import get_current_user_web as get_current_vendor_web
 
 router = APIRouter(prefix="/vendor", tags=["web", "vendor"])
 templates = Jinja2Templates(directory="templates")

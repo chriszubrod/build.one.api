@@ -24,8 +24,8 @@ from integrations.intuit.qbo.item.connector.cost_code.persistence.repo import It
 from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
 from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
-from services.cost_code.business.service import CostCodeService
-from services.sub_cost_code.business.service import SubCostCodeService
+from entities.cost_code.business.service import CostCodeService
+from entities.sub_cost_code.business.service import SubCostCodeService
 
 logger = logging.getLogger(__name__)
 

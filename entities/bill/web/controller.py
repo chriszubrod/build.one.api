@@ -9,15 +9,15 @@ from fastapi.templating import Jinja2Templates
 # Third-party Imports
 
 # Local Imports
-from services.bill.business.service import BillService
-from services.vendor.business.service import VendorService
-from services.bill_line_item.business.service import BillLineItemService
-from services.bill_line_item_attachment.business.service import BillLineItemAttachmentService
-from services.attachment.business.service import AttachmentService
-from services.sub_cost_code.business.service import SubCostCodeService
-from services.project.business.service import ProjectService
-from services.payment_term.business.service import PaymentTermService
-from services.auth.business.service import get_current_user_web
+from entities.bill.business.service import BillService
+from entities.vendor.business.service import VendorService
+from entities.bill_line_item.business.service import BillLineItemService
+from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
+from entities.attachment.business.service import AttachmentService
+from entities.sub_cost_code.business.service import SubCostCodeService
+from entities.project.business.service import ProjectService
+from entities.payment_term.business.service import PaymentTermService
+from entities.auth.business.service import get_current_user_web
 
 logger = logging.getLogger(__name__)
 
@@ -442,7 +442,7 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
                         if False and bill and not bill.is_draft and line_item.project_id:
                             try:
                                 from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
-                                from services.module.business.service import ModuleService
+                                from entities.module.business.service import ModuleService
                                 
                                 # Get the module (try Bills first, then Invoices, then first available)
                                 module_service = ModuleService()

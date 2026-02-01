@@ -4,10 +4,10 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.expense_line_item_attachment.business.model import ExpenseLineItemAttachment
-from services.expense_line_item_attachment.persistence.repo import ExpenseLineItemAttachmentRepository
-from services.expense_line_item.business.service import ExpenseLineItemService
-from services.attachment.business.service import AttachmentService
+from entities.expense_line_item_attachment.business.model import ExpenseLineItemAttachment
+from entities.expense_line_item_attachment.persistence.repo import ExpenseLineItemAttachmentRepository
+from entities.expense_line_item.business.service import ExpenseLineItemService
+from entities.attachment.business.service import AttachmentService
 
 
 class ExpenseLineItemAttachmentService:

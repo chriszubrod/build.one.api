@@ -8,10 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 # Local Imports
-from services.categorization.business.service import get_categorization_service
-from services.categorization.business.model import DocumentCategory
-from services.attachment.persistence.repo import AttachmentRepository
-from services.auth.business.service import get_current_user_api as get_current_categorization_api
+from entities.categorization.business.service import get_categorization_service
+from entities.categorization.business.model import DocumentCategory
+from entities.attachment.persistence.repo import AttachmentRepository
+from entities.auth.business.service import get_current_user_api as get_current_categorization_api
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ def categorize_attachment_router(
         # Save to database if requested
         if save:
             repo = AttachmentRepository()
-            from services.attachment.business.service import AttachmentService
+            from entities.attachment.business.service import AttachmentService
             attachment_service = AttachmentService()
             
             attachment = attachment_service.read_by_public_id(public_id)
@@ -177,7 +177,7 @@ def confirm_categorization_router(
     If confirmed=false, optionally provides a manual_category to override.
     """
     try:
-        from services.attachment.business.service import AttachmentService
+        from entities.attachment.business.service import AttachmentService
         
         attachment_service = AttachmentService()
         repo = AttachmentRepository()

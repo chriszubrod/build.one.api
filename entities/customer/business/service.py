@@ -4,8 +4,8 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.customer.business.model import Customer
-from services.customer.persistence.repo import CustomerRepository
+from entities.customer.business.model import Customer
+from entities.customer.persistence.repo import CustomerRepository
 
 
 class CustomerService:

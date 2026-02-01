@@ -7,7 +7,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 # Local Imports
-from services.auth.business.service import AuthService, get_current_user_web
+from entities.auth.business.service import AuthService, get_current_user_web
 
 router = APIRouter(prefix="/auth", tags=["web", "auth"])
 service = AuthService()

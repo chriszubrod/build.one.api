@@ -7,8 +7,8 @@ from typing import Optional, List, Any
 # Third-party Imports
 
 # Local Imports
-from services.attachment.business.model import Attachment
-from services.attachment.persistence.repo import AttachmentRepository
+from entities.attachment.business.model import Attachment
+from entities.attachment.persistence.repo import AttachmentRepository
 from integrations.azure.ai import AzureDocumentIntelligence
 from integrations.azure.ai.document_intelligence import AzureDocumentIntelligenceError, ExtractionResult
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
@@ -278,7 +278,7 @@ class ExtractionService:
                 # Index in Azure AI Search if requested
                 if index_after and updated:
                     try:
-                        from services.search.business.service import get_search_service
+                        from entities.search.business.service import get_search_service
                         search_service = get_search_service()
                         search_service.index_attachment(updated)
                         logger.info(f"Indexed attachment {attachment.id} in Azure AI Search")

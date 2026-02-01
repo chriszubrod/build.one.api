@@ -8,7 +8,7 @@ from decimal import Decimal
 import pyodbc
 
 # Local Imports
-from services.bill_line_item.business.model import BillLineItem
+from entities.bill_line_item.business.model import BillLineItem
 from shared.database import (
     call_procedure,
     get_connection,

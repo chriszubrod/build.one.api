@@ -6,10 +6,10 @@ from decimal import Decimal
 # Third-party Imports
 
 # Local Imports
-from services.bill_credit_line_item.business.model import BillCreditLineItem
-from services.bill_credit_line_item.persistence.repo import BillCreditLineItemRepository
-from services.bill_credit.business.service import BillCreditService
-from services.project.business.service import ProjectService
+from entities.bill_credit_line_item.business.model import BillCreditLineItem
+from entities.bill_credit_line_item.persistence.repo import BillCreditLineItemRepository
+from entities.bill_credit.business.service import BillCreditService
+from entities.project.business.service import ProjectService
 
 logger = logging.getLogger(__name__)
 

@@ -4,10 +4,10 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.taxpayer_attachment.business.model import TaxpayerAttachment
-from services.taxpayer_attachment.persistence.repo import TaxpayerAttachmentRepository
-from services.taxpayer.business.service import TaxpayerService
-from services.attachment.business.service import AttachmentService
+from entities.taxpayer_attachment.business.model import TaxpayerAttachment
+from entities.taxpayer_attachment.persistence.repo import TaxpayerAttachmentRepository
+from entities.taxpayer.business.service import TaxpayerService
+from entities.attachment.business.service import AttachmentService
 
 
 class TaxpayerAttachmentService:

@@ -13,7 +13,7 @@ from integrations.ms.sharepoint.drive.api.schemas import (
 from integrations.ms.sharepoint.drive.business.service import MsDriveService
 from integrations.ms.sharepoint.drive.connector.company.business.service import DriveCompanyConnector
 from integrations.ms.sharepoint.external.client import get_my_drive
-from services.auth.business.service import get_current_user_api
+from entities.auth.business.service import get_current_user_api
 
 logger = logging.getLogger(__name__)
 

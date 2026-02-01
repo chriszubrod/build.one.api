@@ -7,7 +7,7 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
-from services.payment_term.business.model import PaymentTerm
+from entities.payment_term.business.model import PaymentTerm
 from shared.database import (
     call_procedure,
     get_connection,

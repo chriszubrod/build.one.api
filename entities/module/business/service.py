@@ -4,8 +4,8 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from services.module.business.model import Module
-from services.module.persistence.repo import ModuleRepository
+from entities.module.business.model import Module
+from entities.module.persistence.repo import ModuleRepository
 
 
 class ModuleService:

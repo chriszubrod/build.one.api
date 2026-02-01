@@ -1,0 +1,18 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Task Not Found - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/task.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+<div class="agent-not-found">
+    <div class="agent-not-found-icon">🔍</div>
+    <h1>Task Not Found</h1>
+    <p>The task with ID <code>{{ public_id }}</code> could not be found.</p>
+    <a href="/tasks/list" class="btn btn-primary">Back to Tasks</a>
+</div>
+
+{% endblock %}

@@ -365,7 +365,6 @@
                         method: 'DELETE',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify(payload)
                     });
@@ -402,13 +401,12 @@
         async function viewAttachment(attachmentPublicId) {
             try {
                 const downloadUrl = `/api/v1/download/attachment/${attachmentPublicId}`;
-                const token = localStorage.getItem('token.access_token');
+                const token = '';
                 
                 // Fetch the file
                 const response = await fetch(downloadUrl, {
                     method: 'GET',
                     headers: {
-                        'Authorization': `Bearer ${token}`
                     }
                 });
 

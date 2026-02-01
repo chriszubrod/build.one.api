@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[CompanyInfoCompany];
 GO
 
+IF OBJECT_ID('qbo.CompanyInfoCompany', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[CompanyInfoCompany]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -13,13 +14,13 @@ CREATE TABLE [qbo].[CompanyInfoCompany]
     CONSTRAINT [UQ_CompanyInfoCompany_CompanyId] UNIQUE ([CompanyId]),
     CONSTRAINT [UQ_CompanyInfoCompany_QboCompanyInfoId] UNIQUE ([QboCompanyInfoId])
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateCompanyInfoCompany;
 GO
 
-CREATE PROCEDURE CreateCompanyInfoCompany
+CREATE OR ALTER PROCEDURE CreateCompanyInfoCompany
 (
     @CompanyId BIGINT,
     @QboCompanyInfoId BIGINT
@@ -47,16 +48,11 @@ BEGIN
 END;
 GO
 
-EXEC CreateCompanyInfoCompany
-    @CompanyId = 1,
-    @QboCompanyInfoId = 1;
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS ReadCompanyInfoCompanyById;
-GO
-
-CREATE PROCEDURE ReadCompanyInfoCompanyById
+CREATE OR ALTER PROCEDURE ReadCompanyInfoCompanyById
 (
     @Id BIGINT
 )
@@ -79,15 +75,11 @@ BEGIN
 END;
 GO
 
-EXEC ReadCompanyInfoCompanyById
-    @Id = 1;
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS ReadCompanyInfoCompanyByPublicId;
-GO
-
-CREATE PROCEDURE ReadCompanyInfoCompanyByPublicId
+CREATE OR ALTER PROCEDURE ReadCompanyInfoCompanyByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
 )
@@ -110,15 +102,11 @@ BEGIN
 END;
 GO
 
-EXEC ReadCompanyInfoCompanyByPublicId
-    @PublicId = '00000000-0000-0000-0000-000000000000';
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS ReadCompanyInfoCompanyByCompanyId;
-GO
-
-CREATE PROCEDURE ReadCompanyInfoCompanyByCompanyId
+CREATE OR ALTER PROCEDURE ReadCompanyInfoCompanyByCompanyId
 (
     @CompanyId BIGINT
 )
@@ -141,15 +129,11 @@ BEGIN
 END;
 GO
 
-EXEC ReadCompanyInfoCompanyByCompanyId
-    @CompanyId = 1;
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS ReadCompanyInfoCompanyByQboCompanyInfoId;
-GO
-
-CREATE PROCEDURE ReadCompanyInfoCompanyByQboCompanyInfoId
+CREATE OR ALTER PROCEDURE ReadCompanyInfoCompanyByQboCompanyInfoId
 (
     @QboCompanyInfoId BIGINT
 )
@@ -172,15 +156,11 @@ BEGIN
 END;
 GO
 
-EXEC ReadCompanyInfoCompanyByQboCompanyInfoId
-    @QboCompanyInfoId = 1;
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS UpdateCompanyInfoCompanyById;
-GO
-
-CREATE PROCEDURE UpdateCompanyInfoCompanyById
+CREATE OR ALTER PROCEDURE UpdateCompanyInfoCompanyById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
@@ -214,18 +194,11 @@ BEGIN
 END;
 GO
 
-EXEC UpdateCompanyInfoCompanyById
-    @Id = 1,
-    @RowVersion = 0x0000000000021CD7,
-    @CompanyId = 1,
-    @QboCompanyInfoId = 1;
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS DeleteCompanyInfoCompanyById;
-GO
-
-CREATE PROCEDURE DeleteCompanyInfoCompanyById
+CREATE OR ALTER PROCEDURE DeleteCompanyInfoCompanyById
 (
     @Id BIGINT
 )
@@ -248,8 +221,4 @@ BEGIN
 END;
 GO
 
-EXEC DeleteCompanyInfoCompanyById
-    @Id = 1;
-GO
 
-SELECT * FROM [qbo].[CompanyInfoCompany];

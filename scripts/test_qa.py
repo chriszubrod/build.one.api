@@ -14,7 +14,7 @@ import os
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from modules.qa.business.service import get_qa_service
+from services.qa.business.service import get_qa_service
 
 
 def main():

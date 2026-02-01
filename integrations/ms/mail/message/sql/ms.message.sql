@@ -8,7 +8,7 @@
 -- =============================================================================
 
 -- Linked email messages (stored when explicitly linked to a record)
-IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'MsMessage')
+IF OBJECT_ID('dbo.MsMessage', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.MsMessage (
         Id INT IDENTITY(1,1) PRIMARY KEY,
@@ -47,15 +47,27 @@ BEGIN
         CONSTRAINT UQ_MsMessage_MessageId UNIQUE (MessageId)
     );
     
+    IF OBJECT_ID('dbo.MsMessage', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsMessage_MessageId' AND object_id = OBJECT_ID('dbo.MsMessage'))
+    BEGIN
     CREATE INDEX IX_MsMessage_MessageId ON dbo.MsMessage(MessageId);
+    END
+    IF OBJECT_ID('dbo.MsMessage', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsMessage_ConversationId' AND object_id = OBJECT_ID('dbo.MsMessage'))
+    BEGIN
     CREATE INDEX IX_MsMessage_ConversationId ON dbo.MsMessage(ConversationId);
+    END
+    IF OBJECT_ID('dbo.MsMessage', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsMessage_FromEmail' AND object_id = OBJECT_ID('dbo.MsMessage'))
+    BEGIN
     CREATE INDEX IX_MsMessage_FromEmail ON dbo.MsMessage(FromEmail);
+    END
+    IF OBJECT_ID('dbo.MsMessage', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsMessage_ReceivedDatetime' AND object_id = OBJECT_ID('dbo.MsMessage'))
+    BEGIN
     CREATE INDEX IX_MsMessage_ReceivedDatetime ON dbo.MsMessage(ReceivedDatetime DESC);
+    END
 END
 GO
 
 -- Message recipients (To, CC, BCC stored separately for querying)
-IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'MsMessageRecipient')
+IF OBJECT_ID('dbo.MsMessageRecipient', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.MsMessageRecipient (
         Id INT IDENTITY(1,1) PRIMARY KEY,
@@ -70,13 +82,19 @@ BEGIN
             CHECK (RecipientType IN ('TO', 'CC', 'BCC'))
     );
     
+    IF OBJECT_ID('dbo.MsMessageRecipient', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsMessageRecipient_MsMessageId' AND object_id = OBJECT_ID('dbo.MsMessageRecipient'))
+    BEGIN
     CREATE INDEX IX_MsMessageRecipient_MsMessageId ON dbo.MsMessageRecipient(MsMessageId);
+    END
+    IF OBJECT_ID('dbo.MsMessageRecipient', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsMessageRecipient_Email' AND object_id = OBJECT_ID('dbo.MsMessageRecipient'))
+    BEGIN
     CREATE INDEX IX_MsMessageRecipient_Email ON dbo.MsMessageRecipient(Email);
+    END
 END
 GO
 
 -- Message attachments (metadata only, content stored in Azure Blob)
-IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'MsMessageAttachment')
+IF OBJECT_ID('dbo.MsMessageAttachment', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.MsMessageAttachment (
         Id INT IDENTITY(1,1) PRIMARY KEY,
@@ -104,7 +122,10 @@ BEGIN
         CONSTRAINT UQ_MsMessageAttachment_PublicId UNIQUE (PublicId)
     );
     
+    IF OBJECT_ID('dbo.MsMessageAttachment', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsMessageAttachment_MsMessageId' AND object_id = OBJECT_ID('dbo.MsMessageAttachment'))
+    BEGIN
     CREATE INDEX IX_MsMessageAttachment_MsMessageId ON dbo.MsMessageAttachment(MsMessageId);
+    END
 END
 GO
 

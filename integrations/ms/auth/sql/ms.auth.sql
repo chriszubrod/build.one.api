@@ -3,9 +3,10 @@ IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'ms')
 GO
 
 IF OBJECT_ID('ms.Auth', 'U') IS NOT NULL
-    DROP TABLE ms.Auth;
 GO
 
+IF OBJECT_ID('ms.Auth', 'U') IS NULL
+BEGIN
 CREATE TABLE ms.Auth
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -23,13 +24,13 @@ CREATE TABLE ms.Auth
     TenantId NVARCHAR(MAX) NOT NULL,
     UserId NVARCHAR(MAX) NULL
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateMsAuth;
 GO
 
-CREATE PROCEDURE CreateMsAuth
+CREATE OR ALTER PROCEDURE CreateMsAuth
 (
     @Code NVARCHAR(MAX),
     @State NVARCHAR(MAX),
@@ -71,22 +72,8 @@ BEGIN
 END;
 GO
 
-EXEC CreateMsAuth
-    @Code = 'test-code',
-    @State = 'test-state',
-    @TokenType = 'Bearer',
-    @AccessToken = 'test-access-token',
-    @ExpiresIn = 3600,
-    @RefreshToken = 'test-refresh-token',
-    @Scope = 'Mail.Read Mail.Send Sites.ReadWrite User.Read offline_access',
-    @TenantId = 'test-tenant-id',
-    @UserId = 'test-user-id';
 
-
-DROP PROCEDURE IF EXISTS ReadMsAuths;
-GO
-
-CREATE PROCEDURE ReadMsAuths
+CREATE OR ALTER PROCEDURE ReadMsAuths
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -113,13 +100,8 @@ BEGIN
 END;
 GO
 
-EXEC ReadMsAuths;
 
-
-DROP PROCEDURE IF EXISTS ReadMsAuthById;
-GO
-
-CREATE PROCEDURE ReadMsAuthById
+CREATE OR ALTER PROCEDURE ReadMsAuthById
 (
     @Id BIGINT
 )
@@ -150,15 +132,11 @@ BEGIN
 END;
 GO
 
-EXEC ReadMsAuthById
-    @Id = 1;
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS ReadMsAuthByPublicId;
-GO
-
-CREATE PROCEDURE ReadMsAuthByPublicId
+CREATE OR ALTER PROCEDURE ReadMsAuthByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
 )
@@ -189,15 +167,11 @@ BEGIN
 END;
 GO
 
-EXEC ReadMsAuthByPublicId
-    @PublicId = '00000000-0000-0000-0000-000000000000';
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS ReadMsAuthByTenantId;
-GO
-
-CREATE PROCEDURE ReadMsAuthByTenantId
+CREATE OR ALTER PROCEDURE ReadMsAuthByTenantId
 (
     @TenantId NVARCHAR(MAX)
 )
@@ -228,13 +202,8 @@ BEGIN
 END;
 GO
 
-EXEC ReadMsAuthByTenantId @TenantId = 'test-tenant-id';
 
-
-DROP PROCEDURE IF EXISTS UpdateMsAuthByTenantId;
-GO
-
-CREATE PROCEDURE UpdateMsAuthByTenantId
+CREATE OR ALTER PROCEDURE UpdateMsAuthByTenantId
 (
     @Code NVARCHAR(MAX),
     @State NVARCHAR(MAX),
@@ -285,22 +254,8 @@ BEGIN
 END;
 GO
 
-EXEC UpdateMsAuthByTenantId
-    @Code = 'test-code',
-    @State = 'test-state',
-    @TokenType = 'Bearer',
-    @AccessToken = 'test-access-token',
-    @ExpiresIn = 3600,
-    @RefreshToken = 'test-refresh-token',
-    @Scope = 'Mail.Read Mail.Send Sites.ReadWrite User.Read offline_access',
-    @TenantId = 'test-tenant-id',
-    @UserId = 'test-user-id';
 
-
-DROP PROCEDURE IF EXISTS DeleteMsAuthByTenantId;
-GO
-
-CREATE PROCEDURE DeleteMsAuthByTenantId
+CREATE OR ALTER PROCEDURE DeleteMsAuthByTenantId
 (
     @TenantId NVARCHAR(MAX)
 )
@@ -332,5 +287,4 @@ BEGIN
 END;
 GO
 
-EXEC DeleteMsAuthByTenantId
     @TenantId = 'test-tenant-id';

@@ -129,8 +129,10 @@ class QboVendorClient:
     def update_vendor(self, vendor: QboVendorUpdate) -> QboVendor:
         """
         Update a vendor in QuickBooks.
+        
+        Note: QBO expects vendor fields at root level, not wrapped in {"Vendor": ...}
         """
-        payload = {"Vendor": vendor.dict(by_alias=True, exclude_none=True)}
+        payload = vendor.dict(by_alias=True, exclude_none=True)
         data = self._request("POST", "/vendor", json=payload)
         return QboVendorResponse(**data).vendor
 

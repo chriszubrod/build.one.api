@@ -11,7 +11,7 @@
 <div class="agent-detail-layout agent-detail-layout--single">
     <!-- Back link -->
     <div class="agent-back-link">
-        <a href="/agent/list">← Back to Workflows</a>
+        <a href="{{ return_url or '/agent/list' }}">← Back to Workflows</a>
     </div>
 
     <!-- Main Content: Workflow Detail -->
@@ -63,8 +63,11 @@
                         <option value="other" {% if workflow.entity_type == 'other' %}selected{% endif %}>Other (General Document)</option>
                     </select>
                     
-                    <button class="btn btn-primary" onclick="confirmEntityType('{{ workflow.public_id }}')">
-                        Confirm Type
+                    <button id="confirm-type-btn" class="btn btn-primary" onclick="confirmEntityType('{{ workflow.public_id }}')">
+                        <span class="btn-text">Confirm Type</span>
+                        <span class="btn-loading" style="display: none;">
+                            <span class="btn-spinner">↻</span> Processing...
+                        </span>
                     </button>
                 </div>
             </div>
@@ -80,11 +83,76 @@
             </div>
             <div class="agent-card-body">
                 <p>
-                    This email was confirmed as: <strong>{{ workflow.entity_label or workflow.confirmed_entity_type }}</strong>
+                    This email was confirmed as: <strong>{{ workflow.confirmed_entity_type|title }}</strong>
                 </p>
                 <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 0.5rem;">
                     Entity-specific processing can now be triggered.
                 </p>
+            </div>
+        </div>
+        {% endif %}
+        
+        <!-- Needs Review Card (for bill_processing workflows that failed) -->
+        {% if workflow.workflow_type == 'bill_processing' and workflow.state == 'needs_review' %}
+        <div class="agent-card agent-card--warning">
+            <div class="agent-card-header">
+                <h2>Bill Processing Needs Review</h2>
+                <span class="agent-state-badge agent-state-badge--warning">Needs Attention</span>
+            </div>
+            <div class="agent-card-body">
+                {% if workflow.error %}
+                <p style="color: var(--danger); margin-bottom: 1rem;">
+                    <strong>Error:</strong> {{ workflow.error }}
+                </p>
+                {% endif %}
+                
+                <p>
+                    <strong>Extracted Vendor:</strong> {{ workflow.extracted_vendor_name or 'Not found' }}
+                </p>
+                {% if not workflow.matched_vendor_id %}
+                <p style="color: var(--warning); font-size: 0.9rem; margin-top: 0.5rem;">
+                    No matching vendor found in the system. You may need to create the vendor first, then retry.
+                </p>
+                {% endif %}
+                
+                <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
+                    <a href="/vendor/create" class="btn btn-secondary">Create Vendor</a>
+                    <button type="button" class="btn btn-primary" onclick="retryBillProcessing('{{ workflow.public_id }}')">
+                        Retry Processing
+                    </button>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Bill Processing Status Card (for bill_processing workflows) -->
+        {% if workflow.workflow_type == 'bill_processing' and workflow.state not in ['completed', 'needs_review'] %}
+        <div class="agent-card agent-card--highlight">
+            <div class="agent-card-header">
+                <h2>Bill Processing</h2>
+                <span class="agent-state-badge agent-state-badge--processing">{{ workflow.state|replace('_', ' ')|title }}</span>
+            </div>
+            <div class="agent-card-body">
+                <p>
+                    Processing bill from: <strong>{{ workflow.vendor_name or 'Unknown Vendor' }}</strong>
+                </p>
+                {% if workflow.state == 'received' %}
+                <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 0.5rem;">
+                    Waiting for extraction to begin...
+                </p>
+                {% elif workflow.state == 'extracting' %}
+                <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 0.5rem;">
+                    Extracting bill details from attachments...
+                </p>
+                {% elif workflow.state == 'matching_vendor' %}
+                <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 0.5rem;">
+                    Matching vendor in system...
+                </p>
+                {% elif workflow.state == 'creating_draft' %}
+                <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 0.5rem;">
+                    Creating draft bill...
+                </p>
+                {% endif %}
             </div>
         </div>
         {% endif %}
@@ -314,7 +382,6 @@ async function sendReminder(publicId) {
         const response = await fetch(`/api/v1/agents/workflows/${publicId}/reminder`, {
             method: 'POST',
             headers: {
-                'Authorization': 'Bearer ' + getToken(),
                 'Content-Type': 'application/json'
             }
         });
@@ -336,7 +403,6 @@ async function retryWorkflow(publicId) {
         const response = await fetch(`/api/v1/agents/workflows/${publicId}/retry`, {
             method: 'POST',
             headers: {
-                'Authorization': 'Bearer ' + getToken(),
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({})
@@ -354,24 +420,50 @@ async function retryWorkflow(publicId) {
 
 async function confirmEntityType(publicId) {
     const entityType = document.getElementById('entity-type-select').value;
+    const btn = document.getElementById('confirm-type-btn');
+    const btnText = btn.querySelector('.btn-text');
+    const btnLoading = btn.querySelector('.btn-loading');
+    
+    // Show loading state
+    btn.disabled = true;
+    btnText.style.display = 'none';
+    btnLoading.style.display = 'inline-flex';
+    
+    const startTime = performance.now();
+    console.log('[TIMING] Starting confirm-type request');
     
     try {
         const response = await fetch(`/api/v1/agents/workflows/${publicId}/confirm-type`, {
             method: 'POST',
             headers: {
-                'Authorization': 'Bearer ' + getToken(),
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({ entity_type: entityType })
         });
+        
+        const fetchTime = performance.now();
+        console.log(`[TIMING] Fetch completed in ${((fetchTime - startTime) / 1000).toFixed(3)}s`);
+        
         if (response.ok) {
-            window.location.href = '/agent/list';
+            const returnUrl = '{{ return_url or "/agent/list" }}';
+            console.log('[TIMING] Redirecting to ' + returnUrl);
+            window.location.href = returnUrl;
         } else {
             const data = await response.json();
             alert('Failed to confirm type: ' + (data.detail || 'Unknown error'));
+            // Reset button on error
+            btn.disabled = false;
+            btnText.style.display = 'inline';
+            btnLoading.style.display = 'none';
         }
     } catch (e) {
+        const errorTime = performance.now();
+        console.log(`[TIMING] Error after ${((errorTime - startTime) / 1000).toFixed(3)}s: ${e.message}`);
         alert('Error: ' + e.message);
+        // Reset button on error
+        btn.disabled = false;
+        btnText.style.display = 'inline';
+        btnLoading.style.display = 'none';
     }
 }
 
@@ -464,7 +556,6 @@ async function previewAttachment(messageId, attachmentIndex, name, contentType) 
         const response = await fetch(`/api/v1/agents/inbox/email/${encodeURIComponent(messageId)}/attachment/${attachmentIndex}`, {
             method: 'GET',
             headers: {
-                'Authorization': 'Bearer ' + getToken(),
             }
         });
         
@@ -541,6 +632,38 @@ document.addEventListener('click', (e) => {
         previewAttachment(messageId, attachmentIdx, name, contentType);
     }
 });
+
+// Remove broken cid: images from email HTML
+// These are inline email images that can't be displayed in browser
+document.querySelectorAll('img[src^="cid:"]').forEach(img => {
+    img.style.display = 'none';
+});
+
+// Retry bill processing for needs_review workflows
+async function retryBillProcessing(workflowId) {
+    const token = '';
+    
+    try {
+        const response = await fetch(`/api/v1/agents/workflows/${workflowId}/process-bill`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            alert('Bill processing started. Redirecting to bill list...');
+            window.location.href = '/bill/list';
+        } else {
+            alert(`Error: ${data.detail || 'Failed to retry bill processing'}`);
+        }
+    } catch (error) {
+        console.error('Error retrying bill processing:', error);
+        alert(`Error: ${error.message}`);
+    }
+}
 </script>
 
 {% endblock %}

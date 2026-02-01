@@ -234,9 +234,9 @@ def _format_message(msg: dict, include_body: bool = False) -> dict:
             {
                 "id": att.get("id"),
                 "name": att.get("name"),
-                "contentType": att.get("contentType"),
+                "content_type": att.get("contentType"),
                 "size": att.get("size"),
-                "isInline": att.get("isInline", False),
+                "is_inline": att.get("isInline", False),
             }
             for att in msg.get("attachments", [])
         ]

@@ -1,0 +1,33 @@
+================================================================================
+                         TECHNICAL DEBT & CLEANUP ITEMS
+================================================================================
+
+Last Updated: January 2026
+
+================================================================================
+NAMING CONVENTIONS
+================================================================================
+
+Issue:    Redundant "service" in import paths
+Location: All services under services/*/business/service.py
+Example:  from services.organization.business.service import OrganizationService
+          ^^^^^^^^                       ^^^^^^^
+
+Recommendation: Export from __init__.py to hide redundancy
+  
+  # services/organization/business/__init__.py
+  from .service import OrganizationService
+
+  # Then import becomes:
+  from services.organization.business import OrganizationService
+
+Priority: Low
+Status:   Noted for future cleanup
+
+================================================================================
+CODE QUALITY
+================================================================================
+
+(none currently logged)
+
+================================================================================

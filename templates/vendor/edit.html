@@ -593,7 +593,6 @@
                     method: 'PUT',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     },
                     body: JSON.stringify(payload)
                 });
@@ -670,7 +669,6 @@
                         method: 'PUT',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify(updatePayload)
                     });
@@ -690,7 +688,6 @@
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify(taxpayerPayload)
                     });
@@ -717,7 +714,6 @@
                         method: 'PUT',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify(vendorPayload)
                     });
@@ -763,7 +759,6 @@
             try {
                 // Get vendor to get database ID
                 const vendorResponse = await fetch(`/api/v1/get/vendor/${vendorPublicId}`, {
-                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token.access_token')}` }
                 });
                 if (!vendorResponse.ok) {
                     updateSaveStatus('addresses', 'error');
@@ -781,7 +776,6 @@
                 
                 // Fetch address type to get database ID
                 const addressTypeResponse = await fetch(`/api/v1/get/address_type/${addressTypePublicId}`, {
-                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token.access_token')}` }
                 });
                 if (!addressTypeResponse.ok) {
                     updateSaveStatus('addresses', 'error');
@@ -816,7 +810,6 @@
                         method: 'PUT',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify(updatePayload)
                     });
@@ -836,7 +829,6 @@
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify({
                             street_one: addressData.street_one,
@@ -870,7 +862,6 @@
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                             },
                             body: JSON.stringify({
                                 vendor_id: vendorDbId.toString(),
@@ -1032,7 +1023,6 @@
                     method: 'PUT',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     },
                     body: JSON.stringify({
                         row_version: getRowVersion(),
@@ -1066,7 +1056,6 @@
                         method: 'DELETE',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify(payload)
                     });
@@ -1281,7 +1270,6 @@
                 const response = await fetch('/api/v1/upload/attachment', {
                     method: 'POST',
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     },
                     body: formData
                 });
@@ -1346,7 +1334,6 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     },
                     body: JSON.stringify({
                         taxpayer_public_id: taxpayerPublicId,
@@ -1366,12 +1353,11 @@
         async function viewAttachment(attachmentPublicId) {
             try {
                 const downloadUrl = `/api/v1/download/attachment/${attachmentPublicId}`;
-                const token = localStorage.getItem('token.access_token');
+                const token = '';
                 
                 const response = await fetch(downloadUrl, {
                     method: 'GET',
                     headers: {
-                        'Authorization': `Bearer ${token}`
                     }
                 });
 
@@ -1409,13 +1395,12 @@
             }
 
             try {
-                const token = localStorage.getItem('token.access_token');
+                const token = '';
                 
                 // Delete TaxpayerAttachment link first
                 const deleteLinkResponse = await fetch(`/api/v1/delete/taxpayer-attachment/${taxpayerAttachmentPublicId}`, {
                     method: 'DELETE',
                     headers: {
-                        'Authorization': `Bearer ${token}`
                     }
                 });
 
@@ -1424,7 +1409,6 @@
                     const deleteAttachmentResponse = await fetch(`/api/v1/delete/attachment/${attachmentPublicId}`, {
                         method: 'DELETE',
                         headers: {
-                            'Authorization': `Bearer ${token}`
                         }
                     });
 

@@ -749,15 +749,16 @@
                 calculatePrice();
             };
 
-            // Calculate Price = Amount * (1 + Markup)
+            // Calculate Price = Amount * (1 + Markup%)
             const calculatePrice = function() {
                 if (!amountInput || !priceInput) {
                     return;
                 }
                 
                 const amount = parseFloat(amountInput.value) || 0;
-                const markup = markupInput ? (parseFloat(markupInput.value) || 0) : 0;
-                const price = amount * (1 + markup);
+                const markupPercent = markupInput ? (parseFloat(markupInput.value) || 0) : 0;
+                // Convert markup percentage to decimal (e.g., 10% -> 0.10)
+                const price = amount * (1 + markupPercent / 100);
                 priceInput.value = price.toFixed(2);
                 
                 // Update the bill's Total Amount
@@ -798,6 +799,7 @@
         }
 
         // Calculate Total Amount = sum of all BillLineItem.Price values
+        // Calculate Total Amount = sum of all BillLineItem.Amount values
         function calculateTotalAmount() {
             const totalAmountInput = document.getElementById('total_amount');
             if (!totalAmountInput) {
@@ -808,9 +810,9 @@
             const allForms = getAllLineItemForms();
             
             allForms.forEach(form => {
-                const priceInput = form.querySelector('[id^="line_item_price"]');
-                if (priceInput && priceInput.value) {
-                    total += parseFloat(priceInput.value) || 0;
+                const amountInput = form.querySelector('[id^="line_item_amount"]');
+                if (amountInput && amountInput.value) {
+                    total += parseFloat(amountInput.value) || 0;
                 }
             });
             
@@ -1535,7 +1537,6 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     }
                 });
                 

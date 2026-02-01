@@ -1,9 +1,10 @@
 -- Attachable to Attachment Mapping Table
 -- Links QBO Attachable to BuildOne Attachment (1:1 relationship)
 
-DROP TABLE IF EXISTS [qbo].[AttachableAttachment];
 GO
 
+IF OBJECT_ID('qbo.AttachableAttachment', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[AttachableAttachment]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -16,13 +17,13 @@ CREATE TABLE [qbo].[AttachableAttachment]
     CONSTRAINT [UQ_AttachableAttachment_AttachmentId] UNIQUE ([AttachmentId]),
     CONSTRAINT [UQ_AttachableAttachment_QboAttachableId] UNIQUE ([QboAttachableId])
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateAttachableAttachment;
 GO
 
-CREATE PROCEDURE CreateAttachableAttachment
+CREATE OR ALTER PROCEDURE CreateAttachableAttachment
 (
     @AttachmentId BIGINT,
     @QboAttachableId BIGINT
@@ -51,10 +52,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadAttachableAttachmentById;
 GO
 
-CREATE PROCEDURE ReadAttachableAttachmentById
+CREATE OR ALTER PROCEDURE ReadAttachableAttachmentById
 (
     @Id BIGINT
 )
@@ -78,10 +78,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadAttachableAttachmentByAttachmentId;
 GO
 
-CREATE PROCEDURE ReadAttachableAttachmentByAttachmentId
+CREATE OR ALTER PROCEDURE ReadAttachableAttachmentByAttachmentId
 (
     @AttachmentId BIGINT
 )
@@ -105,10 +104,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadAttachableAttachmentByQboAttachableId;
 GO
 
-CREATE PROCEDURE ReadAttachableAttachmentByQboAttachableId
+CREATE OR ALTER PROCEDURE ReadAttachableAttachmentByQboAttachableId
 (
     @QboAttachableId BIGINT
 )
@@ -132,10 +130,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteAttachableAttachmentById;
 GO
 
-CREATE PROCEDURE DeleteAttachableAttachmentById
+CREATE OR ALTER PROCEDURE DeleteAttachableAttachmentById
 (
     @Id BIGINT
 )

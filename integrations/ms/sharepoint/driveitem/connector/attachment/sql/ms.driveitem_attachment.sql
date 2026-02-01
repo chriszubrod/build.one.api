@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [ms].[DriveItemAttachment];
 GO
 
+IF OBJECT_ID('ms.DriveItemAttachment', 'U') IS NULL
+BEGIN
 CREATE TABLE [ms].[DriveItemAttachment]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -15,13 +16,13 @@ CREATE TABLE [ms].[DriveItemAttachment]
     CONSTRAINT [FK_DriveItemAttachment_Attachment] FOREIGN KEY ([AttachmentId]) REFERENCES [dbo].[Attachment]([Id]) ON DELETE CASCADE,
     CONSTRAINT [FK_DriveItemAttachment_DriveItem] FOREIGN KEY ([MsDriveItemId]) REFERENCES [ms].[DriveItem]([Id]) ON DELETE CASCADE
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateDriveItemAttachment;
 GO
 
-CREATE PROCEDURE CreateDriveItemAttachment
+CREATE OR ALTER PROCEDURE CreateDriveItemAttachment
 (
     @AttachmentId BIGINT,
     @MsDriveItemId BIGINT
@@ -50,10 +51,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveItemAttachmentById;
 GO
 
-CREATE PROCEDURE ReadDriveItemAttachmentById
+CREATE OR ALTER PROCEDURE ReadDriveItemAttachmentById
 (
     @Id BIGINT
 )
@@ -77,10 +77,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveItemAttachmentByAttachmentId;
 GO
 
-CREATE PROCEDURE ReadDriveItemAttachmentByAttachmentId
+CREATE OR ALTER PROCEDURE ReadDriveItemAttachmentByAttachmentId
 (
     @AttachmentId BIGINT
 )
@@ -104,10 +103,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveItemAttachmentByMsDriveItemId;
 GO
 
-CREATE PROCEDURE ReadDriveItemAttachmentByMsDriveItemId
+CREATE OR ALTER PROCEDURE ReadDriveItemAttachmentByMsDriveItemId
 (
     @MsDriveItemId BIGINT
 )
@@ -131,10 +129,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteDriveItemAttachmentById;
 GO
 
-CREATE PROCEDURE DeleteDriveItemAttachmentById
+CREATE OR ALTER PROCEDURE DeleteDriveItemAttachmentById
 (
     @Id BIGINT
 )
@@ -158,10 +155,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteDriveItemAttachmentByAttachmentId;
 GO
 
-CREATE PROCEDURE DeleteDriveItemAttachmentByAttachmentId
+CREATE OR ALTER PROCEDURE DeleteDriveItemAttachmentByAttachmentId
 (
     @AttachmentId BIGINT
 )
@@ -184,4 +180,3 @@ BEGIN
 END;
 GO
 
-SELECT * FROM [ms].[DriveItemAttachment];

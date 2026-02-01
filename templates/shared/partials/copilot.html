@@ -124,8 +124,7 @@ async function sendCopilotMessage(event) {
         const response = await fetch('/api/v1/copilot/chat', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${getCopilotAuthToken()}`
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify({
                 message: message,
@@ -240,11 +239,6 @@ function removeCopilotTypingIndicator(id) {
     if (element) {
         element.remove();
     }
-}
-
-function getCopilotAuthToken() {
-    // Get token from localStorage (consistent with other pages)
-    return localStorage.getItem('token.access_token') || '';
 }
 
 function newCopilotChat() {

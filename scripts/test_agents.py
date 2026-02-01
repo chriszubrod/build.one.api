@@ -18,7 +18,7 @@ def test_models():
     print("Testing Models")
     print("="*60)
     
-    from agents.models import Workflow, WorkflowEvent
+    from workflows.models import Workflow, WorkflowEvent
     
     # Test Workflow model
     workflow = Workflow(
@@ -60,7 +60,7 @@ def test_definitions():
     print("Testing Workflow Definitions")
     print("="*60)
     
-    from agents.definitions.bill_intake import BILL_INTAKE_WORKFLOW
+    from workflows.definitions.bill_intake import BILL_INTAKE_WORKFLOW
     
     assert BILL_INTAKE_WORKFLOW.name == "bill_intake"
     assert BILL_INTAKE_WORKFLOW.initial_state == "received"
@@ -102,8 +102,8 @@ def test_orchestrator_setup():
     print("Testing Orchestrator Setup")
     print("="*60)
     
-    from agents.orchestrator import WorkflowOrchestrator
-    from agents.definitions.bill_intake import BILL_INTAKE_WORKFLOW
+    from workflows.orchestrator import WorkflowOrchestrator
+    from workflows.definitions.bill_intake import BILL_INTAKE_WORKFLOW
     
     orchestrator = WorkflowOrchestrator()
     orchestrator.register_definition(BILL_INTAKE_WORKFLOW)
@@ -128,7 +128,7 @@ def test_repository_with_db():
     print("="*60)
     
     try:
-        from agents.persistence.repo import WorkflowRepository, WorkflowEventRepository
+        from workflows.persistence.repo import WorkflowRepository, WorkflowEventRepository
         
         workflow_repo = WorkflowRepository()
         event_repo = WorkflowEventRepository()
@@ -203,7 +203,7 @@ def test_agents_setup():
     print("Testing Agents Setup")
     print("="*60)
     
-    from agents.runners.base import Agent, AgentContext, AgentResult
+    from workflows.agents.base import Agent, AgentContext, AgentResult
     
     # Test AgentContext
     context = AgentContext(
@@ -241,7 +241,7 @@ def test_agents_setup():
     print("  [PASS] AgentResult.needs_human_input works correctly")
     
     # Test agent imports
-    from agents.runners import EmailTriageAgent, ApprovalParserAgent, CorrelationAgent
+    from workflows.agents import EmailTriageAgent, ApprovalParserAgent, CorrelationAgent
     
     triage_agent = EmailTriageAgent()
     assert triage_agent.name == "email_triage"
@@ -256,14 +256,56 @@ def test_agents_setup():
     print("  [PASS] CorrelationAgent instantiates correctly")
 
 
+def test_agent_registry():
+    """Test agent registry and new matching agents."""
+    print("\n" + "="*60)
+    print("Testing Agent Registry")
+    print("="*60)
+    
+    from workflows.agents import (
+        AgentRegistry, get_agent_registry,
+        VendorMatchAgent, ProjectMatchAgent,
+    )
+    
+    # Test registry initialization
+    registry = get_agent_registry()
+    assert registry is not None
+    print("  [PASS] get_agent_registry() returns registry")
+    
+    # Test all agents are registered
+    assert registry.vendor_match is not None
+    assert registry.project_match is not None
+    assert registry.email_triage is not None
+    assert registry.bill_extraction is not None
+    assert registry.approval_parser is not None
+    assert registry.correlation is not None
+    print("  [PASS] All agents registered in registry")
+    
+    # Test agent names
+    assert registry.vendor_match.name == "vendor_match"
+    assert registry.project_match.name == "project_match"
+    print("  [PASS] Agent names are correct")
+    
+    # Test agent descriptions
+    assert VendorMatchAgent().description != ""
+    assert ProjectMatchAgent().description != ""
+    print("  [PASS] Matching agents have descriptions")
+    
+    # Test registry.get() method
+    assert registry.get("vendor_match") is not None
+    assert registry.get("project_match") is not None
+    assert registry.get("nonexistent") is None
+    print("  [PASS] registry.get() works correctly")
+
+
 def test_prompts():
     """Test prompt building functions."""
     print("\n" + "="*60)
     print("Testing Prompts")
     print("="*60)
     
-    from agents.prompts.classification import build_classification_prompt, build_multi_bill_prompt
-    from agents.prompts.approval_parse import build_approval_parse_prompt
+    from workflows.prompts.classification import build_classification_prompt, build_multi_bill_prompt
+    from workflows.prompts.approval_parse import build_approval_parse_prompt
     
     # Test classification prompt
     prompt = build_classification_prompt(
@@ -302,8 +344,8 @@ def test_executor_setup():
     print("Testing Executor & Scheduler Setup")
     print("="*60)
     
-    from agents.executor import BillIntakeExecutor
-    from agents.scheduler import WorkflowScheduler
+    from workflows.executor import BillIntakeExecutor
+    from workflows.scheduler import WorkflowScheduler
     
     # Test executor initialization
     executor = BillIntakeExecutor()
@@ -347,8 +389,8 @@ def test_notifications_and_admin():
     print("Testing Notifications & Admin Utilities")
     print("="*60)
     
-    from agents.notifications.summary import DailySummaryGenerator
-    from agents.admin import WorkflowAdmin
+    from workflows.notifications.summary import DailySummaryGenerator
+    from workflows.admin import WorkflowAdmin
     
     # Test summary generator initialization
     summary_gen = DailySummaryGenerator()
@@ -395,8 +437,8 @@ def test_capabilities_setup():
     print("Testing Capabilities Setup")
     print("="*60)
     
-    from agents.capabilities.base import Capability, CapabilityResult
-    from agents.capabilities.registry import CapabilityRegistry
+    from workflows.capabilities.base import Capability, CapabilityResult
+    from workflows.capabilities.registry import CapabilityRegistry
     
     # Test CapabilityResult
     success_result = CapabilityResult.ok(data={"test": True}, extra="metadata")
@@ -416,7 +458,7 @@ def test_capabilities_setup():
     print("  [PASS] CapabilityRegistry created")
     
     # Test LLM dataclasses
-    from agents.capabilities.llm import Classification, ParsedReply
+    from workflows.capabilities.llm import Classification, ParsedReply
     
     classification = Classification(
         category="bill",
@@ -439,7 +481,7 @@ def test_capabilities_setup():
     print("  [PASS] ParsedReply dataclass works")
     
     # Test Document dataclass
-    from agents.capabilities.document import ExtractedDocument
+    from workflows.capabilities.document import ExtractedDocument
     
     doc = ExtractedDocument(
         text="Invoice content here",
@@ -451,7 +493,7 @@ def test_capabilities_setup():
     print("  [PASS] ExtractedDocument dataclass works")
     
     # Test Entity dataclass
-    from agents.capabilities.entity import MatchCandidate
+    from workflows.capabilities.entity import MatchCandidate
     
     candidate = MatchCandidate(
         id=1,
@@ -475,6 +517,7 @@ def main():
     test_orchestrator_setup()
     test_capabilities_setup()
     test_agents_setup()
+    test_agent_registry()
     test_prompts()
     test_executor_setup()
     test_notifications_and_admin()

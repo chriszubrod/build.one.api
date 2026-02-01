@@ -10,8 +10,8 @@ from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo impor
 from integrations.intuit.qbo.item.connector.cost_code.persistence.repo import ItemCostCodeRepository
 from integrations.intuit.qbo.item.business.model import QboItem
 from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
-from modules.sub_cost_code.business.service import SubCostCodeService
-from modules.sub_cost_code.business.model import SubCostCode
+from services.sub_cost_code.business.service import SubCostCodeService
+from services.sub_cost_code.business.model import SubCostCode
 
 logger = logging.getLogger(__name__)
 

@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[CustomerCustomer];
 GO
 
+IF OBJECT_ID('qbo.CustomerCustomer', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[CustomerCustomer]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -13,13 +14,13 @@ CREATE TABLE [qbo].[CustomerCustomer]
     CONSTRAINT [UQ_CustomerCustomer_CustomerId] UNIQUE ([CustomerId]),
     CONSTRAINT [UQ_CustomerCustomer_QboCustomerId] UNIQUE ([QboCustomerId])
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateCustomerCustomer;
 GO
 
-CREATE PROCEDURE CreateCustomerCustomer
+CREATE OR ALTER PROCEDURE CreateCustomerCustomer
 (
     @CustomerId BIGINT,
     @QboCustomerId BIGINT
@@ -48,10 +49,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadCustomerCustomerById;
 GO
 
-CREATE PROCEDURE ReadCustomerCustomerById
+CREATE OR ALTER PROCEDURE ReadCustomerCustomerById
 (
     @Id BIGINT
 )
@@ -75,10 +75,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadCustomerCustomerByCustomerId;
 GO
 
-CREATE PROCEDURE ReadCustomerCustomerByCustomerId
+CREATE OR ALTER PROCEDURE ReadCustomerCustomerByCustomerId
 (
     @CustomerId BIGINT
 )
@@ -102,10 +101,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadCustomerCustomerByQboCustomerId;
 GO
 
-CREATE PROCEDURE ReadCustomerCustomerByQboCustomerId
+CREATE OR ALTER PROCEDURE ReadCustomerCustomerByQboCustomerId
 (
     @QboCustomerId BIGINT
 )
@@ -129,10 +127,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateCustomerCustomerById;
 GO
 
-CREATE PROCEDURE UpdateCustomerCustomerById
+CREATE OR ALTER PROCEDURE UpdateCustomerCustomerById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
@@ -167,10 +164,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteCustomerCustomerById;
 GO
 
-CREATE PROCEDURE DeleteCustomerCustomerById
+CREATE OR ALTER PROCEDURE DeleteCustomerCustomerById
 (
     @Id BIGINT
 )
@@ -193,4 +189,3 @@ BEGIN
 END;
 GO
 
-SELECT * FROM [qbo].[CustomerCustomer];

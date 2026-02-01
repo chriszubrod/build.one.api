@@ -12,8 +12,8 @@ from integrations.intuit.qbo.attachable.business.model import QboAttachable
 from integrations.intuit.qbo.attachable.persistence.repo import QboAttachableRepository
 from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
 from integrations.intuit.qbo.auth.business.service import QboAuthService
-from modules.attachment.business.service import AttachmentService
-from modules.attachment.business.model import Attachment
+from services.attachment.business.service import AttachmentService
+from services.attachment.business.model import Attachment
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
 
 logger = logging.getLogger(__name__)

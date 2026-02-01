@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[BillLineItemBillLine];
 GO
 
+IF OBJECT_ID('qbo.BillLineItemBillLine', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[BillLineItemBillLine]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -13,13 +14,13 @@ CREATE TABLE [qbo].[BillLineItemBillLine]
     CONSTRAINT [UQ_BillLineItemBillLine_BillLineItemId] UNIQUE ([BillLineItemId]),
     CONSTRAINT [UQ_BillLineItemBillLine_QboBillLineId] UNIQUE ([QboBillLineId])
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateBillLineItemBillLine;
 GO
 
-CREATE PROCEDURE CreateBillLineItemBillLine
+CREATE OR ALTER PROCEDURE CreateBillLineItemBillLine
 (
     @BillLineItemId BIGINT,
     @QboBillLineId BIGINT
@@ -48,10 +49,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadBillLineItemBillLineById;
 GO
 
-CREATE PROCEDURE ReadBillLineItemBillLineById
+CREATE OR ALTER PROCEDURE ReadBillLineItemBillLineById
 (
     @Id BIGINT
 )
@@ -75,10 +75,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadBillLineItemBillLineByBillLineItemId;
 GO
 
-CREATE PROCEDURE ReadBillLineItemBillLineByBillLineItemId
+CREATE OR ALTER PROCEDURE ReadBillLineItemBillLineByBillLineItemId
 (
     @BillLineItemId BIGINT
 )
@@ -102,10 +101,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadBillLineItemBillLineByQboBillLineId;
 GO
 
-CREATE PROCEDURE ReadBillLineItemBillLineByQboBillLineId
+CREATE OR ALTER PROCEDURE ReadBillLineItemBillLineByQboBillLineId
 (
     @QboBillLineId BIGINT
 )
@@ -129,10 +127,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteBillLineItemBillLineById;
 GO
 
-CREATE PROCEDURE DeleteBillLineItemBillLineById
+CREATE OR ALTER PROCEDURE DeleteBillLineItemBillLineById
 (
     @Id BIGINT
 )
@@ -155,7 +152,6 @@ BEGIN
 END;
 GO
 
-SELECT * FROM qbo.BillLineItemBillLine;
 
 
 

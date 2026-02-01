@@ -1,9 +1,10 @@
 -- PhysicalAddressAddress Mapping Table
 -- Links QBO PhysicalAddress records to system Address records (1:1 relationship)
 
-DROP TABLE IF EXISTS [qbo].[PhysicalAddressAddress];
 GO
 
+IF OBJECT_ID('qbo.PhysicalAddressAddress', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[PhysicalAddressAddress]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -18,21 +19,27 @@ CREATE TABLE [qbo].[PhysicalAddressAddress]
     CONSTRAINT [UQ_PhysicalAddressAddress_AddressId] UNIQUE ([AddressId]),
     CONSTRAINT [UQ_PhysicalAddressAddress_QboPhysicalAddressId] UNIQUE ([QboPhysicalAddressId])
 );
+END
 GO
 
+IF OBJECT_ID('qbo.PhysicalAddressAddress', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_PhysicalAddressAddress_AddressId' AND object_id = OBJECT_ID('qbo.PhysicalAddressAddress'))
+BEGIN
 CREATE INDEX [IX_PhysicalAddressAddress_AddressId] ON [qbo].[PhysicalAddressAddress]([AddressId]);
+END
 GO
 
+IF OBJECT_ID('qbo.PhysicalAddressAddress', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_PhysicalAddressAddress_QboPhysicalAddressId' AND object_id = OBJECT_ID('qbo.PhysicalAddressAddress'))
+BEGIN
 CREATE INDEX [IX_PhysicalAddressAddress_QboPhysicalAddressId] ON [qbo].[PhysicalAddressAddress]([QboPhysicalAddressId]);
+END
 GO
 
 
 
 -- Create PhysicalAddressAddress
-DROP PROCEDURE IF EXISTS CreatePhysicalAddressAddress;
 GO
 
-CREATE PROCEDURE CreatePhysicalAddressAddress
+CREATE OR ALTER PROCEDURE CreatePhysicalAddressAddress
 (
     @AddressId BIGINT,
     @QboPhysicalAddressId BIGINT
@@ -63,10 +70,9 @@ GO
 
 
 -- Read PhysicalAddressAddress by Id
-DROP PROCEDURE IF EXISTS ReadPhysicalAddressAddressById;
 GO
 
-CREATE PROCEDURE ReadPhysicalAddressAddressById
+CREATE OR ALTER PROCEDURE ReadPhysicalAddressAddressById
 (
     @Id BIGINT
 )
@@ -92,10 +98,9 @@ GO
 
 
 -- Read PhysicalAddressAddress by PublicId
-DROP PROCEDURE IF EXISTS ReadPhysicalAddressAddressByPublicId;
 GO
 
-CREATE PROCEDURE ReadPhysicalAddressAddressByPublicId
+CREATE OR ALTER PROCEDURE ReadPhysicalAddressAddressByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
 )
@@ -121,10 +126,9 @@ GO
 
 
 -- Read PhysicalAddressAddress by AddressId
-DROP PROCEDURE IF EXISTS ReadPhysicalAddressAddressByAddressId;
 GO
 
-CREATE PROCEDURE ReadPhysicalAddressAddressByAddressId
+CREATE OR ALTER PROCEDURE ReadPhysicalAddressAddressByAddressId
 (
     @AddressId BIGINT
 )
@@ -150,10 +154,9 @@ GO
 
 
 -- Read PhysicalAddressAddress by QboPhysicalAddressId
-DROP PROCEDURE IF EXISTS ReadPhysicalAddressAddressByQboPhysicalAddressId;
 GO
 
-CREATE PROCEDURE ReadPhysicalAddressAddressByQboPhysicalAddressId
+CREATE OR ALTER PROCEDURE ReadPhysicalAddressAddressByQboPhysicalAddressId
 (
     @QboPhysicalAddressId BIGINT
 )
@@ -179,10 +182,9 @@ GO
 
 
 -- Update PhysicalAddressAddress by Id
-DROP PROCEDURE IF EXISTS UpdatePhysicalAddressAddressById;
 GO
 
-CREATE PROCEDURE UpdatePhysicalAddressAddressById
+CREATE OR ALTER PROCEDURE UpdatePhysicalAddressAddressById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
@@ -218,10 +220,9 @@ GO
 
 
 -- Delete PhysicalAddressAddress by Id
-DROP PROCEDURE IF EXISTS DeletePhysicalAddressAddressById;
 GO
 
-CREATE PROCEDURE DeletePhysicalAddressAddressById
+CREATE OR ALTER PROCEDURE DeletePhysicalAddressAddressById
 (
     @Id BIGINT
 )

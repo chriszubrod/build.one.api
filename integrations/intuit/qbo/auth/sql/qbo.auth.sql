@@ -1,7 +1,8 @@
 IF OBJECT_ID('qbo.Auth', 'U') IS NOT NULL
-    DROP TABLE qbo.Auth;
 GO
 
+IF OBJECT_ID('qbo.Auth', 'U') IS NULL
+BEGIN
 CREATE TABLE qbo.Auth
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -19,13 +20,13 @@ CREATE TABLE qbo.Auth
     RefreshToken NVARCHAR(MAX) NOT NULL,
     XRefreshTokenExpiresIn INT NOT NULL
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateQboAuth;
 GO
 
-CREATE PROCEDURE CreateQboAuth
+CREATE OR ALTER PROCEDURE CreateQboAuth
 (
     @Code NVARCHAR(MAX),
     @RealmId NVARCHAR(MAX),
@@ -67,22 +68,8 @@ BEGIN
 END;
 GO
 
-EXEC CreateQboAuth
-    @Code = '1234567890',
-    @RealmId = '1234567890',
-    @State = '1234567890',
-    @TokenType = '1234567890',
-    @IdToken = '1234567890',
-    @AccessToken = '1234567890',
-    @ExpiresIn = 1234567890,
-    @RefreshToken = '1234567890',
-    @XRefreshTokenExpiresIn = 1234567890;
 
-
-DROP PROCEDURE IF EXISTS ReadQboAuths;
-GO
-
-CREATE PROCEDURE ReadQboAuths
+CREATE OR ALTER PROCEDURE ReadQboAuths
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -109,13 +96,8 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboAuths;
 
-
-DROP PROCEDURE IF EXISTS ReadQboAuthById;
-GO
-
-CREATE PROCEDURE ReadQboAuthById
+CREATE OR ALTER PROCEDURE ReadQboAuthById
 (
     @Id BIGINT
 )
@@ -146,16 +128,12 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboAuthById
-    @Id = 1;
+
+
+
 GO
 
-
-
-DROP PROCEDURE IF EXISTS ReadQboAuthByPublicId;
-GO
-
-CREATE PROCEDURE ReadQboAuthByPublicId
+CREATE OR ALTER PROCEDURE ReadQboAuthByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
 )
@@ -186,16 +164,12 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboAuthByPublicId
-    @PublicId = '00000000-0000-0000-0000-000000000000';
+
+
+
 GO
 
-
-
-DROP PROCEDURE IF EXISTS ReadQboAuthByRealmId;
-GO
-
-CREATE PROCEDURE ReadQboAuthByRealmId
+CREATE OR ALTER PROCEDURE ReadQboAuthByRealmId
 (
     @RealmId NVARCHAR(MAX)
 )
@@ -226,13 +200,8 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboAuthByRealmId @RealmId = '1234567890';
 
-
-DROP PROCEDURE IF EXISTS UpdateQboAuthByRealmId;
-GO
-
-CREATE PROCEDURE UpdateQboAuthByRealmId
+CREATE OR ALTER PROCEDURE UpdateQboAuthByRealmId
 (
     @Code NVARCHAR(MAX),
     @RealmId NVARCHAR(MAX),
@@ -284,22 +253,8 @@ BEGIN
 END;
 GO
 
-EXEC UpdateQboAuthByRealmId
-    @Code = '1234567890',
-    @RealmId = '1234567890',
-    @State = '1234567890',
-    @TokenType = '1234567890',
-    @IdToken = '1234567890',
-    @AccessToken = '1234567890',
-    @ExpiresIn = 1234567890,
-    @RefreshToken = '1234567890',
-    @XRefreshTokenExpiresIn = 1234567890;
 
-
-DROP PROCEDURE IF EXISTS DeleteQboAuthByRealmId;
-GO
-
-CREATE PROCEDURE DeleteQboAuthByRealmId
+CREATE OR ALTER PROCEDURE DeleteQboAuthByRealmId
 (
     @RealmId NVARCHAR(MAX)
 )
@@ -333,5 +288,4 @@ BEGIN
 END;
 GO
 
-EXEC DeleteQboAuthByRealmId
     @RealmId = '1234567890';

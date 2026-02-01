@@ -1,0 +1,385 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Admin - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="dashboard-page-header">
+        <h1>Admin</h1>
+        <div class="dashboard-actions">
+            <button id="refresh-btn" class="btn btn-outline-primary">Refresh</button>
+        </div>
+    </div>
+
+    <!-- Stats Cards -->
+    <div class="dashboard-stats">
+        <div class="stat-card">
+            <div class="stat-label">Workflows Today</div>
+            <div class="stat-value" id="stat-workflows-today">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Completed Today</div>
+            <div class="stat-value stat-success" id="stat-completed-today">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Awaiting Approval</div>
+            <div class="stat-value stat-warning" id="stat-awaiting-approval">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Failed (24h)</div>
+            <div class="stat-value stat-danger" id="stat-failed">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Active Workflows</div>
+            <div class="stat-value" id="stat-active">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Avg Completion</div>
+            <div class="stat-value stat-info" id="stat-avg-completion">-</div>
+        </div>
+    </div>
+
+    <!-- Recent Workflows Table -->
+    <div class="dashboard-section">
+        <div class="section-header">
+            <h2>Recent Activity <span id="results-count" class="results-count"></span></h2>
+            <div class="section-actions">
+                <div class="search-wrapper">
+                    <input type="text" id="search-input" class="search-input" 
+                           placeholder="Search vendor, invoice #, or amount...">
+                    <button id="clear-search" class="clear-btn" style="display: none;">Clear</button>
+                </div>
+                <select id="state-filter" class="filter-select">
+                    <option value="">All States</option>
+                    <option value="received">Received</option>
+                    <option value="processing">Processing</option>
+                    <option value="awaiting_approval">Awaiting Approval</option>
+                    <option value="completed">Completed</option>
+                    <option value="failed">Failed</option>
+                </select>
+            </div>
+        </div>
+        
+        <div class="table-container">
+            <table class="dashboard-table" id="workflows-table">
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>State</th>
+                        <th>Vendor</th>
+                        <th>Invoice #</th>
+                        <th>Amount</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="workflows-tbody">
+                    <tr class="loading-row">
+                        <td colspan="7">Loading workflows...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="empty-state" id="empty-state" style="display: none;">
+            <div class="empty-state-icon">&#128203;</div>
+            <h3>No Workflows Found</h3>
+            <p>No workflows match the current filter.</p>
+        </div>
+    </div>
+
+    <!-- Toast notification -->
+    <div class="toast" id="toast" style="display: none;"></div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        (function() {
+            // DOM elements
+            const refreshBtn = document.getElementById('refresh-btn');
+            const stateFilter = document.getElementById('state-filter');
+            const searchInput = document.getElementById('search-input');
+            const clearSearchBtn = document.getElementById('clear-search');
+            const resultsCount = document.getElementById('results-count');
+            const tbody = document.getElementById('workflows-tbody');
+            const emptyState = document.getElementById('empty-state');
+            const table = document.getElementById('workflows-table');
+
+            // Stat elements
+            const statElements = {
+                workflowsToday: document.getElementById('stat-workflows-today'),
+                completedToday: document.getElementById('stat-completed-today'),
+                awaitingApproval: document.getElementById('stat-awaiting-approval'),
+                failed: document.getElementById('stat-failed'),
+                active: document.getElementById('stat-active'),
+                avgCompletion: document.getElementById('stat-avg-completion'),
+            };
+
+            let allWorkflows = [];
+
+            // Debounce utility
+            function debounce(func, wait) {
+                let timeout;
+                return function(...args) {
+                    clearTimeout(timeout);
+                    timeout = setTimeout(() => func.apply(this, args), wait);
+                };
+            }
+
+            // URL param helpers
+            function getUrlParams() {
+                const params = new URLSearchParams(window.location.search);
+                return {
+                    q: params.get('q') || '',
+                    state: params.get('state') || '',
+                };
+            }
+
+            function updateUrlParams(q, state) {
+                const params = new URLSearchParams();
+                if (q) params.set('q', q);
+                if (state) params.set('state', state);
+                const newUrl = params.toString() 
+                    ? `${window.location.pathname}?${params.toString()}`
+                    : window.location.pathname;
+                window.history.replaceState({}, '', newUrl);
+            }
+
+            // Update clear button visibility
+            function updateClearButton() {
+                clearSearchBtn.style.display = searchInput.value ? 'block' : 'none';
+            }
+
+            // Update results count display
+            function updateResultsCount(count) {
+                if (searchInput.value || stateFilter.value) {
+                    resultsCount.textContent = `(${count} result${count !== 1 ? 's' : ''})`;
+                } else {
+                    resultsCount.textContent = '';
+                }
+            }
+
+            // Toast notification
+            function showToast(message, type = 'info') {
+                const toast = document.getElementById('toast');
+                toast.textContent = message;
+                toast.className = `toast toast-${type}`;
+                toast.style.display = 'block';
+                setTimeout(() => {
+                    toast.style.display = 'none';
+                }, 4000);
+            }
+
+            // Retry workflow action
+            window.retryWorkflow = async function(publicId, event) {
+                if (event) event.stopPropagation();
+                
+                try {
+                    const response = await fetch(`/api/v1/workflow/${publicId}/retry`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    const data = await response.json();
+                    
+                    if (response.ok && data.success) {
+                        showToast(data.message, 'success');
+                        // Refresh data after a short delay
+                        setTimeout(() => {
+                            fetchStats();
+                            fetchWorkflows();
+                        }, 1000);
+                    } else {
+                        showToast(data.detail || data.message || 'Failed to retry workflow', 'error');
+                    }
+                } catch (error) {
+                    showToast('Error: ' + error.message, 'error');
+                }
+            };
+
+            // Format date for display
+            function formatDate(dateStr) {
+                if (!dateStr) return '-';
+                const date = new Date(dateStr);
+                return date.toLocaleDateString('en-US', {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                });
+            }
+
+            // Format currency
+            function formatCurrency(amount) {
+                if (!amount && amount !== 0) return '-';
+                return new Intl.NumberFormat('en-US', {
+                    style: 'currency',
+                    currency: 'USD',
+                }).format(amount);
+            }
+
+            // Get state badge class
+            function getStateBadgeClass(state) {
+                const stateClasses = {
+                    'received': 'badge-info',
+                    'processing': 'badge-info',
+                    'awaiting_approval': 'badge-warning',
+                    'completed': 'badge-success',
+                    'failed': 'badge-danger',
+                    'cancelled': 'badge-secondary',
+                    'abandoned': 'badge-secondary',
+                };
+                return stateClasses[state] || 'badge-default';
+            }
+
+            // Format workflow type for display
+            function formatWorkflowType(type) {
+                if (!type) return '-';
+                return type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            }
+
+            // Fetch stats
+            async function fetchStats() {
+                try {
+                    const response = await fetch('/api/v1/admin/stats');
+                    if (!response.ok) throw new Error('Failed to fetch stats');
+                    const stats = await response.json();
+
+                    statElements.workflowsToday.textContent = stats.workflows_today;
+                    statElements.completedToday.textContent = stats.completed_today;
+                    statElements.awaitingApproval.textContent = stats.awaiting_approval;
+                    statElements.failed.textContent = stats.failed_24h;
+                    statElements.active.textContent = stats.active_workflows;
+                    statElements.avgCompletion.textContent = stats.avg_completion_minutes + ' min';
+                } catch (error) {
+                    console.error('Error fetching stats:', error);
+                }
+            }
+
+            // Fetch workflows (with search/filter support)
+            async function fetchWorkflows() {
+                tbody.innerHTML = '<tr class="loading-row"><td colspan="7">Loading workflows...</td></tr>';
+                
+                const q = searchInput.value.trim();
+                const state = stateFilter.value;
+                
+                // Update URL params
+                updateUrlParams(q, state);
+                
+                try {
+                    let url;
+                    if (q || state) {
+                        // Use search endpoint when filtering
+                        const params = new URLSearchParams();
+                        if (q) params.set('q', q);
+                        if (state) params.set('state', state);
+                        params.set('limit', '50');
+                        url = `/api/v1/workflows/search?${params.toString()}`;
+                    } else {
+                        // Use recent-workflows endpoint for default view
+                        url = '/api/v1/admin/recent-workflows?limit=50';
+                    }
+                    
+                    const response = await fetch(url);
+                    if (!response.ok) throw new Error('Failed to fetch workflows');
+                    allWorkflows = await response.json();
+                    renderWorkflows();
+                } catch (error) {
+                    console.error('Error fetching workflows:', error);
+                    tbody.innerHTML = '<tr class="error-row"><td colspan="7">Error loading workflows</td></tr>';
+                    updateResultsCount(0);
+                }
+            }
+
+            // Render workflows table
+            function renderWorkflows() {
+                const workflows = allWorkflows;
+                
+                updateResultsCount(workflows.length);
+
+                if (workflows.length === 0) {
+                    tbody.innerHTML = '';
+                    table.style.display = 'none';
+                    emptyState.style.display = 'block';
+                    return;
+                }
+
+                table.style.display = 'table';
+                emptyState.style.display = 'none';
+
+                tbody.innerHTML = workflows.map(wf => `
+                    <tr class="workflow-row ${wf.state === 'failed' ? 'failed-row' : ''}" data-public-id="${wf.public_id}">
+                        <td>${formatWorkflowType(wf.workflow_type)}</td>
+                        <td><span class="state-badge ${getStateBadgeClass(wf.state)}">${wf.state || '-'}</span></td>
+                        <td>${wf.vendor_name || '-'}</td>
+                        <td>${wf.invoice_number || '-'}</td>
+                        <td>${formatCurrency(wf.amount)}</td>
+                        <td>${formatDate(wf.created_datetime)}</td>
+                        <td class="actions-cell">
+                            <a href="/admin/workflow/${wf.public_id}" class="btn btn-sm btn-outline-primary">View</a>
+                            ${wf.state === 'failed' || wf.state === 'needs_review' ? `<button class="btn btn-sm btn-warning" onclick="retryWorkflow('${wf.public_id}', event)">Retry</button>` : ''}
+                        </td>
+                    </tr>
+                `).join('');
+
+                // Add click handlers for rows
+                document.querySelectorAll('.workflow-row').forEach(row => {
+                    row.addEventListener('click', function(e) {
+                        if (e.target.tagName === 'A' || e.target.tagName === 'BUTTON') return;
+                        const publicId = this.dataset.publicId;
+                        window.location.href = `/admin/workflow/${publicId}`;
+                    });
+                });
+            }
+
+            // Debounced search handler
+            const debouncedSearch = debounce(function() {
+                updateClearButton();
+                fetchWorkflows();
+            }, 300);
+
+            // Event listeners
+            refreshBtn.addEventListener('click', function() {
+                fetchStats();
+                fetchWorkflows();
+            });
+
+            searchInput.addEventListener('input', debouncedSearch);
+            
+            searchInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') {
+                    searchInput.value = '';
+                    updateClearButton();
+                    fetchWorkflows();
+                }
+            });
+
+            clearSearchBtn.addEventListener('click', function() {
+                searchInput.value = '';
+                updateClearButton();
+                fetchWorkflows();
+                searchInput.focus();
+            });
+
+            stateFilter.addEventListener('change', fetchWorkflows);
+
+            // Initialize from URL params
+            const params = getUrlParams();
+            if (params.q) {
+                searchInput.value = params.q;
+                updateClearButton();
+            }
+            if (params.state) {
+                stateFilter.value = params.state;
+            }
+
+            // Initial load
+            fetchStats();
+            fetchWorkflows();
+        })();
+    </script>
+{% endblock %}

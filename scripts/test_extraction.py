@@ -14,8 +14,8 @@ import os
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from modules.attachment.business.extraction_service import ExtractionService
-from modules.attachment.business.service import AttachmentService
+from services.attachment.business.extraction_service import ExtractionService
+from services.attachment.business.service import AttachmentService
 from shared.storage import AzureBlobStorage
 import uuid
 

@@ -1,0 +1,217 @@
+# Python Standard Library Imports
+from typing import Optional
+import hmac
+import secrets
+
+# Third-party Imports
+from fastapi import APIRouter, HTTPException, Depends, Response, Request
+
+# Local Imports
+from config import Settings
+from services.auth.api.schemas import (
+    AuthCreate,
+    AuthUpdate,
+    AuthUpdateUserId,
+    AuthLogin,
+    AuthSignup,
+    AuthRefreshRequest
+)
+from services.auth.business.service import (
+    AuthService,
+    get_current_user_api,
+)
+
+router = APIRouter(prefix="/api/v1", tags=["auth"])
+service = AuthService()
+
+ACCESS_COOKIE_NAME = "token.access_token"
+REFRESH_COOKIE_NAME = "token.refresh_token"
+CSRF_COOKIE_NAME = "token.csrf"
+CSRF_HEADER_NAME = "X-CSRF-Token"
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _secure_cookie_enabled() -> bool:
+    settings = Settings()
+    if settings.debug:
+        return False
+    return settings.env.lower() not in {"development", "local", "test"}
+
+
+def _set_auth_cookies(*, response: Response, access_token, refresh_token) -> None:
+    secure_cookie = _secure_cookie_enabled()
+    response.set_cookie(
+        key=ACCESS_COOKIE_NAME,
+        value=access_token.access_token,
+        httponly=True,
+        secure=secure_cookie,
+        samesite="lax",
+        max_age=access_token.expires_in,
+        path="/",
+    )
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=refresh_token.refresh_token,
+        httponly=True,
+        secure=secure_cookie,
+        samesite="lax",
+        max_age=refresh_token.expires_in,
+        path="/",
+    )
+    csrf_token = secrets.token_urlsafe(32)
+    response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=csrf_token,
+        httponly=False,
+        secure=secure_cookie,
+        samesite="lax",
+        max_age=refresh_token.expires_in,
+        path="/",
+    )
+
+
+def _clear_auth_cookies(*, response: Response) -> None:
+    response.delete_cookie(ACCESS_COOKIE_NAME, path="/")
+    response.delete_cookie(REFRESH_COOKIE_NAME, path="/")
+    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
+
+
+def _require_csrf(request: Request) -> None:
+    if request.method.upper() not in UNSAFE_METHODS:
+        return
+    csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME)
+    csrf_header = request.headers.get(CSRF_HEADER_NAME)
+    if not csrf_cookie or not csrf_header:
+        raise HTTPException(status_code=403, detail="CSRF token missing or invalid.")
+    if not hmac.compare_digest(csrf_cookie, csrf_header):
+        raise HTTPException(status_code=403, detail="CSRF token missing or invalid.")
+
+
+@router.post("/create/auth")
+def create_auth_router(body: AuthCreate, current_user: dict = Depends(get_current_user_api)):
+    """
+    Create a new auth.
+    """
+    auth = service.create(
+        username=body.username,
+        password=body.password
+    )
+    return auth.to_dict()
+
+
+@router.get("/get/auth/{public_id}")
+def get_auth_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+    """
+    Read a auth by public ID.
+    """
+    if current_user.get("sub") != public_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    auth = service.read_by_public_id(public_id=public_id)
+    return auth.to_dict()
+
+
+@router.put("/update/auth/{public_id}")
+def update_auth_by_id_router(public_id: str, body: AuthUpdate, current_user: dict = Depends(get_current_user_api)):
+    """
+    Update a auth by ID.
+    """
+    if current_user.get("sub") != public_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    auth = service.update_by_public_id(public_id=public_id, auth=body)
+    return auth.to_dict()
+
+
+@router.put("/update/auth/{public_id}/user-public-id/{user_public_id}")
+def update_auth_user_id_router(public_id: str, user_public_id: str, current_user: dict = Depends(get_current_user_api)):
+    """
+    Update a auth user ID by public ID.
+    """
+    if current_user.get("sub") != public_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    auth = service.update_user_id_by_public_id(public_id=public_id, user_public_id=user_public_id)
+    return auth.to_dict()
+
+
+@router.delete("/delete/auth/{public_id}")
+def delete_auth_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+    """
+    Soft delete a auth by ID.
+    """
+    if current_user.get("sub") != public_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    auth = service.delete_by_public_id(public_id=public_id)
+    return auth.to_dict()
+
+
+@router.post("/auth/login")
+def login_auth_router(body: AuthLogin, response: Response):
+    """
+    Login a auth.
+    """
+    try:
+        auth, access_token, refresh_token = service.login(
+            username=body.username,
+            password=body.password
+        )
+        _set_auth_cookies(response=response, access_token=access_token, refresh_token=refresh_token)
+        return {
+            "auth": auth.to_dict(),
+            "token": access_token.to_dict(),
+            "refresh_token": refresh_token.to_dict()
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Catch all other exceptions (database errors, etc.) and return JSON
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.post("/signup/auth")
+def signup_auth_router(body: AuthSignup, response: Response):
+    """
+    Signup a auth.
+    """
+    try:
+        auth, access_token, refresh_token = service.signup(
+            username=body.username,
+            password=body.password,
+            confirm_password=body.confirm_password
+        )
+        _set_auth_cookies(response=response, access_token=access_token, refresh_token=refresh_token)
+        return {
+            "auth": auth.to_dict(),
+            "token": access_token.to_dict(),
+            "refresh_token": refresh_token.to_dict()
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/auth/refresh")
+def refresh_token_router(request: Request, response: Response, body: Optional[AuthRefreshRequest] = None):
+    """
+    Refresh access token using refresh token.
+    Implements token rotation for security.
+    """
+    try:
+        if request.cookies.get(REFRESH_COOKIE_NAME):
+            _require_csrf(request)
+        refresh_token_value = body.refresh_token if body and body.refresh_token else None
+        if not refresh_token_value:
+            refresh_token_value = request.cookies.get(REFRESH_COOKIE_NAME)
+        if not refresh_token_value:
+            raise ValueError("Refresh token missing.")
+        access_token, refresh_token = service.refresh_access_token(
+            refresh_token=refresh_token_value
+        )
+        _set_auth_cookies(response=response, access_token=access_token, refresh_token=refresh_token)
+        return {
+            "token": access_token.to_dict(),
+            "refresh_token": refresh_token.to_dict()
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")

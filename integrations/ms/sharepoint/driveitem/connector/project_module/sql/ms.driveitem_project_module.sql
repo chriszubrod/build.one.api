@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [ms].[DriveItemProjectModule];
 GO
 
+IF OBJECT_ID('ms.DriveItemProjectModule', 'U') IS NULL
+BEGIN
 CREATE TABLE [ms].[DriveItemProjectModule]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -16,13 +17,13 @@ CREATE TABLE [ms].[DriveItemProjectModule]
     CONSTRAINT [FK_DriveItemProjectModule_DriveItem] FOREIGN KEY ([MsDriveItemId]) REFERENCES [ms].[DriveItem]([Id]) ON DELETE CASCADE,
     CONSTRAINT [FK_DriveItemProjectModule_Module] FOREIGN KEY ([ModuleId]) REFERENCES [dbo].[Module]([Id]) ON DELETE CASCADE
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateDriveItemProjectModule;
 GO
 
-CREATE PROCEDURE CreateDriveItemProjectModule
+CREATE OR ALTER PROCEDURE CreateDriveItemProjectModule
 (
     @ProjectId BIGINT,
     @ModuleId BIGINT,
@@ -53,10 +54,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveItemProjectModuleById;
 GO
 
-CREATE PROCEDURE ReadDriveItemProjectModuleById
+CREATE OR ALTER PROCEDURE ReadDriveItemProjectModuleById
 (
     @Id BIGINT
 )
@@ -81,10 +81,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveItemProjectModuleByProjectIdAndModuleId;
 GO
 
-CREATE PROCEDURE ReadDriveItemProjectModuleByProjectIdAndModuleId
+CREATE OR ALTER PROCEDURE ReadDriveItemProjectModuleByProjectIdAndModuleId
 (
     @ProjectId BIGINT,
     @ModuleId BIGINT
@@ -110,10 +109,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveItemProjectModulesByProjectId;
 GO
 
-CREATE PROCEDURE ReadDriveItemProjectModulesByProjectId
+CREATE OR ALTER PROCEDURE ReadDriveItemProjectModulesByProjectId
 (
     @ProjectId BIGINT
 )
@@ -139,10 +137,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveItemProjectModuleByMsDriveItemId;
 GO
 
-CREATE PROCEDURE ReadDriveItemProjectModuleByMsDriveItemId
+CREATE OR ALTER PROCEDURE ReadDriveItemProjectModuleByMsDriveItemId
 (
     @MsDriveItemId BIGINT
 )
@@ -167,10 +164,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteDriveItemProjectModuleById;
 GO
 
-CREATE PROCEDURE DeleteDriveItemProjectModuleById
+CREATE OR ALTER PROCEDURE DeleteDriveItemProjectModuleById
 (
     @Id BIGINT
 )
@@ -195,10 +191,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteDriveItemProjectModuleByProjectIdAndModuleId;
 GO
 
-CREATE PROCEDURE DeleteDriveItemProjectModuleByProjectIdAndModuleId
+CREATE OR ALTER PROCEDURE DeleteDriveItemProjectModuleByProjectIdAndModuleId
 (
     @ProjectId BIGINT,
     @ModuleId BIGINT
@@ -223,4 +218,3 @@ BEGIN
 END;
 GO
 
-SELECT * FROM [ms].[DriveItemProjectModule];

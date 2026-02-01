@@ -26,8 +26,8 @@ from urllib.parse import unquote
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.database import get_connection
-from agents.persistence.repo import WorkflowRepository
-from agents.capabilities.registry import get_capability_registry
+from workflows.persistence.repo import WorkflowRepository
+from workflows.capabilities.registry import get_capability_registry
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,7 +61,7 @@ def get_workflows_with_attachments() -> list:
             SELECT 
                 PublicId,
                 Context
-            FROM agents.Workflow
+            FROM dbo.Workflow
             WHERE JSON_QUERY(Context, '$.attachment_blob_urls') IS NOT NULL
         """)
         

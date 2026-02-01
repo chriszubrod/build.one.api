@@ -1,7 +1,8 @@
 IF OBJECT_ID('ms.DriveItem', 'U') IS NOT NULL
-    DROP TABLE ms.DriveItem;
 GO
 
+IF OBJECT_ID('ms.DriveItem', 'U') IS NULL
+BEGIN
 CREATE TABLE ms.DriveItem
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -21,22 +22,31 @@ CREATE TABLE ms.DriveItem
     [GraphModifiedDatetime] DATETIME2(3) NULL,
     CONSTRAINT FK_DriveItem_Drive FOREIGN KEY ([MsDriveId]) REFERENCES ms.Drive([Id]) ON DELETE CASCADE
 );
+END
 GO
 
+IF OBJECT_ID('ms.DriveItem', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_DriveItem_ItemId' AND object_id = OBJECT_ID('ms.DriveItem'))
+BEGIN
 CREATE UNIQUE INDEX IX_DriveItem_ItemId ON ms.DriveItem ([ItemId]);
+END
 GO
 
+IF OBJECT_ID('ms.DriveItem', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_DriveItem_MsDriveId' AND object_id = OBJECT_ID('ms.DriveItem'))
+BEGIN
 CREATE INDEX IX_DriveItem_MsDriveId ON ms.DriveItem ([MsDriveId]);
+END
 GO
 
+IF OBJECT_ID('ms.DriveItem', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_DriveItem_ParentItemId' AND object_id = OBJECT_ID('ms.DriveItem'))
+BEGIN
 CREATE INDEX IX_DriveItem_ParentItemId ON ms.DriveItem ([ParentItemId]);
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateMsDriveItem;
 GO
 
-CREATE PROCEDURE CreateMsDriveItem
+CREATE OR ALTER PROCEDURE CreateMsDriveItem
 (
     @MsDriveId BIGINT,
     @ItemId NVARCHAR(255),
@@ -81,10 +91,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadMsDriveItems;
 GO
 
-CREATE PROCEDURE ReadMsDriveItems
+CREATE OR ALTER PROCEDURE ReadMsDriveItems
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -113,10 +122,9 @@ BEGIN
 END;
 GO
 
-DROP PROCEDURE IF EXISTS ReadMsDriveItemsByMsDriveId;
 GO
 
-CREATE PROCEDURE ReadMsDriveItemsByMsDriveId
+CREATE OR ALTER PROCEDURE ReadMsDriveItemsByMsDriveId
 (
     @MsDriveId BIGINT
 )
@@ -150,10 +158,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadMsDriveItemByPublicId;
 GO
 
-CREATE PROCEDURE ReadMsDriveItemByPublicId
+CREATE OR ALTER PROCEDURE ReadMsDriveItemByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
 )
@@ -187,10 +194,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadMsDriveItemByItemId;
 GO
 
-CREATE PROCEDURE ReadMsDriveItemByItemId
+CREATE OR ALTER PROCEDURE ReadMsDriveItemByItemId
 (
     @ItemId NVARCHAR(255)
 )
@@ -224,10 +230,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadMsDriveItemsByParentItemId;
 GO
 
-CREATE PROCEDURE ReadMsDriveItemsByParentItemId
+CREATE OR ALTER PROCEDURE ReadMsDriveItemsByParentItemId
 (
     @ParentItemId NVARCHAR(255)
 )
@@ -261,10 +266,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateMsDriveItemByPublicId;
 GO
 
-CREATE PROCEDURE UpdateMsDriveItemByPublicId
+CREATE OR ALTER PROCEDURE UpdateMsDriveItemByPublicId
 (
     @PublicId UNIQUEIDENTIFIER,
     @MsDriveId BIGINT,
@@ -321,10 +325,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteMsDriveItemByPublicId;
 GO
 
-CREATE PROCEDURE DeleteMsDriveItemByPublicId
+CREATE OR ALTER PROCEDURE DeleteMsDriveItemByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
 )
@@ -358,8 +361,6 @@ END;
 GO
 
 
-EXEC DeleteMsDriveItemByPublicId
     @PublicId = '0143726e-1155-47b4-9750-f5ea4362a605';
 
 
-EXEC ReadMsDriveItems;

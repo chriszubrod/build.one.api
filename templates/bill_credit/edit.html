@@ -1,0 +1,183 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Edit {{ bill_credit.credit_number or 'Bill Credit' }} - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/bill_credit.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="bill-page-header">
+        <h1>Edit Bill Credit</h1>
+        <div style="display: flex; gap: 0.5rem;">
+            {% if bill_credit.is_draft %}
+            <button type="button" id="complete-btn" class="btn btn-primary">Complete</button>
+            {% endif %}
+            <a href="/bill-credit/{{ bill_credit.public_id }}" class="btn btn-secondary">View</a>
+            <a href="/bill-credit/list" class="btn btn-secondary">Back to List</a>
+        </div>
+    </div>
+
+    <div class="bill-form-container">
+        <form id="bill-credit-form" class="bill-form">
+            <input type="hidden" id="public_id" value="{{ bill_credit.public_id }}">
+            <input type="hidden" id="row_version" value="{{ bill_credit.row_version }}">
+            
+            <div class="bill-form-section">
+                <h5>Bill Credit Details</h5>
+                
+                <div class="bill-form-row">
+                    <div class="bill-form-group">
+                        <label for="vendor_public_id" class="bill-form-label">Vendor *</label>
+                        <select id="vendor_public_id" name="vendor_public_id" class="bill-form-select" required>
+                            <option value="">Select a vendor...</option>
+                            {% for vendor in vendors %}
+                            <option value="{{ vendor.public_id }}" {% if bill_credit.vendor_public_id == vendor.public_id %}selected{% endif %}>{{ vendor.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <div class="bill-form-row">
+                    <div class="bill-form-group">
+                        <label for="credit_number" class="bill-form-label">Credit Number *</label>
+                        <input type="text" id="credit_number" name="credit_number" class="bill-form-input" required maxlength="50" value="{{ bill_credit.credit_number or '' }}">
+                    </div>
+                    <div class="bill-form-group">
+                        <label for="credit_date" class="bill-form-label">Credit Date *</label>
+                        <input type="date" id="credit_date" name="credit_date" class="bill-form-input" required value="{{ bill_credit.credit_date[:10] if bill_credit.credit_date else '' }}">
+                    </div>
+                </div>
+
+                <div class="bill-form-row">
+                    <div class="bill-form-group">
+                        <label for="total_amount" class="bill-form-label">Total Amount</label>
+                        <input type="number" id="total_amount" name="total_amount" class="bill-form-input" step="0.01" min="0" value="{{ bill_credit.total_amount or '' }}">
+                    </div>
+                </div>
+
+                <div class="bill-form-row">
+                    <div class="bill-form-group" style="flex: 1;">
+                        <label for="memo" class="bill-form-label">Memo</label>
+                        <textarea id="memo" name="memo" class="bill-form-textarea" rows="3">{{ bill_credit.memo or '' }}</textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bill-form-actions">
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+                <a href="/bill-credit/{{ bill_credit.public_id }}" class="btn btn-secondary">Cancel</a>
+            </div>
+        </form>
+    </div>
+
+    {% if line_items %}
+    <div class="bill-form-container" style="margin-top: 2rem;">
+        <h5>Line Items</h5>
+        <div class="line-item-grid" style="display: grid; grid-template-columns: 1fr; gap: 1rem;">
+            {% for line_item in line_items %}
+            <div class="line-item-card" style="border: 1px solid #e0e0e0; border-radius: 4px; padding: 1rem;">
+                <div style="display: flex; justify-content: space-between; align-items: start;">
+                    <div>
+                        <strong>{{ line_item.description or 'No Description' }}</strong>
+                        {% if line_item.amount is not none %}
+                        <span style="margin-left: 1rem; color: var(--color-text-secondary);">${{ "%.2f"|format(line_item.amount) }}</span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const form = document.getElementById('bill-credit-form');
+        const completeBtn = document.getElementById('complete-btn');
+        
+        // Save changes
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            await saveBillCredit();
+        });
+        
+        // Complete bill credit
+        if (completeBtn) {
+            completeBtn.addEventListener('click', async function() {
+                if (!confirm('Are you sure you want to complete this bill credit? This will finalize it and sync attachments to SharePoint.')) {
+                    return;
+                }
+                
+                completeBtn.disabled = true;
+                completeBtn.textContent = 'Completing...';
+                
+                try {
+                    // First save any changes
+                    await saveBillCredit();
+                    
+                    // Then complete
+                    const publicId = document.getElementById('public_id').value;
+                    const response = await fetch(`/api/v1/complete/bill-credit/${publicId}`, {
+                        method: 'POST',
+                        headers: {
+                        }
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        alert('Bill credit completed successfully!');
+                        window.location.href = `/bill-credit/${publicId}`;
+                    } else {
+                        alert('Error completing bill credit: ' + (data.detail || data.message || 'Unknown error'));
+                        completeBtn.disabled = false;
+                        completeBtn.textContent = 'Complete';
+                    }
+                } catch (error) {
+                    console.error('Error:', error);
+                    alert('Error completing bill credit: ' + error.message);
+                    completeBtn.disabled = false;
+                    completeBtn.textContent = 'Complete';
+                }
+            });
+        }
+        
+        async function saveBillCredit() {
+            const publicId = document.getElementById('public_id').value;
+            const rowVersion = document.getElementById('row_version').value;
+            
+            const formData = {
+                row_version: rowVersion,
+                vendor_public_id: document.getElementById('vendor_public_id').value,
+                credit_number: document.getElementById('credit_number').value,
+                credit_date: document.getElementById('credit_date').value,
+                total_amount: document.getElementById('total_amount').value ? parseFloat(document.getElementById('total_amount').value) : null,
+                memo: document.getElementById('memo').value || null
+            };
+            
+            const response = await fetch(`/api/v1/update/bill-credit/${publicId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(formData)
+            });
+            
+            const data = await response.json();
+            
+            if (response.ok) {
+                // Update row version for subsequent saves
+                document.getElementById('row_version').value = data.row_version;
+                return true;
+            } else {
+                throw new Error(data.detail || 'Failed to save');
+            }
+        }
+    });
+</script>
+{% endblock %}

@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [ms].[DriveCompany];
 GO
 
+IF OBJECT_ID('ms.DriveCompany', 'U') IS NULL
+BEGIN
 CREATE TABLE [ms].[DriveCompany]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -14,13 +15,13 @@ CREATE TABLE [ms].[DriveCompany]
     CONSTRAINT [UQ_DriveCompany_MsDriveId] UNIQUE ([MsDriveId]),
     CONSTRAINT [FK_DriveCompany_Drive] FOREIGN KEY ([MsDriveId]) REFERENCES [ms].[Drive]([Id]) ON DELETE CASCADE
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateDriveCompany;
 GO
 
-CREATE PROCEDURE CreateDriveCompany
+CREATE OR ALTER PROCEDURE CreateDriveCompany
 (
     @CompanyId BIGINT,
     @MsDriveId BIGINT
@@ -49,10 +50,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveCompanyById;
 GO
 
-CREATE PROCEDURE ReadDriveCompanyById
+CREATE OR ALTER PROCEDURE ReadDriveCompanyById
 (
     @Id BIGINT
 )
@@ -76,10 +76,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveCompanyByCompanyId;
 GO
 
-CREATE PROCEDURE ReadDriveCompanyByCompanyId
+CREATE OR ALTER PROCEDURE ReadDriveCompanyByCompanyId
 (
     @CompanyId BIGINT
 )
@@ -103,10 +102,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveCompanyByMsDriveId;
 GO
 
-CREATE PROCEDURE ReadDriveCompanyByMsDriveId
+CREATE OR ALTER PROCEDURE ReadDriveCompanyByMsDriveId
 (
     @MsDriveId BIGINT
 )
@@ -130,10 +128,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteDriveCompanyById;
 GO
 
-CREATE PROCEDURE DeleteDriveCompanyById
+CREATE OR ALTER PROCEDURE DeleteDriveCompanyById
 (
     @Id BIGINT
 )
@@ -157,10 +154,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteDriveCompanyByCompanyId;
 GO
 
-CREATE PROCEDURE DeleteDriveCompanyByCompanyId
+CREATE OR ALTER PROCEDURE DeleteDriveCompanyByCompanyId
 (
     @CompanyId BIGINT
 )
@@ -183,4 +179,3 @@ BEGIN
 END;
 GO
 
-SELECT * FROM [ms].[DriveCompany];

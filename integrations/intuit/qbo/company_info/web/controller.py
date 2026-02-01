@@ -7,7 +7,7 @@ from fastapi.templating import Jinja2Templates
 # Local Imports
 from integrations.intuit.qbo.company_info.business.service import QboCompanyInfoService
 from integrations.intuit.qbo.auth.business.service import QboAuthService
-from modules.auth.business.service import get_current_user_web as get_current_qbo_company_info_web
+from services.auth.business.service import get_current_user_web as get_current_qbo_company_info_web
 
 router = APIRouter(prefix="/qbo-company-info", tags=["web", "qbo-company-info"])
 templates = Jinja2Templates(directory="templates/qbo-company-info")

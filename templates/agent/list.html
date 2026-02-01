@@ -66,7 +66,7 @@
     <div class="agent-list">
         {% if workflows %}
             {% for wf in workflows %}
-            <a href="/agent/{{ wf.public_id }}" class="agent-list-item {{ 'agent-list-item--alert' if wf.needs_attention else '' }}">
+            <a href="/agent/{{ wf.public_id }}{% if selected_state %}?from_state={{ selected_state }}{% endif %}" class="agent-list-item {{ 'agent-list-item--alert' if wf.needs_attention else '' }}">
                 <div class="agent-list-item-status">
                     {% if wf.state == 'completed' %}
                         <span class="agent-status-icon agent-status-icon--completed">✓</span>
@@ -132,7 +132,6 @@ async function pollInbox() {
         const response = await fetch('/api/v1/agents/poll/run', {
             method: 'POST',
             headers: {
-                'Authorization': 'Bearer ' + getToken(),
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({})

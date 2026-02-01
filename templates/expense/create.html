@@ -1,0 +1,1031 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Create Expense - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/expense.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <!-- Toast notification container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <div class="expense-create-fullpage">
+        <div class="expense-create-header">
+            <h1>Create Expense</h1>
+            <a href="/expense/list" class="btn btn-secondary">Back to List</a>
+        </div>
+
+        <div class="expense-create-content">
+            <form id="createExpenseForm" autocomplete="off">
+                <!-- Hidden fields for tracking expense state -->
+                <input type="hidden" id="expense_public_id" name="expense_public_id" value="">
+                <input type="hidden" id="row_version" name="row_version" value="">
+                
+                <!-- Expense Details Section -->
+                <section id="expense-details" class="expense-section">
+                    <div class="expense-form-card">
+                        <div class="expense-form-card-header">
+                            <h5>Expense Details</h5>
+                            <div class="process-status-container">
+                                <span id="expense-save-status" class="save-status"></span>
+                            </div>
+                        </div>
+                        <div class="expense-form-card-body">
+                            <div class="expense-form-group">
+                                <label for="vendor_public_id" class="expense-form-label">
+                                    Vendor <span class="required">*</span>
+                                </label>
+                                <select class="expense-form-control"
+                                        id="vendor_public_id"
+                                        name="vendor_public_id"
+                                        required
+                                        autocomplete="off">
+                                    <option value="">-- Select a vendor --</option>
+                                    {% for vendor in vendors %}
+                                    <option value="{{ vendor.public_id }}">{{ vendor.name or 'Unnamed Vendor' }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+
+                            <div class="expense-form-group-row">
+                                <div class="expense-form-group">
+                                    <label for="expense_date" class="expense-form-label">
+                                        Expense Date <span class="required">*</span>
+                                    </label>
+                                    <input type="date"
+                                           class="expense-form-control"
+                                           id="expense_date"
+                                           name="expense_date"
+                                           required
+                                           autocomplete="off">
+                                </div>
+
+                                <div class="expense-form-group" style="position: relative;">
+                                    <label for="reference_number" class="expense-form-label">
+                                        Reference # <span class="required">*</span>
+                                    </label>
+                                    <div style="position: relative; width: 100%;">
+                                        <input type="text"
+                                               class="expense-form-control"
+                                               id="reference_number"
+                                               name="reference_number"
+                                               required
+                                               maxlength="50"
+                                               autocomplete="off"
+                                               placeholder="Receipt or reference number"
+                                               style="width: 100%; padding-right: 0.5rem;">
+                                        <span id="reference_number_warning" class="expense-warning-label" style="display: none; position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%); z-index: 10; pointer-events: none;"></span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Line Items Section -->
+                            <div style="margin-top: 2rem; margin-bottom: 2rem; padding-top: 2rem; border-top: 1px solid #e0e0e0;">
+                                <h5 style="margin: 0 0 1rem 0; font-size: var(--font-size-action-lg); font-weight: 600; color: var(--color-text);">Line Items</h5>
+                                
+                                <div id="line-items-list"></div>
+
+                                <!-- Add Line Item Form -->
+                                <div id="add-line-item-form" style="display: block; border: 1px solid #e0e0e0; border-radius: 4px; padding: 1.5rem; margin-top: 1rem; background-color: var(--color-surface);">
+                                    <!-- Hidden fields for tracking line item state -->
+                                    <input type="hidden" class="line-item-public-id" value="">
+                                    <input type="hidden" class="line-item-row-version" value="">
+                                    <!-- Row 1: Project, SubCostCode, Description -->
+                                    <div class="expense-line-item-grid expense-line-item-row-1">
+                                        <!-- Project -->
+                                        <div class="expense-form-group" style="margin-bottom: 0;">
+                                            <label for="line_item_project_public_id" class="expense-form-label">Project</label>
+                                            <select class="expense-form-control" id="line_item_project_public_id">
+                                                <option value="">-- Select --</option>
+                                                {% for project in projects %}
+                                                <option value="{{ project.public_id }}">{{ project.name }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        
+                                        <!-- Sub Cost Code -->
+                                        <div class="expense-form-group" style="margin-bottom: 0;">
+                                            <label for="line_item_sub_cost_code_id" class="expense-form-label">Sub Cost Code <span class="required">*</span></label>
+                                            <select class="expense-form-control" id="line_item_sub_cost_code_id">
+                                                <option value="">-- Select --</option>
+                                                {% for sub_cost_code in sub_cost_codes %}
+                                                <option value="{{ sub_cost_code.id }}">
+                                                    {% if sub_cost_code.number and sub_cost_code.name %}
+                                                        {{ sub_cost_code.number }} - {{ sub_cost_code.name }}
+                                                    {% elif sub_cost_code.number %}
+                                                        {{ sub_cost_code.number }}
+                                                    {% elif sub_cost_code.name %}
+                                                        {{ sub_cost_code.name }}
+                                                    {% else %}
+                                                        Unnamed
+                                                    {% endif %}
+                                                </option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        
+                                        <!-- Description -->
+                                        <div class="expense-form-group expense-line-item-description" style="margin-bottom: 0;">
+                                            <label for="line_item_description" class="expense-form-label">Description <span class="required">*</span></label>
+                                            <textarea class="expense-form-control" id="line_item_description" rows="1" placeholder="Enter description" style="resize: vertical;"></textarea>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Row 2: Quantity, Rate, Amount, IsBillable, Markup, Price -->
+                                    <div class="expense-line-item-grid expense-line-item-row-2">
+                                        <!-- Quantity -->
+                                        <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_quantity" class="expense-form-label">Quantity <span class="required">*</span></label>
+                                            <input type="number" class="expense-form-control" id="line_item_quantity" min="0" step="1" placeholder="1" value="1">
+                                        </div>
+                                        
+                                        <!-- Rate -->
+                                        <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_rate" class="expense-form-label">Rate <span class="required">*</span></label>
+                                            <input type="number" class="expense-form-control" id="line_item_rate" min="0" step="0.0001" placeholder="Rate">
+                                        </div>
+                                        
+                                        <!-- Amount (read-only, calculated) -->
+                                        <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_amount" class="expense-form-label">Amount</label>
+                                            <input type="number" class="expense-form-control" id="line_item_amount" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);">
+                                        </div>
+                                        
+                                        <!-- Is Billable -->
+                                        <div class="expense-form-group expense-line-item-checkbox" style="margin-bottom: 0;">
+                                            <label for="line_item_is_billable" class="expense-form-label">Is Billable</label>
+                                            <div style="display: flex; align-items: center; height: 2.5rem;">
+                                                <input type="checkbox" class="expense-form-control" id="line_item_is_billable" checked style="width: auto; height: auto; margin: 0;">
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Markup -->
+                                        <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_markup" class="expense-form-label">Markup (%)</label>
+                                            <input type="number" class="expense-form-control" id="line_item_markup" min="0" step="0.01" placeholder="0.00">
+                                        </div>
+                                        
+                                        <!-- Price (read-only, calculated) -->
+                                        <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
+                                            <label for="line_item_price" class="expense-form-label">Price</label>
+                                            <input type="number" class="expense-form-control" id="line_item_price" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);">
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Attachment Section -->
+                                    <div class="line-item-attachment-section" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed #e0e0e0;">
+                                        <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                                <label class="expense-form-label" style="margin-bottom: 0;">Attachment</label>
+                                                <div class="attachment-upload-wrapper" style="display: flex; align-items: center; gap: 0.5rem;">
+                                                    <input type="file" class="line-item-file-input" id="line_item_attachment" style="display: none;" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt">
+                                                    <button type="button" class="btn btn-secondary btn-sm attachment-upload-btn" onclick="triggerFileInput(this)" style="white-space: nowrap;">
+                                                        <span class="attachment-btn-text">Choose File</span>
+                                                    </button>
+                                                    <span class="attachment-status" style="font-size: 0.85rem; color: var(--color-text-muted); white-space: nowrap;">No file attached</span>
+                                                </div>
+                                            </div>
+                                            <div class="attachment-display" style="display: none;">
+                                                <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background-color: var(--color-success-bg, #e8f5e9); border-radius: 4px; width: fit-content; max-width: 100%;">
+                                                    <span class="attachment-icon" style="font-size: 1.2rem;">📎</span>
+                                                    <a href="#" class="attachment-filename" target="_blank" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-primary); max-width: 500px;" title=""></a>
+                                                    <button type="button" class="btn btn-danger btn-sm attachment-remove-btn" onclick="removeAttachment(this)" title="Remove attachment" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">✕</button>
+                                                </div>
+                                            </div>
+                                            <div style="display: flex; gap: 0.5rem; margin-left: auto;">
+                                                <button type="button" class="btn btn-secondary" onclick="handleCancelLineItemForm(this)">Cancel</button>
+                                                <button type="button" class="btn btn-primary" onclick="addLineItem()">Add Line Item</button>
+                                            </div>
+                                        </div>
+                                        <!-- Hidden fields for attachment tracking -->
+                                        <input type="hidden" class="line-item-attachment-public-id" value="">
+                                        <input type="hidden" class="line-item-attachment-link-public-id" value="">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="expense-form-group">
+                                <label for="total_amount" class="expense-form-label">
+                                    Total Amount
+                                </label>
+                                <input type="number"
+                                       class="expense-form-control"
+                                       id="total_amount"
+                                       name="total_amount"
+                                       step="0.01"
+                                       readonly
+                                       tabindex="-1"
+                                       style="background-color: var(--color-surface);">
+                            </div>
+
+                            <div class="expense-form-group">
+                                <label for="memo" class="expense-form-label">
+                                    Memo
+                                </label>
+                                <textarea class="expense-form-control"
+                                          id="memo"
+                                          name="memo"
+                                          rows="4"
+                                          autocomplete="off"
+                                          placeholder="Enter memo"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <div class="expense-form-actions">
+                    <div class="expense-form-actions-left"></div>
+                    <div class="expense-form-actions-right">
+                        <a href="/expense/list" class="btn btn-secondary">Cancel</a>
+                        <button type="submit" class="btn btn-primary">Complete Expense</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        // Focus Vendor select on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            const vendorSelect = document.getElementById('vendor_public_id');
+            if (vendorSelect) {
+                vendorSelect.focus();
+            }
+        });
+
+        // =====================
+        // Toast Notifications
+        // =====================
+
+        function showToast(message, type = 'info', duration = 5000) {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.textContent = message;
+            
+            container.appendChild(toast);
+            setTimeout(() => toast.classList.add('toast-visible'), 10);
+            
+            setTimeout(() => {
+                toast.classList.remove('toast-visible');
+                setTimeout(() => toast.remove(), 300);
+            }, duration);
+        }
+
+        // =====================
+        // Expense Auto-Save
+        // =====================
+
+        let autoSaveTimeout = null;
+        let isSaving = false;
+
+        function updateSaveStatus(status, message) {
+            const statusElement = document.getElementById('expense-save-status');
+            if (!statusElement) return;
+            
+            statusElement.textContent = message || '';
+            statusElement.className = 'save-status';
+            
+            if (status === 'saving') {
+                statusElement.classList.add('save-status-saving');
+            } else if (status === 'saved') {
+                statusElement.classList.add('save-status-saved');
+            } else if (status === 'error') {
+                statusElement.classList.add('save-status-error');
+            }
+        }
+
+        function canAutoSaveExpense() {
+            const vendor = document.getElementById('vendor_public_id');
+            const expenseDate = document.getElementById('expense_date');
+            const referenceNumber = document.getElementById('reference_number');
+            
+            return vendor && vendor.value &&
+                   expenseDate && expenseDate.value &&
+                   referenceNumber && referenceNumber.value.trim();
+        }
+
+        function triggerAutoSaveExpense() {
+            if (autoSaveTimeout) {
+                clearTimeout(autoSaveTimeout);
+            }
+            autoSaveTimeout = setTimeout(autoSaveExpense, 300);
+        }
+
+        async function autoSaveExpense() {
+            if (!canAutoSaveExpense() || isSaving) {
+                return;
+            }
+
+            isSaving = true;
+            updateSaveStatus('saving', 'Saving...');
+
+            const expensePublicId = document.getElementById('expense_public_id').value;
+            const rowVersion = document.getElementById('row_version').value;
+
+            const totalAmountEl = document.getElementById('total_amount');
+            const totalAmountValue = totalAmountEl && totalAmountEl.value ? parseFloat(totalAmountEl.value) : null;
+            
+            const expenseData = {
+                vendor_public_id: document.getElementById('vendor_public_id').value,
+                expense_date: document.getElementById('expense_date').value,
+                reference_number: document.getElementById('reference_number').value.trim(),
+                total_amount: totalAmountValue,
+                memo: document.getElementById('memo').value || null,
+                is_draft: true
+            };
+
+            try {
+                let response;
+                
+                if (expensePublicId) {
+                    expenseData.row_version = rowVersion;
+                    response = await fetch(`/api/v1/update/expense/${expensePublicId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(expenseData)
+                    });
+                } else {
+                    response = await fetch('/api/v1/create/expense', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(expenseData)
+                    });
+                }
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    console.error('Expense auto-save failed:', error);
+                    updateSaveStatus('error', 'Error');
+                    if (error.detail) {
+                        showToast(error.detail, 'error');
+                    }
+                    return;
+                }
+
+                const expense = await response.json();
+                
+                document.getElementById('expense_public_id').value = expense.public_id;
+                document.getElementById('row_version').value = expense.row_version;
+                
+                console.log('Expense auto-saved:', expense.public_id);
+                updateSaveStatus('saved', 'Saved');
+                
+            } catch (error) {
+                console.error('Expense auto-save error:', error);
+                updateSaveStatus('error', 'Error');
+                showToast(error.message || 'Save failed', 'error');
+            } finally {
+                isSaving = false;
+            }
+        }
+
+        // Add listeners to trigger auto-save
+        document.addEventListener('DOMContentLoaded', function() {
+            const fieldsToWatch = ['vendor_public_id', 'expense_date', 'reference_number', 'memo'];
+            
+            fieldsToWatch.forEach(fieldId => {
+                const field = document.getElementById(fieldId);
+                if (field) {
+                    field.addEventListener('change', triggerAutoSaveExpense);
+                    field.addEventListener('blur', triggerAutoSaveExpense);
+                }
+            });
+        });
+
+        // =====================
+        // ExpenseLineItem Auto-Save
+        // =====================
+
+        let lineItemSaveTimeouts = new Map();
+        let lineItemIsSaving = new Map();
+
+        function canAutoSaveLineItem(formElement) {
+            const expensePublicId = document.getElementById('expense_public_id').value;
+            if (!expensePublicId) return false;
+            
+            const subCostCode = formElement.querySelector('[id^="line_item_sub_cost_code_id"]');
+            const description = formElement.querySelector('[id^="line_item_description"]');
+            const quantity = formElement.querySelector('[id^="line_item_quantity"]');
+            const rate = formElement.querySelector('[id^="line_item_rate"]');
+            
+            return subCostCode && subCostCode.value &&
+                   description && description.value.trim() &&
+                   quantity && quantity.value &&
+                   rate && rate.value;
+        }
+
+        function triggerAutoSaveLineItem(formElement) {
+            const formId = formElement.id;
+            
+            if (lineItemSaveTimeouts.has(formId)) {
+                clearTimeout(lineItemSaveTimeouts.get(formId));
+            }
+            
+            lineItemSaveTimeouts.set(formId, setTimeout(() => {
+                autoSaveLineItem(formElement);
+            }, 300));
+        }
+
+        async function autoSaveLineItem(formElement) {
+            const formId = formElement.id;
+            
+            if (lineItemIsSaving.get(formId)) {
+                return;
+            }
+            
+            if (!canAutoSaveLineItem(formElement)) {
+                return;
+            }
+
+            const expensePublicId = document.getElementById('expense_public_id').value;
+            const publicIdField = formElement.querySelector('.line-item-public-id');
+            const rowVersionField = formElement.querySelector('.line-item-row-version');
+            
+            const publicId = publicIdField ? publicIdField.value : '';
+            const rowVersion = rowVersionField ? rowVersionField.value : '';
+
+            const subCostCode = formElement.querySelector('[id^="line_item_sub_cost_code_id"]');
+            const projectSelect = formElement.querySelector('[id^="line_item_project_public_id"]');
+            const description = formElement.querySelector('[id^="line_item_description"]');
+            const quantity = formElement.querySelector('[id^="line_item_quantity"]');
+            const rate = formElement.querySelector('[id^="line_item_rate"]');
+            const amountInput = formElement.querySelector('[id^="line_item_amount"]');
+            const isBillable = formElement.querySelector('[id^="line_item_is_billable"]');
+            const markup = formElement.querySelector('[id^="line_item_markup"]');
+            const priceInput = formElement.querySelector('[id^="line_item_price"]');
+
+            const lineItemData = {
+                expense_public_id: expensePublicId,
+                sub_cost_code_id: subCostCode && subCostCode.value ? parseInt(subCostCode.value) : null,
+                project_public_id: projectSelect && projectSelect.value ? projectSelect.value : null,
+                description: description ? description.value.trim() : null,
+                quantity: quantity && quantity.value ? parseInt(quantity.value) : null,
+                rate: rate && rate.value ? parseFloat(rate.value) : null,
+                amount: amountInput && amountInput.value ? parseFloat(amountInput.value) : null,
+                is_billable: isBillable ? isBillable.checked : true,
+                markup: markup && markup.value ? parseFloat(markup.value) : null,
+                price: priceInput && priceInput.value ? parseFloat(priceInput.value) : null,
+                is_draft: true
+            };
+
+            lineItemIsSaving.set(formId, true);
+            updateSaveStatus('saving', 'Saving...');
+
+            try {
+                let response;
+                
+                if (publicId) {
+                    lineItemData.row_version = rowVersion;
+                    response = await fetch(`/api/v1/update/expense_line_item/${publicId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(lineItemData)
+                    });
+                } else {
+                    response = await fetch('/api/v1/create/expense_line_item', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(lineItemData)
+                    });
+                }
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    console.error('Line item auto-save failed:', error);
+                    updateSaveStatus('error', 'Error');
+                    showToast(error.detail || 'Line item save failed', 'error');
+                    return;
+                }
+
+                const lineItem = await response.json();
+                
+                const isNewLineItem = !publicId;
+                if (publicIdField) publicIdField.value = lineItem.public_id;
+                if (rowVersionField) rowVersionField.value = lineItem.row_version;
+                
+                console.log('Line item auto-saved:', lineItem.public_id);
+                updateSaveStatus('saved', 'Saved');
+                showToast('Line item saved', 'success', 2000);
+                
+                if (isNewLineItem) {
+                    await linkPendingAttachment(formElement, lineItem.public_id);
+                }
+                
+            } catch (error) {
+                console.error('Line item auto-save error:', error);
+                updateSaveStatus('error', 'Error');
+                showToast(error.message || 'Line item save failed', 'error');
+            } finally {
+                lineItemIsSaving.set(formId, false);
+            }
+        }
+
+        function setupLineItemAutoSave(formElement) {
+            const fieldsToWatch = [
+                '[id^="line_item_sub_cost_code_id"]',
+                '[id^="line_item_project_public_id"]',
+                '[id^="line_item_description"]',
+                '[id^="line_item_quantity"]',
+                '[id^="line_item_rate"]',
+                '[id^="line_item_is_billable"]',
+                '[id^="line_item_markup"]'
+            ];
+            
+            fieldsToWatch.forEach(selector => {
+                const field = formElement.querySelector(selector);
+                if (field) {
+                    field.addEventListener('change', () => triggerAutoSaveLineItem(formElement));
+                    field.addEventListener('blur', () => triggerAutoSaveLineItem(formElement));
+                }
+            });
+        }
+
+        // =====================
+        // Line Item Management
+        // =====================
+
+        let lineItemCounter = 0;
+
+        function addLineItemForm() {
+            const originalForm = document.getElementById('add-line-item-form');
+            if (!originalForm) return;
+
+            const clonedForm = originalForm.cloneNode(true);
+            lineItemCounter++;
+            
+            clonedForm.id = `add-line-item-form-${lineItemCounter}`;
+            
+            const elementsWithId = clonedForm.querySelectorAll('[id]');
+            elementsWithId.forEach(element => {
+                element.id = `${element.id}_${lineItemCounter}`;
+            });
+            
+            const labels = clonedForm.querySelectorAll('label[for]');
+            labels.forEach(label => {
+                const oldFor = label.getAttribute('for');
+                label.setAttribute('for', `${oldFor}_${lineItemCounter}`);
+            });
+
+            clearLineItemFormInputs(clonedForm);
+
+            const cancelButton = clonedForm.querySelector('button.btn-secondary');
+            const addButton = clonedForm.querySelector('button.btn-primary');
+            
+            if (cancelButton) {
+                cancelButton.onclick = function() { handleCancelLineItemForm(this); };
+            }
+            if (addButton) {
+                addButton.onclick = function() { addLineItemForm(); };
+            }
+
+            setupLineItemCalculations(clonedForm);
+            setupLineItemAutoSave(clonedForm);
+            setupLineItemAttachment(clonedForm);
+            resetAttachmentDisplay(clonedForm);
+
+            const allForms = getAllLineItemForms();
+            const lastForm = allForms[allForms.length - 1];
+            lastForm.parentNode.insertBefore(clonedForm, lastForm.nextSibling);
+        }
+
+        function setupLineItemCalculations(formElement) {
+            const quantityInput = formElement.querySelector('[id^="line_item_quantity"]');
+            const rateInput = formElement.querySelector('[id^="line_item_rate"]');
+            const markupInput = formElement.querySelector('[id^="line_item_markup"]');
+            const amountInput = formElement.querySelector('[id^="line_item_amount"]');
+            const priceInput = formElement.querySelector('[id^="line_item_price"]');
+
+            const calculateAmount = function() {
+                if (!quantityInput || !rateInput || !amountInput) return;
+                
+                const quantity = parseFloat(quantityInput.value) || 0;
+                const rate = parseFloat(rateInput.value) || 0;
+                const amount = quantity * rate;
+                amountInput.value = amount.toFixed(2);
+                calculatePrice();
+            };
+
+            const calculatePrice = function() {
+                if (!amountInput || !priceInput) return;
+                
+                const amount = parseFloat(amountInput.value) || 0;
+                const markupPercent = markupInput ? (parseFloat(markupInput.value) || 0) : 0;
+                const price = amount * (1 + markupPercent / 100);
+                priceInput.value = price.toFixed(2);
+                calculateTotalAmount();
+            };
+
+            if (quantityInput) {
+                quantityInput.addEventListener('input', calculateAmount);
+                quantityInput.addEventListener('change', calculateAmount);
+            }
+            if (rateInput) {
+                rateInput.addEventListener('input', calculateAmount);
+                rateInput.addEventListener('change', calculateAmount);
+            }
+            if (markupInput) {
+                markupInput.addEventListener('input', calculatePrice);
+                markupInput.addEventListener('change', calculatePrice);
+            }
+        }
+
+        function addLineItem() {
+            addLineItemForm();
+        }
+
+        function getAllLineItemForms() {
+            return document.querySelectorAll('[id^="add-line-item-form"]');
+        }
+
+        function countLineItemForms() {
+            return getAllLineItemForms().length;
+        }
+
+        function calculateTotalAmount() {
+            const totalAmountInput = document.getElementById('total_amount');
+            if (!totalAmountInput) return;
+            
+            let total = 0;
+            const allForms = getAllLineItemForms();
+            
+            allForms.forEach(form => {
+                const amountInput = form.querySelector('[id^="line_item_amount"]');
+                if (amountInput && amountInput.value) {
+                    total += parseFloat(amountInput.value) || 0;
+                }
+            });
+            
+            totalAmountInput.value = total.toFixed(2);
+            triggerAutoSaveExpense();
+        }
+
+        function clearLineItemFormInputs(formElement) {
+            if (!formElement) return;
+            
+            const inputs = formElement.querySelectorAll('input, select, textarea');
+            inputs.forEach(input => {
+                if (input.type === 'checkbox') {
+                    input.checked = true;
+                } else if (input.type === 'file') {
+                    input.value = '';
+                } else if (input.id && input.id.includes('quantity')) {
+                    input.value = '1';
+                } else if (input.id && (input.id.includes('amount') || input.id.includes('price'))) {
+                    input.value = '';
+                } else {
+                    input.value = '';
+                }
+            });
+            
+            resetAttachmentDisplay(formElement);
+        }
+
+        function handleCancelLineItemForm(buttonElement) {
+            if (!buttonElement) return;
+            
+            const formElement = buttonElement.closest('[id^="add-line-item-form"]');
+            if (!formElement) return;
+            
+            const formCount = countLineItemForms();
+            
+            if (formCount > 1) {
+                formElement.remove();
+            } else {
+                clearLineItemFormInputs(formElement);
+            }
+            
+            calculateTotalAmount();
+        }
+
+        // =====================
+        // Attachment Handling
+        // =====================
+
+        function triggerFileInput(buttonElement) {
+            const formElement = buttonElement.closest('[id^="add-line-item-form"]');
+            if (!formElement) return;
+            
+            const fileInput = formElement.querySelector('.line-item-file-input');
+            if (fileInput) fileInput.click();
+        }
+
+        function setupLineItemAttachment(formElement) {
+            const fileInput = formElement.querySelector('.line-item-file-input');
+            if (fileInput) {
+                fileInput.addEventListener('change', function(e) {
+                    handleFileSelect(e, formElement);
+                });
+            }
+        }
+
+        async function handleFileSelect(event, formElement) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const statusElement = formElement.querySelector('.attachment-status');
+            const uploadBtn = formElement.querySelector('.attachment-upload-btn');
+            
+            statusElement.textContent = 'Uploading...';
+            uploadBtn.style.display = 'none';
+            
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                const uploadResponse = await fetch('/api/v1/upload/bill-line-item-attachment', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!uploadResponse.ok) {
+                    const error = await uploadResponse.json();
+                    throw new Error(error.detail || 'Failed to upload file');
+                }
+                
+                const attachment = await uploadResponse.json();
+                console.log('File uploaded:', attachment.public_id);
+                
+                formElement.querySelector('.line-item-attachment-public-id').value = attachment.public_id;
+                
+                const lineItemPublicId = formElement.querySelector('.line-item-public-id').value;
+                if (lineItemPublicId) {
+                    await createAttachmentLink(formElement, lineItemPublicId, attachment.public_id);
+                }
+                
+                updateAttachmentDisplay(formElement, attachment);
+                showToast('File uploaded successfully', 'success', 2000);
+                
+            } catch (error) {
+                console.error('Attachment error:', error);
+                statusElement.textContent = 'Upload failed';
+                showToast(error.message || 'Failed to upload file', 'error');
+                uploadBtn.style.display = '';
+            } finally {
+                event.target.value = '';
+            }
+        }
+
+        async function createAttachmentLink(formElement, lineItemPublicId, attachmentPublicId) {
+            try {
+                const linkResponse = await fetch('/api/v1/create/expense-line-item-attachment', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        expense_line_item_public_id: lineItemPublicId,
+                        attachment_public_id: attachmentPublicId
+                    })
+                });
+                
+                if (!linkResponse.ok) {
+                    const error = await linkResponse.json();
+                    throw new Error(error.detail || 'Failed to link attachment');
+                }
+                
+                const attachmentLink = await linkResponse.json();
+                console.log('Attachment linked:', attachmentLink.public_id);
+                
+                formElement.querySelector('.line-item-attachment-link-public-id').value = attachmentLink.public_id;
+                updateAttachmentLinkedState(formElement);
+                
+                return attachmentLink;
+            } catch (error) {
+                console.error('Failed to create attachment link:', error);
+                throw error;
+            }
+        }
+
+        async function linkPendingAttachment(formElement, lineItemPublicId) {
+            const attachmentPublicId = formElement.querySelector('.line-item-attachment-public-id').value;
+            const linkPublicId = formElement.querySelector('.line-item-attachment-link-public-id').value;
+            
+            if (attachmentPublicId && !linkPublicId) {
+                try {
+                    await createAttachmentLink(formElement, lineItemPublicId, attachmentPublicId);
+                    showToast('Attachment linked to line item', 'success', 2000);
+                } catch (error) {
+                    showToast('Failed to link attachment: ' + error.message, 'error');
+                }
+            }
+        }
+
+        function updateAttachmentDisplay(formElement, attachment) {
+            const uploadWrapper = formElement.querySelector('.attachment-upload-wrapper');
+            const displayWrapper = formElement.querySelector('.attachment-display');
+            const filenameLink = formElement.querySelector('.attachment-filename');
+            const displayContainer = displayWrapper ? displayWrapper.querySelector('div') : null;
+            
+            if (uploadWrapper) uploadWrapper.style.display = 'none';
+            if (displayWrapper) displayWrapper.style.display = 'block';
+            
+            if (filenameLink) {
+                filenameLink.textContent = attachment.original_filename || attachment.filename || 'Attachment';
+                filenameLink.href = `/attachment/view/${attachment.public_id}`;
+            }
+            
+            const lineItemPublicId = formElement.querySelector('.line-item-public-id').value;
+            const linkPublicId = formElement.querySelector('.line-item-attachment-link-public-id').value;
+            
+            if (displayContainer) {
+                if (!lineItemPublicId || !linkPublicId) {
+                    displayContainer.style.backgroundColor = '#fff3cd';
+                    displayContainer.style.borderColor = '#ffc107';
+                    displayContainer.title = 'File uploaded - will be linked when line item is saved';
+                } else {
+                    displayContainer.style.backgroundColor = '#e8f5e9';
+                    displayContainer.style.borderColor = '#c8e6c9';
+                    displayContainer.title = 'File attached to line item';
+                }
+            }
+        }
+
+        function updateAttachmentLinkedState(formElement) {
+            const displayWrapper = formElement.querySelector('.attachment-display');
+            const displayContainer = displayWrapper ? displayWrapper.querySelector('div') : null;
+            
+            if (displayContainer) {
+                displayContainer.style.backgroundColor = '#e8f5e9';
+                displayContainer.style.borderColor = '#c8e6c9';
+                displayContainer.title = 'File attached to line item';
+            }
+        }
+
+        async function removeAttachment(buttonElement) {
+            const formElement = buttonElement.closest('[id^="add-line-item-form"]');
+            if (!formElement) return;
+            
+            const linkPublicId = formElement.querySelector('.line-item-attachment-link-public-id').value;
+            const attachmentPublicId = formElement.querySelector('.line-item-attachment-public-id').value;
+            
+            try {
+                if (linkPublicId) {
+                    const linkResponse = await fetch(`/api/v1/delete/expense-line-item-attachment/${linkPublicId}`, {
+                        method: 'DELETE'
+                    });
+                    
+                    if (!linkResponse.ok) {
+                        const error = await linkResponse.json();
+                        throw new Error(error.detail || 'Failed to remove attachment link');
+                    }
+                }
+                
+                if (attachmentPublicId) {
+                    try {
+                        await fetch(`/api/v1/delete/attachment/${attachmentPublicId}`, { method: 'DELETE' });
+                    } catch (e) {
+                        console.warn('Could not delete attachment file:', e);
+                    }
+                }
+                
+                resetAttachmentDisplay(formElement);
+                showToast('Attachment removed', 'success', 2000);
+                
+            } catch (error) {
+                console.error('Remove attachment error:', error);
+                showToast(error.message || 'Failed to remove attachment', 'error');
+            }
+        }
+
+        function resetAttachmentDisplay(formElement) {
+            const uploadWrapper = formElement.querySelector('.attachment-upload-wrapper');
+            const displayWrapper = formElement.querySelector('.attachment-display');
+            const statusElement = formElement.querySelector('.attachment-status');
+            const uploadBtn = formElement.querySelector('.attachment-upload-btn');
+            
+            if (uploadWrapper) uploadWrapper.style.display = 'flex';
+            if (displayWrapper) displayWrapper.style.display = 'none';
+            if (statusElement) statusElement.textContent = 'No file attached';
+            if (uploadBtn) uploadBtn.style.display = '';
+            
+            const attachmentPublicId = formElement.querySelector('.line-item-attachment-public-id');
+            const linkPublicId = formElement.querySelector('.line-item-attachment-link-public-id');
+            if (attachmentPublicId) attachmentPublicId.value = '';
+            if (linkPublicId) linkPublicId.value = '';
+        }
+
+        // =====================
+        // Complete Expense
+        // =====================
+
+        function validateExpenseForm() {
+            const errors = [];
+            
+            if (!document.getElementById('vendor_public_id').value) {
+                errors.push('Vendor is required');
+            }
+            if (!document.getElementById('expense_date').value) {
+                errors.push('Expense Date is required');
+            }
+            if (!document.getElementById('reference_number').value.trim()) {
+                errors.push('Reference Number is required');
+            }
+            
+            return errors;
+        }
+
+        async function handleCompleteExpense(event) {
+            event.preventDefault();
+            
+            if (autoSaveTimeout) {
+                clearTimeout(autoSaveTimeout);
+                autoSaveTimeout = null;
+            }
+            
+            const validationErrors = validateExpenseForm();
+            if (validationErrors.length > 0) {
+                showToast(validationErrors.join(', '), 'error');
+                return;
+            }
+            
+            const expensePublicId = document.getElementById('expense_public_id').value;
+            if (!expensePublicId) {
+                showToast('Please fill in all required fields and wait for the expense to save.', 'error');
+                return;
+            }
+            
+            updateSaveStatus('saving', 'Completing...');
+            
+            try {
+                const response = await fetch(`/api/v1/complete/expense/${expensePublicId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                if (!response.ok) {
+                    let errorMessage = 'Failed to complete expense';
+                    try {
+                        const error = await response.json();
+                        errorMessage = error.detail || errorMessage;
+                    } catch (e) {
+                        errorMessage = `Server error: ${response.status}`;
+                    }
+                    throw new Error(errorMessage);
+                }
+                
+                const result = await response.json();
+                
+                let statusMessage = 'Expense completed successfully!';
+                const messages = [];
+                
+                const fileUploads = result.file_uploads || {};
+                let totalFilesSynced = 0;
+                let totalFileErrors = 0;
+                for (const projectId in fileUploads) {
+                    const upload = fileUploads[projectId];
+                    totalFilesSynced += upload.synced_count || 0;
+                    if (upload.errors) totalFileErrors += upload.errors.length;
+                }
+                
+                if (totalFilesSynced > 0) {
+                    messages.push(`${totalFilesSynced} file(s) uploaded to SharePoint`);
+                }
+                if (totalFileErrors > 0) {
+                    messages.push(`${totalFileErrors} file upload error(s)`);
+                }
+                
+                if (messages.length > 0) {
+                    statusMessage += ' ' + messages.join(', ') + '.';
+                }
+                
+                const toastType = (result.errors && result.errors.length > 0) ? 'warning' : 'success';
+                showToast(statusMessage, toastType, 8000);
+                
+                setTimeout(() => {
+                    window.location.href = '/expense/list';
+                }, 2000);
+                
+            } catch (error) {
+                console.error('Complete expense error:', error);
+                updateSaveStatus('error', 'Error');
+                showToast(error.message || 'Failed to complete expense', 'error');
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            const initialForm = document.getElementById('add-line-item-form');
+            if (initialForm) {
+                setupLineItemCalculations(initialForm);
+                setupLineItemAutoSave(initialForm);
+                setupLineItemAttachment(initialForm);
+                
+                const addButton = initialForm.querySelector('button.btn-primary');
+                if (addButton) {
+                    addButton.onclick = function() { addLineItemForm(); };
+                }
+            }
+            
+            const form = document.getElementById('createExpenseForm');
+            if (form) {
+                form.addEventListener('submit', handleCompleteExpense);
+            }
+        });
+    </script>
+{% endblock %}

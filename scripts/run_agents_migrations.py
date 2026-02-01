@@ -11,9 +11,8 @@ from shared.database import get_connection
 
 # SQL files to run in order (dependencies first)
 SQL_FILES = [
-    "agents/persistence/sql/agents.Workflow.sql",
-    "agents/persistence/sql/agents.WorkflowEvent.sql",
-    "agents/persistence/sql/seed.WorkflowInboxModule.sql",
+    "workflows/persistence/sql/dbo.workflow.sql",
+    "workflows/persistence/sql/dbo.workflow_event.sql",
 ]
 
 
@@ -63,7 +62,7 @@ def run_sql_file(cursor, filepath: str) -> bool:
 
 def main():
     print("\n" + "="*60)
-    print("AGENTS SCHEMA SQL MIGRATIONS")
+    print("WORKFLOW SQL MIGRATIONS")
     print("="*60)
     
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))

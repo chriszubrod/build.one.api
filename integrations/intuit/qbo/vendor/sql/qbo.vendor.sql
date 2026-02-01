@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[Vendor];
 GO
 
+IF OBJECT_ID('qbo.Vendor', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[Vendor]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -31,22 +32,31 @@ CREATE TABLE [qbo].[Vendor]
     [AcctNum] NVARCHAR(50) NULL,
     [WebAddr] NVARCHAR(500) NULL
 );
+END
 GO
 
+IF OBJECT_ID('qbo.Vendor', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboVendor_QboId' AND object_id = OBJECT_ID('qbo.Vendor'))
+BEGIN
 CREATE INDEX IX_QboVendor_QboId ON [qbo].[Vendor] ([QboId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Vendor', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboVendor_RealmId' AND object_id = OBJECT_ID('qbo.Vendor'))
+BEGIN
 CREATE INDEX IX_QboVendor_RealmId ON [qbo].[Vendor] ([RealmId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Vendor', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboVendor_BillAddrId' AND object_id = OBJECT_ID('qbo.Vendor'))
+BEGIN
 CREATE INDEX IX_QboVendor_BillAddrId ON [qbo].[Vendor] ([BillAddrId]);
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateQboVendor;
 GO
 
-CREATE PROCEDURE CreateQboVendor
+CREATE OR ALTER PROCEDURE CreateQboVendor
 (
     @QboId NVARCHAR(50),
     @SyncToken NVARCHAR(50),
@@ -127,10 +137,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboVendors;
 GO
 
-CREATE PROCEDURE ReadQboVendors
+CREATE OR ALTER PROCEDURE ReadQboVendors
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -171,10 +180,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboVendorsByRealmId;
 GO
 
-CREATE PROCEDURE ReadQboVendorsByRealmId
+CREATE OR ALTER PROCEDURE ReadQboVendorsByRealmId
 (
     @RealmId NVARCHAR(50)
 )
@@ -219,10 +227,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboVendorById;
 GO
 
-CREATE PROCEDURE ReadQboVendorById
+CREATE OR ALTER PROCEDURE ReadQboVendorById
 (
     @Id BIGINT
 )
@@ -266,10 +273,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboVendorByQboId;
 GO
 
-CREATE PROCEDURE ReadQboVendorByQboId
+CREATE OR ALTER PROCEDURE ReadQboVendorByQboId
 (
     @QboId NVARCHAR(50)
 )
@@ -313,10 +319,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboVendorByQboIdAndRealmId;
 GO
 
-CREATE PROCEDURE ReadQboVendorByQboIdAndRealmId
+CREATE OR ALTER PROCEDURE ReadQboVendorByQboIdAndRealmId
 (
     @QboId NVARCHAR(50),
     @RealmId NVARCHAR(50)
@@ -361,10 +366,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateQboVendorByQboId;
 GO
 
-CREATE PROCEDURE UpdateQboVendorByQboId
+CREATE OR ALTER PROCEDURE UpdateQboVendorByQboId
 (
     @QboId NVARCHAR(50),
     @RowVersion BINARY(8),
@@ -457,10 +461,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteQboVendorByQboId;
 GO
 
-CREATE PROCEDURE DeleteQboVendorByQboId
+CREATE OR ALTER PROCEDURE DeleteQboVendorByQboId
 (
     @QboId NVARCHAR(50)
 )

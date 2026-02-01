@@ -80,7 +80,6 @@ async function prefetchThreads(conversations, count = 3) {
         fetch(`/api/v1/agents/inbox/thread/${encodeURIComponent(cid)}`, {
             method: 'GET',
             headers: {
-                'Authorization': 'Bearer ' + getToken(),
                 'Content-Type': 'application/json'
             }
         })
@@ -116,7 +115,6 @@ async function fetchEmails() {
         const response = await fetch(url, {
             method: 'GET',
             headers: {
-                'Authorization': 'Bearer ' + getToken(),
                 'Content-Type': 'application/json'
             }
         });
@@ -287,7 +285,6 @@ async function selectConversation(index) {
             const threadResponse = await fetch(`/api/v1/agents/inbox/thread/${encodeURIComponent(conversationId)}`, {
                 method: 'GET',
                 headers: {
-                    'Authorization': 'Bearer ' + getToken(),
                     'Content-Type': 'application/json'
                 }
             });
@@ -568,7 +565,6 @@ async function previewAttachment(messageId, attachmentIndex, name, contentType) 
         const response = await fetch(`/api/v1/agents/inbox/email/${encodeURIComponent(messageId)}/attachment/${attachmentIndex}`, {
             method: 'GET',
             headers: {
-                'Authorization': 'Bearer ' + getToken(),
             }
         });
         
@@ -730,7 +726,6 @@ async function removeFlag(emailId) {
         const response = await fetch(`/api/v1/agents/inbox/email/${emailId}/unflag`, {
             method: 'POST',
             headers: {
-                'Authorization': 'Bearer ' + getToken(),
                 'Content-Type': 'application/json'
             }
         });
@@ -824,7 +819,6 @@ async function createWorkflow(emailId) {
         const response = await fetch('/api/v1/agents/workflows/start', {
             method: 'POST',
             headers: {
-                'Authorization': 'Bearer ' + getToken(),
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify(payload)

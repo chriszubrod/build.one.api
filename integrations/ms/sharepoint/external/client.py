@@ -1068,9 +1068,10 @@ def get_excel_worksheet(drive_id: str, item_id: str, worksheet_name: str) -> dic
         }
 
 
-def update_excel_range(drive_id: str, item_id: str, worksheet_name: str, range_address: str, values: list) -> dict:
+def update_excel_range(drive_id: str, item_id: str, worksheet_name: str, range_address: str, values: list, max_retries: int = 3) -> dict:
     """
     Update a range of cells in an Excel worksheet.
+    Includes retry logic with exponential backoff for transient Graph API errors.
     
     Args:
         drive_id: The MS Graph drive ID
@@ -1078,10 +1079,14 @@ def update_excel_range(drive_id: str, item_id: str, worksheet_name: str, range_a
         worksheet_name: The name of the worksheet
         range_address: Excel range address (e.g., "A1:D4")
         values: 2D array of values [[row1], [row2], ...]
+        max_retries: Maximum number of retry attempts for transient errors (default 3)
     
     Returns:
         Dict with status_code, message, and updated range data
     """
+    import time
+    import urllib.parse
+    
     try:
         headers = _get_auth_headers()
         if not headers:
@@ -1092,7 +1097,6 @@ def update_excel_range(drive_id: str, item_id: str, worksheet_name: str, range_a
             }
         
         # URL encode worksheet name and range address
-        import urllib.parse
         encoded_name = urllib.parse.quote(worksheet_name)
         encoded_range = urllib.parse.quote(range_address)
         endpoint = f"{GRAPH_API_BASE}/drives/{drive_id}/items/{item_id}/workbook/worksheets/{encoded_name}/range(address='{encoded_range}')"
@@ -1102,41 +1106,69 @@ def update_excel_range(drive_id: str, item_id: str, worksheet_name: str, range_a
         }
         
         logger.info(f"Updating range '{range_address}' in worksheet '{worksheet_name}' of workbook: {item_id}")
-        resp = requests.patch(url=endpoint, headers=headers, json=payload)
         
-        if resp.status_code == 200:
-            range_data = resp.json()
-            return {
-                "message": "Range updated successfully",
-                "status_code": 200,
-                "range": {
-                    "address": range_data.get("address"),
-                    "addressLocal": range_data.get("addressLocal"),
-                    "cellCount": range_data.get("cellCount"),
-                    "columnCount": range_data.get("columnCount"),
-                    "rowCount": range_data.get("rowCount"),
-                    "values": range_data.get("values")
+        # Retry loop for transient errors
+        last_error = None
+        for attempt in range(max_retries):
+            resp = requests.patch(url=endpoint, headers=headers, json=payload)
+            
+            if resp.status_code == 200:
+                range_data = resp.json()
+                return {
+                    "message": "Range updated successfully",
+                    "status_code": 200,
+                    "range": {
+                        "address": range_data.get("address"),
+                        "addressLocal": range_data.get("addressLocal"),
+                        "cellCount": range_data.get("cellCount"),
+                        "columnCount": range_data.get("columnCount"),
+                        "rowCount": range_data.get("rowCount"),
+                        "values": range_data.get("values")
+                    }
                 }
-            }
-        elif resp.status_code == 401:
-            return {
-                "message": "Access token expired or invalid. Try refreshing the token.",
-                "status_code": 401,
-                "range": None
-            }
-        elif resp.status_code == 404:
-            return {
-                "message": f"Worksheet '{worksheet_name}' or range '{range_address}' not found",
-                "status_code": 404,
-                "range": None
-            }
-        else:
-            logger.error(f"Graph API update excel range failed: {resp.text}")
-            return {
-                "message": f"Graph API call failed: {resp.text}",
-                "status_code": resp.status_code,
-                "range": None
-            }
+            elif resp.status_code == 401:
+                return {
+                    "message": "Access token expired or invalid. Try refreshing the token.",
+                    "status_code": 401,
+                    "range": None
+                }
+            elif resp.status_code == 404:
+                return {
+                    "message": f"Worksheet '{worksheet_name}' or range '{range_address}' not found",
+                    "status_code": 404,
+                    "range": None
+                }
+            else:
+                # Check if this is a retryable error
+                is_retryable = (
+                    resp.status_code >= 500 or 
+                    "GeneralException" in resp.text or
+                    "ServiceUnavailable" in resp.text or
+                    "TooManyRequests" in resp.text
+                )
+                
+                if is_retryable and attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) + 1  # Exponential backoff: 2s, 3s, 5s
+                    logger.warning(f"Graph API update failed (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {resp.text[:200]}")
+                    time.sleep(wait_time)
+                    last_error = resp.text
+                    continue
+                else:
+                    logger.error(f"Graph API update excel range failed after {attempt + 1} attempts: {resp.text}")
+                    return {
+                        "message": f"Graph API call failed: {resp.text}",
+                        "status_code": resp.status_code,
+                        "range": None
+                    }
+        
+        # All retries exhausted
+        logger.error(f"Graph API update excel range failed after {max_retries} retries")
+        return {
+            "message": f"Graph API call failed after {max_retries} retries: {last_error}",
+            "status_code": 500,
+            "range": None
+        }
+        
     except Exception as e:
         logger.exception("Error updating excel range")
         return {
@@ -1297,9 +1329,10 @@ def get_excel_used_range_values(drive_id: str, item_id: str, worksheet_name: str
         }
 
 
-def insert_excel_rows(drive_id: str, item_id: str, worksheet_name: str, row_index: int, values: list) -> dict:
+def insert_excel_rows(drive_id: str, item_id: str, worksheet_name: str, row_index: int, values: list, max_retries: int = 3) -> dict:
     """
     Insert rows at a specific position in a worksheet, shifting existing rows down.
+    Includes retry logic with exponential backoff for transient Graph API errors.
     
     Args:
         drive_id: The MS Graph drive ID
@@ -1307,10 +1340,14 @@ def insert_excel_rows(drive_id: str, item_id: str, worksheet_name: str, row_inde
         worksheet_name: The name of the worksheet
         row_index: The 1-based row number where new rows should be inserted
         values: 2D array of values to insert [[row1], [row2], ...]
+        max_retries: Maximum number of retry attempts for transient errors (default 3)
     
     Returns:
         Dict with status_code, message, and inserted range data
     """
+    import time
+    import urllib.parse
+    
     try:
         headers = _get_auth_headers()
         if not headers:
@@ -1320,7 +1357,6 @@ def insert_excel_rows(drive_id: str, item_id: str, worksheet_name: str, row_inde
                 "range": None
             }
         
-        import urllib.parse
         encoded_name = urllib.parse.quote(worksheet_name)
         
         num_rows = len(values)
@@ -1350,10 +1386,16 @@ def insert_excel_rows(drive_id: str, item_id: str, worksheet_name: str, row_inde
         }
         
         logger.info(f"Inserting {num_rows} row(s) at row {row_index} in worksheet '{worksheet_name}'")
-        insert_resp = requests.post(url=insert_endpoint, headers=headers, json=insert_payload)
         
-        if insert_resp.status_code not in [200, 201]:
-            if insert_resp.status_code == 401:
+        # Retry loop for transient errors
+        last_error = None
+        for attempt in range(max_retries):
+            insert_resp = requests.post(url=insert_endpoint, headers=headers, json=insert_payload)
+            
+            if insert_resp.status_code in [200, 201]:
+                # Success - proceed to Step 2
+                break
+            elif insert_resp.status_code == 401:
                 return {
                     "message": "Access token expired or invalid. Try refreshing the token.",
                     "status_code": 401,
@@ -1366,12 +1408,35 @@ def insert_excel_rows(drive_id: str, item_id: str, worksheet_name: str, row_inde
                     "range": None
                 }
             else:
-                logger.error(f"Graph API insert rows failed: {insert_resp.text}")
-                return {
-                    "message": f"Graph API insert failed: {insert_resp.text}",
-                    "status_code": insert_resp.status_code,
-                    "range": None
-                }
+                # Check if this is a retryable error (GeneralException, 5xx, etc.)
+                is_retryable = (
+                    insert_resp.status_code >= 500 or 
+                    "GeneralException" in insert_resp.text or
+                    "ServiceUnavailable" in insert_resp.text or
+                    "TooManyRequests" in insert_resp.text
+                )
+                
+                if is_retryable and attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) + 1  # Exponential backoff: 2s, 3s, 5s
+                    logger.warning(f"Graph API insert failed (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {insert_resp.text[:200]}")
+                    time.sleep(wait_time)
+                    last_error = insert_resp.text
+                    continue
+                else:
+                    logger.error(f"Graph API insert rows failed after {attempt + 1} attempts: {insert_resp.text}")
+                    return {
+                        "message": f"Graph API insert failed: {insert_resp.text}",
+                        "status_code": insert_resp.status_code,
+                        "range": None
+                    }
+        else:
+            # All retries exhausted
+            logger.error(f"Graph API insert rows failed after {max_retries} retries")
+            return {
+                "message": f"Graph API insert failed after {max_retries} retries: {last_error}",
+                "status_code": 500,
+                "range": None
+            }
         
         # Step 2: Update the inserted rows with values
         return update_excel_range(drive_id, item_id, worksheet_name, insert_range, values)

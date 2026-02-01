@@ -151,7 +151,6 @@
                         method: 'DELETE',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify(payload)
                     });
@@ -256,7 +255,6 @@
                 const response = await fetch('/api/v1/ms/sharepoint/site/followed', {
                     method: 'GET',
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     }
                 });
 
@@ -328,7 +326,6 @@
                 const response = await fetch(`/api/v1/ms/sharepoint/site/${siteId}/drives`, {
                     method: 'GET',
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     }
                 });
 
@@ -376,7 +373,6 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     },
                     body: JSON.stringify({
                         company_id: companyId,
@@ -407,7 +403,6 @@
                 const response = await fetch(`/api/v1/ms/sharepoint/drive/connector/company/${companyId}`, {
                     method: 'DELETE',
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     }
                 });
 

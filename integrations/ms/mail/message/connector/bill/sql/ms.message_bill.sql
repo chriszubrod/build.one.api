@@ -3,7 +3,7 @@
 -- =============================================================================
 
 -- Link between MsMessage and Bill
-IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'MsMessageBill')
+IF OBJECT_ID('dbo.MsMessageBill', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.MsMessageBill (
         Id INT IDENTITY(1,1) PRIMARY KEY,
@@ -26,8 +26,14 @@ BEGIN
         CONSTRAINT UQ_MsMessageBill_Unique UNIQUE (MsMessageId, BillId)
     );
     
+    IF OBJECT_ID('dbo.MsMessageBill', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsMessageBill_MsMessageId' AND object_id = OBJECT_ID('dbo.MsMessageBill'))
+    BEGIN
     CREATE INDEX IX_MsMessageBill_MsMessageId ON dbo.MsMessageBill(MsMessageId);
+    END
+    IF OBJECT_ID('dbo.MsMessageBill', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsMessageBill_BillId' AND object_id = OBJECT_ID('dbo.MsMessageBill'))
+    BEGIN
     CREATE INDEX IX_MsMessageBill_BillId ON dbo.MsMessageBill(BillId);
+    END
 END
 GO
 

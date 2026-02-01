@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[Term];
 GO
 
+IF OBJECT_ID('qbo.Term', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[Term]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -21,22 +22,31 @@ CREATE TABLE [qbo].[Term]
     [DueNextMonthDays] INT NULL,
     [DueDays] INT NULL
 );
+END
 GO
 
+IF OBJECT_ID('qbo.Term', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboTerm_QboId' AND object_id = OBJECT_ID('qbo.Term'))
+BEGIN
 CREATE INDEX IX_QboTerm_QboId ON [qbo].[Term] ([QboId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Term', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboTerm_RealmId' AND object_id = OBJECT_ID('qbo.Term'))
+BEGIN
 CREATE INDEX IX_QboTerm_RealmId ON [qbo].[Term] ([RealmId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Term', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboTerm_Name' AND object_id = OBJECT_ID('qbo.Term'))
+BEGIN
 CREATE INDEX IX_QboTerm_Name ON [qbo].[Term] ([Name]);
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateQboTerm;
 GO
 
-CREATE PROCEDURE CreateQboTerm
+CREATE OR ALTER PROCEDURE CreateQboTerm
 (
     @QboId NVARCHAR(50),
     @SyncToken NVARCHAR(50),
@@ -93,10 +103,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboTerms;
 GO
 
-CREATE PROCEDURE ReadQboTerms
+CREATE OR ALTER PROCEDURE ReadQboTerms
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -127,10 +136,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboTermsByRealmId;
 GO
 
-CREATE PROCEDURE ReadQboTermsByRealmId
+CREATE OR ALTER PROCEDURE ReadQboTermsByRealmId
 (
     @RealmId NVARCHAR(50)
 )
@@ -165,10 +173,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboTermById;
 GO
 
-CREATE PROCEDURE ReadQboTermById
+CREATE OR ALTER PROCEDURE ReadQboTermById
 (
     @Id BIGINT
 )
@@ -202,10 +209,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboTermByQboId;
 GO
 
-CREATE PROCEDURE ReadQboTermByQboId
+CREATE OR ALTER PROCEDURE ReadQboTermByQboId
 (
     @QboId NVARCHAR(50)
 )
@@ -239,10 +245,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboTermByQboIdAndRealmId;
 GO
 
-CREATE PROCEDURE ReadQboTermByQboIdAndRealmId
+CREATE OR ALTER PROCEDURE ReadQboTermByQboIdAndRealmId
 (
     @QboId NVARCHAR(50),
     @RealmId NVARCHAR(50)
@@ -277,10 +282,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateQboTermByQboId;
 GO
 
-CREATE PROCEDURE UpdateQboTermByQboId
+CREATE OR ALTER PROCEDURE UpdateQboTermByQboId
 (
     @QboId NVARCHAR(50),
     @RowVersion BINARY(8),
@@ -343,10 +347,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteQboTermByQboId;
 GO
 
-CREATE PROCEDURE DeleteQboTermByQboId
+CREATE OR ALTER PROCEDURE DeleteQboTermByQboId
 (
     @QboId NVARCHAR(50)
 )
@@ -380,5 +383,3 @@ END;
 GO
 
 
-SELECT * FROM [qbo].[Term];
-GO

@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 async def run_poll_cycle(tenant_id: int, since: str = None, access_token: str = None):
     """Run the full polling cycle."""
-    from agents.scheduler import WorkflowScheduler
+    from workflows.scheduler import WorkflowScheduler
     
     # Get access token if not provided
     if not access_token:

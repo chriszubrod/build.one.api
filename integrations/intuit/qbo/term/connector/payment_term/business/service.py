@@ -8,8 +8,8 @@ from typing import Optional
 from integrations.intuit.qbo.term.connector.payment_term.business.model import TermPaymentTerm
 from integrations.intuit.qbo.term.connector.payment_term.persistence.repo import TermPaymentTermRepository
 from integrations.intuit.qbo.term.business.model import QboTerm
-from modules.payment_term.business.service import PaymentTermService
-from modules.payment_term.business.model import PaymentTerm
+from services.payment_term.business.service import PaymentTermService
+from services.payment_term.business.model import PaymentTerm
 
 logger = logging.getLogger(__name__)
 

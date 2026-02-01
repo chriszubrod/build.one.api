@@ -1,0 +1,109 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Create Bill Credit - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/bill_credit.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="bill-page-header">
+        <h1>Create Bill Credit</h1>
+        <a href="/bill-credit/list" class="btn btn-secondary">Back to List</a>
+    </div>
+
+    <div class="bill-form-container">
+        <form id="bill-credit-form" class="bill-form">
+            <div class="bill-form-section">
+                <h5>Bill Credit Details</h5>
+                
+                <div class="bill-form-row">
+                    <div class="bill-form-group">
+                        <label for="vendor_public_id" class="bill-form-label">Vendor *</label>
+                        <select id="vendor_public_id" name="vendor_public_id" class="bill-form-select" required>
+                            <option value="">Select a vendor...</option>
+                            {% for vendor in vendors %}
+                            <option value="{{ vendor.public_id }}">{{ vendor.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <div class="bill-form-row">
+                    <div class="bill-form-group">
+                        <label for="credit_number" class="bill-form-label">Credit Number *</label>
+                        <input type="text" id="credit_number" name="credit_number" class="bill-form-input" required maxlength="50">
+                    </div>
+                    <div class="bill-form-group">
+                        <label for="credit_date" class="bill-form-label">Credit Date *</label>
+                        <input type="date" id="credit_date" name="credit_date" class="bill-form-input" required>
+                    </div>
+                </div>
+
+                <div class="bill-form-row">
+                    <div class="bill-form-group">
+                        <label for="total_amount" class="bill-form-label">Total Amount</label>
+                        <input type="number" id="total_amount" name="total_amount" class="bill-form-input" step="0.01" min="0">
+                    </div>
+                </div>
+
+                <div class="bill-form-row">
+                    <div class="bill-form-group" style="flex: 1;">
+                        <label for="memo" class="bill-form-label">Memo</label>
+                        <textarea id="memo" name="memo" class="bill-form-textarea" rows="3"></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bill-form-actions">
+                <button type="submit" class="btn btn-primary">Create Bill Credit</button>
+                <a href="/bill-credit/list" class="btn btn-secondary">Cancel</a>
+            </div>
+        </form>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const form = document.getElementById('bill-credit-form');
+        
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = {
+                vendor_public_id: document.getElementById('vendor_public_id').value,
+                credit_number: document.getElementById('credit_number').value,
+                credit_date: document.getElementById('credit_date').value,
+                total_amount: document.getElementById('total_amount').value ? parseFloat(document.getElementById('total_amount').value) : null,
+                memo: document.getElementById('memo').value || null,
+                is_draft: true
+            };
+            
+            try {
+                const response = await fetch('/api/v1/create/bill-credit', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(formData)
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    // Redirect to edit page for the new bill credit
+                    window.location.href = `/bill-credit/${data.public_id}/edit`;
+                } else {
+                    alert('Error creating bill credit: ' + (data.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Error creating bill credit: ' + error.message);
+            }
+        });
+    });
+</script>
+{% endblock %}

@@ -9,9 +9,9 @@ from integrations.intuit.qbo.vendor.connector.vendor.business.model import Vendo
 from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
 from integrations.intuit.qbo.vendor.business.model import QboVendor
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
-from modules.vendor.business.service import VendorService
-from modules.vendor.business.model import Vendor
-from modules.vendor_address.business.service import VendorAddressService
+from services.vendor.business.service import VendorService
+from services.vendor.business.model import Vendor
+from services.vendor_address.business.service import VendorAddressService
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +52,7 @@ class VendorVendorConnector:
             Vendor: The synced Vendor record
         """
         # Map QBO Vendor fields to Vendor module fields
-        vendor_name = qbo_vendor.display_name or qbo_vendor.company_name or ""
-        vendor_abbreviation = qbo_vendor.company_name[:255] if qbo_vendor.company_name else None
+        vendor_name = qbo_vendor.display_name
         
         # Check for existing mapping
         mapping = self.mapping_repo.read_by_qbo_vendor_id(qbo_vendor.id)
@@ -64,7 +63,6 @@ class VendorVendorConnector:
             if vendor:
                 logger.info(f"Updating existing Vendor {vendor.id} from QboVendor {qbo_vendor.id}")
                 vendor.name = vendor_name
-                vendor.abbreviation = vendor_abbreviation
                 vendor = self.vendor_service.repo.update_by_id(vendor)
                 
                 # Sync addresses for existing vendor
@@ -81,7 +79,7 @@ class VendorVendorConnector:
         logger.info(f"Creating new Vendor from QboVendor {qbo_vendor.id}: name={vendor_name}")
         vendor = self.vendor_service.create(
             name=vendor_name,
-            abbreviation=vendor_abbreviation,
+            abbreviation=None,
             is_draft=False
         )
         

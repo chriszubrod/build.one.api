@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[ItemSubCostCode];
 GO
 
+IF OBJECT_ID('qbo.ItemSubCostCode', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[ItemSubCostCode]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -13,13 +14,13 @@ CREATE TABLE [qbo].[ItemSubCostCode]
     CONSTRAINT [UQ_ItemSubCostCode_SubCostCodeId] UNIQUE ([SubCostCodeId]),
     CONSTRAINT [UQ_ItemSubCostCode_QboItemId] UNIQUE ([QboItemId])
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateItemSubCostCode;
 GO
 
-CREATE PROCEDURE CreateItemSubCostCode
+CREATE OR ALTER PROCEDURE CreateItemSubCostCode
 (
     @SubCostCodeId BIGINT,
     @QboItemId BIGINT
@@ -48,10 +49,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadItemSubCostCodeById;
 GO
 
-CREATE PROCEDURE ReadItemSubCostCodeById
+CREATE OR ALTER PROCEDURE ReadItemSubCostCodeById
 (
     @Id BIGINT
 )
@@ -75,10 +75,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadItemSubCostCodeBySubCostCodeId;
 GO
 
-CREATE PROCEDURE ReadItemSubCostCodeBySubCostCodeId
+CREATE OR ALTER PROCEDURE ReadItemSubCostCodeBySubCostCodeId
 (
     @SubCostCodeId BIGINT
 )
@@ -102,10 +101,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadItemSubCostCodeByQboItemId;
 GO
 
-CREATE PROCEDURE ReadItemSubCostCodeByQboItemId
+CREATE OR ALTER PROCEDURE ReadItemSubCostCodeByQboItemId
 (
     @QboItemId BIGINT
 )
@@ -129,10 +127,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateItemSubCostCodeById;
 GO
 
-CREATE PROCEDURE UpdateItemSubCostCodeById
+CREATE OR ALTER PROCEDURE UpdateItemSubCostCodeById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
@@ -167,10 +164,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteItemSubCostCodeById;
 GO
 
-CREATE PROCEDURE DeleteItemSubCostCodeById
+CREATE OR ALTER PROCEDURE DeleteItemSubCostCodeById
 (
     @Id BIGINT
 )
@@ -194,4 +190,3 @@ END;
 GO
 
 
-SELECT * FROM qbo.ItemSubCostCode;

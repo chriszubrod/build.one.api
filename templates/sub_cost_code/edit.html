@@ -125,7 +125,6 @@
                     method: 'PUT',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     },
                     body: JSON.stringify(data)
                 });
@@ -166,7 +165,6 @@
                         method: 'DELETE',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify({ row_version: formData.get('row_version') })
                     });

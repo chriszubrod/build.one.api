@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[TermPaymentTerm];
 GO
 
+IF OBJECT_ID('qbo.TermPaymentTerm', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[TermPaymentTerm]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -13,13 +14,13 @@ CREATE TABLE [qbo].[TermPaymentTerm]
     CONSTRAINT [UQ_TermPaymentTerm_PaymentTermId] UNIQUE ([PaymentTermId]),
     CONSTRAINT [UQ_TermPaymentTerm_QboTermId] UNIQUE ([QboTermId])
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateTermPaymentTerm;
 GO
 
-CREATE PROCEDURE CreateTermPaymentTerm
+CREATE OR ALTER PROCEDURE CreateTermPaymentTerm
 (
     @PaymentTermId BIGINT,
     @QboTermId BIGINT
@@ -48,10 +49,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadTermPaymentTermById;
 GO
 
-CREATE PROCEDURE ReadTermPaymentTermById
+CREATE OR ALTER PROCEDURE ReadTermPaymentTermById
 (
     @Id BIGINT
 )
@@ -75,10 +75,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadTermPaymentTermByPaymentTermId;
 GO
 
-CREATE PROCEDURE ReadTermPaymentTermByPaymentTermId
+CREATE OR ALTER PROCEDURE ReadTermPaymentTermByPaymentTermId
 (
     @PaymentTermId BIGINT
 )
@@ -102,10 +101,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadTermPaymentTermByQboTermId;
 GO
 
-CREATE PROCEDURE ReadTermPaymentTermByQboTermId
+CREATE OR ALTER PROCEDURE ReadTermPaymentTermByQboTermId
 (
     @QboTermId BIGINT
 )
@@ -129,10 +127,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateTermPaymentTermById;
 GO
 
-CREATE PROCEDURE UpdateTermPaymentTermById
+CREATE OR ALTER PROCEDURE UpdateTermPaymentTermById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
@@ -167,10 +164,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteTermPaymentTermById;
 GO
 
-CREATE PROCEDURE DeleteTermPaymentTermById
+CREATE OR ALTER PROCEDURE DeleteTermPaymentTermById
 (
     @Id BIGINT
 )
@@ -194,5 +190,3 @@ END;
 GO
 
 
-SELECT * FROM [qbo].[TermPaymentTerm];
-GO

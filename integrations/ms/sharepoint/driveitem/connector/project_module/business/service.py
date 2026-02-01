@@ -11,7 +11,7 @@ from integrations.ms.sharepoint.driveitem.connector.project.business.service imp
 from integrations.ms.sharepoint.driveitem.business.service import MsDriveItemService
 from integrations.ms.sharepoint.driveitem.persistence.repo import MsDriveItemRepository
 from integrations.ms.sharepoint.external.client import get_drive_item as graph_get_drive_item
-from modules.module.business.service import ModuleService
+from services.module.business.service import ModuleService
 
 logger = logging.getLogger(__name__)
 

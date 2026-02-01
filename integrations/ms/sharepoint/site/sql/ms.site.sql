@@ -3,9 +3,10 @@ IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'ms')
 GO
 
 IF OBJECT_ID('ms.Site', 'U') IS NOT NULL
-    DROP TABLE ms.Site;
 GO
 
+IF OBJECT_ID('ms.Site', 'U') IS NULL
+BEGIN
 CREATE TABLE ms.Site
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -18,19 +19,25 @@ CREATE TABLE ms.Site
     [WebUrl] NVARCHAR(MAX) NOT NULL,
     [Hostname] NVARCHAR(255) NOT NULL
 );
+END
 GO
 
+IF OBJECT_ID('ms.Site', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Site_SiteId' AND object_id = OBJECT_ID('ms.Site'))
+BEGIN
 CREATE UNIQUE INDEX IX_Site_SiteId ON ms.Site ([SiteId]);
+END
 GO
 
+IF OBJECT_ID('ms.Site', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Site_Hostname' AND object_id = OBJECT_ID('ms.Site'))
+BEGIN
 CREATE INDEX IX_Site_Hostname ON ms.Site ([Hostname]);
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateMsSite;
 GO
 
-CREATE PROCEDURE CreateMsSite
+CREATE OR ALTER PROCEDURE CreateMsSite
 (
     @SiteId NVARCHAR(255),
     @DisplayName NVARCHAR(255),
@@ -63,10 +70,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadMsSites;
 GO
 
-CREATE PROCEDURE ReadMsSites
+CREATE OR ALTER PROCEDURE ReadMsSites
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -89,13 +95,8 @@ BEGIN
 END;
 GO
 
-EXEC ReadMsSites;
 
-
-DROP PROCEDURE IF EXISTS ReadMsSiteById;
-GO
-
-CREATE PROCEDURE ReadMsSiteById
+CREATE OR ALTER PROCEDURE ReadMsSiteById
 (
     @Id BIGINT
 )
@@ -123,10 +124,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadMsSiteByPublicId;
 GO
 
-CREATE PROCEDURE ReadMsSiteByPublicId
+CREATE OR ALTER PROCEDURE ReadMsSiteByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
 )
@@ -154,10 +154,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadMsSiteBySiteId;
 GO
 
-CREATE PROCEDURE ReadMsSiteBySiteId
+CREATE OR ALTER PROCEDURE ReadMsSiteBySiteId
 (
     @SiteId NVARCHAR(255)
 )
@@ -185,10 +184,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateMsSiteByPublicId;
 GO
 
-CREATE PROCEDURE UpdateMsSiteByPublicId
+CREATE OR ALTER PROCEDURE UpdateMsSiteByPublicId
 (
     @PublicId UNIQUEIDENTIFIER,
     @SiteId NVARCHAR(255),
@@ -227,10 +225,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteMsSiteByPublicId;
 GO
 
-CREATE PROCEDURE DeleteMsSiteByPublicId
+CREATE OR ALTER PROCEDURE DeleteMsSiteByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
 )
@@ -258,7 +255,5 @@ END;
 GO
 
 
-EXEC DeleteMsSiteByPublicId
     @PublicId = '0143726e-1155-47b4-9750-f5ea4362a605';
 
-EXEC ReadMsSites;

@@ -3,9 +3,10 @@ IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'ms')
 GO
 
 IF OBJECT_ID('ms.Client', 'U') IS NOT NULL
-    DROP TABLE ms.Client;
 GO
 
+IF OBJECT_ID('ms.Client', 'U') IS NULL
+BEGIN
 CREATE TABLE ms.Client
 (
     App NVARCHAR(MAX) NOT NULL,
@@ -14,13 +15,13 @@ CREATE TABLE ms.Client
     TenantId NVARCHAR(MAX) NOT NULL,
     RedirectUri NVARCHAR(MAX) NOT NULL
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateMsClient;
 GO
 
-CREATE PROCEDURE CreateMsClient
+CREATE OR ALTER PROCEDURE CreateMsClient
 (
     @App NVARCHAR(MAX),
     @ClientId NVARCHAR(MAX),
@@ -46,19 +47,8 @@ BEGIN
 END;
 GO
 
-EXEC CreateMsClient
-    @App = 'buildone',
-    @ClientId = '8bb81ea6-2887-49ad-ba40-4b77e343b975',
-    @ClientSecret = 'aXa8Q~wH_V8mBpTcdG4un~4XG1UhfiF4FdiWucxR',
-    @TenantId = '5daf13a1-5113-4d2c-bb43-13c6d113cf18',
-    @RedirectUri = 'http://localhost:8000/api/v1/ms/auth/request/callback';
 
-UPDATE ms.Client SET TenantId = '5daf13a1-5113-4d2c-bb43-13c6d113cf18' WHERE App = 'buildone';
-
-DROP PROCEDURE IF EXISTS ReadMsClients;
-GO
-
-CREATE PROCEDURE ReadMsClients
+CREATE OR ALTER PROCEDURE ReadMsClients
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -76,13 +66,8 @@ BEGIN
 END;
 GO
 
-EXEC ReadMsClients;
 
-
-DROP PROCEDURE IF EXISTS ReadMsClientByApp;
-GO
-
-CREATE PROCEDURE ReadMsClientByApp
+CREATE OR ALTER PROCEDURE ReadMsClientByApp
 (
     @App NVARCHAR(MAX)
 )
@@ -103,13 +88,8 @@ BEGIN
 END;
 GO
 
-EXEC ReadMsClientByApp @App = 'build.one';
 
-
-DROP PROCEDURE IF EXISTS ReadMsClientByClientId;
-GO
-
-CREATE PROCEDURE ReadMsClientByClientId
+CREATE OR ALTER PROCEDURE ReadMsClientByClientId
 (
     @ClientId NVARCHAR(MAX)
 )
@@ -131,13 +111,8 @@ BEGIN
 END;
 GO
 
-EXEC ReadMsClientByClientId @ClientId = 'test-client-id';
 
-
-DROP PROCEDURE IF EXISTS UpdateMsClientByApp;
-GO
-
-CREATE PROCEDURE UpdateMsClientByApp
+CREATE OR ALTER PROCEDURE UpdateMsClientByApp
 (
     @App NVARCHAR(MAX),
     @ClientId NVARCHAR(MAX),
@@ -169,18 +144,8 @@ BEGIN
 END;
 GO
 
-EXEC UpdateMsClientByApp
-    @App = 'build.one',
-    @ClientId = 'updated-client-id',
-    @ClientSecret = 'updated-client-secret',
-    @TenantId = 'updated-tenant-id',
-    @RedirectUri = 'https://updated-domain.com/api/v1/ms/auth/request/callback';
 
-
-DROP PROCEDURE IF EXISTS UpdateMsClientByClientId;
-GO
-
-CREATE PROCEDURE UpdateMsClientByClientId
+CREATE OR ALTER PROCEDURE UpdateMsClientByClientId
 (
     @App NVARCHAR(MAX),
     @ClientId NVARCHAR(MAX),
@@ -212,18 +177,8 @@ BEGIN
 END;
 GO
 
-EXEC UpdateMsClientByClientId
-    @App = 'build.one',
-    @ClientId = 'updated-client-id',
-    @ClientSecret = 'updated-client-secret',
-    @TenantId = 'updated-tenant-id',
-    @RedirectUri = 'https://updated-domain.com/api/v1/ms/auth/request/callback';
 
-
-DROP PROCEDURE IF EXISTS DeleteMsClientByApp;
-GO
-
-CREATE PROCEDURE DeleteMsClientByApp
+CREATE OR ALTER PROCEDURE DeleteMsClientByApp
 (
     @App NVARCHAR(MAX)
 )
@@ -246,5 +201,4 @@ BEGIN
 END;
 GO
 
-EXEC DeleteMsClientByApp
     @App = 'buildone';

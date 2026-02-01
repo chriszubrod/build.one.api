@@ -1,0 +1,50 @@
+Vendors Needing TaxIdentifier Re-Entry
+=======================================
+Generated: 2026-01-26
+
+These 41 vendors had their TaxIdentifier deleted during a QBO update.
+The last 4 digits of the original TaxIdentifier are shown to help identify the correct values.
+
+#    QBO ID     Vendor Name                                   Last 4 Digits
+---------------------------------------------------------------------------------
+1    81         Advantage Shutters                            6445
+2    84         All Service Propane                           3033
+3    1058       Ann Sacks Tile & Stone Inc.                   3204
+4    89         B&E Irrigation & Landscaping, LLC             6259
+5    93         BugOut Termite and Pest Control, Inc.         2090
+6    96         Castro Welding & Maintenance, LLC             7044
+7    104        Chim Chimney                                  6346
+8    109        Clearline Networks, LLC                       3364
+9    113        ConcreteCraft Nashville                       8666
+10   120        Dale, Inc.                                    2379
+11   121        Daniels & Associates, Inc.                    4111
+12   70         Dusty Baker                                   1408
+13   1253       Eco-Lyfe LLC                                  4937
+14   130        Emaus Restoration                             2248
+15   133        Esteban Diaz Landscaping                      9330
+16   29         Francisco A Jimenez                           6681
+17   57         Frank Stafford                                7180
+18   142        Gladiator Roofing and More, LLC               3624
+19   1251       Glass Doctor of Nashville                     5821
+20   146        Goat Turf, LLC                                2133
+21   65         Gregory L Cashion                             3125
+22   152        Groove Construction                           6511
+23   45         Haywood Burgess                               0636
+24   160        Homestead Building, LLC                       4664
+25   165        Innovative Cutting, Inc.                      8811
+26   169        Insulation Solutions of TN                    6660
+27   172        J&J Mechanical Services, Inc.                 6339
+28   176        Jarrett Fire Protection, LLC                  2805
+29   76         Omero Valenciano Aparicio                     6412
+30   1243       Palazzo Tile And Stone Inc                    9029
+31   234        Robi Decking                                  0170
+32   235        Rock Solutions                                7758
+33   244        SEC of Nashville, Inc.                        7745
+34   251        Sneed Builders & Maintenance                  5840
+35   1218       Superglass Windshield Repair                  7976
+36   1185       Timber Build, Inc                             4713
+37   725        Timothy Hammonds                              2024
+38   1254       Tri-Stone & Tile, Inc.                        4763
+39   288        TTL, Inc.                                     5231
+40   1214       W. M. Brooks Plumbing Co., Inc.               7920
+41   228        White Cap, LP                                 0647

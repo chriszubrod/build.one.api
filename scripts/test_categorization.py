@@ -14,9 +14,9 @@ import os
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from modules.categorization.business.service import get_categorization_service
-from modules.categorization.business.model import DocumentCategory, CategorizationStatus
-from modules.attachment.business.service import AttachmentService
+from services.categorization.business.service import get_categorization_service
+from services.categorization.business.model import DocumentCategory, CategorizationStatus
+from services.attachment.business.service import AttachmentService
 
 
 def main():

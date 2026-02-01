@@ -15,8 +15,8 @@ import hashlib
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from modules.anomaly.business.service import get_anomaly_service
-from modules.attachment.business.service import AttachmentService
+from services.anomaly.business.service import get_anomaly_service
+from services.attachment.business.service import AttachmentService
 
 
 def main():

@@ -1,9 +1,9 @@
-DROP TABLE IF EXISTS [qbo].[BillLine];
 GO
 
-DROP TABLE IF EXISTS [qbo].[Bill];
 GO
 
+IF OBJECT_ID('qbo.Bill', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[Bill]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -33,21 +33,36 @@ CREATE TABLE [qbo].[Bill]
     [DepartmentRefName] NVARCHAR(500) NULL,
     [GlobalTaxCalculation] NVARCHAR(50) NULL
 );
+END
 GO
 
+IF OBJECT_ID('qbo.Bill', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboBill_QboId' AND object_id = OBJECT_ID('qbo.Bill'))
+BEGIN
 CREATE INDEX IX_QboBill_QboId ON [qbo].[Bill] ([QboId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Bill', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboBill_RealmId' AND object_id = OBJECT_ID('qbo.Bill'))
+BEGIN
 CREATE INDEX IX_QboBill_RealmId ON [qbo].[Bill] ([RealmId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Bill', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboBill_VendorRefValue' AND object_id = OBJECT_ID('qbo.Bill'))
+BEGIN
 CREATE INDEX IX_QboBill_VendorRefValue ON [qbo].[Bill] ([VendorRefValue]);
+END
 GO
 
+IF OBJECT_ID('qbo.Bill', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboBill_DocNumber' AND object_id = OBJECT_ID('qbo.Bill'))
+BEGIN
 CREATE INDEX IX_QboBill_DocNumber ON [qbo].[Bill] ([DocNumber]);
+END
 GO
 
 
+IF OBJECT_ID('qbo.BillLine', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[BillLine]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -75,24 +90,33 @@ CREATE TABLE [qbo].[BillLine]
     [MarkupPercent] DECIMAL(18,6) NULL,
     CONSTRAINT [FK_QboBillLine_QboBill] FOREIGN KEY ([QboBillId]) REFERENCES [qbo].[Bill]([Id]) ON DELETE CASCADE
 );
+END
 GO
 
+IF OBJECT_ID('qbo.BillLine', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboBillLine_QboBillId' AND object_id = OBJECT_ID('qbo.BillLine'))
+BEGIN
 CREATE INDEX IX_QboBillLine_QboBillId ON [qbo].[BillLine] ([QboBillId]);
+END
 GO
 
+IF OBJECT_ID('qbo.BillLine', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboBillLine_QboLineId' AND object_id = OBJECT_ID('qbo.BillLine'))
+BEGIN
 CREATE INDEX IX_QboBillLine_QboLineId ON [qbo].[BillLine] ([QboLineId]);
+END
 GO
 
+IF OBJECT_ID('qbo.BillLine', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboBillLine_ItemRefValue' AND object_id = OBJECT_ID('qbo.BillLine'))
+BEGIN
 CREATE INDEX IX_QboBillLine_ItemRefValue ON [qbo].[BillLine] ([ItemRefValue]);
+END
 GO
 
 
 -- Bill Stored Procedures
 
-DROP PROCEDURE IF EXISTS CreateQboBill;
 GO
 
-CREATE PROCEDURE CreateQboBill
+CREATE OR ALTER PROCEDURE CreateQboBill
 (
     @QboId NVARCHAR(50),
     @SyncToken NVARCHAR(50),
@@ -171,10 +195,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboBills;
 GO
 
-CREATE PROCEDURE ReadQboBills
+CREATE OR ALTER PROCEDURE ReadQboBills
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -214,10 +237,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboBillsByRealmId;
 GO
 
-CREATE PROCEDURE ReadQboBillsByRealmId
+CREATE OR ALTER PROCEDURE ReadQboBillsByRealmId
 (
     @RealmId NVARCHAR(50)
 )
@@ -261,10 +283,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboBillById;
 GO
 
-CREATE PROCEDURE ReadQboBillById
+CREATE OR ALTER PROCEDURE ReadQboBillById
 (
     @Id BIGINT
 )
@@ -307,10 +328,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboBillByQboId;
 GO
 
-CREATE PROCEDURE ReadQboBillByQboId
+CREATE OR ALTER PROCEDURE ReadQboBillByQboId
 (
     @QboId NVARCHAR(50)
 )
@@ -353,10 +373,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboBillByQboIdAndRealmId;
 GO
 
-CREATE PROCEDURE ReadQboBillByQboIdAndRealmId
+CREATE OR ALTER PROCEDURE ReadQboBillByQboIdAndRealmId
 (
     @QboId NVARCHAR(50),
     @RealmId NVARCHAR(50)
@@ -400,10 +419,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateQboBillByQboId;
 GO
 
-CREATE PROCEDURE UpdateQboBillByQboId
+CREATE OR ALTER PROCEDURE UpdateQboBillByQboId
 (
     @QboId NVARCHAR(50),
     @RowVersion BINARY(8),
@@ -493,10 +511,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteQboBillByQboId;
 GO
 
-CREATE PROCEDURE DeleteQboBillByQboId
+CREATE OR ALTER PROCEDURE DeleteQboBillByQboId
 (
     @QboId NVARCHAR(50)
 )
@@ -541,10 +558,9 @@ GO
 
 -- BillLine Stored Procedures
 
-DROP PROCEDURE IF EXISTS CreateQboBillLine;
 GO
 
-CREATE PROCEDURE CreateQboBillLine
+CREATE OR ALTER PROCEDURE CreateQboBillLine
 (
     @QboBillId BIGINT,
     @QboLineId NVARCHAR(50),
@@ -615,10 +631,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboBillLinesByQboBillId;
 GO
 
-CREATE PROCEDURE ReadQboBillLinesByQboBillId
+CREATE OR ALTER PROCEDURE ReadQboBillLinesByQboBillId
 (
     @QboBillId BIGINT
 )
@@ -659,10 +674,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboBillLineByQboBillIdAndQboLineId;
 GO
 
-CREATE PROCEDURE ReadQboBillLineByQboBillIdAndQboLineId
+CREATE OR ALTER PROCEDURE ReadQboBillLineByQboBillIdAndQboLineId
 (
     @QboBillId BIGINT,
     @QboLineId NVARCHAR(50)
@@ -703,10 +717,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateQboBillLineById;
 GO
 
-CREATE PROCEDURE UpdateQboBillLineById
+CREATE OR ALTER PROCEDURE UpdateQboBillLineById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
@@ -785,10 +798,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteQboBillLineById;
 GO
 
-CREATE PROCEDURE DeleteQboBillLineById
+CREATE OR ALTER PROCEDURE DeleteQboBillLineById
 (
     @Id BIGINT
 )
@@ -827,9 +839,7 @@ BEGIN
 END;
 GO
 
-SELECT * FROM qbo.Bill;
 
-SELECT * FROM qbo.BillLine;
 
 
 

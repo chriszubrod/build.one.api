@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[Item];
 GO
 
+IF OBJECT_ID('qbo.Item', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[Item]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -28,22 +29,31 @@ CREATE TABLE [qbo].[Item]
     [ExpenseAccountRefValue] NVARCHAR(50) NULL,
     [ExpenseAccountRefName] NVARCHAR(255) NULL
 );
+END
 GO
 
+IF OBJECT_ID('qbo.Item', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboItem_QboId' AND object_id = OBJECT_ID('qbo.Item'))
+BEGIN
 CREATE INDEX IX_QboItem_QboId ON [qbo].[Item] ([QboId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Item', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboItem_RealmId' AND object_id = OBJECT_ID('qbo.Item'))
+BEGIN
 CREATE INDEX IX_QboItem_RealmId ON [qbo].[Item] ([RealmId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Item', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboItem_ParentRefValue' AND object_id = OBJECT_ID('qbo.Item'))
+BEGIN
 CREATE INDEX IX_QboItem_ParentRefValue ON [qbo].[Item] ([ParentRefValue]);
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateQboItem;
 GO
 
-CREATE PROCEDURE CreateQboItem
+CREATE OR ALTER PROCEDURE CreateQboItem
 (
     @QboId NVARCHAR(50),
     @SyncToken NVARCHAR(50),
@@ -116,10 +126,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboItems;
 GO
 
-CREATE PROCEDURE ReadQboItems
+CREATE OR ALTER PROCEDURE ReadQboItems
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -156,14 +165,11 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboItems;
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS ReadQboItemsByRealmId;
-GO
-
-CREATE PROCEDURE ReadQboItemsByRealmId
+CREATE OR ALTER PROCEDURE ReadQboItemsByRealmId
 (
     @RealmId NVARCHAR(50)
 )
@@ -205,10 +211,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboItemById;
 GO
 
-CREATE PROCEDURE ReadQboItemById
+CREATE OR ALTER PROCEDURE ReadQboItemById
 (
     @Id BIGINT
 )
@@ -249,10 +254,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboItemByQboId;
 GO
 
-CREATE PROCEDURE ReadQboItemByQboId
+CREATE OR ALTER PROCEDURE ReadQboItemByQboId
 (
     @QboId NVARCHAR(50)
 )
@@ -293,10 +297,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboItemByQboIdAndRealmId;
 GO
 
-CREATE PROCEDURE ReadQboItemByQboIdAndRealmId
+CREATE OR ALTER PROCEDURE ReadQboItemByQboIdAndRealmId
 (
     @QboId NVARCHAR(50),
     @RealmId NVARCHAR(50)
@@ -338,10 +341,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateQboItemByQboId;
 GO
 
-CREATE PROCEDURE UpdateQboItemByQboId
+CREATE OR ALTER PROCEDURE UpdateQboItemByQboId
 (
     @QboId NVARCHAR(50),
     @RowVersion BINARY(8),
@@ -425,10 +427,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteQboItemByQboId;
 GO
 
-CREATE PROCEDURE DeleteQboItemByQboId
+CREATE OR ALTER PROCEDURE DeleteQboItemByQboId
 (
     @QboId NVARCHAR(50)
 )

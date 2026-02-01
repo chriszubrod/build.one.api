@@ -123,6 +123,51 @@ class QboAttachableService:
 
         return synced
 
+    def sync_attachables_for_vendor_credit(
+        self,
+        realm_id: str,
+        vendor_credit_qbo_id: str,
+        sync_to_modules: bool = True,
+    ) -> List[QboAttachable]:
+        """
+        Sync attachables linked to a specific VendorCredit.
+
+        Args:
+            realm_id: QBO realm ID
+            vendor_credit_qbo_id: QBO VendorCredit ID
+            sync_to_modules: If True, also sync to Attachment module
+
+        Returns:
+            List of synced QboAttachable records
+        """
+        qbo_auth = self.auth_service.ensure_valid_token(realm_id=realm_id)
+        if not qbo_auth or not qbo_auth.access_token:
+            raise ValueError(f"No valid QBO auth found for realm {realm_id}")
+
+        with QboAttachableClient(
+            access_token=qbo_auth.access_token,
+            realm_id=realm_id
+        ) as client:
+            qbo_attachables = client.query_attachables_for_entity(
+                entity_type="VendorCredit",
+                entity_id=vendor_credit_qbo_id
+            )
+
+        logger.info(f"Fetched {len(qbo_attachables)} attachables for VendorCredit {vendor_credit_qbo_id}")
+
+        synced = []
+        for qbo_att in qbo_attachables:
+            try:
+                local_att = self._upsert_attachable(realm_id, qbo_att)
+                synced.append(local_att)
+            except Exception as e:
+                logger.error(f"Failed to upsert attachable {qbo_att.id}: {e}")
+
+        if sync_to_modules:
+            self._sync_to_attachments(synced, realm_id)
+
+        return synced
+
     def _upsert_attachable(
         self,
         realm_id: str,

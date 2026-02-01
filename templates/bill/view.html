@@ -251,7 +251,12 @@
                                     {% endif %}
                                 </div>
                             </div>
-                            <div class="agent-message-date">{{ msg.received_at[:10] if msg.received_at else '' }}</div>
+                            <div class="agent-message-date" style="display: flex; align-items: center; gap: 0.75rem;">
+                                <span>{{ msg.received_at[:10] if msg.received_at else '' }}</span>
+                                {% if msg.web_link %}
+                                <a href="{{ msg.web_link }}" target="_blank" onclick="event.stopPropagation();" class="agent-link-subtle" title="Open in Outlook" style="font-size: 0.85rem;">↗ Outlook</a>
+                                {% endif %}
+                            </div>
                         </div>
                         <div class="agent-message-preview">{% set clean_body = (msg.body or '')|striptags|replace('\n', ' ')|replace('\r', '')|trim %}{{ (clean_body[:120] + '...') if clean_body|length > 120 else clean_body }}</div>
                         <div class="agent-message-content">
@@ -382,7 +387,6 @@
                         method: 'DELETE',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify(payload)
                     });

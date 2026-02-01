@@ -261,7 +261,6 @@
                         method: 'DELETE',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify(payload)
                     });
@@ -431,7 +430,6 @@
                 const response = await fetch(`/api/v1/ms/sharepoint/driveitem/drive/${selectedDrivePublicId}/browse`, {
                     method: 'GET',
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     }
                 });
 
@@ -484,7 +482,6 @@
                 const response = await fetch(`/api/v1/ms/sharepoint/driveitem/drive/${drivePublicId}/browse/${itemId}`, {
                     method: 'GET',
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     }
                 });
 
@@ -657,7 +654,6 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     },
                     body: JSON.stringify({
                         project_id: projectId,
@@ -688,7 +684,6 @@
                 const response = await fetch(`/api/v1/ms/sharepoint/driveitem/connector/project/${projectId}`, {
                     method: 'DELETE',
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     }
                 });
 
@@ -777,7 +772,6 @@
                 const response = await fetch(`/api/v1/ms/sharepoint/driveitem/drive/${projectRootDrivePublicId}/browse/${projectRootItemId}`, {
                     method: 'GET',
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     }
                 });
 
@@ -806,7 +800,6 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     },
                     body: JSON.stringify({
                         project_id: projectId,
@@ -837,7 +830,6 @@
                 const response = await fetch(`/api/v1/ms/sharepoint/driveitem/connector/project-module/${projectId}/${moduleId}`, {
                     method: 'DELETE',
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     }
                 });
 
@@ -895,7 +887,6 @@
                 const itemResponse = await fetch(`/api/v1/ms/sharepoint/driveitem/drive/${drivePublicId}/item/${itemId}`, {
                     method: 'GET',
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     }
                 });
 
@@ -909,7 +900,6 @@
                 const worksheetsResponse = await fetch(`/api/v1/ms/sharepoint/driveitem/drive/${drivePublicId}/item/${itemId}/worksheets`, {
                     method: 'GET',
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     }
                 });
 
@@ -996,7 +986,6 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     },
                     body: JSON.stringify({
                         project_id: projectId,
@@ -1028,7 +1017,6 @@
                 const response = await fetch(`/api/v1/ms/sharepoint/driveitem/connector/project-excel/${projectId}`, {
                     method: 'DELETE',
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     }
                 });
 

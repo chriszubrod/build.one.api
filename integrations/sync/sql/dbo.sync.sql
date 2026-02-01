@@ -1,3 +1,5 @@
+IF OBJECT_ID('dbo.Sync', 'U') IS NULL
+BEGIN
 CREATE TABLE [dbo].[Sync]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -10,17 +12,23 @@ CREATE TABLE [dbo].[Sync]
     [Entity] NVARCHAR(255) NOT NULL,
     [LastSyncDatetime] DATETIME2(3) NULL
 );
+END
 GO
 
-ALTER TABLE dbo.[Sync]
-ADD [LastSyncDatetime] DATETIME2(3) NULL;
+IF NOT EXISTS (
+    SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'Sync' AND COLUMN_NAME = 'LastSyncDatetime'
+)
+BEGIN
+    ALTER TABLE dbo.Sync
+    ADD LastSyncDatetime DATETIME2(3) NULL;
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateSync;
 GO
 
-CREATE PROCEDURE CreateSync
+CREATE OR ALTER PROCEDURE CreateSync
 (
     @Provider NVARCHAR(50),
     @Env NVARCHAR(255),
@@ -49,18 +57,11 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
-EXEC CreateSync
-    @Provider = 'qbo',
-    @Env = 'production',
-    @Entity = 'vendor',
-    @LastSyncDatetime = NULL;
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS ReadSyncs;
-GO
-
-CREATE PROCEDURE ReadSyncs
+CREATE OR ALTER PROCEDURE ReadSyncs
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -81,14 +82,11 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
-EXEC ReadSyncs;
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS ReadSyncById;
-GO
-
-CREATE PROCEDURE ReadSyncById
+CREATE OR ALTER PROCEDURE ReadSyncById
 (
     @Id BIGINT
 )
@@ -112,15 +110,11 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
-EXEC ReadSyncById
-    @Id = 1;
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS ReadSyncByPublicId;
-GO
-
-CREATE PROCEDURE ReadSyncByPublicId
+CREATE OR ALTER PROCEDURE ReadSyncByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
 )
@@ -144,15 +138,11 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
-EXEC ReadSyncByPublicId
-    @PublicId = 'c86edd93-a99c-424b-afa3-8df26f7de144';
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS ReadSyncByProvider;
-GO
-
-CREATE PROCEDURE ReadSyncByProvider
+CREATE OR ALTER PROCEDURE ReadSyncByProvider
 (
     @Provider NVARCHAR(50)
 )
@@ -176,15 +166,11 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
-EXEC ReadSyncByProvider
-    @Provider = 'qbo';
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS UpdateSyncById;
-GO
-
-CREATE PROCEDURE UpdateSyncById
+CREATE OR ALTER PROCEDURE UpdateSyncById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
@@ -221,20 +207,11 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
-EXEC UpdateSyncById
-    @Id = 5,
-    @RowVersion = 0x0000000000020B85,
-    @Provider = 'qbo',
-    @Env = 'production',
-    @Entity = 'vendor',
-    @LastSyncDatetime = NULL;
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS DeleteSyncById;
-GO
-
-CREATE PROCEDURE DeleteSyncById
+CREATE OR ALTER PROCEDURE DeleteSyncById
 (
     @Id BIGINT
 )
@@ -258,12 +235,7 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
-EXEC DeleteSyncById
-    @Id = 8;
-GO
 
 UPDATE dbo.[Sync]
 SET [LastSyncDatetime] = '2026-01-01 00:00:00.000'
 WHERE [Id] = 14 AND [RowVersion] = 0x000000000004A864;
-
-SELECT * FROM dbo.[Sync];

@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [ms].[DriveItemProjectExcel];
 GO
 
+IF OBJECT_ID('ms.DriveItemProjectExcel', 'U') IS NULL
+BEGIN
 CREATE TABLE [ms].[DriveItemProjectExcel]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -15,13 +16,13 @@ CREATE TABLE [ms].[DriveItemProjectExcel]
     CONSTRAINT [UQ_DriveItemProjectExcel_MsDriveItemId] UNIQUE ([MsDriveItemId]),
     CONSTRAINT [FK_DriveItemProjectExcel_DriveItem] FOREIGN KEY ([MsDriveItemId]) REFERENCES [ms].[DriveItem]([Id]) ON DELETE CASCADE
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateDriveItemProjectExcel;
 GO
 
-CREATE PROCEDURE CreateDriveItemProjectExcel
+CREATE OR ALTER PROCEDURE CreateDriveItemProjectExcel
 (
     @ProjectId BIGINT,
     @MsDriveItemId BIGINT,
@@ -52,10 +53,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveItemProjectExcelById;
 GO
 
-CREATE PROCEDURE ReadDriveItemProjectExcelById
+CREATE OR ALTER PROCEDURE ReadDriveItemProjectExcelById
 (
     @Id BIGINT
 )
@@ -80,10 +80,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveItemProjectExcelByProjectId;
 GO
 
-CREATE PROCEDURE ReadDriveItemProjectExcelByProjectId
+CREATE OR ALTER PROCEDURE ReadDriveItemProjectExcelByProjectId
 (
     @ProjectId BIGINT
 )
@@ -108,10 +107,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveItemProjectExcelByMsDriveItemId;
 GO
 
-CREATE PROCEDURE ReadDriveItemProjectExcelByMsDriveItemId
+CREATE OR ALTER PROCEDURE ReadDriveItemProjectExcelByMsDriveItemId
 (
     @MsDriveItemId BIGINT
 )
@@ -136,10 +134,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteDriveItemProjectExcelById;
 GO
 
-CREATE PROCEDURE DeleteDriveItemProjectExcelById
+CREATE OR ALTER PROCEDURE DeleteDriveItemProjectExcelById
 (
     @Id BIGINT
 )
@@ -164,10 +161,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteDriveItemProjectExcelByProjectId;
 GO
 
-CREATE PROCEDURE DeleteDriveItemProjectExcelByProjectId
+CREATE OR ALTER PROCEDURE DeleteDriveItemProjectExcelByProjectId
 (
     @ProjectId BIGINT
 )
@@ -191,4 +187,3 @@ BEGIN
 END;
 GO
 
-SELECT * FROM [ms].[DriveItemProjectExcel];

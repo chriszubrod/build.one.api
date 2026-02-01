@@ -3,7 +3,7 @@
 -- =============================================================================
 
 -- Link between MsMessage and Project
-IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'MsMessageProject')
+IF OBJECT_ID('dbo.MsMessageProject', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.MsMessageProject (
         Id INT IDENTITY(1,1) PRIMARY KEY,
@@ -26,8 +26,14 @@ BEGIN
         CONSTRAINT UQ_MsMessageProject_Unique UNIQUE (MsMessageId, ProjectId)
     );
     
+    IF OBJECT_ID('dbo.MsMessageProject', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsMessageProject_MsMessageId' AND object_id = OBJECT_ID('dbo.MsMessageProject'))
+    BEGIN
     CREATE INDEX IX_MsMessageProject_MsMessageId ON dbo.MsMessageProject(MsMessageId);
+    END
+    IF OBJECT_ID('dbo.MsMessageProject', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsMessageProject_ProjectId' AND object_id = OBJECT_ID('dbo.MsMessageProject'))
+    BEGIN
     CREATE INDEX IX_MsMessageProject_ProjectId ON dbo.MsMessageProject(ProjectId);
+    END
 END
 GO
 

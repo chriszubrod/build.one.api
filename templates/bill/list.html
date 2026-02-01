@@ -88,7 +88,7 @@
                         <th>Email Subject</th>
                         <th>From</th>
                         <th>Received</th>
-                        <th>Confidence</th>
+                        <th>Vendor</th>
                         <th>Status</th>
                         <th>Actions</th>
                     </tr>
@@ -108,17 +108,27 @@
                             {% endif %}
                         </td>
                         <td>
-                            {% if wf.confidence >= 0.8 %}
-                                <span class="bill-confidence-badge bill-confidence-high">{{ (wf.confidence * 100)|int }}%</span>
-                            {% elif wf.confidence >= 0.5 %}
-                                <span class="bill-confidence-badge bill-confidence-medium">{{ (wf.confidence * 100)|int }}%</span>
+                            {% if wf.child_state == 'needs_review' and not wf.matched_vendor_id %}
+                                <div class="bill-vendor-select-wrapper">
+                                    <select class="bill-vendor-select" id="vendor-select-{{ wf.public_id }}" data-extracted="{{ wf.extracted_vendor_name or '' }}">
+                                        <option value="">Select vendor...</option>
+                                        {% for vendor in vendors %}
+                                        <option value="{{ vendor.id }}">{{ vendor.name }}</option>
+                                        {% endfor %}
+                                    </select>
+                                    {% if wf.extracted_vendor_name %}
+                                    <small class="bill-vendor-extracted">Extracted: {{ wf.extracted_vendor_name }}</small>
+                                    {% endif %}
+                                </div>
+                            {% elif wf.matched_vendor_id %}
+                                <span class="bill-vendor-matched">✓ Matched</span>
                             {% else %}
-                                <span class="bill-confidence-badge bill-confidence-low">{{ (wf.confidence * 100)|int }}%</span>
+                                <span class="bill-vendor-pending">Pending</span>
                             {% endif %}
                         </td>
                         <td>
                             {% if wf.child_state == 'needs_review' %}
-                                <span class="bill-status-badge bill-status-error">Error</span>
+                                <span class="bill-status-badge bill-status-error">Needs Vendor</span>
                             {% elif wf.child_state == 'completed' %}
                                 <span class="bill-status-badge bill-status-finalized">Done</span>
                             {% elif wf.child_state %}
@@ -130,8 +140,8 @@
                         <td>
                             <div class="bill-table-actions">
                                 {% if wf.child_state == 'needs_review' %}
-                                    <button type="button" class="btn btn-warning btn-sm" onclick="processBillWorkflow('{{ wf.public_id }}', this)">
-                                        Retry
+                                    <button type="button" class="btn btn-primary btn-sm" onclick="retryWithVendor('{{ wf.public_id }}', this)">
+                                        Create Bill
                                     </button>
                                 {% elif wf.child_state == 'completed' %}
                                     <span class="bill-status-badge bill-status-finalized">✓ Complete</span>
@@ -422,7 +432,6 @@
                         method: 'GET',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         }
                     });
                     
@@ -479,6 +488,16 @@
             bill.notified = true;
             bill.notifiedAt = Date.now();
         });
+        
+        // Reload the page after completions to update the draft list
+        if (completed.length > 0 || errors.length > 0) {
+            // Clear session storage for notified bills before reload
+            const remainingBills = pendingBills.filter(b => !b.notified);
+            sessionStorage.setItem('pendingBillCompletions', JSON.stringify(remainingBills));
+            // Reload after a brief delay to let toast show
+            setTimeout(() => window.location.reload(), 1500);
+            return;
+        }
         
         // Keep bills that are still processing OR were just notified (within last 5 seconds)
         const checkTime = Date.now();
@@ -780,6 +799,72 @@
         window.location.href = '/bill/create?new=true&hasFile=true';
     }
 
+    // Retry a workflow with a manually selected vendor
+    window.retryWithVendor = async function(workflowId, button) {
+        // Get the selected vendor from the dropdown
+        const vendorSelect = document.getElementById(`vendor-select-${workflowId}`);
+        const vendorId = vendorSelect ? vendorSelect.value : null;
+        
+        if (!vendorId) {
+            showToast('Please select a vendor first', 'warning');
+            vendorSelect.focus();
+            return;
+        }
+        
+        // Disable button and show loading state
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Creating...';
+        
+        const token = '';
+        
+        try {
+            const response = await fetch(`/api/v1/agents/workflows/${workflowId}/process-bill`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ vendor_id: parseInt(vendorId) })
+            });
+            
+            const data = await response.json();
+            
+            if (response.ok) {
+                showToast(`✓ Bill created successfully!`, 'success');
+                
+                // Update the row to show processing state
+                const row = button.closest('tr');
+                if (row) {
+                    const statusCell = row.querySelector('td:nth-child(5)');
+                    if (statusCell) {
+                        statusCell.innerHTML = '<span class="bill-status-badge bill-status-processing">processing</span>';
+                    }
+                    const actionsCell = row.querySelector('td:nth-child(6)');
+                    if (actionsCell) {
+                        actionsCell.innerHTML = `
+                            <div class="bill-table-actions">
+                                <span class="btn btn-secondary btn-sm" style="opacity: 0.5;">Processing...</span>
+                                <a href="/agent/${workflowId}" class="btn btn-outline-secondary btn-sm" target="_blank">View</a>
+                            </div>
+                        `;
+                    }
+                }
+                
+                // Poll for completion then reload
+                pollWorkflowCompletion(workflowId, workflowId);
+            } else {
+                showToast(`✗ Error: ${data.detail || 'Failed to create bill'}`, 'error');
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        } catch (error) {
+            console.error('Error creating bill:', error);
+            showToast(`✗ Error: ${error.message}`, 'error');
+            button.disabled = false;
+            button.textContent = originalText;
+        }
+    }
+
     // Process a single workflow into a bill
     window.processBillWorkflow = async function(workflowId, button) {
         console.log('[ProcessBill] Called with workflowId:', workflowId, 'button:', button);
@@ -793,7 +878,7 @@
         button.disabled = true;
         button.textContent = 'Processing...';
         
-        const token = localStorage.getItem('token.access_token');
+        const token = '';
         console.log('[ProcessBill] Token available:', !!token);
         
         try {
@@ -802,7 +887,6 @@
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
                 }
             });
             console.log('[ProcessBill] Response status:', response.status);
@@ -858,7 +942,6 @@
             try {
                 const response = await fetch(`/api/v1/agents/workflows/${childId}`, {
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     }
                 });
                 

@@ -14,7 +14,7 @@ from integrations.ms.sharepoint.site.api.schemas import (
 from integrations.ms.sharepoint.site.business.service import MsSiteService
 from integrations.ms.sharepoint.site.connector.company.business.service import SiteCompanyConnector
 from integrations.ms.sharepoint.external.client import list_site_drives
-from modules.auth.business.service import get_current_user_api
+from services.auth.business.service import get_current_user_api
 
 logger = logging.getLogger(__name__)
 

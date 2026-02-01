@@ -27,10 +27,10 @@ from integrations.intuit.qbo.attachable.business.service import QboAttachableSer
 from integrations.intuit.qbo.attachable.connector.attachment.business.service import AttachableAttachmentConnector
 from integrations.intuit.qbo.attachable.connector.attachment.persistence.repo import AttachableAttachmentRepository
 from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import BillLineItemBillLineRepository
-from modules.bill.business.service import BillService
-from modules.bill_line_item.business.service import BillLineItemService
-from modules.bill_line_item_attachment.business.service import BillLineItemAttachmentService
-from modules.attachment.business.service import AttachmentService
+from services.bill.business.service import BillService
+from services.bill_line_item.business.service import BillLineItemService
+from services.bill_line_item_attachment.business.service import BillLineItemAttachmentService
+from services.attachment.business.service import AttachmentService
 
 logger = logging.getLogger(__name__)
 

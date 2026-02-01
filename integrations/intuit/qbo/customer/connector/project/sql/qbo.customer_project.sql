@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[CustomerProject];
 GO
 
+IF OBJECT_ID('qbo.CustomerProject', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[CustomerProject]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -13,13 +14,13 @@ CREATE TABLE [qbo].[CustomerProject]
     CONSTRAINT [UQ_CustomerProject_ProjectId] UNIQUE ([ProjectId]),
     CONSTRAINT [UQ_CustomerProject_QboCustomerId] UNIQUE ([QboCustomerId])
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateCustomerProject;
 GO
 
-CREATE PROCEDURE CreateCustomerProject
+CREATE OR ALTER PROCEDURE CreateCustomerProject
 (
     @ProjectId BIGINT,
     @QboCustomerId BIGINT
@@ -48,10 +49,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadCustomerProjectById;
 GO
 
-CREATE PROCEDURE ReadCustomerProjectById
+CREATE OR ALTER PROCEDURE ReadCustomerProjectById
 (
     @Id BIGINT
 )
@@ -75,10 +75,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadCustomerProjectByProjectId;
 GO
 
-CREATE PROCEDURE ReadCustomerProjectByProjectId
+CREATE OR ALTER PROCEDURE ReadCustomerProjectByProjectId
 (
     @ProjectId BIGINT
 )
@@ -102,10 +101,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadCustomerProjectByQboCustomerId;
 GO
 
-CREATE PROCEDURE ReadCustomerProjectByQboCustomerId
+CREATE OR ALTER PROCEDURE ReadCustomerProjectByQboCustomerId
 (
     @QboCustomerId BIGINT
 )
@@ -129,10 +127,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateCustomerProjectById;
 GO
 
-CREATE PROCEDURE UpdateCustomerProjectById
+CREATE OR ALTER PROCEDURE UpdateCustomerProjectById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
@@ -167,10 +164,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteCustomerProjectById;
 GO
 
-CREATE PROCEDURE DeleteCustomerProjectById
+CREATE OR ALTER PROCEDURE DeleteCustomerProjectById
 (
     @Id BIGINT
 )
@@ -193,4 +189,3 @@ BEGIN
 END;
 GO
 
-SELECT * FROM [qbo].[CustomerProject];

@@ -1,0 +1,193 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}{{ bill_credit.credit_number or 'Bill Credit' }} - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/bill_credit.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <input type="hidden" id="bill-credit-public-id" value="{{ bill_credit.public_id }}">
+
+    <div class="bill-page-header">
+        <h1>{{ bill_credit.credit_number or 'Bill Credit Details' }}</h1>
+        <div style="display: flex; gap: 0.5rem;">
+            {% if bill_credit.is_draft %}
+            <button type="button" id="complete-btn" class="btn btn-primary">Complete</button>
+            {% endif %}
+            <a href="/bill-credit/{{ bill_credit.public_id }}/edit" class="btn btn-primary">Edit</a>
+            <a href="/bill-credit/list" class="btn btn-secondary">Back to List</a>
+        </div>
+    </div>
+
+    <div class="bill-detail-container">
+        <div class="bill-detail-card">
+            <div class="bill-detail-card-header">
+                <h5>Bill Credit Information</h5>
+            </div>
+            <div class="bill-detail-card-body">
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Credit Number:</div>
+                    <div class="bill-detail-value">{{ bill_credit.credit_number or 'Not specified' }}</div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Vendor:</div>
+                    <div class="bill-detail-value">{{ bill_credit.vendor_name or (bill_credit.vendor_id or 'Not specified') }}</div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Credit Date:</div>
+                    <div class="bill-detail-value">{{ bill_credit.credit_date or 'Not specified' }}</div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Total Amount:</div>
+                    <div class="bill-detail-value">{% if bill_credit.total_amount %}${{ "%.2f"|format(bill_credit.total_amount) }}{% else %}Not specified{% endif %}</div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Memo:</div>
+                    <div class="bill-detail-value">{{ bill_credit.memo or 'Not specified' }}</div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Status:</div>
+                    <div class="bill-detail-value">
+                        {% if bill_credit.is_draft %}
+                            <span class="bill-status-badge bill-status-draft">Draft</span>
+                        {% else %}
+                            <span class="bill-status-badge bill-status-finalized">Finalized</span>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Public ID:</div>
+                    <div class="bill-detail-value">
+                        <code>{{ bill_credit.public_id or 'Not available' }}</code>
+                    </div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Created:</div>
+                    <div class="bill-detail-value">{{ bill_credit.created_datetime or 'Unknown' }}</div>
+                </div>
+
+                <div class="bill-detail-row">
+                    <div class="bill-detail-label">Last Modified:</div>
+                    <div class="bill-detail-value">{{ bill_credit.modified_datetime or 'Unknown' }}</div>
+                </div>
+            </div>
+        </div>
+
+        {% if line_items %}
+        <div class="bill-detail-card">
+            <div class="bill-detail-card-header">
+                <h5>Line Items</h5>
+            </div>
+            <div class="bill-detail-card-body">
+                <div class="line-item-grid" style="display: grid; grid-template-columns: 1fr; gap: 1rem;">
+                    {% for line_item in line_items %}
+                    <div class="line-item-card" style="border: 1px solid #e0e0e0; border-radius: 4px;">
+                        <div class="line-item-card-body" style="padding: 1rem;">
+                            <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem;">
+                                <h6 style="margin: 0; font-size: var(--font-size-action-lg);">{{ line_item.description or 'No Description' }}</h6>
+                            </div>
+                            <div class="line-item-metadata" style="display: flex; flex-direction: column; gap: 0.25rem; font-size: var(--font-size-base); color: var(--color-text-secondary);">
+                                {% if line_item.project_name %}
+                                <div class="line-item-metadata-item">
+                                    <span>Project: {{ line_item.project_name }}</span>
+                                </div>
+                                {% endif %}
+                                {% if line_item.sub_cost_code_number %}
+                                <div class="line-item-metadata-item">
+                                    <span>Sub Cost Code: {{ line_item.sub_cost_code_number }}{% if line_item.sub_cost_code_name %} - {{ line_item.sub_cost_code_name }}{% endif %}</span>
+                                </div>
+                                {% endif %}
+                                {% if line_item.quantity is not none %}
+                                <div class="line-item-metadata-item">
+                                    <span>Quantity: {{ line_item.quantity }}</span>
+                                </div>
+                                {% endif %}
+                                {% if line_item.unit_price is not none %}
+                                <div class="line-item-metadata-item">
+                                    <span>Unit Price: ${{ "%.4f"|format(line_item.unit_price) }}</span>
+                                </div>
+                                {% endif %}
+                                {% if line_item.amount is not none %}
+                                <div class="line-item-metadata-item">
+                                    <span>Amount: ${{ "%.2f"|format(line_item.amount) }}</span>
+                                </div>
+                                {% endif %}
+                                {% if line_item.is_billable is not none %}
+                                <div class="line-item-metadata-item">
+                                    <span>Billable: {{ 'Yes' if line_item.is_billable else 'No' }}</span>
+                                </div>
+                                {% endif %}
+                                {% if line_item.billable_amount is not none %}
+                                <div class="line-item-metadata-item">
+                                    <span>Billable Amount: ${{ "%.2f"|format(line_item.billable_amount) }}</span>
+                                </div>
+                                {% endif %}
+                            </div>
+                            
+                            {% if line_item.attachment %}
+                            <div class="line-item-attachment-display" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed #e0e0e0;">
+                                <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background-color: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px;">
+                                    <span style="font-size: 1.2rem; flex-shrink: 0;">📎</span>
+                                    <a href="/attachment/view/{{ line_item.attachment.public_id }}" target="_blank" style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-primary, #1976d2); text-decoration: none; font-size: 0.9rem;">
+                                        {{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}
+                                    </a>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const completeBtn = document.getElementById('complete-btn');
+        if (!completeBtn) return;
+
+        completeBtn.addEventListener('click', async function() {
+            if (!confirm('Are you sure you want to complete this bill credit? This will finalize it and sync attachments to SharePoint.')) {
+                return;
+            }
+
+            completeBtn.disabled = true;
+            completeBtn.textContent = 'Completing...';
+
+            try {
+                const publicId = document.getElementById('bill-credit-public-id').value;
+                const response = await fetch(`/api/v1/complete/bill-credit/${publicId}`, { method: 'POST' });
+                const data = await response.json();
+
+                if (response.ok) {
+                    alert('Bill credit completed successfully!');
+                    window.location.href = `/bill-credit/${publicId}`;
+                } else {
+                    alert('Error completing bill credit: ' + (data.detail || data.message || 'Unknown error'));
+                    completeBtn.disabled = false;
+                    completeBtn.textContent = 'Complete';
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Error completing bill credit: ' + error.message);
+                completeBtn.disabled = false;
+                completeBtn.textContent = 'Complete';
+            }
+        });
+    });
+</script>
+{% endblock %}

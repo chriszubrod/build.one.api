@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [ms].[DriveItemProject];
 GO
 
+IF OBJECT_ID('ms.DriveItemProject', 'U') IS NULL
+BEGIN
 CREATE TABLE [ms].[DriveItemProject]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -14,13 +15,13 @@ CREATE TABLE [ms].[DriveItemProject]
     CONSTRAINT [UQ_DriveItemProject_MsDriveItemId] UNIQUE ([MsDriveItemId]),
     CONSTRAINT [FK_DriveItemProject_DriveItem] FOREIGN KEY ([MsDriveItemId]) REFERENCES [ms].[DriveItem]([Id]) ON DELETE CASCADE
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateDriveItemProject;
 GO
 
-CREATE PROCEDURE CreateDriveItemProject
+CREATE OR ALTER PROCEDURE CreateDriveItemProject
 (
     @ProjectId BIGINT,
     @MsDriveItemId BIGINT
@@ -49,10 +50,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveItemProjectById;
 GO
 
-CREATE PROCEDURE ReadDriveItemProjectById
+CREATE OR ALTER PROCEDURE ReadDriveItemProjectById
 (
     @Id BIGINT
 )
@@ -76,10 +76,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveItemProjectByProjectId;
 GO
 
-CREATE PROCEDURE ReadDriveItemProjectByProjectId
+CREATE OR ALTER PROCEDURE ReadDriveItemProjectByProjectId
 (
     @ProjectId BIGINT
 )
@@ -103,10 +102,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadDriveItemProjectByMsDriveItemId;
 GO
 
-CREATE PROCEDURE ReadDriveItemProjectByMsDriveItemId
+CREATE OR ALTER PROCEDURE ReadDriveItemProjectByMsDriveItemId
 (
     @MsDriveItemId BIGINT
 )
@@ -130,10 +128,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteDriveItemProjectById;
 GO
 
-CREATE PROCEDURE DeleteDriveItemProjectById
+CREATE OR ALTER PROCEDURE DeleteDriveItemProjectById
 (
     @Id BIGINT
 )
@@ -157,10 +154,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteDriveItemProjectByProjectId;
 GO
 
-CREATE PROCEDURE DeleteDriveItemProjectByProjectId
+CREATE OR ALTER PROCEDURE DeleteDriveItemProjectByProjectId
 (
     @ProjectId BIGINT
 )
@@ -183,4 +179,3 @@ BEGIN
 END;
 GO
 
-SELECT * FROM [ms].[DriveItemProject];

@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[Account];
 GO
 
+IF OBJECT_ID('qbo.Account', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[Account]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -27,25 +28,37 @@ CREATE TABLE [qbo].[Account]
     [CurrencyRefValue] NVARCHAR(10) NULL,
     [CurrencyRefName] NVARCHAR(100) NULL
 );
+END
 GO
 
+IF OBJECT_ID('qbo.Account', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboAccount_QboId' AND object_id = OBJECT_ID('qbo.Account'))
+BEGIN
 CREATE INDEX IX_QboAccount_QboId ON [qbo].[Account] ([QboId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Account', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboAccount_RealmId' AND object_id = OBJECT_ID('qbo.Account'))
+BEGIN
 CREATE INDEX IX_QboAccount_RealmId ON [qbo].[Account] ([RealmId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Account', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboAccount_AccountType' AND object_id = OBJECT_ID('qbo.Account'))
+BEGIN
 CREATE INDEX IX_QboAccount_AccountType ON [qbo].[Account] ([AccountType]);
+END
 GO
 
+IF OBJECT_ID('qbo.Account', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboAccount_Classification' AND object_id = OBJECT_ID('qbo.Account'))
+BEGIN
 CREATE INDEX IX_QboAccount_Classification ON [qbo].[Account] ([Classification]);
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateQboAccount;
 GO
 
-CREATE PROCEDURE CreateQboAccount
+CREATE OR ALTER PROCEDURE CreateQboAccount
 (
     @QboId NVARCHAR(50),
     @SyncToken NVARCHAR(50),
@@ -120,10 +133,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboAccounts;
 GO
 
-CREATE PROCEDURE ReadQboAccounts
+CREATE OR ALTER PROCEDURE ReadQboAccounts
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -159,13 +171,10 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboAccounts;
+
 GO
 
-DROP PROCEDURE IF EXISTS ReadQboAccountsByRealmId;
-GO
-
-CREATE PROCEDURE ReadQboAccountsByRealmId
+CREATE OR ALTER PROCEDURE ReadQboAccountsByRealmId
 (
     @RealmId NVARCHAR(50)
 )
@@ -206,10 +215,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboAccountById;
 GO
 
-CREATE PROCEDURE ReadQboAccountById
+CREATE OR ALTER PROCEDURE ReadQboAccountById
 (
     @Id BIGINT
 )
@@ -249,10 +257,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboAccountByQboId;
 GO
 
-CREATE PROCEDURE ReadQboAccountByQboId
+CREATE OR ALTER PROCEDURE ReadQboAccountByQboId
 (
     @QboId NVARCHAR(50)
 )
@@ -292,10 +299,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboAccountByQboIdAndRealmId;
 GO
 
-CREATE PROCEDURE ReadQboAccountByQboIdAndRealmId
+CREATE OR ALTER PROCEDURE ReadQboAccountByQboIdAndRealmId
 (
     @QboId NVARCHAR(50),
     @RealmId NVARCHAR(50)
@@ -336,10 +342,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateQboAccountByQboId;
 GO
 
-CREATE PROCEDURE UpdateQboAccountByQboId
+CREATE OR ALTER PROCEDURE UpdateQboAccountByQboId
 (
     @QboId NVARCHAR(50),
     @RowVersion BINARY(8),
@@ -420,10 +425,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteQboAccountByQboId;
 GO
 
-CREATE PROCEDURE DeleteQboAccountByQboId
+CREATE OR ALTER PROCEDURE DeleteQboAccountByQboId
 (
     @QboId NVARCHAR(50)
 )

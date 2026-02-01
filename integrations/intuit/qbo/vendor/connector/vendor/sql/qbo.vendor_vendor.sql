@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[VendorVendor];
 GO
 
+IF OBJECT_ID('qbo.VendorVendor', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[VendorVendor]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -13,13 +14,13 @@ CREATE TABLE [qbo].[VendorVendor]
     CONSTRAINT [UQ_VendorVendor_VendorId] UNIQUE ([VendorId]),
     CONSTRAINT [UQ_VendorVendor_QboVendorId] UNIQUE ([QboVendorId])
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateVendorVendor;
 GO
 
-CREATE PROCEDURE CreateVendorVendor
+CREATE OR ALTER PROCEDURE CreateVendorVendor
 (
     @VendorId BIGINT,
     @QboVendorId BIGINT
@@ -48,10 +49,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadVendorVendorById;
 GO
 
-CREATE PROCEDURE ReadVendorVendorById
+CREATE OR ALTER PROCEDURE ReadVendorVendorById
 (
     @Id BIGINT
 )
@@ -75,10 +75,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadVendorVendorByVendorId;
 GO
 
-CREATE PROCEDURE ReadVendorVendorByVendorId
+CREATE OR ALTER PROCEDURE ReadVendorVendorByVendorId
 (
     @VendorId BIGINT
 )
@@ -102,10 +101,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadVendorVendorByQboVendorId;
 GO
 
-CREATE PROCEDURE ReadVendorVendorByQboVendorId
+CREATE OR ALTER PROCEDURE ReadVendorVendorByQboVendorId
 (
     @QboVendorId BIGINT
 )
@@ -129,10 +127,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateVendorVendorById;
 GO
 
-CREATE PROCEDURE UpdateVendorVendorById
+CREATE OR ALTER PROCEDURE UpdateVendorVendorById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
@@ -167,10 +164,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteVendorVendorById;
 GO
 
-CREATE PROCEDURE DeleteVendorVendorById
+CREATE OR ALTER PROCEDURE DeleteVendorVendorById
 (
     @Id BIGINT
 )

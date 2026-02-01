@@ -72,13 +72,11 @@
                 lastname: formData.get('lastname')
             };
 
-            console.log('Local Storage:', localStorage);
             try {
                 const response = await fetch('/api/v1/create/user', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                        'Content-Type': 'application/json'
                     },
                     body: JSON.stringify(payload)
                 });
@@ -87,11 +85,10 @@
                     const result = await response.json();
                     console.log('Create user result:', result);
                     try {
-                        const update_resp = await fetch(`/api/v1/update/auth/${localStorage.getItem('auth.public_id')}/user-public-id/${result.public_id}`, {
+                        const update_resp = await fetch(`/api/v1/update/auth/{{ current_user.sub }}/user-public-id/${result.public_id}`, {
                             method: 'PUT',
                             headers: {
-                                'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
+                                'Content-Type': 'application/json'
                             }
                         });
                         if (update_resp.ok) {

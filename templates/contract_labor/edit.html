@@ -663,7 +663,6 @@
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                 },
                 body: JSON.stringify(data)
             });
@@ -725,7 +724,6 @@
             const response = await fetch(`/api/v1/contract-labor/${publicId}`, {
                 method: 'DELETE',
                 headers: {
-                    'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                 }
             });
 

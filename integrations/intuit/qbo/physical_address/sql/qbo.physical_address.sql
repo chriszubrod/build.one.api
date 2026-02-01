@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[PhysicalAddress];
 GO
 
+IF OBJECT_ID('qbo.PhysicalAddress', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[PhysicalAddress]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -19,10 +20,10 @@ CREATE TABLE [qbo].[PhysicalAddress]
 
 
 
-DROP PROCEDURE IF EXISTS CreateQboPhysicalAddress;
+END
 GO
 
-CREATE PROCEDURE CreateQboPhysicalAddress
+CREATE OR ALTER PROCEDURE CreateQboPhysicalAddress
 (
     @QboId NVARCHAR(MAX),
     @Line1 NVARCHAR(MAX),
@@ -58,22 +59,12 @@ BEGIN
 END;
 GO
 
-EXEC CreateQboPhysicalAddress
-    @QboId = '1',
-    @Line1 = '123 Main St',
-    @Line2 = 'Suite 100',
-    @City = 'San Francisco',
-    @Country = 'USA',
-    @CountrySubDivisionCode = 'CA',
-    @PostalCode = '94105';
+
+
+
 GO
 
-
-
-DROP PROCEDURE IF EXISTS ReadQboPhysicalAddresses;
-GO
-
-CREATE PROCEDURE ReadQboPhysicalAddresses
+CREATE OR ALTER PROCEDURE ReadQboPhysicalAddresses
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -98,14 +89,11 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboPhysicalAddresses;
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS ReadQboPhysicalAddressById;
-GO
-
-CREATE PROCEDURE ReadQboPhysicalAddressById
+CREATE OR ALTER PROCEDURE ReadQboPhysicalAddressById
 (
     @Id BIGINT
 )
@@ -133,14 +121,8 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboPhysicalAddressById @Id = '1';
 
-
-
-DROP PROCEDURE IF EXISTS ReadQboPhysicalAddressByPublicId;
-GO
-
-CREATE PROCEDURE ReadQboPhysicalAddressByPublicId
+CREATE OR ALTER PROCEDURE ReadQboPhysicalAddressByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
 )
@@ -168,17 +150,13 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboPhysicalAddressByPublicId
-    @PublicId = '00000000-0000-0000-0000-000000000000';
+
+
+
+
 GO
 
-
-
-
-DROP PROCEDURE IF EXISTS ReadQboPhysicalAddressByQboId;
-GO
-
-CREATE PROCEDURE ReadQboPhysicalAddressByQboId
+CREATE OR ALTER PROCEDURE ReadQboPhysicalAddressByQboId
 (
     @QboId NVARCHAR(MAX)
 )
@@ -206,17 +184,13 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboPhysicalAddressByQboId
-    @QboId = '1';
+
+
+
+
 GO
 
-
-
-
-DROP PROCEDURE IF EXISTS UpdateQboPhysicalAddressById;
-GO
-
-CREATE PROCEDURE UpdateQboPhysicalAddressById
+CREATE OR ALTER PROCEDURE UpdateQboPhysicalAddressById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
@@ -262,24 +236,12 @@ BEGIN
 END;
 GO
 
-EXEC UpdateQboPhysicalAddressById
-    @Id = 1,
-    @RowVersion = 0x0000000000000000,
-    @QboId = '1',
-    @Line1 = '123 Main St',
-    @Line2 = 'Suite 100',
-    @City = 'San Francisco',
-    @Country = 'USA',
-    @CountrySubDivisionCode = 'CA',
-    @PostalCode = '94105';
+
+
+
 GO
 
-
-
-DROP PROCEDURE IF EXISTS DeleteQboPhysicalAddressById;
-GO
-
-CREATE PROCEDURE DeleteQboPhysicalAddressById
+CREATE OR ALTER PROCEDURE DeleteQboPhysicalAddressById
 (
     @Id BIGINT
 )
@@ -307,7 +269,4 @@ BEGIN
 END;
 GO
 
-EXEC DeleteQboPhysicalAddressById
-    @Id = 1;
-GO
 

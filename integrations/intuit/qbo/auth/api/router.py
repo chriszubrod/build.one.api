@@ -13,7 +13,7 @@ from integrations.intuit.qbo.auth.external.client import (
     connect_intuit_oauth_2_token_endpoint_refresh,
     connect_intuit_oauth_2_token_endpoint_revoke
 )
-from modules.auth.business.service import get_current_user_api
+from services.auth.business.service import get_current_user_api
 
 logger = logging.getLogger(__name__)
 

@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[Customer];
 GO
 
+IF OBJECT_ID('qbo.Customer', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[Customer]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -36,31 +37,49 @@ CREATE TABLE [qbo].[Customer]
     [Notes] NVARCHAR(MAX) NULL,
     [PrintOnCheckName] NVARCHAR(500) NULL
 );
+END
 GO
 
+IF OBJECT_ID('qbo.Customer', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboCustomer_QboId' AND object_id = OBJECT_ID('qbo.Customer'))
+BEGIN
 CREATE INDEX IX_QboCustomer_QboId ON [qbo].[Customer] ([QboId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Customer', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboCustomer_RealmId' AND object_id = OBJECT_ID('qbo.Customer'))
+BEGIN
 CREATE INDEX IX_QboCustomer_RealmId ON [qbo].[Customer] ([RealmId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Customer', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboCustomer_ParentRefValue' AND object_id = OBJECT_ID('qbo.Customer'))
+BEGIN
 CREATE INDEX IX_QboCustomer_ParentRefValue ON [qbo].[Customer] ([ParentRefValue]);
+END
 GO
 
+IF OBJECT_ID('qbo.Customer', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboCustomer_Job' AND object_id = OBJECT_ID('qbo.Customer'))
+BEGIN
 CREATE INDEX IX_QboCustomer_Job ON [qbo].[Customer] ([Job]);
+END
 GO
 
+IF OBJECT_ID('qbo.Customer', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboCustomer_BillAddrId' AND object_id = OBJECT_ID('qbo.Customer'))
+BEGIN
 CREATE INDEX IX_QboCustomer_BillAddrId ON [qbo].[Customer] ([BillAddrId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Customer', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboCustomer_ShipAddrId' AND object_id = OBJECT_ID('qbo.Customer'))
+BEGIN
 CREATE INDEX IX_QboCustomer_ShipAddrId ON [qbo].[Customer] ([ShipAddrId]);
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateQboCustomer;
 GO
 
-CREATE PROCEDURE CreateQboCustomer
+CREATE OR ALTER PROCEDURE CreateQboCustomer
 (
     @QboId NVARCHAR(50),
     @SyncToken NVARCHAR(50),
@@ -153,10 +172,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboCustomers;
 GO
 
-CREATE PROCEDURE ReadQboCustomers
+CREATE OR ALTER PROCEDURE ReadQboCustomers
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -201,14 +219,11 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboCustomers;
+
+
 GO
 
-
-DROP PROCEDURE IF EXISTS ReadQboCustomersByRealmId;
-GO
-
-CREATE PROCEDURE ReadQboCustomersByRealmId
+CREATE OR ALTER PROCEDURE ReadQboCustomersByRealmId
 (
     @RealmId NVARCHAR(50)
 )
@@ -258,10 +273,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboCustomerById;
 GO
 
-CREATE PROCEDURE ReadQboCustomerById
+CREATE OR ALTER PROCEDURE ReadQboCustomerById
 (
     @Id BIGINT
 )
@@ -310,10 +324,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboCustomerByQboId;
 GO
 
-CREATE PROCEDURE ReadQboCustomerByQboId
+CREATE OR ALTER PROCEDURE ReadQboCustomerByQboId
 (
     @QboId NVARCHAR(50)
 )
@@ -362,10 +375,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboCustomerByQboIdAndRealmId;
 GO
 
-CREATE PROCEDURE ReadQboCustomerByQboIdAndRealmId
+CREATE OR ALTER PROCEDURE ReadQboCustomerByQboIdAndRealmId
 (
     @QboId NVARCHAR(50),
     @RealmId NVARCHAR(50)
@@ -415,10 +427,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateQboCustomerByQboId;
 GO
 
-CREATE PROCEDURE UpdateQboCustomerByQboId
+CREATE OR ALTER PROCEDURE UpdateQboCustomerByQboId
 (
     @QboId NVARCHAR(50),
     @RowVersion BINARY(8),
@@ -526,10 +537,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteQboCustomerByQboId;
 GO
 
-CREATE PROCEDURE DeleteQboCustomerByQboId
+CREATE OR ALTER PROCEDURE DeleteQboCustomerByQboId
 (
     @QboId NVARCHAR(50)
 )

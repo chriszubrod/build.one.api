@@ -9,11 +9,11 @@ from integrations.intuit.qbo.bill.api.schemas import QboBillSync, QboBillPush
 from integrations.intuit.qbo.bill.business.service import QboBillService
 from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 from integrations.intuit.qbo.attachable.connector.attachment.business.service import AttachableAttachmentConnector
-from modules.bill.business.service import BillService
-from modules.bill_line_item.business.service import BillLineItemService
-from modules.bill_line_item_attachment.business.service import BillLineItemAttachmentService
-from modules.attachment.business.service import AttachmentService
-from modules.auth.business.service import get_current_user_api as get_current_qbo_bill_api
+from services.bill.business.service import BillService
+from services.bill_line_item.business.service import BillLineItemService
+from services.bill_line_item_attachment.business.service import BillLineItemAttachmentService
+from services.attachment.business.service import AttachmentService
+from services.auth.business.service import get_current_user_api as get_current_qbo_bill_api
 
 logger = logging.getLogger(__name__)
 

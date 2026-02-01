@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 # Local Imports
 from integrations.intuit.qbo.company_info.api.schemas import QboCompanyInfoSync
 from integrations.intuit.qbo.company_info.business.service import QboCompanyInfoService
-from modules.auth.business.service import get_current_user_api as get_current_qbo_company_info_api
+from services.auth.business.service import get_current_user_api as get_current_qbo_company_info_api
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-company-info"])
 service = QboCompanyInfoService()

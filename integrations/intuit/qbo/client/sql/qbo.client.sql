@@ -6,24 +6,25 @@ GO
 
 
 IF OBJECT_ID('qbo.Client', 'U') IS NOT NULL
-    DROP TABLE qbo.Client;
 GO
 
 
 
+IF OBJECT_ID('qbo.Client', 'U') IS NULL
+BEGIN
 CREATE TABLE qbo.Client
 (
     App NVARCHAR(MAX) NOT NULL,
     ClientId NVARCHAR(MAX) NOT NULL,
     ClientSecret NVARCHAR(MAX) NOT NULL
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateQboClient;
 GO
 
-CREATE PROCEDURE CreateQboClient
+CREATE OR ALTER PROCEDURE CreateQboClient
 (
     @App NVARCHAR(MAX),
     @ClientId NVARCHAR(MAX),
@@ -45,16 +46,8 @@ BEGIN
 END;
 GO
 
-EXEC CreateQboClient
-    @App = 'build.one',
-    @ClientId = 'ABxFNbNXlqWDlNAa7tOakJ5ib9RNpgBSU5qIIxLf1PCAQztL0i',
-    @ClientSecret = 'JZKkGDmKqPyAs7TlmAFIR2ih8DIylq9tlgzI4phm';
 
-
-DROP PROCEDURE IF EXISTS ReadQboClients;
-GO
-
-CREATE PROCEDURE ReadQboClients
+CREATE OR ALTER PROCEDURE ReadQboClients
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -70,13 +63,8 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboClients;
 
-
-DROP PROCEDURE IF EXISTS ReadQboClientByApp;
-GO
-
-CREATE PROCEDURE ReadQboClientByApp
+CREATE OR ALTER PROCEDURE ReadQboClientByApp
 (
     @App NVARCHAR(MAX)
 )
@@ -95,13 +83,8 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboClientByApp @App = 'build.one';
 
-
-DROP PROCEDURE IF EXISTS ReadQboClientByClientId;
-GO
-
-CREATE PROCEDURE ReadQboClientByClientId
+CREATE OR ALTER PROCEDURE ReadQboClientByClientId
 (
     @ClientId NVARCHAR(MAX)
 )
@@ -121,13 +104,8 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboClientByClientId @ClientId = 'test-client';
 
-
-DROP PROCEDURE IF EXISTS UpdateQboClientByApp;
-GO
-
-CREATE PROCEDURE UpdateQboClientByApp
+CREATE OR ALTER PROCEDURE UpdateQboClientByApp
 (
     @App NVARCHAR(MAX),
     @ClientId NVARCHAR(MAX),
@@ -153,16 +131,8 @@ BEGIN
 END;
 GO
 
-EXEC UpdateQboClientByApp
-    @App = 'build.one',
-    @ClientId = 'client-id',
-    @ClientSecret = 'client-secret';
 
-
-DROP PROCEDURE IF EXISTS UpdateQboClientByClientId;
-GO
-
-CREATE PROCEDURE UpdateQboClientByClientId
+CREATE OR ALTER PROCEDURE UpdateQboClientByClientId
 (
     @App NVARCHAR(MAX),
     @ClientId NVARCHAR(MAX),
@@ -188,16 +158,8 @@ BEGIN
 END;
 GO
 
-EXEC UpdateQboClientByClientId
-    @App = 'build.one',
-    @ClientId = 'updated-client',
-    @ClientSecret = 'updated-secret';
 
-
-DROP PROCEDURE IF EXISTS DeleteQboClientByApp;
-GO
-
-CREATE PROCEDURE DeleteQboClientByApp
+CREATE OR ALTER PROCEDURE DeleteQboClientByApp
 (
     @App NVARCHAR(MAX)
 )
@@ -218,5 +180,4 @@ BEGIN
 END;
 GO
 
-EXEC DeleteQboClientByApp
     @App = 'build.one';

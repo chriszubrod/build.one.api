@@ -14,8 +14,8 @@ import os
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from modules.copilot.business.service import get_copilot_service
-from modules.copilot.business.model import CopilotIntent
+from services.copilot.business.service import get_copilot_service
+from services.copilot.business.model import CopilotIntent
 
 
 def main():

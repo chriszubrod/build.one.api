@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[BillBill];
 GO
 
+IF OBJECT_ID('qbo.BillBill', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[BillBill]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -13,13 +14,13 @@ CREATE TABLE [qbo].[BillBill]
     CONSTRAINT [UQ_BillBill_BillId] UNIQUE ([BillId]),
     CONSTRAINT [UQ_BillBill_QboBillId] UNIQUE ([QboBillId])
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateBillBill;
 GO
 
-CREATE PROCEDURE CreateBillBill
+CREATE OR ALTER PROCEDURE CreateBillBill
 (
     @BillId BIGINT,
     @QboBillId BIGINT
@@ -48,10 +49,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadBillBillById;
 GO
 
-CREATE PROCEDURE ReadBillBillById
+CREATE OR ALTER PROCEDURE ReadBillBillById
 (
     @Id BIGINT
 )
@@ -75,10 +75,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadBillBillByBillId;
 GO
 
-CREATE PROCEDURE ReadBillBillByBillId
+CREATE OR ALTER PROCEDURE ReadBillBillByBillId
 (
     @BillId BIGINT
 )
@@ -102,10 +101,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadBillBillByQboBillId;
 GO
 
-CREATE PROCEDURE ReadBillBillByQboBillId
+CREATE OR ALTER PROCEDURE ReadBillBillByQboBillId
 (
     @QboBillId BIGINT
 )
@@ -129,10 +127,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteBillBillById;
 GO
 
-CREATE PROCEDURE DeleteBillBillById
+CREATE OR ALTER PROCEDURE DeleteBillBillById
 (
     @Id BIGINT
 )
@@ -156,4 +153,3 @@ END;
 GO
 
 
-SELECT * FROM qbo.BillBill;

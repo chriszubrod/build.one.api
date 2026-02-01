@@ -26,22 +26,30 @@ BEGIN
 END;
 GO
 
+IF OBJECT_ID('qbo.Attachable', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_QboAttachable_QboId_RealmId' AND object_id = OBJECT_ID('qbo.Attachable'))
+BEGIN
 CREATE UNIQUE INDEX UX_QboAttachable_QboId_RealmId ON [qbo].[Attachable] ([QboId], [RealmId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Attachable', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboAttachable_RealmId' AND object_id = OBJECT_ID('qbo.Attachable'))
+BEGIN
 CREATE INDEX IX_QboAttachable_RealmId ON [qbo].[Attachable] ([RealmId]);
+END
 GO
 
+IF OBJECT_ID('qbo.Attachable', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboAttachable_EntityRef' AND object_id = OBJECT_ID('qbo.Attachable'))
+BEGIN
 CREATE INDEX IX_QboAttachable_EntityRef ON [qbo].[Attachable] ([EntityRefType], [EntityRefValue]);
+END
 GO
 
 
 -- Stored Procedures
 
-DROP PROCEDURE IF EXISTS CreateQboAttachable;
 GO
 
-CREATE PROCEDURE CreateQboAttachable
+CREATE OR ALTER PROCEDURE CreateQboAttachable
 (
     @QboId NVARCHAR(50),
     @SyncToken NVARCHAR(50),
@@ -98,10 +106,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboAttachableById;
 GO
 
-CREATE PROCEDURE ReadQboAttachableById
+CREATE OR ALTER PROCEDURE ReadQboAttachableById
 (
     @Id BIGINT
 )
@@ -135,10 +142,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboAttachableByQboId;
 GO
 
-CREATE PROCEDURE ReadQboAttachableByQboId
+CREATE OR ALTER PROCEDURE ReadQboAttachableByQboId
 (
     @QboId NVARCHAR(50)
 )
@@ -172,10 +178,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboAttachableByQboIdAndRealmId;
 GO
 
-CREATE PROCEDURE ReadQboAttachableByQboIdAndRealmId
+CREATE OR ALTER PROCEDURE ReadQboAttachableByQboIdAndRealmId
 (
     @QboId NVARCHAR(50),
     @RealmId NVARCHAR(50)
@@ -210,10 +215,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboAttachablesByEntityRef;
 GO
 
-CREATE PROCEDURE ReadQboAttachablesByEntityRef
+CREATE OR ALTER PROCEDURE ReadQboAttachablesByEntityRef
 (
     @EntityRefType NVARCHAR(50),
     @EntityRefValue NVARCHAR(50),
@@ -251,10 +255,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadQboAttachablesByRealmId;
 GO
 
-CREATE PROCEDURE ReadQboAttachablesByRealmId
+CREATE OR ALTER PROCEDURE ReadQboAttachablesByRealmId
 (
     @RealmId NVARCHAR(50)
 )
@@ -288,10 +291,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateQboAttachableByQboId;
 GO
 
-CREATE PROCEDURE UpdateQboAttachableByQboId
+CREATE OR ALTER PROCEDURE UpdateQboAttachableByQboId
 (
     @QboId NVARCHAR(50),
     @RowVersion BINARY(8),
@@ -353,10 +355,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteQboAttachableByQboId;
 GO
 
-CREATE PROCEDURE DeleteQboAttachableByQboId
+CREATE OR ALTER PROCEDURE DeleteQboAttachableByQboId
 (
     @QboId NVARCHAR(50)
 )

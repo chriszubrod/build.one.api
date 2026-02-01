@@ -23,8 +23,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.database import get_connection
-from agents.persistence.repo import WorkflowRepository
-from agents.capabilities.registry import get_capability_registry
+from workflows.persistence.repo import WorkflowRepository
+from workflows.capabilities.registry import get_capability_registry
 from integrations.ms.auth.persistence.repo import MsAuthRepository
 
 logging.basicConfig(
@@ -54,7 +54,7 @@ def get_workflows_needing_backfill() -> list:
                 PublicId,
                 TriggerMessageId,
                 Context
-            FROM agents.Workflow
+            FROM dbo.Workflow
             WHERE WorkflowType = 'email_intake'
               AND State = 'completed'
               AND JSON_VALUE(Context, '$.confirmed_entity_type') = 'bill'

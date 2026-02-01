@@ -116,6 +116,7 @@
             try {
                 const response = await fetch('/api/v1/signup/auth', {
                     method: 'POST',
+                    credentials: 'same-origin',
                     headers: {
                         'Content-Type': 'application/json',
                     },
@@ -123,17 +124,6 @@
                 });
 
                 if (response.ok) {
-                    const result = await response.json();
-                    localStorage.clear();
-                    localStorage.setItem('token.access_token', result.token.access_token);
-                    localStorage.setItem('token.token_type', result.token.token_type);
-                    localStorage.setItem('token.expires_in', result.token.expires_in);
-                    localStorage.setItem('token.refresh_token', result.refresh_token.refresh_token);
-                    localStorage.setItem('token.refresh_expires_in', result.refresh_token.expires_in);
-                    localStorage.setItem('token.stored_at', Math.floor(Date.now() / 1000).toString());
-                    localStorage.setItem('auth.public_id', result.auth.public_id);
-                    localStorage.setItem('auth.username', result.auth.username);
-                    document.cookie = `token.access_token=${result.token.access_token}; path=/; max-age=${result.token.expires_in}; samesite=lax`;
                     window.location.href = '/user/create';
                 } else {
                     const error = await response.json();

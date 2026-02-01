@@ -1,7 +1,8 @@
 IF OBJECT_ID('ms.Drive', 'U') IS NOT NULL
-    DROP TABLE ms.Drive;
 GO
 
+IF OBJECT_ID('ms.Drive', 'U') IS NULL
+BEGIN
 CREATE TABLE ms.Drive
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -16,19 +17,25 @@ CREATE TABLE ms.Drive
     [DriveType] NVARCHAR(50) NOT NULL,
     CONSTRAINT FK_Drive_Site FOREIGN KEY ([MsSiteId]) REFERENCES ms.Site([Id]) ON DELETE CASCADE
 );
+END
 GO
 
+IF OBJECT_ID('ms.Drive', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Drive_DriveId' AND object_id = OBJECT_ID('ms.Drive'))
+BEGIN
 CREATE UNIQUE INDEX IX_Drive_DriveId ON ms.Drive ([DriveId]);
+END
 GO
 
+IF OBJECT_ID('ms.Drive', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Drive_MsSiteId' AND object_id = OBJECT_ID('ms.Drive'))
+BEGIN
 CREATE INDEX IX_Drive_MsSiteId ON ms.Drive ([MsSiteId]);
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateMsDrive;
 GO
 
-CREATE PROCEDURE CreateMsDrive
+CREATE OR ALTER PROCEDURE CreateMsDrive
 (
     @MsSiteId BIGINT,
     @DriveId NVARCHAR(255),
@@ -63,10 +70,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadMsDrives;
 GO
 
-CREATE PROCEDURE ReadMsDrives
+CREATE OR ALTER PROCEDURE ReadMsDrives
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -90,12 +96,8 @@ BEGIN
 END;
 GO
 
-EXEC ReadMsDrives;
 
-DROP PROCEDURE IF EXISTS ReadMsDrivesByMsSiteId;
-GO
-
-CREATE PROCEDURE ReadMsDrivesByMsSiteId
+CREATE OR ALTER PROCEDURE ReadMsDrivesByMsSiteId
 (
     @MsSiteId BIGINT
 )
@@ -124,10 +126,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadMsDriveByPublicId;
 GO
 
-CREATE PROCEDURE ReadMsDriveByPublicId
+CREATE OR ALTER PROCEDURE ReadMsDriveByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
 )
@@ -156,10 +157,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadMsDriveByDriveId;
 GO
 
-CREATE PROCEDURE ReadMsDriveByDriveId
+CREATE OR ALTER PROCEDURE ReadMsDriveByDriveId
 (
     @DriveId NVARCHAR(255)
 )
@@ -188,10 +188,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadMsDriveById;
 GO
 
-CREATE PROCEDURE ReadMsDriveById
+CREATE OR ALTER PROCEDURE ReadMsDriveById
 (
     @Id BIGINT
 )
@@ -220,10 +219,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS UpdateMsDriveByPublicId;
 GO
 
-CREATE PROCEDURE UpdateMsDriveByPublicId
+CREATE OR ALTER PROCEDURE UpdateMsDriveByPublicId
 (
     @PublicId UNIQUEIDENTIFIER,
     @MsSiteId BIGINT,
@@ -265,10 +263,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteMsDriveByPublicId;
 GO
 
-CREATE PROCEDURE DeleteMsDriveByPublicId
+CREATE OR ALTER PROCEDURE DeleteMsDriveByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
 )
@@ -297,7 +294,5 @@ END;
 GO
 
 
-EXEC DeleteMsDriveByPublicId
     @PublicId = '0143726e-1155-47b4-9750-f5ea4362a605';
 
-EXEC ReadMsDrives;

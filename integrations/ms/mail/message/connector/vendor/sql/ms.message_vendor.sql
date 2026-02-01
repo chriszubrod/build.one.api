@@ -3,7 +3,7 @@
 -- =============================================================================
 
 -- Link between MsMessage and Vendor
-IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'MsMessageVendor')
+IF OBJECT_ID('dbo.MsMessageVendor', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.MsMessageVendor (
         Id INT IDENTITY(1,1) PRIMARY KEY,
@@ -26,8 +26,14 @@ BEGIN
         CONSTRAINT UQ_MsMessageVendor_Unique UNIQUE (MsMessageId, VendorId)
     );
     
+    IF OBJECT_ID('dbo.MsMessageVendor', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsMessageVendor_MsMessageId' AND object_id = OBJECT_ID('dbo.MsMessageVendor'))
+    BEGIN
     CREATE INDEX IX_MsMessageVendor_MsMessageId ON dbo.MsMessageVendor(MsMessageId);
+    END
+    IF OBJECT_ID('dbo.MsMessageVendor', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsMessageVendor_VendorId' AND object_id = OBJECT_ID('dbo.MsMessageVendor'))
+    BEGIN
     CREATE INDEX IX_MsMessageVendor_VendorId ON dbo.MsMessageVendor(VendorId);
+    END
 END
 GO
 

@@ -470,7 +470,12 @@
                                         {% endif %}
                                     </div>
                                 </div>
-                                <div class="agent-message-date">{{ msg.received_at[:10] if msg.received_at else '' }}</div>
+                                <div class="agent-message-date" style="display: flex; align-items: center; gap: 0.75rem;">
+                                    <span>{{ msg.received_at[:10] if msg.received_at else '' }}</span>
+                                    {% if msg.web_link %}
+                                    <a href="{{ msg.web_link }}" target="_blank" onclick="event.stopPropagation();" class="agent-link-subtle" title="Open in Outlook" style="font-size: 0.85rem;">↗ Outlook</a>
+                                    {% endif %}
+                                </div>
                             </div>
                             <div class="agent-message-preview">{% set clean_body = (msg.body or '')|striptags|replace('\n', ' ')|replace('\r', '')|trim %}{{ (clean_body[:120] + '...') if clean_body|length > 120 else clean_body }}</div>
                             <div class="agent-message-content">
@@ -626,9 +631,9 @@
             // Update new tab link
             if (newTabLink) newTabLink.href = `/attachment/view/${publicId}`;
             
-            // Determine file type
-            const isPdf = (contentType || '').toLowerCase().includes('pdf') || 
-                          (fileExtension || '').toLowerCase() === '.pdf';
+            // Determine file type (handle extension with or without leading dot)
+            const ext = (fileExtension || '').toLowerCase().replace(/^\./, '');
+            const isPdf = (contentType || '').toLowerCase().includes('pdf') || ext === 'pdf';
             const isImage = (contentType || '').toLowerCase().startsWith('image/');
             
             // Generate preview content
@@ -1137,8 +1142,9 @@
                 }
                 
                 const amount = parseFloat(amountInput.value) || 0;
-                const markup = markupInput ? (parseFloat(markupInput.value) || 0) : 0;
-                const price = amount * (1 + markup);
+                const markupPercent = markupInput ? (parseFloat(markupInput.value) || 0) : 0;
+                // Convert markup percentage to decimal (e.g., 10% -> 0.10)
+                const price = amount * (1 + markupPercent / 100);
                 priceInput.value = price.toFixed(2);
                 calculateTotalAmount();
             };
@@ -1162,7 +1168,7 @@
             return document.querySelectorAll('[id^="line-item-form"], [id^="add-line-item-form"]');
         }
 
-        // Calculate Total Amount = sum of all BillLineItem.Price values
+        // Calculate Total Amount = sum of all BillLineItem.Amount values
         function calculateTotalAmount() {
             const totalAmountInput = document.getElementById('total_amount');
             if (!totalAmountInput) {
@@ -1173,9 +1179,9 @@
             const allForms = getAllLineItemForms();
             
             allForms.forEach(form => {
-                const priceInput = form.querySelector('.line-item-price, [id^="line_item_price"]');
-                if (priceInput && priceInput.value) {
-                    total += parseFloat(priceInput.value) || 0;
+                const amountInput = form.querySelector('.line-item-amount, [id^="line_item_amount"]');
+                if (amountInput && amountInput.value) {
+                    total += parseFloat(amountInput.value) || 0;
                 }
             });
             
@@ -1872,7 +1878,6 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     }
                 });
                 

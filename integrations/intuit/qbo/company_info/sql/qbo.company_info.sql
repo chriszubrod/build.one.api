@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [qbo].[CompanyInfo];
 GO
 
+IF OBJECT_ID('qbo.CompanyInfo', 'U') IS NULL
+BEGIN
 CREATE TABLE [qbo].[CompanyInfo]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -23,14 +24,14 @@ CREATE TABLE [qbo].[CompanyInfo]
     [WebAddr] NVARCHAR(MAX) NULL,
     [CurrencyRef] NVARCHAR(MAX) NULL
 );
+END
 GO
 
 
 
-DROP PROCEDURE IF EXISTS CreateQboCompanyInfo;
 GO
 
-CREATE PROCEDURE CreateQboCompanyInfo
+CREATE OR ALTER PROCEDURE CreateQboCompanyInfo
 (
     @QboId NVARCHAR(MAX),
     @SyncToken NVARCHAR(MAX),
@@ -82,29 +83,12 @@ BEGIN
 END;
 GO
 
-EXEC CreateQboCompanyInfo
-    @QboId = '1',
-    @SyncToken = '0',
-    @RealmId = '123456789',
-    @CompanyName = 'Test Company',
-    @LegalName = 'Test Company Legal',
-    @CompanyAddrId = NULL,
-    @LegalAddrId = NULL,
-    @CustomerCommunicationAddrId = NULL,
-    @TaxPayerId = '12-3456789',
-    @FiscalYearStartMonth = 1,
-    @Country = 'USA',
-    @Email = 'test@example.com',
-    @WebAddr = 'https://example.com',
-    @CurrencyRef = 'USD';
+
+
+
 GO
 
-
-
-DROP PROCEDURE IF EXISTS ReadQboCompanyInfos;
-GO
-
-CREATE PROCEDURE ReadQboCompanyInfos
+CREATE OR ALTER PROCEDURE ReadQboCompanyInfos
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -136,15 +120,12 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboCompanyInfos;
+
+
+
 GO
 
-
-
-DROP PROCEDURE IF EXISTS ReadQboCompanyInfoByQboId;
-GO
-
-CREATE PROCEDURE ReadQboCompanyInfoByQboId
+CREATE OR ALTER PROCEDURE ReadQboCompanyInfoByQboId
 (
     @QboId NVARCHAR(MAX)
 )
@@ -179,16 +160,12 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboCompanyInfoByQboId
-    @QboId = '1';
+
+
+
 GO
 
-
-
-DROP PROCEDURE IF EXISTS ReadQboCompanyInfoById;
-GO
-
-CREATE PROCEDURE ReadQboCompanyInfoById
+CREATE OR ALTER PROCEDURE ReadQboCompanyInfoById
 (
     @Id BIGINT
 )
@@ -223,16 +200,12 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboCompanyInfoById
-    @Id = 1;
+
+
+
 GO
 
-
-
-DROP PROCEDURE IF EXISTS ReadQboCompanyInfoByRealmId;
-GO
-
-CREATE PROCEDURE ReadQboCompanyInfoByRealmId
+CREATE OR ALTER PROCEDURE ReadQboCompanyInfoByRealmId
 (
     @RealmId NVARCHAR(MAX)
 )
@@ -267,16 +240,12 @@ BEGIN
 END;
 GO
 
-EXEC ReadQboCompanyInfoByRealmId
-    @RealmId = '123456789';
+
+
+
 GO
 
-
-
-DROP PROCEDURE IF EXISTS UpdateQboCompanyInfoByQboId;
-GO
-
-CREATE PROCEDURE UpdateQboCompanyInfoByQboId
+CREATE OR ALTER PROCEDURE UpdateQboCompanyInfoByQboId
 (
     @QboId NVARCHAR(MAX),
     @RowVersion BINARY(8),
@@ -344,28 +313,10 @@ BEGIN
 END;
 GO
 
-EXEC UpdateQboCompanyInfoByQboId
-    @QboId = '1',
-    @RowVersion = 0x0000000000020B74,
-    @SyncToken = '1',
-    @RealmId = '123456789',
-    @CompanyName = 'Test Company Updated',
-    @LegalName = 'Test Company Legal Updated',
-    @CompanyAddrId = NULL,
-    @LegalAddrId = NULL,
-    @CustomerCommunicationAddrId = NULL,
-    @TaxPayerId = '12-3456789',
-    @FiscalYearStartMonth = 1,
-    @Country = 'USA',
-    @Email = 'test@example.com',
-    @WebAddr = 'https://example.com',
-    @CurrencyRef = 'USD';
+
 GO
 
-DROP PROCEDURE IF EXISTS DeleteQboCompanyInfoByQboId;
-GO
-
-CREATE PROCEDURE DeleteQboCompanyInfoByQboId
+CREATE OR ALTER PROCEDURE DeleteQboCompanyInfoByQboId
 (
     @QboId NVARCHAR(MAX)
 )
@@ -400,6 +351,3 @@ BEGIN
 END;
 GO
 
-EXEC DeleteQboCompanyInfoByQboId
-    @QboId = '1';
-GO

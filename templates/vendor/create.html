@@ -593,7 +593,6 @@
                     method,
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     },
                     body: JSON.stringify(requestBody)
                 });
@@ -625,7 +624,6 @@
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                             },
                             body: JSON.stringify(payload)
                         });
@@ -714,7 +712,6 @@
                         method: 'PUT',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify(updatePayload)
                     });
@@ -735,7 +732,6 @@
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify(taxpayerPayload)
                     });
@@ -766,7 +762,6 @@
                         method: 'PUT',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify(vendorPayload)
                     });
@@ -821,7 +816,6 @@
             try {
                 // Get vendor to get database ID
                 const vendorResponse = await fetch(`/api/v1/get/vendor/${vendorPublicId}`, {
-                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token.access_token')}` }
                 });
                 if (!vendorResponse.ok) {
                     updateSaveStatus('addresses', 'error');
@@ -839,7 +833,6 @@
                 
                 // Fetch address type to get database ID
                 const addressTypeResponse = await fetch(`/api/v1/get/address_type/${addressTypePublicId}`, {
-                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token.access_token')}` }
                 });
                 if (!addressTypeResponse.ok) {
                     updateSaveStatus('addresses', 'error');
@@ -874,7 +867,6 @@
                         method: 'PUT',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify(updatePayload)
                     });
@@ -897,7 +889,6 @@
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         },
                         body: JSON.stringify({
                             street_one: addressData.street_one,
@@ -935,7 +926,6 @@
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                             },
                             body: JSON.stringify({
                                 vendor_id: vendorDbId.toString(),
@@ -1232,7 +1222,6 @@
                 const response = await fetch('/api/v1/upload/attachment', {
                     method: 'POST',
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     },
                     body: formData
                 });
@@ -1284,7 +1273,6 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     },
                     body: JSON.stringify({
                         taxpayer_public_id: taxpayerPublicId,
@@ -1378,7 +1366,6 @@
                         // Get all taxpayer attachments to find the link
                         const response = await fetch(`/api/v1/get/taxpayer-attachments/${taxpayerPublicId}`, {
                             headers: {
-                                'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                             }
                         });
                         if (response.ok) {
@@ -1388,7 +1375,6 @@
                                 await fetch(`/api/v1/delete/taxpayer-attachment/${link.public_id}`, {
                                     method: 'DELETE',
                                     headers: {
-                                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                                     }
                                 });
                             }
@@ -1399,7 +1385,6 @@
                     await fetch(`/api/v1/delete/attachment/${attachmentPublicId}`, {
                         method: 'DELETE',
                         headers: {
-                            'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                         }
                     });
                 } catch (error) {
@@ -1616,7 +1601,6 @@
                     method: 'PUT',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('token.access_token')}`
                     },
                     body: JSON.stringify({
                         row_version: getRowVersion(),

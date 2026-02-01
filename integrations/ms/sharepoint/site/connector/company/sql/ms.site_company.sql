@@ -1,6 +1,7 @@
-DROP TABLE IF EXISTS [ms].[SiteCompany];
 GO
 
+IF OBJECT_ID('ms.SiteCompany', 'U') IS NULL
+BEGIN
 CREATE TABLE [ms].[SiteCompany]
 (
     [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
@@ -13,13 +14,13 @@ CREATE TABLE [ms].[SiteCompany]
     CONSTRAINT [UQ_SiteCompany_CompanyId] UNIQUE ([CompanyId]),
     CONSTRAINT [UQ_SiteCompany_SiteId] UNIQUE ([SiteId])
 );
+END
 GO
 
 
-DROP PROCEDURE IF EXISTS CreateSiteCompany;
 GO
 
-CREATE PROCEDURE CreateSiteCompany
+CREATE OR ALTER PROCEDURE CreateSiteCompany
 (
     @CompanyId BIGINT,
     @SiteId BIGINT
@@ -48,10 +49,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadSiteCompanyById;
 GO
 
-CREATE PROCEDURE ReadSiteCompanyById
+CREATE OR ALTER PROCEDURE ReadSiteCompanyById
 (
     @Id BIGINT
 )
@@ -75,10 +75,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadSiteCompanyByCompanyId;
 GO
 
-CREATE PROCEDURE ReadSiteCompanyByCompanyId
+CREATE OR ALTER PROCEDURE ReadSiteCompanyByCompanyId
 (
     @CompanyId BIGINT
 )
@@ -102,10 +101,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS ReadSiteCompanyBySiteId;
 GO
 
-CREATE PROCEDURE ReadSiteCompanyBySiteId
+CREATE OR ALTER PROCEDURE ReadSiteCompanyBySiteId
 (
     @SiteId BIGINT
 )
@@ -129,10 +127,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteSiteCompanyById;
 GO
 
-CREATE PROCEDURE DeleteSiteCompanyById
+CREATE OR ALTER PROCEDURE DeleteSiteCompanyById
 (
     @Id BIGINT
 )
@@ -156,10 +153,9 @@ END;
 GO
 
 
-DROP PROCEDURE IF EXISTS DeleteSiteCompanyByCompanyId;
 GO
 
-CREATE PROCEDURE DeleteSiteCompanyByCompanyId
+CREATE OR ALTER PROCEDURE DeleteSiteCompanyByCompanyId
 (
     @CompanyId BIGINT
 )
@@ -182,4 +178,3 @@ BEGIN
 END;
 GO
 
-SELECT * FROM [ms].[SiteCompany];

@@ -15,8 +15,8 @@ import os
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from modules.attachment.business.service import AttachmentService
-from modules.search.business.service import get_search_service
+from services.attachment.business.service import AttachmentService
+from services.search.business.service import get_search_service
 
 
 def main():

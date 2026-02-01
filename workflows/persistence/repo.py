@@ -172,6 +172,7 @@ class WorkflowRepository:
             return set()  # Return empty set on error to avoid blocking inbox
 
     def read_by_trigger_message_id(self, trigger_message_id: str) -> Optional[Workflow]:
+        """Return first workflow with this trigger_message_id (any type). Prefer read_by_trigger_message_id_and_type for duplicate check."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -184,6 +185,29 @@ class WorkflowRepository:
                 return self._from_db(row)
         except Exception as error:
             logger.error("Error during read Workflow by trigger message ID: %s", error)
+            raise map_database_error(error)
+
+    def read_by_trigger_message_id_and_type(
+        self, trigger_message_id: str, workflow_type: str
+    ) -> Optional[Workflow]:
+        """Return workflow with this trigger_message_id and workflow_type (for correct duplicate detection)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadWorkflowByTriggerMessageIdAndType",
+                    params={
+                        "TriggerMessageId": trigger_message_id,
+                        "WorkflowType": workflow_type,
+                    },
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(
+                "Error during read Workflow by trigger message ID and type: %s", error
+            )
             raise map_database_error(error)
 
     def read_by_tenant_and_state(

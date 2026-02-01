@@ -96,32 +96,39 @@
     <div class="task-card-header">
         <h2>Email Conversation</h2>
         <div style="display: flex; gap: 1rem; align-items: center;">
-            {% if workflow.message_count > 0 %}
-            <span class="task-badge task-badge--neutral">💬 {{ workflow.message_count }} message{{ 's' if workflow.message_count != 1 else '' }}</span>
+            {% set msg_count = workflow.get('message_count', 0) or (workflow.get('conversation')|length if workflow.get('conversation') else 0) %}
+            {% if msg_count > 0 %}
+            <span class="task-badge task-badge--neutral">💬 {{ msg_count }} message{{ 's' if msg_count != 1 else '' }}</span>
             {% endif %}
-            {% if workflow.attachment_count > 0 %}
-            <span class="task-badge task-badge--info">📎 {{ workflow.attachment_count }} attachment{{ 's' if workflow.attachment_count != 1 else '' }}</span>
+            {% set att_count = workflow.get('attachment_count', 0) %}
+            {% if att_count > 0 %}
+            <span class="task-badge task-badge--info">📎 {{ att_count }} attachment{{ 's' if att_count != 1 else '' }}</span>
             {% endif %}
         </div>
     </div>
     <div class="task-card-body" style="padding: 0;">
-        {# Email conversation rendering #}
-        {% if workflow.conversation and workflow.conversation|length > 0 %}
+        {# Email conversation rendering - conversation may be in workflow or workflow.context #}
+        {% set conversation = workflow.get('conversation') or (workflow.get('context') or {}).get('conversation') or [] %}
+        {% if conversation and conversation|length > 0 %}
         <div class="task-conversation-thread" id="conversation-thread">
-            {% for msg in workflow.conversation %}
+            {% for msg in conversation %}
             <div class="task-conversation-message" data-msg-index="{{ loop.index0 }}">
                 <div class="task-message-header">
                     <div class="task-message-from">
-                        <strong>{{ msg.from_name or msg.from_address }}</strong>
-                        {% if msg.has_attachments %}
+                        <strong>{{ msg.get('from_name') or msg.get('from_address') or 'Unknown' }}</strong>
+                        {% if msg.get('has_attachments') %}
                         <span class="task-header-attachment">📎</span>
                         {% endif %}
                     </div>
-                    <div class="task-message-date">{{ msg.received_at[:10] if msg.received_at else '' }}</div>
+                    <div class="task-message-date">{{ msg.get('received_at')[:10] if msg.get('received_at') else '' }}</div>
                 </div>
-                <div class="task-message-preview">{{ msg.subject or 'No subject' }}</div>
+                <div class="task-message-preview">{{ msg.get('subject') or 'No subject' }}</div>
             </div>
             {% endfor %}
+        </div>
+        {% else %}
+        <div class="task-card-body" style="padding: 1rem;">
+            <p class="task-empty-state task-empty-state--small" style="margin: 0;">No conversation data for this workflow.</p>
         </div>
         {% endif %}
     </div>

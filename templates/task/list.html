@@ -13,9 +13,11 @@
     <div class="task-header">
         <div class="task-header-left">
             <h1>Tasks</h1>
+            <!--
             <button id="poll-btn" class="btn btn-primary task-poll-btn" onclick="pollInbox()">
                 <span class="task-poll-icon">↻</span> Poll Inbox
             </button>
+            -->
         </div>
         <div class="task-header-actions">
             <a href="/tasks/browse" class="btn btn-secondary">Browse Inbox</a>
@@ -71,7 +73,7 @@
             {% set source_icon = '📧' if task.source_type == 'email' else '📊' if task.source_type == 'upload' else '✍️' %}
             {% set effective_status = task.state or task.status or 'open' %}
 
-            <a href="/tasks/{{ task.public_id }}{% if selected_state %}?from_state={{ selected_state }}{% endif %}" class="task-list-item {{ 'task-list-item--alert' if task.needs_attention or effective_status == 'needs_review' else '' }}">
+            <a href="{% if task.bill_public_id %}/bills/{{ task.bill_public_id }}{% else %}/tasks/{{ task.public_id }}{% if selected_state %}?from_state={{ selected_state }}{% endif %}{% endif %}" class="task-list-item {{ 'task-list-item--alert' if task.needs_attention or effective_status == 'needs_review' else '' }}">
                 <div class="task-list-item-status">
                     {% if effective_status == 'completed' %}
                         <span class="task-status-icon task-status-icon--completed">✓</span>
@@ -92,6 +94,9 @@
                             <span class="task-list-item-subject">{{ task.subject or task.title or 'No subject' }}</span>
                         {% else %}
                             <span class="task-list-item-subject">{{ task.title or task.description or 'Untitled Task' }}</span>
+                        {% endif %}
+                        {% if task.bill_public_id and task.bill_status %}
+                            <span class="task-badge task-badge--sm task-badge--neutral">{{ task.bill_status }}</span>
                         {% endif %}
                         {% if task.task_type %}
                             <span class="task-badge task-badge--sm task-badge--neutral">{{ task.task_type|replace('_', ' ')|title }}</span>

@@ -13,6 +13,7 @@ from workflows.definitions.base import WorkflowDefinition
 from workflows.definitions.bill_intake import (
     BILL_INTAKE_WORKFLOW,
     EMAIL_INTAKE_WORKFLOW,
+    EXPENSE_INTAKE_WORKFLOW,
     BILL_PROCESSING_WORKFLOW,
 )
 from workflows.exceptions import WorkflowStepError
@@ -47,6 +48,7 @@ class BillIntakeExecutor:
         # Register workflow definitions
         self.orchestrator.register_definition(BILL_INTAKE_WORKFLOW)
         self.orchestrator.register_definition(EMAIL_INTAKE_WORKFLOW)
+        self.orchestrator.register_definition(EXPENSE_INTAKE_WORKFLOW)
         self.orchestrator.register_definition(BILL_PROCESSING_WORKFLOW)
         
         # Initialize agents via registry
@@ -59,6 +61,58 @@ class BillIntakeExecutor:
             self.jinja_env = None
             logger.warning(f"Template directory not found: {TEMPLATE_DIR}")
     
+    def _mark_conversation_read_and_unflag(
+        self,
+        conversation_id: Optional[str],
+        conversation: Optional[List[Dict]],
+    ) -> None:
+        """
+        Mark all messages in the conversation as read and remove flag.
+        Used so the conversation drops out of Browse Inbox (flagged-only list).
+        Sync helper; log failures, do not raise.
+        """
+        from integrations.ms.mail.external.client import (
+            mark_message_read,
+            unflag_message,
+            search_all_messages,
+        )
+        message_ids: List[str] = []
+        if conversation:
+            for msg in conversation:
+                mid = msg.get("message_id") or msg.get("id")
+                if mid:
+                    message_ids.append(mid)
+        elif conversation_id:
+            resp = search_all_messages(conversation_id=conversation_id, top=50)
+            if resp.get("status_code") == 200:
+                for m in resp.get("messages", []):
+                    mid = m.get("message_id") or m.get("id")
+                    if mid:
+                        message_ids.append(mid)
+        if not message_ids:
+            return
+        for message_id in message_ids:
+            try:
+                r = mark_message_read(message_id, True)
+                if r.get("status_code") not in (200,):
+                    logger.warning(
+                        "mark_message_read failed for %s: %s",
+                        message_id[:20] + "..." if len(message_id) > 20 else message_id,
+                        r.get("message"),
+                    )
+            except Exception as e:
+                logger.warning("mark_message_read error for message %s: %s", message_id, e)
+            try:
+                u = unflag_message(message_id)
+                if u.get("status_code") not in (200, 204):
+                    logger.warning(
+                        "unflag_message failed for %s: %s",
+                        message_id[:20] + "..." if len(message_id) > 20 else message_id,
+                        u.get("message"),
+                    )
+            except Exception as e:
+                logger.warning("unflag_message error for message %s: %s", message_id, e)
+    
     async def start_from_email(
         self,
         tenant_id: int,
@@ -67,6 +121,8 @@ class BillIntakeExecutor:
         conversation_id: Optional[str] = None,
         conversation: Optional[List[Dict]] = None,
         total_attachments: int = 0,
+        workflow_type: str = "email_intake",
+        preferred_module: Optional[str] = None,
     ) -> Workflow:
         """
         Start a new email intake workflow from a conversation.
@@ -78,11 +134,13 @@ class BillIntakeExecutor:
             conversation_id: Conversation ID for thread correlation
             conversation: Full conversation thread with all messages
             total_attachments: Total count of attachments across conversation
+            workflow_type: email_intake (bill/invoice) or expense_intake
             
         Returns:
             Created workflow
         """
-        logger.info(f"Starting email intake workflow for message {message_id} with {len(conversation or [])} messages")
+        print(f"[BillIntakeExecutor] start_from_email workflow_type={workflow_type} message_id={message_id[:24] if message_id else None}... tenant_id={tenant_id}")
+        logger.info(f"Starting {workflow_type} workflow for message {message_id} with {len(conversation or [])} messages")
         
         # Build initial context with full conversation data
         initial_context = {
@@ -93,6 +151,9 @@ class BillIntakeExecutor:
             "message_count": len(conversation or []),
             "total_attachments": total_attachments,
         }
+        if preferred_module == "bill":
+            initial_context["confirmed_entity_type"] = "bill"
+            initial_context["classification"] = {"entity_type": "bill"}
         
         # Extract the triggered email from conversation for quick access
         triggered_email = None
@@ -125,30 +186,79 @@ class BillIntakeExecutor:
                 })
         initial_context["all_conversation_attachments"] = all_attachments
         
-        # Create the workflow with email_intake type
-        workflow = self.orchestrator.create_workflow(
+        # Create the workflow with selected type (email_intake or expense_intake)
+        workflow, created = self.orchestrator.create_workflow(
             tenant_id=tenant_id,
-            workflow_type="email_intake",
+            workflow_type=workflow_type,
             trigger_message_id=message_id,
             conversation_id=conversation_id,
             context=initial_context,
-            created_by="email_intake_executor",
+            created_by=f"{workflow_type}_executor",
         )
-        # Create Task entry for list/detail UI
+        # If INSERT...OUTPUT didn't return a row, workflow.id may be None; re-read by public_id
+        if workflow.id is None and workflow.public_id:
+            from workflows.persistence.repo import WorkflowRepository
+            wf_repo = WorkflowRepository()
+            refetched = wf_repo.read_by_public_id(workflow.public_id)
+            if refetched:
+                workflow = refetched
+                print(f"[BillIntakeExecutor] re-read workflow by public_id id={workflow.id}")
+        print(f"[BillIntakeExecutor] created workflow id={workflow.id} public_id={workflow.public_id} workflow_type={workflow.workflow_type} state={workflow.state} is_new={created}")
+        # Create or update Task entry for list/detail UI (upsert handles duplicate workflow)
+        task_created_or_updated = False
+        task = None
         try:
             from services.tasks.business.service import TaskService
-            TaskService().create_from_workflow(
+            task = TaskService().upsert_task_for_workflow(
                 workflow,
                 source_type="email",
-                source_id=conversation_id,
+                source_id=workflow.conversation_id or (workflow.context or {}).get("conversation_id"),
             )
+            if task:
+                task_created_or_updated = True
+                print(f"[BillIntakeExecutor] task created/updated task_id={task.public_id} workflow_id={workflow.public_id}")
+                logger.info("Task %s linked to workflow %s", task.public_id, workflow.public_id)
+            else:
+                print(f"[BillIntakeExecutor] upsert_task_for_workflow returned None (workflow.id={workflow.id} workflow.tenant_id={workflow.tenant_id})")
         except Exception as e:
+            print(f"[BillIntakeExecutor] Failed to create task for workflow {workflow.public_id}: {e}")
             logger.warning("Failed to create task for workflow %s: %s", workflow.public_id, e)
-        # Run triage in background - don't block the response
-        import asyncio
-        asyncio.create_task(self._run_triage_background(workflow, access_token))
-        
-        return workflow
+        # Mark conversation read and unflag so it drops out of Browse Inbox (fire-and-forget)
+        if conversation_id or conversation:
+            try:
+                loop = asyncio.get_event_loop()
+                loop.run_in_executor(
+                    None,
+                    lambda: self._mark_conversation_read_and_unflag(conversation_id, conversation),
+                )
+                logger.info("Marking conversation read and unflagging messages")
+            except Exception as e:
+                logger.warning("Failed to schedule mark read/unflag: %s", e)
+        # Run triage in background only for newly created workflows (duplicate is already past triage)
+        if created:
+            asyncio.create_task(self._run_triage_background(workflow, access_token))
+        # Duplicate workflow + user chose Bill but task has no bill yet -> ensure draft bill is created
+        elif preferred_module == "bill" and task and not task.bill_id:
+            if workflow.state == "received":
+                # Triage never ran: set confirmed_entity_type and run triage so attachment_blob_urls get set, then spawn at end
+                from workflows.persistence.repo import WorkflowRepository
+                merged = dict(workflow.context or {})
+                merged["confirmed_entity_type"] = "bill"
+                merged["classification"] = {"entity_type": "bill"}
+                wf_repo = WorkflowRepository()
+                updated = wf_repo.update_context(workflow.public_id, merged)
+                if updated:
+                    logger.info("Duplicate workflow %s (received) has no bill; running triage then bill_processing", workflow.public_id)
+                    asyncio.create_task(self._run_triage_background(updated, access_token))
+                else:
+                    asyncio.create_task(self.spawn_bill_processing(workflow, access_token))
+            else:
+                # Already classified: spawn bill_processing with existing context
+                logger.info("Duplicate workflow %s has no bill; spawning bill_processing", workflow.public_id)
+                asyncio.create_task(self.spawn_bill_processing(workflow, access_token))
+
+        is_duplicate = not created
+        return (workflow, is_duplicate, task_created_or_updated)
     
     async def _run_triage_background(
         self,
@@ -219,23 +329,28 @@ class BillIntakeExecutor:
             # Sync task status
             try:
                 from services.tasks.business.service import TaskService
-                TaskService().sync_status_from_workflow(workflow)
+                TaskService().sync_status_from_workflow(workflow.id, workflow.state)
             except Exception as e:
                 logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e)
             return workflow
         
-        # Update workflow with triage results
+        # Update workflow with triage results; preserve confirmed_entity_type if user pre-selected Bill
+        context_updates = dict(result.context_updates or {})
+        confirmed = (workflow.context or {}).get("confirmed_entity_type")
+        if confirmed:
+            context_updates["confirmed_entity_type"] = confirmed
+            context_updates["classification"] = (workflow.context or {}).get("classification") or {"entity_type": confirmed}
         workflow = self.orchestrator.transition(
             public_id=workflow.public_id,
             trigger="classification_complete",
-            context_updates=result.context_updates,
+            context_updates=context_updates,
             created_by="email_triage_agent",
         )
 
         # Sync task status
         try:
             from services.tasks.business.service import TaskService
-            TaskService().sync_status_from_workflow(workflow)
+            TaskService().sync_status_from_workflow(workflow.id, workflow.state)
         except Exception as e:
             logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e)
 
@@ -243,6 +358,10 @@ class BillIntakeExecutor:
         detected_bills = result.context_updates.get("detected_bills", [])
         if len(detected_bills) > 1:
             await self._create_child_workflows(workflow, detected_bills, access_token)
+
+        # When user chose Bill at Create Task, spawn draft bill creation after triage (so attachment_blob_urls are set)
+        if (workflow.context or {}).get("confirmed_entity_type") == "bill":
+            asyncio.create_task(self.spawn_bill_processing(workflow, access_token))
 
         return workflow
     
@@ -541,7 +660,7 @@ class BillIntakeExecutor:
             # Sync task status
             try:
                 from services.tasks.business.service import TaskService
-                TaskService().sync_status_from_workflow(workflow)
+                TaskService().sync_status_from_workflow(workflow.id, workflow.state)
             except Exception as e:
                 logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e)
 
@@ -569,7 +688,7 @@ class BillIntakeExecutor:
             # Sync task status
             try:
                 from services.tasks.business.service import TaskService
-                TaskService().sync_status_from_workflow(workflow)
+                TaskService().sync_status_from_workflow(workflow.id, workflow.state)
             except Exception as e_sync:
                 logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e_sync)
 
@@ -765,7 +884,7 @@ class BillIntakeExecutor:
         }
         
         # Create the bill_processing workflow
-        workflow = self.orchestrator.create_workflow(
+        workflow, _ = self.orchestrator.create_workflow(
             tenant_id=parent_workflow.tenant_id,
             workflow_type="bill_processing",
             conversation_id=parent_workflow.conversation_id,
@@ -1031,12 +1150,18 @@ class BillIntakeExecutor:
             created_by="bill_intake_executor",
         )
 
-        # Sync task status
-        try:
-            from services.tasks.business.service import TaskService
-            TaskService().sync_status_from_workflow(workflow)
-        except Exception as e:
-            logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e)
+        # Link parent (email_intake) task to this bill so list routes to bill
+        parent_public_id = (workflow.context or {}).get("parent_workflow_id")
+        if parent_public_id:
+            try:
+                from services.tasks.business.service import TaskService
+                TaskService().set_task_bill_for_parent_workflow(
+                    parent_workflow_public_id=parent_public_id,
+                    bill_id=bill_data.get("id"),
+                    bill_public_id=bill_data.get("public_id"),
+                )
+            except Exception as e:
+                logger.warning("Failed to link parent task to bill for %s: %s", parent_public_id, e)
 
         self.orchestrator.log_step(
             workflow_id=workflow.id,

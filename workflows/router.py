@@ -486,20 +486,20 @@ class TriggerRouter:
             For sync (expects_response=True): Operation result
             For async (expects_response=False): {"workflow_id": "...", "status": "started"}
         """
+        workflow_type = context.workflow_type or self._infer_workflow_type(context)
+        print(f"[TriggerRouter] route trigger_type={context.trigger_type.value} workflow_type={workflow_type} correlation_id={context.correlation_id}")
         logger.info(
             f"Routing trigger: type={context.trigger_type.value}, "
             f"source={context.trigger_source.value}, "
-            f"workflow_type={context.workflow_type}, "
+            f"workflow_type={workflow_type}, "
             f"correlation_id={context.correlation_id}"
         )
-        
-        # Determine workflow type if not specified
-        workflow_type = context.workflow_type or self._infer_workflow_type(context)
         
         # Route based on workflow type
         handler = self._get_handler(workflow_type)
         
         if handler is None:
+            print(f"[TriggerRouter] no handler for workflow_type={workflow_type}")
             logger.warning(f"No handler for workflow type: {workflow_type}")
             return {
                 "success": False,
@@ -584,9 +584,9 @@ class TriggerRouter:
         # Long-running workflow handlers
         handlers = {
             "email_intake": self._handle_email_intake,
+            "expense_intake": self._handle_expense_intake,
             "approval_response": self._handle_approval_response,
             "timeout_handler": self._handle_timeout,
-            # Add more handlers as workflows are implemented
         }
         return handlers.get(workflow_type)
     
@@ -595,25 +595,54 @@ class TriggerRouter:
     # =========================================================================
     
     async def _handle_email_intake(self, context: TriggerContext) -> Dict[str, Any]:
-        """Handle email intake workflow."""
+        """Handle email intake workflow (bill/invoice). When module=bill, spawns draft bill creation."""
         message_id = context.payload.get("message_id")
-        
-        # Build conversation data from payload
         conversation = context.payload.get("conversation", [])
-        
-        workflow = await self.executor.start_from_email(
+        total_attachments = context.payload.get("total_attachments", len(context.attachments))
+        module = (context.payload.get("module") or "bill").lower()
+        preferred_module = "bill" if module == "bill" else None
+        print(f"[TriggerRouter] _handle_email_intake message_id={message_id[:20] if message_id else None}... workflow_type=email_intake module={module}")
+        workflow, is_duplicate, task_created = await self.executor.start_from_email(
             tenant_id=context.tenant_id,
             access_token=context.access_token,
             message_id=message_id,
             conversation_id=context.conversation_id,
             conversation=conversation,
-            total_attachments=len(context.attachments),
+            total_attachments=total_attachments,
+            workflow_type="email_intake",
+            preferred_module=preferred_module,
         )
-        
+        print(f"[TriggerRouter] _handle_email_intake done workflow_id={workflow.public_id} state={workflow.state} duplicate={is_duplicate} task_created={task_created}")
         return {
             "workflow_id": workflow.public_id,
             "workflow_type": workflow.workflow_type,
             "state": workflow.state,
+            "duplicate": is_duplicate,
+            "task_created": task_created,
+        }
+
+    async def _handle_expense_intake(self, context: TriggerContext) -> Dict[str, Any]:
+        """Handle expense intake workflow (expense)."""
+        message_id = context.payload.get("message_id")
+        conversation = context.payload.get("conversation", [])
+        total_attachments = context.payload.get("total_attachments", len(context.attachments))
+        print(f"[TriggerRouter] _handle_expense_intake message_id={message_id[:20] if message_id else None}... workflow_type=expense_intake")
+        workflow, is_duplicate, task_created = await self.executor.start_from_email(
+            tenant_id=context.tenant_id,
+            access_token=context.access_token,
+            message_id=message_id,
+            conversation_id=context.conversation_id,
+            conversation=conversation,
+            total_attachments=total_attachments,
+            workflow_type="expense_intake",
+        )
+        print(f"[TriggerRouter] _handle_expense_intake done workflow_id={workflow.public_id} state={workflow.state} duplicate={is_duplicate} task_created={task_created}")
+        return {
+            "workflow_id": workflow.public_id,
+            "workflow_type": workflow.workflow_type,
+            "state": workflow.state,
+            "duplicate": is_duplicate,
+            "task_created": task_created,
         }
     
     async def _handle_approval_response(self, context: TriggerContext) -> Dict[str, Any]:

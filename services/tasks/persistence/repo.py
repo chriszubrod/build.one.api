@@ -116,8 +116,11 @@ class TaskRepository:
                 row = cursor.fetchone()
                 if not row:
                     raise map_database_error(Exception("CreateTask failed"))
-                return self._from_db(row)
+                task = self._from_db(row)
+                print(f"[TaskRepository] create succeeded TaskType={task_type} ReferenceId={reference_id} PublicId={task.public_id} WorkflowId={workflow_id}")
+                return task
         except Exception as error:
+            print(f"[TaskRepository] create failed: {error}")
             logger.error("Error during create Task: %s", error)
             raise map_database_error(error)
 
@@ -210,6 +213,7 @@ class TaskRepository:
         status: Optional[str] = None,
         description: Optional[str] = None,
         context: Optional[dict] = None,
+        bill_id: Optional[int] = None,
     ) -> Optional[Task]:
         try:
             # Serialize context dict to JSON if present
@@ -232,6 +236,7 @@ class TaskRepository:
                         "Status": status,
                         "Description": description,
                         "Context": context_json,
+                        "BillId": bill_id,
                     },
                 )
                 row = cursor.fetchone()

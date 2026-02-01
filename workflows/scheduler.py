@@ -101,6 +101,7 @@ class WorkflowScheduler:
                     access_token=access_token,
                     message_id=message.id,
                     conversation_id=message.conversation_id,
+                    workflow_type="email_intake",
                 )
                 created_workflows.append(workflow)
                 self._processed_messages.add(message.id)

@@ -459,7 +459,7 @@ function renderConversation(thread, selectedEmail, selectedId) {
             </div>
             <div class="task-detail-actions">
                 ${selectedEmail.web_link ? `<a href="${selectedEmail.web_link}" target="_blank" class="task-link-subtle">Open in Outlook ↗</a>` : ''}
-                <a href="#" class="task-link-subtle" onclick="createWorkflow('${selectedEmail.id}'); return false;">Create Workflow</a>
+                <a href="#" class="task-link-subtle" onclick="openCreateTaskModal('${selectedEmail.id}'); return false;">Create Task</a>
                 ${selectedEmail.is_flagged ? `<a href="#" class="task-link-subtle" onclick="removeFlag('${selectedEmail.id}'); return false;">Remove Flag</a>` : ''}
             </div>
         </div>
@@ -800,28 +800,71 @@ async function removeFlag(emailId) {
     }
 }
 
-async function createWorkflow(emailId) {
-    if (!confirm('Create a workflow from this email conversation? The agent will analyze all messages and attachments.')) {
+// Module options for Create Task (value must match API: bill, expense, invoice, contract, change_order, other)
+const TASK_MODULES = [
+    { value: 'bill', label: 'Bill' },
+    { value: 'expense', label: 'Expense' },
+    { value: 'invoice', label: 'Invoice' },
+    { value: 'contract', label: 'Contract' },
+    { value: 'change_order', label: 'Change Order' },
+    { value: 'other', label: 'Other' },
+];
+
+function openCreateTaskModal(emailId) {
+    const modal = document.getElementById('create-task-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.id = 'create-task-modal';
+        wrap.className = 'task-modal-overlay';
+        wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:1000;';
+        wrap.innerHTML = `
+            <div class="task-create-task-dialog" style="background:#fff;padding:1.5rem;border-radius:8px;min-width:280px;box-shadow:0 4px 20px rgba(0,0,0,0.25);position:relative;z-index:1001;">
+                <h3 style="margin:0 0 1rem;font-size:1.1rem;color:#1e293b;">Create Task</h3>
+                <p style="margin:0 0 0.75rem;color:#555;font-size:0.9rem;">Which module is this task for?</p>
+                <select id="create-task-module" style="width:100%;padding:0.5rem;margin-bottom:1rem;font-size:1rem;border:1px solid #ccc;border-radius:4px;">
+                    ${TASK_MODULES.map(m => `<option value="${m.value}">${m.label}</option>`).join('')}
+                </select>
+                <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+                    <button type="button" class="btn btn-secondary" id="create-task-cancel">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="create-task-confirm">Create Task</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(wrap);
+        wrap.querySelector('#create-task-cancel').onclick = () => { wrap.remove(); };
+        wrap.querySelector('#create-task-confirm').onclick = () => {
+            const module = wrap.querySelector('#create-task-module').value;
+            wrap.remove();
+            createTask(emailId, module);
+        };
+        wrap.addEventListener('click', (e) => { if (e.target === wrap) wrap.remove(); });
         return;
     }
-    
+    modal.style.display = 'flex';
+    document.getElementById('create-task-module').value = 'bill';
+    document.getElementById('create-task-confirm').onclick = () => {
+        const module = document.getElementById('create-task-module').value;
+        modal.style.display = 'none';
+        createTask(emailId, module);
+    };
+}
+
+async function createTask(emailId, module) {
     const detailPanel = document.getElementById('email-detail');
     const buttons = detailPanel.querySelectorAll('button');
     const links = detailPanel.querySelectorAll('a.task-link-subtle');
     
-    // Show loading overlay
     const overlay = document.createElement('div');
     overlay.className = 'task-workflow-creating';
     overlay.innerHTML = `
         <div class="task-workflow-creating-content">
             <span class="task-poll-icon task-poll-spinning">↻</span>
-            <span>Creating workflow...</span>
+            <span>Creating task...</span>
         </div>
     `;
     detailPanel.style.position = 'relative';
     detailPanel.appendChild(overlay);
     
-    // Disable buttons and links
     buttons.forEach(btn => btn.disabled = true);
     links.forEach(link => {
         link.style.pointerEvents = 'none';
@@ -829,7 +872,6 @@ async function createWorkflow(emailId) {
     });
     
     try {
-        // Build the full conversation payload
         const totalAttachments = currentThread?.messages?.reduce(
             (sum, msg) => sum + (msg.attachments?.length || 0), 0
         ) || 0;
@@ -851,6 +893,7 @@ async function createWorkflow(emailId) {
                 attachments: msg.attachments || [],
             })),
             total_attachments: totalAttachments,
+            module: module || 'bill',
         };
         
         const response = await fetch('/api/v1/tasks/workflows/start', {
@@ -861,13 +904,17 @@ async function createWorkflow(emailId) {
             body: JSON.stringify(payload)
         });
         
-        // Remove overlay
         overlay.remove();
         
         if (response.ok) {
             const result = await response.json();
-            // Show brief success toast instead of alert
-            showToast('✓ Workflow created! Processing in background.', 'success');
+            if (result.duplicate) {
+                showToast('This conversation already has a task. View it on the Tasks list.', 'info');
+            } else if (result.task_created === false) {
+                showToast('Workflow started but task could not be created in database. Check server logs.', 'error');
+            } else {
+                showToast('✓ Task created! Processing in background.', 'success');
+            }
             
             // Find the conversation in the list and remove it
             const conversationId = currentSelectedEmail?.conversation_id || currentThread?.conversation_id;

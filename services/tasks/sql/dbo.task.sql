@@ -284,7 +284,8 @@ CREATE PROCEDURE UpdateTask
     @Title NVARCHAR(500) = NULL,
     @Status NVARCHAR(50) = NULL,
     @Description NVARCHAR(MAX) = NULL,
-    @Context NVARCHAR(MAX) = NULL
+    @Context NVARCHAR(MAX) = NULL,
+    @BillId BIGINT = NULL
 )
 AS
 BEGIN
@@ -298,6 +299,7 @@ BEGIN
         [Status] = COALESCE(@Status, [Status]),
         [Description] = COALESCE(@Description, [Description]),
         [Context] = COALESCE(@Context, [Context]),
+        [BillId] = CASE WHEN @BillId IS NOT NULL THEN @BillId ELSE [BillId] END,
         [ModifiedDatetime] = @Now
     OUTPUT
         INSERTED.[Id],

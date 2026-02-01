@@ -268,6 +268,44 @@ BEGIN
 END;
 GO
 
+-- Duplicate check: return workflow by trigger_message_id AND workflow_type (so we get email_intake, not bill_processing)
+DROP PROCEDURE IF EXISTS ReadWorkflowByTriggerMessageIdAndType;
+GO
+
+CREATE PROCEDURE ReadWorkflowByTriggerMessageIdAndType
+(
+    @TriggerMessageId NVARCHAR(200),
+    @WorkflowType NVARCHAR(100)
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT TOP 1
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [TenantId],
+        [WorkflowType],
+        [State],
+        [ParentWorkflowId],
+        [ConversationId],
+        [TriggerMessageId],
+        [VendorId],
+        [ProjectId],
+        [BillId],
+        [CreatedBy],
+        [Context],
+        CONVERT(VARCHAR(19), [CompletedDatetime], 120) AS [CompletedDatetime]
+    FROM dbo.[Workflow]
+    WHERE [TriggerMessageId] = @TriggerMessageId AND [WorkflowType] = @WorkflowType;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
 
 DROP PROCEDURE IF EXISTS ReadWorkflowsByTenantAndState;
 GO

@@ -157,6 +157,15 @@ EMAIL_INTAKE_WORKFLOW = WorkflowDefinition(
     steps=EMAIL_INTAKE_STEPS,
 )
 
+# Same structure as email_intake; expense-specific logic can be added later.
+EXPENSE_INTAKE_WORKFLOW = WorkflowDefinition(
+    name="expense_intake",
+    initial_state="received",
+    states=EMAIL_INTAKE_STATES,
+    transitions=EMAIL_INTAKE_TRANSITIONS,
+    steps=EMAIL_INTAKE_STEPS,
+)
+
 
 # =============================================================================
 # Bill Processing Workflow - Entity-Specific Processing

@@ -19,11 +19,21 @@ from services.tasks.api.schemas import (
 )
 from services.tasks.business.service import TaskService
 from workflows.admin import WorkflowAdmin
-from workflows.executor import BillIntakeExecutor
 from workflows.persistence.repo import WorkflowRepository
+from workflows.router import TriggerRouter
+from workflows.router import TriggerContext, TriggerType, TriggerSource
 from workflows.scheduler import WorkflowScheduler
 
 logger = logging.getLogger(__name__)
+
+
+def _module_to_workflow_type(module: str) -> str:
+    """Map UI module selection to workflow type for routing."""
+    m = (module or "bill").lower()
+    if m == "expense":
+        return "expense_intake"
+    # bill, invoice, contract, change_order, other -> email_intake for now
+    return "email_intake"
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["api", "tasks"])
 
@@ -352,27 +362,51 @@ async def start_workflow(
     body: StartWorkflowRequest,
     current_user: dict = Depends(get_current_user_api),
 ) -> Dict:
-    """Start a workflow from email (e.g. from tasks browse). Creates/updates Task row."""
+    """Create Task from email (tasks browse). Routes by module (bill, expense, etc.) to correct workflow."""
     tenant_id = current_user.get("tenant_id", 1)
+    workflow_type = _module_to_workflow_type(body.module)
+    print(f"[tasks/workflows/start] module={body.module} -> workflow_type={workflow_type} tenant_id={tenant_id} message_id={body.message_id[:20] if body.message_id else None}...")
     access_token = _get_ms_access_token(tenant_id)
     if not access_token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="MS Graph token not available. Connect Microsoft integration first.",
         )
-    executor = BillIntakeExecutor()
-    workflow = await executor.start_from_email(
+    router = TriggerRouter()
+    context = TriggerContext(
+        trigger_type=TriggerType.API_CALL,
+        trigger_source=TriggerSource.API,
         tenant_id=tenant_id,
+        user_id=current_user.get("user_id"),
         access_token=access_token,
-        message_id=body.message_id,
+        payload={
+            "message_id": body.message_id,
+            "conversation_id": body.conversation_id,
+            "conversation": body.conversation,
+            "total_attachments": body.total_attachments,
+            "module": body.module,
+        },
+        expects_response=True,
+        workflow_type=workflow_type,
         conversation_id=body.conversation_id,
-        conversation=body.conversation,
-        total_attachments=body.total_attachments,
     )
+    result = await router.route(context)
+    if not result.get("success"):
+        error = result.get("error", "Unknown error")
+        print(f"[tasks/workflows/start] route failed: {error}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error)
+    workflow_id = result.get("workflow_id")
+    workflow_type_res = result.get("workflow_type", workflow_type)
+    state = result.get("state", "received")
+    duplicate = result.get("duplicate", False)
+    task_created = result.get("task_created", False)
+    print(f"[tasks/workflows/start] success workflow_id={workflow_id} workflow_type={workflow_type_res} state={state} duplicate={duplicate} task_created={task_created}")
     return {
-        "workflow_id": workflow.public_id,
-        "workflow_type": workflow.workflow_type,
-        "state": workflow.state,
+        "workflow_id": workflow_id,
+        "workflow_type": workflow_type_res,
+        "state": state,
+        "duplicate": duplicate,
+        "task_created": task_created,
     }
 
 
@@ -404,7 +438,7 @@ def _get_ms_access_token(tenant_id: int) -> Optional[str]:
     """Get MS Graph access token for the tenant."""
     try:
         from integrations.ms.auth.business.service import MsAuthService
-        ms_auth = MsAuthService().ensure_valid_token(tenant_id=tenant_id)
+        ms_auth = MsAuthService().ensure_valid_token(tenant_id=None)
         return ms_auth.access_token if ms_auth else None
     except Exception as e:
         logger.warning("Failed to get MS token for tenant %s: %s", tenant_id, e)
@@ -446,8 +480,17 @@ def inbox_browse(
         cid = m.get("conversation_id") or m.get("conversationId") or ""
         if cid:
             by_conv[cid].append(m)
+    # Keep only conversations that have at least one flagged message
+    flagged_only = {
+        cid: msgs for cid, msgs in by_conv.items()
+        if any((m.get("flag") or {}).get("flagStatus") == "flagged" for m in msgs)
+    }
+    # Sort by latest message per conversation (desc), take first limit
+    def _latest_received(msgs: List[Dict]) -> str:
+        return max((m.get("received_datetime") or m.get("receivedDateTime") or "" for m in msgs), default="")
+    sorted_items = sorted(flagged_only.items(), key=lambda x: _latest_received(x[1]), reverse=True)[:limit]
     conversations = []
-    for cid, msgs in list(by_conv.items())[:limit]:
+    for cid, msgs in sorted_items:
         msgs_sorted = sorted(msgs, key=lambda x: x.get("received_datetime") or x.get("receivedDateTime") or "", reverse=True)
         latest = msgs_sorted[0]
         participants = list({(m.get("from_name") or m.get("from_email") or "Unknown") for m in msgs_sorted})

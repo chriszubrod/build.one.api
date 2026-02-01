@@ -68,6 +68,7 @@ class TaskService:
         description: Optional[str] = None,
         status: Optional[str] = None,
         context: Optional[dict] = None,
+        bill_id: Optional[int] = None,
     ) -> Optional[Task]:
         """Update a task's fields."""
         return self.task_repo.update(
@@ -76,11 +77,42 @@ class TaskService:
             description=description,
             status=status,
             context=context,
+            bill_id=bill_id,
         )
 
     def update_status(self, public_id: str, status: str) -> Optional[Task]:
         """Quick status-only update."""
         return self.task_repo.update(public_id=public_id, status=status)
+
+    def set_task_bill_for_parent_workflow(
+        self,
+        parent_workflow_public_id: str,
+        bill_id: int,
+        bill_public_id: str,
+    ) -> Optional[Task]:
+        """Link the task for the given (email_intake) workflow to the created bill."""
+        try:
+            from workflows.persistence.repo import WorkflowRepository
+
+            wf_repo = WorkflowRepository()
+            parent = wf_repo.read_by_public_id(parent_workflow_public_id)
+            if not parent:
+                logger.warning("Parent workflow not found: %s", parent_workflow_public_id)
+                return None
+            task = self.task_repo.read_by_workflow_id(parent.id)
+            if not task:
+                logger.warning("No task for workflow %s", parent_workflow_public_id)
+                return None
+            merged = dict(task.context or {})
+            merged["bill_public_id"] = bill_public_id
+            return self.task_repo.update(
+                public_id=task.public_id,
+                bill_id=bill_id,
+                context=merged,
+            )
+        except Exception as e:
+            logger.warning("Failed to set task bill for parent workflow %s: %s", parent_workflow_public_id, e)
+            return None
 
     def get_tasks(
         self,
@@ -315,6 +347,14 @@ class TaskService:
                 item["needs_attention"] = task.status == "needs_review"
                 item["days_ago"] = None
 
+            # When task is linked to a bill, add bill_public_id and bill_status for list link/display
+            if task.bill_id:
+                bill_enrichment = self._enrich_with_bill(task)
+                if bill_enrichment:
+                    item.update(bill_enrichment)
+            elif (task.context or {}).get("bill_public_id"):
+                item["bill_public_id"] = task.context.get("bill_public_id")
+
             result.append(item)
         return result
 
@@ -366,6 +406,24 @@ class TaskService:
             logger.warning("Failed to enrich task %s with workflow summary: %s", task.public_id, e)
             return None
 
+    def _enrich_with_bill(self, task: Task) -> Optional[Dict]:
+        """Enrich task with bill public_id and status for list link/display."""
+        if not task.bill_id:
+            return None
+        try:
+            from services.bill.business.service import BillService
+
+            bill = BillService().read_by_id(task.bill_id)
+            if not bill:
+                return None
+            return {
+                "bill_public_id": bill.public_id,
+                "bill_status": "Draft" if bill.is_draft else "Finalized",
+            }
+        except Exception as e:
+            logger.warning("Failed to enrich task %s with bill: %s", task.public_id, e)
+            return None
+
     # =========================================================================
     # Legacy workflow-specific methods (kept for backward compatibility)
     # =========================================================================
@@ -380,7 +438,9 @@ class TaskService:
         Create or update a Task for this workflow (one Task per TaskType + ReferenceId).
         Legacy method - kept for backward compatibility with existing workflow code.
         """
+        print(f"[TaskService] upsert_task_for_workflow workflow.id={workflow.id} workflow.tenant_id={workflow.tenant_id} workflow.state={workflow.state}")
         if not workflow.id or not workflow.tenant_id:
+            print(f"[TaskService] upsert_task_for_workflow skipping: missing workflow.id or workflow.tenant_id")
             return None
 
         if workflow.state in TERMINAL_WORKFLOW_STATES:
@@ -401,8 +461,10 @@ class TaskService:
                 title=title,
                 status=status,
             )
+            print(f"[TaskService] upsert_task_for_workflow updated existing task public_id={existing.public_id}")
             return updated
 
+        print(f"[TaskService] upsert_task_for_workflow creating new task tenant_id={workflow.tenant_id} reference_id={workflow.id} title={title[:50] if title else None}...")
         return self.task_repo.create(
             tenant_id=workflow.tenant_id,
             task_type="workflow",

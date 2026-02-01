@@ -6,11 +6,12 @@ from pydantic import BaseModel, Field
 
 
 class StartWorkflowRequest(BaseModel):
-    """Request to start a workflow from email (tasks browse)."""
+    """Request to start a workflow from email (tasks browse). Create Task with module selection."""
     message_id: str = Field(..., description="Selected message ID")
     conversation_id: Optional[str] = Field(default=None, description="Conversation ID")
     conversation: List[Dict[str, Any]] = Field(default_factory=list, description="Full conversation messages")
     total_attachments: int = Field(default=0, description="Total attachments in conversation")
+    module: str = Field(default="bill", description="Module for this task: bill, expense, invoice, contract, change_order, other")
 
 
 class PollRunResponse(BaseModel):

@@ -122,17 +122,33 @@ async def task_detail(
         wf_dict = {}
     if summary:
         wf_dict.update(summary)
-    events = [
-        {
-            "from_state": e.get("from_state"),
-            "to_state": e.get("to_state"),
-            "step_name": e.get("step_name"),
-            "type": e.get("event_type"),
-            "created_at": e.get("created_datetime"),
-            "created_by": e.get("created_by"),
-        }
-        for e in events_raw
-    ]
+    # Ensure conversation and counts are at top level for template (from context)
+    ctx = wf_dict.get("context") or {}
+    wf_dict.setdefault("conversation", ctx.get("conversation") or [])
+    conv = wf_dict.get("conversation") or []
+    wf_dict.setdefault("message_count", len(conv))
+    wf_dict.setdefault("attachment_count", ctx.get("total_attachments", 0))
+    # Build events list; events_raw may be dicts (from to_dict()) or objects
+    events = []
+    for e in events_raw:
+        if hasattr(e, "get"):
+            events.append({
+                "from_state": e.get("from_state"),
+                "to_state": e.get("to_state"),
+                "step_name": e.get("step_name"),
+                "type": e.get("event_type"),
+                "created_at": e.get("created_datetime"),
+                "created_by": e.get("created_by"),
+            })
+        else:
+            events.append({
+                "from_state": getattr(e, "from_state", None),
+                "to_state": getattr(e, "to_state", None),
+                "step_name": getattr(e, "step_name", None),
+                "type": getattr(e, "event_type", None),
+                "created_at": getattr(e, "created_datetime", None),
+                "created_by": getattr(e, "created_by", None),
+            })
     wf_dict["events"] = events
 
     # Extract upload data from task context for data_upload tasks

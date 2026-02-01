@@ -238,12 +238,14 @@ class WorkflowOrchestrator:
         # Check for duplicate by trigger message ID AND workflow type
         # This allows child workflows to share the same trigger_message_id as parent
         if trigger_message_id:
-            existing = self.workflow_repo.read_by_trigger_message_id(trigger_message_id)
-            if existing and existing.workflow_type == workflow_type:
+            existing = self.workflow_repo.read_by_trigger_message_id_and_type(
+                trigger_message_id, workflow_type
+            )
+            if existing:
                 logger.warning(
                     f"Workflow already exists for trigger message {trigger_message_id}"
                 )
-                return existing
+                return (existing, False)  # (workflow, created=False)
         
         # Create the workflow
         workflow = self.workflow_repo.create(
@@ -276,7 +278,7 @@ class WorkflowOrchestrator:
             f"in state {definition.initial_state}"
         )
         
-        return workflow
+        return (workflow, True)  # (workflow, created=True)
     
     def load_workflow(self, public_id: str) -> WorkflowStateMachine:
         """
@@ -422,7 +424,7 @@ class WorkflowOrchestrator:
         
         Inherits tenant, type, and correlation from parent.
         """
-        return self.create_workflow(
+        workflow, _ = self.create_workflow(
             tenant_id=parent.tenant_id,
             workflow_type=parent.workflow_type,
             conversation_id=parent.conversation_id,
@@ -432,3 +434,4 @@ class WorkflowOrchestrator:
             context=context,
             created_by=created_by,
         )
+        return workflow

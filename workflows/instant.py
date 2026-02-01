@@ -290,7 +290,7 @@ class InstantWorkflowHandler:
         
         # Create the workflow record
         try:
-            workflow = self.orchestrator.create_workflow(
+            workflow, _ = self.orchestrator.create_workflow(
                 tenant_id=context.tenant_id,
                 workflow_type=workflow_type,
                 context={

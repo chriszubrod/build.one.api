@@ -107,6 +107,8 @@ def call_procedure(cursor: pyodbc.Cursor, name: str, params: dict):
 
 
 def map_database_error(error: Exception) -> DatabaseError:
+    if isinstance(error, DatabaseError):
+        return error
     error_message = str(error).lower()
 
     # Connection-related errors

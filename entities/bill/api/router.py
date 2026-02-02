@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import logging
 
 # Third-party Imports
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -7,9 +8,10 @@ from decimal import Decimal
 # Local Imports
 from entities.bill.api.schemas import BillCreate, BillUpdate
 from entities.bill.business.service import BillService
-from entities.bill.business.complete_service import BillCompleteService
 from entities.auth.business.service import get_current_user_api
 from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill"])
 
@@ -112,10 +114,10 @@ def update_bill_by_public_id_router(public_id: str, body: BillUpdate, current_us
     result = TriggerRouter().route_instant(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update bill")
-        )
+        err = result.get("error", "Failed to update bill")
+        if "concurrency" in err.lower() or "row-version" in err.lower():
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
     
     return result.get("data")
 
@@ -154,27 +156,14 @@ def complete_bill_router(public_id: str, current_user: dict = Depends(get_curren
     """
     Complete a bill: finalize, upload attachments to module folders, and sync to Excel workbooks.
     """
-    print(f"\n{'='*60}")
-    print(f"=== COMPLETE BILL API CALLED: {public_id} ===")
-    print(f"{'='*60}")
-    
-    service = BillCompleteService()
-    result = service.complete_bill(public_id=public_id)
-    
-    print(f"\n--- COMPLETE BILL RESULT ---")
-    print(f"  status_code: {result.get('status_code')}")
-    print(f"  bill_finalized: {result.get('bill_finalized')}")
-    print(f"  file_uploads: {result.get('file_uploads')}")
-    print(f"  excel_syncs: {result.get('excel_syncs')}")
-    qbo_sync = result.get('qbo_sync', {})
-    if qbo_sync:
-        qbo_status = "✓" if qbo_sync.get('success') else "✗"
-        qbo_bill_id = qbo_sync.get('qbo_bill_id')
-        print(f"  qbo_sync: {qbo_status} {qbo_sync.get('message', '')} (QBO Bill ID: {qbo_bill_id})")
-    if result.get('errors'):
-        print(f"  ERRORS: {result.get('errors')}")
-    print(f"{'='*60}\n")
-    
+    logger.info("Complete bill API called: public_id=%s", public_id)
+    result = BillService().complete_bill(public_id=public_id)
+    logger.info(
+        "Complete bill result: status_code=%s, bill_finalized=%s, errors=%s",
+        result.get("status_code"),
+        result.get("bill_finalized"),
+        len(result.get("errors", [])),
+    )
     if result.get("status_code") >= 400:
         raise HTTPException(
             status_code=result.get("status_code", 500),

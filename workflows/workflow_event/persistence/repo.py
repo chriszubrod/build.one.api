@@ -3,7 +3,8 @@ import base64
 import json
 import logging
 from datetime import datetime
-from typing import List, Optional
+from decimal import Decimal
+from typing import Any, List, Optional
 
 # Third-party Imports
 import pyodbc
@@ -17,6 +18,15 @@ from shared.database import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _json_serial(obj: Any) -> Any:
+    """Convert non-JSON-serializable values (e.g. Decimal) for json.dumps."""
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 class WorkflowEventRepository:
@@ -72,7 +82,7 @@ class WorkflowEventRepository:
         created_by: Optional[str] = None,
     ) -> WorkflowEvent:
         try:
-            data_json = json.dumps(data) if data else None
+            data_json = json.dumps(data, default=_json_serial) if data else None
             
             with get_connection() as conn:
                 cursor = conn.cursor()

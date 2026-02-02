@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 # Local Imports
+from entities.auth.api.router import _set_auth_cookies
 from entities.auth.business.service import AuthService, get_current_user_web
 
 router = APIRouter(prefix="/auth", tags=["web", "auth"])
@@ -38,6 +39,27 @@ def signup(request: Request):
             "request": request,
         }
     )
+
+
+@router.get("/refresh")
+def refresh(request: Request):
+    """
+    Refresh access token using refresh cookie, then redirect to next.
+    Used when access token expired on full-page load so session is restored.
+    """
+    next_path = request.query_params.get("next", "/dashboard")
+    if not next_path.startswith("/"):
+        next_path = "/dashboard"
+    refresh_token = request.cookies.get("token.refresh_token")
+    if not refresh_token:
+        return RedirectResponse(url="/auth/login", status_code=303)
+    try:
+        access_token, new_refresh_token = service.refresh_access_token(refresh_token=refresh_token)
+        response = RedirectResponse(url=next_path, status_code=303)
+        _set_auth_cookies(response=response, access_token=access_token, refresh_token=new_refresh_token)
+        return response
+    except Exception:
+        return RedirectResponse(url="/auth/login", status_code=303)
 
 
 @router.get("/logout")

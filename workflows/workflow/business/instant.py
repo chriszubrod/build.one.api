@@ -23,57 +23,57 @@ logger = logging.getLogger(__name__)
 # Service Registry
 # =============================================================================
 # Maps entity names to their service module paths.
-# All services follow the pattern: services/{entity}/business/service.py
+# All services follow the pattern: entities/{entity}/business/service.py
 
 SERVICE_REGISTRY: Dict[str, str] = {
     # Core billing entities
-    "bill": "services.bill.business.service.BillService",
-    "bill_line_item": "services.bill_line_item.business.service.BillLineItemService",
-    "bill_line_item_attachment": "services.bill_line_item_attachment.business.service.BillLineItemAttachmentService",
+    "bill": "entities.bill.business.service.BillService",
+    "bill_line_item": "entities.bill_line_item.business.service.BillLineItemService",
+    "bill_line_item_attachment": "entities.bill_line_item_attachment.business.service.BillLineItemAttachmentService",
     
     # Expense entities
-    "expense": "services.expense.business.service.ExpenseService",
-    "expense_line_item": "services.expense_line_item.business.service.ExpenseLineItemService",
-    "expense_line_item_attachment": "services.expense_line_item_attachment.business.service.ExpenseLineItemAttachmentService",
+    "expense": "entities.expense.business.service.ExpenseService",
+    "expense_line_item": "entities.expense_line_item.business.service.ExpenseLineItemService",
+    "expense_line_item_attachment": "entities.expense_line_item_attachment.business.service.ExpenseLineItemAttachmentService",
     
     # Bill Credit entities
-    "bill_credit": "services.bill_credit.business.service.BillCreditService",
-    "bill_credit_line_item": "services.bill_credit_line_item.business.service.BillCreditLineItemService",
-    "bill_credit_line_item_attachment": "services.bill_credit_line_item_attachment.business.service.BillCreditLineItemAttachmentService",
+    "bill_credit": "entities.bill_credit.business.service.BillCreditService",
+    "bill_credit_line_item": "entities.bill_credit_line_item.business.service.BillCreditLineItemService",
+    "bill_credit_line_item_attachment": "entities.bill_credit_line_item_attachment.business.service.BillCreditLineItemAttachmentService",
     
     # Vendor entities
-    "vendor": "services.vendor.business.service.VendorService",
-    "vendor_address": "services.vendor_address.business.service.VendorAddressService",
-    "vendor_type": "services.vendor_type.business.service.VendorTypeService",
+    "vendor": "entities.vendor.business.service.VendorService",
+    "vendor_address": "entities.vendor_address.business.service.VendorAddressService",
+    "vendor_type": "entities.vendor_type.business.service.VendorTypeService",
     
     # Project entities
-    "project": "services.project.business.service.ProjectService",
-    "project_address": "services.project_address.business.service.ProjectAddressService",
+    "project": "entities.project.business.service.ProjectService",
+    "project_address": "entities.project_address.business.service.ProjectAddressService",
     
     # Customer and costing
-    "customer": "services.customer.business.service.CustomerService",
-    "cost_code": "services.cost_code.business.service.CostCodeService",
-    "sub_cost_code": "services.sub_cost_code.business.service.SubCostCodeService",
-    "payment_term": "services.payment_term.business.service.PaymentTermService",
+    "customer": "entities.customer.business.service.CustomerService",
+    "cost_code": "entities.cost_code.business.service.CostCodeService",
+    "sub_cost_code": "entities.sub_cost_code.business.service.SubCostCodeService",
+    "payment_term": "entities.payment_term.business.service.PaymentTermService",
     
     # Organization entities
-    "company": "services.company.business.service.CompanyService",
-    "organization": "services.organization.business.service.OrganizationService",
-    "module": "services.module.business.service.ModuleService",
+    "company": "entities.company.business.service.CompanyService",
+    "organization": "entities.organization.business.service.OrganizationService",
+    "module": "entities.module.business.service.ModuleService",
     
     # User management
-    "user": "services.user.business.service.UserService",
-    "user_role": "services.user_role.business.service.UserRoleService",
-    "role_module": "services.role_module.business.service.RoleModuleService",
+    "user": "entities.user.business.service.UserService",
+    "user_role": "entities.user_role.business.service.UserRoleService",
+    "role_module": "entities.role_module.business.service.RoleModuleService",
     
     # Attachments
-    "attachment": "services.attachment.business.service.AttachmentService",
-    "taxpayer": "services.taxpayer.business.service.TaxpayerService",
-    "taxpayer_attachment": "services.taxpayer_attachment.business.service.TaxpayerAttachmentService",
+    "attachment": "entities.attachment.business.service.AttachmentService",
+    "taxpayer": "entities.taxpayer.business.service.TaxpayerService",
+    "taxpayer_attachment": "entities.taxpayer_attachment.business.service.TaxpayerAttachmentService",
     
     # Other
-    "integration": "services.integration.business.service.IntegrationService",
-    "contract_labor": "services.contract_labor.business.service.ContractLaborService",
+    "integration": "entities.integration.business.service.IntegrationService",
+    "contract_labor": "entities.contract_labor.business.service.ContractLaborService",
 }
 
 

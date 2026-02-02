@@ -34,7 +34,7 @@ INSTANT_OPERATIONS = ["create", "update", "delete"]
 # Entity Registry
 # =============================================================================
 # All services that support instant workflows.
-# These map to services in services/{entity}/business/service.py
+# These map to services in entities/{entity}/business/service.py
 
 INSTANT_ENTITIES = [
     # Core billing entities

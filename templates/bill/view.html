@@ -11,11 +11,12 @@
 
 {% block content %}
 
+    <div id="bill-view-data" data-return-to="{{ return_to or '' }}" style="display: none;" aria-hidden="true"></div>
     <div class="bill-page-header">
         <h1>{{ bill.bill_number or 'Bill Details' }}</h1>
         <div style="display: flex; gap: 0.5rem;">
-            <a href="/bill/{{ bill.public_id }}/edit" class="btn btn-primary">Edit</a>
-            <a href="/bill/list" class="btn btn-secondary">Back to List</a>
+            <a href="/bill/{{ bill.public_id }}/edit{% if return_to %}?return_to={{ return_to | urlencode }}{% endif %}" class="btn btn-primary">Edit</a>
+            <a href="{{ return_to or '/bill/list' }}" class="btn btn-secondary">Back to List</a>
         </div>
     </div>
 
@@ -52,7 +53,7 @@
 
                 <div class="bill-detail-row">
                     <div class="bill-detail-label">Total Amount:</div>
-                    <div class="bill-detail-value">{% if bill.total_amount %}${{ "%.2f"|format(bill.total_amount) }}{% else %}Not specified{% endif %}</div>
+                    <div class="bill-detail-value">{% if bill.total_amount is not none and bill.total_amount != '' %}${{ bill.total_amount | format_amount }}{% else %}Not specified{% endif %}</div>
                 </div>
 
                 <div class="bill-detail-row">
@@ -112,17 +113,17 @@
                                 {% endif %}
                                 {% if line_item.rate is not none %}
                                 <div class="line-item-metadata-item">
-                                    <span>Rate: ${{ "%.4f"|format(line_item.rate) }}</span>
+                                    <span>Rate: ${{ line_item.rate | format_amount(4) }}</span>
                                 </div>
                                 {% endif %}
                                 {% if line_item.amount is not none %}
                                 <div class="line-item-metadata-item">
-                                    <span>Amount: ${{ "%.2f"|format(line_item.amount) }}</span>
+                                    <span>Amount: ${{ line_item.amount | format_amount }}</span>
                                 </div>
                                 {% endif %}
                                 {% if line_item.price is not none %}
                                 <div class="line-item-metadata-item">
-                                    <span>Price: ${{ "%.2f"|format(line_item.price) }}</span>
+                                    <span>Price: ${{ line_item.price | format_amount }}</span>
                                 </div>
                                 {% endif %}
                                 {% if line_item.is_billable is not none %}
@@ -329,7 +330,7 @@
             <h6>Actions</h6>
             <div class="bill-actions-list">
                 <a href="/bill/{{ bill.public_id }}/edit" class="btn btn-primary">Edit Bill</a>
-                <a href="/bill/list" class="btn btn-secondary">View All Bills</a>
+                <a href="{{ return_to or '/bill/list' }}" class="btn btn-secondary">View All Bills</a>
                 <button type="button" class="btn btn-danger" onclick="deleteBill()">Delete Bill</button>
             </div>
         </div>
@@ -392,7 +393,8 @@
                     });
 
                     if (response.ok) {
-                        window.location.href = '/bill/list';
+                        const returnTo = document.getElementById('bill-view-data')?.dataset?.returnTo || '';
+                        window.location.href = (returnTo && returnTo.startsWith('/bill/list')) ? returnTo : '/bill/list';
                     } else {
                         const contentType = response.headers.get('content-type');
                         if (contentType && contentType.includes('application/json')) {

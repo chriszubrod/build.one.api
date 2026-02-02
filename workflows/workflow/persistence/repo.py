@@ -3,7 +3,8 @@ import base64
 import json
 import logging
 from datetime import datetime
-from typing import List, Optional
+from decimal import Decimal
+from typing import Any, List, Optional
 
 # Third-party Imports
 import pyodbc
@@ -17,6 +18,15 @@ from shared.database import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _json_serial(obj: Any) -> Any:
+    """Convert non-JSON-serializable values (e.g. Decimal) for json.dumps."""
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 class WorkflowRepository:
@@ -80,7 +90,7 @@ class WorkflowRepository:
         context: Optional[dict] = None,
     ) -> Workflow:
         try:
-            context_json = json.dumps(context) if context else None
+            context_json = json.dumps(context, default=_json_serial) if context else None
             
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -296,7 +306,7 @@ class WorkflowRepository:
         context: Optional[dict] = None,
     ) -> Optional[Workflow]:
         try:
-            context_json = json.dumps(context) if context else None
+            context_json = json.dumps(context, default=_json_serial) if context else None
             
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -324,7 +334,7 @@ class WorkflowRepository:
         context: Optional[dict] = None,
     ) -> Optional[Workflow]:
         try:
-            context_json = json.dumps(context) if context else None
+            context_json = json.dumps(context, default=_json_serial) if context else None
             
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -351,7 +361,7 @@ class WorkflowRepository:
         context: dict,
     ) -> Optional[Workflow]:
         try:
-            context_json = json.dumps(context)
+            context_json = json.dumps(context, default=_json_serial)
             
             with get_connection() as conn:
                 cursor = conn.cursor()

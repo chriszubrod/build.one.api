@@ -1,7 +1,7 @@
 # Python Standard Library Imports
 import base64
 import logging
-from typing import Optional, Tuple
+from typing import Optional
 from decimal import Decimal
 
 # Third-party Imports
@@ -221,6 +221,16 @@ class BillRepository:
                     params=params,
                 )
                 row = cursor.fetchone()
+                if not row:
+                    logger.warning(
+                        "UpdateBillById returned no row (id=%s); possible row-version conflict or record not found.",
+                        bill.id,
+                    )
+                    raise map_database_error(
+                        Exception(
+                            "Update did not match any row; the bill may have been modified by another process (row-version conflict) or no longer exists."
+                        )
+                    )
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during update bill by ID: {error}")

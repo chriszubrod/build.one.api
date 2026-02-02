@@ -221,6 +221,8 @@ class BillIntakeExecutor:
                 logger.info("Task %s linked to workflow %s", task.public_id, workflow.public_id)
             else:
                 print(f"[BillIntakeExecutor] upsert_task_for_workflow returned None (workflow.id={workflow.id} workflow.tenant_id={workflow.tenant_id})")
+        except (ModuleNotFoundError, ImportError):
+            logger.debug("entities.tasks not available; skipping task upsert for workflow %s", workflow.public_id)
         except Exception as e:
             print(f"[BillIntakeExecutor] Failed to create task for workflow {workflow.public_id}: {e}")
             logger.warning("Failed to create task for workflow %s: %s", workflow.public_id, e)
@@ -331,6 +333,8 @@ class BillIntakeExecutor:
             try:
                 from entities.tasks.business.service import TaskService
                 TaskService().sync_status_from_workflow(workflow.id, workflow.state)
+            except (ModuleNotFoundError, ImportError):
+                logger.debug("entities.tasks not available; skipping task sync for workflow %s", workflow.public_id)
             except Exception as e:
                 logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e)
             return workflow
@@ -352,6 +356,8 @@ class BillIntakeExecutor:
         try:
             from entities.tasks.business.service import TaskService
             TaskService().sync_status_from_workflow(workflow.id, workflow.state)
+        except (ModuleNotFoundError, ImportError):
+            logger.debug("entities.tasks not available; skipping task sync for workflow %s", workflow.public_id)
         except Exception as e:
             logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e)
 
@@ -382,6 +388,8 @@ class BillIntakeExecutor:
             try:
                 from entities.tasks.business.service import TaskService
                 TaskService().sync_status_from_workflow(workflow.id, workflow.state)
+            except (ModuleNotFoundError, ImportError):
+                logger.debug("entities.tasks not available; skipping task sync for workflow %s", workflow.public_id)
             except Exception as e:
                 logger.warning("Failed to sync task status after auto-confirm for workflow %s: %s", workflow.public_id, e)
 
@@ -685,6 +693,8 @@ class BillIntakeExecutor:
             try:
                 from entities.tasks.business.service import TaskService
                 TaskService().sync_status_from_workflow(workflow.id, workflow.state)
+            except (ModuleNotFoundError, ImportError):
+                logger.debug("entities.tasks not available; skipping task sync for workflow %s", workflow.public_id)
             except Exception as e:
                 logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e)
 
@@ -713,6 +723,8 @@ class BillIntakeExecutor:
             try:
                 from entities.tasks.business.service import TaskService
                 TaskService().sync_status_from_workflow(workflow.id, workflow.state)
+            except (ModuleNotFoundError, ImportError):
+                logger.debug("entities.tasks not available; skipping task sync for workflow %s", workflow.public_id)
             except Exception as e_sync:
                 logger.warning("Failed to sync task status for workflow %s: %s", workflow.public_id, e_sync)
 
@@ -1184,6 +1196,8 @@ class BillIntakeExecutor:
                     bill_id=bill_data.get("id"),
                     bill_public_id=bill_data.get("public_id"),
                 )
+            except (ModuleNotFoundError, ImportError):
+                logger.debug("entities.tasks not available; skipping set_task_bill_for_parent for %s", parent_public_id)
             except Exception as e:
                 logger.warning("Failed to link parent task to bill for %s: %s", parent_public_id, e)
 

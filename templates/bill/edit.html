@@ -11,11 +11,12 @@
 
     <!-- Toast notification container -->
     <div id="toast-container" class="toast-container"></div>
+    <div id="bill-edit-data" data-return-to="{{ return_to or '' }}" style="display: none;" aria-hidden="true"></div>
 
     <div class="bill-create-fullpage">
         <div class="bill-create-header">
             <h1>Edit Bill</h1>
-            <a href="/bill/list" class="btn btn-secondary">Back to List</a>
+            <a href="{{ return_to or '/bill/list' }}" class="btn btn-secondary">Back to List</a>
         </div>
 
         <div class="bill-create-content">
@@ -89,28 +90,34 @@
                                     <label for="bill_date" class="bill-form-label">
                                         Bill Date <span class="required">*</span>
                                     </label>
-                                    <input type="date"
+                                    <input type="text"
                                            class="bill-form-control"
                                            id="bill_date"
                                            name="bill_date"
                                            required
-                                           value="{{ bill.bill_date[:10] if bill.bill_date else '' }}"
+                                           value="{{ bill.bill_date or '' }}"
                                            autocomplete="off"
-                                           placeholder="Enter bill date">
+                                           placeholder="MM-DD-YYYY or MMDDYYYY"
+                                           inputmode="numeric"
+                                           maxlength="10"
+                                           style="max-width: 11rem;">
                                 </div>
 
                                 <div class="bill-form-group">
                                     <label for="due_date" class="bill-form-label">
                                         Due Date <span class="required">*</span>
                                     </label>
-                                    <input type="date"
+                                    <input type="text"
                                            class="bill-form-control"
                                            id="due_date"
                                            name="due_date"
                                            required
-                                           value="{{ bill.due_date[:10] if bill.due_date else '' }}"
+                                           value="{{ bill.due_date or '' }}"
                                            autocomplete="off"
-                                           placeholder="Enter due date">
+                                           placeholder="MM-DD-YYYY or MMDDYYYY"
+                                           inputmode="numeric"
+                                           maxlength="10"
+                                           style="max-width: 11rem;">
                                 </div>
 
                                 <div class="bill-form-group" style="position: relative;">
@@ -428,7 +435,7 @@
                         <button type="button" class="btn btn-danger" onclick="deleteBill()">Delete Bill</button>
                     </div>
                     <div class="bill-form-actions-right">
-                        <a href="/bill/list" class="btn btn-secondary">Cancel</a>
+                        <a href="{{ return_to or '/bill/list' }}" class="btn btn-secondary">Cancel</a>
                         <button type="submit" class="btn btn-primary">Complete Bill</button>
                     </div>
                 </div>
@@ -568,6 +575,11 @@
 
 {% block scripts %}
     <script>
+        function getBillListUrl() {
+            const el = document.getElementById('bill-edit-data');
+            const r = el && el.dataset.returnTo;
+            return (r && r.startsWith('/bill/list')) ? r : '/bill/list';
+        }
         // =====================
         // Email Conversation Toggle Functions
         // =====================
@@ -719,6 +731,87 @@
             initializeFirstAttachmentPreview();
         });
 
+        // Parse flexible date input to MM-DD-YYYY (display/key-in format)
+        function toMMDDYYYY(month, day, y) {
+            return `${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}-${y}`;
+        }
+        function parseFlexibleDate(str) {
+            if (!str || !str.trim()) return null;
+            const s = str.trim();
+            if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) {
+                let y = parseInt(s.slice(0, 4), 10);
+                if (y >= 1 && y < 100) y += 2000;
+                const month = parseInt(s.slice(5, 7), 10);
+                const day = parseInt(s.slice(8, 10), 10);
+                if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+                return toMMDDYYYY(month, day, y);
+            }
+            const withSep = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+            if (withSep) {
+                let y = parseInt(withSep[3], 10);
+                if (y < 100) y += 2000;
+                const month = parseInt(withSep[1], 10);
+                const day = parseInt(withSep[2], 10);
+                if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+                const d = new Date(y, month - 1, day);
+                if (isNaN(d.getTime()) || d.getFullYear() !== y || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+                return toMMDDYYYY(month, day, y);
+            }
+            const digits = s.replace(/\D/g, '');
+            if (digits.length === 8) {
+                const month = parseInt(digits.slice(0, 2), 10);
+                const day = parseInt(digits.slice(2, 4), 10);
+                const y = parseInt(digits.slice(4, 8), 10);
+                if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+                const d = new Date(y, month - 1, day);
+                if (isNaN(d.getTime()) || d.getFullYear() !== y || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+                return toMMDDYYYY(month, day, y);
+            }
+            if (digits.length === 6) {
+                const month = parseInt(digits.slice(0, 2), 10);
+                const day = parseInt(digits.slice(2, 4), 10);
+                const y = 2000 + parseInt(digits.slice(4, 6), 10);
+                if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+                const d = new Date(y, month - 1, day);
+                if (isNaN(d.getTime()) || d.getFullYear() !== y || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+                return toMMDDYYYY(month, day, y);
+            }
+            if (digits.length === 7) {
+                const month = parseInt(digits.slice(0, 1), 10);
+                const day = parseInt(digits.slice(1, 3), 10);
+                const y = parseInt(digits.slice(3, 7), 10);
+                if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+                const d = new Date(y, month - 1, day);
+                if (isNaN(d.getTime()) || d.getFullYear() !== y || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+                return toMMDDYYYY(month, day, y);
+            }
+            if (digits.length === 5) {
+                const month = parseInt(digits.slice(0, 1), 10);
+                const day = parseInt(digits.slice(1, 3), 10);
+                const y = 2000 + parseInt(digits.slice(3, 5), 10);
+                if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+                const d = new Date(y, month - 1, day);
+                if (isNaN(d.getTime()) || d.getFullYear() !== y || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+                return toMMDDYYYY(month, day, y);
+            }
+            return null;
+        }
+        // Convert MM-DD-YYYY (or MM/DD/YYYY) from input to YYYY-MM-DD for API
+        function dateToApiFormat(str) {
+            if (!str || !str.trim()) return '';
+            const parsed = parseFlexibleDate(str);
+            if (!parsed) return str.trim();
+            const m = parsed.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+            if (m) return `${m[3]}-${m[1]}-${m[2]}`;
+            return str.trim();
+        }
+
+        function normalizeDateInput(inputEl) {
+            if (!inputEl) return;
+            const parsed = parseFlexibleDate(inputEl.value);
+            if (parsed) inputEl.value = parsed;
+        }
+
         // Set DueDate equal to BillDate when BillDate is set
         function setDueDateFromBillDate() {
             const billDateInput = document.getElementById('bill_date');
@@ -727,19 +820,23 @@
             
             if (billDateInput && dueDateInput && billDateInput.value) {
                 dueDateInput.value = billDateInput.value;
-                // Focus on BillNumber to skip DueDate in tab order
-                if (billNumberInput) {
-                    billNumberInput.focus();
-                }
+                if (billNumberInput) billNumberInput.focus();
             }
         }
 
-        // Add listener to BillDate field
+        // Add listeners: normalize flexible date on blur, then sync Due Date from Bill Date
         document.addEventListener('DOMContentLoaded', function() {
             const billDateInput = document.getElementById('bill_date');
+            const dueDateInput = document.getElementById('due_date');
             if (billDateInput) {
+                billDateInput.addEventListener('blur', function() {
+                    normalizeDateInput(billDateInput);
+                    setDueDateFromBillDate();
+                });
                 billDateInput.addEventListener('change', setDueDateFromBillDate);
-                billDateInput.addEventListener('blur', setDueDateFromBillDate);
+            }
+            if (dueDateInput) {
+                dueDateInput.addEventListener('blur', function() { normalizeDateInput(dueDateInput); });
             }
         });
 
@@ -829,8 +926,8 @@
                 row_version: rowVersion,
                 vendor_public_id: document.getElementById('vendor_public_id').value,
                 payment_term_public_id: document.getElementById('payment_term_public_id').value || null,
-                bill_date: document.getElementById('bill_date').value,
-                due_date: document.getElementById('due_date').value,
+                bill_date: dateToApiFormat(document.getElementById('bill_date').value),
+                due_date: dateToApiFormat(document.getElementById('due_date').value),
                 bill_number: document.getElementById('bill_number').value.trim(),
                 total_amount: totalAmountValue,
                 memo: document.getElementById('memo').value || null,
@@ -1005,15 +1102,43 @@
                 if (!publicId) {
                     await linkPendingAttachment(formElement, lineItem.public_id);
                     
-                    // If this was the template "add-line-item-form", hide it after save and show the button
-                    // The new line item will appear in the existing line items list after page refresh
+                    // If this was the blank "add-line-item-form", convert it to an existing row so it stays visible
                     if (formElement.id === 'add-line-item-form') {
-                        formElement.style.display = 'none';
-                        clearLineItemFormInputs(formElement);
-                        const button = document.getElementById('add-line-item-button');
-                        if (button) {
-                            button.style.display = 'inline-flex';
+                        const lineItemsList = document.getElementById('line-items-list');
+                        if (lineItemsList) {
+                            formElement.id = 'line-item-form-' + lineItemCounter;
+                            formElement.classList.add('line-item-existing-form');
+                            const cancelBtn = formElement.querySelector('button[onclick*="handleCancelLineItemForm"]');
+                            if (cancelBtn) {
+                                const addCancelDiv = cancelBtn.closest('div');
+                                if (addCancelDiv) addCancelDiv.innerHTML = '<button type="button" class="btn btn-danger btn-sm" onclick="deleteLineItemForm(this)">Delete Line Item</button>';
+                            }
+                            lineItemsList.insertBefore(formElement, lineItemsList.firstChild);
+                            lineItemCounter++;
+                            const newAddForm = formElement.cloneNode(true);
+                            newAddForm.id = 'add-line-item-form';
+                            newAddForm.classList.remove('line-item-existing-form');
+                            newAddForm.style.display = 'none';
+                            clearLineItemFormInputs(newAddForm);
+                            resetAttachmentDisplay(newAddForm);
+                            const publicIdInput = newAddForm.querySelector('.line-item-public-id');
+                            const rowVersionInput = newAddForm.querySelector('.line-item-row-version');
+                            if (publicIdInput) publicIdInput.value = '';
+                            if (rowVersionInput) rowVersionInput.value = '';
+                            const deleteBtn = newAddForm.querySelector('button[onclick*="deleteLineItemForm"]');
+                            if (deleteBtn) {
+                                const restoreDiv = deleteBtn.closest('div');
+                                if (restoreDiv) restoreDiv.innerHTML = '<button type="button" class="btn btn-secondary" onclick="handleCancelLineItemForm(this)">Cancel</button><button type="button" class="btn btn-primary" onclick="addLineItem()">Add Line Item</button>';
+                            }
+                            lineItemsList.parentNode.insertBefore(newAddForm, lineItemsList.nextSibling);
+                            setupLineItemCalculations(newAddForm);
+                            setupLineItemAutoSave(newAddForm);
+                            setupLineItemAttachment(newAddForm);
+                            const addButton = newAddForm.querySelector('button.btn-primary');
+                            if (addButton) addButton.onclick = function() { addLineItemForm(); };
                         }
+                        const button = document.getElementById('add-line-item-button');
+                        if (button) button.style.display = 'inline-flex';
                     }
                 }
                 
@@ -1152,14 +1277,17 @@
             if (quantityInput) {
                 quantityInput.addEventListener('input', calculateAmount);
                 quantityInput.addEventListener('change', calculateAmount);
+                quantityInput.addEventListener('blur', calculateAmount);
             }
             if (rateInput) {
                 rateInput.addEventListener('input', calculateAmount);
                 rateInput.addEventListener('change', calculateAmount);
+                rateInput.addEventListener('blur', calculateAmount);
             }
             if (markupInput) {
                 markupInput.addEventListener('input', calculatePrice);
                 markupInput.addEventListener('change', calculatePrice);
+                markupInput.addEventListener('blur', calculatePrice);
             }
         }
 
@@ -1314,6 +1442,12 @@
                         addLineItemForm();
                     };
                 }
+            }
+            
+            // If bill has no line items, show one blank line item form so user can fill it in
+            const existingCount = document.querySelectorAll('.line-item-existing-form').length;
+            if (existingCount === 0) {
+                showAddLineItemForm();
             }
             
             // Calculate initial total
@@ -1655,8 +1789,8 @@
                 row_version: rowVersion,
                 vendor_public_id: document.getElementById('vendor_public_id').value,
                 payment_term_public_id: document.getElementById('payment_term_public_id').value || null,
-                bill_date: document.getElementById('bill_date').value,
-                due_date: document.getElementById('due_date').value,
+                bill_date: dateToApiFormat(document.getElementById('bill_date').value),
+                due_date: dateToApiFormat(document.getElementById('due_date').value),
                 bill_number: document.getElementById('bill_number').value.trim(),
                 total_amount: totalAmountValue,
                 memo: document.getElementById('memo').value || null,
@@ -1795,7 +1929,7 @@
             const existingBill = pendingBills.find(b => b.publicId === billPublicId && b.status === 'processing');
             if (existingBill) {
                 showToast(`Bill "${billNumber}" is already being processed.`, 'warning', 3000);
-                window.location.href = '/bill/list';
+                window.location.href = getBillListUrl();
                 return;
             }
             
@@ -1860,7 +1994,7 @@
             
             // Immediately redirect to list page - don't wait for API response
             showToast(`Processing "${billNumber}"... Redirecting to list.`, 'info', 2000);
-            window.location.href = '/bill/list';
+            window.location.href = getBillListUrl();
             
             return;  // Skip the old synchronous flow below
             
@@ -1990,7 +2124,7 @@
                 }
                 
                 setTimeout(() => {
-                    window.location.href = '/bill/list';
+                    window.location.href = getBillListUrl();
                 }, 2500);
                 
             } catch (error) {
@@ -2040,7 +2174,7 @@
                 });
                 
                 if (response.ok) {
-                    window.location.href = '/bill/list';
+                    window.location.href = getBillListUrl();
                 } else {
                     const error = await response.json();
                     showToast(error.detail || 'Failed to delete bill', 'error');

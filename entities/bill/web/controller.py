@@ -25,6 +25,32 @@ router = APIRouter(prefix="/bill", tags=["web", "bill"])
 templates = Jinja2Templates(directory="templates")
 
 
+def _format_amount(value, decimals=2):
+    """Format number with thousands separators (for display)."""
+    if value is None:
+        return ""
+    try:
+        return f"{float(value):,.{int(decimals)}f}"
+    except (TypeError, ValueError):
+        return str(value) if value != "" else ""
+
+
+templates.env.filters["format_amount"] = _format_amount
+
+
+def _date_to_mm_dd_yyyy(val: Optional[str]) -> str:
+    """Convert YYYY-MM-DD (or 0002-02-01) to MM-DD-YYYY for display/input."""
+    if not val or not isinstance(val, str) or len(val) < 10:
+        return val or ""
+    s = val.strip()[:10]
+    if s[4] != "-" or s[7] != "-":
+        return val
+    y, m, d = s[:4], s[5:7], s[8:10]
+    if y.startswith("00") and len(y) == 4:
+        y = "20" + y[2:]
+    return f"{m}-{d}-{y}"
+
+
 @router.get("/list")
 async def list_bills(
     request: Request,
@@ -119,6 +145,9 @@ async def list_bills(
     # Get pending bill workflows (confirmed as "bill" but not yet processed)
     pending_workflows = _get_pending_bill_workflows(current_user.get("tenant_id", 1))
     
+    # Preserve current list URL for "Back to List" when viewing a bill
+    return_to = request.url.path + ("?" + request.url.query if request.url.query else "")
+
     return templates.TemplateResponse(
         "bill/list.html",
         {
@@ -128,6 +157,7 @@ async def list_bills(
             "pending_workflows": pending_workflows,
             "current_user": current_user,
             "current_path": request.url.path,
+            "return_to": return_to,
             "page": page,
             "page_size": page_size,
             "total_count": total_count,
@@ -359,6 +389,7 @@ async def create_bill(request: Request, current_user: dict = Depends(get_current
 async def view_bill(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
     """
     View a bill.
+    Accepts return_to query param (e.g. from list) to restore list view on "Back to List".
     """
     bill = BillService().read_by_public_id(public_id=public_id)
     vendors = VendorService().read_all()
@@ -604,6 +635,15 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
         if workflow_data:
             workflow_conversation = workflow_data.get("conversation", [])
     
+    # Only allow return_to to our own list path (avoid open redirect)
+    return_to = request.query_params.get("return_to") or ""
+    if return_to and not return_to.startswith("/bill/list"):
+        return_to = ""
+
+    # Display dates as MM-DD-YYYY (and normalize 0002 → 2002)
+    for key in ("bill_date", "due_date"):
+        bill_dict[key] = _date_to_mm_dd_yyyy(bill_dict.get(key))
+
     return templates.TemplateResponse(
         "bill/view.html",
         {
@@ -614,6 +654,7 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
             "workflow_data": workflow_data,
             "current_user": current_user,
             "current_path": request.url.path,
+            "return_to": return_to,
         },
     )
 
@@ -712,7 +753,15 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
         workflow_data = _get_workflow_for_bill(bill.public_id)
         if workflow_data:
             workflow_conversation = workflow_data.get("conversation", [])
-    
+
+    return_to = request.query_params.get("return_to") or ""
+    if return_to and not return_to.startswith("/bill/list"):
+        return_to = ""
+
+    # Display dates as MM-DD-YYYY for key-in (and normalize 0002 → 2002)
+    for key in ("bill_date", "due_date"):
+        bill_dict[key] = _date_to_mm_dd_yyyy(bill_dict.get(key))
+
     return templates.TemplateResponse(
         "bill/edit.html",
         {
@@ -727,5 +776,6 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
             "workflow_data": workflow_data,
             "current_user": current_user,
             "current_path": request.url.path,
+            "return_to": return_to,
         },
     )

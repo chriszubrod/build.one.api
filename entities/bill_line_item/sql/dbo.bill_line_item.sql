@@ -1,5 +1,3 @@
-GO
-
 IF OBJECT_ID('dbo.BillLineItem', 'U') IS NULL
 BEGIN
 CREATE TABLE [dbo].[BillLineItem]
@@ -53,7 +51,6 @@ END
 GO
 
 
-GO
 
 CREATE OR ALTER PROCEDURE CreateBillLineItem
 (
@@ -99,9 +96,8 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadBillLineItems
 AS
@@ -131,9 +127,10 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-
 GO
+
+
+
 
 CREATE OR ALTER PROCEDURE ReadBillLineItemById
 (
@@ -166,9 +163,9 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-
 GO
+
+
 
 CREATE OR ALTER PROCEDURE ReadBillLineItemByPublicId
 (
@@ -201,9 +198,11 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-
 GO
+
+
+
+
 
 CREATE OR ALTER PROCEDURE ReadBillLineItemsByBillId
 (
@@ -237,9 +236,11 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-
 GO
+
+
+
+
 
 CREATE OR ALTER PROCEDURE UpdateBillLineItemById
 (
@@ -301,9 +302,11 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-
 GO
+
+
+
+
 
 CREATE OR ALTER PROCEDURE DeleteBillLineItemById
 (
@@ -336,6 +339,4 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-
-
+GO

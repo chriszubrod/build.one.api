@@ -48,6 +48,16 @@ class WebAuthenticationRequired(Exception):
     pass
 
 
+class RefreshRequired(Exception):
+    """
+    Exception raised when access token is expired but refresh token may be valid.
+    Handler redirects to /auth/refresh?next=... so the session can be restored.
+    """
+    def __init__(self, next_path: str):
+        self.next_path = next_path
+        super().__init__(next_path)
+
+
 def _hash_password(password: str) -> str:
     """
     Hash password using bcrypt with salt.
@@ -219,6 +229,12 @@ def get_current_user_web(request: Request):
 
         return auth_payload
     except ValueError as e:
+        # On expired access token, try refresh via redirect so full-page nav stays logged in
+        if str(e) == "Token has expired." and request.cookies.get("token.refresh_token"):
+            next_path = request.url.path or "/dashboard"
+            if request.url.query:
+                next_path = f"{next_path}?{request.url.query}"
+            raise RefreshRequired(next_path=next_path)
         raise WebAuthenticationRequired()
 
 

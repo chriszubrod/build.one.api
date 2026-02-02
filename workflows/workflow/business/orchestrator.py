@@ -151,6 +151,8 @@ class WorkflowStateMachine:
             try:
                 from entities.tasks.business.service import TaskService
                 TaskService().upsert_task_for_workflow(updated)
+            except (ModuleNotFoundError, ImportError):
+                logger.debug("entities.tasks not available; skipping task upsert for workflow %s", updated.public_id)
             except Exception as e:
                 logger.warning("Failed to upsert task for workflow %s: %s", updated.public_id, e)
             return updated

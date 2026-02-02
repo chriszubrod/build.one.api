@@ -1,5 +1,3 @@
-GO
-
 IF OBJECT_ID('dbo.Bill', 'U') IS NULL
 BEGIN
 CREATE TABLE [dbo].[Bill]
@@ -55,8 +53,8 @@ ADD CONSTRAINT UQ_Bill_VendorId_BillNumber UNIQUE ([VendorId], [BillNumber]);
 END
 GO
 
-GO
 
+-- Create Bill Stored Procedures
 CREATE OR ALTER PROCEDURE CreateBill
 (
     @VendorId BIGINT,
@@ -95,8 +93,10 @@ BEGIN
 END;
 GO
 
-GO
 
+
+
+-- Read Bills Stored Procedures
 CREATE OR ALTER PROCEDURE ReadBills
 AS
 BEGIN
@@ -123,8 +123,13 @@ BEGIN
 END;
 GO
 
-GO
 
+
+
+
+
+
+-- Read Bill By Id Stored Procedures
 CREATE OR ALTER PROCEDURE ReadBillById
 (
     @Id BIGINT
@@ -154,8 +159,11 @@ BEGIN
 END;
 GO
 
-GO
 
+
+
+
+-- Read Bill By Public Id Stored Procedures
 CREATE OR ALTER PROCEDURE ReadBillByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
@@ -185,8 +193,9 @@ BEGIN
 END;
 GO
 
-GO
 
+
+-- Read Bill By Bill Number Stored Procedures
 CREATE OR ALTER PROCEDURE ReadBillByBillNumber
 (
     @BillNumber NVARCHAR(50)
@@ -216,8 +225,14 @@ BEGIN
 END;
 GO
 
-GO
 
+
+
+
+
+
+
+-- Read Bill By Bill Number And Vendor Id Stored Procedures
 CREATE OR ALTER PROCEDURE ReadBillByBillNumberAndVendorId
 (
     @BillNumber NVARCHAR(50),
@@ -248,7 +263,11 @@ BEGIN
 END;
 GO
 
-GO
+
+
+
+
+-- Update Bill By Id Stored Procedures
 
 CREATE OR ALTER PROCEDURE UpdateBillById
 (
@@ -300,8 +319,11 @@ BEGIN
 END;
 GO
 
-GO
 
+
+
+
+-- Delete Bill By Id Stored Procedures
 CREATE OR ALTER PROCEDURE DeleteBillById
 (
     @Id BIGINT
@@ -331,9 +353,12 @@ BEGIN
 END;
 GO
 
--- Pagination and filtering procedures
-GO
 
+
+
+
+
+-- Pagination and filtering procedures
 CREATE OR ALTER PROCEDURE ReadBillsPaginated
 (
     @PageNumber INT = 1,
@@ -413,7 +438,6 @@ BEGIN
 END;
 GO
 
-GO
 
 CREATE OR ALTER PROCEDURE CountBills
 (

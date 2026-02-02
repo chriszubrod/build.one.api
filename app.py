@@ -1,8 +1,6 @@
 # Python Standard Library Imports
-import logging
-import os
-import sys
-from pathlib import Path
+import config
+from urllib.parse import quote
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
@@ -13,8 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from typing_extensions import Annotated
 
 # Local Imports
-import config
-from entities.auth.business.service import WebAuthenticationRequired
+from entities.auth.business.service import RefreshRequired, WebAuthenticationRequired
 
 from entities.address.api.router import router as address_api_router
 from entities.address.web.controller import router as address_web_router
@@ -82,8 +79,6 @@ from entities.qa.api.router import router as qa_api_router
 from entities.anomaly.api.router import router as anomaly_api_router
 from entities.categorization.api.router import router as categorization_api_router
 from entities.copilot.api.router import router as copilot_api_router
-from entities.tasks.api.router import router as tasks_api_router
-from entities.tasks.web.controller import router as tasks_web_router
 
 from integrations.intuit.qbo.auth.api.router import router as intuit_qbo_auth_api_router
 from integrations.intuit.qbo.company_info.api.router import router as intuit_qbo_company_info_api_router
@@ -122,6 +117,15 @@ class ProxyHeadersMiddleware(BaseHTTPMiddleware):
 
 # Enable proxy headers middleware to handle HTTPS correctly in Azure
 app.add_middleware(ProxyHeadersMiddleware)
+
+
+@app.exception_handler(RefreshRequired)
+async def refresh_required_handler(request: Request, exc: RefreshRequired):
+    """
+    Access token expired but refresh token may be valid.
+    Redirect to web refresh endpoint to restore session then continue to requested page.
+    """
+    return RedirectResponse(url=f"/auth/refresh?next={quote(exc.next_path, safe='/')}", status_code=303)
 
 
 @app.exception_handler(WebAuthenticationRequired)
@@ -217,8 +221,6 @@ app.include_router(qa_api_router)
 app.include_router(anomaly_api_router)
 app.include_router(categorization_api_router)
 app.include_router(copilot_api_router)
-app.include_router(tasks_api_router)
-app.include_router(tasks_web_router)
 
 
 def get_settings():

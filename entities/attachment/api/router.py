@@ -425,12 +425,18 @@ def view_attachment_router(public_id: str, current_user: dict = Depends(get_curr
         storage = AzureBlobStorage()
         file_content, metadata = storage.download_file(attachment.blob_url)
         
-        # Return file with inline disposition (viewable in browser)
+        media_type = metadata.get("content_type") or attachment.content_type or "application/octet-stream"
+        if media_type == "application/octet-stream":
+            fn = (attachment.original_filename or attachment.filename or "").lower()
+            ext = (attachment.file_extension or "").lower()
+            if ext == "pdf" or fn.endswith(".pdf"):
+                media_type = "application/pdf"
+        filename = (attachment.original_filename or attachment.filename or "attachment").replace('"', "'")
         return StreamingResponse(
             io.BytesIO(file_content),
-            media_type=metadata.get("content_type", attachment.content_type or "application/octet-stream"),
+            media_type=media_type,
             headers={
-                "Content-Disposition": f'inline; filename="{attachment.original_filename or attachment.filename}"',
+                "Content-Disposition": f'inline; filename="{filename}"',
             },
         )
     except HTTPException:

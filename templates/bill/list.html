@@ -249,11 +249,7 @@
                             {% endif %}
                         </td>
                         <td>
-                            {% if bill.total_amount %}
-                                ${{ "%.2f"|format(bill.total_amount) }}
-                            {% else %}
-                                $0.00
-                            {% endif %}
+                            ${{ (bill.total_amount or 0) | format_amount }}
                         </td>
                         <td>
                             {% if bill.is_draft %}
@@ -264,8 +260,8 @@
                         </td>
                         <td>
                             <div class="bill-table-actions">
-                                <a href="/bill/{{ bill.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
-                                <a href="/bill/{{ bill.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
+                                <a href="/bill/{{ bill.public_id }}{% if return_to %}?return_to={{ return_to | urlencode }}{% endif %}" class="btn btn-outline-primary btn-sm">View</a>
+                                <a href="/bill/{{ bill.public_id }}/edit{% if return_to %}?return_to={{ return_to | urlencode }}{% endif %}" class="btn btn-outline-secondary btn-sm">Edit</a>
                             </div>
                         </td>
                     </tr>
@@ -282,9 +278,9 @@
             </div>
             <div class="bill-pagination-controls">
                 {% if has_previous %}
-                    <a href="?page=1&page_size={{ page_size }}&search={{ search }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
+                    <a href="?page=1&page_size={{ page_size }}&search={{ search | urlencode }}&is_draft={{ is_draft | e }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
                        class="btn btn-secondary btn-sm">First</a>
-                    <a href="?page={{ page - 1 }}&page_size={{ page_size }}&search={{ search }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
+                    <a href="?page={{ page - 1 }}&page_size={{ page_size }}&search={{ search | urlencode }}&is_draft={{ is_draft | e }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
                        class="btn btn-secondary btn-sm">Previous</a>
                 {% else %}
                     <span class="btn btn-secondary btn-sm" style="opacity: 0.5; cursor: not-allowed;">First</span>
@@ -298,15 +294,15 @@
                     {% if p == page %}
                         <span class="btn btn-primary btn-sm" style="cursor: default;">{{ p }}</span>
                     {% else %}
-                        <a href="?page={{ p }}&page_size={{ page_size }}&search={{ search }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
+                        <a href="?page={{ p }}&page_size={{ page_size }}&search={{ search | urlencode }}&is_draft={{ is_draft | e }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
                            class="btn btn-secondary btn-sm">{{ p }}</a>
                     {% endif %}
                 {% endfor %}
 
                 {% if has_next %}
-                    <a href="?page={{ page + 1 }}&page_size={{ page_size }}&search={{ search }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
+                    <a href="?page={{ page + 1 }}&page_size={{ page_size }}&search={{ search | urlencode }}&is_draft={{ is_draft | e }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
                        class="btn btn-secondary btn-sm">Next</a>
-                    <a href="?page={{ total_pages }}&page_size={{ page_size }}&search={{ search }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
+                    <a href="?page={{ total_pages }}&page_size={{ page_size }}&search={{ search | urlencode }}&is_draft={{ is_draft | e }}&sort_by={{ sort_by }}&sort_direction={{ sort_direction }}" 
                        class="btn btn-secondary btn-sm">Last</a>
                 {% else %}
                     <span class="btn btn-secondary btn-sm" style="opacity: 0.5; cursor: not-allowed;">Next</span>

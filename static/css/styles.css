@@ -166,6 +166,22 @@ legend {
     scrollbar-color: #d0d0d0 transparent;
 }
 
+/* Global toast container: fixed to viewport so toasts stay visible when page is scrolled */
+.toast-container {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 99999;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-width: 400px;
+    pointer-events: none;
+}
+.toast-container .toast {
+    pointer-events: auto;
+}
+
 @media (min-width: 1024px) {
     .three-column-layout {
         grid-template-columns: 16rem 1fr 20rem;

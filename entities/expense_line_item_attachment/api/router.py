@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from entities.expense_line_item_attachment.api.schemas import ExpenseLineItemAttachmentCreate
 from entities.expense_line_item_attachment.business.service import ExpenseLineItemAttachmentService
 from entities.auth.business.service import get_current_user_api
-from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "expense_line_item_attachment"])
 service = ExpenseLineItemAttachmentService()

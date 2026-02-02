@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from entities.user_role.api.schemas import UserRoleCreate, UserRoleUpdate
 from entities.user_role.business.service import UserRoleService
 from entities.auth.business.service import get_current_user_api
-from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "user_role"])
 

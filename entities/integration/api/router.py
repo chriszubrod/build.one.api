@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from entities.integration.api.schemas import IntegrationCreate, IntegrationUpdate
 from entities.integration.business.service import IntegrationService
 from entities.auth.business.service import get_current_user_api
-from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "integration"])
 

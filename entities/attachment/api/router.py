@@ -14,7 +14,7 @@ from entities.attachment.business.service import AttachmentService
 from entities.attachment.business.extraction_service import ExtractionService
 from entities.auth.business.service import get_current_user_api as get_current_attachment_api
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
-from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 logger = logging.getLogger(__name__)
 

@@ -154,7 +154,7 @@ def _get_pending_bill_workflows(tenant_id: int) -> list:
     - OR are email_intake workflows confirmed as 'bill' without a child workflow
     """
     try:
-        from workflows.persistence.repo import WorkflowRepository
+        from workflows.workflow.persistence.repo import WorkflowRepository
         
         repo = WorkflowRepository()
         
@@ -276,7 +276,7 @@ def _get_workflow_for_bill(bill_public_id: str) -> Optional[dict]:
     Returns the workflow context including email conversation.
     """
     try:
-        from workflows.persistence.repo import WorkflowRepository
+        from workflows.workflow.persistence.repo import WorkflowRepository
         from shared.database import get_connection
         
         repo = WorkflowRepository()

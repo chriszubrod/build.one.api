@@ -9,7 +9,7 @@ from entities.bill_credit.api.schemas import BillCreditCreate, BillCreditUpdate
 from entities.bill_credit.business.service import BillCreditService
 from entities.bill_credit.business.complete_service import BillCreditCompleteService
 from entities.auth.business.service import get_current_user_api
-from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_credit"])
 

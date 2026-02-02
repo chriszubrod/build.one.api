@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from entities.taxpayer.api.schemas import TaxpayerCreate, TaxpayerUpdate
 from entities.taxpayer.business.service import TaxpayerService
 from entities.auth.business.service import get_current_user_api as get_current_taxpayer_api
-from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "taxpayer"])
 service = TaxpayerService()

@@ -10,7 +10,7 @@ from entities.cost_code.api.schemas import (
     CostCodeUpdate,
 )
 from entities.auth.business.service import get_current_user_api
-from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "cost-code"])
 service = CostCodeService()

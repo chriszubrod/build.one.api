@@ -8,7 +8,7 @@ from decimal import Decimal
 from entities.bill_credit_line_item.api.schemas import BillCreditLineItemCreate, BillCreditLineItemUpdate
 from entities.bill_credit_line_item.business.service import BillCreditLineItemService
 from entities.auth.business.service import get_current_user_api
-from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_credit_line_item"])
 

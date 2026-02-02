@@ -24,7 +24,7 @@ from entities.contract_labor.api.schemas import (
 )
 from entities.contract_labor.persistence.line_item_repo import ContractLaborLineItemRepository
 from entities.auth.business.service import get_current_user_api
-from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 logger = logging.getLogger(__name__)
 

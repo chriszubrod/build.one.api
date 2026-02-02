@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from entities.bill_line_item_attachment.api.schemas import BillLineItemAttachmentCreate
 from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
 from entities.auth.business.service import get_current_user_api as get_current_bill_line_item_attachment_api
-from workflows.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_line_item_attachment"])
 service = BillLineItemAttachmentService()

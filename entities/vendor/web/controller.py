@@ -104,6 +104,32 @@ async def view_vendor(request: Request, public_id: str, current_user: dict = Dep
         # Get all address types for display
         all_address_types = AddressTypeService().read_all()
         
+        # Linked SharePoint folder (for W9 backfill etc.)
+        linked_folder = None
+        linked_drives = []
+        vendor_root_drive_public_id = None
+        try:
+            from integrations.ms.sharepoint.driveitem.connector.vendor.business.service import DriveItemVendorConnector
+            from integrations.ms.sharepoint.drive.persistence.repo import MsDriveRepository
+            connector = DriveItemVendorConnector()
+            linked_folder = connector.get_driveitem_for_vendor(vendor_id=int(vendor.id))
+            if linked_folder:
+                drive_repo = MsDriveRepository()
+                ms_drive_id = linked_folder.get("ms_drive_id")
+                if ms_drive_id:
+                    drive = drive_repo.read_by_id(ms_drive_id)
+                    if drive:
+                        vendor_root_drive_public_id = drive.public_id
+                from integrations.ms.sharepoint.drive.connector.company.business.service import DriveCompanyConnector
+                drive_connector = DriveCompanyConnector()
+                company_ids = [c.get("id") for c in current_user.get("companies", []) if c.get("id")]
+                for cid in company_ids:
+                    d = drive_connector.get_drive_for_company(company_id=cid)
+                    if d:
+                        linked_drives.append(d)
+        except Exception:
+            linked_drives = []
+
         # Fetch taxpayer attachments if taxpayer exists
         taxpayer_attachments = []
         attachments_data = []
@@ -135,6 +161,9 @@ async def view_vendor(request: Request, public_id: str, current_user: dict = Dep
                 "address_types": all_address_types,
                 "addresses_by_type": addresses_by_type,
                 "attachments": attachments_data,
+                "linked_folder": linked_folder,
+                "linked_drives": linked_drives,
+                "vendor_root_drive_public_id": vendor_root_drive_public_id,
                 "current_user": current_user,
                 "current_path": request.url.path,
             },

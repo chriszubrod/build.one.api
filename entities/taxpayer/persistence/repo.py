@@ -54,6 +54,8 @@ class TaxpayerRepository:
                 business_name=row.BusinessName,
                 classification=classification,
                 taxpayer_id_number=row.TaxpayerIdNumber,
+                is_signed=row.IsSigned,
+                signature_date=row.SignatureDate,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during taxpayer mapping: {error}")
@@ -62,7 +64,7 @@ class TaxpayerRepository:
             logger.error(f"Unexpected error during taxpayer mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, entity_name: Optional[str], business_name: Optional[str], classification: Optional[TaxpayerClassification], taxpayer_id_number: Optional[str]) -> Taxpayer:
+    def create(self, *, entity_name: Optional[str], business_name: Optional[str], classification: Optional[TaxpayerClassification], taxpayer_id_number: Optional[str], is_signed: Optional[int] = 0, signature_date: Optional[str] = None) -> Taxpayer:
         """
         Create a new taxpayer.
         """
@@ -78,6 +80,8 @@ class TaxpayerRepository:
                             "BusinessName": business_name,
                             "Classification": classification.value if classification else None,
                             "TaxpayerIdNumber": taxpayer_id_number,
+                            "IsSigned": is_signed if is_signed is not None else 0,
+                            "SignatureDate": signature_date,
                         },
                     )
                     row = cursor.fetchone()
@@ -216,6 +220,8 @@ class TaxpayerRepository:
                         "BusinessName": taxpayer.business_name,
                         "Classification": taxpayer.classification.value if taxpayer.classification else None,
                         "TaxpayerIdNumber": taxpayer.taxpayer_id_number,
+                        "IsSigned": taxpayer.is_signed if taxpayer.is_signed is not None else 0,
+                        "SignatureDate": taxpayer.signature_date,
                     },
                 )
                 row = cursor.fetchone()

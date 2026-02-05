@@ -25,6 +25,9 @@
                 <a href="#taxpayer" class="vendor-nav-item" data-section="taxpayer">
                     <span class="vendor-nav-label">Taxpayer</span>
                 </a>
+                <a href="#sharepoint-folder" class="vendor-nav-item" data-section="sharepoint-folder">
+                    <span class="vendor-nav-label">SharePoint Folder</span>
+                </a>
                 <a href="#addresses" class="vendor-nav-item" data-section="addresses">
                     <span class="vendor-nav-label">Addresses</span>
                 </a>
@@ -52,6 +55,36 @@
                         <div class="vendor-form-group">
                             <label class="vendor-form-label">Vendor Type</label>
                             <div class="vendor-form-value">{{ vendor_type.name if vendor_type else 'Not specified' }}</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- SharePoint Folder Section (for W9 backfill etc.) -->
+            <section id="sharepoint-folder" class="vendor-section">
+                <div class="vendor-form-card">
+                    <div class="vendor-form-card-header">
+                        <h5>SharePoint Document Folder</h5>
+                    </div>
+                    <div class="vendor-form-card-body">
+                        <div id="vendor-linked-folder-container">
+                            {% if linked_folder %}
+                                <div class="vendor-form-group">
+                                    <label class="vendor-form-label">Linked folder</label>
+                                    <div class="vendor-form-value">{{ linked_folder.name or 'Folder' }}</div>
+                                    {% if linked_folder.web_url %}
+                                        <a href="{{ linked_folder.web_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-primary mt-1">Open in SharePoint</a>
+                                    {% endif %}
+                                </div>
+                                <button type="button" class="btn btn-danger btn-sm" onclick="unlinkVendorFolder()">Unlink Folder</button>
+                            {% else %}
+                                <p class="vendor-form-value text-muted">No folder linked. Link a SharePoint folder to enable W9 backfill from documents.</p>
+                                {% if linked_drives and linked_drives|length > 0 %}
+                                    <button type="button" class="btn btn-primary btn-sm" onclick="openVendorFolderPicker()">Link Folder</button>
+                                {% else %}
+                                    <p class="text-muted small">No drives available. Link a drive to your company first.</p>
+                                {% endif %}
+                            {% endif %}
                         </div>
                     </div>
                 </div>
@@ -295,6 +328,29 @@
                 </div>
             </section>
 
+            <!-- Vendor folder picker modal -->
+            <div id="vendor-folder-picker-modal" class="modal" style="display: none;" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">Link SharePoint Folder</h5>
+                            <button type="button" class="btn-close" onclick="closeVendorFolderPicker()"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div id="vendor-picker-view-drives">
+                                <p class="text-muted small">Select a drive to browse, then choose a folder.</p>
+                                <div id="vendor-picker-drives-list"></div>
+                            </div>
+                            <div id="vendor-picker-view-folders" style="display: none;">
+                                <p class="text-muted small"><span id="vendor-picker-path"></span></p>
+                                <button type="button" class="btn btn-sm btn-secondary mb-2" onclick="vendorPickerBack()">Back</button>
+                                <div id="vendor-picker-folders-list"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="vendor-form-actions">
                 <div class="vendor-form-actions-left"></div>
                 <div class="vendor-form-actions-right">
@@ -310,6 +366,126 @@
 
 {% block scripts %}
     <script>
+        const vendorPublicId = '{{ vendor.public_id }}';
+        const linkedDrivesVendor = {% if linked_drives %}{{ linked_drives | tojson | safe }}{% else %}[]{% endif %};
+        let vendorPickerDrivePublicId = null;
+        let vendorPickerStack = [];
+
+        function openVendorFolderPicker() {
+            document.getElementById('vendor-folder-picker-modal').style.display = 'block';
+            document.getElementById('vendor-picker-view-drives').style.display = 'block';
+            document.getElementById('vendor-picker-view-folders').style.display = 'none';
+            const list = document.getElementById('vendor-picker-drives-list');
+            if (linkedDrivesVendor.length === 0) {
+                list.innerHTML = '<p class="text-muted">No drives available.</p>';
+                return;
+            }
+            list.innerHTML = linkedDrivesVendor.map(d => {
+                const name = (d.name || 'Drive').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                const pid = (d.public_id || '').replace(/"/g, '&quot;');
+                return `<div class="mb-2"><button type="button" class="btn btn-sm btn-outline-primary" onclick="vendorPickerSelectDrive('${pid}', '${name}')">${name}</button></div>`;
+            }).join('');
+        }
+
+        function closeVendorFolderPicker() {
+            document.getElementById('vendor-folder-picker-modal').style.display = 'none';
+        }
+
+        async function vendorPickerSelectDrive(drivePublicId, driveName) {
+            vendorPickerDrivePublicId = drivePublicId;
+            vendorPickerStack = [{ item_id: null, name: driveName }];
+            document.getElementById('vendor-picker-view-drives').style.display = 'none';
+            document.getElementById('vendor-picker-view-folders').style.display = 'block';
+            document.getElementById('vendor-picker-path').textContent = driveName;
+            await vendorPickerBrowse(null);
+        }
+
+        async function vendorPickerBrowse(parentItemId) {
+            const listEl = document.getElementById('vendor-picker-folders-list');
+            listEl.innerHTML = '<p class="text-muted">Loading...</p>';
+            const url = parentItemId
+                ? `/api/v1/ms/sharepoint/driveitem/drive/${vendorPickerDrivePublicId}/browse/${parentItemId}`
+                : `/api/v1/ms/sharepoint/driveitem/drive/${vendorPickerDrivePublicId}/browse`;
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+                if (data.status_code !== 200 || !data.items) {
+                    listEl.innerHTML = '<p class="text-danger">' + (data.message || 'Failed to load') + '</p>';
+                    return;
+                }
+                const folders = (data.items || []).filter(i => i.item_type === 'folder');
+                const currentItemId = vendorPickerStack[vendorPickerStack.length - 1];
+                let html = '';
+                if (currentItemId && currentItemId.item_id) {
+                    html += `<div class="mb-2"><button type="button" class="btn btn-sm btn-success" onclick="linkVendorFolder('${currentItemId.item_id.replace(/'/g, "\\'")}')">Link This Folder</button></div>`;
+                }
+                folders.forEach(f => {
+                    const name = (f.name || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, "\\'");
+                    const itemId = (f.item_id || '').replace(/"/g, '&quot;');
+                    html += `<div class="mb-1"><button type="button" class="btn btn-sm btn-outline-secondary" onclick="vendorPickerOpenFolder('${itemId}', '${name}')">${name}</button></div>`;
+                });
+                listEl.innerHTML = html || '<p class="text-muted">No subfolders.</p>';
+            } catch (e) {
+                listEl.innerHTML = '<p class="text-danger">Error: ' + (e.message || 'Unknown') + '</p>';
+            }
+        }
+
+        function vendorPickerOpenFolder(itemId, name) {
+            vendorPickerStack.push({ item_id: itemId, name });
+            document.getElementById('vendor-picker-path').textContent = vendorPickerStack.map(s => s.name).join(' / ');
+            vendorPickerBrowse(itemId);
+        }
+
+        function vendorPickerBack() {
+            if (vendorPickerStack.length <= 1) {
+                document.getElementById('vendor-picker-view-folders').style.display = 'none';
+                document.getElementById('vendor-picker-view-drives').style.display = 'block';
+                return;
+            }
+            vendorPickerStack.pop();
+            document.getElementById('vendor-picker-path').textContent = vendorPickerStack.map(s => s.name).join(' / ');
+            const parent = vendorPickerStack[vendorPickerStack.length - 1];
+            vendorPickerBrowse(parent ? parent.item_id : null);
+        }
+
+        async function linkVendorFolder(graphItemId) {
+            try {
+                const res = await fetch('/api/v1/ms/sharepoint/driveitem/connector/vendor', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        vendor_public_id: vendorPublicId,
+                        drive_public_id: vendorPickerDrivePublicId,
+                        graph_item_id: graphItemId
+                    })
+                });
+                const data = await res.json();
+                if (res.ok && data.status_code < 400) {
+                    closeVendorFolderPicker();
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + (data.message || data.detail || 'Failed to link folder'));
+                }
+            } catch (e) {
+                alert('Error: ' + (e.message || 'Unknown'));
+            }
+        }
+
+        async function unlinkVendorFolder() {
+            if (!confirm('Unlink this folder from the vendor?')) return;
+            try {
+                const res = await fetch(`/api/v1/ms/sharepoint/driveitem/connector/vendor/${vendorPublicId}`, { method: 'DELETE' });
+                const data = await res.json();
+                if (res.ok && data.status_code < 400) {
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + (data.message || data.detail || 'Failed to unlink'));
+                }
+            } catch (e) {
+                alert('Error: ' + (e.message || 'Unknown'));
+            }
+        }
+
         // Sidebar navigation
         document.addEventListener('DOMContentLoaded', function() {
             const navItems = document.querySelectorAll('.vendor-nav-item');

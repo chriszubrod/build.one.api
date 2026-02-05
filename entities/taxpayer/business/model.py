@@ -32,6 +32,8 @@ class Taxpayer:
     business_name: Optional[str]
     classification: Optional[TaxpayerClassification]
     taxpayer_id_number: Optional[str]
+    is_signed: Optional[int] = None
+    signature_date: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

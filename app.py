@@ -79,6 +79,7 @@ from entities.qa.api.router import router as qa_api_router
 from entities.anomaly.api.router import router as anomaly_api_router
 from entities.categorization.api.router import router as categorization_api_router
 from entities.copilot.api.router import router as copilot_api_router
+from core.workflow.api.pending_action_router import router as pending_action_api_router
 
 from integrations.intuit.qbo.auth.api.router import router as intuit_qbo_auth_api_router
 from integrations.intuit.qbo.company_info.api.router import router as intuit_qbo_company_info_api_router
@@ -221,6 +222,7 @@ app.include_router(qa_api_router)
 app.include_router(anomaly_api_router)
 app.include_router(categorization_api_router)
 app.include_router(copilot_api_router)
+app.include_router(pending_action_api_router)
 
 
 def get_settings():

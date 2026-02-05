@@ -61,10 +61,11 @@ def chat_router(
     try:
         copilot_service = get_copilot_service()
         
-        # Add user context
+        # Add user context (tenant_id for workflow lookups)
         context = {
             "user_id": current_user.get("id"),
             "user_name": current_user.get("name"),
+            "tenant_id": current_user.get("tenant_id", 1),
         }
         
         response = copilot_service.chat(
@@ -167,6 +168,12 @@ def get_quick_actions_router(
     """
     return {
         "actions": [
+            {
+                "label": "Check Vendor Compliance",
+                "prompt": "Check current status for ",
+                "icon": "vendor",
+                "requires_input": True,
+            },
             {
                 "label": "Check System Status",
                 "prompt": "What's the current system status?",

@@ -19,7 +19,7 @@ class TaxpayerService:
         """Initialize the TaxpayerService."""
         self.repo = repo or TaxpayerRepository()
 
-    def create(self, *, tenant_id: int = None, entity_name: Optional[str], business_name: Optional[str], classification: Optional[str] = None, taxpayer_id_number: Optional[str] = None) -> Taxpayer:
+    def create(self, *, tenant_id: int = None, entity_name: Optional[str], business_name: Optional[str], classification: Optional[str] = None, taxpayer_id_number: Optional[str] = None, is_signed: Optional[int] = 0, signature_date: Optional[str] = None) -> Taxpayer:
         """
         Create a new taxpayer.
         """
@@ -43,7 +43,7 @@ class TaxpayerService:
         
         # TODO: In Phase 10, use tenant_id for tenant isolation
         encrypted_taxpayer_id_number = encrypt_sensitive_data(taxpayer_id_number) if taxpayer_id_number else None
-        taxpayer = self.repo.create(entity_name=entity_name, business_name=business_name, classification=classification, taxpayer_id_number=encrypted_taxpayer_id_number)
+        taxpayer = self.repo.create(entity_name=entity_name, business_name=business_name, classification=classification, taxpayer_id_number=encrypted_taxpayer_id_number, is_signed=is_signed, signature_date=signature_date)
         # Decrypt for return value
         if taxpayer and taxpayer.taxpayer_id_number:
             taxpayer.taxpayer_id_number = decrypt_sensitive_data(taxpayer.taxpayer_id_number)
@@ -117,6 +117,8 @@ class TaxpayerService:
         business_name: str = None,
         classification: str = None,
         taxpayer_id_number: str = None,
+        is_signed: Optional[int] = None,
+        signature_date: Optional[str] = None,
     ) -> Optional[Taxpayer]:
         """
         Update a taxpayer by public ID.
@@ -154,6 +156,10 @@ class TaxpayerService:
             if taxpayer_id_number is not None:
                 encrypted_id = encrypt_sensitive_data(taxpayer_id_number)
                 existing.taxpayer_id_number = encrypted_id
+            if is_signed is not None:
+                existing.is_signed = is_signed
+            if signature_date is not None:
+                existing.signature_date = signature_date
             updated = self.repo.update_by_id(existing)
             # Decrypt for return value
             if updated and updated.taxpayer_id_number:

@@ -193,6 +193,24 @@ class DriveItemProjectResponse(BaseModel):
     )
 
 
+# DriveItem-Vendor Connector Schemas
+
+class DriveItemVendorLinkRequest(BaseModel):
+    """Request model for linking a driveitem (folder) to a vendor."""
+    vendor_public_id: str = Field(
+        min_length=1,
+        description="The public ID of the vendor to link"
+    )
+    drive_public_id: str = Field(
+        min_length=1,
+        description="The public ID of the linked drive"
+    )
+    graph_item_id: str = Field(
+        min_length=1,
+        description="The MS Graph item ID (folder) to link to the vendor"
+    )
+
+
 # DriveItem-ProjectModule Connector Schemas
 
 class DriveItemProjectModuleLinkRequest(BaseModel):

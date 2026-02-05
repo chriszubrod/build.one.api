@@ -1,5 +1,3 @@
-GO
-
 IF OBJECT_ID('dbo.Taxpayer', 'U') IS NULL
 BEGIN
 CREATE TABLE [dbo].[Taxpayer]
@@ -12,28 +10,43 @@ CREATE TABLE [dbo].[Taxpayer]
     [EntityName] NVARCHAR(MAX) NOT NULL,
     [BusinessName] NVARCHAR(MAX) NOT NULL,
     [Classification] NVARCHAR(MAX) NOT NULL,
-    [TaxpayerIdNumber] NVARCHAR(MAX) NOT NULL
+    [TaxpayerIdNumber] NVARCHAR(MAX) NOT NULL,
+    [IsSigned] INT NOT NULL,
+    [SignatureDate] DATETIME2(3) NOT NULL
 );
 END
 GO
 
-
+-- Add columns to existing table if missing (migration)
+IF COL_LENGTH('dbo.Taxpayer', 'IsSigned') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Taxpayer] ADD [IsSigned] INT NOT NULL DEFAULT 0;
+END
+IF COL_LENGTH('dbo.Taxpayer', 'SignatureDate') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Taxpayer] ADD [SignatureDate] DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME();
+END
 GO
+
+
 
 CREATE OR ALTER PROCEDURE CreateTaxpayer
 (
     @EntityName NVARCHAR(MAX),
     @BusinessName NVARCHAR(MAX),
     @Classification NVARCHAR(MAX),
-    @TaxpayerIdNumber NVARCHAR(MAX)
+    @TaxpayerIdNumber NVARCHAR(MAX),
+    @IsSigned INT = 0,
+    @SignatureDate DATETIME2(3) = NULL
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+    DECLARE @SigDate DATETIME2(3) = COALESCE(@SignatureDate, @Now);
 
-    INSERT INTO dbo.[Taxpayer] ([CreatedDatetime], [ModifiedDatetime], [EntityName], [BusinessName], [Classification], [TaxpayerIdNumber])
+    INSERT INTO dbo.[Taxpayer] ([CreatedDatetime], [ModifiedDatetime], [EntityName], [BusinessName], [Classification], [TaxpayerIdNumber], [IsSigned], [SignatureDate])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -43,15 +56,17 @@ BEGIN
         INSERTED.[EntityName],
         INSERTED.[BusinessName],
         INSERTED.[Classification],
-        INSERTED.[TaxpayerIdNumber]
-    VALUES (@Now, @Now, @EntityName, @BusinessName, @Classification, @TaxpayerIdNumber);
+        INSERTED.[TaxpayerIdNumber],
+        INSERTED.[IsSigned],
+        CONVERT(VARCHAR(19), INSERTED.[SignatureDate], 120) AS [SignatureDate]
+    VALUES (@Now, @Now, @EntityName, @BusinessName, @Classification, @TaxpayerIdNumber, @IsSigned, @SigDate);
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
+
+
 
 CREATE OR ALTER PROCEDURE ReadTaxpayers
 AS
@@ -67,16 +82,18 @@ BEGIN
         [EntityName],
         [BusinessName],
         [Classification],
-        [TaxpayerIdNumber]
+        [TaxpayerIdNumber],
+        [IsSigned],
+        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate]
     FROM dbo.[Taxpayer]
     ORDER BY [EntityName] ASC;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
+
+
 
 CREATE OR ALTER PROCEDURE ReadTaxpayerById
 (
@@ -95,16 +112,18 @@ BEGIN
         [EntityName],
         [BusinessName],
         [Classification],
-        [TaxpayerIdNumber]
+        [TaxpayerIdNumber],
+        [IsSigned],
+        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate]
     FROM dbo.[Taxpayer]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
+
+
 
 CREATE OR ALTER PROCEDURE ReadTaxpayerByPublicId
 (
@@ -123,16 +142,18 @@ BEGIN
         [EntityName],
         [BusinessName],
         [Classification],
-        [TaxpayerIdNumber]
+        [TaxpayerIdNumber],
+        [IsSigned],
+        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate]
     FROM dbo.[Taxpayer]
     WHERE [PublicId] = @PublicId;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
+
+
 
 CREATE OR ALTER PROCEDURE ReadTaxpayerByName
 (
@@ -151,16 +172,18 @@ BEGIN
         [EntityName],
         [BusinessName],
         [Classification],
-        [TaxpayerIdNumber]
+        [TaxpayerIdNumber],
+        [IsSigned],
+        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate]
     FROM dbo.[Taxpayer]
     WHERE [EntityName] = @EntityName;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
+
+
 
 CREATE OR ALTER PROCEDURE ReadTaxpayerByBusinessName
 (
@@ -179,16 +202,18 @@ BEGIN
         [EntityName],
         [BusinessName],
         [Classification],
-        [TaxpayerIdNumber]
+        [TaxpayerIdNumber],
+        [IsSigned],
+        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate]
     FROM dbo.[Taxpayer]
     WHERE [BusinessName] = @BusinessName;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
+
+
 
 CREATE OR ALTER PROCEDURE ReadTaxpayerByTaxpayerIdNumber
 (
@@ -207,16 +232,18 @@ BEGIN
         [EntityName],
         [BusinessName],
         [Classification],
-        [TaxpayerIdNumber]
+        [TaxpayerIdNumber],
+        [IsSigned],
+        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate]
     FROM dbo.[Taxpayer]
     WHERE [TaxpayerIdNumber] = @TaxpayerIdNumber;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
+
+
 
 CREATE OR ALTER PROCEDURE UpdateTaxpayerById
 (
@@ -225,7 +252,9 @@ CREATE OR ALTER PROCEDURE UpdateTaxpayerById
     @EntityName NVARCHAR(MAX),
     @BusinessName NVARCHAR(MAX),
     @Classification NVARCHAR(MAX),
-    @TaxpayerIdNumber NVARCHAR(MAX)
+    @TaxpayerIdNumber NVARCHAR(MAX),
+    @IsSigned INT,
+    @SignatureDate DATETIME2(3)
 )
 AS
 BEGIN
@@ -239,7 +268,9 @@ BEGIN
         [EntityName] = @EntityName,
         [BusinessName] = @BusinessName,
         [Classification] = @Classification,
-        [TaxpayerIdNumber] = @TaxpayerIdNumber
+        [TaxpayerIdNumber] = @TaxpayerIdNumber,
+        [IsSigned] = @IsSigned,
+        [SignatureDate] = @SignatureDate
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -249,15 +280,17 @@ BEGIN
         INSERTED.[EntityName],
         INSERTED.[BusinessName],
         INSERTED.[Classification],
-        INSERTED.[TaxpayerIdNumber]
+        INSERTED.[TaxpayerIdNumber],
+        INSERTED.[IsSigned],
+        CONVERT(VARCHAR(19), INSERTED.[SignatureDate], 120) AS [SignatureDate]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
+
+
 
 CREATE OR ALTER PROCEDURE DeleteTaxpayerById
 (
@@ -277,9 +310,11 @@ BEGIN
         DELETED.[EntityName],
         DELETED.[BusinessName],
         DELETED.[Classification],
-        DELETED.[TaxpayerIdNumber]
+        DELETED.[TaxpayerIdNumber],
+        DELETED.[IsSigned],
+        CONVERT(VARCHAR(19), DELETED.[SignatureDate], 120) AS [SignatureDate]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
 END;
-
+GO

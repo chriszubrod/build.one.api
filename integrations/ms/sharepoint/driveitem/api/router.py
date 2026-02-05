@@ -10,6 +10,7 @@ from integrations.ms.sharepoint.driveitem.api.schemas import (
     DriveItemLinkRequest,
     FolderCreateRequest,
     DriveItemProjectLinkRequest,
+    DriveItemVendorLinkRequest,
     DriveItemProjectModuleLinkRequest,
     DriveItemProjectExcelLinkRequest,
     DriveItemProjectExcelPushDataRequest,
@@ -18,6 +19,7 @@ from integrations.ms.sharepoint.driveitem.api.schemas import (
 )
 from integrations.ms.sharepoint.driveitem.business.service import MsDriveItemService
 from integrations.ms.sharepoint.driveitem.connector.project.business.service import DriveItemProjectConnector
+from integrations.ms.sharepoint.driveitem.connector.vendor.business.service import DriveItemVendorConnector
 from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
 from integrations.ms.sharepoint.driveitem.connector.project_excel.business.service import DriveItemProjectExcelConnector
 from entities.auth.business.service import get_current_user_api
@@ -381,6 +383,75 @@ def unlink_driveitem_from_project_router(
             detail=result.get("message", "Failed to unlink folder from project")
         )
     
+    return result
+
+
+# =============================================================================
+# DriveItem-Vendor Connector Endpoints
+# =============================================================================
+
+
+@router.post("/connector/vendor")
+def link_driveitem_to_vendor_router(
+    body: DriveItemVendorLinkRequest,
+    current_user: dict = Depends(get_current_user_api)
+):
+    """
+    Link a DriveItem (folder) to a Vendor.
+    Stores the DriveItem in ms.DriveItem if needed, then creates ms.DriveItemVendor mapping.
+    """
+    from entities.vendor.business.service import VendorService
+    vendor = VendorService().read_by_public_id(public_id=body.vendor_public_id)
+    if not vendor or not vendor.id:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    connector = DriveItemVendorConnector()
+    result = connector.link_driveitem_to_vendor(
+        vendor_id=int(vendor.id),
+        drive_public_id=body.drive_public_id,
+        graph_item_id=body.graph_item_id,
+    )
+    if result.get("status_code") >= 400:
+        raise HTTPException(
+            status_code=result.get("status_code", 500),
+            detail=result.get("message", "Failed to link folder to vendor"),
+        )
+    return result
+
+
+@router.get("/connector/vendor/{vendor_public_id}")
+def get_driveitem_for_vendor_router(
+    vendor_public_id: str,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """Get the linked DriveItem (folder) for a Vendor."""
+    from entities.vendor.business.service import VendorService
+    vendor = VendorService().read_by_public_id(public_id=vendor_public_id)
+    if not vendor or not vendor.id:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    connector = DriveItemVendorConnector()
+    driveitem = connector.get_driveitem_for_vendor(vendor_id=int(vendor.id))
+    if not driveitem:
+        return {"message": "No linked folder found for this vendor", "status_code": 404, "driveitem": None}
+    return {"message": "Folder mapping retrieved successfully", "status_code": 200, "driveitem": driveitem}
+
+
+@router.delete("/connector/vendor/{vendor_public_id}")
+def unlink_driveitem_from_vendor_router(
+    vendor_public_id: str,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """Unlink the DriveItem (folder) from a Vendor."""
+    from entities.vendor.business.service import VendorService
+    vendor = VendorService().read_by_public_id(public_id=vendor_public_id)
+    if not vendor or not vendor.id:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    connector = DriveItemVendorConnector()
+    result = connector.unlink_by_vendor_id(vendor_id=int(vendor.id))
+    if result.get("status_code") >= 400:
+        raise HTTPException(
+            status_code=result.get("status_code", 500),
+            detail=result.get("message", "Failed to unlink folder from vendor"),
+        )
     return result
 
 

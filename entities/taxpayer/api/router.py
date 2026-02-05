@@ -30,6 +30,8 @@ def create_taxpayer_router(body: TaxpayerCreate, current_user: dict = Depends(ge
             "business_name": body.business_name,
             "classification": body.classification,
             "taxpayer_id_number": body.taxpayer_id_number,
+            "is_signed": body.is_signed,
+            "signature_date": body.signature_date,
         },
         workflow_type="taxpayer_create",
     )
@@ -82,6 +84,8 @@ def update_taxpayer_by_public_id_router(public_id: str, body: TaxpayerUpdate, cu
             "business_name": body.business_name,
             "classification": body.classification.value if body.classification else None,
             "taxpayer_id_number": body.taxpayer_id_number,
+            "is_signed": body.is_signed,
+            "signature_date": body.signature_date,
         },
         workflow_type="taxpayer_update",
     )

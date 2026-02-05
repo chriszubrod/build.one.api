@@ -29,6 +29,9 @@ class CopilotIntent(str, Enum):
     ANALYZE_SPENDING = "analyze_spending"
     FIND_ANOMALIES = "find_anomalies"
     
+    # Workflows / compliance
+    CHECK_VENDOR_COMPLIANCE = "check_vendor_compliance"
+
     # General
     GREETING = "greeting"
     HELP = "help"

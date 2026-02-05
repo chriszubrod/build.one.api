@@ -83,6 +83,7 @@ Available intents:
 - create_bill: User wants to create a bill
 - list_entities: User wants to list bills, vendors, projects, etc.
 - analyze_spending: User wants spending analysis
+- check_vendor_compliance: User wants to check compliance or status for a specific vendor (e.g. "check status for ACME Corp", "is Vendor X in good standing")
 - greeting: User is greeting or starting conversation
 - help: User needs help understanding the system
 - unknown: Cannot determine intent"""
@@ -239,6 +240,7 @@ class CopilotService:
             CopilotIntent.SEARCH_DOCUMENTS: self._handle_search,
             CopilotIntent.QUESTION_ANSWER: self._handle_question,
             CopilotIntent.GET_STATUS: self._handle_status,
+            CopilotIntent.CHECK_VENDOR_COMPLIANCE: self._handle_vendor_compliance,
             CopilotIntent.CATEGORIZE_DOCUMENT: self._handle_categorize,
             CopilotIntent.CHECK_DUPLICATES: self._handle_duplicates,
             CopilotIntent.LIST_ENTITIES: self._handle_list,
@@ -403,6 +405,90 @@ class CopilotService:
                 intent=CopilotIntent.GET_STATUS,
             )
 
+    def _handle_vendor_compliance(
+        self,
+        message: str,
+        conversation: Conversation,
+        intent_result: Dict[str, Any],
+        context: Optional[Dict[str, Any]],
+    ) -> CopilotResponse:
+        """Handle vendor compliance status: resolve vendor by name, find latest workflow, return state and link."""
+        entities = intent_result.get("entities", {})
+        vendor_name = (entities.get("vendor_name") or "").strip()
+        if not vendor_name:
+            return CopilotResponse(
+                message="Which vendor would you like me to check? For example: \"Check current status for ACME Corp\"",
+                intent=CopilotIntent.CHECK_VENDOR_COMPLIANCE,
+                suggestions=["Check status for [vendor name]"],
+            )
+        tenant_id = 1
+        if context and context.get("tenant_id") is not None:
+            tenant_id = int(context["tenant_id"])
+
+        try:
+            from entities.vendor.business.service import VendorService
+            from workflows.workflow.persistence.repo import WorkflowRepository
+
+            vendor = VendorService().read_by_name(vendor_name)
+            if not vendor or not vendor.id:
+                return CopilotResponse(
+                    message=f"I couldn't find a vendor named \"{vendor_name}\". Check the spelling or try the exact name from your Vendors list.",
+                    intent=CopilotIntent.CHECK_VENDOR_COMPLIANCE,
+                    suggestions=["Check status for [vendor name]"],
+                )
+
+            repo = WorkflowRepository()
+            workflows = repo.read_by_tenant_and_type(tenant_id=tenant_id, workflow_type="vendor_compliance")
+            vendor_workflows = [w for w in workflows if getattr(w, "vendor_id", None) == vendor.id]
+            latest = vendor_workflows[0] if vendor_workflows else None
+
+            if not latest:
+                admin_base = "/admin/workflow"
+                return CopilotResponse(
+                    message=f"**{vendor.name or vendor_name}** — No compliance run yet. Run a check from Admin or use the script to create a workflow, then you can view status and pending actions here.",
+                    intent=CopilotIntent.CHECK_VENDOR_COMPLIANCE,
+                    action_taken="check_vendor_compliance",
+                    data={"vendor_id": vendor.id, "vendor_public_id": str(vendor.public_id), "vendor_name": vendor.name},
+                    suggestions=[f"Run compliance for {vendor.name or vendor_name}", "What's the system status?"],
+                )
+
+            state = getattr(latest, "state", None) or "unknown"
+            ctx = getattr(latest, "context", None) or {}
+            pending = ctx.get("pending_actions") or []
+            w9_info = ctx.get("w9", {})
+            admin_url = f"/admin/workflow/{latest.public_id}"
+
+            msg = f"**{vendor.name or vendor_name}** — Compliance workflow: **{state}**."
+            if pending:
+                msg += f" {len(pending)} pending action(s) need your approval."
+            if w9_info:
+                satisfied = w9_info.get("satisfied")
+                if satisfied is True:
+                    msg += " W9: satisfied."
+                elif satisfied is False:
+                    msg += " W9: not satisfied."
+            msg += f"\n\n[View workflow & approve actions]({admin_url})"
+
+            return CopilotResponse(
+                message=msg,
+                intent=CopilotIntent.CHECK_VENDOR_COMPLIANCE,
+                action_taken="check_vendor_compliance",
+                data={
+                    "vendor_id": vendor.id,
+                    "vendor_public_id": str(vendor.public_id),
+                    "workflow_public_id": latest.public_id,
+                    "state": state,
+                    "pending_actions_count": len(pending),
+                },
+                suggestions=["What's the system status?", "Search for documents"],
+            )
+        except Exception as e:
+            logger.exception("Vendor compliance check error: %s", e)
+            return CopilotResponse(
+                message=f"I had trouble checking compliance for \"{vendor_name}\". Please try again or check the workflow in Admin.",
+                intent=CopilotIntent.CHECK_VENDOR_COMPLIANCE,
+            )
+
     def _handle_categorize(
         self,
         message: str,
@@ -555,6 +641,9 @@ class CopilotService:
                    "- \"What documents need review?\"\n"
                    "- \"Show pending categorizations\"\n"
                    "- \"Summarize recent activity\"\n\n"
+                   "**Vendor Compliance:**\n"
+                   "- \"Check current status for ACME Corp\"\n"
+                   "- \"Is [vendor name] in good standing?\"\n\n"
                    "Just ask naturally - I'll figure out what you need!",
             intent=CopilotIntent.HELP,
         )

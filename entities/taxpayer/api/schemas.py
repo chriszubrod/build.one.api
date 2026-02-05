@@ -28,6 +28,14 @@ class TaxpayerCreate(BaseModel):
         max_length=255,
         description="The taxpayer ID number of the taxpayer.",
     )
+    is_signed: Optional[int] = Field(
+        default=0,
+        description="Whether the taxpayer form is signed (0 or 1).",
+    )
+    signature_date: Optional[str] = Field(
+        default=None,
+        description="ISO datetime when the taxpayer was signed.",
+    )
 
 
 class TaxpayerUpdate(BaseModel):
@@ -52,4 +60,12 @@ class TaxpayerUpdate(BaseModel):
         default=None,
         max_length=255,
         description="The taxpayer ID number of the taxpayer.",
+    )
+    is_signed: Optional[int] = Field(
+        default=None,
+        description="Whether the taxpayer form is signed (0 or 1).",
+    )
+    signature_date: Optional[str] = Field(
+        default=None,
+        description="ISO datetime when the taxpayer was signed.",
     )

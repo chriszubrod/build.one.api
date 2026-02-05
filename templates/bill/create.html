@@ -41,6 +41,10 @@
                                         <span class="process-badge-icon"></span>
                                         <span class="process-badge-text">Excel</span>
                                     </div>
+                                    <div id="status-badge-qbo" class="process-badge" data-status="idle">
+                                        <span class="process-badge-icon"></span>
+                                        <span class="process-badge-text">QuickBooks</span>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -72,7 +76,7 @@
                                             autocomplete="off">
                                         <option value="">Select Payment Terms</option>
                                         {% for term in payment_terms %}
-                                        <option value="{{ term.public_id }}" {% if term.name == 'Due on Receipt' %}selected{% endif %}>
+                                        <option value="{{ term.public_id }}" {% if term.name and term.name.lower() == 'due on receipt' %}selected{% endif %}>
                                             {{ term.name }}
                                         </option>
                                         {% endfor %}
@@ -1384,6 +1388,7 @@
                 setProcessBadgeStatus('status-badge-saved', 'idle');
                 setProcessBadgeStatus('status-badge-sharepoint', 'idle');
                 setProcessBadgeStatus('status-badge-excel', 'idle');
+                setProcessBadgeStatus('status-badge-qbo', 'idle');
             }
         }
 
@@ -1635,6 +1640,21 @@
             });
             sessionStorage.setItem('pendingBillCompletions', JSON.stringify(pendingBills));
             
+            // Show progress: button loading state + process badges
+            const form = document.getElementById('createBillForm');
+            const submitBtn = form ? form.querySelector('button[type="submit"]') : null;
+            const originalBtnText = submitBtn ? submitBtn.textContent : 'Complete Bill';
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Completing…';
+            }
+            showProcessBadges();
+            updateSaveStatus('', '');
+            setProcessBadgeStatus('status-badge-saved', 'running', 'Completing bill…');
+            setProcessBadgeStatus('status-badge-sharepoint', 'idle', 'SharePoint');
+            setProcessBadgeStatus('status-badge-excel', 'idle', 'Excel');
+            setProcessBadgeStatus('status-badge-qbo', 'idle', 'QuickBooks');
+            
             // Start the Complete Bill API call
             console.log('[Complete Bill] Starting API call for:', billPublicId);
             
@@ -1662,6 +1682,11 @@
                         sessionStorage.setItem('pendingBillCompletions', JSON.stringify(bills));
                         
                         showToast(`Bill "${billNumber}" completed successfully!`, 'success', 3000);
+                        setProcessBadgeStatus('status-badge-saved', 'completed', 'Bill saved');
+                        setProcessBadgeStatus('status-badge-sharepoint', 'completed', 'SharePoint');
+                        setProcessBadgeStatus('status-badge-excel', 'completed', 'Excel');
+                        const qboSync = result.qbo_sync || {};
+                        setProcessBadgeStatus('status-badge-qbo', (qboSync.errors && qboSync.errors.length) ? 'error' : 'completed', qboSync.success ? (qboSync.qbo_bill_id ? `QBO ${qboSync.qbo_bill_id}` : 'QuickBooks') : 'QuickBooks');
                     } else {
                         let errorMessage = 'Failed to complete bill';
                         try {
@@ -1675,6 +1700,12 @@
                         bills[billIndex].endTime = Date.now();
                         sessionStorage.setItem('pendingBillCompletions', JSON.stringify(bills));
                         
+                        setProcessBadgeStatus('status-badge-saved', 'error', 'Error');
+                        setProcessBadgeStatus('status-badge-qbo', 'error', 'Error');
+                        if (submitBtn) {
+                            submitBtn.disabled = false;
+                            submitBtn.textContent = originalBtnText;
+                        }
                         showToast(`Failed: ${errorMessage}`, 'error', 5000);
                     }
                 }
@@ -1697,6 +1728,12 @@
                     sessionStorage.setItem('pendingBillCompletions', JSON.stringify(bills));
                 }
                 
+                setProcessBadgeStatus('status-badge-saved', 'error', 'Error');
+                setProcessBadgeStatus('status-badge-qbo', 'error', 'Error');
+                if (submitBtn) {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = originalBtnText;
+                }
                 showToast(`Error: ${error.message || 'Network error'}`, 'error', 5000);
             }
             

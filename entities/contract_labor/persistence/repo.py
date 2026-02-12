@@ -363,6 +363,7 @@ class ContractLaborRepository:
                     "VendorId": contract_labor.vendor_id,
                     "ProjectId": contract_labor.project_id,
                     "EmployeeName": contract_labor.employee_name,
+                    "JobName": contract_labor.job_name,
                     "WorkDate": contract_labor.work_date,
                     "TimeIn": contract_labor.time_in,
                     "TimeOut": contract_labor.time_out,

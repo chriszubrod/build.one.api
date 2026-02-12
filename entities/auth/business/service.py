@@ -37,6 +37,8 @@ security = HTTPBearer(auto_error=False)
 CSRF_COOKIE_NAME = "token.csrf"
 CSRF_HEADER_NAME = "X-CSRF-Token"
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+# Allow tokens that expired this many seconds ago (clock skew / in-flight requests)
+JWT_EXP_LEEWAY_SECONDS = 30
 logger = logging.getLogger(__name__)
 
 
@@ -104,14 +106,15 @@ def _coerce_datetime(value) -> Optional[datetime]:
 
 def verify_token(*, token: str, expected_token_type: Optional[str] = None, allow_legacy: bool = False) -> dict:
     """
-    Verify a JWT token.
+    Verify a JWT token. Uses a small exp leeway to avoid 401s from clock skew or in-flight requests at expiry.
     """
     try:
         settings = Settings()
         payload = jwt.decode(
             token,
             settings.secret_key,
-            algorithms=[settings.algorithm]
+            algorithms=[settings.algorithm],
+            leeway=JWT_EXP_LEEWAY_SECONDS,
         )
         if expected_token_type:
             token_type = payload.get("token_type")
@@ -487,11 +490,17 @@ class AuthService:
             token_hash = self._hash_refresh_token(refresh_token)
             stored = self.token_repo.read_by_hash(token_hash)
             now = datetime.now(timezone.utc)
+            # Grace period for revoked token: another tab may have just rotated; allow this token once
+            REVOKED_GRACE_SECONDS = 60
+            revoked_in_grace = False
 
             if stored:
                 if stored.revoked_datetime:
-                    raise ValueError("Refresh token has been revoked.")
-                if stored.expires_datetime and stored.expires_datetime <= now:
+                    delta = (now - stored.revoked_datetime).total_seconds()
+                    if delta > REVOKED_GRACE_SECONDS:
+                        raise ValueError("Refresh token has been revoked.")
+                    revoked_in_grace = True  # Within grace: issue new tokens, skip revoke step
+                elif stored.expires_datetime and stored.expires_datetime <= now:
                     raise ValueError("Refresh token has expired.")
             else:
                 logger.info("Legacy refresh token accepted for migration for %s", auth.public_id)
@@ -500,9 +509,9 @@ class AuthService:
             new_access_token = self.generate_auth_token(auth=auth)
             new_refresh_token, refresh_meta = self._issue_refresh_token(auth=auth)
 
-            # Revoke old token (or record legacy token as revoked)
+            # Revoke old token (or record legacy token as revoked); skip if already revoked in grace
             replaced_by_jti = refresh_meta["jti"]
-            if stored:
+            if stored and not revoked_in_grace:
                 revoked = self.token_repo.revoke_by_hash(
                     token_hash=token_hash,
                     revoked_datetime=now,
@@ -510,7 +519,7 @@ class AuthService:
                 )
                 if not revoked:
                     raise ValueError("Refresh token has been revoked.")
-            else:
+            elif not stored:
                 legacy_issued_at = _coerce_datetime(refresh_payload.get("iat")) or now
                 legacy_expires_at = _coerce_datetime(refresh_payload.get("exp")) or (
                     now + timedelta(seconds=Settings().refresh_token_expire_seconds)

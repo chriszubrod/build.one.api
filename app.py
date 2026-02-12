@@ -80,6 +80,7 @@ from entities.anomaly.api.router import router as anomaly_api_router
 from entities.categorization.api.router import router as categorization_api_router
 from entities.copilot.api.router import router as copilot_api_router
 from core.workflow.api.pending_action_router import router as pending_action_api_router
+from core.ai.agents.vendor_agent.api.router import router as vendor_agent_api_router
 
 from integrations.intuit.qbo.auth.api.router import router as intuit_qbo_auth_api_router
 from integrations.intuit.qbo.company_info.api.router import router as intuit_qbo_company_info_api_router
@@ -97,6 +98,7 @@ from integrations.ms.sharepoint.driveitem.api.router import router as ms_sharepo
 from integrations.ms.mail.message.api.router import router as ms_mail_api_router
 from integrations.intuit.qbo.account.api.router import router as qbo_account_api_router
 from integrations.intuit.qbo.purchase.api.router import router as qbo_purchase_api_router
+from integrations.intuit.qbo.purchase.web.controller import router as qbo_purchase_web_router
 from integrations.intuit.qbo.vendorcredit.api.router import router as qbo_vendorcredit_api_router
 
 
@@ -180,6 +182,7 @@ app.include_router(qbo_client_api_router)
 app.include_router(qbo_client_web_router)
 app.include_router(qbo_account_api_router)
 app.include_router(qbo_purchase_api_router)
+app.include_router(qbo_purchase_web_router)
 app.include_router(qbo_vendorcredit_api_router)
 app.include_router(ms_auth_api_router)
 app.include_router(ms_sharepoint_site_api_router)
@@ -223,6 +226,7 @@ app.include_router(anomaly_api_router)
 app.include_router(categorization_api_router)
 app.include_router(copilot_api_router)
 app.include_router(pending_action_api_router)
+app.include_router(vendor_agent_api_router)
 
 
 def get_settings():

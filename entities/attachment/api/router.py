@@ -1,12 +1,14 @@
 # Python Standard Library Imports
 import io
 import logging
+import secrets
+import time
 import uuid
 from typing import Optional
 
 # Third-party Imports
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 # Local Imports
 from entities.attachment.api.schemas import AttachmentCreate, AttachmentUpdate
@@ -14,6 +16,7 @@ from entities.attachment.business.service import AttachmentService
 from entities.attachment.business.extraction_service import ExtractionService
 from entities.auth.business.service import get_current_user_api as get_current_attachment_api
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
+from shared.pdf_utils import compact_pdf
 from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
 logger = logging.getLogger(__name__)
@@ -271,13 +274,19 @@ async def upload_attachment_router(
         # Read file content
         file_content = await file.read()
         file_size = len(file_content)
-        
-        # Validate file size
+
+        # Validate file size (before compaction)
         service.validate_file_size(file_size)
-        
+
+        # Compact PDFs to reduce stored size (lossless when possible)
+        content_type = file.content_type or "application/octet-stream"
+        if content_type == "application/pdf":
+            file_content = compact_pdf(file_content)
+            file_size = len(file_content)
+
         # Calculate hash
         file_hash = service.calculate_hash(file_content)
-        
+
         # Check for duplicates (optional - can warn or prevent)
         existing = service.read_by_hash(file_hash)
         if existing:
@@ -285,28 +294,28 @@ async def upload_attachment_router(
             # Return existing attachment instead of creating duplicate
             # Uncomment to prevent duplicates:
             # raise HTTPException(status_code=409, detail="File already exists")
-        
+
         # Extract file extension
         file_extension = service.extract_extension(file.filename or "")
-        
+
         # Generate unique blob name using public_id only (with extension)
         public_id = str(uuid.uuid4())
         blob_name = f"{public_id}{file_extension}" if file_extension else public_id
-        
+
         # Upload to Azure Blob Storage
         storage = AzureBlobStorage()
         blob_url = storage.upload_file(
             blob_name=blob_name,
             file_content=file_content,
-            content_type=file.content_type or "application/octet-stream",
+            content_type=content_type,
         )
-        
+
         # Create attachment record
         attachment = service.create(
             filename=file.filename,
             original_filename=file.filename,
             file_extension=file_extension,
-            content_type=file.content_type or "application/octet-stream",
+            content_type=content_type,
             file_size=file_size,
             file_hash=file_hash,
             blob_url=blob_url,
@@ -318,7 +327,7 @@ async def upload_attachment_router(
             expiration_date=expiration_date,
             storage_tier="Hot",
         )
-        
+
         # Trigger background extraction for supported file types
         if attachment.id and extraction_service.is_extractable(attachment):
             background_tasks.add_task(trigger_extraction_background, attachment.id)
@@ -350,35 +359,41 @@ async def upload_bill_line_item_attachment_router(
         # Read file content
         file_content = await file.read()
         file_size = len(file_content)
-        
-        # Validate file size
+
+        # Validate file size (before compaction)
         service.validate_file_size(file_size)
-        
+
+        # Compact PDFs to reduce stored size (lossless when possible)
+        content_type = file.content_type or "application/octet-stream"
+        if content_type == "application/pdf":
+            file_content = compact_pdf(file_content)
+            file_size = len(file_content)
+
         # Calculate hash
         file_hash = service.calculate_hash(file_content)
-        
+
         # Extract file extension
         file_extension = service.extract_extension(file.filename or "")
-        
+
         # Generate unique blob name using public_id only (with extension)
         public_id = str(uuid.uuid4())
         blob_name = f"{public_id}{file_extension}" if file_extension else public_id
-        
+
         # Upload to Azure Blob Storage
         storage = AzureBlobStorage()
         blob_url = storage.upload_file(
             blob_name=blob_name,
             file_content=file_content,
-            content_type=file.content_type or "application/octet-stream",
+            content_type=content_type,
         )
         logger.info(f"Uploaded bill line item attachment to Azure Blob: {blob_url}")
-        
+
         # Create attachment record in database
         attachment = service.create(
             filename=file.filename,
             original_filename=file.filename,
             file_extension=file_extension,
-            content_type=file.content_type or "application/octet-stream",
+            content_type=content_type,
             file_size=file_size,
             file_hash=file_hash,
             blob_url=blob_url,
@@ -653,4 +668,114 @@ def get_extraction_result_router(
     except Exception as e:
         logger.error(f"Error getting extraction result: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# -----------------------------------------------------------------------------
+# Temporary pending bill file (for list -> create page transfer when file too large for sessionStorage)
+# -----------------------------------------------------------------------------
+_PENDING_FILE_STORE: dict[str, dict] = {}
+_PENDING_FILE_TTL_SEC = 300  # 5 minutes
+
+
+def _clean_expired_pending_files():
+    now = time.time()
+    expired = [k for k, v in _PENDING_FILE_STORE.items() if v.get("expires_at", 0) < now]
+    for k in expired:
+        del _PENDING_FILE_STORE[k]
+
+
+@router.post("/temp/pending-bill-file")
+async def upload_temp_pending_bill_file(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_attachment_api),
+):
+    """
+    Store a file temporarily for transfer to the bill create page.
+    Returns a token to pass in the URL; the create page fetches the file by token.
+    Files are deleted after retrieval or after TTL (5 minutes).
+    """
+    try:
+        content = await file.read()
+        _clean_expired_pending_files()
+        token = secrets.token_urlsafe(32)
+        _PENDING_FILE_STORE[token] = {
+            "filename": file.filename or "attachment",
+            "content_type": file.content_type or "application/octet-stream",
+            "bytes": content,
+            "expires_at": time.time() + _PENDING_FILE_TTL_SEC,
+        }
+        return {"token": token}
+    except Exception as e:
+        logger.error(f"Temp pending file upload failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/temp/pending-bill-file")
+async def get_temp_pending_bill_file(
+    token: str,
+    current_user: dict = Depends(get_current_attachment_api),
+):
+    """
+    Retrieve a temporarily stored file by token. File is removed after retrieval.
+    Used by the bill create page when navigating with pendingFileToken in the URL.
+    """
+    _clean_expired_pending_files()
+    entry = _PENDING_FILE_STORE.pop(token, None)
+    if not entry:
+        raise HTTPException(status_code=404, detail="File not found or expired")
+    return Response(
+        content=entry["bytes"],
+        media_type=entry["content_type"],
+        headers={
+            "Content-Disposition": f'inline; filename="{entry["filename"]}"',
+        },
+    )
+
+
+@router.post("/temp/pending-expense-file")
+async def upload_temp_pending_expense_file(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_attachment_api),
+):
+    """
+    Store a file temporarily for transfer to the expense create page.
+    Returns a token to pass in the URL; the create page fetches the file by token.
+    Files are deleted after retrieval or after TTL (5 minutes).
+    """
+    try:
+        content = await file.read()
+        _clean_expired_pending_files()
+        token = secrets.token_urlsafe(32)
+        _PENDING_FILE_STORE[token] = {
+            "filename": file.filename or "attachment",
+            "content_type": file.content_type or "application/octet-stream",
+            "bytes": content,
+            "expires_at": time.time() + _PENDING_FILE_TTL_SEC,
+        }
+        return {"token": token}
+    except Exception as e:
+        logger.error(f"Temp pending expense file upload failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/temp/pending-expense-file")
+async def get_temp_pending_expense_file(
+    token: str,
+    current_user: dict = Depends(get_current_attachment_api),
+):
+    """
+    Retrieve a temporarily stored file by token. File is removed after retrieval.
+    Used by the expense create page when navigating with pendingFileToken in the URL.
+    """
+    _clean_expired_pending_files()
+    entry = _PENDING_FILE_STORE.pop(token, None)
+    if not entry:
+        raise HTTPException(status_code=404, detail="File not found or expired")
+    return Response(
+        content=entry["bytes"],
+        media_type=entry["content_type"],
+        headers={
+            "Content-Disposition": f'inline; filename="{entry["filename"]}"',
+        },
+    )
 

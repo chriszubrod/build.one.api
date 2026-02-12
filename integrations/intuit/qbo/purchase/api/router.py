@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 import logging
+from typing import Optional
 
 # Third-party Imports
 from fastapi import APIRouter, Depends, HTTPException
@@ -79,6 +80,40 @@ def get_qbo_purchase_lines_router(id: int, current_user: dict = Depends(get_curr
     """
     lines = service.read_lines_by_qbo_purchase_id(qbo_purchase_id=id)
     return [line.to_dict() for line in lines]
+
+
+@router.get("/get/qbo-purchases/needing-update")
+def get_qbo_purchases_needing_update_router(
+    realm_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_qbo_purchase_api),
+):
+    """
+    List QBO purchase lines with AccountRefName = 'NEED TO UPDATE' and no ExpenseLineItem link.
+    """
+    return service.get_lines_needing_update(realm_id=realm_id)
+
+
+@router.post("/ensure-expense-from-qbo-purchase/{qbo_purchase_id}")
+def ensure_expense_from_qbo_purchase_router(
+    qbo_purchase_id: int,
+    current_user: dict = Depends(get_current_qbo_purchase_api),
+):
+    """
+    Ensure Expense and ExpenseLineItems exist for this QBO purchase, then return expense_public_id for redirect.
+    """
+    purchase = service.read_by_id(id=qbo_purchase_id)
+    if not purchase:
+        raise HTTPException(status_code=404, detail=f"QBO purchase with id {qbo_purchase_id} not found")
+    lines = service.read_lines_by_qbo_purchase_id(qbo_purchase_id=qbo_purchase_id)
+    try:
+        connector = PurchaseExpenseConnector()
+        expense = connector.sync_from_qbo_purchase(purchase, lines)
+        return {"expense_public_id": expense.public_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception(f"Error ensuring expense from QBO purchase {qbo_purchase_id}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/sync/expense-to-qbo/{expense_public_id}")

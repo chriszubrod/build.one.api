@@ -613,3 +613,47 @@ class QboPurchaseLineRepository:
         except Exception as error:
             logger.error(f"Error during delete qbo purchase line by ID: {error}")
             raise map_database_error(error)
+
+    def read_lines_needing_update(self, realm_id: Optional[str] = None) -> List[dict]:
+        """
+        Read purchase lines with AccountRefName = 'NEED TO UPDATE' and no ExpenseLineItem link.
+        Returns list of dicts with QboPurchaseId, QboPurchasePublicId, DocNumber, TxnDate,
+        EntityRefName, RealmId, QboPurchaseLineId, LineNum, LineDescription, LineAmount, AccountRefName.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboPurchaseLinesNeedingUpdate",
+                        params={"RealmId": realm_id},
+                    )
+                    rows = cursor.fetchall()
+                    result = []
+                    for row in rows:
+                        if not row:
+                            continue
+                        qbo_purchase_public_id = getattr(row, "QboPurchasePublicId", None)
+                        result.append({
+                            "qbo_purchase_id": getattr(row, "QboPurchaseId", None),
+                            "qbo_purchase_public_id": str(qbo_purchase_public_id) if qbo_purchase_public_id else None,
+                            "doc_number": getattr(row, "DocNumber", None),
+                            "txn_date": getattr(row, "TxnDate", None),
+                            "entity_ref_name": getattr(row, "EntityRefName", None),
+                            "realm_id": getattr(row, "RealmId", None),
+                            "qbo_purchase_line_id": getattr(row, "QboPurchaseLineId", None),
+                            "line_num": getattr(row, "LineNum", None),
+                            "line_description": getattr(row, "LineDescription", None),
+                            "line_amount": float(getattr(row, "LineAmount", 0)) if getattr(row, "LineAmount", None) is not None else None,
+                            "account_ref_name": getattr(row, "AccountRefName", None),
+                        })
+                    return result
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read lines needing update: {error}")
+            raise map_database_error(error)

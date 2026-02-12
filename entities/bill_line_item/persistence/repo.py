@@ -13,6 +13,7 @@ from shared.database import (
     call_procedure,
     get_connection,
     map_database_error,
+    retry_on_transient,
 )
 
 logger = logging.getLogger(__name__)
@@ -149,6 +150,7 @@ class BillLineItemRepository:
             logger.error(f"Error during read bill line item by public ID: {error}")
             raise map_database_error(error)
 
+    @retry_on_transient()
     def read_by_bill_id(self, bill_id: int) -> list[BillLineItem]:
         """
         Read all bill line items for a specific bill.

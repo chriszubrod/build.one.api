@@ -508,12 +508,11 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
                                             sub_cost_code = SubCostCodeService().read_by_id(id=str(line_item.sub_cost_code_id))
                                         
                                         # Generate expected filename (same format as sync)
+                                        # When bill has >1 line item: {Project} - {Vendor} - {BillNumber} - Multiple See Image - {Amount} - {Date}
                                         project_identifier = (project.abbreviation or project.name or "") if project else ""
                                         vendor_abbreviation = (vendor.abbreviation or vendor.name or "") if vendor else ""
                                         bill_number = bill.bill_number or ""
-                                        description = line_item.description or ""
                                         sub_cost_code_number = sub_cost_code.number or "" if sub_cost_code else ""
-                                        price = str(line_item.price) if line_item.price is not None else ""
                                         # Format date as mm-dd-yyyy to match sync format
                                         bill_date = ""
                                         if bill.bill_date:
@@ -524,16 +523,33 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
                                                     bill_date = f"{parts[1]}-{parts[2]}-{parts[0]}"  # mm-dd-yyyy
                                             except Exception:
                                                 bill_date = bill.bill_date[:10]  # Fallback to original
-                                        
-                                        filename_parts = [
-                                            project_identifier,
-                                            vendor_abbreviation,
-                                            bill_number,
-                                            description,
-                                            sub_cost_code_number,
-                                            price,
-                                            bill_date
-                                        ]
+                                        if len(line_items) > 1:
+                                            amount_str = ""
+                                            if bill.total_amount is not None:
+                                                try:
+                                                    amount_str = f"${float(bill.total_amount):,.2f}"
+                                                except (ValueError, TypeError):
+                                                    amount_str = f"${bill.total_amount}"
+                                            filename_parts = [
+                                                project_identifier,
+                                                vendor_abbreviation,
+                                                bill_number,
+                                                "Multiple See Image",
+                                                amount_str,
+                                                bill_date
+                                            ]
+                                        else:
+                                            description = line_item.description or ""
+                                            price = str(line_item.price) if line_item.price is not None else ""
+                                            filename_parts = [
+                                                project_identifier,
+                                                vendor_abbreviation,
+                                                bill_number,
+                                                description,
+                                                sub_cost_code_number,
+                                                price,
+                                                bill_date
+                                            ]
                                         filename_parts = [part for part in filename_parts if part]
                                         base_filename = " - ".join(filename_parts)
                                         base_filename = re.sub(r'[<>:"/\\|?*]', '_', base_filename)

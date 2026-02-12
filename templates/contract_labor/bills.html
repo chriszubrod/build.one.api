@@ -68,7 +68,7 @@
 
         <div class="cl-bill-entries-toggle">
             <button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleEntries(this, 'vendor-{{ loop.index }}')">
-                Show Line Items
+                Show Line Items Summary
             </button>
         </div>
 
@@ -77,20 +77,18 @@
                 <thead>
                     <tr>
                         <th>Date</th>
-                        <th>SubCostCode</th>
-                        <th>Description</th>
-                        <th>Amount</th>
-                        <th>Project</th>
+                        <th>Billed Hours</th>
+                        <th>Cost (before markup)</th>
+                        <th>Price (after markup)</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {% for item in vendor_data.line_items %}
+                    {% for day in vendor_data.line_items_summary %}
                     <tr>
-                        <td>{{ item.date }}</td>
-                        <td>{{ item.sub_cost_code }}</td>
-                        <td>{{ item.description }}</td>
-                        <td>${{ '%.2f'|format(item.amount or 0) }}</td>
-                        <td>{{ item.project }}</td>
+                        <td>{{ day.date }}</td>
+                        <td>{{ '%.2f'|format(day.billed_hours or 0) }}</td>
+                        <td>${{ '%.2f'|format(day.cost_before_markup or 0) }}</td>
+                        <td>${{ '%.2f'|format(day.price_after_markup or 0) }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -109,10 +107,10 @@
         const entriesDiv = document.getElementById('entries-' + vendorId);
         if (entriesDiv.style.display === 'none') {
             entriesDiv.style.display = 'block';
-            button.textContent = 'Hide Line Items';
+            button.textContent = 'Hide Line Items Summary';
         } else {
             entriesDiv.style.display = 'none';
-            button.textContent = 'Show Line Items';
+            button.textContent = 'Show Line Items Summary';
         }
     }
 
@@ -138,7 +136,13 @@
             const result = await response.json();
 
             if (response.ok) {
-                let message = `Generated ${result.bills_created} bill(s) with ${result.line_items_created} line items.`;
+                const newCount = result.bills_created ?? 0;
+                const updatedCount = result.bills_updated ?? 0;
+                const parts = [];
+                if (newCount > 0) parts.push(`${newCount} new`);
+                if (updatedCount > 0) parts.push(`${updatedCount} updated`);
+                const billPhrase = parts.length > 0 ? parts.join(' and ') + ' bill(s)' : '0 bill(s)';
+                let message = `Generated ${billPhrase} with ${result.line_items_created} line items.`;
                 if (result.entries_billed > 0) {
                     message += ` Marked ${result.entries_billed} entries as billed.`;
                 }

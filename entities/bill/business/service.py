@@ -548,27 +548,50 @@ class BillService:
                         sub_cost_code_number = sub_cost_code.number or ""
                 
                 # Generate filename
-                # Format: {Project.Name} - {Vendor.Abbreviation} - {Bill.Number} - {BillLineItem.Description} - {SubCostCode.Number} - {BillLineItem.Price} - {Bill.BillDate}
-                # Note: Project doesn't have abbreviation field, so using name
-                # Vendor has abbreviation field, use it with fallback to name
+                # When bill has >1 line item: {Project} - {Vendor} - {BillNumber} - Multiple See Image - {Amount} - {Date}
+                # Otherwise: {Project.Name} - {Vendor} - {Bill.Number} - {Description} - {SubCostCode.Number} - {Price} - {BillDate}
                 project_abbreviation = project.name or ""
                 vendor_abbreviation = vendor.abbreviation or vendor.name or ""
                 bill_number = bill.bill_number or ""
-                description = line_item.description or ""
-                price = str(line_item.price) if line_item.price is not None else ""
-                bill_date = bill.bill_date[:10] if bill.bill_date else ""  # Get YYYY-MM-DD part
-                
-                # Build filename parts
-                filename_parts = [
-                    project_abbreviation,
-                    vendor_abbreviation,
-                    bill_number,
-                    description,
-                    sub_cost_code_number,
-                    price,
-                    bill_date
-                ]
-                
+                bill_date = ""
+                if bill.bill_date:
+                    try:
+                        date_str = bill.bill_date[:10]
+                        parts = date_str.split("-")
+                        if len(parts) == 3:
+                            bill_date = f"{parts[1]}-{parts[2]}-{parts[0]}"  # mm-dd-yyyy
+                        else:
+                            bill_date = bill.bill_date[:10]
+                    except Exception:
+                        bill_date = bill.bill_date[:10]
+                if len(bill_line_items) > 1:
+                    amount_str = ""
+                    if bill.total_amount is not None:
+                        try:
+                            amount_str = f"${float(bill.total_amount):,.2f}"
+                        except (ValueError, TypeError):
+                            amount_str = f"${bill.total_amount}"
+                    filename_parts = [
+                        project_abbreviation,
+                        vendor_abbreviation,
+                        bill_number,
+                        "Multiple See Image",
+                        amount_str,
+                        bill_date
+                    ]
+                else:
+                    description = line_item.description or ""
+                    price = str(line_item.price) if line_item.price is not None else ""
+                    bill_date = bill.bill_date[:10] if bill.bill_date else ""  # YYYY-MM-DD for single-line (original)
+                    filename_parts = [
+                        project_abbreviation,
+                        vendor_abbreviation,
+                        bill_number,
+                        description,
+                        sub_cost_code_number,
+                        price,
+                        bill_date
+                    ]
                 # Filter out empty parts and join with " - "
                 filename_parts = [part for part in filename_parts if part]
                 base_filename = " - ".join(filename_parts)
@@ -835,6 +858,49 @@ class BillService:
         return self.repo.delete_by_id(existing.id)
 
 
+    def _rename_invoice_blob_on_complete(
+        self, public_id: str, line_items: list, all_errors: list
+    ) -> None:
+        """
+        On Mark Complete: rename invoice blob from invoices/{invoice_number}.pdf to {bill.public_id}.pdf
+        and update the Attachment record. Only renames when blob_url is under invoices/.
+        On failure, appends to all_errors and does not update the DB (DB never points at a missing blob).
+        """
+        if not line_items:
+            return
+        link = self.bill_line_item_attachment_service.read_by_bill_line_item_id(
+            bill_line_item_public_id=line_items[0].public_id
+        )
+        if not link or not link.attachment_id:
+            return
+        attachment = self.attachment_service.read_by_id(id=link.attachment_id)
+        if not attachment or not attachment.blob_url or "invoices/" not in attachment.blob_url:
+            return
+        new_blob_name = f"{public_id}.pdf"
+        storage = AzureBlobStorage()
+        try:
+            file_content, _ = storage.download_file(attachment.blob_url)
+            new_url = storage.upload_file(
+                blob_name=new_blob_name,
+                file_content=file_content,
+                content_type=attachment.content_type or "application/pdf",
+            )
+            self.attachment_service.update_by_public_id(
+                public_id=attachment.public_id,
+                row_version=attachment.row_version,
+                blob_url=new_url,
+                filename=new_blob_name,
+                original_filename=new_blob_name,
+            )
+            storage.delete_file(attachment.blob_url)
+            logger.info(f"Renamed invoice blob to {new_blob_name}")
+        except AzureBlobStorageError as e:
+            logger.exception(f"Blob rename failed for bill {public_id}")
+            all_errors.append({"step": "rename_invoice_blob", "error": str(e)})
+        except Exception as e:
+            logger.exception(f"Blob rename failed for bill {public_id}")
+            all_errors.append({"step": "rename_invoice_blob", "error": str(e)})
+
     def complete_bill(self, public_id: str) -> dict:
         """
         Complete a bill: finalize, upload attachments to module folders, and sync to Excel workbooks.
@@ -989,6 +1055,9 @@ class BillService:
                         "error": str(e)
                     })
         
+        # Step 2b: Rename invoice blob from invoices/... to {public_id}.pdf (contract labor invoice)
+        self._rename_invoice_blob_on_complete(public_id=public_id, line_items=line_items, all_errors=line_item_errors)
+
         # Step 3: Upload attachments to module folders and sync to Excel
         file_upload_results = {}
         excel_sync_results = {}
@@ -1018,7 +1087,8 @@ class BillService:
             upload_result = self._upload_attachments_to_module_folder(
                 bill=bill,
                 line_items=project_line_items,
-                project_id=project_id
+                project_id=project_id,
+                bill_line_items_count=len(line_items)
             )
             file_upload_results[project_id] = upload_result
             if upload_result.get("errors"):
@@ -1408,11 +1478,13 @@ class BillService:
         self,
         bill,
         line_items: List,
-        project_id: int
+        project_id: int,
+        bill_line_items_count: int = 1
     ) -> dict:
         """
         Upload attachments for line items to the project's module folder in SharePoint.
         Downloads from Azure Blob Storage and uploads to SharePoint with final filename.
+        When bill has >1 line item, filename: {Project} - {Vendor} - {BillNumber} - Multiple See Image - {Amount} - {Date}.
         
         Returns:
             Dict with success, synced_count, and errors
@@ -1558,11 +1630,10 @@ class BillService:
                             sub_cost_code_number = sub_cost_code.number or ""
                     
                     # Generate SharePoint filename using final Bill/BillLineItem values
-                    # Use Project.Abbreviation if available, otherwise Project.Name
+                    # When bill has >1 line item: {Project} - {Vendor} - {BillNumber} - Multiple See Image - {Amount} - {Date}
                     project_identifier = project.abbreviation or project.name or ""
                     vendor_abbreviation = vendor.abbreviation or vendor.name or ""
                     bill_number = bill.bill_number or ""
-                    description = line_item.description or ""
                     # Format price with $ and commas (e.g., $10,000.00)
                     price = ""
                     if line_item.price is not None:
@@ -1575,23 +1646,40 @@ class BillService:
                     bill_date = ""
                     if bill.bill_date:
                         try:
-                            # bill.bill_date is in format "YYYY-MM-DD..." - convert to mm-dd-yyyy
-                            date_str = bill.bill_date[:10]  # Get YYYY-MM-DD part
+                            date_str = bill.bill_date[:10]
                             parts = date_str.split("-")
                             if len(parts) == 3:
                                 bill_date = f"{parts[1]}-{parts[2]}-{parts[0]}"  # mm-dd-yyyy
+                            else:
+                                bill_date = bill.bill_date[:10]
                         except Exception:
                             bill_date = bill.bill_date[:10]  # Fallback to original
-                    
-                    filename_parts = [
-                        project_identifier,
-                        vendor_abbreviation,
-                        bill_number,
-                        description,
-                        sub_cost_code_number,
-                        price,
-                        bill_date
-                    ]
+                    if bill_line_items_count > 1:
+                        amount_str = ""
+                        if bill.total_amount is not None:
+                            try:
+                                amount_str = f"${float(bill.total_amount):,.2f}"
+                            except (ValueError, TypeError):
+                                amount_str = f"${bill.total_amount}"
+                        filename_parts = [
+                            project_identifier,
+                            vendor_abbreviation,
+                            bill_number,
+                            "Multiple See Image",
+                            amount_str,
+                            bill_date
+                        ]
+                    else:
+                        description = line_item.description or ""
+                        filename_parts = [
+                            project_identifier,
+                            vendor_abbreviation,
+                            bill_number,
+                            description,
+                            sub_cost_code_number,
+                            price,
+                            bill_date
+                        ]
                     filename_parts = [part for part in filename_parts if part]
                     base_filename = " - ".join(filename_parts)
                     base_filename = re.sub(r'[<>:"/\\|?*]', '_', base_filename)

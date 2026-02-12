@@ -264,6 +264,7 @@ async def bills_page(
                 "vendor_name": None,  # Will be populated below
                 "employee_name": entry.employee_name,
                 "line_items": [],  # Collect all line items for display
+                "by_date": {},  # Aggregate by date for summary: date -> {billed_hours, cost_before_markup, price_after_markup}
                 "total_hours": 0,
                 "total_amount": 0,
                 "min_date": None,
@@ -288,6 +289,23 @@ async def bills_page(
             }
             vendor_groups[vendor_key]["line_items"].append(line_item_dict)
             vendor_groups[vendor_key]["total_amount"] += float(li.price or 0)
+            
+            # Aggregate by date for Line Items Summary
+            date = li.line_date or entry.work_date
+            if date:
+                hours = float(li.hours or 0)
+                rate = float(li.rate or 0)
+                cost_before_markup = (hours / 8.0) * rate
+                price_after_markup = float(li.price or 0)
+                if date not in vendor_groups[vendor_key]["by_date"]:
+                    vendor_groups[vendor_key]["by_date"][date] = {
+                        "billed_hours": 0.0,
+                        "cost_before_markup": 0.0,
+                        "price_after_markup": 0.0,
+                    }
+                vendor_groups[vendor_key]["by_date"][date]["billed_hours"] += hours
+                vendor_groups[vendor_key]["by_date"][date]["cost_before_markup"] += cost_before_markup
+                vendor_groups[vendor_key]["by_date"][date]["price_after_markup"] += price_after_markup
         
         vendor_groups[vendor_key]["total_hours"] += float(entry.total_hours or 0)
         
@@ -308,6 +326,16 @@ async def bills_page(
             data["vendor_name"] = vendor_map.get(data["vendor_id"], f"Vendor #{data['vendor_id']}")
         else:
             data["vendor_name"] = data["employee_name"] or "Unknown"
+        # Build line items summary by day (billed hours, cost before markup, price after markup)
+        data["line_items_summary"] = [
+            {
+                "date": d,
+                "billed_hours": round(v["billed_hours"], 2),
+                "cost_before_markup": round(v["cost_before_markup"], 2),
+                "price_after_markup": round(v["price_after_markup"], 2),
+            }
+            for d, v in sorted(data["by_date"].items())
+        ]
         vendors_with_entries.append(data)
     
     # Sort by vendor name

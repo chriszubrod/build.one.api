@@ -948,60 +948,117 @@
             }
             
             updateSaveStatus('saving', 'Completing...');
+
+            const referenceNumber = document.getElementById('reference_number')?.value || expensePublicId;
+            let pending = JSON.parse(sessionStorage.getItem('pendingExpenseCompletions') || '[]');
+            const now = Date.now();
+            const STALE_THRESHOLD = 5 * 60 * 1000;
+            pending = pending.filter(p => (now - (p.startTime || now)) < STALE_THRESHOLD);
+            const existing = pending.find(p => p.publicId === expensePublicId && p.status === 'processing');
+            if (existing) {
+                showToast(`Expense "${referenceNumber}" is already being processed.`, 'warning', 3000);
+                window.location.href = '/expense/list';
+                return;
+            }
+            pending.push({
+                publicId: expensePublicId,
+                referenceNumber: referenceNumber,
+                startTime: now,
+                status: 'processing'
+            });
+            sessionStorage.setItem('pendingExpenseCompletions', JSON.stringify(pending));
             
             try {
                 const response = await fetch(`/api/v1/complete/expense/${expensePublicId}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }
                 });
-                
+
+                if (response.status === 202) {
+                    showToast(`"${referenceNumber}" is completing. You can check status on the list.`, 'info', 3000);
+                    window.location.href = '/expense/list';
+                    return;
+                }
+
                 if (!response.ok) {
+                    pending = JSON.parse(sessionStorage.getItem('pendingExpenseCompletions') || '[]');
+                    pending = pending.filter(p => !(p.publicId === expensePublicId && p.status === 'processing'));
+                    sessionStorage.setItem('pendingExpenseCompletions', JSON.stringify(pending));
                     let errorMessage = 'Failed to complete expense';
                     try {
                         const error = await response.json();
-                        errorMessage = error.detail || errorMessage;
+                        errorMessage = (typeof error.detail === 'string') ? error.detail : (error.detail?.msg || JSON.stringify(error.detail));
                     } catch (e) {
                         errorMessage = `Server error: ${response.status}`;
                     }
                     throw new Error(errorMessage);
                 }
-                
-                const result = await response.json();
-                
-                let statusMessage = 'Expense completed successfully!';
-                const messages = [];
-                
-                const fileUploads = result.file_uploads || {};
-                let totalFilesSynced = 0;
-                let totalFileErrors = 0;
-                for (const projectId in fileUploads) {
-                    const upload = fileUploads[projectId];
-                    totalFilesSynced += upload.synced_count || 0;
-                    if (upload.errors) totalFileErrors += upload.errors.length;
-                }
-                
-                if (totalFilesSynced > 0) {
-                    messages.push(`${totalFilesSynced} file(s) uploaded to SharePoint`);
-                }
-                if (totalFileErrors > 0) {
-                    messages.push(`${totalFileErrors} file upload error(s)`);
-                }
-                
-                if (messages.length > 0) {
-                    statusMessage += ' ' + messages.join(', ') + '.';
-                }
-                
-                const toastType = (result.errors && result.errors.length > 0) ? 'warning' : 'success';
-                showToast(statusMessage, toastType, 8000);
-                
-                setTimeout(() => {
-                    window.location.href = '/expense/list';
-                }, 2000);
-                
             } catch (error) {
                 console.error('Complete expense error:', error);
+                pending = JSON.parse(sessionStorage.getItem('pendingExpenseCompletions') || '[]');
+                pending = pending.filter(p => !(p.publicId === expensePublicId && p.status === 'processing'));
+                sessionStorage.setItem('pendingExpenseCompletions', JSON.stringify(pending));
                 updateSaveStatus('error', 'Error');
                 showToast(error.message || 'Failed to complete expense', 'error');
+            }
+        }
+
+        function applyPendingExpenseFileToForm(formElement, file) {
+            const fileInput = formElement.querySelector('.line-item-file-input');
+            const uploadWrapper = formElement.querySelector('.attachment-upload-wrapper');
+            const displaySection = formElement.querySelector('.attachment-display');
+            const filenameSpan = formElement.querySelector('.attachment-filename');
+            if (!uploadWrapper || !displaySection || !filenameSpan || !fileInput) {
+                console.warn('Could not find attachment elements in form');
+                return;
+            }
+            const dt = new DataTransfer();
+            dt.items.add(file);
+            fileInput.files = dt.files;
+            fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+            showToast(`File "${file.name}" being uploaded...`, 'info');
+        }
+
+        async function checkForPendingExpenseFileToken(formElement) {
+            const params = new URLSearchParams(window.location.search);
+            const token = params.get('pendingFileToken');
+            if (!token) return;
+            try {
+                const response = await fetch('/api/v1/temp/pending-expense-file?token=' + encodeURIComponent(token));
+                if (!response.ok) throw new Error('File not found or expired');
+                const blob = await response.blob();
+                const filename = response.headers.get('Content-Disposition')?.match(/filename="?([^";]+)"?/)?.[1] || 'attachment.pdf';
+                const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
+                applyPendingExpenseFileToForm(formElement, file);
+                params.delete('pendingFileToken');
+                const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+                window.history.replaceState({}, '', newUrl);
+            } catch (error) {
+                console.error('Error loading pending expense file by token:', error);
+                showToast('Could not load transferred file. Please attach it manually.', 'warning', 6000);
+                const params = new URLSearchParams(window.location.search);
+                params.delete('pendingFileToken');
+                window.history.replaceState({}, '', window.location.pathname + (params.toString() ? '?' + params.toString() : ''));
+            }
+        }
+
+        function checkForPendingExpenseFile(formElement) {
+            const pendingFileData = sessionStorage.getItem('pendingExpenseFile');
+            if (!pendingFileData) return;
+            try {
+                const fileData = JSON.parse(pendingFileData);
+                const byteString = atob(fileData.data.split(',')[1]);
+                const mimeType = fileData.type;
+                const ab = new ArrayBuffer(byteString.length);
+                const ia = new Uint8Array(ab);
+                for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+                const blob = new Blob([ab], { type: mimeType });
+                const file = new File([blob], fileData.name, { type: mimeType });
+                applyPendingExpenseFileToForm(formElement, file);
+                sessionStorage.removeItem('pendingExpenseFile');
+            } catch (error) {
+                console.error('Error loading pending expense file:', error);
+                sessionStorage.removeItem('pendingExpenseFile');
             }
         }
 
@@ -1012,13 +1069,15 @@
                 setupLineItemCalculations(initialForm);
                 setupLineItemAutoSave(initialForm);
                 setupLineItemAttachment(initialForm);
-                
+                checkForPendingExpenseFile(initialForm);
+                checkForPendingExpenseFileToken(initialForm);
+
                 const addButton = initialForm.querySelector('button.btn-primary');
                 if (addButton) {
                     addButton.onclick = function() { addLineItemForm(); };
                 }
             }
-            
+
             const form = document.getElementById('createExpenseForm');
             if (form) {
                 form.addEventListener('submit', handleCompleteExpense);

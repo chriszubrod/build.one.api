@@ -8,9 +8,29 @@
 
 {% block content %}
 
+    <!-- Background completion notifications (sticky) -->
+    <div id="pending-completions-banner" class="expense-pending-banner expense-pending-banner-sticky" style="display: none;" role="status" aria-live="polite">
+        <div class="expense-pending-banner-content">
+            <span class="expense-pending-banner-icon" aria-hidden="true">⏳</span>
+            <div class="expense-pending-banner-text-wrap">
+                <span class="expense-pending-banner-text">Processing expenses in background...</span>
+                <span class="expense-pending-banner-count"></span>
+                <span class="expense-pending-banner-detail"></span>
+            </div>
+        </div>
+    </div>
+
     <div class="expense-page-header">
         <h1>{% if search %}Search Results{% elif is_draft == 'true' or is_draft == '' %}Draft Expenses{% elif is_draft == 'false' %}Completed Expenses{% else %}All Expenses{% endif %}</h1>
         <a href="/expense/create" class="btn btn-primary">Add Expense</a>
+    </div>
+
+    <!-- QBO Purchases Needing Update (loaded in background) -->
+    <div id="qbo-needing-update-section" class="qbo-needing-update-section" style="margin-bottom: 1.5rem; min-height: 60px;">
+        <h2 class="qbo-needing-update-heading" style="font-size: 1rem; font-weight: 600; margin-bottom: 0.5rem;">QBO Purchases Needing Update</h2>
+        <div id="qbo-needing-update-loading" class="qbo-needing-update-loading" style="color: #666;">Loading…</div>
+        <div id="qbo-needing-update-content" class="qbo-needing-update-content" style="display: none;"></div>
+        <div id="qbo-needing-update-empty" class="qbo-needing-update-empty" style="display: none; color: #666;">No purchase lines needing update.</div>
     </div>
 
     <!-- Search and Filters -->
@@ -63,6 +83,39 @@
     </div>
 
     {% if expenses %}
+    <!-- Drag and Drop Upload Zone - Compact when expenses exist -->
+    <div class="expense-upload-section">
+        <div id="expense-drop-zone" class="expense-drop-zone expense-drop-zone-compact">
+            <div class="expense-drop-zone-content">
+                <span class="expense-drop-zone-icon">📁</span>
+                <p class="expense-drop-zone-text">Drag & drop expense files here</p>
+                <p class="expense-drop-zone-subtext">or <label for="expense-file-input" class="expense-drop-zone-browse">browse files</label></p>
+                <input type="file" id="expense-file-input" multiple accept=".pdf,.png,.jpg,.jpeg,.gif,.webp" style="display: none;">
+            </div>
+        </div>
+
+        <!-- Uploaded Files Table -->
+        <div id="expense-uploaded-files-container" class="expense-uploaded-files-container" style="display: none;">
+            <div class="expense-uploaded-files-header">
+                <h3>Files Ready for Import</h3>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="clearAllExpenseFiles()">Clear All</button>
+            </div>
+            <table class="expense-table expense-uploaded-files-table">
+                <thead>
+                    <tr>
+                        <th style="width: 40px;"></th>
+                        <th>File Name</th>
+                        <th>Size</th>
+                        <th>Type</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="expense-uploaded-files-list">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
     <!-- Results Summary -->
     <div class="expense-results-summary">
         <span>Showing {{ expenses|length }} of {{ total_count }} {% if search %}matching {% elif is_draft == 'true' or is_draft == '' %}draft {% elif is_draft == 'false' %}completed {% endif %}expenses</span>
@@ -171,22 +224,50 @@
         {% endif %}
     </div>
     {% else %}
-    <!-- Empty State -->
-    <div class="expense-empty-state">
-        <div class="expense-empty-state-icon">📋</div>
-        <h3>{% if search %}No Expenses Found{% else %}No Draft Expenses{% endif %}</h3>
-        <p>
-            {% if search %}
-                Try adjusting your search criteria.
-            {% else %}
-                Get started by creating your first expense.
-            {% endif %}
-        </p>
-        <div style="display: flex; gap: 0.75rem; justify-content: center; margin-top: 1.5rem;">
-            <a href="/expense/create" class="btn btn-primary">Create Expense</a>
-            {% if search %}
-            <a href="/expense/list" class="btn btn-secondary">Clear Filters</a>
-            {% endif %}
+    <!-- Combined Empty State + Drop Zone -->
+    <div class="expense-upload-section expense-upload-section-empty">
+        <div id="expense-drop-zone" class="expense-drop-zone expense-drop-zone-expanded">
+            <div class="expense-drop-zone-content">
+                <span class="expense-drop-zone-icon">📄</span>
+                <h3 class="expense-drop-zone-title">{% if search %}No Expenses Found{% else %}No Draft Expenses{% endif %}</h3>
+                <p class="expense-drop-zone-message">
+                    {% if search %}
+                        Try adjusting your search, or drop files here to create new expenses.
+                    {% else %}
+                        Drag & drop expense files here to get started
+                    {% endif %}
+                </p>
+                <p class="expense-drop-zone-subtext">or <label for="expense-file-input-empty" class="expense-drop-zone-browse">browse files</label></p>
+                <input type="file" id="expense-file-input-empty" multiple accept=".pdf,.png,.jpg,.jpeg,.gif,.webp" style="display: none;">
+
+                <div class="expense-drop-zone-actions">
+                    <a href="/expense/create" class="btn btn-primary">Create Expense Manually</a>
+                    {% if search %}
+                    <a href="/expense/list" class="btn btn-secondary">Clear Filters</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Uploaded Files Table (same as when expenses exist) -->
+        <div id="expense-uploaded-files-container" class="expense-uploaded-files-container" style="display: none;">
+            <div class="expense-uploaded-files-header">
+                <h3>Files Ready for Import</h3>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="clearAllExpenseFiles()">Clear All</button>
+            </div>
+            <table class="expense-table expense-uploaded-files-table">
+                <thead>
+                    <tr>
+                        <th style="width: 40px;"></th>
+                        <th>File Name</th>
+                        <th>Size</th>
+                        <th>Type</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="expense-uploaded-files-list">
+                </tbody>
+            </table>
         </div>
     </div>
     {% endif %}
@@ -195,48 +276,14 @@
 
 {% block scripts %}
 <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const form = document.getElementById('expense-filters-form');
-        const searchInput = document.getElementById('search');
-        const sortSelect = document.getElementById('sort_by');
-        const statusSelect = document.getElementById('is_draft');
-        
-        // Debounce function for search input
-        let searchTimeout;
-        function debounceSearch() {
-            clearTimeout(searchTimeout);
-            searchTimeout = setTimeout(function() {
-                // Reset to page 1 when filter changes
-                document.getElementById('page').value = '1';
-                form.submit();
-            }, 500);
-        }
-        
-        // Auto-submit on search input (with debounce)
-        if (searchInput) searchInput.addEventListener('input', debounceSearch);
-        
-        // Auto-submit on sort change
-        if (sortSelect) {
-            sortSelect.addEventListener('change', function() {
-                document.getElementById('page').value = '1';
-                form.submit();
-            });
-        }
-        
-        // Auto-submit on status filter change
-        if (statusSelect) {
-            statusSelect.addEventListener('change', function() {
-                document.getElementById('page').value = '1';
-                form.submit();
-            });
-        }
-    });
+    let completionPollInterval = null;
 
-    // Show toast notification
+    // Expense upload queue (persisted as expenseUploadQueue)
+    let expenseUploadedFiles = [];
+
     function showToast(message, type = 'info', duration = 5000) {
         const container = document.getElementById('toast-container');
         if (!container) return;
-        
         const toast = document.createElement('div');
         toast.className = `toast toast-${type}`;
         toast.innerHTML = `
@@ -244,12 +291,407 @@
             <button class="toast-close" onclick="this.parentElement.remove()">×</button>
         `;
         container.appendChild(toast);
-        
         setTimeout(() => {
-            if (toast.parentElement) {
-                toast.remove();
-            }
+            if (toast.parentElement) toast.remove();
         }, duration);
     }
+
+    function loadExpensePersistedFiles() {
+        const stored = sessionStorage.getItem('expenseUploadQueue');
+        if (stored) {
+            try {
+                expenseUploadedFiles = JSON.parse(stored);
+                updateExpenseUploadedFilesTable();
+            } catch (e) {
+                console.error('Error loading expense upload queue:', e);
+                sessionStorage.removeItem('expenseUploadQueue');
+            }
+        }
+    }
+
+    function persistExpenseFiles() {
+        sessionStorage.setItem('expenseUploadQueue', JSON.stringify(expenseUploadedFiles));
+    }
+
+    const PENDING_EXPENSE_FILE_STORAGE_LIMIT = 2 * 1024 * 1024; // 2MB
+
+    function handleExpenseFiles(files) {
+        const validTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+        Array.from(files).forEach(file => {
+            if (validTypes.includes(file.type)) {
+                const exists = expenseUploadedFiles.some(f => f.name === file.name && f.size === file.size);
+                if (!exists) {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        expenseUploadedFiles.push({
+                            name: file.name,
+                            type: file.type,
+                            size: file.size,
+                            data: e.target.result
+                        });
+                        persistExpenseFiles();
+                        updateExpenseUploadedFilesTable();
+                    };
+                    reader.readAsDataURL(file);
+                }
+            }
+        });
+    }
+
+    function formatFileSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    function escapeExpenseHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function updateExpenseUploadedFilesTable() {
+        const container = document.getElementById('expense-uploaded-files-container');
+        const tbody = document.getElementById('expense-uploaded-files-list');
+        if (!container || !tbody) return;
+        if (expenseUploadedFiles.length === 0) {
+            container.style.display = 'none';
+            tbody.innerHTML = '';
+            return;
+        }
+        container.style.display = 'block';
+        tbody.innerHTML = '';
+        expenseUploadedFiles.forEach((file, index) => {
+            const row = document.createElement('tr');
+            const icon = file.type === 'application/pdf' ? '📄' : '🖼️';
+            const sizeStr = formatFileSize(file.size);
+            const ext = file.name.split('.').pop().toUpperCase();
+            row.innerHTML = `
+                <td style="text-align: center; font-size: 1.5rem;">${icon}</td>
+                <td><strong>${escapeExpenseHtml(file.name)}</strong></td>
+                <td>${sizeStr}</td>
+                <td><span class="expense-file-type-badge">${ext}</span></td>
+                <td>
+                    <div class="expense-table-actions">
+                        <button type="button" class="btn btn-primary btn-sm" onclick="createExpenseFromFile(${index})">Create Expense</button>
+                        <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeExpenseFile(${index})">Remove</button>
+                    </div>
+                </td>
+            `;
+            tbody.appendChild(row);
+        });
+    }
+
+    window.removeExpenseFile = function(index) {
+        expenseUploadedFiles.splice(index, 1);
+        persistExpenseFiles();
+        updateExpenseUploadedFilesTable();
+    };
+
+    window.clearAllExpenseFiles = function() {
+        expenseUploadedFiles = [];
+        persistExpenseFiles();
+        updateExpenseUploadedFilesTable();
+    };
+
+    async function uploadExpenseFileToTemp(file) {
+        const byteString = atob(file.data.split(',')[1]);
+        const ab = new ArrayBuffer(byteString.length);
+        const ia = new Uint8Array(ab);
+        for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+        const blob = new Blob([ab], { type: file.type });
+        const formData = new FormData();
+        formData.append('file', blob, file.name);
+        const response = await fetch('/api/v1/temp/pending-expense-file', { method: 'POST', body: formData });
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        return data.token;
+    }
+
+    window.createExpenseFromFile = async function(index) {
+        const file = expenseUploadedFiles[index];
+        if (!file) return;
+
+        const navigateWithToken = async () => {
+            try {
+                showToast('Transferring file...', 'info', 2000);
+                const token = await uploadExpenseFileToTemp(file);
+                expenseUploadedFiles.splice(index, 1);
+                persistExpenseFiles();
+                updateExpenseUploadedFilesTable();
+                window.location.href = '/expense/create?new=true&pendingFileToken=' + encodeURIComponent(token);
+            } catch (e) {
+                console.error('Temp expense upload failed:', e);
+                showToast('Could not transfer file. Open Create Expense and attach the file there.', 'error', 6000);
+                window.location.href = '/expense/create?new=true';
+            }
+        };
+
+        if (file.size > PENDING_EXPENSE_FILE_STORAGE_LIMIT) {
+            await navigateWithToken();
+            return;
+        }
+
+        const fileData = { name: file.name, type: file.type, size: file.size, data: file.data };
+        try {
+            sessionStorage.setItem('pendingExpenseFile', JSON.stringify(fileData));
+        } catch (e) {
+            if (e.name === 'QuotaExceededError') {
+                await navigateWithToken();
+                return;
+            }
+            showToast('Could not transfer file. Open Create Expense and attach it there.', 'error', 6000);
+            window.location.href = '/expense/create?new=true';
+            return;
+        }
+
+        expenseUploadedFiles.splice(index, 1);
+        persistExpenseFiles();
+        updateExpenseUploadedFilesTable();
+        window.location.href = '/expense/create?new=true&hasFile=true';
+    };
+
+    async function checkPendingCompletions() {
+        const pendingRaw = sessionStorage.getItem('pendingExpenseCompletions');
+        let pending = JSON.parse(pendingRaw || '[]');
+        const STALE_THRESHOLD = 5 * 60 * 1000;
+        const now = Date.now();
+        pending = pending.filter(p => (now - (p.startTime || now)) < STALE_THRESHOLD);
+        if (pending.length !== (JSON.parse(pendingRaw || '[]').length)) {
+            sessionStorage.setItem('pendingExpenseCompletions', JSON.stringify(pending));
+        }
+        if (pending.length === 0) {
+            hidePendingBanner();
+            return;
+        }
+        for (const p of pending) {
+            if (p.status === 'processing') {
+                try {
+                    const res = await fetch(`/api/v1/get/expense/${p.publicId}`, { credentials: 'same-origin' });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data.is_draft === false) {
+                            p.status = 'completed';
+                            p.endTime = Date.now();
+                        } else if ((now - (p.startTime || now)) > 120000) {
+                            p.status = 'timeout';
+                            p.error = 'Processing is taking longer than expected. Check the expense status manually.';
+                            p.endTime = Date.now();
+                        }
+                    } else if (res.status === 404) {
+                        p.status = 'error';
+                        p.error = 'Expense not found';
+                        p.endTime = Date.now();
+                    }
+                } catch (e) {
+                    console.error('Error checking expense status:', e);
+                }
+            }
+        }
+        sessionStorage.setItem('pendingExpenseCompletions', JSON.stringify(pending));
+        const completed = pending.filter(p => p.status === 'completed' && !p.notified);
+        const errors = pending.filter(p => (p.status === 'error' || p.status === 'timeout') && !p.notified);
+        const stillProcessing = pending.filter(p => p.status === 'processing');
+        for (const p of completed) {
+            let message = `✓ Expense "${p.referenceNumber || p.publicId}" completed!`;
+            for (let attempt = 0; attempt <= 15; attempt++) {
+                try {
+                    const r = await fetch(`/api/v1/get/expense/${p.publicId}/completion-result`, { credentials: 'same-origin' });
+                    if (r.ok) {
+                        const data = await r.json();
+                        const parts = [];
+                        parts.push(data.expense_finalized ? 'Build One ✓' : 'Build One —');
+                        const fu = data.file_uploads || {};
+                        const spHasErrors = Object.values(fu).some(u => u.errors && u.errors.length > 0);
+                        parts.push(Object.keys(fu).length ? (spHasErrors ? 'SharePoint ⚠' : 'SharePoint ✓') : 'SharePoint —');
+                        message = `✓ Expense "${p.referenceNumber || p.publicId}" completed: ${parts.join(', ')}`;
+                        break;
+                    }
+                    if (r.status === 404 && attempt < 15) {
+                        await new Promise(rr => setTimeout(rr, 2000));
+                        continue;
+                    }
+                    break;
+                } catch (e) {
+                    if (attempt < 15) await new Promise(rr => setTimeout(rr, 2000));
+                }
+            }
+            showToast(message, 'success', 10000);
+            p.notified = true;
+            p.notifiedAt = Date.now();
+        }
+        errors.forEach(p => {
+            if (p.status === 'timeout') {
+                showToast(`⚠ Expense "${p.referenceNumber || p.publicId}": ${p.error}`, 'warning', 10000);
+            } else {
+                showToast(`✗ Expense "${p.referenceNumber || p.publicId}" failed: ${p.error}`, 'error', 10000);
+            }
+            p.notified = true;
+            p.notifiedAt = Date.now();
+        });
+        if (completed.length > 0 || errors.length > 0) {
+            const remaining = pending.filter(p => !p.notified);
+            sessionStorage.setItem('pendingExpenseCompletions', JSON.stringify(remaining));
+            setTimeout(() => window.location.reload(), 1500);
+            return;
+        }
+        const recentlyNotified = pending.filter(p => p.notified && (now - (p.notifiedAt || 0)) < 5000);
+        const toKeep = [...stillProcessing, ...recentlyNotified];
+        sessionStorage.setItem('pendingExpenseCompletions', JSON.stringify(toKeep));
+        if (toKeep.length > 0) {
+            if (stillProcessing.length > 0) {
+                showPendingBanner(stillProcessing.length, 'processing', stillProcessing);
+            } else {
+                showPendingBanner(recentlyNotified.length, 'completed');
+            }
+            if (!completionPollInterval) {
+                completionPollInterval = setInterval(checkPendingCompletions, 2000);
+            }
+        } else {
+            hidePendingBanner();
+            if (completionPollInterval) {
+                clearInterval(completionPollInterval);
+                completionPollInterval = null;
+            }
+        }
+    }
+
+    function showPendingBanner(count, status, processingList = []) {
+        const banner = document.getElementById('pending-completions-banner');
+        if (!banner) return;
+        banner.style.display = 'block';
+        const iconSpan = banner.querySelector('.expense-pending-banner-icon');
+        const textSpan = banner.querySelector('.expense-pending-banner-text');
+        const countSpan = banner.querySelector('.expense-pending-banner-count');
+        const detailSpan = banner.querySelector('.expense-pending-banner-detail');
+        if (status === 'completed') {
+            if (iconSpan) iconSpan.textContent = '✅';
+            if (textSpan) textSpan.textContent = 'Expenses completed successfully!';
+            if (countSpan) countSpan.textContent = `(${count} expense${count > 1 ? 's' : ''})`;
+            if (detailSpan) detailSpan.textContent = '';
+            banner.classList.remove('expense-pending-banner-processing');
+            banner.classList.add('expense-pending-banner-success');
+        } else {
+            if (iconSpan) iconSpan.textContent = '⏳';
+            if (textSpan) textSpan.textContent = 'Processing expenses in background (Build One → SharePoint)...';
+            if (countSpan) countSpan.textContent = `(${count} expense${count > 1 ? 's' : ''})`;
+            const refs = (processingList || []).map(p => p.referenceNumber || p.publicId || '—').filter(Boolean);
+            if (detailSpan) detailSpan.textContent = refs.length ? 'Ref: ' + refs.join(', ') : '';
+            banner.classList.remove('expense-pending-banner-success');
+            banner.classList.add('expense-pending-banner-processing');
+        }
+    }
+
+    function hidePendingBanner() {
+        const banner = document.getElementById('pending-completions-banner');
+        if (banner) banner.style.display = 'none';
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        loadExpensePersistedFiles();
+        checkPendingCompletions();
+
+        const dropZone = document.getElementById('expense-drop-zone');
+        const fileInput = document.getElementById('expense-file-input') || document.getElementById('expense-file-input-empty');
+        if (dropZone) {
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, function(e) { e.preventDefault(); e.stopPropagation(); }, false);
+            });
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropZone.addEventListener(eventName, function() { dropZone.classList.add('expense-drop-zone-active'); }, false);
+            });
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, function() { dropZone.classList.remove('expense-drop-zone-active'); }, false);
+            });
+            dropZone.addEventListener('drop', function(e) { handleExpenseFiles(e.dataTransfer.files); }, false);
+        }
+        if (fileInput) {
+            fileInput.addEventListener('change', function() {
+                handleExpenseFiles(this.files);
+                this.value = '';
+            });
+        }
+
+        const form = document.getElementById('expense-filters-form');
+        const searchInput = document.getElementById('search');
+        const sortSelect = document.getElementById('sort_by');
+        const statusSelect = document.getElementById('is_draft');
+        let searchTimeout;
+        function debounceSearch() {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(function() {
+                document.getElementById('page').value = '1';
+                form.submit();
+            }, 500);
+        }
+        if (searchInput) searchInput.addEventListener('input', debounceSearch);
+        if (sortSelect) {
+            sortSelect.addEventListener('change', function() {
+                document.getElementById('page').value = '1';
+                form.submit();
+            });
+        }
+        if (statusSelect) {
+            statusSelect.addEventListener('change', function() {
+                document.getElementById('page').value = '1';
+                form.submit();
+            });
+        }
+
+        // QBO Purchases Needing Update - load in background
+        (function() {
+            const loadingEl = document.getElementById('qbo-needing-update-loading');
+            const contentEl = document.getElementById('qbo-needing-update-content');
+            const emptyEl = document.getElementById('qbo-needing-update-empty');
+            if (!loadingEl || !contentEl || !emptyEl) return;
+            function hideLoading() {
+                loadingEl.style.display = 'none';
+            }
+            fetch('/api/v1/get/qbo-purchases/needing-update', { credentials: 'same-origin' })
+                .then(function(r) {
+                    if (!r.ok) return [];
+                    return r.json();
+                })
+                .then(function(data) {
+                    hideLoading();
+                    var rows = Array.isArray(data) ? data : (data && (data.items || data.data) ? (data.items || data.data) : []);
+                    if (!Array.isArray(rows)) rows = [];
+                    if (rows.length === 0) {
+                        emptyEl.style.display = 'block';
+                        return;
+                    }
+                    emptyEl.style.display = 'none';
+                    contentEl.style.display = 'block';
+                    try {
+                        const table = document.createElement('table');
+                        table.className = 'expense-table';
+                        table.innerHTML = '<thead><tr><th>Doc #</th><th>Date</th><th>Vendor / Entity</th><th>Line</th><th>Description</th><th>Amount</th><th>Realm</th><th>Actions</th></tr></thead><tbody></tbody>';
+                        const tbody = table.querySelector('tbody');
+                        rows.forEach(function(row) {
+                            const desc = (row.line_description != null && row.line_description !== '') ? String(row.line_description).substring(0, 80) : '—';
+                            const descSuffix = (row.line_description && row.line_description.length > 80) ? '…' : '';
+                            const amount = row.line_amount != null ? '$' + Number(row.line_amount).toFixed(2) : '—';
+                            const openUrl = '/qbo-purchase/needing-update/open/' + row.qbo_purchase_id;
+                            const tr = document.createElement('tr');
+                            tr.innerHTML = '<td>' + escapeExpenseHtml(row.doc_number || '—') + '</td><td>' + escapeExpenseHtml(row.txn_date || '—') + '</td><td>' + escapeExpenseHtml(row.entity_ref_name || '—') + '</td><td>' + (row.line_num != null ? row.line_num : '—') + '</td><td>' + escapeExpenseHtml(desc) + descSuffix + '</td><td>' + amount + '</td><td>' + escapeExpenseHtml(row.realm_id || '—') + '</td><td><a href="' + openUrl + '" class="btn btn-primary btn-sm">Open</a></td>';
+                            tbody.appendChild(tr);
+                        });
+                        contentEl.appendChild(table);
+                    } catch (err) {
+                        console.error('QBO needing-update render error:', err);
+                        emptyEl.textContent = 'Unable to display results.';
+                        emptyEl.style.display = 'block';
+                    }
+                })
+                .catch(function(err) {
+                    console.error('QBO needing-update fetch error:', err);
+                    hideLoading();
+                    emptyEl.textContent = 'Unable to load.';
+                    emptyEl.style.display = 'block';
+                });
+        })();
+    });
 </script>
 {% endblock %}

@@ -19,6 +19,8 @@ from entities.contract_labor.persistence.line_item_repo import ContractLaborLine
 from entities.contract_labor.persistence.repo import ContractLaborRepository
 from entities.bill.business.service import BillService
 from entities.bill_line_item.business.service import BillLineItemService
+from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
+from entities.attachment.business.service import AttachmentService
 from entities.vendor.business.service import VendorService
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
@@ -80,17 +82,24 @@ class ContractLaborBillService:
 
     def get_due_date(self, billing_period: str) -> str:
         """
-        Calculate due date as end of the billing period's month.
-        Example: billing_period 2026-01-15 -> due_date 2026-01-31
+        Due date from bill date (billing period):
+        - Bill date = 15th → Due date = last day of same month.
+        - Bill date = end of month → Due date = 15th of next month.
         """
         try:
             bp_date = datetime.strptime(billing_period, "%Y-%m-%d")
-            # Get last day of the month
             last_day = monthrange(bp_date.year, bp_date.month)[1]
-            due_date = bp_date.replace(day=last_day)
+            if bp_date.day == 15:
+                due_date = bp_date.replace(day=last_day)
+            elif bp_date.day == last_day:
+                if bp_date.month == 12:
+                    due_date = bp_date.replace(year=bp_date.year + 1, month=1, day=15)
+                else:
+                    due_date = bp_date.replace(month=bp_date.month + 1, day=15)
+            else:
+                due_date = bp_date.replace(day=last_day)
             return due_date.strftime("%Y-%m-%d")
         except Exception:
-            # Fallback: add 15 days
             bp_date = datetime.strptime(billing_period, "%Y-%m-%d")
             return (bp_date + timedelta(days=15)).strftime("%Y-%m-%d")
 
@@ -110,7 +119,8 @@ class ContractLaborBillService:
         Groups by project and creates one bill per project.
         
         Returns dict with:
-        - bills_created: number of bills created
+        - bills_created: number of new bills created
+        - bills_updated: number of existing bills updated
         - line_items_created: number of bill line items created
         - entries_billed: number of contract labor entries marked as billed
         - pdf_urls: list of PDF URLs
@@ -118,6 +128,7 @@ class ContractLaborBillService:
         """
         result = {
             "bills_created": 0,
+            "bills_updated": 0,
             "line_items_created": 0,
             "entries_billed": 0,
             "pdf_urls": [],
@@ -177,54 +188,110 @@ class ContractLaborBillService:
                     result["errors"].append(f"Project ID {project_id} not found")
                     continue
 
-                # Determine billing period from first entry
                 first_entry = items[0]["entry"]
                 billing_period = first_entry.billing_period_start or first_entry.work_date
                 if not billing_period:
                     billing_period = datetime.now().strftime("%Y-%m-%d")
 
-                # Calculate totals
                 total_amount = sum(Decimal(str(item["line_item"].price or 0)) for item in items)
-                
-                # Generate invoice number and due date
                 invoice_number = self.generate_invoice_number(
-                    billing_period, 
-                    project.abbreviation or project.name[:10]
+                    billing_period,
+                    project.abbreviation or project.name[:10],
                 )
                 due_date = self.get_due_date(billing_period)
+                memo = f"Contract Labor - {project.abbreviation or project.name}"
 
-                # TEMPORARILY DISABLED: Create Bill
-                # bill = self.bill_service.create(
-                #     vendor_public_id=vendor.public_id,
-                #     bill_date=billing_period,
-                #     due_date=due_date,
-                #     bill_number=invoice_number,
-                #     total_amount=total_amount,
-                #     memo=f"Contract Labor - {project.abbreviation or project.name}",
-                #     is_draft=False,
-                # )
-                # result["bills_created"] += 1
+                # Check for existing bill (edit path)
+                existing_bill = self.bill_service.repo.read_by_bill_number_and_vendor_id(
+                    bill_number=invoice_number, vendor_id=vendor.id
+                )
+                bill = existing_bill
+                is_edit = bill is not None
 
-                # TEMPORARILY DISABLED: Create BillLineItems
-                # for item in items:
-                #     li = item["line_item"]
-                #     self.bill_line_item_service.create(
-                #         bill_public_id=bill.public_id,
-                #         sub_cost_code_id=li.sub_cost_code_id,
-                #         project_public_id=project.public_id,
-                #         description=li.description,
-                #         quantity=1,
-                #         rate=li.rate,
-                #         amount=li.price,
-                #         is_billable=li.is_billable,
-                #         is_billed=True,
-                #         markup=li.markup,
-                #         price=li.price,
-                #         is_draft=False,
-                #     )
-                #     result["line_items_created"] += 1
+                if bill is None:
+                    bill = self.bill_service.create(
+                        vendor_public_id=vendor.public_id,
+                        bill_date=billing_period,
+                        due_date=due_date,
+                        bill_number=invoice_number,
+                        total_amount=total_amount,
+                        memo=memo,
+                        is_draft=True,
+                    )
+                    result["bills_created"] += 1
+                else:
+                    result["bills_updated"] += 1
+                    bill.bill_date = billing_period
+                    bill.due_date = due_date
+                    bill.total_amount = total_amount
+                    bill.memo = memo
+                    bill = self.bill_service.repo.update_by_id(bill)
+                    if not bill:
+                        result["errors"].append(f"Row version conflict updating bill {invoice_number}")
+                        continue
+                    # Delete existing BillLineItems (ContractLaborLineItem.BillLineItemId set NULL via FK ON DELETE SET NULL)
+                    existing_blis = self.bill_line_item_service.read_by_bill_id(bill.id)
+                    for bli in existing_blis:
+                        self.bill_line_item_service.repo.delete_by_id(bli.id)
 
-                # Generate PDF
+                entry_id_to_first_bli_id = {}
+                created_blis_this_project = []
+                line_items_created_this_project = 0
+                try:
+                    for item in items:
+                        li = item["line_item"]
+                        hours = Decimal(str(li.hours or 0))
+                        rate_daily = Decimal(str(li.rate or 0))
+                        unit = 1
+                        rate = (hours / Decimal("8")) * rate_daily
+                        amount = rate
+                        markup_val = Decimal(str(li.markup or 0))
+                        price = amount * (Decimal("1") + markup_val)
+
+                        bli = self.bill_line_item_service.create(
+                            bill_public_id=bill.public_id,
+                            sub_cost_code_id=li.sub_cost_code_id,
+                            project_public_id=project.public_id,
+                            description=li.description,
+                            quantity=unit,
+                            rate=rate,
+                            amount=amount,
+                            is_billable=li.is_billable if li.is_billable is not None else True,
+                            is_billed=False,
+                            markup=li.markup,
+                            price=price,
+                            is_draft=True,
+                        )
+                        line_items_created_this_project += 1
+                        result["line_items_created"] += 1
+                        created_blis_this_project.append(bli)
+
+                        self.line_item_repo.update_by_id(
+                            id=li.id,
+                            row_version=li.row_version_bytes,
+                            line_date=li.line_date,
+                            project_id=li.project_id,
+                            sub_cost_code_id=li.sub_cost_code_id,
+                            description=li.description,
+                            hours=li.hours,
+                            rate=li.rate,
+                            markup=li.markup,
+                            price=li.price,
+                            is_billable=li.is_billable if li.is_billable is not None else True,
+                            bill_line_item_id=bli.id,
+                        )
+                        entry_id = item["entry"].id
+                        if entry_id not in entry_id_to_first_bli_id:
+                            entry_id_to_first_bli_id[entry_id] = bli.id
+                except Exception as e:
+                    if not is_edit:
+                        try:
+                            self.bill_service.delete_by_public_id(bill.public_id)
+                        except Exception as cleanup_e:
+                            logger.warning(f"Cleanup delete bill failed: {cleanup_e}")
+                        result["bills_created"] = max(0, result["bills_created"] - 1)
+                    raise e
+
                 pdf_bytes = self._generate_pdf(
                     vendor_name=vendor.name,
                     project=project,
@@ -234,8 +301,6 @@ class ContractLaborBillService:
                     total_amount=float(total_amount),
                     line_items=items,
                 )
-
-                # Upload PDF to Azure
                 try:
                     storage = AzureBlobStorage()
                     blob_name = f"invoices/{invoice_number.replace('.', '-')}.pdf"
@@ -245,20 +310,38 @@ class ContractLaborBillService:
                         content_type="application/pdf",
                     )
                     result["pdf_urls"].append(pdf_url)
+
+                    # Create Attachment and link to each BillLineItem so the PDF is available when reviewing for Mark Complete
+                    pdf_filename = f"{invoice_number.replace('.', '-')}.pdf"
+                    attachment = AttachmentService().create(
+                        filename=pdf_filename,
+                        original_filename=pdf_filename,
+                        file_extension="pdf",
+                        content_type="application/pdf",
+                        file_size=len(pdf_bytes),
+                        file_hash=None,
+                        blob_url=pdf_url,
+                        description=f"Contract Labor invoice - {project.abbreviation or project.name}",
+                        category="invoice",
+                    )
+                    for bli in created_blis_this_project:
+                        BillLineItemAttachmentService().create(
+                            bill_line_item_public_id=bli.public_id,
+                            attachment_public_id=attachment.public_id,
+                        )
                 except Exception as e:
-                    logger.error(f"Failed to upload PDF: {e}")
+                    logger.error(f"Failed to upload PDF or create attachment: {e}")
                     result["errors"].append(f"Failed to upload PDF for {invoice_number}: {str(e)}")
 
-                # TEMPORARILY DISABLED: Update ContractLabor entries to billed status
-                # for entry_id in entry_ids_by_project[project_id]:
-                #     entry = self.cl_repo.read_by_id(id=entry_id)
-                #     if entry:
-                #         self.cl_repo.update_by_id(
-                #             id=entry_id,
-                #             row_version=entry.row_version_bytes,
-                #             status="billed",
-                #         )
-                #         result["entries_billed"] += 1
+                for entry_id in entry_ids_by_project[project_id]:
+                    entry = self.cl_repo.read_by_id(id=entry_id)
+                    if not entry:
+                        continue
+                    entry.status = "billed"
+                    entry.bill_line_item_id = entry_id_to_first_bli_id.get(entry_id)
+                    updated = self.cl_repo.update_by_id(entry)
+                    if updated:
+                        result["entries_billed"] += 1
 
             except Exception as e:
                 logger.exception(f"Error generating bill for project {project_id}")

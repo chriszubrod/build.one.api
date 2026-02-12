@@ -1,7 +1,9 @@
 # Python Standard Library Imports
 import base64
+import json
 import logging
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 from decimal import Decimal
 
 # Third-party Imports
@@ -288,4 +290,41 @@ class ExpenseRepository:
                 return self._from_db(row) if row else None
         except Exception as error:
             logger.error(f"Error during delete expense by ID: {error}")
+            raise map_database_error(error)
+
+    def set_completion_result(self, public_id: str, result: dict[str, Any], expires_at: float) -> None:
+        """Store completion result for an expense (shared across workers)."""
+        try:
+            expires_dt = datetime.fromtimestamp(expires_at, tz=timezone.utc)
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="UpsertExpenseCompletionResult",
+                    params={
+                        "ExpensePublicId": public_id,
+                        "ResultJson": json.dumps(result, default=str),
+                        "ExpiresAt": expires_dt,
+                    },
+                )
+        except Exception as error:
+            logger.error(f"Error storing expense completion result: {error}")
+            raise map_database_error(error)
+
+    def get_completion_result(self, public_id: str) -> Optional[dict[str, Any]]:
+        """Return completion result for an expense if present and not expired."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="GetExpenseCompletionResult",
+                    params={"ExpensePublicId": public_id},
+                )
+                row = cursor.fetchone()
+                if not row or not getattr(row, "ResultJson", None):
+                    return None
+                return json.loads(row.ResultJson)
+        except Exception as error:
+            logger.error(f"Error reading expense completion result: {error}")
             raise map_database_error(error)

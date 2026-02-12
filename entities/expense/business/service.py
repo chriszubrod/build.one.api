@@ -293,3 +293,11 @@ class ExpenseService:
         
         # Step 4: Delete the Expense record
         return self.repo.delete_by_id(existing.id)
+
+    def complete_expense(self, public_id: str) -> dict:
+        """
+        Complete an expense: finalize and upload attachments to module folders.
+        Delegates to ExpenseCompleteService.
+        """
+        from entities.expense.business.complete_service import ExpenseCompleteService
+        return ExpenseCompleteService().complete_expense(public_id=public_id)

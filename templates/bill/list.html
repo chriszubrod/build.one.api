@@ -8,18 +8,24 @@
 
 {% block content %}
 
-    <!-- Background completion notifications -->
-    <div id="pending-completions-banner" class="bill-pending-banner" style="display: none;">
+    <!-- Background completion notifications (sticky so it stays visible when scrolling) -->
+    <div id="pending-completions-banner" class="bill-pending-banner bill-pending-banner-sticky" style="display: none;" role="status" aria-live="polite">
         <div class="bill-pending-banner-content">
-            <span class="bill-pending-banner-icon">⏳</span>
-            <span class="bill-pending-banner-text">Processing bills in background...</span>
-            <span class="bill-pending-banner-count"></span>
+            <span class="bill-pending-banner-icon" aria-hidden="true">⏳</span>
+            <div class="bill-pending-banner-text-wrap">
+                <span class="bill-pending-banner-text">Processing bills in background...</span>
+                <span class="bill-pending-banner-count"></span>
+                <span class="bill-pending-banner-detail"></span>
+            </div>
         </div>
     </div>
 
     <div class="bill-page-header">
         <h1>{% if search %}Search Results{% elif is_draft == 'true' or is_draft == '' %}Draft Bills{% elif is_draft == 'false' %}Completed Bills{% else %}All Bills{% endif %}</h1>
-        <a href="/bill/create?new=true" class="btn btn-primary">Add Bill</a>
+        <form method="get" action="/bill/create" style="display: inline;">
+            <input type="hidden" name="new" value="true">
+            <button type="submit" class="btn btn-primary">Add Bill</button>
+        </form>
     </div>
 
     <!-- Search and Filters -->
@@ -326,7 +332,10 @@
                     <input type="file" id="file-input" multiple accept=".pdf,.png,.jpg,.jpeg,.gif,.webp" style="display: none;">
                     
                     <div class="bill-drop-zone-actions">
-                        <a href="/bill/create?new=true" class="btn btn-primary">Create Bill Manually</a>
+                        <form method="get" action="/bill/create" style="display: inline;">
+                            <input type="hidden" name="new" value="true">
+                            <button type="submit" class="btn btn-primary">Create Bill Manually</button>
+                        </form>
                         {% if search %}
                         <a href="/bill/list" class="btn btn-secondary">Clear Filters</a>
                         {% endif %}
@@ -417,15 +426,14 @@
         
         console.log('[List] Found', pendingBills.length, 'pending bills, showing banner');
         
-        // Check each processing bill's actual status via API
+        // Check each processing bill's actual status via API (send cookies for auth)
         for (const bill of pendingBills) {
             if (bill.status === 'processing') {
                 try {
                     const response = await fetch(`/api/v1/get/bill/${bill.publicId}`, {
                         method: 'GET',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        }
+                        credentials: 'same-origin',
+                        headers: { 'Content-Type': 'application/json' }
                     });
                     
                     if (response.ok) {
@@ -462,14 +470,44 @@
         const completed = pendingBills.filter(b => b.status === 'completed' && !b.notified);
         const errors = pendingBills.filter(b => (b.status === 'error' || b.status === 'timeout') && !b.notified);
         const stillProcessing = pendingBills.filter(b => b.status === 'processing');
-        
-        // Show notifications for completed bills
-        completed.forEach(bill => {
-            const elapsed = bill.endTime ? Math.round((bill.endTime - bill.startTime) / 1000) : 0;
-            showToast(`✓ Bill "${bill.billNumber}" completed! (${elapsed}s)`, 'success', 8000);
+
+        // Show notifications for completed bills (include Build One, SharePoint, Excel, QBO from completion result)
+        for (const bill of completed) {
+            let message = `✓ Bill "${bill.billNumber}" completed!`;
+            const maxRetries = 15;
+            const retryDelayMs = 2000;
+            for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                try {
+                    const res = await fetch(`/api/v1/get/bill/${bill.publicId}/completion-result`, { credentials: 'same-origin' });
+                    if (res.ok) {
+                        const data = await res.json();
+                        const parts = [];
+                        parts.push(data.bill_finalized ? 'Build One ✓' : 'Build One —');
+                        const fu = data.file_uploads || {};
+                        const spHasErrors = Object.values(fu).some(u => u.errors && u.errors.length > 0);
+                        parts.push(Object.keys(fu).length ? (spHasErrors ? 'SharePoint ⚠' : 'SharePoint ✓') : 'SharePoint —');
+                        const ex = data.excel_syncs || {};
+                        const exHasErrors = Object.values(ex).some(e => e.errors && e.errors.length > 0);
+                        parts.push(Object.keys(ex).length ? (exHasErrors ? 'Excel ⚠' : 'Excel ✓') : 'Excel —');
+                        const qbo = data.qbo_sync || {};
+                        parts.push(qbo.success ? 'QBO ✓' : (qbo.errors && qbo.errors.length ? 'QBO ⚠' : 'QBO —'));
+                        message = `✓ Bill "${bill.billNumber}" completed: ${parts.join(', ')}`;
+                        break;
+                    }
+                    if (res.status === 404 && attempt < maxRetries) {
+                        await new Promise(r => setTimeout(r, retryDelayMs));
+                        continue;
+                    }
+                    break;
+                } catch (e) {
+                    if (attempt < maxRetries) await new Promise(r => setTimeout(r, retryDelayMs));
+                    else break;
+                }
+            }
+            showToast(message, 'success', 10000);
             bill.notified = true;
             bill.notifiedAt = Date.now();
-        });
+        }
         
         // Show notifications for errors/timeouts
         errors.forEach(bill => {
@@ -501,11 +539,9 @@
         
         // Show/hide banner based on processing or recently completed bills
         if (billsToKeep.length > 0) {
-            // Update banner message based on state
             if (stillProcessing.length > 0) {
-                showPendingBanner(stillProcessing.length, 'processing');
+                showPendingBanner(stillProcessing.length, 'processing', stillProcessing);
             } else {
-                // All done, show completion message briefly
                 showPendingBanner(recentlyNotified.length, 'completed');
             }
             // Poll every 2 seconds to check for updates
@@ -521,32 +557,31 @@
         }
     }
     
-    function showPendingBanner(count, status = 'processing') {
-        console.log('[List] showPendingBanner called with count:', count, 'status:', status);
+    function showPendingBanner(count, status = 'processing', processingBills = []) {
         const banner = document.getElementById('pending-completions-banner');
-        console.log('[List] Banner element found:', !!banner);
-        if (banner) {
-            banner.style.display = 'block';
-            
-            const iconSpan = banner.querySelector('.bill-pending-banner-icon');
-            const textSpan = banner.querySelector('.bill-pending-banner-text');
-            const countSpan = banner.querySelector('.bill-pending-banner-count');
-            
-            if (status === 'completed') {
-                if (iconSpan) iconSpan.textContent = '✅';
-                if (textSpan) textSpan.textContent = 'Bills completed successfully!';
-                if (countSpan) countSpan.textContent = `(${count} bill${count > 1 ? 's' : ''})`;
-                banner.classList.remove('bill-pending-banner-processing');
-                banner.classList.add('bill-pending-banner-success');
-            } else {
-                if (iconSpan) iconSpan.textContent = '⏳';
-                if (textSpan) textSpan.textContent = 'Processing bills in background...';
-                if (countSpan) countSpan.textContent = `(${count} bill${count > 1 ? 's' : ''})`;
-                banner.classList.remove('bill-pending-banner-success');
-                banner.classList.add('bill-pending-banner-processing');
-            }
-            
-            console.log('[List] Banner should now be visible');
+        if (!banner) return;
+        banner.style.display = 'block';
+
+        const iconSpan = banner.querySelector('.bill-pending-banner-icon');
+        const textSpan = banner.querySelector('.bill-pending-banner-text');
+        const countSpan = banner.querySelector('.bill-pending-banner-count');
+        const detailSpan = banner.querySelector('.bill-pending-banner-detail');
+
+        if (status === 'completed') {
+            if (iconSpan) iconSpan.textContent = '✅';
+            if (textSpan) textSpan.textContent = 'Bills completed successfully!';
+            if (countSpan) countSpan.textContent = `(${count} bill${count > 1 ? 's' : ''})`;
+            if (detailSpan) detailSpan.textContent = '';
+            banner.classList.remove('bill-pending-banner-processing');
+            banner.classList.add('bill-pending-banner-success');
+        } else {
+            if (iconSpan) iconSpan.textContent = '⏳';
+            if (textSpan) textSpan.textContent = 'Processing bills in background (Build One → SharePoint → Excel → QBO)...';
+            if (countSpan) countSpan.textContent = `(${count} bill${count > 1 ? 's' : ''})`;
+            const numbers = (processingBills || []).map(b => b.billNumber || b.publicId || '—').filter(Boolean);
+            if (detailSpan) detailSpan.textContent = numbers.length ? 'Bill #' + numbers.join(', #') : '';
+            banner.classList.remove('bill-pending-banner-success');
+            banner.classList.add('bill-pending-banner-processing');
         }
     }
     
@@ -771,24 +806,62 @@
         updateUploadedFilesTable();
     }
 
-    window.createBillFromFile = function(index) {
+    // sessionStorage is typically ~5MB per origin; base64 + JSON overhead use more than file size
+    const PENDING_FILE_STORAGE_LIMIT = 2 * 1024 * 1024; // 2MB file size = safe for storage
+
+    // Upload file to temp endpoint and return token (for large files or when sessionStorage fails)
+    async function uploadPendingFileToTemp(file) {
+        const byteString = atob(file.data.split(',')[1]);
+        const ab = new ArrayBuffer(byteString.length);
+        const ia = new Uint8Array(ab);
+        for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+        const blob = new Blob([ab], { type: file.type });
+        const formData = new FormData();
+        formData.append('file', blob, file.name);
+        const response = await fetch('/api/v1/temp/pending-bill-file', { method: 'POST', body: formData });
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        return data.token;
+    }
+
+    window.createBillFromFile = async function(index) {
         const file = uploadedFiles[index];
         if (!file) return;
-        
-        // File data is already in base64 format from persistence
-        const fileData = {
-            name: file.name,
-            type: file.type,
-            size: file.size,
-            data: file.data
+
+        const navigateWithToken = async () => {
+            try {
+                showToast('Transferring file...', 'info', 2000);
+                const token = await uploadPendingFileToTemp(file);
+                uploadedFiles.splice(index, 1);
+                persistFiles();
+                window.location.href = '/bill/create?new=true&pendingFileToken=' + encodeURIComponent(token);
+            } catch (e) {
+                console.error('Temp upload failed:', e);
+                showToast('Could not transfer file. Open Create Bill and attach the file there.', 'error', 6000);
+                window.location.href = '/bill/create?new=true';
+            }
         };
-        sessionStorage.setItem('pendingBillFile', JSON.stringify(fileData));
-        
-        // Remove from queue and persist
+
+        if (file.size > PENDING_FILE_STORAGE_LIMIT) {
+            await navigateWithToken();
+            return;
+        }
+
+        const fileData = { name: file.name, type: file.type, size: file.size, data: file.data };
+        try {
+            sessionStorage.setItem('pendingBillFile', JSON.stringify(fileData));
+        } catch (e) {
+            if (e.name === 'QuotaExceededError') {
+                await navigateWithToken();
+                return;
+            }
+            showToast('Could not transfer file. Open Create Bill and attach it there.', 'error', 6000);
+            window.location.href = '/bill/create?new=true';
+            return;
+        }
+
         uploadedFiles.splice(index, 1);
         persistFiles();
-        
-        // Navigate to create bill page with file flag
         window.location.href = '/bill/create?new=true&hasFile=true';
     }
 

@@ -6,6 +6,11 @@
     <link rel="stylesheet" href="{{ url_for('static', path='css/vendor.css') }}?v={{ range(1000, 9999) | random }}">
 {% endblock %}
 
+{% block aside %}
+    <!-- Vendor view: right sidebar shows Vendor Agent (floating chat button opens this) -->
+    {% include 'vendor/partials/agent_chat.html' %}
+{% endblock %}
+
 {% block content %}
 
     <div class="vendor-page-header">

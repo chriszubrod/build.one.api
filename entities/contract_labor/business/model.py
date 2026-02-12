@@ -155,7 +155,8 @@ class ContractLaborLineItem:
     
     # Parent reference
     contract_labor_id: Optional[int]   # FK to ContractLabor
-    
+    bill_line_item_id: Optional[int]   # FK to BillLineItem (link-back when billed)
+
     # Line item details
     line_date: Optional[str]           # Date for this line (YYYY-MM-DD)
     project_id: Optional[int]          # FK to Project

@@ -1,17 +1,33 @@
 # Python Standard Library Imports
+import logging
+import time
 
 # Third-party Imports
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from decimal import Decimal
 
 # Local Imports
 from entities.expense.api.schemas import ExpenseCreate, ExpenseUpdate
 from entities.expense.business.service import ExpenseService
-from entities.expense.business.complete_service import ExpenseCompleteService
+from entities.expense.persistence.repo import ExpenseRepository
 from entities.auth.business.service import get_current_user_api
 from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1", tags=["api", "expense"])
+
+# Cache last completion result per expense (TTL 1 hour)
+_EXPENSE_COMPLETION_RESULT_CACHE: dict[str, dict] = {}
+_EXPENSE_COMPLETION_CACHE_TTL_SEC = 3600
+
+
+def _clean_expense_completion_cache():
+    now = time.time()
+    expired = [k for k, v in _EXPENSE_COMPLETION_RESULT_CACHE.items() if v.get("expires_at", 0) < now]
+    for k in expired:
+        del _EXPENSE_COMPLETION_RESULT_CACHE[k]
 
 
 @router.post("/create/expense")
@@ -68,6 +84,23 @@ def get_expense_by_reference_number_and_vendor_router(reference_number: str, ven
     return None
 
 
+@router.get("/get/expense/{public_id}/completion-result")
+def get_expense_completion_result_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+    """
+    Return the last completion result for an expense (Build One, SharePoint).
+    Used by the list page to show step status after an expense completes in the background.
+    Reads from DB (shared across workers) then in-memory cache. Returns 404 if no result or expired (1 hour TTL).
+    """
+    result = ExpenseRepository().get_completion_result(public_id)
+    if result is not None:
+        return result
+    _clean_expense_completion_cache()
+    entry = _EXPENSE_COMPLETION_RESULT_CACHE.get(public_id)
+    if not entry or entry.get("expires_at", 0) < time.time():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No completion result found or expired")
+    return entry["result"]
+
+
 @router.get("/get/expense/{public_id}")
 def get_expense_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
     """
@@ -107,10 +140,10 @@ def update_expense_by_public_id_router(public_id: str, body: ExpenseUpdate, curr
     result = TriggerRouter().route_instant(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update expense")
-        )
+        err = result.get("error", "Failed to update expense")
+        if "concurrency" in err.lower() or "row-version" in err.lower():
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
     
     return result.get("data")
 
@@ -144,18 +177,54 @@ def delete_expense_by_public_id_router(public_id: str, current_user: dict = Depe
     return result.get("data")
 
 
-@router.post("/complete/expense/{public_id}")
-def complete_expense_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
-    """
-    Complete an expense: finalize and upload attachments to module folders.
-    """
-    service = ExpenseCompleteService()
-    result = service.complete_expense(public_id=public_id)
-    
-    if result.get("status_code") >= 400:
-        raise HTTPException(
-            status_code=result.get("status_code", 500),
-            detail=result.get("message", "Failed to complete expense")
+def _run_complete_expense(public_id: str) -> None:
+    """Background task: run expense completion (finalize, SharePoint)."""
+    try:
+        result = ExpenseService().complete_expense(public_id=public_id)
+        logger.info(
+            "Complete expense background result: public_id=%s, status_code=%s, expense_finalized=%s",
+            public_id, result.get("status_code"), result.get("expense_finalized"),
         )
-    
-    return result
+        expires_at = time.time() + _EXPENSE_COMPLETION_CACHE_TTL_SEC
+        _EXPENSE_COMPLETION_RESULT_CACHE[public_id] = {
+            "result": result,
+            "expires_at": expires_at,
+        }
+        ExpenseRepository().set_completion_result(public_id, result, expires_at)
+        if result.get("status_code") >= 400:
+            logger.warning("Complete expense failed in background: %s", result.get("message"))
+    except Exception as e:
+        logger.exception("Complete expense background task failed: public_id=%s", public_id)
+        failure_result = {
+            "status_code": 500,
+            "message": str(e),
+            "expense_finalized": False,
+            "file_uploads": {},
+            "errors": [{"step": "complete_expense", "error": str(e)}],
+        }
+        expires_at = time.time() + _EXPENSE_COMPLETION_CACHE_TTL_SEC
+        _EXPENSE_COMPLETION_RESULT_CACHE[public_id] = {"result": failure_result, "expires_at": expires_at}
+        ExpenseRepository().set_completion_result(public_id, failure_result, expires_at)
+
+
+@router.post("/complete/expense/{public_id}")
+def complete_expense_router(
+    public_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """
+    Queue expense completion (finalize, SharePoint). Returns 202 immediately;
+    work runs in background. Client can poll GET /api/v1/get/expense/{public_id}/completion-result or use list page banner.
+    """
+    logger.info("Complete expense API called: public_id=%s (queuing background task)", public_id)
+    expense = ExpenseService().read_by_public_id(public_id=public_id)
+    if not expense:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found")
+    if not getattr(expense, "is_draft", True):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Expense is already completed")
+    background_tasks.add_task(_run_complete_expense, public_id)
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={"status": "accepted", "expense_public_id": public_id},
+    )

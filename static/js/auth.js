@@ -34,24 +34,33 @@ function getCookieValue(name) {
     return '';
 }
 
-// Token refresh utility (cookie-based)
-async function refreshAccessToken() {
+// Token refresh utility (cookie-based). Retries once on 401 to handle transient/race cases.
+async function refreshAccessToken(retry = true) {
     try {
         const csrfToken = getCookieValue(CSRF_COOKIE_NAME);
         const response = await originalFetch('/api/v1/auth/refresh', {
             method: 'POST',
             credentials: 'same-origin',
-            headers: csrfToken ? { [CSRF_HEADER_NAME]: csrfToken } : undefined
+            headers: { 'Content-Type': 'application/json', ...(csrfToken ? { [CSRF_HEADER_NAME]: csrfToken } : {}) }
         });
 
         if (response.ok) {
             return true;
         }
 
+        if (response.status === 401 && retry) {
+            await new Promise(r => setTimeout(r, 500));
+            return refreshAccessToken(false);
+        }
+
         logout();
         return false;
     } catch (error) {
         console.error('Token refresh failed:', error);
+        if (retry) {
+            await new Promise(r => setTimeout(r, 500));
+            return refreshAccessToken(false);
+        }
         logout();
         return false;
     }

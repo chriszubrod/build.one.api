@@ -355,3 +355,9 @@ class QboPurchaseService:
         Read all QboPurchaseLines for a QboPurchase.
         """
         return self.line_repo.read_by_qbo_purchase_id(qbo_purchase_id)
+
+    def get_lines_needing_update(self, realm_id: Optional[str] = None) -> List[dict]:
+        """
+        Get purchase lines with AccountRefName = 'NEED TO UPDATE' and no ExpenseLineItem link.
+        """
+        return self.line_repo.read_lines_needing_update(realm_id=realm_id)

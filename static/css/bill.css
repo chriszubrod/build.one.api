@@ -1675,6 +1675,25 @@ textarea.bill-form-control {
     animation: pulse 2s infinite;
 }
 
+.bill-pending-banner-sticky {
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.bill-pending-banner-text-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem 0.75rem;
+}
+
+.bill-pending-banner-detail {
+    font-size: 0.9rem;
+    opacity: 0.95;
+}
+
 @keyframes pulse {
     0%, 100% {
         opacity: 1;

@@ -1247,3 +1247,444 @@
     color: #666;
 }
 
+/* =============================================================================
+   Vendor Agent Sidebar Chat Styles
+   ============================================================================= */
+
+/* Agent toggle button in sidebar */
+.vendor-sidebar-agent {
+    margin-top: auto;
+    padding: 1.5rem;
+    border-top: 1px solid #e0e0e0;
+}
+
+.vendor-agent-toggle-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    padding: 0.75rem 1rem;
+    background-color: var(--color-surface);
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    color: var(--color-text);
+    font-size: var(--font-size-action);
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.vendor-agent-toggle-btn:hover {
+    background-color: #e8e8e8;
+    border-color: var(--color-text);
+}
+
+.vendor-agent-toggle-btn svg {
+    flex-shrink: 0;
+}
+
+.vendor-agent-indicator {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    margin-left: auto;
+    background-color: #dc3545;
+    color: white;
+    font-size: 0.75rem;
+    font-weight: 600;
+    border-radius: 10px;
+}
+
+/* Agent sidebar panel */
+.vendor-agent-panel {
+    position: fixed;
+    top: 0;
+    right: -420px;
+    width: 400px;
+    height: 100vh;
+    background-color: var(--color-background);
+    border-left: 1px solid #e0e0e0;
+    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.1);
+    display: flex;
+    flex-direction: column;
+    z-index: 1000;
+    transition: right 0.3s ease;
+}
+
+.vendor-agent-panel.open {
+    right: 0;
+}
+
+.vendor-agent-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid #e0e0e0;
+    background-color: var(--color-surface);
+}
+
+.vendor-agent-header h3 {
+    font-size: var(--font-size-action-lg);
+    font-weight: 600;
+    color: var(--color-text);
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.vendor-agent-close-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: #666;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+}
+
+.vendor-agent-close-btn:hover {
+    background-color: #e0e0e0;
+    color: var(--color-text);
+}
+
+/* Agent proposals section */
+.vendor-agent-proposals {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid #e0e0e0;
+    background-color: #fafafa;
+    max-height: 40%;
+    overflow-y: auto;
+}
+
+.vendor-agent-proposals h4 {
+    font-size: var(--font-size-action);
+    font-weight: 600;
+    color: var(--color-text);
+    margin: 0 0 1rem 0;
+}
+
+.agent-proposal-card {
+    background-color: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 0.75rem;
+}
+
+.agent-proposal-card:last-child {
+    margin-bottom: 0;
+}
+
+.agent-proposal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+
+.agent-proposal-status {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    border-radius: 4px;
+}
+
+.agent-proposal-status.status-pending {
+    background-color: #fff3cd;
+    color: #856404;
+}
+
+.agent-proposal-status.status-approved {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.agent-proposal-status.status-rejected {
+    background-color: #f8d7da;
+    color: #721c24;
+}
+
+.agent-proposal-status.status-applied {
+    background-color: #cce5ff;
+    color: #004085;
+}
+
+.agent-proposal-confidence {
+    font-size: var(--font-size-base);
+    color: #666;
+    font-weight: 500;
+}
+
+.agent-proposal-reasoning {
+    font-size: var(--font-size-base);
+    color: var(--color-text);
+    margin-bottom: 0.75rem;
+    line-height: 1.5;
+}
+
+.agent-proposal-fields {
+    font-size: var(--font-size-small);
+    margin-bottom: 0.75rem;
+}
+
+.agent-proposal-field {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    background-color: var(--color-surface);
+    border-radius: 4px;
+    margin-bottom: 0.25rem;
+}
+
+.agent-proposal-field:last-child {
+    margin-bottom: 0;
+}
+
+.agent-proposal-field .field-name {
+    font-weight: 500;
+    color: var(--color-text);
+}
+
+.agent-proposal-field .field-old {
+    color: #dc3545;
+    text-decoration: line-through;
+}
+
+.agent-proposal-field .field-arrow {
+    color: #666;
+}
+
+.agent-proposal-field .field-new {
+    color: #28a745;
+    font-weight: 500;
+}
+
+.agent-proposal-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.agent-no-proposals {
+    font-size: var(--font-size-base);
+    color: #666;
+    text-align: center;
+    padding: 1rem;
+    margin: 0;
+}
+
+/* Agent chat section */
+.vendor-agent-chat {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.vendor-agent-messages {
+    flex: 1;
+    padding: 1rem 1.5rem;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.agent-message {
+    max-width: 85%;
+    padding: 0.75rem 1rem;
+    border-radius: 12px;
+    font-size: var(--font-size-base);
+    line-height: 1.5;
+}
+
+.agent-message-user {
+    align-self: flex-end;
+    background-color: var(--color-text);
+    color: white;
+    border-bottom-right-radius: 4px;
+}
+
+.agent-message-agent {
+    align-self: flex-start;
+    background-color: var(--color-surface);
+    color: var(--color-text);
+    border: 1px solid #e0e0e0;
+    border-bottom-left-radius: 4px;
+}
+
+.agent-message-content {
+    word-wrap: break-word;
+}
+
+.agent-message-time {
+    font-size: 0.7rem;
+    color: rgba(255, 255, 255, 0.7);
+    margin-top: 0.5rem;
+    text-align: right;
+}
+
+.agent-message-agent .agent-message-time {
+    color: #999;
+}
+
+.agent-no-messages {
+    font-size: var(--font-size-base);
+    color: #666;
+    text-align: center;
+    padding: 2rem;
+    margin: 0;
+}
+
+/* Agent input section */
+.vendor-agent-input {
+    padding: 1rem 1.5rem;
+    border-top: 1px solid #e0e0e0;
+    background-color: var(--color-surface);
+}
+
+.vendor-agent-input-wrapper {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.vendor-agent-input input {
+    flex: 1;
+    padding: 0.75rem 1rem;
+    font-size: var(--font-size-action);
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    background-color: var(--color-background);
+    color: var(--color-text);
+    transition: border-color 0.2s ease;
+}
+
+.vendor-agent-input input:focus {
+    outline: none;
+    border-color: var(--color-text);
+}
+
+.vendor-agent-input input:disabled {
+    background-color: var(--color-surface);
+    color: #999;
+}
+
+.vendor-agent-send-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    background-color: var(--color-text);
+    border: none;
+    border-radius: 8px;
+    color: white;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+.vendor-agent-send-btn:hover {
+    background-color: var(--color-text-secondary);
+}
+
+.vendor-agent-send-btn:disabled {
+    background-color: #ccc;
+    cursor: not-allowed;
+}
+
+/* Reject modal */
+.vendor-agent-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1100;
+}
+
+.vendor-agent-modal-content {
+    background-color: var(--color-background);
+    border-radius: 12px;
+    width: 90%;
+    max-width: 450px;
+    padding: 1.5rem;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.vendor-agent-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.vendor-agent-modal-header h4 {
+    margin: 0;
+    font-size: var(--font-size-action-lg);
+    font-weight: 600;
+    color: var(--color-text);
+}
+
+.vendor-agent-modal-body {
+    margin-bottom: 1.5rem;
+}
+
+.vendor-agent-modal-body label {
+    display: block;
+    font-size: var(--font-size-action);
+    font-weight: 500;
+    color: var(--color-text);
+    margin-bottom: 0.5rem;
+}
+
+.vendor-agent-modal-body textarea {
+    width: 100%;
+    min-height: 100px;
+    padding: 0.75rem;
+    font-size: var(--font-size-base);
+    font-family: inherit;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    resize: vertical;
+}
+
+.vendor-agent-modal-body textarea:focus {
+    outline: none;
+    border-color: var(--color-text);
+}
+
+.vendor-agent-modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+/* Responsive adjustments for agent panel */
+@media (max-width: 480px) {
+    .vendor-agent-panel {
+        width: 100%;
+        right: -100%;
+    }
+
+    .vendor-agent-modal-content {
+        width: 95%;
+        margin: 1rem;
+    }
+}
+

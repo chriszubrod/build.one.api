@@ -42,6 +42,7 @@ class ContractLaborLineItemRepository:
                 created_datetime=row.CreatedDatetime,
                 modified_datetime=row.ModifiedDatetime,
                 contract_labor_id=getattr(row, "ContractLaborId", None),
+                bill_line_item_id=getattr(row, "BillLineItemId", None),
                 line_date=getattr(row, "LineDate", None),
                 project_id=getattr(row, "ProjectId", None),
                 sub_cost_code_id=getattr(row, "SubCostCodeId", None),
@@ -172,6 +173,7 @@ class ContractLaborLineItemRepository:
         markup: Optional[Decimal] = None,
         price: Optional[Decimal] = None,
         is_billable: bool = True,
+        bill_line_item_id: Optional[int] = None,
     ) -> Optional[ContractLaborLineItem]:
         """
         Update a line item by ID.
@@ -194,6 +196,7 @@ class ContractLaborLineItemRepository:
                         "Markup": float(markup) if markup is not None else None,
                         "Price": float(price) if price is not None else None,
                         "IsBillable": is_billable,
+                        "BillLineItemId": bill_line_item_id,
                     },
                 )
                 row = cursor.fetchone()

@@ -1055,32 +1055,49 @@
             
             try {
                 if (isDraft) {
-                    // Complete the expense
+                    const referenceNumber = document.getElementById('reference_number')?.value || expensePublicId;
+                    let pending = JSON.parse(sessionStorage.getItem('pendingExpenseCompletions') || '[]');
+                    const now = Date.now();
+                    const STALE_THRESHOLD = 5 * 60 * 1000;
+                    pending = pending.filter(p => (now - (p.startTime || now)) < STALE_THRESHOLD);
+                    const existing = pending.find(p => p.publicId === expensePublicId && p.status === 'processing');
+                    if (existing) {
+                        showToast(`Expense "${referenceNumber}" is already being processed.`, 'warning', 3000);
+                        window.location.href = '/expense/list';
+                        return;
+                    }
+                    pending.push({
+                        publicId: expensePublicId,
+                        referenceNumber: referenceNumber,
+                        startTime: now,
+                        status: 'processing'
+                    });
+                    sessionStorage.setItem('pendingExpenseCompletions', JSON.stringify(pending));
+
                     const response = await fetch(`/api/v1/complete/expense/${expensePublicId}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' }
                     });
-                    
+
+                    if (response.status === 202) {
+                        showToast(`"${referenceNumber}" is completing. You can check status on the list.`, 'info', 3000);
+                        window.location.href = '/expense/list';
+                        return;
+                    }
+
                     if (!response.ok) {
+                        pending = JSON.parse(sessionStorage.getItem('pendingExpenseCompletions') || '[]');
+                        pending = pending.filter(p => !(p.publicId === expensePublicId && p.status === 'processing'));
+                        sessionStorage.setItem('pendingExpenseCompletions', JSON.stringify(pending));
                         let errorMessage = 'Failed to complete expense';
                         try {
                             const error = await response.json();
-                            errorMessage = error.detail || errorMessage;
+                            errorMessage = (typeof error.detail === 'string') ? error.detail : (error.detail?.msg || JSON.stringify(error.detail));
                         } catch (e) {
                             errorMessage = `Server error: ${response.status}`;
                         }
                         throw new Error(errorMessage);
                     }
-                    
-                    const result = await response.json();
-                    
-                    let statusMessage = 'Expense completed successfully!';
-                    const toastType = (result.errors && result.errors.length > 0) ? 'warning' : 'success';
-                    showToast(statusMessage, toastType, 8000);
-                    
-                    setTimeout(() => {
-                        window.location.href = '/expense/list';
-                    }, 2000);
                 } else {
                     // Just save changes
                     await autoSaveExpense();

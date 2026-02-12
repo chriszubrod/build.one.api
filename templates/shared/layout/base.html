@@ -40,8 +40,8 @@
                         {% block content %}{% endblock %}
                     </main>
             
-                    <!-- Right: Aside panel -->
-                    <aside class="sidebar-right" aria-label="Aside">
+                    <!-- Right: Aside panel (chat visible by default) -->
+                    <aside class="sidebar-right sidebar-right-open" aria-label="Aside">
                         {% block aside %}
                             {% include 'shared/partials/aside.html' %}
                         {% endblock %}
@@ -54,23 +54,6 @@
         </div>
         
         {% include 'shared/partials/footer.html' %}
-        
-        <!-- AI Copilot Toggle Button (always visible) -->
-        <button id="copilot-toggle-btn" class="copilot-toggle-btn" aria-label="Toggle AI Assistant">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-            </svg>
-        </button>
-        <script>
-            // Copilot toggle button handler - connects to copilot.html script
-            document.getElementById('copilot-toggle-btn').addEventListener('click', function() {
-                if (typeof toggleCopilot === 'function') {
-                    toggleCopilot();
-                } else {
-                    console.warn('Copilot not loaded');
-                }
-            });
-        </script>
         
         <!-- Global auth script for token refresh -->
         <script src="/static/js/auth.js"></script>

@@ -564,6 +564,7 @@ class BillBillConnector:
                 billable_status=billable_status,
                 qty=qty,
                 unit_price=unit_price,
+                markup_info={"Percent": float(markup_percent)} if markup_percent is not None else None,
             )
             return QboBillLineSchema(
                 line_num=line_num,

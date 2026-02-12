@@ -1940,46 +1940,42 @@
             });
             sessionStorage.setItem('pendingBillCompletions', JSON.stringify(pendingBills));
             
-            // Start the Complete Bill API call (fire and forget)
+            // Start the Complete Bill API call (server returns 202 and runs completion in background)
             console.log('[Complete Bill] Starting API call for:', billPublicId);
             
-            // Fire the API call without waiting - let it complete in background
-            fetch(`/api/v1/complete/bill/${billPublicId}`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            }).then(async response => {
+            try {
+                const response = await fetch(`/api/v1/complete/bill/${billPublicId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
                 console.log('[Complete Bill] Response received:', response.status);
                 
-                // Update the pending bill status in sessionStorage
                 const bills = JSON.parse(sessionStorage.getItem('pendingBillCompletions') || '[]');
                 const billIndex = bills.findIndex(b => b.publicId === billPublicId);
                 
+                if (response.status === 202) {
+                    showToast(`"${billNumber}" is completing. You can keep working on the list.`, 'info', 3000);
+                    window.location.href = getBillListUrl();
+                    return;
+                }
+                
                 if (billIndex !== -1) {
-                    if (response.ok) {
-                        const result = await response.json();
-                        bills[billIndex].status = 'completed';
-                        bills[billIndex].result = result;
-                        bills[billIndex].endTime = Date.now();
-                    } else {
-                        let errorMessage = 'Failed to complete bill';
-                        try {
-                            const error = await response.json();
-                            errorMessage = error.detail || errorMessage;
-                        } catch (e) {
-                            errorMessage = `Server error: ${response.status}`;
-                        }
-                        bills[billIndex].status = 'error';
-                        bills[billIndex].error = errorMessage;
-                        bills[billIndex].endTime = Date.now();
+                    let errorMessage = 'Failed to complete bill';
+                    try {
+                        const err = await response.json();
+                        errorMessage = (typeof err.detail === 'string') ? err.detail : (err.detail?.msg || JSON.stringify(err.detail));
+                    } catch (e) {
+                        errorMessage = `Server error: ${response.status}`;
                     }
+                    bills[billIndex].status = 'error';
+                    bills[billIndex].error = errorMessage;
+                    bills[billIndex].endTime = Date.now();
                     sessionStorage.setItem('pendingBillCompletions', JSON.stringify(bills));
                 }
-            }).catch(error => {
+                showToast(`Failed: ${errorMessage}`, 'error', 5000);
+                window.location.href = getBillListUrl();
+            } catch (error) {
                 console.error('[Complete Bill] Error:', error);
-                
-                // Update status on network error
                 const bills = JSON.parse(sessionStorage.getItem('pendingBillCompletions') || '[]');
                 const billIndex = bills.findIndex(b => b.publicId === billPublicId);
                 if (billIndex !== -1) {
@@ -1988,13 +1984,11 @@
                     bills[billIndex].endTime = Date.now();
                     sessionStorage.setItem('pendingBillCompletions', JSON.stringify(bills));
                 }
-            });
+                showToast(`Error: ${error.message || 'Network error'}`, 'error', 5000);
+                window.location.href = getBillListUrl();
+            }
             
-            // Immediately redirect to list page - don't wait for API response
-            showToast(`Processing "${billNumber}"... Redirecting to list.`, 'info', 2000);
-            window.location.href = getBillListUrl();
-            
-            return;  // Skip the old synchronous flow below
+            return;
             
             // --- OLD SYNCHRONOUS CODE (kept for reference, unreachable) ---
             // Show process badges and hide save status

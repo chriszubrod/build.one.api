@@ -109,6 +109,12 @@ CREATE INDEX IX_QboPurchaseLine_ItemRefValue ON [qbo].[PurchaseLine] ([ItemRefVa
 END
 GO
 
+IF OBJECT_ID('qbo.PurchaseLine', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboPurchaseLine_AccountRefName' AND object_id = OBJECT_ID('qbo.PurchaseLine'))
+BEGIN
+CREATE INDEX IX_QboPurchaseLine_AccountRefName ON [qbo].[PurchaseLine] ([AccountRefName]);
+END
+GO
+
 
 -- Purchase Stored Procedures
 
@@ -814,3 +820,57 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+-- Purchase lines with AccountRefName = 'NEED TO UPDATE' and no ExpenseLineItem link
+CREATE OR ALTER PROCEDURE ReadQboPurchaseLinesNeedingUpdate
+(
+    @RealmId NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        p.[Id] AS [QboPurchaseId],
+        p.[PublicId] AS [QboPurchasePublicId],
+        p.[DocNumber],
+        p.[TxnDate],
+        p.[EntityRefName],
+        p.[RealmId],
+        pl.[Id] AS [QboPurchaseLineId],
+        pl.[LineNum],
+        pl.[Description] AS [LineDescription],
+        pl.[Amount] AS [LineAmount],
+        pl.[AccountRefName]
+    FROM [qbo].[PurchaseLine] pl
+    INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
+    LEFT JOIN [qbo].[PurchaseLineExpenseLineItem] pleli ON pl.[Id] = pleli.[QboPurchaseLineId]
+    WHERE pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+      AND pleli.[Id] IS NULL
+      AND (@RealmId IS NULL OR p.[RealmId] = @RealmId)
+    ORDER BY p.[TxnDate] DESC, p.[DocNumber], pl.[LineNum];
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+SELECT
+    p.[Id] AS [QboPurchaseId],
+    p.[PublicId] AS [QboPurchasePublicId],
+    p.[DocNumber],
+    p.[TxnDate],
+    p.[EntityRefName],
+    p.[RealmId],
+    pl.[Id] AS [QboPurchaseLineId],
+    pl.[LineNum],
+    pl.[Description] AS [LineDescription],
+    pl.[Amount] AS [LineAmount],
+    pl.[AccountRefName]
+FROM [qbo].[PurchaseLine] pl
+INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
+LEFT JOIN [qbo].[PurchaseLineExpenseLineItem] pleli ON pl.[Id] = pleli.[QboPurchaseLineId]
+WHERE pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+ORDER BY p.[TxnDate];
+
+Cost of construction:NEED TO CATEGORIZE

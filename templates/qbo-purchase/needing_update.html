@@ -1,0 +1,84 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}QBO Purchases Needing Update - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="expense-page-header" style="margin-bottom: 1rem;">
+        <h1>QBO Purchases Needing Update</h1>
+        <a href="/expense/list" class="btn btn-secondary">Back to Expenses</a>
+    </div>
+
+    <p class="text-muted" style="margin-bottom: 1rem;">
+        Purchase lines coded to &quot;NEED TO UPDATE&quot; that are not yet linked to an expense line. Click <strong>Open</strong> to create or link the expense and work it through.
+    </p>
+
+    <!-- Optional realm filter -->
+    <form method="get" action="/qbo-purchase/needing-update" class="expense-filters-form" style="margin-bottom: 1.5rem; display: flex; gap: 1rem; align-items: flex-end;">
+        <div class="expense-filter-group">
+            <label for="realm_id" class="expense-filter-label">Realm (optional)</label>
+            <input type="text"
+                   id="realm_id"
+                   name="realm_id"
+                   class="expense-filter-input"
+                   placeholder="Filter by realm ID"
+                   value="{{ realm_id or '' }}"
+                   style="min-width: 200px;">
+        </div>
+        <button type="submit" class="btn btn-primary">Filter</button>
+        {% if realm_id %}
+        <a href="/qbo-purchase/needing-update" class="btn btn-secondary">Clear</a>
+        {% endif %}
+    </form>
+
+    {% if rows %}
+    <div class="expense-table-wrapper">
+        <div class="expense-table-container">
+            <table class="expense-table">
+                <thead>
+                    <tr>
+                        <th>Doc #</th>
+                        <th>Date</th>
+                        <th>Vendor / Entity</th>
+                        <th>Line</th>
+                        <th>Description</th>
+                        <th>Amount</th>
+                        <th>Realm</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr>
+                        <td>{{ row.doc_number or '—' }}</td>
+                        <td>{{ row.txn_date or '—' }}</td>
+                        <td>{{ row.entity_ref_name or '—' }}</td>
+                        <td>{{ row.line_num or '—' }}</td>
+                        <td>{{ (row.line_description or '—')[:80] }}{% if row.line_description and row.line_description|length > 80 %}…{% endif %}</td>
+                        <td>
+                            {% if row.line_amount is not none %}
+                                ${{ "%.2f"|format(row.line_amount) }}
+                            {% else %}
+                                —
+                            {% endif %}
+                        </td>
+                        <td>{{ row.realm_id or '—' }}</td>
+                        <td>
+                            <a href="/qbo-purchase/needing-update/open/{{ row.qbo_purchase_id }}" class="btn btn-primary btn-sm">Open</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <p style="margin-top: 0.75rem;">{{ rows|length }} line(s) needing update.</p>
+    {% else %}
+    <p>No purchase lines needing update.{% if realm_id %} Try clearing the realm filter.{% endif %}</p>
+    {% endif %}
+
+{% endblock %}

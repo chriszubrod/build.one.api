@@ -1,8 +1,83 @@
 # Python Standard Library Imports
 import io
 import logging
+import os
+from typing import Tuple
 
 logger = logging.getLogger(__name__)
+
+# MIME types for images we can convert to PDF
+IMAGE_CONTENT_TYPES = frozenset({
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/gif",
+    "image/webp",
+})
+
+# File extensions for images
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
+
+
+def ensure_pdf(
+    content: bytes,
+    content_type: str,
+    file_name: str,
+) -> Tuple[bytes, str, str]:
+    """
+    Ensure file content is PDF. If the file is an image, convert to PDF.
+    PDFs are returned as-is.
+
+    Args:
+        content: Raw file content
+        content_type: MIME type (e.g. application/pdf, image/png)
+        file_name: Original file name for extension detection
+
+    Returns:
+        Tuple of (content, content_type, file_extension)
+    """
+    if not content:
+        return content, content_type, _ext_from_filename(file_name)
+
+    ct_lower = (content_type or "").strip().lower()
+    ext = _ext_from_filename(file_name)
+
+    # Already PDF
+    if ct_lower == "application/pdf" or ext == ".pdf":
+        return content, "application/pdf", ".pdf"
+
+    # Image: convert to PDF
+    if ct_lower in IMAGE_CONTENT_TYPES or ext in IMAGE_EXTENSIONS:
+        try:
+            from PIL import Image
+
+            img = Image.open(io.BytesIO(content))
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            pdf_buffer = io.BytesIO()
+            img.save(pdf_buffer, "PDF", resolution=100.0)
+            result = pdf_buffer.getvalue()
+            logger.info(
+                "Converted image to PDF: %s (%s) -> %s bytes",
+                file_name,
+                content_type,
+                len(result),
+            )
+            return result, "application/pdf", ".pdf"
+        except Exception as e:
+            logger.warning("Image-to-PDF conversion failed for %s: %s. Storing as-is.", file_name, e)
+            return content, content_type, ext
+
+    # Other types: return as-is
+    return content, content_type, ext
+
+
+def _ext_from_filename(file_name: str) -> str:
+    """Extract lowercase extension including dot."""
+    if not file_name:
+        return ""
+    _, ext = os.path.splitext(file_name)
+    return ext.lower() if ext else ""
 
 
 def compact_pdf(content: bytes) -> bytes:

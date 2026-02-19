@@ -89,6 +89,9 @@ class QboPurchaseService:
         synced_purchases = []
         failed_purchases = []
         
+        from integrations.intuit.qbo.attachable.business.service import QboAttachableService
+        attachable_service = QboAttachableService()
+
         for i, qbo_purchase in enumerate(qbo_purchases):
             try:
                 # Use retry logic for transient database errors
@@ -101,6 +104,16 @@ class QboPurchaseService:
                 )
                 synced_purchases.append(local_purchase)
                 logger.debug(f"Upserted purchase {qbo_purchase.id} ({i + 1}/{len(qbo_purchases)})")
+
+                # Sync attachables (attachments) from QBO for this purchase
+                try:
+                    attachable_service.sync_attachables_for_purchase(
+                        realm_id=realm_id,
+                        purchase_qbo_id=str(qbo_purchase.id),
+                        sync_to_modules=sync_to_modules,
+                    )
+                except Exception as att_e:
+                    logger.warning(f"Could not sync attachables for Purchase {qbo_purchase.id}: {att_e}")
             except Exception as e:
                 logger.error(f"Failed to upsert purchase {qbo_purchase.id}: {e}")
                 failed_purchases.append(qbo_purchase.id)
@@ -304,7 +317,7 @@ class QboPurchaseService:
 
     def _sync_to_expenses(self, purchases: List[QboPurchase]) -> None:
         """
-        Sync purchases to Expense module.
+        Sync purchases to Expense module. Attachables are synced in the main sync loop.
         
         Args:
             purchases: List of QboPurchase records
@@ -314,9 +327,9 @@ class QboPurchaseService:
         
         # Import here to avoid circular dependencies
         from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
-        
+
         connector = PurchaseExpenseConnector()
-        
+
         for purchase in purchases:
             try:
                 # Get purchase lines for this purchase
@@ -356,8 +369,17 @@ class QboPurchaseService:
         """
         return self.line_repo.read_by_qbo_purchase_id(qbo_purchase_id)
 
-    def get_lines_needing_update(self, realm_id: Optional[str] = None) -> List[dict]:
+    def get_lines_needing_update(
+        self,
+        realm_id: Optional[str] = None,
+        include_linked: bool = False,
+        include_all: bool = False,
+    ) -> List[dict]:
         """
-        Get purchase lines with AccountRefName = 'NEED TO UPDATE' and no ExpenseLineItem link.
+        Get purchase lines. include_linked=True includes linked. include_all=True returns all lines.
         """
-        return self.line_repo.read_lines_needing_update(realm_id=realm_id)
+        return self.line_repo.read_lines_needing_update(
+            realm_id=realm_id,
+            include_linked=include_linked,
+            include_all=include_all,
+        )

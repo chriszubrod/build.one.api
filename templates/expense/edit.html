@@ -169,13 +169,20 @@
                                                         <span class="attachment-status" style="font-size: 0.85rem; color: var(--color-text-muted); white-space: nowrap;">No file attached</span>
                                                     </div>
                                                 </div>
-                                                <div class="attachment-display" style="display: {% if line_item.attachment %}block{% else %}none{% endif %};">
+                                                <div class="attachment-display" style="display: {% if line_item.attachment %}flex{% else %}none{% endif %}; align-items: center; gap: 0.5rem;">
                                                     {% if line_item.attachment %}
-                                                    <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background-color: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px; width: fit-content; max-width: 100%;">
-                                                        <span class="attachment-icon" style="font-size: 1.2rem;">📎</span>
-                                                        <a href="/attachment/view/{{ line_item.attachment.public_id }}" class="attachment-filename" target="_blank" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-primary); max-width: 500px;">{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}</a>
-                                                        <button type="button" class="btn btn-danger btn-sm attachment-remove-btn" onclick="removeAttachment(this)" title="Remove attachment" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">✕</button>
-                                                    </div>
+                                                    <a href="#" class="attachment-preview-link attachment-filename"
+                                                       onclick="showAttachmentPreview(this.dataset.attachmentId, this.dataset.contentType, this.dataset.fileExtension, this.dataset.filename); return false;"
+                                                       style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background-color: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px; text-decoration: none; cursor: pointer; max-width: 100%;"
+                                                       data-attachment-id="{{ line_item.attachment.public_id }}"
+                                                       data-content-type="{{ line_item.attachment.content_type or '' }}"
+                                                       data-file-extension="{{ line_item.attachment.file_extension or '' }}"
+                                                       data-filename="{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}">
+                                                        <span class="attachment-icon" style="font-size: 1.1rem;">📎</span>
+                                                        <span style="font-weight: 500; color: var(--color-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px;" title="{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}">{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}</span>
+                                                    </a>
+                                                    <a href="/attachment/view/{{ line_item.attachment.public_id }}" class="btn btn-secondary btn-sm" target="_blank" title="Open in new tab" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">↗</a>
+                                                    <button type="button" class="btn btn-danger btn-sm attachment-remove-btn" onclick="removeAttachment(this)" title="Remove attachment" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">✕</button>
                                                     {% else %}
                                                     <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background-color: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px; width: fit-content; max-width: 100%;">
                                                         <span class="attachment-icon" style="font-size: 1.2rem;">📎</span>
@@ -195,8 +202,13 @@
                                     {% endfor %}
                                 </div>
 
-                                <!-- Add Line Item Form -->
-                                <div id="add-line-item-form" style="display: block; border: 1px solid #e0e0e0; border-radius: 4px; padding: 1.5rem; margin-top: 1rem; background-color: var(--color-surface);">
+                                <!-- Add Line Item button (form hidden until clicked) -->
+                                <div id="add-line-item-button-wrapper" style="margin-top: 1rem;">
+                                    <button type="button" class="btn btn-secondary" onclick="addLineItem()">Add Line Item</button>
+                                </div>
+
+                                <!-- Add Line Item Form (hidden template, shown when cloned) -->
+                                <div id="add-line-item-form" style="display: none; border: 1px solid #e0e0e0; border-radius: 4px; padding: 1.5rem; margin-top: 1rem; background-color: var(--color-surface);">
                                     <input type="hidden" class="line-item-public-id" value="">
                                     <input type="hidden" class="line-item-row-version" value="">
                                     
@@ -283,12 +295,13 @@
                                                     <span class="attachment-status" style="font-size: 0.85rem; color: var(--color-text-muted); white-space: nowrap;">No file attached</span>
                                                 </div>
                                             </div>
-                                            <div class="attachment-display" style="display: none;">
-                                                <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background-color: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px; width: fit-content; max-width: 100%;">
-                                                    <span class="attachment-icon" style="font-size: 1.2rem;">📎</span>
-                                                    <a href="#" class="attachment-filename" target="_blank" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-primary); max-width: 500px;"></a>
-                                                    <button type="button" class="btn btn-danger btn-sm attachment-remove-btn" onclick="removeAttachment(this)" title="Remove attachment" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">✕</button>
-                                                </div>
+                                            <div class="attachment-display" style="display: none; align-items: center; gap: 0.5rem;">
+                                                <a href="#" class="attachment-preview-link attachment-filename" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background-color: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px; text-decoration: none; cursor: pointer; max-width: 100%;">
+                                                    <span class="attachment-icon" style="font-size: 1.1rem;">📎</span>
+                                                    <span class="attachment-filename-text" style="font-weight: 500; color: var(--color-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px;"></span>
+                                                </a>
+                                                <a href="#" class="attachment-newtab-btn btn btn-secondary btn-sm" target="_blank" title="Open in new tab" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; display: none;">↗</a>
+                                                <button type="button" class="btn btn-danger btn-sm attachment-remove-btn" onclick="removeAttachment(this)" title="Remove attachment" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">✕</button>
                                             </div>
                                             <div style="display: flex; gap: 0.5rem; margin-left: auto;">
                                                 <button type="button" class="btn btn-secondary" onclick="handleCancelLineItemForm(this)">Cancel</button>
@@ -336,7 +349,7 @@
                         <button type="button" class="btn btn-danger" onclick="deleteExpense()">Delete Expense</button>
                     </div>
                     <div class="expense-form-actions-right">
-                        <a href="/expense/list" class="btn btn-secondary">Cancel</a>
+                        <button type="button" class="btn btn-secondary" id="cancelExpenseBtn" onclick="handleCancelExpense()">Cancel</button>
                         {% if expense.is_draft %}
                         <button type="submit" class="btn btn-primary">Complete Expense</button>
                         {% else %}
@@ -345,6 +358,22 @@
                     </div>
                 </div>
             </form>
+
+            <!-- Attachment Preview Section (below form, mirrors Bill edit) -->
+            <div id="attachment-preview-section" class="expense-form-card" style="margin-top: 2rem; display: none;">
+                <div class="expense-form-card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h5 style="margin: 0; display: flex; align-items: center; gap: 0.5rem;">
+                        <span>📎</span>
+                        <span id="attachment-preview-filename">Attachment Preview</span>
+                    </h5>
+                    <a id="attachment-preview-newtab" href="#" target="_blank" class="btn btn-secondary btn-sm" title="Open in new tab">↗ Open in New Tab</a>
+                </div>
+                <div class="expense-form-card-body" style="padding: 0;">
+                    <div id="attachment-preview-content" style="min-height: 500px; background: #f8f9fa;">
+                        <!-- Preview content inserted by JavaScript -->
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -371,6 +400,59 @@
                 toast.classList.remove('toast-visible');
                 setTimeout(() => toast.remove(), 300);
             }, duration);
+        }
+
+        function handleCancelExpense() {
+            // Cancel = navigate back without saving or finalizing. Expense stays as draft.
+            window.location.href = '/expense/list';
+        }
+
+        // =====================
+        // Attachment Preview (mirrors Bill edit)
+        // =====================
+
+        let currentPreviewAttachmentId = null;
+
+        function showAttachmentPreview(publicId, contentType, fileExtension, filename) {
+            const section = document.getElementById('attachment-preview-section');
+            const content = document.getElementById('attachment-preview-content');
+            const filenameEl = document.getElementById('attachment-preview-filename');
+            const newTabLink = document.getElementById('attachment-preview-newtab');
+
+            if (!section || !content) return;
+
+            currentPreviewAttachmentId = publicId;
+            if (filenameEl) filenameEl.textContent = filename || 'Attachment';
+            if (newTabLink) newTabLink.href = `/attachment/view/${publicId}`;
+
+            const ext = (fileExtension || '').toLowerCase().replace(/^\./, '');
+            const isPdf = (contentType || '').toLowerCase().includes('pdf') || ext === 'pdf';
+            const isImage = (contentType || '').toLowerCase().startsWith('image/');
+            const safeFilename = (filename || 'Attachment').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+            if (isPdf) {
+                content.innerHTML = `<iframe src="/attachment/view/${publicId}#toolbar=0&navpanes=0&scrollbar=1&view=FitH" style="width: 100%; height: 600px; border: none;" title="PDF Preview"></iframe>`;
+            } else if (isImage) {
+                content.innerHTML = `<div style="padding: 1rem; text-align: center; background: #fff;"><img src="/attachment/view/${publicId}" alt="${safeFilename}" style="max-width: 100%; max-height: 600px; object-fit: contain; border-radius: 4px;"></div>`;
+            } else {
+                content.innerHTML = `<div style="padding: 3rem; text-align: center; color: var(--color-text-muted);"><div style="font-size: 4rem; margin-bottom: 1rem;">📄</div><div style="font-size: 1rem; margin-bottom: 0.5rem;">${safeFilename}</div><div style="font-size: 0.9rem; margin-bottom: 1.5rem;">Preview not available for this file type</div><a href="/attachment/view/${publicId}" target="_blank" class="btn btn-primary">Open File</a></div>`;
+            }
+
+            section.style.display = 'block';
+            document.querySelectorAll('.attachment-preview-link').forEach(link => {
+                link.style.outline = link.dataset.attachmentId === publicId ? '2px solid var(--color-primary)' : 'none';
+                link.style.outlineOffset = link.dataset.attachmentId === publicId ? '2px' : '0';
+            });
+            section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function hideAttachmentPreview() {
+            const section = document.getElementById('attachment-preview-section');
+            const content = document.getElementById('attachment-preview-content');
+            if (section) section.style.display = 'none';
+            if (content) content.innerHTML = '';
+            currentPreviewAttachmentId = null;
+            document.querySelectorAll('.attachment-preview-link').forEach(link => { link.style.outline = 'none'; });
         }
 
         // =====================
@@ -427,13 +509,15 @@
             const totalAmountEl = document.getElementById('total_amount');
             const totalAmountValue = totalAmountEl && totalAmountEl.value ? parseFloat(totalAmountEl.value) : null;
             
+            const isDraft = {{ 'true' if expense.is_draft else 'false' }};
             const expenseData = {
                 row_version: rowVersion,
                 vendor_public_id: document.getElementById('vendor_public_id').value,
                 expense_date: document.getElementById('expense_date').value,
                 reference_number: document.getElementById('reference_number').value.trim(),
                 total_amount: totalAmountValue,
-                memo: document.getElementById('memo').value || null
+                memo: document.getElementById('memo').value || null,
+                is_draft: isDraft
             };
 
             try {
@@ -635,6 +719,7 @@
 
             const clonedForm = originalForm.cloneNode(true);
             lineItemCounter++;
+            clonedForm.style.display = 'block';
             
             clonedForm.id = `add-line-item-form-${lineItemCounter}`;
             
@@ -923,31 +1008,52 @@
         function updateAttachmentDisplay(formElement, attachment) {
             const uploadWrapper = formElement.querySelector('.attachment-upload-wrapper');
             const displayWrapper = formElement.querySelector('.attachment-display');
-            const filenameLink = formElement.querySelector('.attachment-filename');
-            const displayContainer = displayWrapper ? displayWrapper.querySelector('div') : null;
+            const filenameLink = formElement.querySelector('.attachment-preview-link, .attachment-filename');
+            const filenameText = formElement.querySelector('.attachment-filename-text');
+            const newtabBtn = formElement.querySelector('.attachment-newtab-btn');
             
             if (uploadWrapper) uploadWrapper.style.display = 'none';
-            if (displayWrapper) displayWrapper.style.display = 'block';
+            if (displayWrapper) displayWrapper.style.display = 'flex';
+            
+            const filename = attachment.original_filename || attachment.filename || 'Attachment';
+            const contentType = attachment.content_type || '';
+            const fileExtension = attachment.file_extension || '';
             
             if (filenameLink) {
-                filenameLink.textContent = attachment.original_filename || attachment.filename || 'Attachment';
-                filenameLink.href = `/attachment/view/${attachment.public_id}`;
+                if (filenameText) filenameText.textContent = filename;
+                else filenameLink.textContent = filename;
+                filenameLink.href = '#';
+                filenameLink.classList.add('attachment-preview-link');
+                filenameLink.dataset.attachmentId = attachment.public_id;
+                filenameLink.dataset.contentType = contentType;
+                filenameLink.dataset.fileExtension = fileExtension;
+                filenameLink.dataset.filename = filename;
+                filenameLink.onclick = function(e) {
+                    e.preventDefault();
+                    showAttachmentPreview(attachment.public_id, contentType, fileExtension, filename);
+                };
+            }
+            if (newtabBtn) {
+                newtabBtn.href = `/attachment/view/${attachment.public_id}`;
+                newtabBtn.style.display = '';
             }
             
             const lineItemPublicId = formElement.querySelector('.line-item-public-id').value;
             const linkPublicId = formElement.querySelector('.line-item-attachment-link-public-id').value;
-            
-            if (displayContainer) {
+            const previewLink = formElement.querySelector('.attachment-preview-link');
+            if (previewLink) {
                 if (!lineItemPublicId || !linkPublicId) {
-                    displayContainer.style.backgroundColor = '#fff3cd';
-                    displayContainer.style.borderColor = '#ffc107';
-                    displayContainer.title = 'File uploaded - will be linked when line item is saved';
+                    previewLink.style.backgroundColor = '#fff3cd';
+                    previewLink.style.borderColor = '#ffc107';
+                    previewLink.title = 'File uploaded - will be linked when line item is saved';
                 } else {
-                    displayContainer.style.backgroundColor = '#e8f5e9';
-                    displayContainer.style.borderColor = '#c8e6c9';
-                    displayContainer.title = 'File attached to line item';
+                    previewLink.style.backgroundColor = '#e8f5e9';
+                    previewLink.style.borderColor = '#c8e6c9';
+                    previewLink.title = 'File attached to line item';
                 }
             }
+            
+            showAttachmentPreview(attachment.public_id, contentType, fileExtension, filename);
         }
 
         function updateAttachmentLinkedState(formElement) {
@@ -988,6 +1094,10 @@
                     }
                 }
                 
+                if (currentPreviewAttachmentId === attachmentPublicId) {
+                    hideAttachmentPreview();
+                }
+                
                 resetAttachmentDisplay(formElement);
                 showToast('Attachment removed', 'success', 2000);
                 
@@ -1002,11 +1112,27 @@
             const displayWrapper = formElement.querySelector('.attachment-display');
             const statusElement = formElement.querySelector('.attachment-status');
             const uploadBtn = formElement.querySelector('.attachment-upload-btn');
+            const filenameLink = formElement.querySelector('.attachment-preview-link');
+            const newtabBtn = formElement.querySelector('.attachment-newtab-btn');
             
             if (uploadWrapper) uploadWrapper.style.display = 'flex';
             if (displayWrapper) displayWrapper.style.display = 'none';
             if (statusElement) statusElement.textContent = 'No file attached';
             if (uploadBtn) uploadBtn.style.display = '';
+            if (filenameLink) {
+                filenameLink.onclick = null;
+                filenameLink.removeAttribute('data-attachment-id');
+                filenameLink.removeAttribute('data-content-type');
+                filenameLink.removeAttribute('data-file-extension');
+                filenameLink.removeAttribute('data-filename');
+            }
+            if (newtabBtn) {
+                newtabBtn.href = '#';
+                newtabBtn.style.display = 'none';
+            }
+            
+            const filenameText = formElement.querySelector('.attachment-filename-text');
+            if (filenameText) filenameText.textContent = '';
             
             const attachmentPublicId = formElement.querySelector('.line-item-attachment-public-id');
             const linkPublicId = formElement.querySelector('.line-item-attachment-link-public-id');
@@ -1152,16 +1278,23 @@
                 setupLineItemCalculations(newForm);
                 setupLineItemAutoSave(newForm);
                 setupLineItemAttachment(newForm);
-                
-                const addButton = newForm.querySelector('button.btn-primary');
-                if (addButton) {
-                    addButton.onclick = function() { addLineItemForm(); };
-                }
+            }
+            
+            // Auto-show first attachment preview if available
+            const firstAttachmentLink = document.querySelector('.attachment-preview-link');
+            if (firstAttachmentLink && firstAttachmentLink.dataset.attachmentId && document.getElementById('attachment-preview-section')) {
+                showAttachmentPreview(firstAttachmentLink.dataset.attachmentId, firstAttachmentLink.dataset.contentType, firstAttachmentLink.dataset.fileExtension, firstAttachmentLink.dataset.filename);
             }
             
             const form = document.getElementById('editExpenseForm');
             if (form) {
                 form.addEventListener('submit', handleCompleteExpense);
+                // Prevent Enter from submitting (only explicit Complete/Save button click should submit)
+                form.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA' && !e.target.matches('button[type="submit"]')) {
+                        e.preventDefault();
+                    }
+                });
             }
             
             // Calculate initial total

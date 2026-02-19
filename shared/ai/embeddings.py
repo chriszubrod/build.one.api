@@ -1,9 +1,6 @@
 # Python Standard Library Imports
 import logging
-from typing import List, Optional
-
-# Third-party Imports
-# Note: sentence-transformers is imported lazily to avoid slow startup
+from typing import List, Optional, Union
 
 # Local Imports
 import config
@@ -11,14 +8,14 @@ import config
 logger = logging.getLogger(__name__)
 
 # Module-level singleton for lazy loading
-_embedding_service: Optional["EmbeddingService"] = None
+_embedding_service: Optional[Union["LocalEmbeddingService", "AzureEmbeddingService"]] = None
 
 
-class EmbeddingService:
+class LocalEmbeddingService:
     """
     Local embedding generation using Sentence Transformers.
     Runs on CPU - no GPU required.
-
+    Used when Azure OpenAI is not configured (e.g. local dev).
     The model is loaded lazily on first use to avoid slowing down application startup.
     """
 
@@ -35,7 +32,7 @@ class EmbeddingService:
         self._model = None
         self._dimension = None
 
-        logger.info(f"EmbeddingService initialized with model: {self.model_name}")
+        logger.info(f"LocalEmbeddingService initialized with model: {self.model_name}")
 
     def _load_model(self):
         """Load the model lazily on first use."""
@@ -178,22 +175,31 @@ class EmbeddingService:
         return similarities[:top_k]
 
 
-def get_embedding_service(model_name: Optional[str] = None) -> EmbeddingService:
+def get_embedding_service(model_name: Optional[str] = None):
     """
     Get the singleton embedding service instance.
 
-    This function returns a shared instance to avoid loading the model
-    multiple times. Use this instead of creating EmbeddingService directly.
+    Uses Azure OpenAI embeddings when azure_openai_endpoint and azure_openai_api_key
+    are configured (production). Otherwise uses local Sentence Transformers (dev).
 
     Args:
-        model_name: Optional model name. Only used on first call.
+        model_name: Optional model name for local embeddings. Ignored when using Azure.
 
     Returns:
-        The shared EmbeddingService instance.
+        Embedding service (Azure or Local) with generate_embedding, dimension, etc.
     """
     global _embedding_service
 
     if _embedding_service is None:
-        _embedding_service = EmbeddingService(model_name)
+        settings = config.Settings()
+        if settings.azure_openai_endpoint and settings.azure_openai_api_key:
+            from integrations.azure.ai.embeddings import AzureEmbeddingService
+            _embedding_service = AzureEmbeddingService()
+        else:
+            _embedding_service = LocalEmbeddingService(model_name)
 
     return _embedding_service
+
+
+# Backward compatibility
+EmbeddingService = LocalEmbeddingService

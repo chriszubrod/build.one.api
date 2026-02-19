@@ -88,7 +88,7 @@ class PurchaseExpenseConnector:
                     reference_number=reference_number,
                     total_amount=float(total_amount) if total_amount else None,
                     memo=memo,
-                    is_draft=False,
+                    is_draft=True,
                 )
                 
                 # Sync line items for existing expense
@@ -109,7 +109,7 @@ class PurchaseExpenseConnector:
             reference_number=reference_number,
             total_amount=total_amount,
             memo=memo,
-            is_draft=False
+            is_draft=True,
         )
         
         # Create mapping
@@ -576,3 +576,125 @@ class PurchaseExpenseConnector:
                     )
             except Exception as e:
                 logger.error(f"Failed to update QboPurchaseLine: {e}")
+
+
+def sync_purchase_attachments_to_expense_line_items(
+    expense_id: int,
+    qbo_attachables: list,
+) -> int:
+    """
+    Link QBO attachables (already synced to Attachments) to all ExpenseLineItems for this expense.
+    Mirrors Bill _link_attachments_to_bill_line_items: each attachment is linked to each line item.
+    Returns count of ExpenseLineItemAttachment links created.
+    """
+    if not qbo_attachables:
+        return 0
+
+    from integrations.intuit.qbo.attachable.connector.attachment.persistence.repo import AttachableAttachmentRepository
+    from entities.attachment.business.service import AttachmentService
+    from entities.expense_line_item.business.service import ExpenseLineItemService
+    from entities.expense_line_item_attachment.business.service import ExpenseLineItemAttachmentService
+
+    expense_line_item_service = ExpenseLineItemService()
+    expense_line_item_attachment_service = ExpenseLineItemAttachmentService()
+    attachment_service = AttachmentService()
+    attachable_attachment_repo = AttachableAttachmentRepository()
+
+    line_items = expense_line_item_service.read_by_expense_id(expense_id=expense_id)
+    if not line_items:
+        logger.debug(f"No ExpenseLineItems found for Expense {expense_id}")
+        return 0
+
+    linked = 0
+    for qbo_attachable in qbo_attachables:
+        mapping = attachable_attachment_repo.read_by_qbo_attachable_id(qbo_attachable.id)
+        if not mapping:
+            logger.debug(f"No Attachment mapping found for QboAttachable {qbo_attachable.id}")
+            continue
+        attachment = attachment_service.read_by_id(mapping.attachment_id)
+        if not attachment or not attachment.public_id:
+            continue
+        for line_item in line_items:
+            if not line_item.public_id:
+                continue
+            try:
+                expense_line_item_attachment_service.create(
+                    expense_line_item_public_id=line_item.public_id,
+                    attachment_public_id=attachment.public_id,
+                )
+                linked += 1
+            except Exception as e:
+                logger.debug(f"Could not link Attachment {attachment.id} to ExpenseLineItem {line_item.id}: {e}")
+
+    if linked > 0:
+        logger.info(f"Created {linked} ExpenseLineItemAttachment links for Expense {expense_id}")
+    return linked
+
+
+def sync_purchase_attachments_to_needing_categorize_lines(
+    expense_id: int,
+    qbo_purchase_lines: List[QboPurchaseLine],
+    qbo_attachables: list,
+    realm_id: str,
+) -> int:
+    """
+    Link QBO attachables (already synced to Attachments) to ExpenseLineItem(s)
+    that correspond to PurchaseLines with AccountRefName containing 'NEED TO CATEGORIZE' or 'NEED TO UPDATE'.
+    Returns count of attachments linked.
+    """
+    NEED_PATTERNS = ("NEED TO CATEGORIZE", "NEED TO UPDATE")
+    needing_lines = [
+        pl for pl in qbo_purchase_lines
+        if pl.account_ref_name and any(p.upper() in (pl.account_ref_name or "").upper() for p in NEED_PATTERNS)
+    ]
+    if not needing_lines or not qbo_attachables:
+        return 0
+
+    from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import (
+        PurchaseLineExpenseLineItemRepository,
+    )
+    from integrations.intuit.qbo.attachable.connector.attachment.business.service import (
+        AttachableAttachmentConnector,
+    )
+    from entities.attachment.business.service import AttachmentService
+    from entities.expense_line_item_attachment.business.service import ExpenseLineItemAttachmentService
+
+    mapping_repo = PurchaseLineExpenseLineItemRepository()
+    attachment_connector = AttachableAttachmentConnector()
+    expense_line_item_service = ExpenseLineItemService()
+    expense_line_item_attachment_service = ExpenseLineItemAttachmentService()
+    attachment_service = AttachmentService()
+    linked = 0
+
+    for i, qbo_line in enumerate(needing_lines):
+        if i >= len(qbo_attachables):
+            break
+        mapping = mapping_repo.read_by_qbo_purchase_line_id(qbo_line.id)
+        if not mapping:
+            continue
+        line_item = expense_line_item_service.read_by_id(mapping.expense_line_item_id)
+        if not line_item or not line_item.public_id:
+            continue
+        existing = expense_line_item_attachment_service.read_by_expense_line_item_id(
+            expense_line_item_public_id=line_item.public_id
+        )
+        if existing:
+            continue
+
+        qbo_att = qbo_attachables[i]
+        att_mapping = attachment_connector.get_mapping_by_qbo_attachable_id(qbo_att.id)
+        if not att_mapping:
+            continue
+        attachment = attachment_service.read_by_id(att_mapping.attachment_id)
+        if not attachment or not attachment.public_id:
+            continue
+        try:
+            expense_line_item_attachment_service.create(
+                expense_line_item_public_id=line_item.public_id,
+                attachment_public_id=attachment.public_id,
+            )
+            linked += 1
+        except Exception as e:
+            logger.error(f"Failed to link attachment to line item: {e}")
+
+    return linked

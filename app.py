@@ -11,7 +11,11 @@ from fastapi.staticfiles import StaticFiles
 from typing_extensions import Annotated
 
 # Local Imports
-from entities.auth.business.service import RefreshRequired, WebAuthenticationRequired
+from entities.auth.business.service import (
+    RefreshRequired,
+    WebAuthenticationRequired,
+    get_current_user_api,
+)
 
 from entities.address.api.router import router as address_api_router
 from entities.address.web.controller import router as address_web_router
@@ -244,7 +248,10 @@ def ping():
 
 
 @app.get("/info")
-async def info(settings: Annotated[config.Settings, Depends(get_settings)]):
+async def info(
+    settings: Annotated[config.Settings, Depends(get_settings)],
+    current_user: dict = Depends(get_current_user_api),
+):
     return {
         "api_version": settings.api_version,
         "host": settings.host,

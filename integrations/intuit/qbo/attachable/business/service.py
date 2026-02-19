@@ -168,6 +168,69 @@ class QboAttachableService:
 
         return synced
 
+    def sync_attachables_for_purchase(
+        self,
+        realm_id: str,
+        purchase_qbo_id: str,
+        sync_to_modules: bool = True,
+    ) -> List[QboAttachable]:
+        """
+        Sync attachables linked to a specific Purchase from QBO.
+
+        Args:
+            realm_id: QBO realm ID
+            purchase_qbo_id: QBO Purchase ID
+            sync_to_modules: If True, also sync to Attachment module
+
+        Returns:
+            List of synced QboAttachable records
+        """
+        qbo_auth = self.auth_service.ensure_valid_token(realm_id=realm_id)
+        if not qbo_auth or not qbo_auth.access_token:
+            raise ValueError(f"No valid QBO auth found for realm {realm_id}")
+
+        with QboAttachableClient(
+            access_token=qbo_auth.access_token,
+            realm_id=realm_id
+        ) as client:
+            try:
+                qbo_attachables = client.query_attachables_for_entity(
+                    entity_type="Purchase",
+                    entity_id=purchase_qbo_id
+                )
+            except Exception as e:
+                # Fallback only when entity-specific query fails (e.g. QBO doesn't support Purchase)
+                logger.warning(
+                    "Entity-specific attachable query failed for Purchase %s: %s. Using fallback.",
+                    purchase_qbo_id, e,
+                )
+                all_att = client.query_all_attachables()
+                qbo_attachables = [
+                    a for a in all_att
+                    if a.attachable_ref and any(
+                        ref.entity_ref_value == purchase_qbo_id
+                        and (ref.entity_ref_type or "").upper().startswith("PURCHASE")
+                        for ref in (a.attachable_ref or [])
+                    )
+                ]
+                if qbo_attachables:
+                    logger.info(f"Found {len(qbo_attachables)} attachables via fallback filter")
+
+        logger.info(f"Fetched {len(qbo_attachables)} attachables for Purchase {purchase_qbo_id}")
+
+        synced = []
+        for qbo_att in qbo_attachables:
+            try:
+                local_att = self._upsert_attachable(realm_id, qbo_att)
+                synced.append(local_att)
+            except Exception as e:
+                logger.error(f"Failed to upsert attachable {qbo_att.id}: {e}")
+
+        if sync_to_modules:
+            self._sync_to_attachments(synced, realm_id)
+
+        return synced
+
     def _upsert_attachable(
         self,
         realm_id: str,

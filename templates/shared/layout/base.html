@@ -26,7 +26,7 @@
                 {% include 'shared/partials/flash.html' %}
 
                 <!-- 3-column app shell: left sidenav, main content, right aside -->
-                <div class="three-column-layout">
+                <div class="three-column-layout aside-collapsed">
                         
                     <!-- Left: Sidenav -->
                     <aside class="sidebar-left" aria-label="Sidebar">
@@ -40,8 +40,8 @@
                         {% block content %}{% endblock %}
                     </main>
             
-                    <!-- Right: Aside panel (chat visible by default) -->
-                    <aside class="sidebar-right sidebar-right-open" aria-label="Aside">
+                    <!-- Right: Aside panel (collapsed by default) -->
+                    <aside class="sidebar-right" aria-label="Aside">
                         {% block aside %}
                             {% include 'shared/partials/aside.html' %}
                         {% endblock %}
@@ -55,6 +55,20 @@
         
         {% include 'shared/partials/footer.html' %}
         
+        <!-- Sync layout width with right aside open/closed -->
+        <script>
+        (function() {
+            var layout = document.querySelector('.three-column-layout');
+            var sidebar = document.querySelector('.sidebar-right');
+            if (!layout || !sidebar) return;
+            function updateLayoutClass() {
+                layout.classList.toggle('aside-collapsed', !sidebar.classList.contains('sidebar-right-open'));
+            }
+            updateLayoutClass();
+            var obs = new MutationObserver(updateLayoutClass);
+            obs.observe(sidebar, { attributes: true, attributeFilter: ['class'] });
+        })();
+        </script>
         <!-- Global auth script for token refresh -->
         <script src="/static/js/auth.js"></script>
         

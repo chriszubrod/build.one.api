@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 import logging
+import os
 import uuid
 from typing import Optional
 
@@ -15,6 +16,7 @@ from integrations.intuit.qbo.auth.business.service import QboAuthService
 from entities.attachment.business.service import AttachmentService
 from entities.attachment.business.model import Attachment
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
+from shared.pdf_utils import ensure_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,13 @@ class AttachableAttachmentConnector:
         if not file_content:
             raise ValueError(f"Failed to download file for QboAttachable {qbo_attachable.id}")
         
+        # Ensure PDF: convert images to PDF
+        content_type = qbo_attachable.content_type or "application/octet-stream"
+        file_name = qbo_attachable.file_name or f"attachment_{qbo_attachable.qbo_id}"
+        file_content, content_type, file_extension = ensure_pdf(file_content, content_type, file_name)
+        if file_extension == ".pdf":
+            file_name = self._ensure_pdf_filename(file_name)
+        
         # Calculate file hash
         file_hash = self.attachment_service.calculate_hash(file_content)
         
@@ -89,23 +98,20 @@ class AttachableAttachmentConnector:
             self._create_mapping(attachment_id=existing_by_hash.id, qbo_attachable_id=qbo_attachable.id)
             return existing_by_hash
         
-        # Upload to Azure Blob Storage
+        # Upload to Azure Blob Storage (use converted content/type/filename)
         blob_url = self._upload_to_blob(
             file_content=file_content,
-            file_name=qbo_attachable.file_name or f"attachment_{qbo_attachable.qbo_id}",
-            content_type=qbo_attachable.content_type or "application/octet-stream",
+            file_name=file_name,
+            content_type=content_type,
         )
-        
-        # Extract file extension
-        file_extension = self.attachment_service.extract_extension(qbo_attachable.file_name or "")
         
         # Create Attachment record
         logger.info(f"Creating new Attachment from QboAttachable {qbo_attachable.id}")
         attachment = self.attachment_service.create(
-            filename=qbo_attachable.file_name,
+            filename=file_name,
             original_filename=qbo_attachable.file_name,
             file_extension=file_extension,
-            content_type=qbo_attachable.content_type or "application/octet-stream",
+            content_type=content_type,
             file_size=len(file_content),
             file_hash=file_hash,
             blob_url=blob_url,
@@ -219,6 +225,13 @@ class AttachableAttachmentConnector:
             )
         
         return self.mapping_repo.create(attachment_id=attachment_id, qbo_attachable_id=qbo_attachable_id)
+
+    def _ensure_pdf_filename(self, file_name: str) -> str:
+        """Ensure filename has .pdf extension (e.g. after image-to-PDF conversion)."""
+        if not file_name:
+            return "attachment.pdf"
+        base, ext = os.path.splitext(file_name)
+        return f"{base}.pdf" if base else "attachment.pdf"
 
     def get_mapping_by_attachment_id(self, attachment_id: int) -> Optional[AttachableAttachment]:
         """

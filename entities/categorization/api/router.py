@@ -51,7 +51,7 @@ class CategorizeTextRequest(BaseModel):
 
 
 @router.get("/categorization/categories")
-def list_categories_router():
+def list_categories_router(current_user: dict = Depends(get_current_categorization_api)):
     """
     List all available document categories.
     """

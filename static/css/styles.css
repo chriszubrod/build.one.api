@@ -187,6 +187,9 @@ legend {
         grid-template-columns: 16rem 1fr 20rem;
         padding-right: 1rem; /* Add padding only on desktop, but not on left */
     }
+    .three-column-layout.aside-collapsed {
+        grid-template-columns: 16rem 1fr 0;
+    }
 }
 
 

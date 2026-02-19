@@ -1,10 +1,12 @@
 # Python Standard Library Imports
+import base64
 from typing import Optional
 
 # Third-party Imports
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException
 
 # Local Imports
+from entities.auth.business.service import get_current_user_api
 from integrations.ms.mail.message.business.service import MsMessageService
 from integrations.ms.mail.message.api.schemas import (
     SendMessageRequest,
@@ -26,7 +28,7 @@ service = MsMessageService()
 # =============================================================================
 
 @router.get("/folders")
-async def list_mail_folders():
+async def list_mail_folders(current_user: dict = Depends(get_current_user_api)):
     """
     List all mail folders for the current user.
     """
@@ -40,7 +42,7 @@ async def list_mail_folders():
 
 
 @router.get("/folders/{folder_id}")
-async def get_mail_folder(folder_id: str):
+async def get_mail_folder(folder_id: str, current_user: dict = Depends(get_current_user_api)):
     """
     Get a specific mail folder.
     Use well-known names: inbox, drafts, sentitems, deleteditems, or folder ID.
@@ -65,7 +67,8 @@ async def list_messages(
     skip: int = Query(default=0, ge=0, description="Number of messages to skip"),
     filter_query: Optional[str] = Query(default=None, alias="filter", description="OData filter"),
     search: Optional[str] = Query(default=None, description="Search query"),
-    order_by: str = Query(default="receivedDateTime desc", description="Sort order")
+    order_by: str = Query(default="receivedDateTime desc", description="Sort order"),
+    current_user: dict = Depends(get_current_user_api),
 ):
     """
     List messages from a mail folder.
@@ -90,7 +93,8 @@ async def list_messages(
 @router.get("/messages/{message_id}")
 async def get_message(
     message_id: str,
-    include_body: bool = Query(default=True, description="Include full body content")
+    include_body: bool = Query(default=True, description="Include full body content"),
+    current_user: dict = Depends(get_current_user_api),
 ):
     """
     Get a specific message from Graph API.
@@ -108,7 +112,8 @@ async def get_message(
 @router.patch("/messages/{message_id}/read")
 async def mark_message_read(
     message_id: str,
-    is_read: bool = Query(default=True, description="Mark as read or unread")
+    is_read: bool = Query(default=True, description="Mark as read or unread"),
+    current_user: dict = Depends(get_current_user_api),
 ):
     """
     Mark a message as read or unread.
@@ -123,7 +128,7 @@ async def mark_message_read(
 
 
 @router.get("/messages/{message_id}/attachments")
-async def list_message_attachments(message_id: str):
+async def list_message_attachments(message_id: str, current_user: dict = Depends(get_current_user_api)):
     """
     List attachments for a message.
     """
@@ -137,7 +142,9 @@ async def list_message_attachments(message_id: str):
 
 
 @router.get("/messages/{message_id}/attachments/{attachment_id}")
-async def download_attachment(message_id: str, attachment_id: str):
+async def download_attachment(
+    message_id: str, attachment_id: str, current_user: dict = Depends(get_current_user_api)
+):
     """
     Download an attachment from a message.
     Returns attachment metadata and base64-encoded content.
@@ -150,7 +157,6 @@ async def download_attachment(message_id: str, attachment_id: str):
         )
     
     # Don't return raw bytes via API - encode for JSON
-    import base64
     content = result.get("content")
     if content:
         result["content"] = base64.b64encode(content).decode("utf-8")
@@ -163,7 +169,7 @@ async def download_attachment(message_id: str, attachment_id: str):
 # =============================================================================
 
 @router.post("/messages/send")
-async def send_message(request: SendMessageRequest):
+async def send_message(request: SendMessageRequest, current_user: dict = Depends(get_current_user_api)):
     """
     Send a new email message.
     """
@@ -186,7 +192,7 @@ async def send_message(request: SendMessageRequest):
 
 
 @router.post("/messages/drafts")
-async def create_draft(request: CreateDraftRequest):
+async def create_draft(request: CreateDraftRequest, current_user: dict = Depends(get_current_user_api)):
     """
     Create a new draft message.
     """
@@ -208,7 +214,9 @@ async def create_draft(request: CreateDraftRequest):
 
 
 @router.patch("/messages/drafts/{message_id}")
-async def update_draft(message_id: str, request: UpdateDraftRequest):
+async def update_draft(
+    message_id: str, request: UpdateDraftRequest, current_user: dict = Depends(get_current_user_api)
+):
     """
     Update an existing draft message.
     """
@@ -231,7 +239,7 @@ async def update_draft(message_id: str, request: UpdateDraftRequest):
 
 
 @router.post("/messages/drafts/{message_id}/send")
-async def send_draft(message_id: str):
+async def send_draft(message_id: str, current_user: dict = Depends(get_current_user_api)):
     """
     Send an existing draft message.
     """
@@ -249,7 +257,9 @@ async def send_draft(message_id: str):
 # =============================================================================
 
 @router.post("/messages/{message_id}/reply")
-async def reply_to_message(message_id: str, request: ReplyRequest):
+async def reply_to_message(
+    message_id: str, request: ReplyRequest, current_user: dict = Depends(get_current_user_api)
+):
     """
     Reply to a message.
     """
@@ -270,7 +280,8 @@ async def reply_to_message(message_id: str, request: ReplyRequest):
 @router.post("/messages/{message_id}/reply/draft")
 async def create_reply_draft(
     message_id: str,
-    reply_all: bool = Query(default=False, description="Reply to all recipients")
+    reply_all: bool = Query(default=False, description="Reply to all recipients"),
+    current_user: dict = Depends(get_current_user_api),
 ):
     """
     Create a reply draft for more control before sending.
@@ -285,7 +296,9 @@ async def create_reply_draft(
 
 
 @router.post("/messages/{message_id}/forward")
-async def forward_message(message_id: str, request: ForwardRequest):
+async def forward_message(
+    message_id: str, request: ForwardRequest, current_user: dict = Depends(get_current_user_api)
+):
     """
     Forward a message to recipients.
     """
@@ -303,7 +316,7 @@ async def forward_message(message_id: str, request: ForwardRequest):
 
 
 @router.post("/messages/{message_id}/forward/draft")
-async def create_forward_draft(message_id: str):
+async def create_forward_draft(message_id: str, current_user: dict = Depends(get_current_user_api)):
     """
     Create a forward draft for more control before sending.
     """
@@ -321,7 +334,9 @@ async def create_forward_draft(message_id: str):
 # =============================================================================
 
 @router.post("/messages/{message_id}/move")
-async def move_message(message_id: str, request: MoveMessageRequest):
+async def move_message(
+    message_id: str, request: MoveMessageRequest, current_user: dict = Depends(get_current_user_api)
+):
     """
     Move a message to a different folder.
     """
@@ -335,7 +350,7 @@ async def move_message(message_id: str, request: MoveMessageRequest):
 
 
 @router.delete("/messages/{message_id}")
-async def delete_message(message_id: str):
+async def delete_message(message_id: str, current_user: dict = Depends(get_current_user_api)):
     """
     Delete a message from Graph API (moves to Deleted Items).
     """
@@ -353,7 +368,7 @@ async def delete_message(message_id: str):
 # =============================================================================
 
 @router.post("/messages/{message_id}/link")
-async def link_message(message_id: str):
+async def link_message(message_id: str, current_user: dict = Depends(get_current_user_api)):
     """
     Link a message by storing it locally.
     Fetches from Graph API and stores in database.
@@ -368,7 +383,7 @@ async def link_message(message_id: str):
 
 
 @router.get("/linked")
-async def list_linked_messages():
+async def list_linked_messages(current_user: dict = Depends(get_current_user_api)):
     """
     List all linked messages from local storage.
     """
@@ -381,7 +396,7 @@ async def list_linked_messages():
 
 
 @router.get("/linked/{public_id}")
-async def get_linked_message(public_id: str):
+async def get_linked_message(public_id: str, current_user: dict = Depends(get_current_user_api)):
     """
     Get a linked message with full details.
     """
@@ -395,7 +410,9 @@ async def get_linked_message(public_id: str):
 
 
 @router.get("/linked/by-conversation/{conversation_id}")
-async def get_linked_by_conversation(conversation_id: str):
+async def get_linked_by_conversation(
+    conversation_id: str, current_user: dict = Depends(get_current_user_api)
+):
     """
     Get all linked messages in a conversation thread.
     """
@@ -408,7 +425,7 @@ async def get_linked_by_conversation(conversation_id: str):
 
 
 @router.get("/linked/by-sender/{from_email}")
-async def get_linked_by_sender(from_email: str):
+async def get_linked_by_sender(from_email: str, current_user: dict = Depends(get_current_user_api)):
     """
     Get all linked messages from a specific sender.
     """
@@ -421,7 +438,7 @@ async def get_linked_by_sender(from_email: str):
 
 
 @router.delete("/linked/{public_id}")
-async def unlink_message(public_id: str):
+async def unlink_message(public_id: str, current_user: dict = Depends(get_current_user_api)):
     """
     Unlink a message by removing it from local storage.
     Does not delete from Graph API.
@@ -440,7 +457,9 @@ async def unlink_message(public_id: str):
 # =============================================================================
 
 @router.post("/linked/{public_id}/attachments")
-async def link_attachment(public_id: str, request: LinkAttachmentRequest):
+async def link_attachment(
+    public_id: str, request: LinkAttachmentRequest, current_user: dict = Depends(get_current_user_api)
+):
     """
     Link an attachment by downloading and optionally storing in Azure Blob.
     """
@@ -458,7 +477,9 @@ async def link_attachment(public_id: str, request: LinkAttachmentRequest):
 
 
 @router.get("/linked/{public_id}/attachments")
-async def list_linked_attachments(public_id: str):
+async def list_linked_attachments(
+    public_id: str, current_user: dict = Depends(get_current_user_api)
+):
     """
     List attachments for a linked message.
     """

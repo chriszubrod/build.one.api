@@ -25,14 +25,6 @@
         <a href="/expense/create" class="btn btn-primary">Add Expense</a>
     </div>
 
-    <!-- QBO Purchases Needing Update (loaded in background) -->
-    <div id="qbo-needing-update-section" class="qbo-needing-update-section" style="margin-bottom: 1.5rem; min-height: 60px;">
-        <h2 class="qbo-needing-update-heading" style="font-size: 1rem; font-weight: 600; margin-bottom: 0.5rem;">QBO Purchases Needing Update</h2>
-        <div id="qbo-needing-update-loading" class="qbo-needing-update-loading" style="color: #666;">Loading…</div>
-        <div id="qbo-needing-update-content" class="qbo-needing-update-content" style="display: none;"></div>
-        <div id="qbo-needing-update-empty" class="qbo-needing-update-empty" style="display: none; color: #666;">No purchase lines needing update.</div>
-    </div>
-
     <!-- Search and Filters -->
     <div class="expense-filters-container">
         <form method="get" action="/expense/list" id="expense-filters-form" class="expense-filters-form">
@@ -640,58 +632,6 @@
             });
         }
 
-        // QBO Purchases Needing Update - load in background
-        (function() {
-            const loadingEl = document.getElementById('qbo-needing-update-loading');
-            const contentEl = document.getElementById('qbo-needing-update-content');
-            const emptyEl = document.getElementById('qbo-needing-update-empty');
-            if (!loadingEl || !contentEl || !emptyEl) return;
-            function hideLoading() {
-                loadingEl.style.display = 'none';
-            }
-            fetch('/api/v1/get/qbo-purchases/needing-update', { credentials: 'same-origin' })
-                .then(function(r) {
-                    if (!r.ok) return [];
-                    return r.json();
-                })
-                .then(function(data) {
-                    hideLoading();
-                    var rows = Array.isArray(data) ? data : (data && (data.items || data.data) ? (data.items || data.data) : []);
-                    if (!Array.isArray(rows)) rows = [];
-                    if (rows.length === 0) {
-                        emptyEl.style.display = 'block';
-                        return;
-                    }
-                    emptyEl.style.display = 'none';
-                    contentEl.style.display = 'block';
-                    try {
-                        const table = document.createElement('table');
-                        table.className = 'expense-table';
-                        table.innerHTML = '<thead><tr><th>Doc #</th><th>Date</th><th>Vendor / Entity</th><th>Line</th><th>Description</th><th>Amount</th><th>Realm</th><th>Actions</th></tr></thead><tbody></tbody>';
-                        const tbody = table.querySelector('tbody');
-                        rows.forEach(function(row) {
-                            const desc = (row.line_description != null && row.line_description !== '') ? String(row.line_description).substring(0, 80) : '—';
-                            const descSuffix = (row.line_description && row.line_description.length > 80) ? '…' : '';
-                            const amount = row.line_amount != null ? '$' + Number(row.line_amount).toFixed(2) : '—';
-                            const openUrl = '/qbo-purchase/needing-update/open/' + row.qbo_purchase_id;
-                            const tr = document.createElement('tr');
-                            tr.innerHTML = '<td>' + escapeExpenseHtml(row.doc_number || '—') + '</td><td>' + escapeExpenseHtml(row.txn_date || '—') + '</td><td>' + escapeExpenseHtml(row.entity_ref_name || '—') + '</td><td>' + (row.line_num != null ? row.line_num : '—') + '</td><td>' + escapeExpenseHtml(desc) + descSuffix + '</td><td>' + amount + '</td><td>' + escapeExpenseHtml(row.realm_id || '—') + '</td><td><a href="' + openUrl + '" class="btn btn-primary btn-sm">Open</a></td>';
-                            tbody.appendChild(tr);
-                        });
-                        contentEl.appendChild(table);
-                    } catch (err) {
-                        console.error('QBO needing-update render error:', err);
-                        emptyEl.textContent = 'Unable to display results.';
-                        emptyEl.style.display = 'block';
-                    }
-                })
-                .catch(function(err) {
-                    console.error('QBO needing-update fetch error:', err);
-                    hideLoading();
-                    emptyEl.textContent = 'Unable to load.';
-                    emptyEl.style.display = 'block';
-                });
-        })();
     });
 </script>
 {% endblock %}

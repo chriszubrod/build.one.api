@@ -34,6 +34,7 @@ class AzureBlobStorage:
         self.account_key = settings.azure_storage_account_key
         self.sas_token = settings.azure_storage_sas_token
         self.container_name = settings.azure_storage_container_name
+        self.timeout = settings.azure_storage_timeout
         
         if not self.account_name:
             raise ValueError("Azure Storage account name is required")

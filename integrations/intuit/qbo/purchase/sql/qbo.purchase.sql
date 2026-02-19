@@ -824,7 +824,9 @@ GO
 -- Purchase lines with AccountRefName = 'NEED TO UPDATE' and no ExpenseLineItem link
 CREATE OR ALTER PROCEDURE ReadQboPurchaseLinesNeedingUpdate
 (
-    @RealmId NVARCHAR(50) = NULL
+    @RealmId NVARCHAR(50) = NULL,
+    @IncludeLinked BIT = 0,
+    @IncludeAll BIT = 0
 )
 AS
 BEGIN
@@ -841,36 +843,19 @@ BEGIN
         pl.[LineNum],
         pl.[Description] AS [LineDescription],
         pl.[Amount] AS [LineAmount],
-        pl.[AccountRefName]
+        pl.[AccountRefName],
+        e.[PublicId] AS [ExpensePublicId],
+        (SELECT COUNT(*) FROM [qbo].[Attachable] a WHERE a.[EntityRefValue] = p.[QboId] AND (a.[EntityRefType] LIKE N'Purchase%' OR a.[EntityRefType] LIKE N'PURCHASE%')) AS [AttachableCount]
     FROM [qbo].[PurchaseLine] pl
     INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
     LEFT JOIN [qbo].[PurchaseLineExpenseLineItem] pleli ON pl.[Id] = pleli.[QboPurchaseLineId]
-    WHERE pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
-      AND pleli.[Id] IS NULL
+    LEFT JOIN [dbo].[ExpenseLineItem] eli ON pleli.[ExpenseLineItemId] = eli.[Id]
+    LEFT JOIN [dbo].[Expense] e ON eli.[ExpenseId] = e.[Id]
+    WHERE (@IncludeAll = 1 OR (pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%' OR pl.[AccountRefName] LIKE N'%NEED TO UPDATE%'))
+      AND (@IncludeAll = 1 OR @IncludeLinked = 1 OR pleli.[Id] IS NULL)
       AND (@RealmId IS NULL OR p.[RealmId] = @RealmId)
-    ORDER BY p.[TxnDate] DESC, p.[DocNumber], pl.[LineNum];
+    ORDER BY TRY_CONVERT(DATE, p.[TxnDate], 23) DESC, p.[DocNumber], pl.[LineNum];
 
     COMMIT TRANSACTION;
 END;
 GO
-
-
-SELECT
-    p.[Id] AS [QboPurchaseId],
-    p.[PublicId] AS [QboPurchasePublicId],
-    p.[DocNumber],
-    p.[TxnDate],
-    p.[EntityRefName],
-    p.[RealmId],
-    pl.[Id] AS [QboPurchaseLineId],
-    pl.[LineNum],
-    pl.[Description] AS [LineDescription],
-    pl.[Amount] AS [LineAmount],
-    pl.[AccountRefName]
-FROM [qbo].[PurchaseLine] pl
-INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
-LEFT JOIN [qbo].[PurchaseLineExpenseLineItem] pleli ON pl.[Id] = pleli.[QboPurchaseLineId]
-WHERE pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
-ORDER BY p.[TxnDate];
-
-Cost of construction:NEED TO CATEGORIZE

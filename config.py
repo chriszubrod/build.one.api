@@ -52,11 +52,13 @@ class Settings(BaseSettings):
     azure_storage_account_key: Optional[str] = None
     azure_storage_sas_token: Optional[str] = None
     azure_storage_container_name: str = "attachments"
+    azure_storage_timeout: float = 120.0  # seconds for blob operations (download/upload)
 
     # Azure OpenAI Configuration
     azure_openai_endpoint: Optional[str] = None
     azure_openai_api_key: Optional[str] = None
     azure_openai_deployment_name: str = "gpt-4o-mini"
+    azure_embedding_deployment_name: str = "text-embedding-ada-002"
     azure_openai_api_version: str = "2024-02-01"
 
     # Azure AI Document Intelligence Configuration

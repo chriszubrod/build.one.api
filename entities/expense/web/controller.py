@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import Optional
 import logging
 from fastapi import APIRouter, Request, Depends
+from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 # Third-party Imports
@@ -10,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 # Local Imports
 from entities.expense.business.service import ExpenseService
 from entities.vendor.business.service import VendorService
+from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import PurchaseExpenseRepository
 from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.expense_line_item_attachment.business.service import ExpenseLineItemAttachmentService
 from entities.attachment.business.service import AttachmentService
@@ -137,6 +139,12 @@ async def list_expenses(
             "sort_direction": sort_direction,
         },
     )
+
+
+@router.get("/edit/{public_id}")
+async def edit_expense_redirect(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+    """Redirect legacy /expense/edit/{id} to /expense/{id}/edit."""
+    return RedirectResponse(url=f"/expense/{public_id}/edit", status_code=302)
 
 
 @router.get("/create")
@@ -326,6 +334,11 @@ async def edit_expense(request: Request, public_id: str, current_user: dict = De
     
     if vendor_public_id:
         expense_dict['vendor_public_id'] = vendor_public_id
+
+    has_qbo_purchase_mapping = False
+    if expense and expense.id:
+        pe_mapping = PurchaseExpenseRepository().read_by_expense_id(expense_id=int(expense.id))
+        has_qbo_purchase_mapping = pe_mapping is not None
     
     return templates.TemplateResponse(
         "expense/edit.html",
@@ -338,5 +351,6 @@ async def edit_expense(request: Request, public_id: str, current_user: dict = De
             "projects": projects,
             "current_user": current_user,
             "current_path": request.url.path,
+            "has_qbo_purchase_mapping": has_qbo_purchase_mapping,
         },
     )

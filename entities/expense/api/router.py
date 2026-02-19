@@ -10,7 +10,6 @@ from decimal import Decimal
 # Local Imports
 from entities.expense.api.schemas import ExpenseCreate, ExpenseUpdate
 from entities.expense.business.service import ExpenseService
-from entities.expense.persistence.repo import ExpenseRepository
 from entities.auth.business.service import get_current_user_api
 from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
 
@@ -89,11 +88,8 @@ def get_expense_completion_result_router(public_id: str, current_user: dict = De
     """
     Return the last completion result for an expense (Build One, SharePoint).
     Used by the list page to show step status after an expense completes in the background.
-    Reads from DB (shared across workers) then in-memory cache. Returns 404 if no result or expired (1 hour TTL).
+    In-memory cache only (1 hour TTL). Returns 404 if no result or expired.
     """
-    result = ExpenseRepository().get_completion_result(public_id)
-    if result is not None:
-        return result
     _clean_expense_completion_cache()
     entry = _EXPENSE_COMPLETION_RESULT_CACHE.get(public_id)
     if not entry or entry.get("expires_at", 0) < time.time():
@@ -190,7 +186,6 @@ def _run_complete_expense(public_id: str) -> None:
             "result": result,
             "expires_at": expires_at,
         }
-        ExpenseRepository().set_completion_result(public_id, result, expires_at)
         if result.get("status_code") >= 400:
             logger.warning("Complete expense failed in background: %s", result.get("message"))
     except Exception as e:
@@ -200,11 +195,12 @@ def _run_complete_expense(public_id: str) -> None:
             "message": str(e),
             "expense_finalized": False,
             "file_uploads": {},
+            "excel_syncs": {},
+            "qbo_sync": {},
             "errors": [{"step": "complete_expense", "error": str(e)}],
         }
         expires_at = time.time() + _EXPENSE_COMPLETION_CACHE_TTL_SEC
         _EXPENSE_COMPLETION_RESULT_CACHE[public_id] = {"result": failure_result, "expires_at": expires_at}
-        ExpenseRepository().set_completion_result(public_id, failure_result, expires_at)
 
 
 @router.post("/complete/expense/{public_id}")

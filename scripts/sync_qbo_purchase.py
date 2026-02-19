@@ -19,7 +19,11 @@ from integrations.sync.business.service import SyncService
 from integrations.sync.business.model import Sync
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
 from integrations.intuit.qbo.purchase.business.model import QboPurchase
-from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
+from integrations.intuit.qbo.purchase.connector.expense.business.service import (
+    PurchaseExpenseConnector,
+    sync_purchase_attachments_to_expense_line_items,
+)
+from integrations.intuit.qbo.attachable.business.service import QboAttachableService
 from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import PurchaseExpenseRepository
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
@@ -121,6 +125,7 @@ def sync_qbo_to_local(
         return {
             "purchases_synced": 0,
             "expenses_module_synced": 0,
+            "attachments_linked": 0,
             "purchases": [],
         }
     
@@ -128,13 +133,15 @@ def sync_qbo_to_local(
     
     # Sync purchases to Expense module
     expenses_module_synced = 0
+    attachments_linked = 0
     failed_purchases = []
-    
+    attachable_service = QboAttachableService()
+
     for i, purchase in enumerate(purchases):
         try:
             # Get purchase lines for this purchase
             purchase_lines = qbo_purchase_service.read_lines_by_qbo_purchase_id(purchase.id)
-            
+
             # Use retry logic for transient errors
             expense = with_retry(
                 purchase_connector.sync_from_qbo_purchase,
@@ -145,7 +152,25 @@ def sync_qbo_to_local(
             )
             expenses_module_synced += 1
             logger.info(f"Synced QboPurchase {purchase.id} to Expense {expense.id}")
-            
+
+            # Sync attachables (download to Attachment module) and link to ExpenseLineItems
+            if purchase.qbo_id:
+                try:
+                    qbo_attachables = attachable_service.sync_attachables_for_purchase(
+                        realm_id=realm_id,
+                        purchase_qbo_id=purchase.qbo_id,
+                        sync_to_modules=True,
+                    )
+                    if qbo_attachables:
+                        expense_id = int(expense.id) if isinstance(expense.id, str) else expense.id
+                        linked = sync_purchase_attachments_to_expense_line_items(
+                            expense_id=expense_id,
+                            qbo_attachables=qbo_attachables,
+                        )
+                        attachments_linked += linked
+                except Exception as att_e:
+                    logger.warning(f"Could not sync/link attachments for Purchase {purchase.qbo_id}: {att_e}")
+
         except Exception as e:
             logger.error(f"Failed to sync QboPurchase {purchase.id} to Expense: {e}")
             failed_purchases.append(purchase.id)
@@ -161,6 +186,7 @@ def sync_qbo_to_local(
     return {
         "purchases_synced": len(purchases),
         "expenses_module_synced": expenses_module_synced,
+        "attachments_linked": attachments_linked,
         "purchases": [purchase.to_dict() for purchase in purchases],
     }
 
@@ -264,7 +290,8 @@ def sync_qbo_purchase(
         }
         
         logger.info(f"QBO Purchase sync completed. Purchases from QBO: {qbo_to_local_result['purchases_synced']}, "
-                    f"Expenses module synced: {qbo_to_local_result['expenses_module_synced']}")
+                    f"Expenses synced: {qbo_to_local_result['expenses_module_synced']}, "
+                    f"Attachments linked: {qbo_to_local_result['attachments_linked']}")
         
         return {
             "result": result,

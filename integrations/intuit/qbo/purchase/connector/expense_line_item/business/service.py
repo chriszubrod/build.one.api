@@ -91,7 +91,16 @@ class PurchaseLineExpenseLineItemConnector:
         if qbo_line.markup_percent is not None:
             # QBO stores markup as percentage (e.g., 10 for 10%), we store as decimal (e.g., 0.10)
             markup = Decimal(str(qbo_line.markup_percent)) / Decimal('100')
-        
+
+        # Calculate price: amount * (1 + markup), or amount if no markup
+        price = None
+        if qbo_line.amount is not None:
+            amount_val = Decimal(str(qbo_line.amount))
+            if markup is not None:
+                price = amount_val * (Decimal('1') + markup)
+            else:
+                price = amount_val
+
         # Check for existing mapping
         mapping = self.mapping_repo.read_by_qbo_purchase_line_id(qbo_line.id)
         
@@ -113,7 +122,8 @@ class PurchaseLineExpenseLineItemConnector:
                     is_billable=is_billable,
                     is_billed=is_billed,
                     markup=markup,
-                    is_draft=False,
+                    price=float(price) if price is not None else None,
+                    is_draft=True,
                 )
                 
                 return line_item
@@ -136,7 +146,8 @@ class PurchaseLineExpenseLineItemConnector:
             is_billable=is_billable,
             is_billed=is_billed,
             markup=markup,
-            is_draft=False,
+            price=price,
+            is_draft=True,
         )
         
         # Create mapping

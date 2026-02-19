@@ -85,7 +85,7 @@
         loginForm.addEventListener('submit', async function(e) {
             e.preventDefault();
             toggleLoginButtonState();
-            if (loginSubmit.disabled) {
+            if (loginSubmit.disabled || loginSubmit.getAttribute('aria-busy') === 'true') {
                 return;
             }
 
@@ -94,6 +94,11 @@
                 username: formData.get('username'),
                 password: formData.get('password'),
             };
+
+            const originalText = loginSubmit.textContent;
+            loginSubmit.disabled = true;
+            loginSubmit.setAttribute('aria-busy', 'true');
+            loginSubmit.textContent = 'Signing in…';
 
             try {
                 const response = await fetch('/api/v1/auth/login', {
@@ -121,6 +126,10 @@
                 }
             } catch (error) {
                 alert('Unable to sign in: ' + error.message);
+            } finally {
+                loginSubmit.disabled = !(loginForm.username.value.trim() && loginForm.password.value.trim());
+                loginSubmit.removeAttribute('aria-busy');
+                loginSubmit.textContent = originalText;
             }
         });
 

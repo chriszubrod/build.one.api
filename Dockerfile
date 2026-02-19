@@ -27,4 +27,7 @@ COPY . .
 ENV PORT=8000
 EXPOSE 8000
 
-CMD gunicorn -w 4 -k uvicorn.workers.UvicornWorker app:app --bind "0.0.0.0:${PORT}"
+COPY scripts/entrypoint.sh /app/scripts/entrypoint.sh
+RUN chmod +x /app/scripts/entrypoint.sh
+
+CMD ["/app/scripts/entrypoint.sh"]

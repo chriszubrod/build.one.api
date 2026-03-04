@@ -223,8 +223,24 @@ class ContractLaborImportService:
                     vendor_name = parsed.get("vendor_name", "")
                     job_name = parsed.get("job_name", "")
                     
-                    # Calculate billing period from work date
+                    # Skip duplicate: same natural key already in DB or already seen in this file
                     work_date = parsed.get("work_date")
+                    existing = self.repo.read_by_natural_key(
+                        employee_name=vendor_name,
+                        work_date=work_date,
+                        job_name=job_name or None,
+                        time_in=parsed.get("time_in"),
+                        time_out=parsed.get("time_out"),
+                        description=parsed.get("notes"),
+                    )
+                    if existing:
+                        results["skipped_count"] += 1
+                        results["skipped"].append({
+                            "row": row_num + 1,
+                            "reason": "Duplicate of existing entry"
+                        })
+                        continue
+
                     billing_period_start = ContractLabor.calculate_billing_period_start(work_date)
                     
                     # Create contract labor record with raw data

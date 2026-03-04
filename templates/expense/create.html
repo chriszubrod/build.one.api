@@ -135,19 +135,19 @@
                                         <!-- Quantity -->
                                         <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                             <label for="line_item_quantity" class="expense-form-label">Quantity <span class="required">*</span></label>
-                                            <input type="number" class="expense-form-control" id="line_item_quantity" min="0" step="1" placeholder="1" value="1">
+                                            <input type="number" class="expense-form-control line-item-quantity" id="line_item_quantity" min="0" step="1" placeholder="1" value="1">
                                         </div>
                                         
                                         <!-- Rate -->
                                         <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                             <label for="line_item_rate" class="expense-form-label">Rate <span class="required">*</span></label>
-                                            <input type="number" class="expense-form-control" id="line_item_rate" min="0" step="0.0001" placeholder="Rate">
+                                            <input type="number" class="expense-form-control line-item-rate" id="line_item_rate" min="0" step="0.0001" placeholder="Rate">
                                         </div>
                                         
                                         <!-- Amount (read-only, calculated) -->
                                         <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                             <label for="line_item_amount" class="expense-form-label">Amount</label>
-                                            <input type="number" class="expense-form-control" id="line_item_amount" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);">
+                                            <input type="number" class="expense-form-control line-item-amount" id="line_item_amount" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);">
                                         </div>
                                         
                                         <!-- Is Billable -->
@@ -161,13 +161,13 @@
                                         <!-- Markup -->
                                         <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                             <label for="line_item_markup" class="expense-form-label">Markup (%)</label>
-                                            <input type="number" class="expense-form-control" id="line_item_markup" min="0" step="0.01" placeholder="0.00">
+                                            <input type="number" class="expense-form-control line-item-markup" id="line_item_markup" min="0" step="0.01" placeholder="0.00">
                                         </div>
                                         
                                         <!-- Price (read-only, calculated) -->
                                         <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                             <label for="line_item_price" class="expense-form-label">Price</label>
-                                            <input type="number" class="expense-form-control" id="line_item_price" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);">
+                                            <input type="number" class="expense-form-control line-item-price" id="line_item_price" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);">
                                         </div>
                                     </div>
                                     
@@ -594,11 +594,11 @@
         }
 
         function setupLineItemCalculations(formElement) {
-            const quantityInput = formElement.querySelector('[id^="line_item_quantity"]');
-            const rateInput = formElement.querySelector('[id^="line_item_rate"]');
-            const markupInput = formElement.querySelector('[id^="line_item_markup"]');
-            const amountInput = formElement.querySelector('[id^="line_item_amount"]');
-            const priceInput = formElement.querySelector('[id^="line_item_price"]');
+            const quantityInput = formElement.querySelector('.line-item-quantity, [id^="line_item_quantity"]');
+            const rateInput = formElement.querySelector('.line-item-rate, [id^="line_item_rate"]');
+            const markupInput = formElement.querySelector('.line-item-markup, [id^="line_item_markup"]');
+            const amountInput = formElement.querySelector('.line-item-amount, [id^="line_item_amount"]');
+            const priceInput = formElement.querySelector('.line-item-price, [id^="line_item_price"]');
 
             const calculateAmount = function() {
                 if (!quantityInput || !rateInput || !amountInput) return;
@@ -623,14 +623,17 @@
             if (quantityInput) {
                 quantityInput.addEventListener('input', calculateAmount);
                 quantityInput.addEventListener('change', calculateAmount);
+                quantityInput.addEventListener('blur', calculateAmount);
             }
             if (rateInput) {
                 rateInput.addEventListener('input', calculateAmount);
                 rateInput.addEventListener('change', calculateAmount);
+                rateInput.addEventListener('blur', calculateAmount);
             }
             if (markupInput) {
                 markupInput.addEventListener('input', calculatePrice);
                 markupInput.addEventListener('change', calculatePrice);
+                markupInput.addEventListener('blur', calculatePrice);
             }
         }
 
@@ -654,7 +657,7 @@
             const allForms = getAllLineItemForms();
             
             allForms.forEach(form => {
-                const amountInput = form.querySelector('[id^="line_item_amount"]');
+                const amountInput = form.querySelector('.line-item-amount, [id^="line_item_amount"]');
                 if (amountInput && amountInput.value) {
                     total += parseFloat(amountInput.value) || 0;
                 }
@@ -1076,6 +1079,24 @@
                 if (addButton) {
                     addButton.onclick = function() { addLineItemForm(); };
                 }
+
+                // Run initial calculations (ensures Amount/Price are correct on load)
+                const amountInput = initialForm.querySelector('.line-item-amount, [id^="line_item_amount"]');
+                const priceInput = initialForm.querySelector('.line-item-price, [id^="line_item_price"]');
+                const quantityInput = initialForm.querySelector('.line-item-quantity, [id^="line_item_quantity"]');
+                const rateInput = initialForm.querySelector('.line-item-rate, [id^="line_item_rate"]');
+                const markupInput = initialForm.querySelector('.line-item-markup, [id^="line_item_markup"]');
+                if (quantityInput && rateInput && amountInput) {
+                    const quantity = parseFloat(quantityInput.value) || 0;
+                    const rate = parseFloat(rateInput.value) || 0;
+                    amountInput.value = (quantity * rate).toFixed(2);
+                }
+                if (amountInput && priceInput) {
+                    const amount = parseFloat(amountInput.value) || 0;
+                    const markupPercent = markupInput ? (parseFloat(markupInput.value) || 0) : 0;
+                    priceInput.value = (amount * (1 + markupPercent / 100)).toFixed(2);
+                }
+                calculateTotalAmount();
             }
 
             const form = document.getElementById('createExpenseForm');

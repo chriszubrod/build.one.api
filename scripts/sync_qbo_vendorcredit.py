@@ -19,8 +19,9 @@ from integrations.sync.business.service import SyncService
 from integrations.sync.business.model import Sync
 from integrations.intuit.qbo.vendorcredit.business.service import QboVendorCreditService
 from integrations.intuit.qbo.vendorcredit.business.model import QboVendorCredit
-from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import VendorCreditBillCreditConnector
+from integrations.intuit.qbo.vendorcredit.external.client import QboVendorCreditClient
 from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
+from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import VendorCreditBillCreditConnector
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.attachable.business.service import QboAttachableService
 from integrations.intuit.qbo.attachable.connector.attachment.persistence.repo import AttachableAttachmentRepository
@@ -143,6 +144,59 @@ def _link_attachments_to_bill_credit_line_items(
     return links_created
 
 
+def _dry_run_preview(
+    realm_id: str,
+    qbo_auth,
+    last_sync_time: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> dict:
+    """
+    Dry-run preview: fetch vendor credits from QBO and report what would be synced
+    without writing anything to the local database or pushing to QBO.
+    """
+    logger.info("[DRY RUN] Fetching vendor credits from QBO to preview sync (no writes will occur)...")
+
+    with QboVendorCreditClient(access_token=qbo_auth.access_token, realm_id=realm_id) as client:
+        qbo_vcs = client.query_all_vendor_credits(
+            last_updated_time=last_sync_time,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    logger.info(f"[DRY RUN] QBO returned {len(qbo_vcs)} vendor credits")
+
+    # Check existing local QBO vendor credit records (read-only)
+    vc_repo = QboVendorCreditRepository()
+    existing = vc_repo.read_by_realm_id(realm_id)
+    existing_qbo_ids = {vc.qbo_id for vc in existing}
+
+    would_create = [vc for vc in qbo_vcs if vc.id not in existing_qbo_ids]
+    would_update = [vc for vc in qbo_vcs if vc.id in existing_qbo_ids]
+
+    logger.info(f"[DRY RUN] QBO staging table (qbo.VendorCredit):")
+    logger.info(f"[DRY RUN]   {len(would_create)} would be CREATED")
+    logger.info(f"[DRY RUN]   {len(would_update)} would be UPDATED")
+    logger.info("[DRY RUN] No changes were made to the local database.")
+    logger.info("[DRY RUN] No data was pushed to QBO.")
+
+    sample = [
+        {"qbo_id": vc.id, "doc_number": vc.doc_number, "vendor": vc.vendor_ref.name if vc.vendor_ref else None, "txn_date": vc.txn_date, "total": float(vc.total_amt) if vc.total_amt else None}
+        for vc in would_create[:5]
+    ]
+
+    return {
+        "dry_run": True,
+        "direction": "QBO → BuildOne only (read-only from QBO)",
+        "qbo_records_found": len(qbo_vcs),
+        "qbo_staging": {
+            "would_create": len(would_create),
+            "would_update": len(would_update),
+        },
+        "sample_new_records": sample,
+    }
+
+
 def sync_qbo_to_local(
     realm_id: str,
     last_sync_time: Optional[str],
@@ -258,6 +312,7 @@ def sync_qbo_vendorcredit(
     end_date: Optional[str] = None,
     skip_sync_record_update: bool = False,
     sync_attachments: bool = True,
+    dry_run: bool = False,
 ) -> dict:
     """
     Sync QBO VendorCredits to BillCredit module.
@@ -267,13 +322,10 @@ def sync_qbo_vendorcredit(
 
     Args:
         start_date: Optional start date (YYYY-MM-DD) for filtering vendor credits by TxnDate.
-                   Use this for historical batch syncing.
         end_date: Optional end date (YYYY-MM-DD) for filtering vendor credits by TxnDate.
-                 Use this for historical batch syncing.
         skip_sync_record_update: If True, don't update the sync record timestamp.
-                                Use this when doing historical batch syncs to preserve
-                                the incremental sync tracking.
         sync_attachments: If True, sync file attachments for each vendor credit from QBO.
+        dry_run: If True, fetch from QBO and report what would be synced without writing anything.
     """
     try:
         # Create start time variable
@@ -302,20 +354,45 @@ def sync_qbo_vendorcredit(
         provider = 'qbo'
         entity = 'vendorcredit'
         env = 'prod'
-        
+
         sync_record = _get_or_create_sync_record(sync_service, provider, env, entity)
-        
+
         # For date range queries, don't use last_sync_time (we're doing historical batch)
         # For regular incremental sync, use last_sync_time
         last_sync_time = None
         if start_date or end_date:
-            logger.info(f"Historical batch sync mode - using date range filter instead of last sync time")
+            logger.info("Historical batch sync mode - using date range filter instead of last sync time")
         elif sync_record and sync_record.last_sync_datetime:
             last_sync_time = sync_record.last_sync_datetime
             logger.info(f"Last sync time: {last_sync_time}. Fetching only updated records.")
         else:
             logger.info("No previous sync found. Performing full sync.")
-        
+
+        # --- DRY RUN path: fetch from QBO only, no DB writes ---
+        if dry_run:
+            qbo_auth = auth_service.ensure_valid_token()
+            if not qbo_auth or not qbo_auth.access_token:
+                raise ValueError("No valid QBO access token found")
+            preview = _dry_run_preview(
+                realm_id=realm_id,
+                qbo_auth=qbo_auth,
+                last_sync_time=last_sync_time,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            end_time = datetime.now(timezone.utc)
+            return {
+                "result": {
+                    "success": True,
+                    "dry_run": True,
+                    "realm_id": realm_id,
+                    "start_time": start_time_str,
+                    "end_time": _normalize_last_sync(end_time.isoformat()),
+                    "preview": preview,
+                },
+                "status_code": 200,
+            }
+
         # Sync from QBO to local
         qbo_to_local_result = sync_qbo_to_local(
             realm_id=realm_id,
@@ -430,6 +507,12 @@ allowing you to track progress through historical batch imports.
         help='Skip syncing file attachments for each vendor credit from QBO. By default, attachments are synced.'
     )
 
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Fetch from QBO and report what would be synced without writing to the database or pushing to QBO.'
+    )
+
     return parser.parse_args()
 
 
@@ -467,6 +550,7 @@ if __name__ == "__main__":
         end_date=args.end_date,
         skip_sync_record_update=args.skip_sync_update,
         sync_attachments=not args.skip_attachments,
+        dry_run=args.dry_run,
     )
     
     import json

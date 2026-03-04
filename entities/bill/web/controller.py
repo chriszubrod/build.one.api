@@ -18,6 +18,7 @@ from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
 from entities.payment_term.business.service import PaymentTermService
 from entities.auth.business.service import get_current_user_web
+from entities.inbox.persistence.repo import InboxRecordRepository
 
 logger = logging.getLogger(__name__)
 
@@ -650,10 +651,24 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
         workflow_data = _get_workflow_for_bill(bill.public_id)
         if workflow_data:
             workflow_conversation = workflow_data.get("conversation", [])
-    
-    # Only allow return_to to our own list path (avoid open redirect)
+
+    # Look up linked inbox email (if this bill was created from an inbox message)
+    source_email = None
+    try:
+        inbox_record = InboxRecordRepository().read_by_record_public_id(public_id)
+        if inbox_record and inbox_record.message_id:
+            source_email = {
+                "message_id": inbox_record.message_id,
+                "subject": inbox_record.subject,
+                "from_email": inbox_record.from_email,
+                "from_name": inbox_record.from_name,
+            }
+    except Exception as exc:
+        logger.debug("Inbox record lookup for bill %s failed (non-fatal): %s", public_id, exc)
+
+    _ALLOWED_RETURN_PREFIXES_VIEW = ("/bill/list", "/invoice/")
     return_to = request.query_params.get("return_to") or ""
-    if return_to and not return_to.startswith("/bill/list"):
+    if return_to and not any(return_to.startswith(p) for p in _ALLOWED_RETURN_PREFIXES_VIEW):
         return_to = ""
 
     # Display dates as MM-DD-YYYY (and normalize 0002 → 2002)
@@ -668,6 +683,7 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
             "line_items": line_items_with_attachments,
             "workflow_conversation": workflow_conversation,
             "workflow_data": workflow_data,
+            "source_email": source_email,
             "current_user": current_user,
             "current_path": request.url.path,
             "return_to": return_to,
@@ -762,6 +778,20 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
     if payment_term_public_id:
         bill_dict['payment_term_public_id'] = payment_term_public_id
     
+    # Look up linked inbox email (if this bill was created from an inbox message)
+    source_email = None
+    try:
+        inbox_record = InboxRecordRepository().read_by_record_public_id(public_id)
+        if inbox_record and inbox_record.message_id:
+            source_email = {
+                "message_id": inbox_record.message_id,
+                "subject": inbox_record.subject,
+                "from_email": inbox_record.from_email,
+                "from_name": inbox_record.from_name,
+            }
+    except Exception as exc:
+        logger.debug("Inbox record lookup for bill %s failed (non-fatal): %s", public_id, exc)
+
     # Fetch workflow data for email conversation display
     workflow_conversation = None
     workflow_data = None
@@ -770,8 +800,9 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
         if workflow_data:
             workflow_conversation = workflow_data.get("conversation", [])
 
+    _ALLOWED_RETURN_PREFIXES = ("/bill/list", "/invoice/")
     return_to = request.query_params.get("return_to") or ""
-    if return_to and not return_to.startswith("/bill/list"):
+    if return_to and not any(return_to.startswith(p) for p in _ALLOWED_RETURN_PREFIXES):
         return_to = ""
 
     # Display dates as MM-DD-YYYY for key-in (and normalize 0002 → 2002)
@@ -790,6 +821,7 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
             "payment_terms": payment_terms,
             "workflow_conversation": workflow_conversation,
             "workflow_data": workflow_data,
+            "source_email": source_email,
             "current_user": current_user,
             "current_path": request.url.path,
             "return_to": return_to,

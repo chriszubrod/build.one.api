@@ -19,6 +19,7 @@ from integrations.sync.business.service import SyncService
 from integrations.sync.business.model import Sync
 from integrations.intuit.qbo.bill.business.service import QboBillService
 from integrations.intuit.qbo.bill.business.model import QboBill
+from integrations.intuit.qbo.bill.external.client import QboBillClient
 from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
 from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, QboBillLineRepository
@@ -195,6 +196,69 @@ def _link_attachments_to_bill_line_items(
         logger.info(f"Created {links_created} BillLineItemAttachment links for Bill {bill_id}")
     
     return links_created
+
+
+def _dry_run_preview(
+    realm_id: str,
+    qbo_auth,
+    last_sync_time: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> dict:
+    """
+    Dry-run preview: fetch bills from QBO and report what would be synced
+    without writing anything to the local database or pushing to QBO.
+    """
+    logger.info("[DRY RUN] Fetching bills from QBO to preview sync (no writes will occur)...")
+
+    with QboBillClient(access_token=qbo_auth.access_token, realm_id=realm_id) as client:
+        qbo_bills = client.query_all_bills(
+            last_updated_time=last_sync_time,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    logger.info(f"[DRY RUN] QBO returned {len(qbo_bills)} bills")
+
+    # Check existing local QBO bill records (read-only)
+    bill_repo = QboBillRepository()
+    existing = bill_repo.read_by_realm_id(realm_id)
+    existing_qbo_ids = {b.qbo_id for b in existing}
+
+    # Check how many local Bills already have QBO mappings (read-only)
+    mapping_repo = BillBillRepository()
+    mapped_bill_ids = mapping_repo.read_all_bill_ids()
+    mapped_count = len(mapped_bill_ids) if mapped_bill_ids else 0
+
+    would_create = [b for b in qbo_bills if b.id not in existing_qbo_ids]
+    would_update = [b for b in qbo_bills if b.id in existing_qbo_ids]
+
+    logger.info(f"[DRY RUN] QBO staging table (qbo.Bill):")
+    logger.info(f"[DRY RUN]   {len(would_create)} would be CREATED")
+    logger.info(f"[DRY RUN]   {len(would_update)} would be UPDATED")
+    logger.info(f"[DRY RUN] Bill module mappings already in place: {mapped_count}")
+    logger.info("[DRY RUN] No changes were made to the local database.")
+    logger.info("[DRY RUN] No data was pushed to QBO.")
+    logger.info("[DRY RUN] IMPORTANT: sync_qbo_bill.py has bidirectional capability.")
+    logger.info("[DRY RUN] Always use --pull-only for one-way QBO -> BuildOne syncs.")
+
+    sample = [
+        {"qbo_id": b.id, "doc_number": b.doc_number, "vendor": b.vendor_ref.name if b.vendor_ref else None, "txn_date": b.txn_date, "total": float(b.total_amt) if b.total_amt else None}
+        for b in would_create[:5]
+    ]
+
+    return {
+        "dry_run": True,
+        "direction": "QBO → BuildOne only (read-only from QBO, --pull-only enforced for production)",
+        "qbo_records_found": len(qbo_bills),
+        "qbo_staging": {
+            "would_create": len(would_create),
+            "would_update": len(would_update),
+        },
+        "bill_module_mappings_existing": mapped_count,
+        "sample_new_records": sample,
+        "warning": "This script supports bidirectional sync. Always use --pull-only for QBO -> BuildOne only.",
+    }
 
 
 def sync_qbo_to_local(
@@ -570,22 +634,22 @@ def sync_qbo_bill(
     end_date: Optional[str] = None,
     skip_sync_record_update: bool = False,
     sync_attachments: bool = True,
+    pull_only: bool = False,
+    dry_run: bool = False,
 ) -> dict:
     """
     Two-way sync for QBO Bills <-> Bill module.
-    
+
     1. QBO -> Local: Fetch bills modified since last sync, store locally, sync to Bill
-    2. Local -> QBO: Check for locally modified Bills, sync back to QboBill
-    
+    2. Local -> QBO: Check for locally modified Bills, sync back to QboBill (skip with --pull-only)
+
     Args:
         start_date: Optional start date (YYYY-MM-DD) for filtering bills by TxnDate.
-                   Use this for historical batch syncing.
         end_date: Optional end date (YYYY-MM-DD) for filtering bills by TxnDate.
-                 Use this for historical batch syncing.
         skip_sync_record_update: If True, don't update the sync record timestamp.
-                                Use this when doing historical batch syncs to preserve
-                                the incremental sync tracking.
         sync_attachments: If True, also sync attachments for each bill.
+        pull_only: If True, skip the push (local -> QBO) phase.
+        dry_run: If True, fetch from QBO and report what would be synced without writing anything.
     """
     try:
         # Create start time variable
@@ -623,13 +687,38 @@ def sync_qbo_bill(
         # For regular incremental sync, use last_sync_time
         last_sync_time = None
         if start_date or end_date:
-            logger.info(f"Historical batch sync mode - using date range filter instead of last sync time")
+            logger.info("Historical batch sync mode - using date range filter instead of last sync time")
         elif sync_record and sync_record.last_sync_datetime:
             last_sync_time = sync_record.last_sync_datetime
             logger.info(f"Last sync time: {last_sync_time}. Fetching only updated records.")
         else:
             logger.info("No previous sync found. Performing full sync.")
-        
+
+        # --- DRY RUN path: fetch from QBO only, no DB writes, no QBO writes ---
+        if dry_run:
+            qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
+            if not qbo_auth or not qbo_auth.access_token:
+                raise ValueError(f"No valid access token found for realm_id: {realm_id}")
+            preview = _dry_run_preview(
+                realm_id=realm_id,
+                qbo_auth=qbo_auth,
+                last_sync_time=last_sync_time,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            end_time = datetime.now(timezone.utc)
+            return {
+                "result": {
+                    "success": True,
+                    "dry_run": True,
+                    "realm_id": realm_id,
+                    "start_time": start_time_str,
+                    "end_time": _normalize_last_sync(end_time.isoformat()),
+                    "preview": preview,
+                },
+                "status_code": 200,
+            }
+
         # Step 1: Sync from QBO to local
         qbo_to_local_result = sync_qbo_to_local(
             realm_id=realm_id,
@@ -642,36 +731,38 @@ def sync_qbo_bill(
             attachable_service=attachable_service,
         )
         
-        # Step 2: Sync from local to QBO (reverse sync)
-        # Use a SEPARATE sync record for push operations to avoid conflicts with pull
-        push_entity = 'bill_push'
-        push_sync_record = _get_or_create_sync_record(sync_service, provider, env, push_entity)
-        
-        push_last_sync_time = None
-        if push_sync_record and push_sync_record.last_sync_datetime:
-            push_last_sync_time = push_sync_record.last_sync_datetime
-            logger.info(f"Push sync - last sync time: {push_last_sync_time}")
+        local_to_qbo_result = None
+        if not pull_only:
+            # Step 2: Sync from local to QBO (reverse sync)
+            push_entity = 'bill_push'
+            push_sync_record = _get_or_create_sync_record(sync_service, provider, env, push_entity)
+            
+            push_last_sync_time = None
+            if push_sync_record and push_sync_record.last_sync_datetime:
+                push_last_sync_time = push_sync_record.last_sync_datetime
+                logger.info(f"Push sync - last sync time: {push_last_sync_time}")
+            else:
+                logger.info("No previous push sync found. Will only sync bills from now onward.")
+                push_last_sync_time = start_time_str
+            
+            local_to_qbo_result = sync_local_to_qbo(
+                realm_id=realm_id,
+                last_sync_time=push_last_sync_time,
+                qbo_bill_service=qbo_bill_service,
+                bill_mapping_repo=bill_mapping_repo,
+                qbo_bill_repo=qbo_bill_repo,
+                sync_attachments=sync_attachments,
+            )
         else:
-            logger.info("No previous push sync found. Will only sync bills from now onward.")
-            # For first run, set the cutoff to NOW to avoid syncing historical bills
-            # Only bills finalized AFTER this point will be pushed to QBO
-            push_last_sync_time = start_time_str
-        
-        local_to_qbo_result = sync_local_to_qbo(
-            realm_id=realm_id,
-            last_sync_time=push_last_sync_time,
-            qbo_bill_service=qbo_bill_service,
-            bill_mapping_repo=bill_mapping_repo,
-            qbo_bill_repo=qbo_bill_repo,
-            sync_attachments=sync_attachments,
-        )
+            logger.info("Pull-only mode - skipping push to QBO")
         
         # Update Sync records
         end_time = datetime.now(timezone.utc)
         end_time_str = _normalize_last_sync(end_time.isoformat())
         
-        # Update Push Sync record (separate from pull sync record)
-        if not skip_sync_record_update:
+        if not pull_only and not skip_sync_record_update and local_to_qbo_result is not None:
+            push_entity = 'bill_push'
+            push_sync_record = _get_or_create_sync_record(sync_service, provider, env, push_entity)
             _update_sync_record(sync_service, push_sync_record, end_time_str)
             logger.info(f"Updated push sync record to: {end_time_str}")
         
@@ -703,9 +794,10 @@ def sync_qbo_bill(
             "local_to_qbo": local_to_qbo_result,
         }
         
+        pushed_count = local_to_qbo_result['bills_pushed'] if local_to_qbo_result else 0
         logger.info(f"QBO Bill sync completed. Bills from QBO: {qbo_to_local_result['bills_synced']}, "
                     f"Bills module synced: {qbo_to_local_result['bills_module_synced']}, "
-                    f"Bills pushed: {local_to_qbo_result['bills_pushed']}")
+                    f"Bills pushed: {pushed_count}")
         
         return {
             "result": result,
@@ -776,6 +868,18 @@ allowing you to track progress through historical batch imports.
         help='Skip syncing file attachments for each bill from QBO. By default, attachments are synced.'
     )
     
+    parser.add_argument(
+        '--pull-only',
+        action='store_true',
+        help='Only pull from QBO to local. Skip the push (local -> QBO) phase.'
+    )
+
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Fetch from QBO and report what would be synced without writing to the database or pushing to QBO.'
+    )
+
     return parser.parse_args()
 
 
@@ -813,6 +917,8 @@ if __name__ == "__main__":
         end_date=args.end_date,
         skip_sync_record_update=args.skip_sync_update,
         sync_attachments=not args.skip_attachments,
+        pull_only=args.pull_only,
+        dry_run=args.dry_run,
     )
     
     import json

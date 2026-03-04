@@ -44,10 +44,12 @@ class VendorCreditLineItemConnector:
             if qbo_line.item_ref_value:
                 sub_cost_code_id = self._get_sub_cost_code_id(qbo_line.item_ref_value)
             
-            # Determine billable status
+            # Determine billable and billed status from QBO BillableStatus
+            # "Billable" = not yet invoiced, "HasBeenBilled" = already invoiced, "NotBillable" = not billable
             is_billable = qbo_line.billable_status in ("Billable", "HasBeenBilled")
+            is_billed = qbo_line.billable_status == "HasBeenBilled"
             
-            # Calculate billable amount (for now, same as amount if billable)
+            # Calculate billable amount (same as amount if billable)
             billable_amount = qbo_line.amount if is_billable else None
             
             # Create line item
@@ -60,8 +62,9 @@ class VendorCreditLineItemConnector:
                 unit_price=qbo_line.unit_price,
                 amount=qbo_line.amount,
                 is_billable=is_billable,
+                is_billed=is_billed,
                 billable_amount=billable_amount,
-                is_draft=True,
+                is_draft=False,
             )
             
             return line_item

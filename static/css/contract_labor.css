@@ -768,6 +768,27 @@
     cursor: not-allowed;
 }
 
+/* Import button loading state */
+.cl-import-btn-loading {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.cl-import-spinner {
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: cl-spin 0.7s linear infinite;
+}
+
+@keyframes cl-spin {
+    to { transform: rotate(360deg); }
+}
+
 /* Read-only grid for imported data */
 .cl-readonly-grid {
     display: grid;

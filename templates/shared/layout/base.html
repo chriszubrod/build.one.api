@@ -26,7 +26,7 @@
                 {% include 'shared/partials/flash.html' %}
 
                 <!-- 3-column app shell: left sidenav, main content, right aside -->
-                <div class="three-column-layout aside-collapsed">
+                <div class="three-column-layout">
                         
                     <!-- Left: Sidenav -->
                     <aside class="sidebar-left" aria-label="Sidebar">
@@ -40,8 +40,8 @@
                         {% block content %}{% endblock %}
                     </main>
             
-                    <!-- Right: Aside panel (collapsed by default) -->
-                    <aside class="sidebar-right" aria-label="Aside">
+                    <!-- Right: Aside panel (open by default) -->
+                    <aside class="sidebar-right sidebar-right-open" aria-label="Aside">
                         {% block aside %}
                             {% include 'shared/partials/aside.html' %}
                         {% endblock %}

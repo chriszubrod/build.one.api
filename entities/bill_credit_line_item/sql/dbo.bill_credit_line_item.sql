@@ -17,6 +17,7 @@ CREATE TABLE [dbo].[BillCreditLineItem]
     [UnitPrice] DECIMAL(18,4) NULL,
     [Amount] DECIMAL(18,2) NULL,
     [IsBillable] BIT NULL,
+    [IsBilled] BIT NULL,
     [BillableAmount] DECIMAL(18,2) NULL,
     [IsDraft] BIT NOT NULL DEFAULT 1,
     CONSTRAINT [FK_BillCreditLineItem_BillCredit] FOREIGN KEY ([BillCreditId]) REFERENCES [dbo].[BillCredit]([Id]) ON DELETE CASCADE,
@@ -63,6 +64,7 @@ CREATE OR ALTER PROCEDURE CreateBillCreditLineItem
     @UnitPrice DECIMAL(18,4) NULL,
     @Amount DECIMAL(18,2) NULL,
     @IsBillable BIT NULL,
+    @IsBilled BIT NULL,
     @BillableAmount DECIMAL(18,2) NULL,
     @IsDraft BIT = 1
 )
@@ -72,7 +74,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[BillCreditLineItem] ([CreatedDatetime], [ModifiedDatetime], [BillCreditId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [UnitPrice], [Amount], [IsBillable], [BillableAmount], [IsDraft])
+    INSERT INTO dbo.[BillCreditLineItem] ([CreatedDatetime], [ModifiedDatetime], [BillCreditId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [UnitPrice], [Amount], [IsBillable], [IsBilled], [BillableAmount], [IsDraft])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -87,9 +89,10 @@ BEGIN
         INSERTED.[UnitPrice],
         INSERTED.[Amount],
         INSERTED.[IsBillable],
+        INSERTED.[IsBilled],
         INSERTED.[BillableAmount],
         INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @BillCreditId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @UnitPrice, @Amount, @IsBillable, @BillableAmount, @IsDraft);
+    VALUES (@Now, @Now, @BillCreditId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @UnitPrice, @Amount, @IsBillable, @IsBilled, @BillableAmount, @IsDraft);
 
     COMMIT TRANSACTION;
 END;
@@ -116,6 +119,7 @@ BEGIN
         [UnitPrice],
         [Amount],
         [IsBillable],
+        [IsBilled],
         [BillableAmount],
         [IsDraft]
     FROM dbo.[BillCreditLineItem]
@@ -149,6 +153,7 @@ BEGIN
         [UnitPrice],
         [Amount],
         [IsBillable],
+        [IsBilled],
         [BillableAmount],
         [IsDraft]
     FROM dbo.[BillCreditLineItem]
@@ -182,6 +187,7 @@ BEGIN
         [UnitPrice],
         [Amount],
         [IsBillable],
+        [IsBilled],
         [BillableAmount],
         [IsDraft]
     FROM dbo.[BillCreditLineItem]
@@ -215,6 +221,7 @@ BEGIN
         [UnitPrice],
         [Amount],
         [IsBillable],
+        [IsBilled],
         [BillableAmount],
         [IsDraft]
     FROM dbo.[BillCreditLineItem]
@@ -239,6 +246,7 @@ CREATE OR ALTER PROCEDURE UpdateBillCreditLineItemById
     @UnitPrice DECIMAL(18,4) NULL,
     @Amount DECIMAL(18,2) NULL,
     @IsBillable BIT NULL,
+    @IsBilled BIT NULL,
     @BillableAmount DECIMAL(18,2) NULL,
     @IsDraft BIT = NULL
 )
@@ -259,6 +267,7 @@ BEGIN
         [UnitPrice] = @UnitPrice,
         [Amount] = @Amount,
         [IsBillable] = @IsBillable,
+        [IsBilled] = @IsBilled,
         [BillableAmount] = @BillableAmount,
         [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END
     OUTPUT
@@ -275,6 +284,7 @@ BEGIN
         INSERTED.[UnitPrice],
         INSERTED.[Amount],
         INSERTED.[IsBillable],
+        INSERTED.[IsBilled],
         INSERTED.[BillableAmount],
         INSERTED.[IsDraft]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
@@ -308,6 +318,7 @@ BEGIN
         DELETED.[UnitPrice],
         DELETED.[Amount],
         DELETED.[IsBillable],
+        DELETED.[IsBilled],
         DELETED.[BillableAmount],
         DELETED.[IsDraft]
     WHERE [Id] = @Id;

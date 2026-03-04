@@ -22,6 +22,7 @@ from integrations.ms.mail.external.client import (
     list_messages as graph_list_messages,
     get_message as graph_get_message,
     mark_message_read as graph_mark_message_read,
+    flag_message as graph_flag_message,
     list_message_attachments as graph_list_message_attachments,
     download_attachment as graph_download_attachment,
     send_message as graph_send_message,
@@ -132,6 +133,12 @@ class MsMessageService:
         Mark a message as read/unread in Graph API.
         """
         return graph_mark_message_read(message_id, is_read=is_read)
+
+    def flag_message(self, message_id: str, flagged: bool = True) -> dict:
+        """
+        Flag or unflag a message in Graph API.
+        """
+        return graph_flag_message(message_id, flagged=flagged)
 
     def list_attachments(self, message_id: str) -> dict:
         """

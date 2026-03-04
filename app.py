@@ -78,11 +78,22 @@ from entities.payment_term.api.router import router as payment_term_api_router
 from entities.payment_term.web.controller import router as payment_term_web_router
 from entities.contract_labor.api.router import router as contract_labor_api_router
 from entities.contract_labor.web.controller import router as contract_labor_web_router
+from entities.invoice.api.router import router as invoice_api_router
+from entities.invoice.web.controller import router as invoice_web_router
+from entities.invoice_line_item.api.router import router as invoice_line_item_api_router
+from entities.invoice_line_item.web.controller import router as invoice_line_item_web_router
+from entities.invoice_attachment.api.router import router as invoice_attachment_api_router
+from entities.invoice_attachment.web.controller import router as invoice_attachment_web_router
+from entities.invoice_line_item_attachment.api.router import router as invoice_line_item_attachment_api_router
+from entities.invoice_line_item_attachment.web.controller import router as invoice_line_item_attachment_web_router
 from entities.search.api.router import router as search_api_router
 from entities.qa.api.router import router as qa_api_router
 from entities.anomaly.api.router import router as anomaly_api_router
 from entities.categorization.api.router import router as categorization_api_router
 from entities.copilot.api.router import router as copilot_api_router
+from entities.inbox.web.controller import router as inbox_web_router
+from entities.classification_override.api.router import router as classification_override_api_router
+from entities.classification_override.web.controller import router as classification_override_web_router
 from core.workflow.api.pending_action_router import router as pending_action_api_router
 from core.ai.agents.vendor_agent.api.router import router as vendor_agent_api_router
 
@@ -104,6 +115,8 @@ from integrations.intuit.qbo.account.api.router import router as qbo_account_api
 from integrations.intuit.qbo.purchase.api.router import router as qbo_purchase_api_router
 from integrations.intuit.qbo.purchase.web.controller import router as qbo_purchase_web_router
 from integrations.intuit.qbo.vendorcredit.api.router import router as qbo_vendorcredit_api_router
+from integrations.intuit.qbo.bill.api.router import router as qbo_bill_api_router
+from integrations.intuit.qbo.invoice.api.router import router as qbo_invoice_api_router
 
 
 app = FastAPI()
@@ -188,6 +201,8 @@ app.include_router(qbo_account_api_router)
 app.include_router(qbo_purchase_api_router)
 app.include_router(qbo_purchase_web_router)
 app.include_router(qbo_vendorcredit_api_router)
+app.include_router(qbo_bill_api_router)
+app.include_router(qbo_invoice_api_router)
 app.include_router(ms_auth_api_router)
 app.include_router(ms_sharepoint_site_api_router)
 app.include_router(ms_sharepoint_drive_api_router)
@@ -205,6 +220,9 @@ app.include_router(dashboard_api_router)
 app.include_router(dashboard_web_router)
 app.include_router(attachment_api_router)
 app.include_router(attachment_web_router)
+app.include_router(inbox_web_router)
+app.include_router(classification_override_api_router)
+app.include_router(classification_override_web_router)
 app.include_router(bill_api_router)
 app.include_router(bill_web_router)
 app.include_router(bill_line_item_api_router)
@@ -224,6 +242,14 @@ app.include_router(payment_term_api_router)
 app.include_router(payment_term_web_router)
 app.include_router(contract_labor_api_router)
 app.include_router(contract_labor_web_router)
+app.include_router(invoice_api_router)
+app.include_router(invoice_web_router)
+app.include_router(invoice_line_item_api_router)
+app.include_router(invoice_line_item_web_router)
+app.include_router(invoice_attachment_api_router)
+app.include_router(invoice_attachment_web_router)
+app.include_router(invoice_line_item_attachment_api_router)
+app.include_router(invoice_line_item_attachment_web_router)
 app.include_router(search_api_router)
 app.include_router(qa_api_router)
 app.include_router(anomaly_api_router)

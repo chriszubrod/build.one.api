@@ -1,0 +1,1069 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Process Message - Build.One{% endblock %}
+
+{% block head %}
+<style>
+    /* ── Two-column layout ──────────────────────────────────────────── */
+    .message-layout {
+        display: grid;
+        grid-template-columns: 1fr 420px;
+        gap: 1.5rem;
+        align-items: start;
+    }
+    .message-layout > * {
+        min-width: 0;  /* Prevent grid blowout from wide content */
+    }
+    @media (max-width: 900px) {
+        .message-layout { grid-template-columns: 1fr; }
+    }
+
+    /* ── Email preview panel ────────────────────────────────────────── */
+    .email-panel {
+        background: #fff;
+        border: 1px solid var(--border-color, #e5e7eb);
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    .email-header {
+        padding: 1rem 1.25rem;
+        border-bottom: 1px solid var(--border-color, #e5e7eb);
+        background: #f9fafb;
+    }
+    .email-header h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+    .email-meta { font-size: 0.8rem; color: var(--text-muted, #6b7280); }
+    .email-meta span { display: block; line-height: 1.6; }
+    .email-body {
+        padding: 1rem 1.25rem;
+        font-size: 0.9rem;
+        line-height: 1.6;
+        max-height: 300px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        word-break: break-word;
+    }
+    .email-attachments {
+        padding: 0.75rem 1.25rem;
+        border-top: 1px solid var(--border-color, #e5e7eb);
+        background: #f9fafb;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+    }
+    .att-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        background: #fff;
+        border: 1px solid var(--border-color, #e5e7eb);
+        border-radius: 6px;
+        padding: 0.3rem 0.65rem;
+        font-size: 0.8rem;
+        cursor: pointer;
+        transition: border-color 0.15s;
+    }
+    .att-chip:hover { border-color: #3b82f6; }
+    .att-chip.selected {
+        border-color: #3b82f6;
+        background: #dbeafe;
+        font-weight: 600;
+        box-shadow: 0 0 0 2px #bfdbfe;
+    }
+
+    /* ── Process panel ──────────────────────────────────────────────── */
+    .process-panel {
+        background: #fff;
+        border: 1px solid var(--border-color, #e5e7eb);
+        border-radius: 8px;
+        position: sticky;
+        top: 1rem;
+    }
+    .process-panel-header {
+        padding: 0.875rem 1.25rem;
+        border-bottom: 1px solid var(--border-color, #e5e7eb);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+    .process-panel-header h3 { margin: 0; font-size: 1rem; }
+    .process-panel-body { padding: 1rem 1.25rem; }
+
+    /* ── Type selector tabs ─────────────────────────────────────────── */
+    .type-tabs {
+        display: flex;
+        gap: 0.3rem;
+        margin-bottom: 1rem;
+        background: #f3f4f6;
+        padding: 0.25rem;
+        border-radius: 7px;
+    }
+    .type-tab {
+        flex: 1;
+        text-align: center;
+        padding: 0.35rem 0.5rem;
+        border-radius: 5px;
+        font-size: 0.8rem;
+        font-weight: 500;
+        cursor: pointer;
+        border: none;
+        background: transparent;
+        color: #6b7280;
+        transition: background 0.15s, color 0.15s;
+    }
+    .type-tab.active { background: #fff; color: #111827; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+
+    /* ── Extract button + results ───────────────────────────────────── */
+    #extract-btn {
+        width: 100%;
+        margin-bottom: 1rem;
+    }
+    #extract-status {
+        font-size: 0.8rem;
+        color: var(--text-muted, #6b7280);
+        margin-bottom: 0.75rem;
+        min-height: 1.2rem;
+    }
+    .extraction-loading { color: #3b82f6; }
+    .extraction-error   { color: #dc2626; }
+    .extraction-success { color: #059669; }
+
+    /* ── Form fields (used in Forward to PM panel) ──────────────────── */
+    .field-group { margin-bottom: 0.875rem; }
+    .field-group label {
+        display: block;
+        font-size: 0.75rem;
+        font-weight: 600;
+        margin-bottom: 0.25rem;
+        color: #374151;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+    .field-group input:focus { outline: none; border-color: #3b82f6; }
+
+    /* ── Confidence colours (used in preview rows) ──────────────────── */
+    .confidence-high .preview-value { color: #065f46; }
+    .confidence-med  .preview-value { color: #92400e; }
+    .confidence-low  .preview-value { color: #991b1b; }
+
+    /* ── Triage action buttons ──────────────────────────────────────── */
+    .triage-actions {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        margin-top: 0.25rem;
+    }
+    .triage-btn {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.15rem;
+        width: 100%;
+        padding: 0.65rem 0.875rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 7px;
+        background: #fff;
+        cursor: pointer;
+        text-align: left;
+        transition: border-color 0.15s, background 0.15s;
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: #111827;
+    }
+    .triage-btn:hover { border-color: #3b82f6; background: #f0f9ff; }
+    .triage-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .triage-btn-sub {
+        font-size: 0.75rem;
+        font-weight: 400;
+        color: #9ca3af;
+    }
+    .triage-btn-process { border-color: #3b82f6; background: #eff6ff; }
+    .triage-btn-process:hover { background: #dbeafe; border-color: #2563eb; }
+    .triage-btn-forward { border-color: #d1d5db; }
+    .triage-btn-skip { border-color: #d1d5db; color: #6b7280; }
+
+    /* ── Panel sections ─────────────────────────────────────────────── */
+    .panel-desc {
+        font-size: 0.82rem;
+        color: #6b7280;
+        margin: 0 0 0.875rem;
+        line-height: 1.5;
+    }
+
+    /* ── Extraction preview ─────────────────────────────────────────── */
+    .preview-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        padding: 0.35rem 0;
+        border-bottom: 1px solid #f3f4f6;
+        font-size: 0.85rem;
+        gap: 0.5rem;
+    }
+    .preview-row:last-child { border-bottom: none; }
+    .preview-label { color: #6b7280; flex-shrink: 0; }
+    .preview-value { font-weight: 500; text-align: right; }
+    .conf-tag {
+        font-size: 0.7rem;
+        font-weight: 400;
+        padding: 0.1rem 0.3rem;
+        border-radius: 3px;
+        margin-left: 0.3rem;
+    }
+    .confidence-high .conf-tag { background: #d1fae5; color: #065f46; }
+    .confidence-med  .conf-tag { background: #fef3c7; color: #92400e; }
+    .confidence-low  .conf-tag { background: #fee2e2; color: #991b1b; }
+
+    /* ── Preview form controls ─────────────────────────────────────── */
+    .preview-row input[type="text"],
+    .preview-row input[type="number"],
+    .preview-row input[type="date"],
+    .preview-row select {
+        padding: 0.3rem 0.5rem;
+        border: 1px solid #d1d5db;
+        border-radius: 4px;
+        font-size: 0.82rem;
+        box-sizing: border-box;
+        width: 100%;
+    }
+    .preview-row input:focus,
+    .preview-row select:focus {
+        outline: none;
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+    }
+    .preview-field-wrapper {
+        flex: 1;
+        text-align: right;
+        min-width: 0;
+    }
+    .preview-hint {
+        font-size: 0.72rem;
+        color: #92400e;
+        margin-top: 2px;
+    }
+    #vendor-filter {
+        padding: 0.25rem 0.5rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 4px;
+        font-size: 0.78rem;
+        width: 100%;
+        margin-bottom: 4px;
+        box-sizing: border-box;
+    }
+    #vendor-filter::placeholder { color: #9ca3af; }
+    #vendor-filter:focus {
+        outline: none;
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+    }
+
+    /* ── Attachment preview ─────────────────────────────────────────── */
+    #attachment-preview-section {
+        border-top: 1px solid var(--border-color, #e5e7eb);
+    }
+    .att-preview-header {
+        padding: 0.5rem 1.25rem;
+        background: #f9fafb;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: #6b7280;
+    }
+    .att-preview-toggle {
+        border: none;
+        background: none;
+        cursor: pointer;
+        font-size: 0.8rem;
+        color: #3b82f6;
+    }
+
+    /* ── Action row ─────────────────────────────────────────────────── */
+    .action-row {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 1rem;
+        flex-wrap: wrap;
+    }
+    .action-row .btn { flex: 1; }
+
+    /* ── Message action buttons (read/flag) ──────────────────────────── */
+    .msg-actions {
+        display: flex;
+        gap: 0.4rem;
+        margin-top: 0.5rem;
+    }
+    .msg-action-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.3rem 0.6rem;
+        font-size: 0.78rem;
+        font-weight: 500;
+        border: 1px solid #d1d5db;
+        border-radius: 5px;
+        background: #fff;
+        color: #374151;
+        cursor: pointer;
+        transition: border-color 0.15s, background 0.15s;
+    }
+    .msg-action-btn:hover { border-color: #3b82f6; background: #f0f9ff; }
+    .msg-action-btn.active { border-color: #3b82f6; background: #dbeafe; color: #1d4ed8; }
+
+    /* ── Classification badge ───────────────────────────────────────── */
+    .badge-type {
+        display: inline-flex; align-items: center; gap: 0.25rem;
+        padding: 0.2rem 0.55rem; border-radius: 9999px;
+        font-size: 0.75rem; font-weight: 600;
+        width: fit-content;
+    }
+    .badge-bill         { background:#dbeafe;color:#1d4ed8; }
+    .badge-expense      { background:#d1fae5;color:#065f46; }
+    .badge-vendor_credit{ background:#fef3c7;color:#92400e; }
+    .badge-inquiry      { background:#e0e7ff;color:#3730a3; }
+    .badge-statement    { background:#f3e8ff;color:#6b21a8; }
+    .badge-unknown      { background:#f3f4f6;color:#6b7280; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- Thread data for copilot sidebar -->
+<div id="thread-context"
+     data-message-id="{{ email.message_id }}"
+     data-conversation-id="{{ email.conversation_id or '' }}"
+     style="display:none;"></div>
+
+<!-- Back link -->
+<div style="margin-bottom:1rem;">
+    <a id="back-to-inbox" href="/inbox" style="font-size:0.875rem; color:#3b82f6;">← Back to Inbox</a>
+</div>
+
+<div class="message-layout">
+
+    <!-- ── LEFT: Email preview ───────────────────────────────────── -->
+    <div>
+        <div class="email-panel">
+            <div class="email-header">
+                <h2>{{ email.subject or '(no subject)' }}</h2>
+                <div class="email-meta">
+                    <span><strong>From:</strong> {{ email.from_name or '' }} &lt;{{ email.from_email or '' }}&gt;</span>
+                    {% if email.to_recipients %}
+                    <span><strong>To:</strong>
+                        {% for r in email.to_recipients %}{{ r.name or r.email }}{% if r.name %} &lt;{{ r.email }}&gt;{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+                    </span>
+                    {% endif %}
+                    {% if email.cc_recipients %}
+                    <span><strong>CC:</strong>
+                        {% for r in email.cc_recipients %}{{ r.name or r.email }}{% if r.name %} &lt;{{ r.email }}&gt;{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+                    </span>
+                    {% endif %}
+                    {% if email.bcc_recipients %}
+                    <span><strong>BCC:</strong>
+                        {% for r in email.bcc_recipients %}{{ r.name or r.email }}{% if r.name %} &lt;{{ r.email }}&gt;{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+                    </span>
+                    {% endif %}
+                    <span><strong>Date:</strong> {{ email.received_datetime or '' }}</span>
+                    <span>
+                        <strong>Type:</strong>
+                        <span class="badge-type badge-{{ classification.type }}">{{ classification.label }}</span>
+                        &nbsp;
+                        <span style="font-size:0.75rem; color:#9ca3af;">
+                            {{ (classification.confidence * 100) | int }}% confidence
+                        </span>
+                    </span>
+                </div>
+                <div class="msg-actions">
+                    <button class="msg-action-btn {% if email.is_read %}active{% endif %}"
+                            id="btn-read"
+                            onclick="toggleRead()">
+                        <span id="read-icon">{% if email.is_read %}✉️{% else %}📩{% endif %}</span>
+                        <span id="read-label">{% if email.is_read %}Mark Unread{% else %}Mark Read{% endif %}</span>
+                    </button>
+                    <button class="msg-action-btn {% if email.is_flagged or (email.flag and email.flag.flagStatus == 'flagged') %}active{% endif %}"
+                            id="btn-flag"
+                            onclick="toggleFlag()">
+                        <span id="flag-icon">🚩</span>
+                        <span id="flag-label">{% if email.is_flagged or (email.flag and email.flag.flagStatus == 'flagged') %}Unflag{% else %}Flag{% endif %}</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="email-body">
+                {% if email.body_content %}
+                    {% if email.body_content_type == 'html' %}
+                        {{ email.body_content | safe }}
+                    {% else %}
+                        <pre style="white-space:pre-wrap; font-family:inherit; margin:0;">{{ email.body_content }}</pre>
+                    {% endif %}
+                {% else %}
+                    <span style="color:#9ca3af;">No body content.</span>
+                {% endif %}
+            </div>
+
+            {% if email.attachments %}
+            <div class="email-attachments">
+                <span style="font-size:0.75rem; font-weight:600; color:#6b7280; align-self:center;">Attachments:</span>
+                {% for att in email.attachments %}
+                {% if not att.is_inline %}
+                <div class="att-chip"
+                     data-att-id="{{ att.id }}"
+                     onclick="selectAttachment(this, '{{ att.id }}')">
+                    📎 {{ att.name }}
+                    <span style="color:#9ca3af;">({{ ((att.size or 0) / 1024) | int }}KB)</span>
+                </div>
+                {% endif %}
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            <!-- Attachment preview (populated after extraction) -->
+            <div id="attachment-preview-section" style="display:none;">
+                <div class="att-preview-header">
+                    <span>Document Preview: <span id="preview-filename"></span></span>
+                    <button class="att-preview-toggle" onclick="togglePreviewCollapse()">
+                        <span id="preview-toggle-label">Collapse</span>
+                    </button>
+                </div>
+                <div id="attachment-preview-container">
+                    <iframe id="attachment-preview-iframe"
+                            style="width:100%; height:600px; border:none;">
+                    </iframe>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── RIGHT: Process panel ──────────────────────────────────── -->
+    <div>
+        <div class="process-panel">
+            <div class="process-panel-header">
+                <h3>Process Message</h3>
+            </div>
+            <div class="process-panel-body">
+
+                <!-- Type tabs -->
+                <div class="type-tabs" id="type-tabs">
+                    <button class="type-tab {% if classification.type == 'bill' %}active{% endif %}"
+                            onclick="setType('bill')" data-type="bill">Bill</button>
+                    <button class="type-tab {% if classification.type == 'expense' %}active{% endif %}"
+                            onclick="setType('expense')" data-type="expense">Expense</button>
+                    <button class="type-tab {% if classification.type == 'vendor_credit' %}active{% endif %}"
+                            onclick="setType('vendor_credit')" data-type="vendor_credit">Credit</button>
+                    <button class="type-tab {% if classification.type in ('inquiry','statement','unknown') %}active{% endif %}"
+                            onclick="setType('skip')" data-type="skip">Skip</button>
+                </div>
+
+                <!-- ═══ PANEL: Choose Action (default) ═══ -->
+                <div id="panel-choosing">
+                    <div class="triage-actions">
+
+                        <!-- Process (primary) -->
+                        <button class="triage-btn triage-btn-process" id="btn-process"
+                                onclick="startProcess()">
+                            <span>➡️ <span id="process-label">Process as Bill</span></span>
+                            <span class="triage-btn-sub">Extract fields & create draft record</span>
+                        </button>
+
+                        <!-- Forward to PM -->
+                        <button class="triage-btn triage-btn-forward" onclick="startForwardToPM()">
+                            <span>📤 Forward to PM</span>
+                            <span class="triage-btn-sub">Ask a PM to review before processing</span>
+                        </button>
+
+                        <!-- Skip -->
+                        <button class="triage-btn triage-btn-skip" onclick="skipMessage()">
+                            <span>⏭️ Skip — No Action</span>
+                            <span class="triage-btn-sub">Leave in inbox for now</span>
+                        </button>
+
+                    </div>
+                </div>
+
+                <!-- ═══ PANEL: Forward to PM ═══ -->
+                <div id="panel-forwarding" style="display:none;">
+                    <p class="panel-desc">Forward this message to a PM for review and approval.</p>
+                    <div class="field-group">
+                        <label>PM Email Address *</label>
+                        <input type="email" id="pm_email" placeholder="pm@rogersbuild.com"
+                               style="width:100%; padding:0.45rem 0.65rem; border:1px solid #d1d5db;
+                                      border-radius:5px; font-size:0.875rem; box-sizing:border-box;">
+                    </div>
+                    <div class="field-group" style="margin-top:0.5rem;">
+                        <label>Note</label>
+                        <input type="text" id="forward_note"
+                               value="When you have a moment, will you please review for approval?"
+                               style="width:100%; padding:0.45rem 0.65rem; border:1px solid #d1d5db;
+                                      border-radius:5px; font-size:0.875rem; box-sizing:border-box;">
+                    </div>
+                    <div class="action-row">
+                        <button class="btn btn-primary" onclick="submitForwardToPM()">📤 Send Forward</button>
+                        <button class="btn btn-secondary" onclick="cancelAction()">← Back</button>
+                    </div>
+                    <div id="forward-status" style="font-size:0.8rem; margin-top:0.5rem; min-height:1.2rem;"></div>
+                </div>
+
+                <!-- ═══ PANEL: Extracting (loading) ═══ -->
+                <div id="panel-extracting" style="display:none; text-align:center; padding:1.5rem 0;">
+                    <div style="font-size:1.5rem; margin-bottom:0.5rem;">⏳</div>
+                    <div style="font-weight:600; font-size:0.875rem; color:#374151;">Extracting document fields…</div>
+                    <div style="font-size:0.78rem; color:#9ca3af; margin-top:0.25rem;">
+                        Running Document Intelligence on the attachment
+                    </div>
+                </div>
+
+                <!-- ═══ PANEL: Extraction Preview ═══ -->
+                <div id="panel-preview" style="display:none;">
+                    <p class="panel-desc" id="preview-desc">Review extracted fields, then create the draft.</p>
+                    <div id="preview-fields"
+                         style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px;
+                                padding:0.5rem 0.75rem; margin-bottom:0.75rem;">
+                    </div>
+                    <div class="action-row">
+                        <button class="btn btn-primary" id="create-btn" onclick="confirmProcess()">✓ Create Draft</button>
+                        <button class="btn btn-secondary" onclick="cancelAction()">← Back</button>
+                    </div>
+                    <div id="create-status" style="font-size:0.8rem; margin-top:0.5rem; min-height:1.2rem;"></div>
+                </div>
+
+            </div><!-- /process-panel-body -->
+        </div><!-- /process-panel -->
+    </div><!-- /right col -->
+
+</div><!-- /message-layout -->
+
+<script>
+const MESSAGE_ID = "{{ email.message_id }}";
+const INBOX_RETURN_URL = (document.referrer && new URL(document.referrer).pathname === '/inbox')
+    ? document.referrer
+    : '/inbox';
+document.getElementById('back-to-inbox').href = INBOX_RETURN_URL;
+let selectedAttachmentId = null;
+let extractionData = null;
+let lastAttachmentInfo = null;
+let currentType = "{{ classification.type }}";
+let isRead = {{ 'true' if email.is_read else 'false' }};
+let isFlagged = {{ 'true' if (email.is_flagged or (email.flag and email.flag.flagStatus == 'flagged')) else 'false' }};
+const DRAFT_BTN_LABELS = {
+    bill: 'Create Draft Bill',
+    vendor_credit: 'Create Draft Credit',
+    expense: 'Create Draft Expense',
+};
+const VENDORS = [
+    {% for vendor in vendors %}
+    { publicId: "{{ vendor.public_id }}", name: {{ vendor.name | tojson }} },
+    {% endfor %}
+];
+const PROJECTS = [
+    {% for project in projects %}
+    { publicId: "{{ project.public_id }}", name: {{ project.name | tojson }} },
+    {% endfor %}
+];
+const SUB_COST_CODES = [
+    {% for scc in sub_cost_codes %}
+    { id: "{{ scc.id }}", name: {{ scc.name | tojson }}, number: {{ (scc.number or '') | tojson }} },
+    {% endfor %}
+];
+
+function getCsrfHeaders() {
+    const csrfCookie = document.cookie.split('; ').find(row => row.startsWith('token.csrf='));
+    const csrfToken = csrfCookie ? decodeURIComponent(csrfCookie.split('=').slice(1).join('=')) : '';
+    return csrfToken ? { 'X-CSRF-Token': csrfToken } : {};
+}
+
+// ── Panel management ────────────────────────────────────────────────
+const PANELS = ['panel-choosing', 'panel-forwarding', 'panel-extracting', 'panel-preview'];
+
+function showPanel(id) {
+    PANELS.forEach(p => {
+        document.getElementById(p).style.display = (p === id) ? '' : 'none';
+    });
+}
+
+function cancelAction() {
+    showPanel('panel-choosing');
+}
+
+// ── Type tab switching ──────────────────────────────────────────────
+const TYPE_LABELS = {
+    bill: 'Process as Bill',
+    vendor_credit: 'Process as Credit',
+    expense: 'Process as Expense',
+    skip: 'Skip',
+};
+
+function setType(type) {
+    currentType = type;
+    document.querySelectorAll('.type-tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.type === type);
+    });
+    const label = document.getElementById('process-label');
+    if (label) label.textContent = TYPE_LABELS[type] || 'Process';
+    // Disable the Process button for skip type
+    const processBtn = document.getElementById('btn-process');
+    if (processBtn) {
+        processBtn.disabled = (type === 'skip');
+    }
+    // Return to chooser panel if we were on preview with a different type
+    if (document.getElementById('panel-preview').style.display !== 'none') {
+        cancelAction();
+    }
+}
+
+// ── Attachment selection ────────────────────────────────────────────
+function selectAttachment(el, attId) {
+    document.querySelectorAll('.att-chip').forEach(c => {
+        c.classList.remove('selected');
+        const tag = c.querySelector('.att-selected-tag');
+        if (tag) tag.remove();
+    });
+    el.classList.add('selected');
+    selectedAttachmentId = attId;
+    const tag = document.createElement('span');
+    tag.className = 'att-selected-tag';
+    tag.textContent = ' ✓';
+    tag.style.cssText = 'color:#2563eb; font-weight:700; margin-left:2px;';
+    el.appendChild(tag);
+}
+
+// ── Skip ─────────────────────────────────────────────────────────────
+function skipMessage() {
+    window.location.href = INBOX_RETURN_URL;
+}
+
+// ── Forward to PM ────────────────────────────────────────────────────
+function startForwardToPM() {
+    showPanel('panel-forwarding');
+    document.getElementById('forward-status').textContent = '';
+    setTimeout(() => document.getElementById('pm_email').focus(), 50);
+}
+
+async function submitForwardToPM() {
+    const pmEmail = document.getElementById('pm_email').value.trim();
+    const note = document.getElementById('forward_note').value.trim();
+    const status = document.getElementById('forward-status');
+
+    if (!pmEmail) {
+        status.innerHTML = '<span style="color:#dc2626">⚠ PM email is required.</span>';
+        return;
+    }
+
+    status.innerHTML = '<span style="color:#3b82f6">⏳ Forwarding…</span>';
+
+    try {
+        const resp = await fetch(`/inbox/message/${MESSAGE_ID}/forward-to-pm`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getCsrfHeaders() },
+            body: JSON.stringify({ pm_email: pmEmail, note }),
+            credentials: 'same-origin',
+        });
+        const data = await resp.json();
+
+        if (data.status_code === 200) {
+            status.innerHTML = '<span style="color:#059669">✓ Forwarded! Returning to inbox…</span>';
+            setTimeout(() => { window.location.href = INBOX_RETURN_URL; }, 1000);
+        } else {
+            status.innerHTML = `<span style="color:#dc2626">⚠ ${data.message || 'Forward failed. Please try again.'}</span>`;
+        }
+    } catch (err) {
+        status.innerHTML = `<span style="color:#dc2626">⚠ Forward failed: ${err}</span>`;
+    }
+}
+
+// ── Process (extract → preview → create) ────────────────────────────
+async function startProcess() {
+    showPanel('panel-extracting');
+
+    let url = `/inbox/message/${MESSAGE_ID}/extract`;
+    if (selectedAttachmentId) url += `?attachment_id=${selectedAttachmentId}`;
+
+    let ex = null;
+    let extractionError = null;
+    try {
+        const resp = await fetch(url, {
+            method: 'POST',
+            headers: { ...getCsrfHeaders() },
+            credentials: 'same-origin',
+        });
+        const data = await resp.json();
+        if (data.status_code === 200) {
+            ex = data.extraction;
+            lastAttachmentInfo = data.attachment || null;
+        } else {
+            extractionError = data.message || `Extraction failed (${data.status_code})`;
+        }
+    } catch (err) {
+        extractionError = `Network error: ${err.message || err}`;
+    }
+
+    extractionData = ex;
+    renderPreview(ex, extractionError);
+    showPanel('panel-preview');
+    document.getElementById('create-status').textContent = '';
+
+    // Show extraction results in copilot chat
+    if (ex && typeof addCopilotMessage === 'function') {
+        showExtractionInChat(ex);
+    }
+
+    // Show attachment preview in left column
+    if (lastAttachmentInfo) {
+        showAttachmentPreview();
+    }
+}
+
+function showAttachmentPreview() {
+    const section = document.getElementById('attachment-preview-section');
+    const iframe = document.getElementById('attachment-preview-iframe');
+    const filenameSpan = document.getElementById('preview-filename');
+
+    if (!lastAttachmentInfo) return;
+
+    const msgId = lastAttachmentInfo.source_message_id || MESSAGE_ID;
+    const attId = lastAttachmentInfo.id;
+    iframe.src = `/inbox/message/${msgId}/attachment/${attId}/view#navpanes=0`;
+    filenameSpan.textContent = lastAttachmentInfo.filename || 'attachment';
+    section.style.display = '';
+}
+
+function togglePreviewCollapse() {
+    const container = document.getElementById('attachment-preview-container');
+    const label = document.getElementById('preview-toggle-label');
+    if (container.style.display === 'none') {
+        container.style.display = '';
+        label.textContent = 'Collapse';
+    } else {
+        container.style.display = 'none';
+        label.textContent = 'Expand';
+    }
+}
+
+function showExtractionInChat(ex) {
+    const confPct = ex.overall_confidence ? Math.round(ex.overall_confidence * 100) : null;
+    const isAI = (ex.extraction_notes || []).some(n => n.toLowerCase().includes('claude'));
+
+    let lines = [];
+    lines.push(`**Document Extraction ${isAI ? '(AI)' : ''}**`);
+    lines.push('');
+
+    if (ex.vendor_name) {
+        const vPct = ex.vendor_match?.confidence ?? ex.vendor_confidence;
+        const vLabel = ex.vendor_match ? ex.vendor_match.name : ex.vendor_name;
+        lines.push(`**Vendor:** ${vLabel}${vPct ? ' (' + Math.round(vPct * 100) + '%)' : ''}`);
+    }
+    if (ex.bill_number) {
+        const bPct = ex.bill_number_confidence;
+        lines.push(`**Invoice #:** ${ex.bill_number}${bPct ? ' (' + Math.round(bPct * 100) + '%)' : ''}`);
+    }
+    if (ex.bill_date) {
+        const dPct = ex.date_confidence;
+        lines.push(`**Date:** ${ex.bill_date}${dPct ? ' (' + Math.round(dPct * 100) + '%)' : ''}`);
+    }
+    if (ex.total_amount) {
+        const aPct = ex.amount_confidence;
+        const amt = parseFloat(ex.total_amount).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+        lines.push(`**Amount:** ${amt}${aPct ? ' (' + Math.round(aPct * 100) + '%)' : ''}`);
+    }
+    if (ex.line_items?.length) {
+        lines.push(`**Line Items:** ${ex.line_items.length}`);
+    }
+    if (ex.memo) {
+        lines.push(`**Memo:** ${ex.memo}`);
+    }
+
+    if (confPct) {
+        lines.push('');
+        lines.push(`Overall confidence: **${confPct}%**`);
+    }
+
+    addCopilotMessage(lines.join('\n'), 'assistant');
+}
+
+function renderPreview(ex, errorMessage) {
+    const container = document.getElementById('preview-fields');
+    const createBtn = document.getElementById('create-btn');
+    const desc = document.getElementById('preview-desc');
+
+    // Button label
+    createBtn.textContent = `✓ ${DRAFT_BTN_LABELS[currentType] || 'Create Draft'}`;
+    createBtn.disabled = false;
+
+    if (!ex) {
+        const reason = errorMessage || 'No fields could be extracted.';
+        desc.textContent = `${reason} A blank draft will be created for you to complete.`;
+        container.innerHTML = `<div style="text-align:center; color:#9ca3af; font-size:0.82rem; padding:0.5rem 0;">
+            ${errorMessage ? '⚠️ ' + errorMessage : 'No attachment extracted.'}</div>`;
+        return;
+    }
+
+    const overall = ex.overall_confidence ? Math.round(ex.overall_confidence * 100) : null;
+    if (overall) {
+        desc.textContent = `Extraction confidence: ${overall}%. Review fields and correct if needed.`;
+    } else {
+        desc.textContent = 'Review extracted fields. Correct if needed, then create the draft.';
+    }
+
+    let html = '';
+
+    // --- Vendor select ---
+    const vendorConf = ex.vendor_match?.confidence ?? ex.vendor_confidence;
+    const vendorConfPct = vendorConf ? Math.round(vendorConf * 100) : null;
+    const vendorConfClass = vendorConfPct == null ? '' : vendorConfPct >= 80 ? 'confidence-high' : vendorConfPct >= 50 ? 'confidence-med' : 'confidence-low';
+    const vendorConfTag = vendorConfPct != null ? `<span class="conf-tag">${vendorConfPct}%</span>` : '';
+    const selectedVendorId = ex.vendor_match?.public_id || '';
+
+    html += `<div class="preview-row ${vendorConfClass}">
+        <span class="preview-label">Vendor</span>
+        <div class="preview-field-wrapper">
+            <select id="preview-vendor" style="width:100%;">
+                <option value="">(no vendor selected)</option>
+                ${VENDORS.map(v => `<option value="${v.publicId}" ${v.publicId === selectedVendorId ? 'selected' : ''}>${v.name}</option>`).join('')}
+            </select>
+            ${!ex.vendor_match && ex.vendor_name ? `<div class="preview-hint">Extracted: "${ex.vendor_name}" (unmatched)</div>` : ''}
+            ${vendorConfTag}
+        </div>
+    </div>`;
+
+    // --- Invoice # input ---
+    const bnConf = ex.bill_number_confidence;
+    const bnConfPct = bnConf ? Math.round(bnConf * 100) : null;
+    const bnConfClass = bnConfPct == null ? '' : bnConfPct >= 80 ? 'confidence-high' : bnConfPct >= 50 ? 'confidence-med' : 'confidence-low';
+    const bnConfTag = bnConfPct != null ? `<span class="conf-tag">${bnConfPct}%</span>` : '';
+
+    html += `<div class="preview-row ${bnConfClass}">
+        <span class="preview-label">Invoice #</span>
+        <div class="preview-field-wrapper">
+            <input type="text" id="preview-bill-number" value="${ex.bill_number || ''}" placeholder="Enter invoice number">
+            ${bnConfTag}
+        </div>
+    </div>`;
+
+    // --- Date input ---
+    const dateConf = ex.date_confidence;
+    const dateConfPct = dateConf ? Math.round(dateConf * 100) : null;
+    const dateConfClass = dateConfPct == null ? '' : dateConfPct >= 80 ? 'confidence-high' : dateConfPct >= 50 ? 'confidence-med' : 'confidence-low';
+    const dateConfTag = dateConfPct != null ? `<span class="conf-tag">${dateConfPct}%</span>` : '';
+
+    html += `<div class="preview-row ${dateConfClass}">
+        <span class="preview-label">Date</span>
+        <div class="preview-field-wrapper">
+            <input type="date" id="preview-date" value="${ex.bill_date || ''}">
+            ${dateConfTag}
+        </div>
+    </div>`;
+
+    // --- Amount input ---
+    const amtConf = ex.amount_confidence;
+    const amtConfPct = amtConf ? Math.round(amtConf * 100) : null;
+    const amtConfClass = amtConfPct == null ? '' : amtConfPct >= 80 ? 'confidence-high' : amtConfPct >= 50 ? 'confidence-med' : 'confidence-low';
+    const amtConfTag = amtConfPct != null ? `<span class="conf-tag">${amtConfPct}%</span>` : '';
+    const amtVal = ex.total_amount ? parseFloat(ex.total_amount).toFixed(2) : '';
+
+    html += `<div class="preview-row ${amtConfClass}">
+        <span class="preview-label">Amount</span>
+        <div class="preview-field-wrapper">
+            <input type="number" id="preview-amount" value="${amtVal}" step="0.01" placeholder="0.00">
+            ${amtConfTag}
+        </div>
+    </div>`;
+
+    // --- Description / Memo input ---
+    html += `<div class="preview-row">
+        <span class="preview-label">Description</span>
+        <div class="preview-field-wrapper">
+            <input type="text" id="preview-memo" value="${ex.memo || ''}" placeholder="Line item description">
+        </div>
+    </div>`;
+
+    // --- Project select ---
+    const selectedProjectId = ex.project_match?.public_id || '';
+    html += `<div class="preview-row">
+        <span class="preview-label">Project</span>
+        <div class="preview-field-wrapper">
+            <select id="preview-project" style="width:100%;">
+                <option value="">(none)</option>
+                ${PROJECTS.map(p => `<option value="${p.publicId}" ${p.publicId === selectedProjectId ? 'selected' : ''}>${p.name}</option>`).join('')}
+            </select>
+            ${ex.project_hint && !ex.project_match ? `<div class="preview-hint">AI suggestion: "${ex.project_hint}" (unmatched)</div>` : ''}
+        </div>
+    </div>`;
+
+    // --- SubCostCode select ---
+    const selectedSccId = ex.sub_cost_code_match?.id || '';
+    html += `<div class="preview-row">
+        <span class="preview-label">Cost Code</span>
+        <div class="preview-field-wrapper">
+            <select id="preview-scc" style="width:100%;">
+                <option value="">(none)</option>
+                ${SUB_COST_CODES.map(s => `<option value="${s.id}" ${String(s.id) === String(selectedSccId) ? 'selected' : ''}>${s.number ? s.number + ' ' : ''}${s.name}</option>`).join('')}
+            </select>
+            ${ex.sub_cost_code_hint && !ex.sub_cost_code_match ? `<div class="preview-hint">AI suggestion: "${ex.sub_cost_code_hint}" (unmatched)</div>` : ''}
+        </div>
+    </div>`;
+
+    // --- Is Billable checkbox ---
+    const billableChecked = ex.is_billable !== false ? 'checked' : '';
+    html += `<div class="preview-row">
+        <span class="preview-label">Billable</span>
+        <div class="preview-field-wrapper" style="text-align:left;">
+            <label style="font-size:0.82rem; font-weight:400; text-transform:none; letter-spacing:normal; cursor:pointer;">
+                <input type="checkbox" id="preview-billable" ${billableChecked}> Job cost (billable to customer)
+            </label>
+        </div>
+    </div>`;
+
+    container.innerHTML = html;
+}
+
+async function confirmProcess() {
+    const createBtn = document.getElementById('create-btn');
+    const status = document.getElementById('create-status');
+    createBtn.disabled = true;
+    createBtn.textContent = 'Creating…';
+
+    const ex = extractionData;
+
+    // Read user-edited values from form controls (fall back to extraction data)
+    const vendorPublicId = document.getElementById('preview-vendor')?.value || null;
+    const billNumber = document.getElementById('preview-bill-number')?.value || null;
+    const billDate = document.getElementById('preview-date')?.value || null;
+    const amount = document.getElementById('preview-amount')?.value || ex?.total_amount || null;
+    const memo = document.getElementById('preview-memo')?.value || ex?.memo || null;
+    const projectPublicId = document.getElementById('preview-project')?.value || null;
+    const sccId = document.getElementById('preview-scc')?.value || null;
+    const isBillable = document.getElementById('preview-billable')?.checked ?? true;
+
+    let url, payload;
+
+    if (currentType === 'bill') {
+        url = `/inbox/message/${MESSAGE_ID}/create-bill`;
+        payload = {
+            vendor_public_id: vendorPublicId,
+            bill_number: billNumber,
+            bill_date: billDate,
+            due_date: billDate,
+            total_amount: amount,
+            memo: memo,
+            payment_term_public_id: ex?.payment_term_match?.public_id || null,
+            project_public_id: projectPublicId,
+            sub_cost_code_id: sccId,
+            is_billable: isBillable,
+            attachment_id: lastAttachmentInfo?.id || null,
+            attachment_message_id: lastAttachmentInfo?.source_message_id || null,
+        };
+    } else if (currentType === 'vendor_credit') {
+        url = `/inbox/message/${MESSAGE_ID}/create-credit`;
+        payload = {
+            vendor_public_id: vendorPublicId,
+            credit_number: billNumber,
+            credit_date: billDate,
+            total_amount: ex?.total_amount || null,
+            memo: ex?.memo || null,
+            line_items: (ex?.line_items || []).map(li => ({
+                description: li.description,
+                amount: li.amount,
+            })),
+        };
+    } else if (currentType === 'expense') {
+        url = `/inbox/message/${MESSAGE_ID}/create-expense`;
+        payload = {
+            vendor_public_id: vendorPublicId,
+            reference_number: billNumber,
+            expense_date: billDate,
+            total_amount: ex?.total_amount || null,
+            memo: ex?.memo || null,
+            line_items: (ex?.line_items || []).map(li => ({
+                description: li.description,
+                amount: li.amount,
+            })),
+        };
+    }
+
+    try {
+        const resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getCsrfHeaders() },
+            body: JSON.stringify(payload),
+            credentials: 'same-origin',
+        });
+        const data = await resp.json();
+
+        if (data.status_code === 201 && data.redirect_url) {
+            status.innerHTML = '<span style="color:#059669">✓ Draft created! Returning to inbox…</span>';
+            setTimeout(() => { window.location.href = INBOX_RETURN_URL; }, 800);
+        } else {
+            status.innerHTML = `<span style="color:#dc2626">⚠ ${data.message || 'Creation failed. Please try again.'}</span>`;
+            createBtn.disabled = false;
+            createBtn.textContent = `✓ ${DRAFT_BTN_LABELS[currentType] || 'Create Draft'}`;
+        }
+    } catch (err) {
+        status.innerHTML = `<span style="color:#dc2626">⚠ ${err}</span>`;
+        createBtn.disabled = false;
+    }
+}
+
+// ── Mark read / unread ────────────────────────────────────────────
+async function toggleRead() {
+    const newState = !isRead;
+    const btn = document.getElementById('btn-read');
+    btn.disabled = true;
+
+    try {
+        const resp = await fetch(`/inbox/message/${MESSAGE_ID}/mark-read`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getCsrfHeaders() },
+            body: JSON.stringify({ is_read: newState }),
+            credentials: 'same-origin',
+        });
+        const data = await resp.json();
+
+        if (data.status_code === 200) {
+            isRead = newState;
+            document.getElementById('read-icon').textContent = isRead ? '✉️' : '📩';
+            document.getElementById('read-label').textContent = isRead ? 'Mark Unread' : 'Mark Read';
+            btn.classList.toggle('active', isRead);
+        }
+    } catch (err) {
+        console.error('Toggle read failed:', err);
+    }
+    btn.disabled = false;
+}
+
+// ── Flag / unflag ────────────────────────────────────────────────
+async function toggleFlag() {
+    const newState = !isFlagged;
+    const btn = document.getElementById('btn-flag');
+    btn.disabled = true;
+
+    try {
+        const resp = await fetch(`/inbox/message/${MESSAGE_ID}/flag`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getCsrfHeaders() },
+            body: JSON.stringify({ flagged: newState }),
+            credentials: 'same-origin',
+        });
+        const data = await resp.json();
+
+        if (data.status_code === 200) {
+            isFlagged = newState;
+            document.getElementById('flag-label').textContent = isFlagged ? 'Unflag' : 'Flag';
+            btn.classList.toggle('active', isFlagged);
+        }
+    } catch (err) {
+        console.error('Toggle flag failed:', err);
+    }
+    btn.disabled = false;
+}
+
+// ── Init ──────────────────────────────────────────────────────────
+setType("{{ classification.type }}");
+
+// Auto-select first non-inline attachment
+const firstChip = document.querySelector('.att-chip');
+if (firstChip) {
+    firstChip.click();
+}
+</script>
+
+{% endblock %}

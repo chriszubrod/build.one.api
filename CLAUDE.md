@@ -1,0 +1,1 @@
+At the start of each session, read SESSION_NOTES.md for historical context.

@@ -75,7 +75,7 @@ class VendorCreditBillCreditConnector:
                 credit_number=qbo_vc.doc_number or f"QBO-{qbo_vc.qbo_id}",
                 total_amount=Decimal(str(qbo_vc.total_amt)) if qbo_vc.total_amt else None,
                 memo=qbo_vc.private_note,
-                is_draft=True,
+                is_draft=False,
             )
             
             if bill_credit:

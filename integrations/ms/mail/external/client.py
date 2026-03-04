@@ -22,15 +22,37 @@ def _get_auth_headers() -> Optional[dict]:
     """
     ms_auth_service = MsAuthService()
     ms_auth = ms_auth_service.ensure_valid_token()
-    
+
     if not ms_auth or not ms_auth.access_token:
         logger.error("No valid MS access token available")
         return None
-    
+
     return {
         "Authorization": f"Bearer {ms_auth.access_token}",
         "Content-Type": "application/json"
     }
+
+
+def _mailbox_path(mailbox: Optional[str] = None) -> str:
+    """
+    Return the Graph API mailbox path segment.
+
+    When ``mailbox`` is None (the default) requests target the authenticated
+    user's own mailbox via ``/me``.  When a mailbox email address is supplied
+    (e.g. the dedicated invoice inbox account) requests target that account
+    via ``/users/{mailbox}``, which works provided the authenticated user
+    has delegated access or the app has application-level Mail.Read permission
+    for that account.
+
+    Args:
+        mailbox: Optional email address of a shared / separate mailbox.
+
+    Returns:
+        Path segment string, e.g. ``"/me"`` or ``"/users/invoices@company.com"``
+    """
+    if mailbox:
+        return f"/users/{mailbox}"
+    return "/me"
 
 
 # =============================================================================
@@ -38,10 +60,13 @@ def _get_auth_headers() -> Optional[dict]:
 # =============================================================================
 
 
-def list_mail_folders() -> dict:
+def list_mail_folders(mailbox: Optional[str] = None) -> dict:
     """
-    List all mail folders for the current user.
-    
+    List all mail folders for the current user (or a delegated mailbox).
+
+    Args:
+        mailbox: Optional email address of a separate / shared mailbox.
+
     Returns:
         Dict with status_code, message, and folders list
     """
@@ -53,8 +78,8 @@ def list_mail_folders() -> dict:
                 "status_code": 401,
                 "folders": []
             }
-        
-        endpoint = f"{GRAPH_API_BASE}/me/mailFolders"
+
+        endpoint = f"{GRAPH_API_BASE}{_mailbox_path(mailbox)}/mailFolders"
         
         logger.info("Listing mail folders")
         resp = requests.get(url=endpoint, headers=headers)
@@ -101,13 +126,14 @@ def list_mail_folders() -> dict:
         }
 
 
-def get_mail_folder(folder_id: str) -> dict:
+def get_mail_folder(folder_id: str, mailbox: Optional[str] = None) -> dict:
     """
     Get a specific mail folder by ID.
-    
+
     Args:
         folder_id: The folder ID or well-known name (inbox, drafts, sentitems, deleteditems)
-    
+        mailbox: Optional email address of a separate / shared mailbox.
+
     Returns:
         Dict with status_code, message, and folder data
     """
@@ -119,8 +145,8 @@ def get_mail_folder(folder_id: str) -> dict:
                 "status_code": 401,
                 "folder": None
             }
-        
-        endpoint = f"{GRAPH_API_BASE}/me/mailFolders/{folder_id}"
+
+        endpoint = f"{GRAPH_API_BASE}{_mailbox_path(mailbox)}/mailFolders/{folder_id}"
         
         logger.info(f"Getting mail folder: {folder_id}")
         resp = requests.get(url=endpoint, headers=headers)
@@ -250,11 +276,12 @@ def list_messages(
     skip: int = 0,
     filter_query: Optional[str] = None,
     search: Optional[str] = None,
-    order_by: str = "receivedDateTime desc"
+    order_by: str = "receivedDateTime desc",
+    mailbox: Optional[str] = None,
 ) -> dict:
     """
     List messages from a mail folder with automatic pagination.
-    
+
     Args:
         folder: Folder ID or well-known name (inbox, drafts, sentitems, deleteditems)
         top: Total number of messages to retrieve (will page automatically)
@@ -262,7 +289,8 @@ def list_messages(
         filter_query: OData filter query (e.g., "isRead eq false")
         search: Search query string
         order_by: Sort order (default: receivedDateTime desc)
-    
+        mailbox: Optional email address of a separate / shared mailbox.
+
     Returns:
         Dict with status_code, message, messages list, and pagination info
     """
@@ -275,8 +303,8 @@ def list_messages(
                 "messages": [],
                 "total_count": 0
             }
-        
-        endpoint = f"{GRAPH_API_BASE}/me/mailFolders/{folder}/messages"
+
+        endpoint = f"{GRAPH_API_BASE}{_mailbox_path(mailbox)}/mailFolders/{folder}/messages"
         
         # MS Graph caps at 50 per request, so we'll page through
         page_size = 50
@@ -378,18 +406,20 @@ def list_messages(
 def search_all_messages(
     conversation_id: str,
     top: int = 50,
+    mailbox: Optional[str] = None,
 ) -> dict:
     """
     Search all messages by conversation ID.
-    
+
     Uses a two-phase approach:
     1. First tries direct $filter (fast for recent conversations)
     2. Falls back to paging if filter fails or returns no results
-    
+
     Args:
         conversation_id: The conversation ID to search for
         top: Maximum number of messages to return
-        
+        mailbox: Optional email address of a separate / shared mailbox.
+
     Returns:
         Dict with status_code, message, and messages list
     """
@@ -402,9 +432,10 @@ def search_all_messages(
                 "messages": [],
             }
         
-        endpoint = f"{GRAPH_API_BASE}/me/messages"
+        base = f"{GRAPH_API_BASE}/users/{mailbox}" if mailbox else f"{GRAPH_API_BASE}/me"
+        endpoint = f"{base}/messages"
         select_fields = "id,conversationId,internetMessageId,subject,body,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,isDraft,hasAttachments,importance,bodyPreview,webLink,flag"
-        
+
         # Phase 1: Try direct $filter (fast path for recent conversations)
         # Note: This may fail with InefficientFilter for some queries
         logger.info(f"Trying direct filter for conversation: {conversation_id[:50]}...")
@@ -510,14 +541,15 @@ def search_all_messages(
         }
 
 
-def get_message(message_id: str, include_body: bool = True) -> dict:
+def get_message(message_id: str, include_body: bool = True, mailbox: Optional[str] = None) -> dict:
     """
     Get a specific message by ID with full details.
-    
+
     Args:
         message_id: The message ID
         include_body: Whether to include the full body content
-    
+        mailbox: Optional email address of a separate / shared mailbox.
+
     Returns:
         Dict with status_code, message data
     """
@@ -529,8 +561,8 @@ def get_message(message_id: str, include_body: bool = True) -> dict:
                 "status_code": 401,
                 "email": None
             }
-        
-        endpoint = f"{GRAPH_API_BASE}/me/messages/{message_id}"
+
+        endpoint = f"{GRAPH_API_BASE}{_mailbox_path(mailbox)}/messages/{message_id}"
         
         select_fields = "id,conversationId,internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,receivedDateTime,sentDateTime,isRead,isDraft,hasAttachments,importance,bodyPreview,webLink,flag"
         if include_body:
@@ -603,14 +635,15 @@ def get_message(message_id: str, include_body: bool = True) -> dict:
         }
 
 
-def mark_message_read(message_id: str, is_read: bool = True) -> dict:
+def mark_message_read(message_id: str, is_read: bool = True, mailbox: Optional[str] = None) -> dict:
     """
     Mark a message as read or unread.
-    
+
     Args:
         message_id: The message ID
         is_read: True to mark as read, False to mark as unread
-    
+        mailbox: Optional shared mailbox email address
+
     Returns:
         Dict with status_code and message
     """
@@ -621,16 +654,17 @@ def mark_message_read(message_id: str, is_read: bool = True) -> dict:
                 "message": "No valid MS access token available. Please authenticate first.",
                 "status_code": 401
             }
-        
-        endpoint = f"{GRAPH_API_BASE}/me/messages/{message_id}"
-        
+
+        base = f"{GRAPH_API_BASE}/users/{mailbox}" if mailbox else f"{GRAPH_API_BASE}/me"
+        endpoint = f"{base}/messages/{message_id}"
+
         payload = {
             "isRead": is_read
         }
-        
+
         logger.info(f"Marking message {message_id} as {'read' if is_read else 'unread'}")
         resp = requests.patch(url=endpoint, headers=headers, json=payload)
-        
+
         if resp.status_code == 200:
             return {
                 "message": f"Message marked as {'read' if is_read else 'unread'}",
@@ -660,13 +694,15 @@ def mark_message_read(message_id: str, is_read: bool = True) -> dict:
         }
 
 
-def unflag_message(message_id: str) -> dict:
+def flag_message(message_id: str, flagged: bool = True, mailbox: Optional[str] = None) -> dict:
     """
-    Remove the flag from a message.
-    
+    Flag or unflag a message.
+
     Args:
         message_id: The message ID
-    
+        flagged: True to flag, False to unflag
+        mailbox: Optional shared mailbox email address
+
     Returns:
         Dict with status_code and message
     """
@@ -677,21 +713,23 @@ def unflag_message(message_id: str) -> dict:
                 "message": "No valid MS access token available. Please authenticate first.",
                 "status_code": 401
             }
-        
-        endpoint = f"{GRAPH_API_BASE}/me/messages/{message_id}"
-        
+
+        base = f"{GRAPH_API_BASE}/users/{mailbox}" if mailbox else f"{GRAPH_API_BASE}/me"
+        endpoint = f"{base}/messages/{message_id}"
+
         payload = {
             "flag": {
-                "flagStatus": "notFlagged"
+                "flagStatus": "flagged" if flagged else "notFlagged"
             }
         }
-        
-        logger.info(f"Removing flag from message {message_id}")
+
+        action = "Flagging" if flagged else "Unflagging"
+        logger.info(f"{action} message {message_id}")
         resp = requests.patch(url=endpoint, headers=headers, json=payload)
-        
+
         if resp.status_code == 200:
             return {
-                "message": "Flag removed from message",
+                "message": f"Message {'flagged' if flagged else 'unflagged'}",
                 "status_code": 200
             }
         elif resp.status_code == 401:
@@ -705,17 +743,31 @@ def unflag_message(message_id: str) -> dict:
                 "status_code": 404
             }
         else:
-            logger.error(f"Graph API unflag message failed: {resp.text}")
+            logger.error(f"Graph API flag message failed: {resp.text}")
             return {
                 "message": f"Graph API call failed: {resp.text}",
                 "status_code": resp.status_code
             }
     except Exception as e:
-        logger.exception("Error removing flag from message")
+        logger.exception("Error flagging message")
         return {
             "message": f"An error occurred: {str(e)}",
             "status_code": 500
         }
+
+
+def unflag_message(message_id: str) -> dict:
+    """
+    Remove the flag from a message.
+    Convenience wrapper — delegates to flag_message(flagged=False).
+
+    Args:
+        message_id: The message ID
+
+    Returns:
+        Dict with status_code and message
+    """
+    return flag_message(message_id, flagged=False)
 
 
 # =============================================================================
@@ -723,13 +775,14 @@ def unflag_message(message_id: str) -> dict:
 # =============================================================================
 
 
-def list_message_attachments(message_id: str) -> dict:
+def list_message_attachments(message_id: str, mailbox: Optional[str] = None) -> dict:
     """
     List all attachments for a message.
-    
+
     Args:
         message_id: The message ID
-    
+        mailbox: Optional email address of a separate / shared mailbox.
+
     Returns:
         Dict with status_code, message, and attachments list
     """
@@ -741,8 +794,8 @@ def list_message_attachments(message_id: str) -> dict:
                 "status_code": 401,
                 "attachments": []
             }
-        
-        endpoint = f"{GRAPH_API_BASE}/me/messages/{message_id}/attachments"
+
+        endpoint = f"{GRAPH_API_BASE}{_mailbox_path(mailbox)}/messages/{message_id}/attachments"
         
         logger.info(f"Listing attachments for message: {message_id}")
         resp = requests.get(url=endpoint, headers=headers)
@@ -795,14 +848,15 @@ def list_message_attachments(message_id: str) -> dict:
         }
 
 
-def download_attachment(message_id: str, attachment_id: str) -> dict:
+def download_attachment(message_id: str, attachment_id: str, mailbox: Optional[str] = None) -> dict:
     """
     Download an attachment's content.
-    
+
     Args:
         message_id: The message ID
         attachment_id: The attachment ID
-    
+        mailbox: Optional email address of a separate / shared mailbox.
+
     Returns:
         Dict with status_code, content (bytes), content_type, and filename
     """
@@ -816,8 +870,8 @@ def download_attachment(message_id: str, attachment_id: str) -> dict:
                 "content_type": None,
                 "filename": None
             }
-        
-        endpoint = f"{GRAPH_API_BASE}/me/messages/{message_id}/attachments/{attachment_id}"
+
+        endpoint = f"{GRAPH_API_BASE}{_mailbox_path(mailbox)}/messages/{message_id}/attachments/{attachment_id}"
         
         logger.info(f"Downloading attachment: {attachment_id} from message: {message_id}")
         resp = requests.get(url=endpoint, headers=headers)

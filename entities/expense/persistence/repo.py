@@ -193,6 +193,16 @@ class ExpenseRepository:
                     params=params,
                 )
                 row = cursor.fetchone()
+                if not row:
+                    logger.warning(
+                        "UpdateExpenseById returned no row (id=%s); possible row-version conflict or record not found.",
+                        expense.id,
+                    )
+                    raise map_database_error(
+                        Exception(
+                            "Update did not match any row; the expense may have been modified by another process (row-version conflict) or no longer exists."
+                        )
+                    )
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during update expense by ID: {error}")

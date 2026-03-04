@@ -88,7 +88,7 @@ class PurchaseExpenseConnector:
                     reference_number=reference_number,
                     total_amount=float(total_amount) if total_amount else None,
                     memo=memo,
-                    is_draft=True,
+                    is_draft=False,
                 )
                 
                 # Sync line items for existing expense
@@ -109,7 +109,7 @@ class PurchaseExpenseConnector:
             reference_number=reference_number,
             total_amount=total_amount,
             memo=memo,
-            is_draft=True,
+            is_draft=False,
         )
         
         # Create mapping

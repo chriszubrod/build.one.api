@@ -9,8 +9,10 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import RedirectResponse
 
 # Local Imports
+from entities.contract_labor.business.model import ContractLabor
 from entities.contract_labor.business.service import ContractLaborService
 from entities.contract_labor.business.import_service import ContractLaborImportService
+from entities.contract_labor.business.bill_service import ContractLaborBillService
 from entities.contract_labor.persistence.repo import ContractLaborRepository
 from entities.contract_labor.persistence.line_item_repo import ContractLaborLineItemRepository
 from entities.vendor.business.service import VendorService
@@ -392,7 +394,20 @@ async def edit_entry(
     for key, value in entry_dict.items():
         if isinstance(value, Decimal):
             entry_dict[key] = float(value)
-    
+
+    # Default Bill Date, Due Date, Bill Number from Work Date (same rules as billing period)
+    if entry.work_date and (not entry.bill_date or not entry.due_date or not entry.bill_number):
+        billing_period = ContractLabor.calculate_billing_period_start(entry.work_date)
+        if billing_period:
+            if not entry.bill_date:
+                entry_dict["bill_date"] = billing_period
+            if not entry.due_date:
+                due = ContractLaborBillService().get_due_date(billing_period)
+                entry_dict["due_date"] = due
+            if not entry.bill_number:
+                # Format YYYY.MM.DD (e.g. 2026.02.15)
+                entry_dict["bill_number"] = billing_period.replace("-", ".")
+
     if vendor:
         entry_dict['vendor_name'] = vendor.name
         entry_dict['vendor_public_id'] = vendor.public_id

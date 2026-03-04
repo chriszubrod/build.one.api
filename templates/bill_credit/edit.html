@@ -15,7 +15,7 @@
             <button type="button" id="complete-btn" class="btn btn-primary">Complete</button>
             {% endif %}
             <a href="/bill-credit/{{ bill_credit.public_id }}" class="btn btn-secondary">View</a>
-            <a href="/bill-credit/list" class="btn btn-secondary">Back to List</a>
+            <a href="{{ return_to or '/bill-credit/list' }}" class="btn btn-secondary">Back to List</a>
         </div>
     </div>
 

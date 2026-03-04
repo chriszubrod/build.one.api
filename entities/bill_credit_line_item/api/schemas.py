@@ -40,6 +40,10 @@ class BillCreditLineItemCreate(BaseModel):
         default=None,
         description="Whether this line item is billable."
     )
+    is_billed: Optional[bool] = Field(
+        default=None,
+        description="Whether this line item has been billed/invoiced."
+    )
     billable_amount: Optional[Decimal] = Field(
         default=None,
         description="The billable amount."
@@ -84,6 +88,10 @@ class BillCreditLineItemUpdate(BaseModel):
     is_billable: Optional[bool] = Field(
         default=None,
         description="Whether this line item is billable."
+    )
+    is_billed: Optional[bool] = Field(
+        default=None,
+        description="Whether this line item has been billed/invoiced."
     )
     billable_amount: Optional[Decimal] = Field(
         default=None,

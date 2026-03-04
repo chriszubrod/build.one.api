@@ -49,6 +49,7 @@ class BillCreditLineItemRepository:
                 unit_price=Decimal(str(getattr(row, "UnitPrice", None))) if getattr(row, "UnitPrice", None) is not None else None,
                 amount=Decimal(str(getattr(row, "Amount", None))) if getattr(row, "Amount", None) is not None else None,
                 is_billable=bool(getattr(row, "IsBillable", False)) if getattr(row, "IsBillable", None) is not None else None,
+                is_billed=bool(getattr(row, "IsBilled", False)) if getattr(row, "IsBilled", None) is not None else None,
                 billable_amount=Decimal(str(getattr(row, "BillableAmount", None))) if getattr(row, "BillableAmount", None) is not None else None,
                 is_draft=bool(getattr(row, "IsDraft", False)) if getattr(row, "IsDraft", None) is not None else None,
             )
@@ -70,6 +71,7 @@ class BillCreditLineItemRepository:
         unit_price: Optional[Decimal] = None,
         amount: Optional[Decimal] = None,
         is_billable: Optional[bool] = None,
+        is_billed: Optional[bool] = None,
         billable_amount: Optional[Decimal] = None,
         is_draft: bool = True,
     ) -> BillCreditLineItem:
@@ -91,6 +93,7 @@ class BillCreditLineItemRepository:
                         "UnitPrice": float(unit_price) if unit_price is not None else None,
                         "Amount": float(amount) if amount is not None else None,
                         "IsBillable": 1 if is_billable else (0 if is_billable is False else None),
+                        "IsBilled": 1 if is_billed else (0 if is_billed is False else None),
                         "BillableAmount": float(billable_amount) if billable_amount is not None else None,
                         "IsDraft": 1 if is_draft else 0,
                     },
@@ -194,6 +197,7 @@ class BillCreditLineItemRepository:
                     "UnitPrice": float(line_item.unit_price) if line_item.unit_price is not None else None,
                     "Amount": float(line_item.amount) if line_item.amount is not None else None,
                     "IsBillable": 1 if line_item.is_billable else (0 if line_item.is_billable is False else None),
+                    "IsBilled": 1 if line_item.is_billed else (0 if line_item.is_billed is False else None),
                     "BillableAmount": float(line_item.billable_amount) if line_item.billable_amount is not None else None,
                 }
                 # Only include IsDraft if it's explicitly set (not None)

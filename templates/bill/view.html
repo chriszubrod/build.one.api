@@ -4,7 +4,7 @@
 
 {% block head %}
     <link rel="stylesheet" href="{{ url_for('static', path='css/bill.css') }}?v={{ range(1000, 9999) | random }}">
-    {% if workflow_conversation %}
+    {% if workflow_conversation or source_email %}
     <link rel="stylesheet" href="{{ url_for('static', path='css/agent.css') }}?v={{ range(1000, 9999) | random }}">
     {% endif %}
 {% endblock %}
@@ -15,6 +15,16 @@
     <div class="bill-page-header">
         <h1>{{ bill.bill_number or 'Bill Details' }}</h1>
         <div style="display: flex; gap: 0.5rem;">
+            {% if source_email %}
+            <button type="button"
+                    class="btn btn-secondary"
+                    id="toggle-source-email-btn"
+                    onclick="toggleSourceEmail()"
+                    title="Show the email this bill was created from"
+                    style="font-size:0.8rem;">
+                Show Source Email
+            </button>
+            {% endif %}
             <a href="/bill/{{ bill.public_id }}/edit{% if return_to %}?return_to={{ return_to | urlencode }}{% endif %}" class="btn btn-primary">Edit</a>
             <a href="{{ return_to or '/bill/list' }}" class="btn btn-secondary">Back to List</a>
         </div>
@@ -326,6 +336,24 @@
         </div>
         {% endif %}
 
+        <!-- Source Email Section (loaded via AJAX) -->
+        {% if source_email %}
+        <div id="source-email-section" class="agent-card" style="display: none;">
+            <div class="agent-card-header">
+                <h2>Source Email</h2>
+                <div style="display: flex; gap: 1rem; align-items: center;">
+                    <span id="source-email-status" class="agent-badge agent-badge--neutral">Loading...</span>
+                    <a id="source-email-outlook-link" href="#" class="agent-link-subtle" target="_blank" title="Open in Outlook" style="display: none;">Open in Outlook</a>
+                </div>
+            </div>
+            <div class="agent-card-body" style="padding: 0;">
+                <div id="source-email-content" style="padding: 1.25rem; color: var(--color-text-muted, #6c757d);">
+                    Loading email...
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
         <div class="bill-actions-card">
             <h6>Actions</h6>
             <div class="bill-actions-list">
@@ -375,6 +403,100 @@
                 const toggle = msg.querySelector('.agent-message-toggle');
                 if (toggle) toggle.textContent = '▶';
             });
+        }
+
+        // =====================
+        // Source Email Inline Display
+        // =====================
+
+        let sourceEmailLoaded = false;
+        let sourceEmailVisible = false;
+
+        function toggleSourceEmail() {
+            const section = document.getElementById('source-email-section');
+            const btn = document.getElementById('toggle-source-email-btn');
+            if (!section) return;
+
+            sourceEmailVisible = !sourceEmailVisible;
+            section.style.display = sourceEmailVisible ? 'block' : 'none';
+            if (btn) btn.textContent = sourceEmailVisible ? 'Hide Source Email' : 'Show Source Email';
+
+            if (sourceEmailVisible && !sourceEmailLoaded) {
+                loadSourceEmail();
+            }
+            if (sourceEmailVisible) {
+                section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }
+
+        async function loadSourceEmail() {
+            const contentEl = document.getElementById('source-email-content');
+            const statusEl = document.getElementById('source-email-status');
+            {% if source_email %}
+            const messageId = '{{ source_email.message_id }}';
+            {% else %}
+            return;
+            {% endif %}
+
+            try {
+                const resp = await fetch(`/inbox/message/${encodeURIComponent(messageId)}/detail`);
+                const data = await resp.json();
+
+                if (data.status_code !== 200 || !data.email) {
+                    contentEl.innerHTML = '<div style="padding: 1rem; color: var(--color-danger, #dc3545);">Could not load email.</div>';
+                    if (statusEl) statusEl.textContent = 'Error';
+                    return;
+                }
+
+                const email = data.email;
+                sourceEmailLoaded = true;
+                if (statusEl) statusEl.textContent = email.received_datetime ? email.received_datetime.slice(0, 10) : '';
+
+                // Show Outlook link if web_link is available
+                const outlookLink = document.getElementById('source-email-outlook-link');
+                if (outlookLink && email.web_link) {
+                    outlookLink.href = email.web_link;
+                    outlookLink.style.display = '';
+                }
+
+                let html = '<div class="agent-message-envelope" style="margin-bottom: 1rem;">';
+                html += '<div class="agent-envelope-row"><span class="agent-envelope-label">From:</span>';
+                html += '<span class="agent-envelope-value">' + escapeHtml(email.from_name || '') + ' &lt;' + escapeHtml(email.from_email || '') + '&gt;</span></div>';
+
+                if (email.to_recipients && email.to_recipients.length) {
+                    const toList = email.to_recipients.map(r => escapeHtml(typeof r === 'string' ? r : (r.address || r.email || ''))).join(', ');
+                    html += '<div class="agent-envelope-row"><span class="agent-envelope-label">To:</span>';
+                    html += '<span class="agent-envelope-value">' + toList + '</span></div>';
+                }
+
+                html += '<div class="agent-envelope-row"><span class="agent-envelope-label">Subject:</span>';
+                html += '<span class="agent-envelope-value">' + escapeHtml(email.subject || '') + '</span></div>';
+
+                html += '<div class="agent-envelope-row"><span class="agent-envelope-label">Received:</span>';
+                html += '<span class="agent-envelope-value">' + escapeHtml(email.received_datetime || '') + '</span></div>';
+                html += '</div>';
+
+                html += '<div class="agent-message-body-section"><div class="agent-message-body';
+                if (email.body_content_type === 'html') html += ' agent-email-body--html';
+                html += '">';
+                if (email.body_content_type === 'html') {
+                    html += email.body_content || '';
+                } else {
+                    html += '<pre style="white-space: pre-wrap; font-family: inherit; margin: 0;">' + escapeHtml(email.body_content || '') + '</pre>';
+                }
+                html += '</div></div>';
+
+                contentEl.innerHTML = html;
+            } catch (err) {
+                contentEl.innerHTML = '<div style="padding: 1rem; color: var(--color-danger, #dc3545);">Failed to load email: ' + escapeHtml(err.message) + '</div>';
+                if (statusEl) statusEl.textContent = 'Error';
+            }
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.appendChild(document.createTextNode(str));
+            return div.innerHTML;
         }
 
         async function deleteBill() {

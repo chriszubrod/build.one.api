@@ -123,7 +123,7 @@ class PurchaseLineExpenseLineItemConnector:
                     is_billed=is_billed,
                     markup=markup,
                     price=float(price) if price is not None else None,
-                    is_draft=True,
+                    is_draft=False,
                 )
                 
                 return line_item
@@ -147,7 +147,7 @@ class PurchaseLineExpenseLineItemConnector:
             is_billed=is_billed,
             markup=markup,
             price=price,
-            is_draft=True,
+            is_draft=False,
         )
         
         # Create mapping

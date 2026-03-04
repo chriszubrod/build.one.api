@@ -198,6 +198,41 @@ class ContractLaborRepository:
             logger.error(f"Error during read contract labor by public ID: {error}")
             raise map_database_error(error)
 
+    def read_by_natural_key(
+        self,
+        *,
+        employee_name: str,
+        work_date: str,
+        job_name: Optional[str] = None,
+        time_in: Optional[str] = None,
+        time_out: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> Optional[ContractLabor]:
+        """
+        Find an existing entry with the same natural key (for duplicate detection).
+        Key: employee_name, work_date, job_name, time_in, time_out, description.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadContractLaborByNaturalKey",
+                    params={
+                        "EmployeeName": employee_name or "",
+                        "WorkDate": work_date,
+                        "JobName": job_name,
+                        "TimeIn": time_in,
+                        "TimeOut": time_out,
+                        "Description": description,
+                    },
+                )
+                row = cursor.fetchone()
+                return self._from_db(row) if row else None
+        except Exception as error:
+            logger.error(f"Error during read contract labor by natural key: {error}")
+            raise map_database_error(error)
+
     def read_by_vendor_id(self, vendor_id: int) -> list[ContractLabor]:
         """
         Read all contract labor entries for a specific vendor.

@@ -2,6 +2,7 @@
 VendorAgent Graph Definition
 
 Compiles the LangGraph agent for vendor type classification.
+Uses the shared base graph builder infrastructure.
 """
 from __future__ import annotations
 
@@ -9,8 +10,8 @@ import logging
 from typing import Optional
 
 from langchain_core.messages import HumanMessage
-from langgraph.graph import StateGraph, START, END
 
+from core.ai.agents.base import build_standard_agent_graph
 from core.ai.agents.vendor_agent.graph.state import VendorAgentState, initial_state
 from core.ai.agents.vendor_agent.graph.nodes import (
     setup_context,
@@ -26,79 +27,16 @@ from core.ai.agents.vendor_agent.config import MAX_LLM_CALLS_PER_RUN
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# Graph Builder
-# =============================================================================
-
-def build_vendor_agent():
-    """
-    Build and compile the VendorAgent graph.
-
-    Graph structure:
-        START
-          │
-          ▼
-        setup_context
-          │
-          ▼
-        llm_call ◄─────────────────┐
-          │                        │
-          ▼                        │
-        should_continue            │
-          │                        │
-          ├─── tool_node ──► update_metrics
-          │         │              │
-          │         └──────────────┘
-          │
-          ▼
-        check_complete
-          │
-          ├─── (continue) ──► llm_call
-          │
-          └─── (done) ──► END
-    """
-    builder = StateGraph(VendorAgentState)
-
-    # Add nodes
-    builder.add_node("setup_context", setup_context)
-    builder.add_node("llm_call", llm_call)
-    builder.add_node("tool_node", tool_node)
-    builder.add_node("update_metrics", update_metrics)
-    builder.add_node("check_complete", lambda state: {})  # Pass-through for routing
-
-    # Add edges
-    builder.add_edge(START, "setup_context")
-    builder.add_edge("setup_context", "llm_call")
-
-    # After LLM call, decide: execute tools or check if done
-    builder.add_conditional_edges(
-        "llm_call",
-        should_continue,
-        {
-            "tool_node": "tool_node",
-            "check_complete": "check_complete",
-        }
-    )
-
-    # After tool execution, update metrics and go back to LLM
-    builder.add_edge("tool_node", "update_metrics")
-    builder.add_edge("update_metrics", "llm_call")
-
-    # After check_complete, either continue or end
-    builder.add_conditional_edges(
-        "check_complete",
-        check_complete,
-        {
-            "llm_call": "llm_call",
-            "__end__": END,
-        }
-    )
-
-    return builder.compile()
-
-
-# Compiled agent instance
-vendor_agent = build_vendor_agent()
+# Compiled agent instance using shared graph builder
+vendor_agent = build_standard_agent_graph(
+    state_class=VendorAgentState,
+    setup_fn=setup_context,
+    llm_call_fn=llm_call,
+    tool_node_fn=tool_node,
+    should_continue_fn=should_continue,
+    check_complete_fn=check_complete,
+    update_metrics_fn=update_metrics,
+)
 
 
 # =============================================================================

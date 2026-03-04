@@ -112,6 +112,7 @@
                         <th style="width: 40px;"></th>
                         <th>Date</th>
                         <th>Vendor</th>
+                        <th>Job</th>
                         <th>Hours</th>
                         <th>Status</th>
                         <th>Actions</th>
@@ -127,6 +128,7 @@
                         <td>
                             <strong>{{ entry.vendor_name or entry.employee_name or 'Unknown' }}</strong>
                         </td>
+                        <td>{{ entry.job_name or '—' }}</td>
                         <td>{{ "%.2f"|format(entry.total_hours or 0) }}</td>
                         <td>
                             {% if entry.status == 'pending_review' %}

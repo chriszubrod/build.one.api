@@ -61,7 +61,7 @@ class AzureDocumentIntelligence:
     Uses the Layout model for generic document extraction.
     """
 
-    API_VERSION = "2024-02-29-preview"
+    API_VERSION = "2024-11-30"
     POLL_INTERVAL = 1.0  # seconds between status checks
     MAX_POLL_ATTEMPTS = 120  # max ~2 minutes of polling
 
@@ -180,8 +180,13 @@ class AzureDocumentIntelligence:
             if response.status_code != 202:
                 error_text = response.text if hasattr(response, "text") else str(response.status_code)
                 logger.error(f"Document Intelligence start failed: {response.status_code} - {error_text}")
+                try:
+                    err_json = response.json()
+                    msg = err_json.get("error", {}).get("message", error_text[:200])
+                except Exception:
+                    msg = error_text[:200] if error_text else f"HTTP {response.status_code}"
                 raise AzureDocumentIntelligenceError(
-                    f"Failed to start analysis: {response.status_code}"
+                    f"Failed to start analysis: {response.status_code}. {msg}"
                 )
 
             operation_location = response.headers.get("Operation-Location")
@@ -207,9 +212,14 @@ class AzureDocumentIntelligence:
 
             if response.status_code != 202:
                 error_text = response.text if hasattr(response, "text") else str(response.status_code)
-                logger.error(f"Document Intelligence start failed: {response.status_code} - {error_text}")
+                logger.error(f"Document Intelligence start failed (URL): {response.status_code} - {error_text}")
+                try:
+                    err_json = response.json()
+                    msg = err_json.get("error", {}).get("message", error_text[:200])
+                except Exception:
+                    msg = error_text[:200] if error_text else f"HTTP {response.status_code}"
                 raise AzureDocumentIntelligenceError(
-                    f"Failed to start analysis: {response.status_code}"
+                    f"Failed to start analysis: {response.status_code}. {msg}"
                 )
 
             operation_location = response.headers.get("Operation-Location")

@@ -61,9 +61,20 @@ class Settings(BaseSettings):
     azure_embedding_deployment_name: str = "text-embedding-ada-002"
     azure_openai_api_version: str = "2024-02-01"
 
+    # Anthropic Configuration
+    anthropic_api_key: Optional[str] = None
+    anthropic_model: str = "claude-3-haiku-20240307"
+
     # Azure AI Document Intelligence Configuration
     azure_document_intelligence_endpoint: Optional[str] = None
     azure_document_intelligence_key: Optional[str] = None
+
+    # Invoice Inbox Configuration
+    # The email address of the dedicated invoice inbox account (separate licensed M365 user).
+    # When set, the Inbox feature reads from this mailbox via the Graph API /users/{email}/ path.
+    # The authenticated service account must have delegated Mail.Read permission for this address.
+    # Leave blank to fall back to the primary authenticated user's own mailbox.
+    invoice_inbox_email: Optional[str] = None
 
     # Azure AI Search Configuration
     azure_search_endpoint: Optional[str] = None

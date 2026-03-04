@@ -34,6 +34,7 @@ class BillCreditLineItemService:
         unit_price: Optional[Decimal] = None,
         amount: Optional[Decimal] = None,
         is_billable: Optional[bool] = None,
+        is_billed: Optional[bool] = None,
         billable_amount: Optional[Decimal] = None,
         is_draft: bool = True,
     ) -> BillCreditLineItem:
@@ -66,6 +67,7 @@ class BillCreditLineItemService:
             unit_price=unit_price,
             amount=amount,
             is_billable=is_billable,
+            is_billed=is_billed,
             billable_amount=billable_amount,
             is_draft=is_draft,
         )
@@ -137,6 +139,8 @@ class BillCreditLineItemService:
             existing.amount = Decimal(str(bill_credit_line_item.amount))
         if bill_credit_line_item.is_billable is not None:
             existing.is_billable = bill_credit_line_item.is_billable
+        if hasattr(bill_credit_line_item, 'is_billed') and bill_credit_line_item.is_billed is not None:
+            existing.is_billed = bill_credit_line_item.is_billed
         if bill_credit_line_item.billable_amount is not None:
             existing.billable_amount = Decimal(str(bill_credit_line_item.billable_amount))
         if bill_credit_line_item.is_draft is not None:

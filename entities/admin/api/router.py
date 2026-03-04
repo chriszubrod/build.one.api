@@ -13,6 +13,16 @@ from workflows.workflow.business.admin import WorkflowAdmin
 router = APIRouter(prefix="/api/v1", tags=["api", "admin"])
 
 
+@router.get("/admin/inbox-stats")
+def get_inbox_classification_stats(current_user: dict = Depends(get_current_user_api)):
+    """
+    Get inbox classification accuracy metrics for the admin dashboard.
+    """
+    from entities.inbox.persistence.repo import InboxRecordRepository
+    repo = InboxRecordRepository()
+    return repo.get_classification_stats()
+
+
 @router.get("/admin/stats")
 def get_dashboard_stats(current_user: dict = Depends(get_current_user_api)):
     """

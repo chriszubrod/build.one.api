@@ -4,6 +4,49 @@
 
 {% block head %}
     <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}?v={{ range(1000, 9999) | random }}">
+    <style>
+        .admin-tabs { display:flex; gap:0; border-bottom:2px solid #e5e7eb; margin-bottom:1.25rem; }
+        .admin-tab {
+            padding:0.5rem 1.25rem; font-size:0.875rem; font-weight:500; border:none;
+            background:none; color:#6b7280; cursor:pointer; border-bottom:2px solid transparent;
+            margin-bottom:-2px; transition:all 0.15s;
+        }
+        .admin-tab.active { color:#3b82f6; border-bottom-color:#3b82f6; }
+        .admin-tab:hover:not(.active) { color:#374151; }
+        .admin-tab-panel { display:none; }
+        .admin-tab-panel.active { display:block; }
+
+        /* Inbox quality specifics */
+        .iq-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:0.75rem; margin-bottom:1.25rem; }
+        @media(max-width:768px){ .iq-stats { grid-template-columns:repeat(2,1fr); } }
+        .iq-stat { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:0.875rem 1rem; }
+        .iq-stat-label { font-size:0.72rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:#6b7280; }
+        .iq-stat-value { font-size:1.35rem; font-weight:700; margin-top:0.15rem; }
+        .iq-stat-value.good { color:#059669; }
+        .iq-stat-value.warn { color:#d97706; }
+
+        .iq-section { margin-bottom:1.5rem; }
+        .iq-section h3 { font-size:0.95rem; margin:0 0 0.5rem; }
+
+        /* Confidence histogram */
+        .conf-bar-row { display:flex; align-items:center; gap:0.5rem; margin-bottom:0.35rem; font-size:0.82rem; }
+        .conf-bar-label { width:60px; text-align:right; color:#6b7280; flex-shrink:0; }
+        .conf-bar-track { flex:1; height:18px; background:#f3f4f6; border-radius:3px; overflow:hidden; }
+        .conf-bar-fill { height:100%; border-radius:3px; transition:width 0.3s; }
+        .conf-bar-count { width:36px; font-weight:500; }
+
+        /* Type badges in tables */
+        .iq-type-badge {
+            display:inline-block; padding:0.12rem 0.4rem; border-radius:9999px;
+            font-size:0.72rem; font-weight:600;
+        }
+        .iq-type-bill         { background:#dbeafe;color:#1d4ed8; }
+        .iq-type-expense      { background:#d1fae5;color:#065f46; }
+        .iq-type-vendor_credit{ background:#fef3c7;color:#92400e; }
+        .iq-type-inquiry      { background:#e0e7ff;color:#3730a3; }
+        .iq-type-statement    { background:#f3e8ff;color:#6b21a8; }
+        .iq-type-unknown      { background:#f3f4f6;color:#6b7280; }
+    </style>
 {% endblock %}
 
 {% block content %}
@@ -11,9 +54,19 @@
     <div class="dashboard-page-header">
         <h1>Admin</h1>
         <div class="dashboard-actions">
+            <a href="/admin/overrides" class="btn btn-outline-primary" style="font-size:0.82rem;">Classification Overrides</a>
             <button id="refresh-btn" class="btn btn-outline-primary">Refresh</button>
         </div>
     </div>
+
+    <!-- Tab Navigation -->
+    <div class="admin-tabs">
+        <button class="admin-tab active" data-tab="workflows">Workflows</button>
+        <button class="admin-tab" data-tab="inbox-quality">Inbox Quality</button>
+    </div>
+
+    <!-- Tab: Workflows -->
+    <div class="admin-tab-panel active" id="tab-workflows">
 
     <!-- Stats Cards -->
     <div class="dashboard-stats">
@@ -91,6 +144,103 @@
             <p>No workflows match the current filter.</p>
         </div>
     </div>
+
+    </div><!-- /tab-workflows -->
+
+    <!-- Tab: Inbox Quality -->
+    <div class="admin-tab-panel" id="tab-inbox-quality">
+
+        <!-- IQ Stats Cards -->
+        <div class="iq-stats">
+            <div class="iq-stat">
+                <div class="iq-stat-label">Total Processed</div>
+                <div class="iq-stat-value" id="iq-total">-</div>
+            </div>
+            <div class="iq-stat">
+                <div class="iq-stat-label">Accuracy</div>
+                <div class="iq-stat-value" id="iq-accuracy">-</div>
+            </div>
+            <div class="iq-stat">
+                <div class="iq-stat-label">Override Rate</div>
+                <div class="iq-stat-value" id="iq-override-rate">-</div>
+            </div>
+            <div class="iq-stat">
+                <div class="iq-stat-label">Avg Confidence</div>
+                <div class="iq-stat-value" id="iq-avg-conf">-</div>
+            </div>
+        </div>
+
+        <!-- Accuracy by Type -->
+        <div class="iq-section">
+            <h3>Accuracy by Classification Type</h3>
+            <div class="table-container">
+                <table class="dashboard-table" id="iq-type-table">
+                    <thead>
+                        <tr>
+                            <th>Type</th>
+                            <th>Total</th>
+                            <th>Correct</th>
+                            <th>Overridden</th>
+                            <th>Accuracy</th>
+                        </tr>
+                    </thead>
+                    <tbody id="iq-type-tbody">
+                        <tr><td colspan="5" style="text-align:center;color:#9ca3af;">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Confidence Distribution -->
+        <div class="iq-section">
+            <h3>Confidence Distribution</h3>
+            <div id="iq-histogram"></div>
+        </div>
+
+        <!-- Common Override Patterns -->
+        <div class="iq-section">
+            <h3>Common Override Patterns</h3>
+            <div class="table-container">
+                <table class="dashboard-table" id="iq-overrides-table">
+                    <thead>
+                        <tr>
+                            <th>Sender</th>
+                            <th>Predicted</th>
+                            <th>Actual</th>
+                            <th>Count</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="iq-overrides-tbody">
+                        <tr><td colspan="5" style="text-align:center;color:#9ca3af;">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Recent Misclassifications -->
+        <div class="iq-section">
+            <h3>Recent Misclassifications</h3>
+            <div class="table-container">
+                <table class="dashboard-table" id="iq-misclass-table">
+                    <thead>
+                        <tr>
+                            <th>Subject</th>
+                            <th>Sender</th>
+                            <th>Predicted</th>
+                            <th>Actual Override</th>
+                            <th>Confidence</th>
+                            <th>Date</th>
+                        </tr>
+                    </thead>
+                    <tbody id="iq-misclass-tbody">
+                        <tr><td colspan="6" style="text-align:center;color:#9ca3af;">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    </div><!-- /tab-inbox-quality -->
 
     <!-- Toast notification -->
     <div class="toast" id="toast" style="display: none;"></div>
@@ -380,6 +530,149 @@
             // Initial load
             fetchStats();
             fetchWorkflows();
+
+            // -----------------------------------------------------------------
+            // Tab switching
+            // -----------------------------------------------------------------
+            let iqLoaded = false;
+
+            document.querySelectorAll('.admin-tab').forEach(tab => {
+                tab.addEventListener('click', function() {
+                    document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('active'));
+                    document.querySelectorAll('.admin-tab-panel').forEach(p => p.classList.remove('active'));
+                    this.classList.add('active');
+                    const panel = document.getElementById('tab-' + this.dataset.tab);
+                    if (panel) panel.classList.add('active');
+
+                    if (this.dataset.tab === 'inbox-quality' && !iqLoaded) {
+                        fetchInboxStats();
+                    }
+                });
+            });
+
+            // -----------------------------------------------------------------
+            // Inbox Quality dashboard
+            // -----------------------------------------------------------------
+            function typeBadge(type) {
+                const label = (type || 'unknown').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                const cls = 'iq-type-' + (type || 'unknown');
+                return `<span class="iq-type-badge ${cls}">${label}</span>`;
+            }
+
+            async function fetchInboxStats() {
+                try {
+                    const resp = await fetch('/api/v1/admin/inbox-stats');
+                    if (!resp.ok) throw new Error('Failed to fetch inbox stats');
+                    const data = await resp.json();
+                    iqLoaded = true;
+                    renderInboxStats(data);
+                } catch (err) {
+                    console.error('Error fetching inbox stats:', err);
+                }
+            }
+
+            function renderInboxStats(data) {
+                const acc = data.accuracy || {};
+                const total = acc.total_processed || 0;
+                const correct = acc.correct || 0;
+                const overridden = acc.overridden || 0;
+                const pct = total > 0 ? ((correct / total) * 100).toFixed(1) : '-';
+                const overridePct = total > 0 ? ((overridden / total) * 100).toFixed(1) : '-';
+
+                document.getElementById('iq-total').textContent = total;
+                const accEl = document.getElementById('iq-accuracy');
+                accEl.textContent = pct === '-' ? '-' : pct + '%';
+                accEl.className = 'iq-stat-value ' + (parseFloat(pct) >= 90 ? 'good' : 'warn');
+                const orEl = document.getElementById('iq-override-rate');
+                orEl.textContent = overridePct === '-' ? '-' : overridePct + '%';
+                orEl.className = 'iq-stat-value ' + (parseFloat(overridePct) <= 10 ? 'good' : 'warn');
+                document.getElementById('iq-avg-conf').textContent =
+                    acc.avg_confidence != null ? (acc.avg_confidence * 100).toFixed(1) + '%' : '-';
+
+                // Accuracy by type
+                const typeTbody = document.getElementById('iq-type-tbody');
+                if (data.accuracy_by_type && data.accuracy_by_type.length) {
+                    typeTbody.innerHTML = data.accuracy_by_type.map(r => {
+                        const typePct = r.total > 0 ? ((r.correct / r.total) * 100).toFixed(1) : '-';
+                        return `<tr>
+                            <td>${typeBadge(r.classification_type)}</td>
+                            <td>${r.total}</td>
+                            <td>${r.correct}</td>
+                            <td>${r.overridden}</td>
+                            <td><strong>${typePct}%</strong></td>
+                        </tr>`;
+                    }).join('');
+                } else {
+                    typeTbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#9ca3af;">No data yet</td></tr>';
+                }
+
+                // Confidence histogram
+                const histDiv = document.getElementById('iq-histogram');
+                if (data.confidence_histogram && data.confidence_histogram.length) {
+                    const maxCount = Math.max(...data.confidence_histogram.map(b => b.count));
+                    const colors = { '0-25%':'#ef4444', '25-50%':'#f97316', '50-75%':'#eab308', '75-90%':'#22c55e', '90-100%':'#059669' };
+                    histDiv.innerHTML = data.confidence_histogram.map(b => {
+                        const w = maxCount > 0 ? ((b.count / maxCount) * 100).toFixed(1) : 0;
+                        const color = colors[b.bucket] || '#6b7280';
+                        return `<div class="conf-bar-row">
+                            <div class="conf-bar-label">${b.bucket}</div>
+                            <div class="conf-bar-track">
+                                <div class="conf-bar-fill" style="width:${w}%;background:${color};"></div>
+                            </div>
+                            <div class="conf-bar-count">${b.count}</div>
+                        </div>`;
+                    }).join('');
+                } else {
+                    histDiv.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:1rem;">No data yet</div>';
+                }
+
+                // Common override patterns
+                const ovTbody = document.getElementById('iq-overrides-tbody');
+                if (data.common_overrides && data.common_overrides.length) {
+                    ovTbody.innerHTML = data.common_overrides.map(o => {
+                        const domain = o.from_email ? o.from_email.split('@')[1] : '';
+                        return `<tr>
+                            <td style="font-size:0.82rem;">${o.from_email || '-'}</td>
+                            <td>${typeBadge(o.predicted_type)}</td>
+                            <td>${typeBadge(o.actual_type)}</td>
+                            <td><strong>${o.override_count}</strong></td>
+                            <td>${domain ? `<a href="/admin/overrides" class="btn btn-sm btn-outline-primary">Create Rule</a>` : '-'}</td>
+                        </tr>`;
+                    }).join('');
+                } else {
+                    ovTbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#9ca3af;">No overrides recorded</td></tr>';
+                }
+
+                // Recent misclassifications
+                const mcTbody = document.getElementById('iq-misclass-tbody');
+                if (data.recent_misclassifications && data.recent_misclassifications.length) {
+                    mcTbody.innerHTML = data.recent_misclassifications.map(m => {
+                        const subj = (m.subject || '-').length > 50 ? m.subject.substring(0, 50) + '...' : (m.subject || '-');
+                        const conf = m.classification_confidence != null ? (m.classification_confidence * 100).toFixed(0) + '%' : '-';
+                        const dt = m.processed_at ? new Date(m.processed_at).toLocaleDateString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '-';
+                        return `<tr>
+                            <td style="font-size:0.82rem;" title="${(m.subject||'').replace(/"/g,'&quot;')}">${subj}</td>
+                            <td style="font-size:0.82rem;">${m.from_email || '-'}</td>
+                            <td>${typeBadge(m.classification_type)}</td>
+                            <td>${typeBadge(m.user_override_type)}</td>
+                            <td>${conf}</td>
+                            <td style="font-size:0.82rem;">${dt}</td>
+                        </tr>`;
+                    }).join('');
+                } else {
+                    mcTbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#9ca3af;">No misclassifications recorded</td></tr>';
+                }
+            }
+
+            // Refresh button also refreshes inbox quality if that tab is active
+            refreshBtn.addEventListener('click', function() {
+                const activeTab = document.querySelector('.admin-tab.active');
+                if (activeTab && activeTab.dataset.tab === 'inbox-quality') {
+                    iqLoaded = false;
+                    fetchInboxStats();
+                }
+            });
+
         })();
     </script>
 {% endblock %}

@@ -3,40 +3,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional, List, Dict, Any
-
-
-class CopilotIntent(str, Enum):
-    """Detected intents from user messages."""
-    # Information retrieval
-    SEARCH_DOCUMENTS = "search_documents"
-    QUESTION_ANSWER = "question_answer"
-    GET_STATUS = "get_status"
-    SUMMARIZE = "summarize"
-    
-    # Document operations
-    CATEGORIZE_DOCUMENT = "categorize_document"
-    CHECK_DUPLICATES = "check_duplicates"
-    EXTRACT_DOCUMENT = "extract_document"
-    
-    # Entity operations
-    CREATE_BILL = "create_bill"
-    CREATE_INVOICE = "create_invoice"
-    UPDATE_ENTITY = "update_entity"
-    LIST_ENTITIES = "list_entities"
-    
-    # Analysis
-    ANALYZE_SPENDING = "analyze_spending"
-    FIND_ANOMALIES = "find_anomalies"
-    
-    # Workflows / compliance
-    CHECK_VENDOR_COMPLIANCE = "check_vendor_compliance"
-
-    # General
-    GREETING = "greeting"
-    HELP = "help"
-    CLARIFICATION = "clarification"
-    UNKNOWN = "unknown"
+from typing import Any, Optional, List, Dict
 
 
 class MessageRole(str, Enum):
@@ -48,26 +15,38 @@ class MessageRole(str, Enum):
 
 @dataclass
 class ConversationMessage:
-    """A single message in a conversation."""
+    """A single message in a conversation.
+
+    For user messages, ``content`` is a plain string.
+    For assistant messages, ``content`` may be a list of Claude content blocks
+    (dicts with ``type`` keys such as ``text``, ``tool_use``, etc.).
+    """
     role: MessageRole
-    content: str
+    content: Any  # str for user messages, list[dict] for assistant content blocks
     timestamp: datetime = field(default_factory=datetime.utcnow)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    def display_content(self) -> str:
+        """Extract human-readable text from content (handles Claude content blocks)."""
+        if isinstance(self.content, str):
+            return self.content
+        if isinstance(self.content, list):
+            texts = []
+            for block in self.content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    texts.append(block["text"])
+                elif hasattr(block, "type") and block.type == "text":
+                    texts.append(block.text)
+            return "\n".join(texts) if texts else ""
+        return str(self.content)
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary."""
+        """Convert to dictionary for API responses (display-friendly)."""
         return {
             "role": self.role.value,
-            "content": self.content,
+            "content": self.display_content(),
             "timestamp": self.timestamp.isoformat(),
             "metadata": self.metadata,
-        }
-
-    def to_openai_message(self) -> Dict[str, str]:
-        """Convert to OpenAI message format."""
-        return {
-            "role": self.role.value,
-            "content": self.content,
         }
 
 
@@ -78,9 +57,9 @@ class Conversation:
     messages: List[ConversationMessage] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
-    context: Dict[str, Any] = field(default_factory=dict)  # Persistent context
-    
-    def add_message(self, role: MessageRole, content: str, metadata: Optional[Dict] = None) -> ConversationMessage:
+    context: Dict[str, Any] = field(default_factory=dict)
+
+    def add_message(self, role: MessageRole, content: Any, metadata: Optional[Dict] = None) -> ConversationMessage:
         """Add a message to the conversation."""
         message = ConversationMessage(
             role=role,
@@ -91,10 +70,30 @@ class Conversation:
         self.updated_at = datetime.utcnow()
         return message
 
-    def get_messages_for_context(self, max_messages: int = 20) -> List[Dict[str, str]]:
-        """Get recent messages in OpenAI format for context."""
+    def add_assistant_turn(self, content_blocks) -> ConversationMessage:
+        """Add an assistant turn with Claude content blocks (serialized to dicts)."""
+        serialized = [
+            block.model_dump() if hasattr(block, "model_dump") else block
+            for block in content_blocks
+        ]
+        return self.add_message(MessageRole.ASSISTANT, serialized)
+
+    def to_claude_messages(self, max_messages: int = 20) -> List[Dict[str, Any]]:
+        """Convert conversation history to Claude API message format.
+
+        Skips system messages (those go in the ``system`` parameter).
+        Returns the most recent ``max_messages`` messages.
+        """
         recent = self.messages[-max_messages:] if len(self.messages) > max_messages else self.messages
-        return [msg.to_openai_message() for msg in recent]
+        claude_messages = []
+        for msg in recent:
+            if msg.role == MessageRole.SYSTEM:
+                continue
+            claude_messages.append({
+                "role": msg.role.value,
+                "content": msg.content,  # str for user, list[dict] for assistant
+            })
+        return claude_messages
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -111,7 +110,7 @@ class Conversation:
 class CopilotResponse:
     """Response from the copilot."""
     message: str
-    intent: Optional[CopilotIntent] = None
+    intent: Optional[str] = None
     action_taken: Optional[str] = None
     data: Optional[Dict[str, Any]] = None
     suggestions: List[str] = field(default_factory=list)
@@ -123,7 +122,7 @@ class CopilotResponse:
         """Convert to dictionary."""
         return {
             "message": self.message,
-            "intent": self.intent.value if self.intent else None,
+            "intent": self.intent,
             "action_taken": self.action_taken,
             "data": self.data,
             "suggestions": self.suggestions,

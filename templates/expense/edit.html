@@ -11,7 +11,7 @@
     <div class="expense-create-fullpage">
         <div class="expense-create-header">
             <h1>Edit Expense</h1>
-            <a href="/expense/list" class="btn btn-secondary">Back to List</a>
+            <a href="{{ return_to or '/expense/list' }}" class="btn btn-secondary">Back to List</a>
         </div>
 
         <div class="expense-create-content">
@@ -126,17 +126,17 @@
                                         <div class="expense-line-item-grid expense-line-item-row-2">
                                             <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                                 <label class="expense-form-label">Quantity <span class="required">*</span></label>
-                                                <input type="number" class="expense-form-control" id="line_item_quantity_existing_{{ loop.index0 }}" min="0" step="1" value="{{ line_item.quantity or 1 }}">
+                                                <input type="number" class="expense-form-control line-item-quantity" id="line_item_quantity_existing_{{ loop.index0 }}" min="0" step="1" value="{{ line_item.quantity or 1 }}">
                                             </div>
                                             
                                             <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                                 <label class="expense-form-label">Rate <span class="required">*</span></label>
-                                                <input type="number" class="expense-form-control" id="line_item_rate_existing_{{ loop.index0 }}" min="0" step="0.0001" value="{{ line_item.rate or '' }}">
+                                                <input type="number" class="expense-form-control line-item-rate" id="line_item_rate_existing_{{ loop.index0 }}" min="0" step="0.0001" value="{{ line_item.rate or '' }}">
                                             </div>
                                             
                                             <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                                 <label class="expense-form-label">Amount</label>
-                                                <input type="number" class="expense-form-control" id="line_item_amount_existing_{{ loop.index0 }}" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);" value="{{ line_item.amount or '' }}">
+                                                <input type="number" class="expense-form-control line-item-amount" id="line_item_amount_existing_{{ loop.index0 }}" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);" value="{{ line_item.amount or '' }}">
                                             </div>
                                             
                                             <div class="expense-form-group expense-line-item-checkbox" style="margin-bottom: 0;">
@@ -148,12 +148,12 @@
                                             
                                             <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                                 <label class="expense-form-label">Markup (%)</label>
-                                                <input type="number" class="expense-form-control" id="line_item_markup_existing_{{ loop.index0 }}" min="0" step="0.01" value="{{ (line_item.markup * 100) if line_item.markup else '' }}">
+                                                <input type="number" class="expense-form-control line-item-markup" id="line_item_markup_existing_{{ loop.index0 }}" min="0" step="0.01" value="{{ (line_item.markup * 100) if line_item.markup else '' }}">
                                             </div>
                                             
                                             <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                                 <label class="expense-form-label">Price</label>
-                                                <input type="number" class="expense-form-control" id="line_item_price_existing_{{ loop.index0 }}" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);" value="{{ line_item.price or '' }}">
+                                                <input type="number" class="expense-form-control line-item-price" id="line_item_price_existing_{{ loop.index0 }}" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);" value="{{ line_item.price or '' }}">
                                             </div>
                                         </div>
                                         
@@ -252,17 +252,17 @@
                                     <div class="expense-line-item-grid expense-line-item-row-2">
                                         <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                             <label for="line_item_quantity" class="expense-form-label">Quantity <span class="required">*</span></label>
-                                            <input type="number" class="expense-form-control" id="line_item_quantity" min="0" step="1" placeholder="1" value="1">
+                                            <input type="number" class="expense-form-control line-item-quantity" id="line_item_quantity" min="0" step="1" placeholder="1" value="1">
                                         </div>
                                         
                                         <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                             <label for="line_item_rate" class="expense-form-label">Rate <span class="required">*</span></label>
-                                            <input type="number" class="expense-form-control" id="line_item_rate" min="0" step="0.0001" placeholder="Rate">
+                                            <input type="number" class="expense-form-control line-item-rate" id="line_item_rate" min="0" step="0.0001" placeholder="Rate">
                                         </div>
                                         
                                         <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                             <label for="line_item_amount" class="expense-form-label">Amount</label>
-                                            <input type="number" class="expense-form-control" id="line_item_amount" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);">
+                                            <input type="number" class="expense-form-control line-item-amount" id="line_item_amount" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);">
                                         </div>
                                         
                                         <div class="expense-form-group expense-line-item-checkbox" style="margin-bottom: 0;">
@@ -274,12 +274,12 @@
                                         
                                         <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                             <label for="line_item_markup" class="expense-form-label">Markup (%)</label>
-                                            <input type="number" class="expense-form-control" id="line_item_markup" min="0" step="0.01" placeholder="0.00">
+                                            <input type="number" class="expense-form-control line-item-markup" id="line_item_markup" min="0" step="0.01" placeholder="0.00">
                                         </div>
                                         
                                         <div class="expense-form-group expense-line-item-narrow" style="margin-bottom: 0;">
                                             <label for="line_item_price" class="expense-form-label">Price</label>
-                                            <input type="number" class="expense-form-control" id="line_item_price" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);">
+                                            <input type="number" class="expense-form-control line-item-price" id="line_item_price" step="0.01" readonly tabindex="-1" style="background-color: var(--color-surface);">
                                         </div>
                                     </div>
                                     
@@ -538,7 +538,9 @@
                 }
 
                 const expense = await response.json();
-                document.getElementById('row_version').value = expense.row_version;
+                if (expense && expense.row_version) {
+                    document.getElementById('row_version').value = expense.row_version;
+                }
                 
                 console.log('Expense auto-saved:', expense.public_id);
                 updateSaveStatus('saved', 'Saved');
@@ -757,11 +759,11 @@
         }
 
         function setupLineItemCalculations(formElement) {
-            const quantityInput = formElement.querySelector('[id^="line_item_quantity"]');
-            const rateInput = formElement.querySelector('[id^="line_item_rate"]');
-            const markupInput = formElement.querySelector('[id^="line_item_markup"]');
-            const amountInput = formElement.querySelector('[id^="line_item_amount"]');
-            const priceInput = formElement.querySelector('[id^="line_item_price"]');
+            const quantityInput = formElement.querySelector('.line-item-quantity, [id^="line_item_quantity"]');
+            const rateInput = formElement.querySelector('.line-item-rate, [id^="line_item_rate"]');
+            const markupInput = formElement.querySelector('.line-item-markup, [id^="line_item_markup"]');
+            const amountInput = formElement.querySelector('.line-item-amount, [id^="line_item_amount"]');
+            const priceInput = formElement.querySelector('.line-item-price, [id^="line_item_price"]');
 
             const calculateAmount = function() {
                 if (!quantityInput || !rateInput || !amountInput) return;
@@ -786,14 +788,17 @@
             if (quantityInput) {
                 quantityInput.addEventListener('input', calculateAmount);
                 quantityInput.addEventListener('change', calculateAmount);
+                quantityInput.addEventListener('blur', calculateAmount);
             }
             if (rateInput) {
                 rateInput.addEventListener('input', calculateAmount);
                 rateInput.addEventListener('change', calculateAmount);
+                rateInput.addEventListener('blur', calculateAmount);
             }
             if (markupInput) {
                 markupInput.addEventListener('input', calculatePrice);
                 markupInput.addEventListener('change', calculatePrice);
+                markupInput.addEventListener('blur', calculatePrice);
             }
         }
 
@@ -817,7 +822,7 @@
             const allForms = getAllLineItemForms();
             
             allForms.forEach(form => {
-                const amountInput = form.querySelector('[id^="line_item_amount"]');
+                const amountInput = form.querySelector('.line-item-amount, [id^="line_item_amount"]');
                 if (amountInput && amountInput.value) {
                     total += parseFloat(amountInput.value) || 0;
                 }
@@ -1280,6 +1285,26 @@
                 setupLineItemAttachment(newForm);
             }
             
+            // Run initial calculations for all line item forms (ensures Amount/Price are correct on load)
+            document.querySelectorAll('[id^="add-line-item-form"]').forEach(form => {
+                const amountInput = form.querySelector('.line-item-amount, [id^="line_item_amount"]');
+                const priceInput = form.querySelector('.line-item-price, [id^="line_item_price"]');
+                if (amountInput && priceInput) {
+                    const quantityInput = form.querySelector('.line-item-quantity, [id^="line_item_quantity"]');
+                    const rateInput = form.querySelector('.line-item-rate, [id^="line_item_rate"]');
+                    const markupInput = form.querySelector('.line-item-markup, [id^="line_item_markup"]');
+                    if (quantityInput && rateInput) {
+                        const quantity = parseFloat(quantityInput.value) || 0;
+                        const rate = parseFloat(rateInput.value) || 0;
+                        amountInput.value = (quantity * rate).toFixed(2);
+                    }
+                    const amount = parseFloat(amountInput.value) || 0;
+                    const markupPercent = markupInput ? (parseFloat(markupInput.value) || 0) : 0;
+                    priceInput.value = (amount * (1 + markupPercent / 100)).toFixed(2);
+                }
+            });
+            calculateTotalAmount();
+
             // Auto-show first attachment preview if available
             const firstAttachmentLink = document.querySelector('.attachment-preview-link');
             if (firstAttachmentLink && firstAttachmentLink.dataset.attachmentId && document.getElementById('attachment-preview-section')) {

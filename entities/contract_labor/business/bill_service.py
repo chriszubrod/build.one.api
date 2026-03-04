@@ -229,60 +229,100 @@ class ContractLaborBillService:
                     if not bill:
                         result["errors"].append(f"Row version conflict updating bill {invoice_number}")
                         continue
-                    # Delete existing BillLineItems (ContractLaborLineItem.BillLineItemId set NULL via FK ON DELETE SET NULL)
+                    # Clean up existing BillLineItems and their attachment links
                     existing_blis = self.bill_line_item_service.read_by_bill_id(bill.id)
+                    blia_service = BillLineItemAttachmentService()
+                    orphan_attachment_ids = set()
                     for bli in existing_blis:
+                        if bli.public_id:
+                            link = blia_service.read_by_bill_line_item_id(bill_line_item_public_id=bli.public_id)
+                            if link:
+                                if link.attachment_id:
+                                    orphan_attachment_ids.add(link.attachment_id)
+                                blia_service.delete_by_public_id(link.public_id)
                         self.bill_line_item_service.repo.delete_by_id(bli.id)
+                    for att_id in orphan_attachment_ids:
+                        try:
+                            att = AttachmentService().read_by_id(id=att_id)
+                            if att:
+                                AttachmentService().delete_by_public_id(public_id=att.public_id)
+                        except Exception:
+                            logger.warning(f"Could not delete orphan attachment {att_id}")
 
                 entry_id_to_first_bli_id = {}
                 created_blis_this_project = []
                 line_items_created_this_project = 0
+                # Group by SubCostCode so we can consolidate into one BillLineItem per SubCostCode
+                by_scc = {}
+                for item in items:
+                    li = item["line_item"]
+                    scc_id = li.sub_cost_code_id
+                    key = (scc_id,)  # tuple so None is valid key
+                    if key not in by_scc:
+                        by_scc[key] = []
+                    by_scc[key].append(item)
+
                 try:
-                    for item in items:
-                        li = item["line_item"]
-                        hours = Decimal(str(li.hours or 0))
-                        rate_daily = Decimal(str(li.rate or 0))
-                        unit = 1
-                        rate = (hours / Decimal("8")) * rate_daily
-                        amount = rate
-                        markup_val = Decimal(str(li.markup or 0))
-                        price = amount * (Decimal("1") + markup_val)
+                    for (scc_id,), group in by_scc.items():
+                        first_item = group[0]
+                        li_first = first_item["line_item"]
+                        scc = first_item["scc"]
+                        total_amount = Decimal("0")
+                        total_price = Decimal("0")
+                        any_billable = False
+                        for item in group:
+                            li = item["line_item"]
+                            markup_val = Decimal(str(li.markup or 0))
+                            price = Decimal(str(li.price or 0))
+                            amount = price / (Decimal("1") + markup_val) if markup_val else price
+                            total_amount += amount
+                            total_price += price
+                            if li.is_billable if li.is_billable is not None else True:
+                                any_billable = True
+
+                        description = (scc.description if scc else None) or li_first.description or ""
+                        if total_amount:
+                            effective_markup = (total_price - total_amount) / total_amount
+                        else:
+                            effective_markup = Decimal("0")
 
                         bli = self.bill_line_item_service.create(
                             bill_public_id=bill.public_id,
-                            sub_cost_code_id=li.sub_cost_code_id,
+                            sub_cost_code_id=scc_id,
                             project_public_id=project.public_id,
-                            description=li.description,
-                            quantity=unit,
-                            rate=rate,
-                            amount=amount,
-                            is_billable=li.is_billable if li.is_billable is not None else True,
+                            description=description,
+                            quantity=1,
+                            rate=total_amount,
+                            amount=total_amount,
+                            is_billable=any_billable,
                             is_billed=False,
-                            markup=li.markup,
-                            price=price,
+                            markup=effective_markup,
+                            price=total_price,
                             is_draft=True,
                         )
                         line_items_created_this_project += 1
                         result["line_items_created"] += 1
                         created_blis_this_project.append(bli)
 
-                        self.line_item_repo.update_by_id(
-                            id=li.id,
-                            row_version=li.row_version_bytes,
-                            line_date=li.line_date,
-                            project_id=li.project_id,
-                            sub_cost_code_id=li.sub_cost_code_id,
-                            description=li.description,
-                            hours=li.hours,
-                            rate=li.rate,
-                            markup=li.markup,
-                            price=li.price,
-                            is_billable=li.is_billable if li.is_billable is not None else True,
-                            bill_line_item_id=bli.id,
-                        )
-                        entry_id = item["entry"].id
-                        if entry_id not in entry_id_to_first_bli_id:
-                            entry_id_to_first_bli_id[entry_id] = bli.id
+                        for item in group:
+                            li = item["line_item"]
+                            self.line_item_repo.update_by_id(
+                                id=li.id,
+                                row_version=li.row_version_bytes,
+                                line_date=li.line_date,
+                                project_id=li.project_id,
+                                sub_cost_code_id=li.sub_cost_code_id,
+                                description=li.description,
+                                hours=li.hours,
+                                rate=li.rate,
+                                markup=li.markup,
+                                price=li.price,
+                                is_billable=li.is_billable if li.is_billable is not None else True,
+                                bill_line_item_id=bli.id,
+                            )
+                            entry_id = item["entry"].id
+                            if entry_id not in entry_id_to_first_bli_id:
+                                entry_id_to_first_bli_id[entry_id] = bli.id
                 except Exception as e:
                     if not is_edit:
                         try:
@@ -303,16 +343,14 @@ class ContractLaborBillService:
                 )
                 try:
                     storage = AzureBlobStorage()
-                    blob_name = f"invoices/{invoice_number.replace('.', '-')}.pdf"
+                    pdf_filename = f"{bill.public_id}.pdf"
                     pdf_url = storage.upload_file(
-                        blob_name=blob_name,
+                        blob_name=pdf_filename,
                         file_content=pdf_bytes,
                         content_type="application/pdf",
                     )
                     result["pdf_urls"].append(pdf_url)
 
-                    # Create Attachment and link to each BillLineItem so the PDF is available when reviewing for Mark Complete
-                    pdf_filename = f"{invoice_number.replace('.', '-')}.pdf"
                     attachment = AttachmentService().create(
                         filename=pdf_filename,
                         original_filename=pdf_filename,

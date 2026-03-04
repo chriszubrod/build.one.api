@@ -196,7 +196,7 @@
                                     <select class="cl-form-control line-project-id">
                                         <option value="">-- Select Project --</option>
                                         {% for project in projects %}
-                                        <option value="{{ project.id }}" {% if item.project_id == project.id %}selected{% endif %}>
+                                        <option value="{{ project.id }}" data-abbreviation="{{ project.abbreviation or '' }}" {% if item.project_id == project.id %}selected{% endif %}>
                                             {% if project.abbreviation %}{{ project.abbreviation }} - {% endif %}{{ project.name }}
                                         </option>
                                         {% endfor %}
@@ -303,7 +303,7 @@
                     <select class="cl-form-control line-project-id">
                         <option value="">-- Select Project --</option>
                         {% for project in projects %}
-                        <option value="{{ project.id }}">
+                        <option value="{{ project.id }}" data-abbreviation="{{ project.abbreviation or '' }}">
                             {% if project.abbreviation %}{{ project.abbreviation }} - {% endif %}{{ project.name }}
                         </option>
                         {% endfor %}
@@ -416,6 +416,25 @@
         return vendorName ? (VENDOR_MARKUP_MAP[vendorName] * 100) : null;
     }
 
+    // MR2* projects use 5% markup instead of vendor default
+    const MR2_MARKUP_PERCENT = 5;
+    function isMr2Project(option) {
+        if (!option || !option.value) return false;
+        const abbr = (option.dataset.abbreviation || '').trim().toUpperCase();
+        return abbr.indexOf('MR2') === 0;
+    }
+    function applyMr2MarkupIfNeeded(lineItemRow) {
+        const projectSelect = lineItemRow.querySelector('.line-project-id');
+        const markupInput = lineItemRow.querySelector('.line-markup');
+        if (!projectSelect || !markupInput) return;
+        const opt = projectSelect.options[projectSelect.selectedIndex];
+        if (isMr2Project(opt)) {
+            markupInput.value = MR2_MARKUP_PERCENT;
+            const hoursInput = lineItemRow.querySelector('.line-hours');
+            if (hoursInput) calculateLinePrice(hoursInput);
+        }
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
         // Debug: Log entry data from server
         console.log('Entry data from server:', {
@@ -450,6 +469,16 @@
         }
         
         calculateTotal();
+
+        // When project changes: if MR2*, set markup to 5% and recalc
+        document.getElementById('line-items-container').addEventListener('change', function(e) {
+            if (e.target.classList.contains('line-project-id')) {
+                const lineItem = e.target.closest('.cl-line-item');
+                if (lineItem) applyMr2MarkupIfNeeded(lineItem);
+            }
+        });
+        // Apply MR2 markup to existing line items that have MR2 project selected
+        document.querySelectorAll('.cl-line-item').forEach(applyMr2MarkupIfNeeded);
         
         // Update Back to List and Cancel links to preserve filter state
         updateListLinks();

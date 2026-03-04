@@ -845,8 +845,8 @@
             // Clear all input values in the cloned form
             clearLineItemFormInputs(clonedForm);
 
-            // Update button onclick handlers
-            const cancelButton = clonedForm.querySelector('button.btn-secondary');
+            // Update button onclick handlers (Cancel is btn-secondary but not attachment-upload-btn)
+            const cancelButton = clonedForm.querySelector('button.btn-secondary:not(.attachment-upload-btn)');
             const addButton = clonedForm.querySelector('button.btn-primary');
             
             if (cancelButton) {

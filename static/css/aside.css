@@ -1,13 +1,16 @@
-/* Sidebar right - hidden by default, shown when picker is open */
+/* ========================================
+   Sidebar Right
+   ======================================== */
+
 .sidebar-right {
     display: none;
     width: 320px;
     min-width: 320px;
     max-width: 320px;
     background-color: var(--color-background);
-    border-left: 1px solid #e5e7eb;
-    height: 100%; /* Fill the grid cell height */
-    overflow: hidden; /* Let the panel body handle scrolling */
+    border-left: 1px solid #e0e0e0;
+    height: 100%;
+    overflow: hidden;
 }
 
 .sidebar-right-open {
@@ -22,16 +25,19 @@
         top: 0;
         height: 100vh;
         z-index: 1000;
-        box-shadow: -4px 0 12px rgba(0, 0, 0, 0.15);
+        box-shadow: -2px 0 8px rgba(0, 0, 0, 0.08);
     }
 }
 
-/* Aside Panel */
+/* ========================================
+   Aside Panel (generic)
+   ======================================== */
+
 .aside-panel {
     display: none;
     flex: 1;
     flex-direction: column;
-    min-height: 0; /* Important for nested flex scrolling */
+    min-height: 0;
     overflow: hidden;
 }
 
@@ -43,53 +49,28 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 1rem;
-    border-bottom: 1px solid #e5e7eb;
+    padding: 0.625rem 1rem;
+    border-bottom: 1px solid #e0e0e0;
     background-color: var(--color-background);
-    flex-shrink: 0; /* Don't shrink the header */
+    flex-shrink: 0;
 }
 
 .aside-panel-header h5 {
     margin: 0;
-    font-size: 1rem;
-    font-weight: 600;
+    font-size: var(--font-size-action);
+    font-weight: 500;
     color: var(--color-text);
-}
-
-.copilot-header-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-
-.copilot-new-chat-btn {
-    background: none;
-    border: 1px solid #d1d5db;
-    border-radius: 0.375rem;
-    padding: 0.375rem;
-    cursor: pointer;
-    color: var(--color-text-secondary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.15s ease;
-}
-
-.copilot-new-chat-btn:hover {
-    background-color: #f3f4f6;
-    border-color: #3b82f6;
-    color: #3b82f6;
 }
 
 .aside-close-btn {
     background: none;
     border: none;
-    font-size: 1.5rem;
+    font-size: 1.25rem;
     color: var(--color-text-secondary);
     cursor: pointer;
     padding: 0;
     line-height: 1;
-    transition: color 0.15s ease-in-out;
+    transition: color 0.15s;
 }
 
 .aside-close-btn:hover {
@@ -102,55 +83,74 @@
     padding: 1rem;
     display: flex;
     flex-direction: column;
-    min-height: 0; /* Important for flex child scrolling */
+    min-height: 0;
+    scrollbar-width: thin;
+    scrollbar-color: #d0d0d0 transparent;
 }
 
-/* Search Container */
+.aside-panel-body::-webkit-scrollbar {
+    width: 6px;
+}
+
+.aside-panel-body::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.aside-panel-body::-webkit-scrollbar-thumb {
+    background-color: #d0d0d0;
+    border-radius: 3px;
+}
+
+/* ========================================
+   Search (picker panels)
+   ======================================== */
+
 .aside-search-container {
     margin-bottom: 1rem;
-    flex-shrink: 0; /* Don't shrink the search box */
+    flex-shrink: 0;
 }
 
 .aside-search-input {
     width: 100%;
-    padding: 0.625rem 0.875rem;
-    border: 1px solid #d1d5db;
-    border-radius: 0.375rem;
-    font-size: 0.875rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    font-size: var(--font-size-base);
     background-color: var(--color-background);
     color: var(--color-text);
-    transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+    transition: border-color 0.15s;
 }
 
 .aside-search-input:focus {
     outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    border-color: var(--color-text-secondary);
 }
 
 .aside-search-input::placeholder {
     color: var(--color-text-secondary);
 }
 
-/* Results Container */
+/* ========================================
+   Results (picker panels)
+   ======================================== */
+
 .aside-results-container {
     flex: 1;
     overflow-y: auto;
-    min-height: 0; /* Important for flex child scrolling */
-    padding-bottom: 1rem; /* Add some padding at the bottom */
+    min-height: 0;
+    padding-bottom: 1rem;
 }
 
 .aside-results-container .text-muted {
     color: var(--color-text-secondary);
-    font-size: 0.875rem;
+    font-size: var(--font-size-base);
 }
 
 .aside-results-container .text-danger {
     color: #dc2626;
-    font-size: 0.875rem;
+    font-size: var(--font-size-base);
 }
 
-/* Results List */
 .aside-results-list {
     list-style: none;
     padding: 0;
@@ -161,17 +161,16 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0.75rem;
-    border: 1px solid #e5e7eb;
-    border-radius: 0.375rem;
-    margin-bottom: 0.5rem;
+    padding: 0.625rem 0.75rem;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    margin-bottom: 0.375rem;
     background-color: var(--color-background);
-    transition: background-color 0.15s ease-in-out, border-color 0.15s ease-in-out;
+    transition: border-color 0.15s;
 }
 
 .aside-result-item:hover {
-    background-color: #f9fafb;
-    border-color: #d1d5db;
+    border-color: var(--color-text-secondary);
 }
 
 .aside-result-info {
@@ -181,7 +180,7 @@
 }
 
 .aside-result-name {
-    font-size: 0.875rem;
+    font-size: var(--font-size-base);
     font-weight: 500;
     color: var(--color-text);
     white-space: nowrap;
@@ -190,7 +189,7 @@
 }
 
 .aside-result-detail {
-    font-size: 0.75rem;
+    font-size: var(--font-size-base);
     color: var(--color-text-secondary);
     white-space: nowrap;
     overflow: hidden;
@@ -198,21 +197,105 @@
     margin-top: 0.125rem;
 }
 
-/* Small button variant */
 .btn-sm {
     padding: 0.25rem 0.625rem;
-    font-size: 0.75rem;
-    border-radius: 0.25rem;
+    font-size: var(--font-size-base);
+    border-radius: 4px;
 }
 
-/* Navigation container (e.g., back button) */
 .aside-nav {
     margin-top: 0.5rem;
     flex-shrink: 0;
 }
 
+
 /* ========================================
-   AI Copilot Chat Styles
+   Copilot Header
+   ======================================== */
+
+.copilot-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.copilot-new-chat-btn {
+    background: none;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    padding: 0.3rem;
+    cursor: pointer;
+    color: var(--color-text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-color 0.15s, color 0.15s;
+}
+
+.copilot-new-chat-btn:hover {
+    border-color: var(--color-text-secondary);
+    color: var(--color-text);
+}
+
+/* Toggle Button (inline in header) */
+.copilot-toggle-btn {
+    width: 2rem;
+    height: 2rem;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.15s;
+    margin-right: 0.5rem;
+}
+
+.copilot-toggle-btn:hover {
+    color: var(--color-text);
+}
+
+.copilot-toggle-hidden {
+    display: none !important;
+}
+
+
+/* ========================================
+   Copilot Tab Bar
+   ======================================== */
+
+.copilot-tabs {
+    display: flex;
+    gap: 0;
+    align-items: center;
+}
+
+.copilot-tab {
+    padding: 0.3rem 0.625rem;
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    border: none;
+    background: none;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.copilot-tab.active {
+    color: var(--color-text);
+    border-bottom-color: var(--color-text);
+}
+
+.copilot-tab:hover:not(.active) {
+    color: var(--color-text);
+}
+
+
+/* ========================================
+   Copilot Chat
    ======================================== */
 
 .copilot-body {
@@ -221,48 +304,63 @@
     flex-direction: column;
 }
 
+/* Quick Actions */
 .copilot-quick-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid #e5e7eb;
-    background-color: #f9fafb;
+    gap: 0.375rem;
+    padding: 0.625rem 1rem;
+    border-bottom: 1px solid #e0e0e0;
 }
 
 .copilot-quick-btn {
-    padding: 0.375rem 0.75rem;
-    font-size: 0.75rem;
-    background-color: white;
-    border: 1px solid #d1d5db;
-    border-radius: 1rem;
+    padding: 0.3rem 0.625rem;
+    font-size: var(--font-size-base);
+    background-color: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: border-color 0.15s;
     white-space: nowrap;
+    color: var(--color-text-secondary);
 }
 
 .copilot-quick-btn:hover {
-    background-color: #3b82f6;
-    border-color: #3b82f6;
-    color: white;
+    border-color: var(--color-text-secondary);
+    color: var(--color-text);
 }
 
 /* Chat Messages Container */
 .copilot-messages {
     flex: 1;
     overflow-y: auto;
-    padding: 1rem;
+    padding: 0.75rem 1rem;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 0.625rem;
     min-height: 0;
+    scrollbar-width: thin;
+    scrollbar-color: #d0d0d0 transparent;
+}
+
+.copilot-messages::-webkit-scrollbar {
+    width: 6px;
+}
+
+.copilot-messages::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.copilot-messages::-webkit-scrollbar-thumb {
+    background-color: #d0d0d0;
+    border-radius: 3px;
 }
 
 /* Individual Message */
 .copilot-message {
     display: flex;
     flex-direction: column;
-    max-width: 90%;
+    max-width: 88%;
 }
 
 .copilot-message-user {
@@ -274,65 +372,64 @@
 }
 
 .copilot-message-content {
-    padding: 0.75rem 1rem;
-    border-radius: 1rem;
-    font-size: 0.875rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 4px;
+    font-size: var(--font-size-base);
     line-height: 1.5;
     word-wrap: break-word;
 }
 
 .copilot-message-user .copilot-message-content {
-    background-color: #3b82f6;
-    color: white;
-    border-bottom-right-radius: 0.25rem;
+    background-color: var(--color-text);
+    color: var(--color-background);
 }
 
 .copilot-message-assistant .copilot-message-content {
-    background-color: #f3f4f6;
-    color: #1f2937;
-    border-bottom-left-radius: 0.25rem;
+    background-color: var(--color-surface);
+    color: var(--color-text);
+    border: 1px solid #e0e0e0;
 }
 
 /* Suggestions */
 .copilot-suggestions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.375rem;
-    margin-top: 0.5rem;
+    gap: 0.25rem;
+    margin-top: 0.375rem;
 }
 
 .copilot-suggestion-btn {
-    padding: 0.25rem 0.625rem;
-    font-size: 0.7rem;
-    background-color: white;
-    border: 1px solid #d1d5db;
-    border-radius: 0.75rem;
+    padding: 0.2rem 0.5rem;
+    font-size: var(--font-size-base);
+    background-color: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
     cursor: pointer;
-    transition: all 0.15s ease;
-    color: #3b82f6;
+    transition: border-color 0.15s;
+    color: var(--color-text-secondary);
 }
 
 .copilot-suggestion-btn:hover {
-    background-color: #eff6ff;
-    border-color: #3b82f6;
+    border-color: var(--color-text-secondary);
+    color: var(--color-text);
 }
 
 /* Sources */
 .copilot-sources {
-    margin-top: 0.375rem;
-    color: #6b7280;
+    margin-top: 0.25rem;
+    color: var(--color-text-secondary);
 }
 
 .copilot-source {
-    background-color: #e5e7eb;
+    background-color: var(--color-surface);
     padding: 0.125rem 0.375rem;
-    border-radius: 0.25rem;
-    font-size: 0.65rem;
+    border-radius: 2px;
+    font-size: var(--font-size-base);
 }
 
 /* Typing Indicator */
 .copilot-typing .copilot-message-content {
-    padding: 0.75rem 1rem;
+    padding: 0.5rem 0.75rem;
 }
 
 .copilot-typing-status {
@@ -342,9 +439,9 @@
 }
 
 .copilot-typing-dot {
-    width: 0.4rem;
-    height: 0.4rem;
-    background-color: #3b82f6;
+    width: 4px;
+    height: 4px;
+    background-color: var(--color-text-secondary);
     border-radius: 50%;
     animation: copilot-typing 1.4s infinite ease-in-out both;
 }
@@ -358,16 +455,15 @@
 }
 
 .copilot-typing-text {
-    margin-left: 0.5rem;
-    font-size: 0.8rem;
-    color: #6b7280;
-    font-style: italic;
+    margin-left: 0.375rem;
+    font-size: var(--font-size-base);
+    color: var(--color-text-secondary);
 }
 
 @keyframes copilot-typing {
     0%, 80%, 100% {
         transform: scale(0.6);
-        opacity: 0.5;
+        opacity: 0.4;
     }
     40% {
         transform: scale(1);
@@ -377,9 +473,9 @@
 
 /* Input Area */
 .copilot-input-area {
-    padding: 0.75rem 1rem;
-    border-top: 1px solid #e5e7eb;
-    background-color: white;
+    padding: 0.625rem 1rem;
+    border-top: 1px solid #e0e0e0;
+    background-color: var(--color-background);
     flex-shrink: 0;
 }
 
@@ -391,86 +487,164 @@
 
 .copilot-input {
     flex: 1;
-    padding: 0.625rem 1rem;
-    border: 1px solid #d1d5db;
-    border-radius: 1.5rem;
-    font-size: 0.875rem;
-    background-color: #f9fafb;
-    transition: all 0.15s ease;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    font-size: var(--font-size-base);
+    background-color: var(--color-background);
+    color: var(--color-text);
+    transition: border-color 0.15s;
 }
 
 .copilot-input:focus {
     outline: none;
-    border-color: #3b82f6;
-    background-color: white;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    border-color: var(--color-text-secondary);
+}
+
+.copilot-input::placeholder {
+    color: var(--color-text-secondary);
 }
 
 .copilot-send-btn {
-    width: 2.5rem;
-    height: 2.5rem;
-    border: none;
-    border-radius: 50%;
-    background-color: #3b82f6;
-    color: white;
+    width: 2rem;
+    height: 2rem;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    background-color: var(--color-text);
+    color: var(--color-background);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s;
     flex-shrink: 0;
 }
 
 .copilot-send-btn:hover {
-    background-color: #2563eb;
-    transform: scale(1.05);
+    background-color: var(--color-text-secondary);
 }
 
-.copilot-send-btn:active {
-    transform: scale(0.95);
+.copilot-send-btn svg {
+    width: 14px;
+    height: 14px;
 }
 
-/* Toggle Button */
-.copilot-toggle-btn {
-    position: fixed;
-    bottom: 1.5rem;
-    right: 1.5rem;
-    width: 3.5rem;
-    height: 3.5rem;
-    border: none;
-    border-radius: 50%;
-    background-color: #3b82f6;
-    color: white;
-    cursor: pointer;
+
+/* ========================================
+   Thread Panel
+   ======================================== */
+
+.copilot-thread-panel {
+    padding: 0.75rem !important;
+    overflow-y: auto;
+}
+
+.thread-empty-state {
+    text-align: center;
+    padding: 2rem 1rem;
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-base);
+}
+
+.thread-message {
+    background: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    padding: 0.625rem 0.75rem;
+    margin-bottom: 0.375rem;
+    transition: border-color 0.15s;
+}
+
+.thread-message:hover {
+    border-color: var(--color-text-secondary);
+}
+
+.thread-message-current {
+    border-left: 3px solid var(--color-text);
+    background: var(--color-surface);
+}
+
+.thread-msg-header {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
-    transition: all 0.2s ease;
-    z-index: 999;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 0.2rem;
 }
 
-.copilot-toggle-btn:hover {
-    background-color: #2563eb;
-    transform: scale(1.1);
-    box-shadow: 0 6px 16px rgba(59, 130, 246, 0.5);
+.thread-msg-sender {
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    color: var(--color-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 60%;
 }
 
-.copilot-toggle-hidden {
-    display: none !important;
+.thread-msg-date {
+    font-size: var(--font-size-base);
+    color: var(--color-text-secondary);
+    flex-shrink: 0;
 }
 
-/* Responsive adjustments */
+.thread-msg-subject {
+    font-size: var(--font-size-base);
+    color: var(--color-text);
+    font-weight: 500;
+    margin-bottom: 0.25rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.thread-msg-preview {
+    font-size: var(--font-size-base);
+    color: var(--color-text-secondary);
+    line-height: 1.45;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.thread-att-badge {
+    display: inline-block;
+    font-size: var(--font-size-base);
+    color: var(--color-text-secondary);
+    margin-top: 0.3rem;
+}
+
+.thread-msg-view-btn {
+    display: inline-block;
+    margin-top: 0.375rem;
+    padding: 0.2rem 0.5rem;
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    color: var(--color-text);
+    background: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+
+.thread-msg-view-btn:hover {
+    border-color: var(--color-text-secondary);
+}
+
+/* ========================================
+   Responsive
+   ======================================== */
+
 @media (max-width: 768px) {
     .copilot-quick-actions {
         padding: 0.5rem;
     }
-    
+
     .copilot-quick-btn {
-        font-size: 0.7rem;
         padding: 0.25rem 0.5rem;
     }
-    
+
     .copilot-message {
         max-width: 95%;
     }

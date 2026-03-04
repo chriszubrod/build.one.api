@@ -200,6 +200,7 @@ def _run_complete_bill(public_id: str) -> None:
         }
         # DB so list page can read from any worker after redirect
         BillRepository().set_completion_result(public_id, result, expires_at)
+        logger.info("Completion result saved for bill %s (status_code=%s)", public_id, result.get("status_code"))
         if result.get("status_code") >= 400:
             logger.warning("Complete bill failed in background: %s", result.get("message"))
     except Exception as e:

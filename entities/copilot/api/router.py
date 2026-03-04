@@ -86,7 +86,7 @@ def chat_router(
         return ChatResponse(
             message=response.message,
             conversation_id=conv_id,
-            intent=response.intent.value if response.intent else None,
+            intent=response.intent,
             action_taken=response.action_taken,
             data=response.data,
             suggestions=response.suggestions,

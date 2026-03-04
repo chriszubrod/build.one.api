@@ -14,7 +14,19 @@
     <div class="bill-create-fullpage">
         <div class="bill-create-header">
             <h1>Edit Bill</h1>
-            <a href="{{ return_to or '/bill/list' }}" class="btn btn-secondary">Back to List</a>
+            <div style="display:flex; align-items:center; gap:0.75rem;">
+                {% if source_email %}
+                <button type="button"
+                        class="btn btn-secondary"
+                        id="toggle-source-email-btn"
+                        onclick="toggleSourceEmail()"
+                        title="Show the email this bill was created from"
+                        style="font-size:0.8rem;">
+                    Show Source Email
+                </button>
+                {% endif %}
+                <a href="{{ return_to or '/bill/list' }}" class="btn btn-secondary">Back to List</a>
+            </div>
         </div>
 
         <div class="bill-create-content">
@@ -248,23 +260,26 @@
                                                         </div>
                                                     </div>
                                                     <div class="attachment-display" style="display: {% if line_item.attachment %}flex{% else %}none{% endif %}; align-items: center; gap: 0.5rem;">
-                                                        {% if line_item.attachment %}
-                                                        <a href="#" 
-                                                           class="attachment-preview-link" 
-                                                           onclick="showAttachmentPreview('{{ line_item.attachment.public_id }}', '{{ line_item.attachment.content_type or '' }}', '{{ line_item.attachment.file_extension or '' }}', '{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}'); return false;"
-                                                           style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background-color: var(--color-success-bg, #e8f5e9); border-radius: 4px; text-decoration: none; cursor: pointer;"
-                                                           data-attachment-id="{{ line_item.attachment.public_id }}"
-                                                           data-content-type="{{ line_item.attachment.content_type or '' }}"
-                                                           data-file-extension="{{ line_item.attachment.file_extension or '' }}"
-                                                           data-filename="{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}">
+                                                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background-color: var(--color-success-bg, #e8f5e9); border-radius: 4px; width: fit-content; max-width: 100%;">
                                                             <span class="attachment-icon" style="font-size: 1.1rem;">📎</span>
-                                                            <span class="attachment-filename" style="font-weight: 500; color: var(--color-primary); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}">
+                                                            {% if line_item.attachment %}
+                                                            <a href="#" 
+                                                               class="attachment-preview-link attachment-filename" 
+                                                               onclick="showAttachmentPreview('{{ line_item.attachment.public_id }}', '{{ line_item.attachment.content_type or '' }}', '{{ line_item.attachment.file_extension or '' }}', '{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}'); return false;"
+                                                               style="font-weight: 500; color: var(--color-primary); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: none; cursor: pointer;"
+                                                               data-attachment-id="{{ line_item.attachment.public_id }}"
+                                                               data-content-type="{{ line_item.attachment.content_type or '' }}"
+                                                               data-file-extension="{{ line_item.attachment.file_extension or '' }}"
+                                                               data-filename="{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}"
+                                                               title="{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}">
                                                                 {{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}
-                                                            </span>
-                                                        </a>
-                                                        <a href="/attachment/view/{{ line_item.attachment.public_id }}" class="btn btn-secondary btn-sm" target="_blank" title="Open in new tab" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">↗</a>
-                                                        <button type="button" class="btn btn-danger btn-sm attachment-remove-btn" onclick="removeAttachment(this)" title="Remove attachment" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">✕</button>
-                                                        {% endif %}
+                                                            </a>
+                                                            {% else %}
+                                                            <a href="#" class="attachment-filename" target="_blank" style="font-weight: 500; color: var(--color-primary); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title=""></a>
+                                                            {% endif %}
+                                                            <a href="{% if line_item.attachment %}/attachment/view/{{ line_item.attachment.public_id }}{% else %}#{% endif %}" class="attachment-open-link btn btn-secondary btn-sm" target="_blank" title="Open in new tab" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; display: {% if line_item.attachment %}inline-block{% else %}none{% endif %};">↗</a>
+                                                            <button type="button" class="btn btn-danger btn-sm attachment-remove-btn" onclick="removeAttachment(this)" title="Remove attachment" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">✕</button>
+                                                        </div>
                                                     </div>
                                                     <div style="display: flex; gap: 0.5rem; margin-left: auto;">
                                                         <button type="button" class="btn btn-danger btn-sm" onclick="deleteLineItemForm(this)">Delete Line Item</button>
@@ -549,6 +564,24 @@
             </div>
             {% endif %}
             
+            <!-- Source Email Section (loaded via AJAX) -->
+            {% if source_email %}
+            <div id="source-email-section" class="agent-card" style="margin-top: 2rem; display: none;">
+                <div class="agent-card-header">
+                    <h2>Source Email</h2>
+                    <div style="display: flex; gap: 1rem; align-items: center;">
+                        <span id="source-email-status" class="agent-badge agent-badge--neutral">Loading...</span>
+                        <a id="source-email-outlook-link" href="#" class="agent-link-subtle" target="_blank" title="Open in Outlook" style="display: none;">Open in Outlook</a>
+                    </div>
+                </div>
+                <div class="agent-card-body" style="padding: 0;">
+                    <div id="source-email-content" style="padding: 1.25rem; color: var(--color-text-muted, #6c757d);">
+                        Loading email...
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
             <!-- Attachment Preview Section (below form) -->
             <div id="attachment-preview-section" class="bill-form-card" style="margin-top: 2rem; display: none;">
                 <div class="bill-form-card-header" style="display: flex; justify-content: space-between; align-items: center;">
@@ -616,6 +649,102 @@
                 const toggle = msg.querySelector('.agent-message-toggle');
                 if (toggle) toggle.textContent = '▶';
             });
+        }
+
+        // =====================
+        // Source Email Inline Display
+        // =====================
+
+        let sourceEmailLoaded = false;
+        let sourceEmailVisible = false;
+
+        function toggleSourceEmail() {
+            const section = document.getElementById('source-email-section');
+            const btn = document.getElementById('toggle-source-email-btn');
+            if (!section) return;
+
+            sourceEmailVisible = !sourceEmailVisible;
+            section.style.display = sourceEmailVisible ? 'block' : 'none';
+            if (btn) btn.textContent = sourceEmailVisible ? 'Hide Source Email' : 'Show Source Email';
+
+            if (sourceEmailVisible && !sourceEmailLoaded) {
+                loadSourceEmail();
+            }
+            if (sourceEmailVisible) {
+                section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }
+
+        async function loadSourceEmail() {
+            const contentEl = document.getElementById('source-email-content');
+            const statusEl = document.getElementById('source-email-status');
+            {% if source_email %}
+            const messageId = '{{ source_email.message_id }}';
+            {% else %}
+            return;
+            {% endif %}
+
+            try {
+                const resp = await fetch(`/inbox/message/${encodeURIComponent(messageId)}/detail`);
+                const data = await resp.json();
+
+                if (data.status_code !== 200 || !data.email) {
+                    contentEl.innerHTML = '<div style="padding: 1rem; color: var(--color-danger, #dc3545);">Could not load email.</div>';
+                    if (statusEl) statusEl.textContent = 'Error';
+                    return;
+                }
+
+                const email = data.email;
+                sourceEmailLoaded = true;
+                if (statusEl) statusEl.textContent = email.received_datetime ? email.received_datetime.slice(0, 10) : '';
+
+                // Show Outlook link if web_link is available
+                const outlookLink = document.getElementById('source-email-outlook-link');
+                if (outlookLink && email.web_link) {
+                    outlookLink.href = email.web_link;
+                    outlookLink.style.display = '';
+                }
+
+                // Build the envelope + body HTML
+                let html = '<div class="agent-message-envelope" style="margin-bottom: 1rem;">';
+                html += '<div class="agent-envelope-row"><span class="agent-envelope-label">From:</span>';
+                html += '<span class="agent-envelope-value">' + escapeHtml(email.from_name || '') + ' &lt;' + escapeHtml(email.from_email || '') + '&gt;</span></div>';
+
+                if (email.to_recipients && email.to_recipients.length) {
+                    const toList = email.to_recipients.map(r => escapeHtml(typeof r === 'string' ? r : (r.address || r.email || ''))).join(', ');
+                    html += '<div class="agent-envelope-row"><span class="agent-envelope-label">To:</span>';
+                    html += '<span class="agent-envelope-value">' + toList + '</span></div>';
+                }
+
+                html += '<div class="agent-envelope-row"><span class="agent-envelope-label">Subject:</span>';
+                html += '<span class="agent-envelope-value">' + escapeHtml(email.subject || '') + '</span></div>';
+
+                html += '<div class="agent-envelope-row"><span class="agent-envelope-label">Received:</span>';
+                html += '<span class="agent-envelope-value">' + escapeHtml(email.received_datetime || '') + '</span></div>';
+                html += '</div>';
+
+                // Email body
+                html += '<div class="agent-message-body-section"><div class="agent-message-body';
+                if (email.body_content_type === 'html') html += ' agent-email-body--html';
+                html += '">';
+                if (email.body_content_type === 'html') {
+                    html += email.body_content || '';
+                } else {
+                    html += '<pre style="white-space: pre-wrap; font-family: inherit; margin: 0;">' + escapeHtml(email.body_content || '') + '</pre>';
+                }
+                html += '</div></div>';
+
+                contentEl.innerHTML = html;
+            } catch (err) {
+                contentEl.innerHTML = '<div style="padding: 1rem; color: var(--color-danger, #dc3545);">Failed to load email: ' + escapeHtml(err.message) + '</div>';
+                if (statusEl) statusEl.textContent = 'Error';
+            }
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.appendChild(document.createTextNode(str));
+            return div.innerHTML;
         }
 
         // =====================
@@ -1212,9 +1341,9 @@
 
             clearLineItemFormInputs(clonedForm);
 
-            const cancelButton = clonedForm.querySelector('button.btn-secondary');
+            const cancelButton = clonedForm.querySelector('button.btn-secondary:not(.attachment-upload-btn)');
             const addButton = clonedForm.querySelector('button.btn-primary');
-            
+
             if (cancelButton) {
                 cancelButton.onclick = function() {
                     handleCancelLineItemForm(this);
@@ -1582,9 +1711,10 @@
             const displayWrapper = formElement.querySelector('.attachment-display');
             const filenameLink = formElement.querySelector('.attachment-filename');
             const displayContainer = displayWrapper ? displayWrapper.querySelector('div') : null;
+            const openLink = formElement.querySelector('.attachment-open-link');
             
             if (uploadWrapper) uploadWrapper.style.display = 'none';
-            if (displayWrapper) displayWrapper.style.display = 'block';
+            if (displayWrapper) displayWrapper.style.display = 'flex';
             
             const filename = attachment.original_filename || attachment.filename || 'Attachment';
             const contentType = attachment.content_type || '';
@@ -1593,11 +1723,18 @@
             if (filenameLink) {
                 filenameLink.textContent = filename;
                 filenameLink.href = `/attachment/view/${attachment.public_id}`;
-                // Make clicking the filename show the preview
+                filenameLink.title = filename;
+                filenameLink.classList.add('attachment-preview-link');
+                filenameLink.setAttribute('data-attachment-id', attachment.public_id);
                 filenameLink.onclick = function(e) {
                     e.preventDefault();
                     showAttachmentPreview(attachment.public_id, contentType, fileExtension, filename);
+                    return false;
                 };
+            }
+            if (openLink) {
+                openLink.href = `/attachment/view/${attachment.public_id}`;
+                openLink.style.display = 'inline-block';
             }
             
             const lineItemPublicId = formElement.querySelector('.line-item-public-id').value;
@@ -1677,11 +1814,25 @@
             const displayWrapper = formElement.querySelector('.attachment-display');
             const statusElement = formElement.querySelector('.attachment-status');
             const uploadBtn = formElement.querySelector('.attachment-upload-btn');
+            const openLink = formElement.querySelector('.attachment-open-link');
+            const filenameLink = formElement.querySelector('.attachment-filename');
             
             if (uploadWrapper) uploadWrapper.style.display = 'flex';
             if (displayWrapper) displayWrapper.style.display = 'none';
             if (statusElement) statusElement.textContent = 'No file attached';
             if (uploadBtn) uploadBtn.style.display = ''; // Ensure button is visible
+            if (openLink) {
+                openLink.href = '#';
+                openLink.style.display = 'none';
+            }
+            if (filenameLink) {
+                filenameLink.textContent = '';
+                filenameLink.href = '#';
+                filenameLink.removeAttribute('title');
+                filenameLink.classList.remove('attachment-preview-link');
+                filenameLink.removeAttribute('data-attachment-id');
+                filenameLink.onclick = null;
+            }
             
             const attachmentPublicId = formElement.querySelector('.line-item-attachment-public-id');
             const linkPublicId = formElement.querySelector('.line-item-attachment-link-public-id');
@@ -2154,10 +2305,17 @@
             if (!confirm('Are you sure you want to delete this bill? This action cannot be undone.')) {
                 return;
             }
-            
+
+            // Prevent auto-save from firing during delete
+            isSaving = true;
+            if (autoSaveTimeout) {
+                clearTimeout(autoSaveTimeout);
+                autoSaveTimeout = null;
+            }
+
             const billPublicId = document.getElementById('bill_public_id').value;
             const rowVersion = document.getElementById('row_version').value;
-            
+
             try {
                 const response = await fetch(`/api/v1/delete/bill/${billPublicId}`, {
                     method: 'DELETE',

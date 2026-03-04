@@ -16,7 +16,7 @@ from core.ai.agents.vendor_agent.config import (
     VENDOR_AGENT_SYSTEM_PROMPT,
     MAX_LLM_CALLS_PER_RUN,
 )
-from core.ai.llm.azure import get_chat_model
+from core.ai.llm.claude import get_claude_model
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 def get_model_with_tools():
-    """Get the chat model with tools bound."""
-    model = get_chat_model()
+    """Get the Claude chat model with tools bound."""
+    model = get_claude_model()
     return model.bind_tools(VENDOR_AGENT_TOOLS)
 
 

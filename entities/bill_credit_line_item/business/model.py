@@ -24,6 +24,7 @@ class BillCreditLineItem:
     unit_price: Optional[Decimal]
     amount: Optional[Decimal]
     is_billable: Optional[bool]
+    is_billed: Optional[bool]
     billable_amount: Optional[Decimal]
     is_draft: Optional[bool]
 

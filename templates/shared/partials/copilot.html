@@ -1,7 +1,11 @@
 <!-- AI Copilot Chat Panel (visible by default) -->
 <div id="copilot-panel" class="aside-panel aside-panel-open">
     <div class="aside-panel-header">
-        <h5>AI Assistant</h5>
+        <!-- Tab bar replaces static heading when Thread is available -->
+        <div class="copilot-tabs" id="copilot-tabs">
+            <button class="copilot-tab active" data-copilot-tab="chat">Chat</button>
+            <button class="copilot-tab" data-copilot-tab="thread" id="copilot-thread-tab" style="display:none;">Thread</button>
+        </div>
         <div class="copilot-header-actions">
             <button type="button" class="copilot-new-chat-btn" onclick="newCopilotChat()" aria-label="New Chat" title="New Chat">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -11,8 +15,9 @@
             <button type="button" class="aside-close-btn" onclick="toggleCopilot()" aria-label="Close">&times;</button>
         </div>
     </div>
-    
-    <div class="aside-panel-body copilot-body">
+
+    <!-- Chat panel -->
+    <div class="aside-panel-body copilot-body" id="copilot-chat-panel">
         <!-- Quick Actions -->
         <div id="copilot-quick-actions" class="copilot-quick-actions">
             <button type="button" class="copilot-quick-btn" onclick="sendQuickAction('What\\'s the current status?')">
@@ -25,7 +30,7 @@
                 ❓ Help
             </button>
         </div>
-        
+
         <!-- Chat Messages -->
         <div id="copilot-messages" class="copilot-messages">
             <div class="copilot-message copilot-message-assistant">
@@ -35,15 +40,22 @@
             </div>
         </div>
     </div>
-    
-    <!-- Input Area -->
-    <div class="copilot-input-area">
+
+    <!-- Thread panel (hidden by default) -->
+    <div class="aside-panel-body copilot-thread-panel" id="copilot-thread-panel" style="display:none;">
+        <div id="thread-loading" class="thread-empty-state">Loading thread...</div>
+        <div id="thread-empty" class="thread-empty-state" style="display:none;">No other messages in this thread.</div>
+        <div id="thread-messages"></div>
+    </div>
+
+    <!-- Input Area (only visible on Chat tab) -->
+    <div class="copilot-input-area" id="copilot-input-area">
         <form id="copilot-form" onsubmit="sendCopilotMessage(event)">
             <div class="copilot-input-container">
-                <input 
-                    type="text" 
-                    id="copilot-input" 
-                    class="copilot-input" 
+                <input
+                    type="text"
+                    id="copilot-input"
+                    class="copilot-input"
                     placeholder="Ask me anything..."
                     autocomplete="off"
                 >
@@ -59,7 +71,7 @@
 
 <script>
 let copilotConversationId = null;
-let copilotOpen = false;
+let copilotOpen = true;
 
 function toggleCopilot() {
     const sidebar = document.querySelector('.sidebar-right');
@@ -113,7 +125,7 @@ async function sendCopilotMessage(event) {
     const typingId = addCopilotTypingIndicator('Thinking...');
     
     // Set up timeout
-    const timeoutMs = 30000; // 30 seconds
+    const timeoutMs = 120000; // 120 seconds (agent may need multiple tool rounds)
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     
@@ -275,4 +287,105 @@ function closeCopilotPanel() {
 
 // Make closeCopilotPanel available globally for picker scripts
 window.closeCopilotPanel = closeCopilotPanel;
+
+// ── Thread Tab ─────────────────────────────────────────────────────
+let threadLoaded = false;
+let threadCache = null;
+
+// Tab switching
+document.querySelectorAll('.copilot-tab').forEach(tab => {
+    tab.addEventListener('click', function() {
+        document.querySelectorAll('.copilot-tab').forEach(t => t.classList.remove('active'));
+        this.classList.add('active');
+
+        const target = this.dataset.copilotTab;
+        const chatPanel = document.getElementById('copilot-chat-panel');
+        const threadPanel = document.getElementById('copilot-thread-panel');
+        const inputArea = document.getElementById('copilot-input-area');
+
+        if (target === 'thread') {
+            chatPanel.style.display = 'none';
+            inputArea.style.display = 'none';
+            threadPanel.style.display = '';
+            if (!threadLoaded) loadThread();
+        } else {
+            chatPanel.style.display = '';
+            inputArea.style.display = '';
+            threadPanel.style.display = 'none';
+        }
+    });
+});
+
+// Detect inbox message page and show Thread tab
+(function initThreadTab() {
+    const ctx = document.getElementById('thread-context');
+    if (!ctx) return;
+
+    const messageId = ctx.dataset.messageId;
+    const conversationId = ctx.dataset.conversationId;
+    if (!messageId || !conversationId) return;
+
+    // Show the Thread tab button
+    const threadTab = document.getElementById('copilot-thread-tab');
+    if (threadTab) threadTab.style.display = '';
+})();
+
+async function loadThread() {
+    const ctx = document.getElementById('thread-context');
+    if (!ctx) return;
+
+    const messageId = ctx.dataset.messageId;
+    if (!messageId) return;
+
+    const loadingEl = document.getElementById('thread-loading');
+    const emptyEl = document.getElementById('thread-empty');
+    const container = document.getElementById('thread-messages');
+
+    loadingEl.style.display = '';
+    emptyEl.style.display = 'none';
+    container.innerHTML = '';
+
+    try {
+        const resp = await fetch(`/inbox/message/${messageId}/thread`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        threadLoaded = true;
+        threadCache = data.messages || [];
+
+        loadingEl.style.display = 'none';
+
+        if (threadCache.length === 0) {
+            emptyEl.style.display = '';
+            return;
+        }
+
+        container.innerHTML = threadCache.map(msg => {
+            const isCurrent = msg.is_current;
+            const dt = msg.received_datetime
+                ? new Date(msg.received_datetime).toLocaleDateString('en-US', {
+                    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                  })
+                : '';
+            const sender = msg.from_name || msg.from_email || 'Unknown';
+            const preview = (msg.body_preview || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const attBadge = msg.has_attachments
+                ? `<span class="thread-att-badge">📎 ${msg.attachment_count || ''}</span>`
+                : '';
+
+            return `<div class="thread-message ${isCurrent ? 'thread-message-current' : ''}" data-msg-id="${msg.message_id}">
+                <div class="thread-msg-header">
+                    <span class="thread-msg-sender">${sender}</span>
+                    <span class="thread-msg-date">${dt}</span>
+                </div>
+                <div class="thread-msg-subject">${(msg.subject || '(no subject)').replace(/</g, '&lt;')}</div>
+                <div class="thread-msg-preview">${preview}</div>
+                ${attBadge}
+                ${!isCurrent ? `<button class="thread-msg-view-btn" onclick="window.location.href='/inbox/message/${msg.message_id}'">View</button>` : ''}
+            </div>`;
+        }).join('');
+    } catch (err) {
+        loadingEl.style.display = 'none';
+        container.innerHTML = `<div class="thread-empty-state" style="color:#dc2626;">Failed to load thread: ${err.message}</div>`;
+    }
+}
 </script>

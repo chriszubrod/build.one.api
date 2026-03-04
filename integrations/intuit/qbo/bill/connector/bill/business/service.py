@@ -109,22 +109,17 @@ class BillBillConnector:
             if bill:
                 logger.info(f"Updating existing Bill {bill.id} from QboBill {qbo_bill.id}")
                 
-                # Create an update object
-                class BillUpdate:
-                    pass
-                
-                update = BillUpdate()
-                update.vendor_public_id = vendor_public_id
-                update.bill_date = bill_date
-                update.due_date = due_date
-                update.bill_number = bill_number
-                update.total_amount = total_amount
-                update.memo = memo
-                update.terms_id = None
-                update.is_draft = False
-                update.row_version = bill.row_version
-                
-                bill = self.bill_service.update_by_public_id(bill.public_id, update)
+                bill = self.bill_service.update_by_public_id(
+                    bill.public_id,
+                    vendor_public_id=vendor_public_id,
+                    bill_date=bill_date,
+                    due_date=due_date,
+                    bill_number=bill_number,
+                    total_amount=total_amount,
+                    memo=memo,
+                    is_draft=False,
+                    row_version=bill.row_version,
+                )
                 
                 # Sync line items for existing bill
                 self._sync_line_items(bill.id, qbo_bill_lines)

@@ -327,6 +327,11 @@ async def edit_bill_credit(request: Request, public_id: str, current_user: dict 
     if vendor_public_id:
         bill_credit_dict['vendor_public_id'] = vendor_public_id
     
+    _ALLOWED_RETURN_PREFIXES = ("/bill-credit/list", "/invoice/")
+    return_to = request.query_params.get("return_to") or ""
+    if return_to and not any(return_to.startswith(p) for p in _ALLOWED_RETURN_PREFIXES):
+        return_to = ""
+
     return templates.TemplateResponse(
         "bill_credit/edit.html",
         {
@@ -338,5 +343,6 @@ async def edit_bill_credit(request: Request, public_id: str, current_user: dict 
             "projects": projects,
             "current_user": current_user,
             "current_path": request.url.path,
+            "return_to": return_to,
         },
     )

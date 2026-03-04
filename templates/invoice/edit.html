@@ -1,0 +1,972 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Edit Invoice - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/invoice.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="invoice-create-fullpage">
+        <div class="invoice-create-header">
+            <h1>Edit Invoice</h1>
+            <a href="{{ return_to or '/invoice/list' }}" class="btn btn-secondary">Back to List</a>
+        </div>
+
+        <div class="invoice-create-content">
+            <form id="editInvoiceForm" autocomplete="off">
+                <input type="hidden" id="invoice_public_id" name="invoice_public_id" value="{{ invoice.public_id }}">
+                <input type="hidden" id="row_version" name="row_version" value="{{ invoice.row_version }}">
+
+                <section class="invoice-section">
+                    <div class="invoice-form-card">
+                        <div class="invoice-form-card-header">
+                            <h5>Invoice Details</h5>
+                            <span id="invoice-save-status" class="save-status"></span>
+                        </div>
+                        <div class="invoice-form-card-body">
+                            <div class="invoice-form-group">
+                                <label for="project_public_id" class="invoice-form-label">
+                                    Project <span class="required">*</span>
+                                </label>
+                                <select class="invoice-form-control" id="project_public_id" name="project_public_id" required autocomplete="off">
+                                    <option value="">-- Select a project --</option>
+                                    {% for project in projects %}
+                                    <option value="{{ project.public_id }}" {% if invoice.project_public_id and project.public_id == invoice.project_public_id %}selected{% endif %}>
+                                        {{ project.name or 'Unnamed Project' }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+
+                            <div class="invoice-form-group-row">
+                                <div class="invoice-form-group">
+                                    <label for="payment_term_public_id" class="invoice-form-label">Payment Terms</label>
+                                    <select class="invoice-form-control" id="payment_term_public_id" name="payment_term_public_id" autocomplete="off">
+                                        <option value="">Select Payment Terms</option>
+                                        {% for term in payment_terms %}
+                                        <option value="{{ term.public_id }}" {% if invoice.payment_term_public_id == term.public_id %}selected{% endif %}>
+                                            {{ term.name }}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+
+                                <div class="invoice-form-group">
+                                    <label for="invoice_date" class="invoice-form-label">
+                                        Invoice Date <span class="required">*</span>
+                                    </label>
+                                    <input type="text" class="invoice-form-control" id="invoice_date" name="invoice_date"
+                                           required value="{{ invoice.invoice_date or '' }}" autocomplete="off"
+                                           placeholder="MM-DD-YYYY" inputmode="numeric" maxlength="10" style="max-width: 11rem;">
+                                </div>
+
+                                <div class="invoice-form-group">
+                                    <label for="due_date" class="invoice-form-label">
+                                        Due Date <span class="required">*</span>
+                                    </label>
+                                    <input type="text" class="invoice-form-control" id="due_date" name="due_date"
+                                           required value="{{ invoice.due_date or '' }}" autocomplete="off"
+                                           placeholder="MM-DD-YYYY" inputmode="numeric" maxlength="10" style="max-width: 11rem;">
+                                </div>
+
+                                <div class="invoice-form-group">
+                                    <label for="invoice_number" class="invoice-form-label">
+                                        Invoice Number <span class="required">*</span>
+                                    </label>
+                                    <input type="text" class="invoice-form-control" id="invoice_number" name="invoice_number"
+                                           required maxlength="50" autocomplete="off" value="{{ invoice.invoice_number or '' }}">
+                                </div>
+                            </div>
+
+                            <input type="hidden" id="total_amount" name="total_amount" value="{{ invoice.total_amount or '' }}">
+
+                            <div class="invoice-form-group">
+                                <label for="memo" class="invoice-form-label">Memo</label>
+                                <textarea class="invoice-form-control" id="memo" name="memo" rows="3"
+                                          autocomplete="off">{{ invoice.memo or '' }}</textarea>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Line Items Section -->
+                <section class="invoice-section">
+                    <div class="invoice-form-card">
+                        <div class="invoice-form-card-header">
+                            <h5>Line Items</h5>
+                            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                                <span id="line-items-count" class="save-status"></span>
+                                <button type="button" class="btn btn-secondary btn-sm" id="loadBillableBtn" onclick="loadBillableItems()">
+                                    Load Billable Items
+                                </button>
+                                <button type="button" class="btn btn-primary btn-sm" onclick="generatePacket()" id="generatePacketBtn">
+                                    Generate PDF Packet
+                                </button>
+                                <button type="button" class="btn btn-secondary btn-sm" onclick="reconcileWithWorksheet()" id="reconcileBtn">
+                                    Reconcile
+                                </button>
+                            </div>
+                        </div>
+                        <div class="invoice-form-card-body">
+                            <div id="line-items-empty" style="{% if line_items %}display:none{% endif %}">
+                                <p style="color: var(--color-text-secondary); text-align: center; padding: 2rem 0;">
+                                    No line items yet. Click "Load Billable Items" to pull in unbilled items for this project.
+                                </p>
+                            </div>
+                            <div id="line-items-table-wrapper" style="{% if not line_items %}display:none{% endif %}">
+                                <table class="invoice-table" id="line-items-table">
+                                    <thead>
+                                        <tr>
+                                            <th style="width: 2.5rem;"></th>
+                                            <th data-sort="string">Source</th>
+                                            <th data-sort="date">Date</th>
+                                            <th data-sort="string">Vendor</th>
+                                            <th data-sort="string">Ref</th>
+                                            <th data-sort="string">Description</th>
+                                            <th data-sort="string">Cost Code</th>
+                                            <th data-sort="number" style="text-align: right;">Amount</th>
+                                            <th data-sort="number" style="text-align: right;">Markup</th>
+                                            <th data-sort="number" style="text-align: right;">Price</th>
+                                            <th style="text-align: center; width: 2.5rem;" title="Attachments">📎</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="line-items-tbody">
+                                        {% for li in line_items %}
+                                        <tr data-public-id="{{ li.public_id }}" data-source-type="{{ li.source_type }}"
+                                            data-source-id="{{ li.bill_line_item_id or li.expense_line_item_id or li.bill_credit_line_item_id or '' }}"
+                                            data-description="{{ li.description or '' }}"
+                                            data-amount="{{ li.amount if li.amount is not none else '' }}"
+                                            data-markup="{{ li.markup if li.markup is not none else '' }}"
+                                            data-price="{{ li.price if li.price is not none else '' }}"
+                                            data-parent-number="{{ li.get('parent_number', '') if li.get else '' }}"
+                                            data-source-date="{{ li.get('source_date', '') if li.get else '' }}"
+                                            data-scc-number="{{ li.get('sub_cost_code_number', '') if li.get else '' }}"
+                                            data-scc-name="{{ li.get('sub_cost_code_name', '') if li.get else '' }}"
+                                            data-vendor-name="{{ li.get('vendor_name', '') if li.get else '' }}"
+                                            data-attachment-id="{{ li.get('attachment_public_id', '') if li.get else '' }}"
+                                            data-parent-public-id="{{ li.get('parent_public_id', '') if li.get else '' }}"
+                                            data-included="true">
+                                            <td>
+                                                <button type="button" class="btn-icon btn-icon-danger" title="Remove from invoice"
+                                                        onclick="removeLineItem('{{ li.public_id }}', this)">
+                                                    &times;
+                                                </button>
+                                            </td>
+                                            <td><span class="invoice-source-badge invoice-source-badge--{{ li.source_type|lower|replace(' ', '-') }}">{% if li.source_type == 'BillLineItem' %}Bill{% elif li.source_type == 'ExpenseLineItem' %}Expense{% elif li.source_type == 'BillCreditLineItem' %}Credit{% elif li.source_type == 'Manual' %}Manual{% else %}{{ li.source_type or 'N/A' }}{% endif %}</span></td>
+                                            <td>{{ li.get('source_date', '—') if li.get and li.get('source_date') else '—' }}</td>
+                                            <td>{{ li.get('vendor_name', '') if li.get and li.get('vendor_name') else '—' }}</td>
+                                            <td>{% if li.get and li.get('parent_public_id') and li.get('parent_number') %}<a href="{{ '/bill/' if li.source_type == 'BillLineItem' else '/expense/' if li.source_type == 'ExpenseLineItem' else '/bill-credit/' }}{{ li.get('parent_public_id') }}/edit?return_to=/invoice/{{ invoice.public_id }}/edit">{{ li.get('parent_number') }}</a>{% else %}{{ li.get('parent_number', '—') if li.get else '—' }}{% endif %}</td>
+                                            <td>{{ li.description or '—' }}</td>
+                                            <td>{% if li.get and li.get('sub_cost_code_number') %}{{ li.get('sub_cost_code_number') }} — {{ li.get('sub_cost_code_name', '') }}{% else %}—{% endif %}</td>
+                                            <td style="text-align: right;">{% if li.amount is not none %}${{ li.amount | format_amount }}{% else %}—{% endif %}</td>
+                                            <td style="text-align: right;">{% if li.markup is not none and li.markup != 0 %}{{ "%.2f"|format(li.markup) }}%{% else %}—{% endif %}</td>
+                                            <td style="text-align: right;">{% if li.price is not none %}${{ li.price | format_amount }}{% else %}—{% endif %}</td>
+                                            <td style="text-align: center;">{% if li.get and li.get('attachment_public_id') %}<a href="/api/v1/view/attachment/{{ li.get('attachment_public_id') }}" target="_blank" class="attachment-link" title="View PDF">📄</a>{% elif li.get and li.get('parent_public_id') %}<a href="{{ '/bill/' if li.source_type == 'BillLineItem' else '/expense/' if li.source_type == 'ExpenseLineItem' else '/bill-credit/' }}{{ li.get('parent_public_id') }}/edit?return_to=/invoice/{{ invoice.public_id }}/edit" class="attachment-link attachment-link--missing" title="Edit source record to add attachment">📎</a>{% else %}—{% endif %}</td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                    <tfoot>
+                                        <tr>
+                                            <td colspan="10" style="text-align: right; font-weight: 600;">Total</td>
+                                            <td style="text-align: right; font-weight: 600;" id="line-items-total">
+                                                ${{ '{:,.2f}'.format(line_items | selectattr('price') | map(attribute='price') | list | sum) if line_items else '0.00' }}
+                                            </td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Needs Review Section -->
+                <section class="invoice-section" id="draft-items-section" style="display:none">
+                    <div class="invoice-form-card">
+                        <div class="invoice-form-card-header">
+                            <h5>Needs Review</h5>
+                            <span id="draft-items-count" class="save-status"></span>
+                        </div>
+                        <div class="invoice-form-card-body">
+                            <p style="color: var(--color-text-secondary); margin-bottom: 0.75rem;">
+                                These billable items are still in draft status. Complete them to make them available for invoicing.
+                            </p>
+                            <div id="draft-items-table-wrapper">
+                                <table class="invoice-table" id="draft-items-table">
+                                    <thead>
+                                        <tr>
+                                            <th data-sort="string">Source</th>
+                                            <th data-sort="date">Date</th>
+                                            <th data-sort="string">Vendor</th>
+                                            <th data-sort="string">Ref</th>
+                                            <th data-sort="string">Description</th>
+                                            <th data-sort="string">Cost Code</th>
+                                            <th data-sort="number" style="text-align: right;">Amount</th>
+                                            <th data-sort="number" style="text-align: right;">Markup</th>
+                                            <th data-sort="number" style="text-align: right;">Price</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="draft-items-tbody"></tbody>
+                                    <tfoot>
+                                        <tr>
+                                            <td colspan="8" style="text-align: right; font-weight: 600;">Total</td>
+                                            <td style="text-align: right; font-weight: 600;" id="draft-items-total">$0.00</td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Reconciliation Section -->
+                <section class="invoice-section" id="reconcile-section" style="display:none">
+                    <div class="invoice-form-card">
+                        <div class="invoice-form-card-header">
+                            <h5>Reconciliation</h5>
+                        </div>
+                        <div class="invoice-form-card-body" id="reconcile-body"></div>
+                    </div>
+                </section>
+
+                <div class="invoice-form-actions">
+                    <div class="invoice-form-actions-left">
+                        <button type="button" class="btn btn-danger" id="deleteBtn" onclick="deleteInvoice()">Delete</button>
+                    </div>
+                    <div class="invoice-form-actions-right">
+                        <a href="{{ return_to or '/invoice/list' }}" class="btn btn-secondary">Cancel</a>
+                        <button type="button" class="btn btn-secondary" id="saveDraftBtn" onclick="saveInvoice()">Save Draft</button>
+                        <button type="submit" class="btn btn-primary" id="completeBtn">Complete Invoice</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function btnBusy(id, label) {
+        const b = document.getElementById(id);
+        if (!b) return;
+        b.disabled = true;
+        b.dataset.origLabel = b.textContent;
+        b.innerHTML = `<span class="btn-spinner"></span>${label || b.textContent}`;
+    }
+    function btnReady(id) {
+        const b = document.getElementById(id);
+        if (!b) return;
+        b.disabled = false;
+        b.textContent = b.dataset.origLabel || b.textContent;
+    }
+
+    function showToast(message, type = 'info', duration = 5000) {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.textContent = message;
+        container.appendChild(toast);
+        setTimeout(() => toast.classList.add('toast-visible'), 10);
+        setTimeout(() => { toast.classList.remove('toast-visible'); setTimeout(() => toast.remove(), 300); }, duration);
+    }
+
+    function toMMDDYYYY(month, day, y) {
+        return `${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}-${y}`;
+    }
+
+    function parseFlexibleDate(str) {
+        if (!str || !str.trim()) return null;
+        const s = str.trim();
+        if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) {
+            let y = parseInt(s.slice(0, 4), 10);
+            if (y >= 1 && y < 100) y += 2000;
+            const month = parseInt(s.slice(5, 7), 10);
+            const day = parseInt(s.slice(8, 10), 10);
+            if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+            return toMMDDYYYY(month, day, y);
+        }
+        const withSep = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+        if (withSep) {
+            let y = parseInt(withSep[3], 10);
+            if (y < 100) y += 2000;
+            const month = parseInt(withSep[1], 10);
+            const day = parseInt(withSep[2], 10);
+            if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+            const d = new Date(y, month - 1, day);
+            if (isNaN(d.getTime()) || d.getFullYear() !== y || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+            return toMMDDYYYY(month, day, y);
+        }
+        const digits = s.replace(/\D/g, '');
+        if (digits.length === 8) {
+            const month = parseInt(digits.slice(0, 2), 10);
+            const day = parseInt(digits.slice(2, 4), 10);
+            const y = parseInt(digits.slice(4, 8), 10);
+            if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+            const d = new Date(y, month - 1, day);
+            if (isNaN(d.getTime()) || d.getFullYear() !== y || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+            return toMMDDYYYY(month, day, y);
+        }
+        if (digits.length === 6) {
+            const month = parseInt(digits.slice(0, 2), 10);
+            const day = parseInt(digits.slice(2, 4), 10);
+            const y = 2000 + parseInt(digits.slice(4, 6), 10);
+            if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+            const d = new Date(y, month - 1, day);
+            if (isNaN(d.getTime()) || d.getFullYear() !== y || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+            return toMMDDYYYY(month, day, y);
+        }
+        return null;
+    }
+
+    function dateToApiFormat(str) {
+        if (!str || !str.trim()) return '';
+        const parsed = parseFlexibleDate(str);
+        if (!parsed) return str.trim();
+        const m = parsed.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+        if (m) return `${m[3]}-${m[1]}-${m[2]}`;
+        return str.trim();
+    }
+
+    function normalizeDateInput(inputEl) {
+        if (!inputEl) return;
+        const parsed = parseFlexibleDate(inputEl.value);
+        if (parsed) inputEl.value = parsed;
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const invoiceDateInput = document.getElementById('invoice_date');
+        const dueDateInput = document.getElementById('due_date');
+        if (invoiceDateInput) {
+            invoiceDateInput.addEventListener('blur', function() { normalizeDateInput(invoiceDateInput); });
+        }
+        if (dueDateInput) {
+            dueDateInput.addEventListener('blur', function() { normalizeDateInput(dueDateInput); });
+        }
+        updateTotal();
+        updateCount();
+    });
+
+    function fmt(val) {
+        if (val == null) return '—';
+        return '$' + Number(val).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function fmtMarkup(val) {
+        if (val == null || val === 0) return '—';
+        return Number(val).toFixed(2) + '%';
+    }
+
+    function sourceLabel(type) {
+        const labels = {
+            'BillLineItem': 'Bill',
+            'ExpenseLineItem': 'Expense',
+            'BillCreditLineItem': 'Credit',
+            'Manual': 'Manual',
+        };
+        return labels[type] || type;
+    }
+
+    function updateTotal() {
+        let total = 0;
+        document.querySelectorAll('#line-items-tbody tr[data-included="true"]').forEach(row => {
+            const priceCell = row.querySelector('td:nth-child(10)');
+            if (priceCell) {
+                const text = priceCell.textContent.replace(/[$,—]/g, '').trim();
+                const val = parseFloat(text);
+                if (!isNaN(val)) total += val;
+            }
+        });
+        const totalEl = document.getElementById('line-items-total');
+        if (totalEl) totalEl.textContent = fmt(total);
+
+        const totalAmountInput = document.getElementById('total_amount');
+        if (totalAmountInput) totalAmountInput.value = total.toFixed(2);
+    }
+
+    function updateCount() {
+        const allRows = document.querySelectorAll('#line-items-tbody tr');
+        const includedRows = document.querySelectorAll('#line-items-tbody tr[data-included="true"]');
+        const excludedRows = document.querySelectorAll('#line-items-tbody tr[data-included="false"]');
+        const countEl = document.getElementById('line-items-count');
+
+        let label = '';
+        if (includedRows.length > 0) {
+            label = `${includedRows.length} item${includedRows.length !== 1 ? 's' : ''}`;
+            if (excludedRows.length > 0) {
+                label += `, ${excludedRows.length} excluded`;
+            }
+        }
+        if (countEl) countEl.textContent = label;
+
+        const emptyEl = document.getElementById('line-items-empty');
+        const tableEl = document.getElementById('line-items-table-wrapper');
+        if (allRows.length > 0) {
+            if (emptyEl) emptyEl.style.display = 'none';
+            if (tableEl) tableEl.style.display = '';
+        } else {
+            if (emptyEl) emptyEl.style.display = '';
+            if (tableEl) tableEl.style.display = 'none';
+        }
+    }
+
+    function editUrlForSource(sourceType, parentPublicId) {
+        const invoiceId = document.getElementById('invoice_public_id').value;
+        const returnTo = encodeURIComponent(`/invoice/${invoiceId}/edit`);
+        const prefixes = {
+            'BillLineItem': '/bill/',
+            'ExpenseLineItem': '/expense/',
+            'BillCreditLineItem': '/bill-credit/',
+        };
+        const prefix = prefixes[sourceType];
+        if (!prefix || !parentPublicId) return '';
+        return `${prefix}${parentPublicId}/edit?return_to=${returnTo}`;
+    }
+
+    function buildRowHTML(sourceType, included, publicId, row) {
+        const actionBtn = included
+            ? `<button type="button" class="btn-icon btn-icon-danger" title="Remove from invoice"
+                       onclick="removeLineItem('${publicId}', this)">&times;</button>`
+            : `<button type="button" class="btn-icon btn-icon-success" title="Add back to invoice"
+                       onclick="reAddLineItem(this)">+</button>`;
+
+        const sccNumber = row.getAttribute('data-scc-number');
+        const sccName = row.getAttribute('data-scc-name');
+        const costCode = sccNumber ? `${sccNumber} — ${sccName || ''}` : '—';
+        const attachId = row.getAttribute('data-attachment-id');
+        const parentPid = row.getAttribute('data-parent-public-id');
+        let attachCell;
+        if (attachId) {
+            attachCell = `<a href="/api/v1/view/attachment/${attachId}" target="_blank" class="attachment-link" title="View PDF">📄</a>`;
+        } else if (parentPid) {
+            const editUrl = editUrlForSource(sourceType, parentPid);
+            attachCell = editUrl
+                ? `<a href="${editUrl}" class="attachment-link attachment-link--missing" title="Edit source record to add attachment">📎</a>`
+                : '—';
+        } else {
+            attachCell = '—';
+        }
+        const amount = row.getAttribute('data-amount');
+        const markup = row.getAttribute('data-markup');
+        const price = row.getAttribute('data-price');
+
+        return `
+            <td>${actionBtn}</td>
+            <td><span class="invoice-source-badge invoice-source-badge--${(sourceType || '').toLowerCase().replace(/ /g, '-')}">${sourceLabel(sourceType)}</span></td>
+            <td>${row.getAttribute('data-source-date') || '—'}</td>
+            <td>${row.getAttribute('data-vendor-name') || '—'}</td>
+            <td>${refLink(sourceType, row.getAttribute('data-parent-public-id'), row.getAttribute('data-parent-number'))}</td>
+            <td>${row.getAttribute('data-description') || '—'}</td>
+            <td>${costCode}</td>
+            <td style="text-align: right;">${fmt(amount ? parseFloat(amount) : null)}</td>
+            <td style="text-align: right;">${fmtMarkup(markup ? parseFloat(markup) : null)}</td>
+            <td style="text-align: right;">${fmt(price ? parseFloat(price) : null)}</td>
+            <td style="text-align: center;">${attachCell}</td>
+        `;
+    }
+
+    function refLink(sourceType, parentPublicId, parentNumber) {
+        if (!parentPublicId || !parentNumber) return parentNumber || '—';
+        const url = editUrlForSource(sourceType, parentPublicId);
+        return url ? `<a href="${url}">${parentNumber}</a>` : parentNumber;
+    }
+
+    async function loadBillableItems() {
+        const projectPublicId = document.getElementById('project_public_id').value;
+        if (!projectPublicId) {
+            showToast('Please select a project first', 'error');
+            return;
+        }
+        btnBusy('loadBillableBtn', 'Loading…');
+
+        const invoicePublicId = document.getElementById('invoice_public_id').value;
+        let url = `/api/v1/get/invoice/billable-items/${projectPublicId}`;
+        if (invoicePublicId) url += `?invoice_public_id=${invoicePublicId}`;
+
+        try {
+            const resp = await fetch(url);
+            if (!resp.ok) {
+                const err = await resp.json();
+                showToast(err.detail || 'Failed to load billable items', 'error');
+                return;
+            }
+
+            const data = await resp.json();
+            const items = data.ready || [];
+            const draftItems = data.draft || [];
+
+            if (items.length === 0 && draftItems.length === 0) {
+                showToast('No unbilled items found for this project', 'info');
+                return;
+            }
+
+            const typeOrder = { 'BillLineItem': 0, 'BillCreditLineItem': 1, 'ExpenseLineItem': 2 };
+            const sortItems = arr => arr.sort((a, b) => {
+                const ta = typeOrder[a.source_type] ?? 9;
+                const tb = typeOrder[b.source_type] ?? 9;
+                if (ta !== tb) return ta - tb;
+                return (a.vendor_name || '').localeCompare(b.vendor_name || '');
+            });
+
+            sortItems(items);
+
+            let created = 0;
+            for (const item of items) {
+                const fkField = item.source_type === 'BillLineItem' ? 'bill_line_item_id'
+                    : item.source_type === 'ExpenseLineItem' ? 'expense_line_item_id'
+                    : item.source_type === 'BillCreditLineItem' ? 'bill_credit_line_item_id'
+                    : null;
+
+                const body = {
+                    invoice_public_id: invoicePublicId,
+                    source_type: item.source_type,
+                    description: item.description,
+                    amount: item.amount,
+                    markup: item.markup,
+                    price: item.price,
+                    is_draft: true,
+                };
+                if (fkField) body[fkField] = item.source_id;
+
+                const createResp = await fetch('/api/v1/create/invoice_line_item', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+
+                if (createResp.ok) {
+                    const li = await createResp.json();
+                    addLineItemRow(li, {
+                        parent_number: item.parent_number,
+                        parent_public_id: item.parent_public_id,
+                        source_date: item.source_date,
+                        scc_number: item.sub_cost_code_number,
+                        scc_name: item.sub_cost_code_name,
+                        vendor_name: item.vendor_name,
+                        attachment_public_id: item.attachment_public_id,
+                    });
+                    created++;
+                }
+            }
+
+            updateTotal();
+            updateCount();
+
+            renderDraftItems(sortItems(draftItems));
+
+            if (created > 0) {
+                showToast(`Added ${created} billable item${created !== 1 ? 's' : ''}`, 'success');
+            }
+            if (draftItems.length > 0) {
+                showToast(`${draftItems.length} billable item${draftItems.length !== 1 ? 's' : ''} still in draft — review needed`, 'info', 8000);
+            }
+        } catch (err) {
+            showToast(err.message || 'Failed to load billable items', 'error');
+        } finally {
+            btnReady('loadBillableBtn');
+        }
+    }
+
+    function renderDraftItems(draftItems) {
+        const section = document.getElementById('draft-items-section');
+        const tbody = document.getElementById('draft-items-tbody');
+        const countEl = document.getElementById('draft-items-count');
+        const totalEl = document.getElementById('draft-items-total');
+        tbody.innerHTML = '';
+
+        if (!draftItems || draftItems.length === 0) {
+            section.style.display = 'none';
+            return;
+        }
+
+        let total = 0;
+        for (const item of draftItems) {
+            const scc = item.sub_cost_code_number
+                ? `${item.sub_cost_code_number} — ${item.sub_cost_code_name || ''}`
+                : '—';
+            const editUrl = editUrlForSource(item.source_type, item.parent_public_id);
+            const refHtml = editUrl && item.parent_number
+                ? `<a href="${editUrl}">${item.parent_number}</a>`
+                : (item.parent_number || '—');
+
+            const tr = document.createElement('tr');
+            tr.classList.add('line-item-draft');
+            tr.innerHTML = `
+                <td><span class="invoice-source-badge invoice-source-badge--${(item.source_type || '').toLowerCase()}">${sourceLabel(item.source_type)}</span></td>
+                <td>${item.source_date || '—'}</td>
+                <td>${item.vendor_name || '—'}</td>
+                <td>${refHtml}</td>
+                <td>${item.description || '—'}</td>
+                <td>${scc}</td>
+                <td style="text-align: right;">${fmt(item.amount)}</td>
+                <td style="text-align: right;">${fmtMarkup(item.markup)}</td>
+                <td style="text-align: right;">${fmt(item.price)}</td>
+            `;
+            tbody.appendChild(tr);
+            if (item.price != null) total += item.price;
+        }
+
+        totalEl.textContent = fmt(total);
+        countEl.textContent = `${draftItems.length} item${draftItems.length !== 1 ? 's' : ''}`;
+        section.style.display = '';
+    }
+
+    function addLineItemRow(li, extra) {
+        const tbody = document.getElementById('line-items-tbody');
+        const tr = document.createElement('tr');
+        tr.setAttribute('data-public-id', li.public_id);
+        tr.setAttribute('data-source-type', li.source_type || '');
+        tr.setAttribute('data-source-id', li.bill_line_item_id || li.expense_line_item_id || li.bill_credit_line_item_id || '');
+        tr.setAttribute('data-description', li.description || '');
+        tr.setAttribute('data-amount', li.amount != null ? li.amount : '');
+        tr.setAttribute('data-markup', li.markup != null ? li.markup : '');
+        tr.setAttribute('data-price', li.price != null ? li.price : '');
+        tr.setAttribute('data-parent-number', extra.parent_number || '');
+        tr.setAttribute('data-source-date', extra.source_date || '');
+        tr.setAttribute('data-scc-number', extra.scc_number || '');
+        tr.setAttribute('data-scc-name', extra.scc_name || '');
+        tr.setAttribute('data-vendor-name', extra.vendor_name || '');
+        tr.setAttribute('data-attachment-id', extra.attachment_public_id || '');
+        tr.setAttribute('data-parent-public-id', extra.parent_public_id || '');
+        tr.setAttribute('data-included', 'true');
+
+        tr.innerHTML = buildRowHTML(li.source_type, true, li.public_id, tr);
+        tbody.appendChild(tr);
+    }
+
+    async function removeLineItem(publicId, btnEl) {
+        const row = btnEl.closest('tr');
+        try {
+            const resp = await fetch(`/api/v1/delete/invoice_line_item/${publicId}`, { method: 'DELETE' });
+            if (!resp.ok) {
+                const err = await resp.json();
+                showToast(err.detail || 'Failed to remove line item', 'error');
+                return;
+            }
+
+            row.setAttribute('data-included', 'false');
+            row.removeAttribute('data-public-id');
+            row.classList.add('line-item-excluded');
+            row.innerHTML = buildRowHTML(
+                row.getAttribute('data-source-type'), false, '', row
+            );
+
+            updateTotal();
+            updateCount();
+        } catch (err) {
+            showToast(err.message || 'Failed to remove line item', 'error');
+        }
+    }
+
+    async function reAddLineItem(btnEl) {
+        const row = btnEl.closest('tr');
+        const invoicePublicId = document.getElementById('invoice_public_id').value;
+
+        const sourceType = row.getAttribute('data-source-type');
+        const sourceId = row.getAttribute('data-source-id');
+        const fkField = sourceType === 'BillLineItem' ? 'bill_line_item_id'
+            : sourceType === 'ExpenseLineItem' ? 'expense_line_item_id'
+            : sourceType === 'BillCreditLineItem' ? 'bill_credit_line_item_id'
+            : null;
+
+        const body = {
+            invoice_public_id: invoicePublicId,
+            source_type: sourceType,
+            description: row.getAttribute('data-description') || null,
+            amount: row.getAttribute('data-amount') ? parseFloat(row.getAttribute('data-amount')) : null,
+            markup: row.getAttribute('data-markup') ? parseFloat(row.getAttribute('data-markup')) : null,
+            price: row.getAttribute('data-price') ? parseFloat(row.getAttribute('data-price')) : null,
+            is_draft: true,
+        };
+        if (fkField && sourceId) body[fkField] = parseInt(sourceId);
+
+        try {
+            const resp = await fetch('/api/v1/create/invoice_line_item', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+
+            if (!resp.ok) {
+                const err = await resp.json();
+                showToast(err.detail || 'Failed to re-add line item', 'error');
+                return;
+            }
+
+            const li = await resp.json();
+            row.setAttribute('data-public-id', li.public_id);
+            row.setAttribute('data-included', 'true');
+            row.classList.remove('line-item-excluded');
+            row.innerHTML = buildRowHTML(sourceType, true, li.public_id, row);
+
+            updateTotal();
+            updateCount();
+        } catch (err) {
+            showToast(err.message || 'Failed to re-add line item', 'error');
+        }
+    }
+
+    function getInvoiceData(isDraft) {
+        return {
+            row_version: document.getElementById('row_version').value,
+            project_public_id: document.getElementById('project_public_id').value,
+            payment_term_public_id: document.getElementById('payment_term_public_id').value || null,
+            invoice_date: dateToApiFormat(document.getElementById('invoice_date').value),
+            due_date: dateToApiFormat(document.getElementById('due_date').value),
+            invoice_number: document.getElementById('invoice_number').value.trim(),
+            total_amount: document.getElementById('total_amount').value ? parseFloat(document.getElementById('total_amount').value) : null,
+            memo: document.getElementById('memo').value || null,
+            is_draft: isDraft,
+        };
+    }
+
+    async function saveInvoice() {
+        const publicId = document.getElementById('invoice_public_id').value;
+        const data = getInvoiceData(true);
+        btnBusy('saveDraftBtn', 'Saving…');
+
+        try {
+            const response = await fetch(`/api/v1/update/invoice/${publicId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                showToast(error.detail || 'Failed to save', 'error');
+                return;
+            }
+
+            const invoice = await response.json();
+            document.getElementById('row_version').value = invoice.row_version;
+            showToast('Invoice saved', 'success', 2000);
+        } catch (error) {
+            showToast(error.message || 'Failed to save', 'error');
+        } finally {
+            btnReady('saveDraftBtn');
+        }
+    }
+
+    document.getElementById('editInvoiceForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        btnBusy('completeBtn', 'Completing…');
+
+        await saveInvoice();
+
+        const publicId = document.getElementById('invoice_public_id').value;
+        try {
+            const response = await fetch(`/api/v1/complete/invoice/${publicId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                showToast(error.detail || 'Failed to complete invoice', 'error');
+                return;
+            }
+
+            showToast('Invoice completed successfully', 'success');
+            setTimeout(() => { window.location.href = '/invoice/list'; }, 1500);
+        } catch (error) {
+            showToast(error.message || 'Failed to complete invoice', 'error');
+        } finally {
+            btnReady('completeBtn');
+        }
+    });
+
+    async function generatePacket() {
+        const publicId = document.getElementById('invoice_public_id').value;
+        if (!publicId) { showToast('Save the invoice first', 'error'); return; }
+        btnBusy('generatePacketBtn', 'Generating…');
+        const pdfTab = window.open('about:blank', '_blank');
+        try {
+            const resp = await fetch(`/api/v1/generate/invoice/${publicId}/packet`, { method: 'POST' });
+            if (!resp.ok) {
+                const err = await resp.json();
+                showToast(err.detail || 'Failed to generate packet', 'error');
+                if (pdfTab) pdfTab.close();
+                return;
+            }
+            const data = await resp.json();
+            showToast(`PDF packet created (${data.page_count} pages${data.skipped ? ', ' + data.skipped + ' skipped' : ''})`, 'success');
+            if (pdfTab) pdfTab.location.href = `/api/v1/view/attachment/${data.attachment_public_id}`;
+        } catch (err) {
+            showToast(err.message || 'Failed to generate packet', 'error');
+            if (pdfTab) pdfTab.close();
+        } finally {
+            btnReady('generatePacketBtn');
+        }
+    }
+
+    async function deleteInvoice() {
+        if (!confirm('Are you sure you want to delete this invoice?')) return;
+        btnBusy('deleteBtn', 'Deleting…');
+        try {
+            const response = await fetch('/api/v1/delete/invoice/{{ invoice.public_id }}', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+            });
+            if (response.ok) {
+                window.location.href = '/invoice/list';
+            } else {
+                const error = await response.json();
+                showToast(error.detail || 'Failed to delete', 'error');
+            }
+        } catch (error) {
+            showToast(error.message || 'Failed to delete', 'error');
+        } finally {
+            btnReady('deleteBtn');
+        }
+    }
+
+    /* ── Reconciliation ── */
+    async function reconcileWithWorksheet() {
+        const invoicePublicId = '{{ invoice.public_id }}';
+        btnBusy('reconcileBtn', 'Reconciling…');
+        try {
+            const resp = await fetch(`/api/v1/get/invoice/${invoicePublicId}/reconcile`);
+            if (!resp.ok) {
+                const err = await resp.json();
+                showToast(err.detail || 'Reconciliation failed', 'error');
+                return;
+            }
+            const data = await resp.json();
+            renderReconcileResults(data);
+        } catch (err) {
+            showToast(err.message || 'Reconciliation failed', 'error');
+        } finally {
+            btnReady('reconcileBtn');
+        }
+    }
+
+    function renderReconcileResults(data) {
+        const section = document.getElementById('reconcile-section');
+        const body = document.getElementById('reconcile-body');
+
+        const diff = round2(data.db_total - data.ws_total);
+        const diffClass = Math.abs(diff) < 0.01 ? 'reconcile-diff--match' : 'reconcile-diff--mismatch';
+        const diffSign = diff > 0 ? '+' : '';
+
+        let html = `
+            <div class="reconcile-summary">
+                <div class="reconcile-summary-item">
+                    <span class="reconcile-summary-label">Invoice Total</span>
+                    <span class="reconcile-summary-value">${fmt(data.db_total)}</span>
+                </div>
+                <div class="reconcile-summary-item">
+                    <span class="reconcile-summary-label">Worksheet Total</span>
+                    <span class="reconcile-summary-value">${fmt(data.ws_total)}</span>
+                </div>
+                <div class="reconcile-summary-item ${diffClass}">
+                    <span class="reconcile-summary-label">Difference</span>
+                    <span class="reconcile-summary-value">${diffSign}${fmt(diff)}</span>
+                </div>
+            </div>
+        `;
+
+        if (data.mismatched.length > 0) {
+            html += reconcileTable('Amount Mismatches', 'reconcile-mismatch', data.mismatched, true);
+        }
+        if (data.db_only.length > 0) {
+            html += reconcileTable('In Invoice Only', 'reconcile-db-only', data.db_only, false);
+        }
+        if (data.ws_only.length > 0) {
+            html += reconcileTable('In Worksheet Only', 'reconcile-ws-only', data.ws_only, false);
+        }
+        if (data.matched.length > 0) {
+            html += reconcileTable('Matched', 'reconcile-matched', data.matched, true);
+        }
+
+        if (data.mismatched.length === 0 && data.db_only.length === 0 && data.ws_only.length === 0) {
+            html += `<p style="text-align: center; color: var(--color-success, green); padding: 1rem 0; font-weight: 600;">All items reconciled successfully.</p>`;
+        }
+
+        body.innerHTML = html;
+        section.style.display = '';
+    }
+
+    function round2(n) { return Math.round(n * 100) / 100; }
+
+    function reconcileTable(title, cssClass, items, showBoth) {
+        let rows = '';
+        for (const item of items) {
+            rows += `<tr class="${cssClass}">
+                <td>${item.source || '—'}</td>
+                <td>${item.date || ''}</td>
+                <td>${item.vendor || ''}</td>
+                <td>${item.ref}</td>
+                <td>${item.description || ''}</td>
+                <td>${item.cost_code || ''}</td>
+                <td style="text-align: right;">${fmt(item.db_total)}</td>
+                <td style="text-align: right;">${fmt(item.ws_total)}</td>
+                <td style="text-align: right;">${showBoth ? (item.difference > 0 ? '+' : '') + fmt(item.difference) : '—'}</td>
+            </tr>`;
+        }
+        return `
+            <h6 style="margin: 1rem 0 0.5rem;">${title} (${items.length})</h6>
+            <table class="invoice-table reconcile-table">
+                <thead><tr>
+                    <th>Source</th>
+                    <th>Date</th>
+                    <th>Vendor</th>
+                    <th>Ref</th>
+                    <th>Description</th>
+                    <th>Cost Code</th>
+                    <th style="text-align: right;">Invoice</th>
+                    <th style="text-align: right;">Worksheet</th>
+                    <th style="text-align: right;">Difference</th>
+                </tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+    }
+
+    /* ── Table sorting ── */
+    (function initSortableHeaders() {
+        const table = document.getElementById('line-items-table');
+        if (!table) return;
+        const headers = table.querySelectorAll('thead th[data-sort]');
+
+        headers.forEach((th, colIndex) => {
+            th.addEventListener('click', () => {
+                const tbody = document.getElementById('line-items-tbody');
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+                const type = th.getAttribute('data-sort');
+                const realIndex = Array.from(th.parentElement.children).indexOf(th);
+
+                const isAsc = th.classList.contains('sort-asc');
+                headers.forEach(h => h.classList.remove('sort-asc', 'sort-desc'));
+                th.classList.add(isAsc ? 'sort-desc' : 'sort-asc');
+                const dir = isAsc ? -1 : 1;
+
+                rows.sort((a, b) => {
+                    const aCell = a.children[realIndex];
+                    const bCell = b.children[realIndex];
+                    if (!aCell || !bCell) return 0;
+                    let aVal = aCell.textContent.trim();
+                    let bVal = bCell.textContent.trim();
+
+                    if (type === 'number') {
+                        const aNum = parseFloat(aVal.replace(/[$,%,—]/g, '')) || 0;
+                        const bNum = parseFloat(bVal.replace(/[$,%,—]/g, '')) || 0;
+                        return (aNum - bNum) * dir;
+                    }
+                    if (type === 'date') {
+                        const toTs = s => { const m = s.match(/^(\d{2})-(\d{2})-(\d{4})$/); return m ? new Date(m[3], m[1]-1, m[2]).getTime() : 0; };
+                        return (toTs(aVal) - toTs(bVal)) * dir;
+                    }
+                    if (aVal === '—') aVal = '';
+                    if (bVal === '—') bVal = '';
+                    return aVal.localeCompare(bVal) * dir;
+                });
+
+                rows.forEach(r => tbody.appendChild(r));
+            });
+        });
+    })();
+</script>
+{% endblock %}

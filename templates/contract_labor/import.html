@@ -104,8 +104,8 @@
     </div>
     {% else %}
 
-    <div class="cl-import-form-container">
-        <form method="post" action="/contract-labor/import" enctype="multipart/form-data" class="cl-import-form">
+    <div class="cl-import-form-container" id="import-form-container">
+        <form method="post" action="/contract-labor/import" enctype="multipart/form-data" class="cl-import-form" id="cl-import-form">
             
             <!-- File Upload -->
             <div class="cl-form-section">
@@ -149,7 +149,13 @@
             </div>
 
             <div class="cl-form-actions">
-                <button type="submit" class="btn btn-primary btn-lg">Import File</button>
+                <button type="submit" class="btn btn-primary btn-lg" id="cl-import-btn">
+                    <span class="cl-import-btn-text">Import File</span>
+                    <span class="cl-import-btn-loading" aria-hidden="true" style="display: none;">
+                        <span class="cl-import-spinner"></span>
+                        Importing…
+                    </span>
+                </button>
                 <a href="/contract-labor/list" class="btn btn-secondary btn-lg">Cancel</a>
             </div>
         </form>
@@ -164,6 +170,52 @@
         const dropZone = document.getElementById('drop-zone');
         const fileInput = document.getElementById('file');
         const fileNameDisplay = document.getElementById('selected-file-name');
+        const form = document.getElementById('cl-import-form');
+
+        // Submit via fetch so we can send CSRF header (browser form POST does not send custom headers)
+        if (form) {
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                if (!fileInput || !fileInput.files || fileInput.files.length === 0) return;
+                var btn = document.getElementById('cl-import-btn');
+                var btnText = btn && btn.querySelector('.cl-import-btn-text');
+                var btnLoading = btn && btn.querySelector('.cl-import-btn-loading');
+                if (btn && btnText && btnLoading) {
+                    btn.disabled = true;
+                    btnText.style.display = 'none';
+                    btnLoading.style.display = 'inline-flex';
+                }
+                var csrfCookie = document.cookie.split('; ').find(function(row) { return row.startsWith('token.csrf='); });
+                var csrfToken = csrfCookie ? decodeURIComponent(csrfCookie.split('=').slice(1).join('=')) : '';
+                var fd = new FormData(form);
+                var opts = { method: 'POST', body: fd, credentials: 'same-origin' };
+                if (csrfToken) opts.headers = { 'X-CSRF-Token': csrfToken };
+                function resetBtn() {
+                    if (btn && btnText && btnLoading) {
+                        btn.disabled = false;
+                        btnText.style.display = '';
+                        btnLoading.style.display = 'none';
+                    }
+                }
+                fetch(form.action, opts).then(function(r) {
+                    if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || r.statusText); });
+                    return r.text();
+                }).then(function(html) {
+                    var parser = new DOMParser();
+                    var doc = parser.parseFromString(html, 'text/html');
+                    var container = document.getElementById('import-form-container');
+                    var newContainer = doc.getElementById('import-form-container');
+                    if (container && newContainer) {
+                        container.innerHTML = newContainer.innerHTML;
+                    } else {
+                        document.body.innerHTML = doc.body.innerHTML;
+                    }
+                }).catch(function(err) {
+                    resetBtn();
+                    alert(err.message || 'Import failed.');
+                });
+            });
+        }
 
         // Drag and drop
         if (dropZone) {

@@ -340,6 +340,11 @@ async def edit_expense(request: Request, public_id: str, current_user: dict = De
         pe_mapping = PurchaseExpenseRepository().read_by_expense_id(expense_id=int(expense.id))
         has_qbo_purchase_mapping = pe_mapping is not None
     
+    _ALLOWED_RETURN_PREFIXES = ("/expense/list", "/invoice/")
+    return_to = request.query_params.get("return_to") or ""
+    if return_to and not any(return_to.startswith(p) for p in _ALLOWED_RETURN_PREFIXES):
+        return_to = ""
+
     return templates.TemplateResponse(
         "expense/edit.html",
         {
@@ -352,5 +357,6 @@ async def edit_expense(request: Request, public_id: str, current_user: dict = De
             "current_user": current_user,
             "current_path": request.url.path,
             "has_qbo_purchase_mapping": has_qbo_purchase_mapping,
+            "return_to": return_to,
         },
     )

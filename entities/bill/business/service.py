@@ -779,13 +779,10 @@ class BillService:
         bill_id = existing.id
         
         # Step 2: Get all BillLineItems for this bill
-        bill_line_item_service = BillLineItemService()
-        bill_line_items = bill_line_item_service.read_by_bill_id(bill_id=bill_id)
-        
+        bill_line_items = self.bill_line_item_service.read_by_bill_id(bill_id=bill_id)
+
         # Step 3: Delete each BillLineItem and its associated attachments
-        bill_line_item_attachment_service = BillLineItemAttachmentService()
         bill_line_item_attachment_repo = BillLineItemAttachmentRepository()
-        attachment_service = AttachmentService()
         
         # Initialize storage once (may fail if config is missing, handle gracefully)
         storage = None
@@ -795,65 +792,55 @@ class BillService:
             logger.warning(f"Could not initialize Azure Blob Storage for file deletion: {e}")
         
         for line_item in bill_line_items:
+            # Step 3a+3b: Clean up attachments (non-fatal — line item delete must still run)
             try:
-                # Step 3a: Get the BillLineItemAttachment for this line item (1-1 relationship)
                 if line_item.public_id:
-                    attachment_link = bill_line_item_attachment_service.read_by_bill_line_item_id(
+                    attachment_link = self.bill_line_item_attachment_service.read_by_bill_line_item_id(
                         bill_line_item_public_id=line_item.public_id
                     )
-                    
-                    # Step 3b: Delete attachment and its file if it exists
+
                     if attachment_link and attachment_link.attachment_id:
-                        try:
-                            # Get the attachment record
-                            attachment = attachment_service.read_by_id(id=attachment_link.attachment_id)
-                            if attachment:
-                                # Delete from Azure Blob Storage if blob_url exists
-                                if attachment.blob_url and storage:
-                                    try:
-                                        storage.delete_file(attachment.blob_url)
-                                        logger.info(f"Deleted blob {attachment.blob_url} for attachment {attachment.id}")
-                                    except AzureBlobStorageError as e:
-                                        logger.warning(f"Error deleting blob {attachment.blob_url} for attachment {attachment.id}: {e}")
-                                    except Exception as e:
-                                        logger.warning(f"Error deleting blob {attachment.blob_url} for attachment {attachment.id}: {e}")
-                                
-                                # Delete the Attachment record
+                        # Get the attachment record
+                        attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
+                        if attachment:
+                            # Delete from Azure Blob Storage if blob_url exists
+                            if attachment.blob_url and storage:
                                 try:
-                                    attachment_service.delete_by_public_id(public_id=attachment.public_id)
-                                    logger.info(f"Deleted attachment {attachment.id}")
-                                except Exception as e:
-                                    logger.warning(f"Error deleting attachment {attachment.id}: {e}")
-                            
-                            # Delete the BillLineItemAttachment record
-                            if attachment_link.id:
-                                try:
-                                    bill_line_item_attachment_repo.delete_by_id(id=attachment_link.id)
-                                    logger.info(f"Deleted bill line item attachment {attachment_link.id}")
-                                except Exception as e:
-                                    logger.warning(f"Error deleting bill line item attachment {attachment_link.id}: {e}")
-                        except Exception as e:
-                            logger.warning(f"Error processing attachment for line item {line_item.id}: {e}")
-                
-                # Step 3c: Delete the BillLineItem record
-                if line_item.id and line_item.public_id:
-                    try:
-                        bill_line_item_service.delete_by_public_id(public_id=line_item.public_id)
-                        logger.info(f"Deleted bill line item {line_item.id}")
-                    except Exception as e:
-                        logger.warning(f"Error deleting bill line item {line_item.id}: {e}")
-                elif line_item.id:
-                    # Fallback: delete directly by ID if public_id is missing
-                    try:
-                        from entities.bill_line_item.persistence.repo import BillLineItemRepository
-                        bill_line_item_repo = BillLineItemRepository()
-                        bill_line_item_repo.delete_by_id(id=line_item.id)
-                        logger.info(f"Deleted bill line item {line_item.id} (by ID, no public_id)")
-                    except Exception as e:
-                        logger.warning(f"Error deleting bill line item {line_item.id} by ID: {e}")
+                                    storage.delete_file(attachment.blob_url)
+                                    logger.info(f"Deleted blob {attachment.blob_url} for attachment {attachment.id}")
+                                except (AzureBlobStorageError, Exception) as e:
+                                    logger.warning(f"Error deleting blob {attachment.blob_url} for attachment {attachment.id}: {e}")
+
+                            # Delete the Attachment record
+                            try:
+                                self.attachment_service.delete_by_public_id(public_id=attachment.public_id)
+                                logger.info(f"Deleted attachment {attachment.id}")
+                            except Exception as e:
+                                logger.warning(f"Error deleting attachment {attachment.id}: {e}")
+
+                        # Delete the BillLineItemAttachment record
+                        if attachment_link.id:
+                            try:
+                                bill_line_item_attachment_repo.delete_by_id(id=attachment_link.id)
+                                logger.info(f"Deleted bill line item attachment {attachment_link.id}")
+                            except Exception as e:
+                                logger.warning(f"Error deleting bill line item attachment {attachment_link.id}: {e}")
             except Exception as e:
-                logger.warning(f"Error processing bill line item {line_item.id if line_item.id else 'unknown'}: {e}")
-        
+                logger.warning(f"Error cleaning up attachments for line item {line_item.id}: {e}")
+
+            # Step 3c: Delete the BillLineItem record (must run even if attachment cleanup failed)
+            try:
+                if line_item.id and line_item.public_id:
+                    self.bill_line_item_service.delete_by_public_id(public_id=line_item.public_id)
+                    logger.info(f"Deleted bill line item {line_item.id}")
+                elif line_item.id:
+                    from entities.bill_line_item.persistence.repo import BillLineItemRepository
+                    BillLineItemRepository().delete_by_id(id=line_item.id)
+                    logger.info(f"Deleted bill line item {line_item.id} (by ID, no public_id)")
+            except Exception as e:
+                logger.error(f"Failed to delete bill line item {line_item.id}: {e}")
+                raise ValueError(f"Cannot delete bill: failed to delete line item {line_item.id}") from e
+
         # Step 4: Delete the Bill record
         return self.repo.delete_by_id(existing.id)
 
@@ -862,44 +849,52 @@ class BillService:
         self, public_id: str, line_items: list, all_errors: list
     ) -> None:
         """
-        On Mark Complete: rename invoice blob from invoices/{invoice_number}.pdf to {bill.public_id}.pdf
-        and update the Attachment record. Only renames when blob_url is under invoices/.
-        On failure, appends to all_errors and does not update the DB (DB never points at a missing blob).
+        On Mark Complete: move all attachment blobs to the container root.
+        Blobs already at root are skipped. For each attachment with a folder prefix
+        (e.g. contract-labor/..., invoices/...), downloads, re-uploads at root using
+        the existing filename, updates the Attachment record, and deletes the old blob.
         """
         if not line_items:
             return
-        link = self.bill_line_item_attachment_service.read_by_bill_line_item_id(
-            bill_line_item_public_id=line_items[0].public_id
-        )
-        if not link or not link.attachment_id:
-            return
-        attachment = self.attachment_service.read_by_id(id=link.attachment_id)
-        if not attachment or not attachment.blob_url or "invoices/" not in attachment.blob_url:
-            return
-        new_blob_name = f"{public_id}.pdf"
         storage = AzureBlobStorage()
-        try:
-            file_content, _ = storage.download_file(attachment.blob_url)
-            new_url = storage.upload_file(
-                blob_name=new_blob_name,
-                file_content=file_content,
-                content_type=attachment.content_type or "application/pdf",
+        processed_attachment_ids = set()
+        for line_item in line_items:
+            if not line_item.public_id:
+                continue
+            link = self.bill_line_item_attachment_service.read_by_bill_line_item_id(
+                bill_line_item_public_id=line_item.public_id
             )
-            self.attachment_service.update_by_public_id(
-                public_id=attachment.public_id,
-                row_version=attachment.row_version,
-                blob_url=new_url,
-                filename=new_blob_name,
-                original_filename=new_blob_name,
-            )
-            storage.delete_file(attachment.blob_url)
-            logger.info(f"Renamed invoice blob to {new_blob_name}")
-        except AzureBlobStorageError as e:
-            logger.exception(f"Blob rename failed for bill {public_id}")
-            all_errors.append({"step": "rename_invoice_blob", "error": str(e)})
-        except Exception as e:
-            logger.exception(f"Blob rename failed for bill {public_id}")
-            all_errors.append({"step": "rename_invoice_blob", "error": str(e)})
+            if not link or not link.attachment_id:
+                continue
+            if link.attachment_id in processed_attachment_ids:
+                continue
+            processed_attachment_ids.add(link.attachment_id)
+            attachment = self.attachment_service.read_by_id(id=link.attachment_id)
+            if not attachment or not attachment.blob_url:
+                continue
+            container, blob_name = storage._parse_blob_url(attachment.blob_url)
+            if "/" not in blob_name:
+                continue
+            new_blob_name = blob_name.rsplit("/", 1)[-1]
+            try:
+                file_content, _ = storage.download_file(attachment.blob_url)
+                new_url = storage.upload_file(
+                    blob_name=new_blob_name,
+                    file_content=file_content,
+                    content_type=attachment.content_type or "application/pdf",
+                )
+                self.attachment_service.update_by_public_id(
+                    public_id=attachment.public_id,
+                    row_version=attachment.row_version,
+                    blob_url=new_url,
+                    filename=new_blob_name,
+                    original_filename=new_blob_name,
+                )
+                storage.delete_file(attachment.blob_url)
+                logger.info(f"Moved blob to root: {blob_name} -> {new_blob_name}")
+            except Exception as e:
+                logger.exception(f"Blob move failed for attachment {attachment.id}")
+                all_errors.append({"step": "rename_invoice_blob", "error": str(e)})
 
     def complete_bill(self, public_id: str) -> dict:
         """
@@ -1055,7 +1050,7 @@ class BillService:
                         "error": str(e)
                     })
         
-        # Step 2b: Rename invoice blob from invoices/... to {public_id}.pdf (contract labor invoice)
+        # Step 2b: Ensure invoice blob is named {public_id}.pdf (no-op if already correct)
         self._rename_invoice_blob_on_complete(public_id=public_id, line_items=line_items, all_errors=line_item_errors)
 
         # Step 3: Upload attachments to module folders and sync to Excel

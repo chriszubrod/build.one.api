@@ -851,7 +851,7 @@ BEGIN
     LEFT JOIN [qbo].[PurchaseLineExpenseLineItem] pleli ON pl.[Id] = pleli.[QboPurchaseLineId]
     LEFT JOIN [dbo].[ExpenseLineItem] eli ON pleli.[ExpenseLineItemId] = eli.[Id]
     LEFT JOIN [dbo].[Expense] e ON eli.[ExpenseId] = e.[Id]
-    WHERE (@IncludeAll = 1 OR (pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%' OR pl.[AccountRefName] LIKE N'%NEED TO UPDATE%'))
+    WHERE (@IncludeAll = 1 OR (pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%' OR pl.[AccountRefName] LIKE N'%NEED TO UPDATE%' OR pl.[AccountRefName] IS NULL))
       AND (@IncludeAll = 1 OR @IncludeLinked = 1 OR pleli.[Id] IS NULL)
       AND (@RealmId IS NULL OR p.[RealmId] = @RealmId)
     ORDER BY TRY_CONVERT(DATE, p.[TxnDate], 23) DESC, p.[DocNumber], pl.[LineNum];

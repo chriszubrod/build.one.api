@@ -77,6 +77,33 @@
         </form>
     </div>
 
+    <!-- SharePoint Bill Folder Summary -->
+    {% if bill_folder_summary and bill_folder_summary.is_linked %}
+    <div class="bill-folder-summary-section">
+        <div class="bill-folder-summary">
+            <div class="bill-folder-summary-info">
+                <span class="bill-folder-summary-icon">📂</span>
+                <div>
+                    <span class="bill-folder-summary-name">{{ bill_folder_summary.folder_name or 'Source Folder' }}</span>
+                    <span class="bill-folder-summary-count">
+                        {{ bill_folder_summary.file_count }} file{{ 's' if bill_folder_summary.file_count != 1 else '' }} to process
+                    </span>
+                </div>
+            </div>
+            <div class="bill-folder-summary-actions">
+                {% if bill_folder_summary.file_count > 0 %}
+                <button type="button" class="btn btn-primary btn-sm" id="btn-process-folder" onclick="triggerBillFolderProcessing()">
+                    Process Folder
+                </button>
+                {% endif %}
+                <a href="{{ bill_folder_summary.folder_web_url }}" target="_blank" class="btn btn-outline-secondary btn-sm">
+                    Open in SharePoint
+                </a>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Pending Bill Imports from Workflow -->
     {% if pending_workflows %}
     <div class="bill-pending-imports-section">
@@ -1070,6 +1097,154 @@
                 await new Promise(resolve => setTimeout(resolve, 500));
             }
         }
+    }
+
+    // ========================================================================
+    // Bill Folder Processing
+    // ========================================================================
+
+    async function triggerBillFolderProcessing() {
+        const btn = document.getElementById('btn-process-folder');
+        if (!btn) return;
+
+        btn.disabled = true;
+        btn.textContent = 'Processing...';
+
+        // Open copilot panel and show user message
+        if (typeof toggleCopilot === 'function' && !copilotOpen) {
+            toggleCopilot();
+        }
+        if (typeof addCopilotMessage === 'function') {
+            addCopilotMessage('Process bill folder', 'user');
+        }
+
+        // Show typing indicator
+        let typingId = null;
+        if (typeof addCopilotTypingIndicator === 'function') {
+            typingId = addCopilotTypingIndicator('Starting folder processing...');
+        }
+
+        try {
+            const response = await fetch('/api/v1/bill-agent/run', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    company_id: 1,
+                    trigger_source: 'manual'
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to start processing');
+            }
+
+            const data = await response.json();
+            const runPublicId = data.run_public_id;
+
+            if (!runPublicId) {
+                throw new Error('No run ID returned');
+            }
+
+            // Poll for completion with copilot progress
+            await pollBillAgentRun(runPublicId, btn, typingId);
+        } catch (error) {
+            console.error('Bill folder processing error:', error);
+            btn.disabled = false;
+            btn.textContent = 'Process Folder';
+            if (typingId && typeof removeCopilotTypingIndicator === 'function') {
+                removeCopilotTypingIndicator(typingId);
+            }
+            if (typeof addCopilotMessage === 'function') {
+                addCopilotMessage('Failed to start folder processing: ' + error.message, 'assistant');
+            }
+        }
+    }
+
+    async function pollBillAgentRun(runPublicId, btn, typingId) {
+        const maxAttempts = 120;
+        let attempts = 0;
+
+        while (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            attempts++;
+
+            try {
+                const response = await fetch(`/api/v1/bill-agent/run/${runPublicId}`, {
+                    method: 'GET',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                if (!response.ok) continue;
+
+                const data = await response.json();
+
+                if (data.status === 'completed') {
+                    // Remove typing indicator
+                    if (typingId && typeof removeCopilotTypingIndicator === 'function') {
+                        removeCopilotTypingIndicator(typingId);
+                    }
+
+                    // Build summary message
+                    let msg = `**Folder processing complete.**\n\n`;
+                    msg += `Files found: ${data.files_found || 0}\n`;
+                    msg += `Files processed: ${data.files_processed || 0}\n`;
+                    msg += `Bills created: ${data.bills_created || 0}`;
+                    if (data.files_skipped > 0) {
+                        msg += `\nFiles skipped: ${data.files_skipped}`;
+                    }
+                    if (data.error_count > 0) {
+                        msg += `\nErrors: ${data.error_count}`;
+                    }
+
+                    if (typeof addCopilotMessage === 'function') {
+                        addCopilotMessage(msg, 'assistant');
+                    }
+
+                    // Reload page after a brief delay so user sees the message
+                    setTimeout(() => window.location.reload(), 2000);
+                    return;
+                }
+
+                if (data.status === 'failed') {
+                    if (typingId && typeof removeCopilotTypingIndicator === 'function') {
+                        removeCopilotTypingIndicator(typingId);
+                    }
+                    if (typeof addCopilotMessage === 'function') {
+                        addCopilotMessage('Processing failed. Check logs for details.', 'assistant');
+                    }
+                    btn.disabled = false;
+                    btn.textContent = 'Process Folder';
+                    return;
+                }
+
+                // Still running — update progress in typing indicator
+                if (typingId && typeof updateCopilotTypingStatus === 'function') {
+                    const found = data.files_found || 0;
+                    const done = (data.files_processed || 0) + (data.files_skipped || 0);
+                    if (found > 0) {
+                        updateCopilotTypingStatus(typingId, `Processing file ${done + 1} of ${found}...`);
+                    } else {
+                        updateCopilotTypingStatus(typingId, 'Scanning folder...');
+                    }
+                }
+
+                btn.textContent = `Processing...`;
+            } catch (e) {
+                console.warn('Poll error:', e);
+            }
+        }
+
+        // Timeout
+        if (typingId && typeof removeCopilotTypingIndicator === 'function') {
+            removeCopilotTypingIndicator(typingId);
+        }
+        if (typeof addCopilotMessage === 'function') {
+            addCopilotMessage('Processing is taking longer than expected. Check the run status manually.', 'assistant');
+        }
+        btn.disabled = false;
+        btn.textContent = 'Process Folder';
     }
 </script>
 {% endblock %}

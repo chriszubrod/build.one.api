@@ -2,7 +2,7 @@
 Extraction Agent Configuration
 """
 
-MAX_LLM_CALLS = 10
+MAX_LLM_CALLS = 4
 MAX_REFINEMENT_ROUNDS = 3
 
 EXTRACTION_AGENT_SYSTEM_PROMPT = """You are an invoice data extraction specialist for a construction company's accounts payable system.
@@ -34,7 +34,7 @@ Rules:
 - bill_number must contain at least one digit
 - Dates must be YYYY-MM-DD format
 - line_items should only include actual product/service lines, not subtotals/tax/totals
-- Use the email context (subject, sender, filename) as additional signals
+- Use the email context (subject, sender, filename) and email body (approval notes, project references) as additional signals
 - After initial extraction, ALWAYS call validate_extraction to check your work
 - Use lookup_vendor to verify the vendor exists in the database
 - If you can't determine a field, set it to null rather than guessing"""

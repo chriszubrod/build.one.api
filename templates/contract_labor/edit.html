@@ -366,7 +366,7 @@
     const employeeName = "{{ entry.employee_name if entry.employee_name else '' }}";
     const employeeNameLower = employeeName.toLowerCase();
 
-    // Hardcoded employee -> vendor name mappings
+    // Employee name -> vendor name mappings (for auto-matching on import)
     const EMPLOYEE_VENDOR_MAP = {
         'denis marcia izaguirre': 'Denis Samuel Marcia Izaguirre',
         'wilmer  diaz': 'Wilmer Diaz',
@@ -376,28 +376,12 @@
         'emilson cordova': 'Emilson O. Cordova Tercero',
         'selvin cordova': 'Selvin Humberto Cordova Tercero',
         'michael jacobson': 'Michael Jacobson',
+        'brayan marcia salina': 'Brayan Rafael Marcia Salina',
+        'brayan marcia': 'Brayan Rafael Marcia Salina',
     };
 
-    // Hardcoded vendor -> rate (per 8-hour day) mappings
-    // Note: Michael Jacobson is $30/hour, converted to day rate ($30 * 8 = $240)
-    const VENDOR_RATE_MAP = {
-        'Denis Samuel Marcia Izaguirre': 230.00,
-        'Wilmer Diaz': 260.00,
-        'Elmer Cordova': 260.00,
-        'Emilson O. Cordova Tercero': 370.00,
-        'Selvin Humberto Cordova Tercero': 500.00,
-        'Michael Jacobson': 240.00,  // $30/hour * 8 hours
-    };
-
-    // Hardcoded vendor -> markup (as decimal) mappings
-    const VENDOR_MARKUP_MAP = {
-        'Denis Samuel Marcia Izaguirre': 0.50,
-        'Wilmer Diaz': 0.50,
-        'Elmer Cordova': 0.50,
-        'Emilson O. Cordova Tercero': 0.50,
-        'Selvin Humberto Cordova Tercero': 0.35,
-        'Michael Jacobson': 0.50,
-    };
+    // Vendor config from server (address, rate, markup)
+    const VENDOR_CONFIG = {{ vendor_config|tojson }};
 
     // Get matched vendor name for this employee
     function getMatchedVendorName() {
@@ -407,13 +391,15 @@
     // Get default rate for the matched vendor
     function getDefaultRate() {
         const vendorName = getMatchedVendorName();
-        return vendorName ? VENDOR_RATE_MAP[vendorName] : null;
+        const config = vendorName ? VENDOR_CONFIG[vendorName] : null;
+        return config ? config.rate : null;
     }
 
     // Get default markup for the matched vendor (as percentage for display)
     function getDefaultMarkupPercent() {
         const vendorName = getMatchedVendorName();
-        return vendorName ? (VENDOR_MARKUP_MAP[vendorName] * 100) : null;
+        const config = vendorName ? VENDOR_CONFIG[vendorName] : null;
+        return config ? (config.markup * 100) : null;
     }
 
     // MR2* projects use 5% markup instead of vendor default

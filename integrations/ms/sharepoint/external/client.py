@@ -848,15 +848,137 @@ def upload_small_file(drive_id: str, parent_item_id: str, filename: str, content
         }
 
 
+def move_item(drive_id: str, item_id: str, new_parent_id: str, new_name: str = None) -> dict:
+    """
+    Move a file or folder to a different parent folder within the same drive.
+
+    Args:
+        drive_id: The MS Graph drive ID
+        item_id: The MS Graph item ID of the item to move
+        new_parent_id: The MS Graph item ID of the destination folder
+        new_name: Optional new name for the item after moving
+
+    Returns:
+        Dict with status_code, message, and moved item data
+    """
+    try:
+        headers = _get_auth_headers()
+        if not headers:
+            return {
+                "message": "No valid MS access token available. Please authenticate first.",
+                "status_code": 401,
+                "item": None
+            }
+
+        endpoint = f"{GRAPH_API_BASE}/drives/{drive_id}/items/{item_id}"
+
+        body = {
+            "parentReference": {"id": new_parent_id}
+        }
+        if new_name:
+            body["name"] = new_name
+
+        logger.info(f"Moving item {item_id} to parent {new_parent_id} in drive {drive_id}")
+        resp = requests.patch(url=endpoint, headers=headers, json=body)
+
+        if resp.status_code == 200:
+            item = resp.json()
+            formatted_item = _format_drive_item(item)
+            return {
+                "message": "Item moved successfully",
+                "status_code": 200,
+                "item": formatted_item
+            }
+        elif resp.status_code == 401:
+            return {
+                "message": "Access token expired or invalid. Try refreshing the token.",
+                "status_code": 401,
+                "item": None
+            }
+        elif resp.status_code == 404:
+            return {
+                "message": f"Item or destination folder not found",
+                "status_code": 404,
+                "item": None
+            }
+        else:
+            logger.error(f"Graph API move item failed: {resp.text}")
+            return {
+                "message": f"Graph API call failed: {resp.text}",
+                "status_code": resp.status_code,
+                "item": None
+            }
+    except Exception as e:
+        logger.exception("Error moving item")
+        return {
+            "message": f"An error occurred: {str(e)}",
+            "status_code": 500,
+            "item": None
+        }
+
+
+def delete_item(drive_id: str, item_id: str) -> dict:
+    """
+    Delete a file or folder from a drive.
+
+    Args:
+        drive_id: The MS Graph drive ID
+        item_id: The MS Graph item ID of the item to delete
+
+    Returns:
+        Dict with status_code and message
+    """
+    try:
+        headers = _get_auth_headers()
+        if not headers:
+            return {
+                "message": "No valid MS access token available. Please authenticate first.",
+                "status_code": 401,
+            }
+
+        endpoint = f"{GRAPH_API_BASE}/drives/{drive_id}/items/{item_id}"
+
+        logger.info(f"Deleting item {item_id} from drive {drive_id}")
+        resp = requests.delete(url=endpoint, headers=headers)
+
+        if resp.status_code == 204:
+            return {
+                "message": "Item deleted successfully",
+                "status_code": 204,
+            }
+        elif resp.status_code == 401:
+            return {
+                "message": "Access token expired or invalid. Try refreshing the token.",
+                "status_code": 401,
+            }
+        elif resp.status_code == 404:
+            return {
+                "message": f"Item not found: {item_id}",
+                "status_code": 404,
+            }
+        else:
+            logger.error(f"Graph API delete item failed: {resp.text}")
+            return {
+                "message": f"Graph API call failed: {resp.text}",
+                "status_code": resp.status_code,
+            }
+    except Exception as e:
+        logger.exception("Error deleting item")
+        return {
+            "message": f"An error occurred: {str(e)}",
+            "status_code": 500,
+        }
+
+
 def create_folder(drive_id: str, parent_item_id: str, folder_name: str) -> dict:
     """
     Create a new folder in a drive.
-    
+
     Args:
         drive_id: The MS Graph drive ID
         parent_item_id: The MS Graph item ID of the parent folder
         folder_name: The name for the new folder
-    
+
     Returns:
         Dict with status_code, message, and created folder data
     """

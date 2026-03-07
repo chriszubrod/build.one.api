@@ -42,8 +42,11 @@ Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
   "payment_terms": "Payment terms string like 'Net 30', or null",
   "ship_to_address": "Ship-to, job site, or delivery address, or null",
   "memo": "Brief summary of what was purchased/provided (one sentence)",
+  "memo_confidence": 0.0,
   "project_name": "Best matching project name from the AVAILABLE PROJECTS list, or null",
+  "project_confidence": 0.0,
   "sub_cost_code_name": "Best matching sub cost code name from the AVAILABLE SUB COST CODES list, or null",
+  "sub_cost_code_confidence": 0.0,
   "is_billable": true,
   "line_items": [
     {"description": "Line item description", "amount": 0.00, "quantity": null, "unit_price": null}
@@ -58,10 +61,11 @@ Rules:
 - total_amount must be a plain number (no $ or commas); use negative for credits
 - line_items should only include actual product/service lines, not subtotals, tax, or total rows
 - If a field truly cannot be determined from the document, set it to null
-- For memo, use both the document content AND the email context (subject line, sender name/company, attachment filename) to create a concise one-sentence description of what was purchased or provided. This becomes the line item description on the bill.
-- project_name: Match to a project from the AVAILABLE PROJECTS list using ship-to address, job site references, project numbers, delivery locations, or clues from the email subject/sender. Return the exact project name from the list, or null if no confident match.
-- sub_cost_code_name: Match to a cost code from the AVAILABLE SUB COST CODES list based on the type of goods/services described in the document AND the email context (e.g., if the sender is a lumber company, the cost code is likely materials; if a surveyor, likely professional services). Return the exact name from the list, or null if no confident match.
-- is_billable: true if this is a job cost that should be billed to a customer (materials, subcontractor work, equipment for a job site); false if it's an overhead/office expense"""
+- For memo, use the document content, the email context (subject line, sender name/company, attachment filename), AND the email body (which often contains approval notes, project references, and descriptions) to create a concise one-sentence description of what was purchased or provided. This becomes the line item description on the bill.
+- project_name: Match to a project from the AVAILABLE PROJECTS list using ship-to address, job site references, project numbers, delivery locations, clues from the email subject/sender, AND project references in the email body (e.g. "charge to Riverside Heights"). Return the exact project name from the list, or null if no confident match.
+- sub_cost_code_name: Match to a cost code from the AVAILABLE SUB COST CODES list based on the type of goods/services described in the document, the email context, AND the email body (e.g., if the sender is a lumber company, the cost code is likely materials; if a surveyor, likely professional services). Return the exact name from the list, or null if no confident match.
+- is_billable: true if this is a job cost that should be billed to a customer (materials, subcontractor work, equipment for a job site); false if it's an overhead/office expense
+- memo_confidence, project_confidence, sub_cost_code_confidence: self-assessed confidence (0.0–1.0) for each field. Use 0.9+ when the document/email clearly supports the value; 0.5–0.8 when inferred from indirect clues; below 0.5 when guessing"""
 
 
 class ClaudeExtractionService:
@@ -89,6 +93,7 @@ class ClaudeExtractionService:
         attachment_filename: Optional[str] = None,
         projects: Optional[list] = None,
         sub_cost_codes: Optional[list] = None,
+        email_body: Optional[str] = None,
     ) -> Optional[BillExtractionResult]:
         """
         Extract bill fields from Document Intelligence output using Claude.
@@ -99,7 +104,7 @@ class ClaudeExtractionService:
         try:
             user_message = self._build_user_message(
                 extraction, from_email, email_subject, attachment_filename,
-                projects, sub_cost_codes,
+                projects, sub_cost_codes, email_body,
             )
 
             response = self.client.messages.create(
@@ -140,6 +145,7 @@ class ClaudeExtractionService:
         attachment_filename: Optional[str],
         projects: Optional[list] = None,
         sub_cost_codes: Optional[list] = None,
+        email_body: Optional[str] = None,
     ) -> str:
         """Build the user message with all available context."""
         parts = []
@@ -153,6 +159,15 @@ class ClaudeExtractionService:
                 parts.append(f"Subject: {email_subject}")
             if attachment_filename:
                 parts.append(f"Attachment: {attachment_filename}")
+            parts.append("")
+
+        # Email body (approval context, project refs, descriptions)
+        if email_body and email_body.strip():
+            body_text = email_body.strip()[:3000]
+            if len(email_body.strip()) > 3000:
+                body_text += "\n... [truncated]"
+            parts.append("=== EMAIL BODY ===")
+            parts.append(body_text)
             parts.append("")
 
         # Key-value pairs (compact, high-signal)
@@ -296,16 +311,28 @@ class ClaudeExtractionService:
         memo = data.get("memo")
         if memo and isinstance(memo, str) and memo.strip():
             result.memo = memo.strip()
+            try:
+                result.memo_confidence = float(data.get("memo_confidence", 0))
+            except (ValueError, TypeError):
+                result.memo_confidence = 0.0
 
         # --- Project hint ---
         project_name = data.get("project_name")
         if project_name and isinstance(project_name, str) and project_name.strip():
             result.project_hint = project_name.strip()
+            try:
+                result.project_confidence = float(data.get("project_confidence", 0))
+            except (ValueError, TypeError):
+                result.project_confidence = 0.0
 
         # --- Sub cost code hint ---
         scc_name = data.get("sub_cost_code_name")
         if scc_name and isinstance(scc_name, str) and scc_name.strip():
             result.sub_cost_code_hint = scc_name.strip()
+            try:
+                result.sub_cost_code_confidence = float(data.get("sub_cost_code_confidence", 0))
+            except (ValueError, TypeError):
+                result.sub_cost_code_confidence = 0.0
 
         # --- Is billable ---
         is_billable = data.get("is_billable")

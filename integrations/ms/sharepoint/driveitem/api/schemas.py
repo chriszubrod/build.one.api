@@ -301,3 +301,47 @@ class DriveItemProjectExcelClearRangeRequest(BaseModel):
         min_length=1,
         description="Excel range address to clear (e.g., 'A1:D4')"
     )
+
+
+# DriveItem-BillFolder Connector Schemas
+
+class DriveItemBillFolderLinkRequest(BaseModel):
+    """Request model for linking a driveitem (folder) as a bill processing folder."""
+    company_id: int = Field(
+        description="The database ID of the company"
+    )
+    drive_public_id: str = Field(
+        min_length=1,
+        description="The public ID of the linked drive"
+    )
+    graph_item_id: str = Field(
+        min_length=1,
+        description="The MS Graph item ID (folder) to link"
+    )
+    folder_type: str = Field(
+        min_length=1,
+        max_length=20,
+        description="The folder type: 'source' or 'processed'"
+    )
+
+
+# DriveItem-ExpenseFolder Connector Schemas
+
+class DriveItemExpenseFolderLinkRequest(BaseModel):
+    """Request model for linking a driveitem (folder) as an expense processing folder."""
+    company_id: int = Field(
+        description="The database ID of the company"
+    )
+    drive_public_id: str = Field(
+        min_length=1,
+        description="The public ID of the linked drive"
+    )
+    graph_item_id: str = Field(
+        min_length=1,
+        description="The MS Graph item ID (folder) to link"
+    )
+    folder_type: str = Field(
+        min_length=1,
+        max_length=20,
+        description="The folder type: 'source' or 'processed'"
+    )

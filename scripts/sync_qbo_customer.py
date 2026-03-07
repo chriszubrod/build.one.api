@@ -270,10 +270,13 @@ def sync_local_to_qbo(
 
 def sync_qbo_customer() -> dict:
     """
-    Two-way sync for QBO Customers <-> Customer/Project modules.
-    
+    One-way sync for QBO Customers -> Customer/Project modules (QBO -> Local only).
+
     1. QBO -> Local: Fetch customers modified since last sync, store locally, sync to Customer/Project
-    2. Local -> QBO: Check for locally modified Customers/Projects, sync back to QboCustomer
+
+    Note: Local -> QBO push is disabled in the batch sync process.
+    The sync_local_to_qbo function is preserved for one-time pushes
+    when a record is marked Complete.
     """
     try:
         # Create start time variable
@@ -322,15 +325,10 @@ def sync_qbo_customer() -> dict:
             project_connector=project_connector,
         )
         
-        # Step 2: Sync from local to QBO (reverse sync)
-        local_to_qbo_result = sync_local_to_qbo(
-            realm_id=realm_id,
-            last_sync_time=last_sync_time,
-            qbo_customer_service=qbo_customer_service,
-            customer_mapping_repo=customer_mapping_repo,
-            project_mapping_repo=project_mapping_repo,
-            qbo_customer_repo=qbo_customer_repo,
-        )
+        # Step 2: Local -> QBO push disabled in batch sync (one-way intake only).
+        # The sync_local_to_qbo function is preserved for one-time pushes
+        # when a record is marked Complete.
+        local_to_qbo_result = {"customers_pushed": 0, "projects_pushed": 0}
         
         # Update Sync record
         end_time = datetime.now(timezone.utc)

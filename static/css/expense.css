@@ -618,6 +618,48 @@ textarea.expense-form-control {
     align-items: flex-end;
 }
 
+/* Folder Summary */
+.expense-folder-summary-section {
+    margin-bottom: 1.5rem;
+}
+
+.expense-folder-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    background-color: var(--color-surface);
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+}
+
+.expense-folder-summary-info {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.expense-folder-summary-icon {
+    font-size: 1.25rem;
+}
+
+.expense-folder-summary-name {
+    font-weight: 600;
+    color: var(--color-text);
+    margin-right: 0.5rem;
+}
+
+.expense-folder-summary-count {
+    font-size: 0.875rem;
+    color: var(--color-text-secondary);
+}
+
+.expense-folder-summary-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
 /* Results Summary */
 .expense-results-summary {
     display: flex;
@@ -1229,5 +1271,178 @@ textarea.expense-form-control {
     }
     .expense-drop-zone-actions {
         flex-direction: column;
+    }
+}
+
+
+/* ========================================================================
+   Uncategorized Transactions Section
+   ======================================================================== */
+
+.expense-uncategorized-section {
+    margin-bottom: 1.5rem;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    background-color: var(--color-surface);
+    overflow: hidden;
+}
+
+.expense-uncategorized-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid #e0e0e0;
+    background-color: #fffbf0;
+}
+
+.expense-uncategorized-header-left h3 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--color-text);
+}
+
+.expense-uncategorized-subtext {
+    margin: 0.15rem 0 0;
+    font-size: 0.8rem;
+    color: var(--color-text-secondary);
+}
+
+.expense-uncategorized-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+
+.expense-uncategorized-table {
+    font-size: 0.85rem;
+}
+
+.expense-uncategorized-table thead th {
+    padding: 0.5rem 0.5rem;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    color: var(--color-text-secondary);
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.expense-uncategorized-table tbody td {
+    padding: 0.4rem 0.5rem;
+    vertical-align: middle;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.expense-uncategorized-table tbody tr:hover {
+    background-color: #f8f8f8;
+}
+
+.expense-uncategorized-table .uncat-scc-select,
+.expense-uncategorized-table .uncat-project-select {
+    font-size: 0.8rem;
+    padding: 0.2rem 0.3rem;
+}
+
+.expense-truncate {
+    max-width: 15rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Confidence badges */
+.confidence-badge {
+    display: inline-block;
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+    background-color: #f0f0f0;
+}
+
+.confidence-badge.confidence-high {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.confidence-badge.confidence-medium {
+    background-color: #fff3cd;
+    color: #856404;
+}
+
+.confidence-badge.confidence-low {
+    background-color: #f8d7da;
+    color: #721c24;
+}
+
+
+/* ============================================
+   QBO Purchase Match Banner (edit page)
+   ============================================ */
+
+.expense-qbo-match-banner {
+    background-color: #e8f5e9;
+    border: 1px solid #c8e6c9;
+    border-left: 4px solid #4caf50;
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+}
+
+.expense-qbo-match-content {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.expense-qbo-match-icon {
+    font-size: 1.25rem;
+    flex-shrink: 0;
+}
+
+.expense-qbo-match-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.expense-qbo-match-title {
+    font-weight: 600;
+    font-size: var(--font-size-action);
+    color: #2e7d32;
+    margin-bottom: 0.25rem;
+}
+
+.expense-qbo-match-details {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem 0.75rem;
+    font-size: var(--font-size-base);
+    color: var(--color-text);
+}
+
+.expense-qbo-match-detail {
+    white-space: nowrap;
+}
+
+.expense-qbo-match-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+    .expense-qbo-match-content {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .expense-qbo-match-actions {
+        width: 100%;
+    }
+
+    .expense-qbo-match-actions .btn {
+        flex: 1;
     }
 }

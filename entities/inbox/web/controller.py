@@ -47,12 +47,14 @@ async def inbox_list(
     top: int = 50,
     skip: int = 0,
     unread_only: bool = False,
+    flagged_only: bool = True,
 ):
     """
     Main inbox view.  Lists emails from the invoice inbox with AI classifications.
+    Defaults to showing only flagged (red flag) emails.
     """
     svc = InboxService()
-    result = svc.list_inbox(folder=folder, top=top, skip=skip, unread_only=unread_only)
+    result = svc.list_inbox(folder=folder, top=top, skip=skip, unread_only=unread_only, flagged_only=flagged_only)
 
     messages = result.get("messages", [])
     error = None
@@ -77,6 +79,7 @@ async def inbox_list(
             "skip": skip,
             "top": top,
             "unread_only": unread_only,
+            "flagged_only": flagged_only,
             "mailbox": result.get("mailbox", ""),
             "error": error,
         },

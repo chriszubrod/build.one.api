@@ -16,12 +16,16 @@ from integrations.ms.sharepoint.driveitem.api.schemas import (
     DriveItemProjectExcelPushDataRequest,
     DriveItemProjectExcelAppendRowsRequest,
     DriveItemProjectExcelClearRangeRequest,
+    DriveItemBillFolderLinkRequest,
+    DriveItemExpenseFolderLinkRequest,
 )
 from integrations.ms.sharepoint.driveitem.business.service import MsDriveItemService
 from integrations.ms.sharepoint.driveitem.connector.project.business.service import DriveItemProjectConnector
 from integrations.ms.sharepoint.driveitem.connector.vendor.business.service import DriveItemVendorConnector
 from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
 from integrations.ms.sharepoint.driveitem.connector.project_excel.business.service import DriveItemProjectExcelConnector
+from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
+from integrations.ms.sharepoint.driveitem.connector.expense_folder.business.service import DriveItemExpenseFolderConnector
 from entities.auth.business.service import get_current_user_api
 
 logger = logging.getLogger(__name__)
@@ -749,11 +753,147 @@ def clear_worksheet_range_router(
         project_id=project_id,
         range_address=body.range_address
     )
-    
+
     if result.get("status_code") >= 400:
         raise HTTPException(
             status_code=result.get("status_code", 500),
             detail=result.get("message", "Failed to clear worksheet range")
         )
-    
+
+    return result
+
+
+# =============================================================================
+# DriveItem-BillFolder Connector Endpoints
+# =============================================================================
+
+
+@router.post("/connector/bill-folder")
+def link_bill_folder_router(
+    body: DriveItemBillFolderLinkRequest,
+    current_user: dict = Depends(get_current_user_api)
+):
+    """
+    Link a DriveItem (folder) as a bill processing folder for a company.
+    Folder type must be 'source' or 'processed'.
+    """
+    connector = DriveItemBillFolderConnector()
+    result = connector.link_folder(
+        company_id=body.company_id,
+        drive_public_id=body.drive_public_id,
+        graph_item_id=body.graph_item_id,
+        folder_type=body.folder_type,
+    )
+    if result.get("status_code") >= 400:
+        raise HTTPException(
+            status_code=result.get("status_code", 500),
+            detail=result.get("message", "Failed to link bill folder"),
+        )
+    return result
+
+
+@router.get("/connector/bill-folder/{company_id}/{folder_type}")
+def get_bill_folder_router(
+    company_id: int,
+    folder_type: str,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """Get the linked bill processing folder for a company by type."""
+    connector = DriveItemBillFolderConnector()
+    driveitem = connector.get_folder(company_id=company_id, folder_type=folder_type)
+    if not driveitem:
+        return {
+            "message": f"No linked '{folder_type}' folder found for this company",
+            "status_code": 404,
+            "driveitem": None,
+        }
+    return {
+        "message": "Bill folder mapping retrieved successfully",
+        "status_code": 200,
+        "driveitem": driveitem,
+    }
+
+
+@router.delete("/connector/bill-folder/{company_id}/{folder_type}")
+def unlink_bill_folder_router(
+    company_id: int,
+    folder_type: str,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """Unlink a bill processing folder from a company."""
+    connector = DriveItemBillFolderConnector()
+    result = connector.unlink_folder(company_id=company_id, folder_type=folder_type)
+    if result.get("status_code") >= 400:
+        raise HTTPException(
+            status_code=result.get("status_code", 500),
+            detail=result.get("message", "Failed to unlink bill folder"),
+        )
+    return result
+
+
+# =============================================================================
+# DriveItem-ExpenseFolder Connector Endpoints
+# =============================================================================
+
+
+@router.post("/connector/expense-folder")
+def link_expense_folder_router(
+    body: DriveItemExpenseFolderLinkRequest,
+    current_user: dict = Depends(get_current_user_api)
+):
+    """
+    Link a DriveItem (folder) as an expense processing folder for a company.
+    Folder type must be 'source' or 'processed'.
+    """
+    connector = DriveItemExpenseFolderConnector()
+    result = connector.link_folder(
+        company_id=body.company_id,
+        drive_public_id=body.drive_public_id,
+        graph_item_id=body.graph_item_id,
+        folder_type=body.folder_type,
+    )
+    if result.get("status_code") >= 400:
+        raise HTTPException(
+            status_code=result.get("status_code", 500),
+            detail=result.get("message", "Failed to link expense folder"),
+        )
+    return result
+
+
+@router.get("/connector/expense-folder/{company_id}/{folder_type}")
+def get_expense_folder_router(
+    company_id: int,
+    folder_type: str,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """Get the linked expense processing folder for a company by type."""
+    connector = DriveItemExpenseFolderConnector()
+    driveitem = connector.get_folder(company_id=company_id, folder_type=folder_type)
+    if not driveitem:
+        return {
+            "message": f"No linked '{folder_type}' folder found for this company",
+            "status_code": 404,
+            "driveitem": None,
+        }
+    return {
+        "message": "Expense folder mapping retrieved successfully",
+        "status_code": 200,
+        "driveitem": driveitem,
+    }
+
+
+@router.delete("/connector/expense-folder/{company_id}/{folder_type}")
+def unlink_expense_folder_router(
+    company_id: int,
+    folder_type: str,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """Unlink an expense processing folder from a company."""
+    connector = DriveItemExpenseFolderConnector()
+    result = connector.unlink_folder(company_id=company_id, folder_type=folder_type)
+    if result.get("status_code") >= 400:
+        raise HTTPException(
+            status_code=result.get("status_code", 500),
+            detail=result.get("message", "Failed to unlink expense folder"),
+        )
     return result

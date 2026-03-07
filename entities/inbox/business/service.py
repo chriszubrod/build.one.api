@@ -76,6 +76,7 @@ class InboxService:
         top: int = 50,
         skip: int = 0,
         unread_only: bool = False,
+        flagged_only: bool = False,
     ) -> dict:
         """
         Return a list of emails from the invoice inbox, each enriched with
@@ -90,11 +91,17 @@ class InboxService:
                 "mailbox": str,
             }
         """
+        # MS Graph supports $filter on isRead but not on flag/flagStatus
+        # (returns InefficientFilter error). Filter flagged messages client-side.
         filter_query = "isRead eq false" if unread_only else None
+
+        # When filtering flagged client-side, fetch extra messages so we have
+        # enough after filtering to fill the requested page.
+        fetch_top = top * 3 if flagged_only else top
 
         result = mail_client.list_messages(
             folder=folder,
-            top=top,
+            top=fetch_top,
             skip=skip,
             filter_query=filter_query,
             order_by="receivedDateTime desc",
@@ -108,6 +115,12 @@ class InboxService:
             }
 
         messages = result.get("messages", [])
+
+        if flagged_only:
+            messages = [
+                m for m in messages
+                if (m.get("flag") or {}).get("flagStatus") == "flagged"
+            ]
 
         # Batch-lookup cached InboxRecords to avoid re-classifying
         message_ids = [m.get("message_id") for m in messages if m.get("message_id")]
@@ -249,14 +262,13 @@ class InboxService:
         email = msg_result.get("email", {})
         attachments = email.get("attachments") or []
 
-        logger.warning(
-            "DIAG extract_from_message %s: has_attachments=%s, attachment_count=%d, "
-            "conversation_id=%s, attachments=%s",
+        logger.debug(
+            "extract_from_message %s: has_attachments=%s, attachment_count=%d, "
+            "conversation_id=%s",
             message_id,
             email.get("has_attachments"),
             len(attachments),
             (email.get("conversation_id") or "")[:50],
-            [(a.get("name"), a.get("content_type"), a.get("size"), a.get("is_inline")) for a in attachments],
         )
 
         # --- Select target attachment ---
@@ -341,6 +353,7 @@ class InboxService:
 
         # --- Extraction pipeline: Agent → single-call Claude → heuristic ---
         mapped = None
+        body_content = email.get("body_content") or email.get("body_preview") or ""
 
         # Try extraction agent first (multi-turn with validation)
         try:
@@ -353,6 +366,7 @@ class InboxService:
                 attachment_filename=filename,
                 projects=projects,
                 sub_cost_codes=sub_cost_codes,
+                email_body=body_content,
             )
         except Exception as exc:
             logger.warning("Extraction agent failed, trying single-call: %s", exc)
@@ -367,6 +381,7 @@ class InboxService:
                     attachment_filename=filename,
                     projects=projects,
                     sub_cost_codes=sub_cost_codes,
+                    email_body=body_content,
                 )
             except Exception as exc:
                 logger.warning("Claude extraction failed, falling back to heuristic: %s", exc)
@@ -493,7 +508,13 @@ class InboxService:
         try:
             self._mail_svc.mark_message_read(message_id=message_id, is_read=True)
         except Exception as exc:
-            logger.warning("mark_processed failed for %s (non-fatal): %s", message_id, exc)
+            logger.warning("mark_processed mark-read failed for %s (non-fatal): %s", message_id, exc)
+
+        # Clear the flag so the message drops out of the flagged-only view
+        try:
+            self._mail_svc.flag_message(message_id=message_id, flagged=False)
+        except Exception as exc:
+            logger.warning("mark_processed unflag failed for %s (non-fatal): %s", message_id, exc)
 
         # Capture Point B: persist processing outcome
         # Capture Point C: detect user override (classifier was wrong)
@@ -643,13 +664,9 @@ class InboxService:
             return None, current_message_id
 
         thread_messages = thread_result.get("messages") or []
-        logger.warning(
-            "DIAG thread search found %d messages: %s",
-            len(thread_messages),
-            [
-                (m.get("message_id", "?")[:20], m.get("has_attachments"), len(m.get("attachments") or []))
-                for m in thread_messages
-            ],
+        logger.debug(
+            "Thread search found %d messages for conversation %s",
+            len(thread_messages), conversation_id[:50],
         )
 
         # Collect candidate attachments from all thread messages, then pick
@@ -663,19 +680,19 @@ class InboxService:
                 continue  # Already checked this one
 
             attachments = thread_msg.get("attachments") or []
-            logger.warning(
-                "DIAG thread msg %s: has_attachments=%s, attachments=%s",
+            logger.debug(
+                "Thread msg %s: has_attachments=%s, attachment_count=%d",
                 thread_msg_id[:20],
                 thread_msg.get("has_attachments"),
-                [(a.get("name"), a.get("content_type"), a.get("size"), a.get("is_inline")) for a in attachments],
+                len(attachments),
             )
 
             # MS Graph $expand=attachments sometimes returns empty even when
             # hasAttachments is true (especially on filtered/search queries).
             # Fetch the message individually to get its attachments.
             if not attachments and thread_msg.get("has_attachments"):
-                logger.warning(
-                    "DIAG thread msg %s has_attachments=True but expand empty — fetching individually",
+                logger.debug(
+                    "Thread msg %s has_attachments=True but expand empty — fetching individually",
                     thread_msg_id[:20],
                 )
                 try:
@@ -686,13 +703,8 @@ class InboxService:
                     )
                     if detail.get("status_code") in (200, 201):
                         attachments = detail.get("email", {}).get("attachments") or []
-                        logger.warning(
-                            "DIAG fetched %d attachments for thread msg %s: %s",
-                            len(attachments), thread_msg_id[:20],
-                            [(a.get("name"), a.get("content_type"), a.get("size"), a.get("is_inline")) for a in attachments],
-                        )
                 except Exception as exc:
-                    logger.warning("DIAG failed to fetch attachments for thread msg %s: %s", thread_msg_id[:20], exc)
+                    logger.warning("Failed to fetch attachments for thread msg %s: %s", thread_msg_id[:20], exc)
 
             for att in attachments:
                 if att.get("is_inline", False):
@@ -846,6 +858,9 @@ class InboxService:
             "bill_number_confidence": result.bill_number_confidence,
             "date_confidence": result.date_confidence,
             "amount_confidence": result.amount_confidence,
+            "memo_confidence": result.memo_confidence,
+            "project_confidence": result.project_confidence,
+            "sub_cost_code_confidence": result.sub_cost_code_confidence,
             "overall_confidence": result.overall_confidence,
             "extraction_notes": result.extraction_notes,
         }

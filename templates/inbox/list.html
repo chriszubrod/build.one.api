@@ -83,6 +83,19 @@
         .sender-name { font-size: 0.9rem; }
         .sender-email { font-size: 0.75rem; color: var(--text-muted, #6b7280); }
 
+        /* ── Body preview snippet ─────────────────────────────────── */
+        .body-preview {
+            font-size: 0.78rem;
+            color: var(--text-muted, #9ca3af);
+            font-weight: 400 !important;
+            line-height: 1.4;
+            margin-top: 0.15rem;
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+        }
+
         /* ── Empty state ────────────────────────────────────────────── */
         .inbox-empty {
             text-align: center;
@@ -144,6 +157,15 @@
             0%, 100% { opacity: 0.6; }
             50% { opacity: 1; }
         }
+
+        /* ── "Up next" highlight after processing ────────────────────── */
+        tr.up-next td {
+            background: #fef9c3 !important;
+            transition: background 2s ease;
+        }
+        tr.up-next-fade td {
+            background: transparent !important;
+        }
     </style>
 {% endblock %}
 
@@ -152,9 +174,9 @@
 <div class="inbox-header">
     <div style="display:flex; align-items:center; gap:0.75rem;">
         <h1>📬 Invoice Inbox</h1>
-        {% if unread_count > 0 %}
-            <span style="background:#ef4444;color:#fff;border-radius:9999px;padding:0.15rem 0.6rem;font-size:0.75rem;font-weight:700;">
-                {{ unread_count }} new
+        {% if flagged_only %}
+            <span style="background:#dc2626;color:#fff;border-radius:9999px;padding:0.15rem 0.6rem;font-size:0.75rem;font-weight:700;">
+                🚩 Flagged
             </span>
         {% endif %}
     </div>
@@ -175,11 +197,12 @@
 <div class="inbox-toolbar">
     <form method="get" action="/inbox" id="inbox-filter-form" style="display:contents;">
         <label style="font-size:0.85rem; display:flex; align-items:center; gap:0.4rem;">
-            <input type="checkbox" name="unread_only" value="1"
-                   {% if unread_only %}checked{% endif %}
-                   onchange="document.getElementById('inbox-filter-form').submit()">
-            Unread only
+            <input type="checkbox" id="flagged-only-cb"
+                   {% if flagged_only %}checked{% endif %}
+                   onchange="document.getElementById('flagged-only-val').value = this.checked ? '1' : '0'; document.getElementById('inbox-filter-form').submit()">
+            🚩 Flagged only
         </label>
+        <input type="hidden" id="flagged-only-val" name="flagged_only" value="{{ '1' if flagged_only else '0' }}">
         <input type="hidden" name="folder" value="{{ folder }}">
         <input type="hidden" name="top" value="{{ top }}">
     </form>
@@ -207,6 +230,7 @@
         {% set cls = msg.classification %}
         <tr class="{{ 'unread' if not msg.is_read else '' }}"
             data-msg-id="{{ msg.message_id }}"
+            data-received="{{ msg.received_datetime or '' }}"
             data-confidence="{{ cls.confidence }}"
             data-auto-classify="{{ 'true' if msg.auto_classify else 'false' }}"
             onclick="window.location.href='/inbox/message/{{ msg.message_id }}'"
@@ -230,8 +254,13 @@
                 {% endif %}
             </td>
 
-            <!-- Subject -->
-            <td>{{ msg.subject or '(no subject)' }}</td>
+            <!-- Subject + preview -->
+            <td>
+                <div>{{ msg.subject or '(no subject)' }}</div>
+                {% if msg.body_preview %}
+                    <div class="body-preview">{{ msg.body_preview[:120] }}{{ '…' if msg.body_preview|length > 120 else '' }}</div>
+                {% endif %}
+            </td>
 
             <!-- Received -->
             <td style="white-space:nowrap; font-size:0.8rem; color:var(--text-muted,#6b7280);">
@@ -288,11 +317,11 @@
 {% if has_more or skip > 0 %}
 <div class="inbox-pagination">
     {% if skip > 0 %}
-        <a href="/inbox?folder={{ folder }}&top={{ top }}&skip={{ [skip - top, 0] | max }}&unread_only={{ '1' if unread_only else '0' }}"
+        <a href="/inbox?folder={{ folder }}&top={{ top }}&skip={{ [skip - top, 0] | max }}&flagged_only={{ '1' if flagged_only else '0' }}"
            class="btn btn-secondary btn-sm">← Previous</a>
     {% endif %}
     {% if has_more %}
-        <a href="/inbox?folder={{ folder }}&top={{ top }}&skip={{ skip + top }}&unread_only={{ '1' if unread_only else '0' }}"
+        <a href="/inbox?folder={{ folder }}&top={{ top }}&skip={{ skip + top }}&flagged_only={{ '1' if flagged_only else '0' }}"
            class="btn btn-secondary btn-sm">Next →</a>
     {% endif %}
 </div>
@@ -301,10 +330,10 @@
 {% else %}
 <div class="inbox-empty">
     <div class="inbox-empty-icon">📭</div>
-    <h3>No messages{% if unread_only %} (unread){% endif %}</h3>
+    <h3>No messages{% if flagged_only %} (flagged){% endif %}</h3>
     <p>
-        {% if unread_only %}
-            No unread messages. <a href="/inbox">View all messages</a>.
+        {% if flagged_only %}
+            No flagged messages. <a href="/inbox?flagged_only=0">View all messages</a>.
         {% else %}
             The invoice inbox is empty or could not be reached.
         {% endif %}
@@ -489,6 +518,55 @@ async function inlineToggleFlag(btn) {
     }
     btn.disabled = false;
 }
+
+// ── Highlight next message after processing ──────────────────────
+// ?after_dt=<ISO datetime> is the received date of the message just processed.
+// The list is sorted newest-first, so the "next" message is the first one
+// with a received date older than (or equal to) the processed message.
+(function() {
+    const params = new URLSearchParams(window.location.search);
+    const afterDt = params.get('after_dt');
+    if (!afterDt) return;
+
+    const rows = document.querySelectorAll('#inbox-table tbody tr[data-msg-id]');
+    if (rows.length === 0) return;
+
+    const processedTime = new Date(afterDt).getTime();
+    let target = null;
+
+    // List is newest-first. Find the first row whose received date is
+    // at or just after the processed message's date (i.e. the row that
+    // would have been right below the processed message).
+    for (const row of rows) {
+        const rowDt = row.dataset.received;
+        if (!rowDt) continue;
+        const rowTime = new Date(rowDt).getTime();
+        if (rowTime <= processedTime) {
+            target = row;
+            break;
+        }
+    }
+
+    // Fallback: if all remaining messages are newer, highlight the last row
+    if (!target) target = rows[rows.length - 1];
+
+    target.classList.add('up-next');
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    // Fade out after 3 seconds
+    setTimeout(function() {
+        target.classList.add('up-next-fade');
+        setTimeout(function() {
+            target.classList.remove('up-next', 'up-next-fade');
+        }, 2000);
+    }, 3000);
+
+    // Clean up URL
+    params.delete('after_dt');
+    const clean = params.toString();
+    const newUrl = window.location.pathname + (clean ? '?' + clean : '');
+    history.replaceState(null, '', newUrl);
+})();
 </script>
 
 {% endblock %}

@@ -145,7 +145,10 @@ async def list_bills(
     
     # Get pending bill workflows (confirmed as "bill" but not yet processed)
     pending_workflows = _get_pending_bill_workflows(current_user.get("tenant_id", 1))
-    
+
+    # Get bill folder summary for SharePoint folder processing section
+    bill_folder_summary = _get_bill_folder_summary(company_id=1)
+
     # Preserve current list URL for "Back to List" when viewing a bill
     return_to = request.url.path + ("?" + request.url.query if request.url.query else "")
 
@@ -156,6 +159,7 @@ async def list_bills(
             "bills": bills_with_vendors,
             "vendors": vendors,
             "pending_workflows": pending_workflows,
+            "bill_folder_summary": bill_folder_summary,
             "current_user": current_user,
             "current_path": request.url.path,
             "return_to": return_to,
@@ -174,6 +178,47 @@ async def list_bills(
             "sort_direction": sort_direction,
         },
     )
+
+
+def _get_bill_folder_summary(company_id: int) -> Optional[dict]:
+    """
+    Get summary of the linked SharePoint bill source folder.
+    Returns dict with folder_name, folder_web_url, file_count, is_linked.
+    """
+    try:
+        from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
+        from integrations.ms.sharepoint.external import client as sp_client
+
+        connector = DriveItemBillFolderConnector()
+        source_folder = connector.get_folder(company_id, "source")
+
+        if not source_folder:
+            return {"is_linked": False}
+
+        drive_id = source_folder.get("drive_id")
+        item_id = source_folder.get("item_id")
+
+        file_count = 0
+        if drive_id and item_id:
+            try:
+                children = sp_client.list_drive_item_children(drive_id, item_id)
+                if children.get("status_code") == 200:
+                    for item in children.get("items", []):
+                        name = item.get("name", "")
+                        if item.get("item_type") == "file" and (name.lower().endswith('.pdf') or '.' not in name):
+                            file_count += 1
+            except Exception as e:
+                logger.warning("Failed to count files in source folder: %s", e)
+
+        return {
+            "is_linked": True,
+            "folder_name": source_folder.get("name"),
+            "folder_web_url": source_folder.get("web_url"),
+            "file_count": file_count,
+        }
+    except Exception as e:
+        logger.warning("Error getting bill folder summary: %s", e)
+        return None
 
 
 def _get_pending_bill_workflows(tenant_id: int) -> list:

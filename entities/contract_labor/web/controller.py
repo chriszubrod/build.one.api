@@ -12,7 +12,7 @@ from fastapi.responses import RedirectResponse
 from entities.contract_labor.business.model import ContractLabor
 from entities.contract_labor.business.service import ContractLaborService
 from entities.contract_labor.business.import_service import ContractLaborImportService
-from entities.contract_labor.business.bill_service import ContractLaborBillService
+from entities.contract_labor.business.bill_service import ContractLaborBillService, VENDOR_CONFIG
 from entities.contract_labor.persistence.repo import ContractLaborRepository
 from entities.contract_labor.persistence.line_item_repo import ContractLaborLineItemRepository
 from entities.vendor.business.service import VendorService
@@ -118,6 +118,10 @@ async def list_contract_labor(
         
         if entry.vendor_id and entry.vendor_id in vendor_map:
             entry_dict['vendor_name'] = vendor_map[entry.vendor_id].name
+            vendor_cfg = VENDOR_CONFIG.get(vendor_map[entry.vendor_id].name)
+            if vendor_cfg:
+                entry_dict['default_rate'] = float(vendor_cfg['rate'])
+                entry_dict['default_markup'] = float(vendor_cfg['markup'])
         if entry.project_id and entry.project_id in project_map:
             entry_dict['project_name'] = project_map[entry.project_id].name
             entry_dict['project_abbreviation'] = project_map[entry.project_id].abbreviation
@@ -155,6 +159,7 @@ async def list_contract_labor(
             "billing_period": billing_period or "",
             "sort_by": sort_by,
             "sort_direction": sort_direction,
+            "vendor_config": {k: {kk: (float(vv) if isinstance(vv, Decimal) else vv) for kk, vv in v.items()} for k, v in VENDOR_CONFIG.items()},
         },
     )
 
@@ -455,6 +460,7 @@ async def edit_entry(
             "daily_summary": daily_summary,
             "current_user": current_user,
             "current_path": request.url.path,
+            "vendor_config": {k: {kk: (float(vv) if isinstance(vv, Decimal) else vv) for kk, vv in v.items()} for k, v in VENDOR_CONFIG.items()},
         },
     )
 

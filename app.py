@@ -96,6 +96,9 @@ from entities.classification_override.api.router import router as classification
 from entities.classification_override.web.controller import router as classification_override_web_router
 from core.workflow.api.pending_action_router import router as pending_action_api_router
 from core.ai.agents.vendor_agent.api.router import router as vendor_agent_api_router
+from core.ai.agents.bill_agent.api.router import router as bill_agent_api_router
+from core.ai.agents.expense_agent.api.router import router as expense_agent_api_router
+from core.ai.agents.expense_categorization.api.router import router as expense_categorization_api_router
 
 from integrations.intuit.qbo.auth.api.router import router as intuit_qbo_auth_api_router
 from integrations.intuit.qbo.company_info.api.router import router as intuit_qbo_company_info_api_router
@@ -257,6 +260,21 @@ app.include_router(categorization_api_router)
 app.include_router(copilot_api_router)
 app.include_router(pending_action_api_router)
 app.include_router(vendor_agent_api_router)
+app.include_router(bill_agent_api_router)
+app.include_router(expense_agent_api_router)
+app.include_router(expense_categorization_api_router)
+
+
+@app.on_event("startup")
+async def startup_event():
+    from core.ai.agents.bill_agent.scheduler import start_scheduler
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    from core.ai.agents.bill_agent.scheduler import stop_scheduler
+    stop_scheduler()
 
 
 def get_settings():

@@ -15,6 +15,46 @@
         </div>
 
         <div class="expense-create-content">
+            {% if qbo_purchase_match and not has_qbo_purchase_mapping %}
+            <div class="expense-qbo-match-banner" id="qboMatchBanner">
+                <div class="expense-qbo-match-content">
+                    <div class="expense-qbo-match-icon">&#x1f517;</div>
+                    <div class="expense-qbo-match-info">
+                        <div class="expense-qbo-match-title">Matching QBO Transaction Found</div>
+                        <div class="expense-qbo-match-details">
+                            <span class="expense-qbo-match-detail"><strong>{{ qbo_purchase_match.vendor_name }}</strong></span>
+                            {% if qbo_purchase_match.amount %}
+                            <span class="expense-qbo-match-detail">${{ "%.2f"|format(qbo_purchase_match.amount) }}</span>
+                            {% endif %}
+                            {% if qbo_purchase_match.txn_date %}
+                            <span class="expense-qbo-match-detail">{{ qbo_purchase_match.txn_date }}</span>
+                            {% endif %}
+                            {% if qbo_purchase_match.doc_number %}
+                            <span class="expense-qbo-match-detail">Ref: {{ qbo_purchase_match.doc_number }}</span>
+                            {% endif %}
+                            <span class="confidence-badge {% if qbo_purchase_match.confidence >= 0.7 %}confidence-high{% elif qbo_purchase_match.confidence >= 0.5 %}confidence-medium{% else %}confidence-low{% endif %}">
+                                {{ "%.0f"|format(qbo_purchase_match.confidence * 100) }}% match
+                            </span>
+                        </div>
+                    </div>
+                    <div class="expense-qbo-match-actions">
+                        <button type="button"
+                                class="btn btn-primary btn-sm"
+                                id="linkPurchaseBtn"
+                                onclick="linkQboPurchase()"
+                                data-qbo-purchase-id="{{ qbo_purchase_match.qbo_purchase_id }}"
+                                data-realm-id="{{ qbo_purchase_match.realm_id or '' }}"
+                                data-expense-public-id="{{ expense.public_id }}">
+                            Link &amp; Apply
+                        </button>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('qboMatchBanner').style.display='none'">
+                            Dismiss
+                        </button>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
             <form id="editExpenseForm" autocomplete="off">
                 <!-- Hidden fields for tracking expense state -->
                 <input type="hidden" id="expense_public_id" name="expense_public_id" value="{{ expense.public_id }}">
@@ -381,6 +421,45 @@
 
 {% block scripts %}
     <script>
+        // =====================
+        // Link QBO Purchase
+        // =====================
+
+        function linkQboPurchase() {
+            const btn = document.getElementById('linkPurchaseBtn');
+            const qboPurchaseId = parseInt(btn.dataset.qboPurchaseId);
+            const realmId = btn.dataset.realmId;
+            const expensePublicId = btn.dataset.expensePublicId;
+
+            btn.disabled = true;
+            btn.textContent = 'Linking...';
+
+            fetch('/api/v1/expense-categorization/link-purchase', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    expense_public_id: expensePublicId,
+                    qbo_purchase_id: qboPurchaseId,
+                    realm_id: realmId,
+                }),
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status_code === 200) {
+                    window.location.reload();
+                } else {
+                    btn.disabled = false;
+                    btn.textContent = 'Link & Apply';
+                    alert('Link failed: ' + (data.message || 'Unknown error'));
+                }
+            })
+            .catch(err => {
+                btn.disabled = false;
+                btn.textContent = 'Link & Apply';
+                alert('Network error: ' + err.message);
+            });
+        }
+
         // =====================
         // Toast Notifications
         // =====================

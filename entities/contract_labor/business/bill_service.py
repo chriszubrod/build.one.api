@@ -29,31 +29,49 @@ from shared.storage import AzureBlobStorage
 logger = logging.getLogger(__name__)
 
 
-# Hardcoded vendor addresses
-VENDOR_ADDRESSES = {
+# Hardcoded vendor config (address, rate, markup)
+VENDOR_CONFIG = {
     'Denis Samuel Marcia Izaguirre': {
         'address': '212 Delvin Ct.',
         'city_state_zip': 'Antioch, TN 37013',
+        'rate': Decimal('240.00'),
+        'markup': Decimal('0.50'),
     },
     'Wilmer Diaz': {
         'address': '212 Delvin Ct.',
         'city_state_zip': 'Antioch, TN 37013',
+        'rate': Decimal('260.00'),
+        'markup': Decimal('0.50'),
     },
     'Elmer Cordova': {
         'address': '212 Delvin Ct.',
         'city_state_zip': 'Antioch, TN 37013',
+        'rate': Decimal('260.00'),
+        'markup': Decimal('0.50'),
     },
     'Emilson O. Cordova Tercero': {
         'address': '759 Huntington Parkway',
         'city_state_zip': 'Nashville, TN 37211',
+        'rate': Decimal('370.00'),
+        'markup': Decimal('0.50'),
     },
     'Selvin Humberto Cordova Tercero': {
         'address': '212 Delvin Ct.',
         'city_state_zip': 'Antioch, TN 37013',
+        'rate': Decimal('500.00'),
+        'markup': Decimal('0.35'),
     },
     'Michael Jacobson': {
         'address': '523 Fatherland St.',
         'city_state_zip': 'Nashville, TN 37206',
+        'rate': Decimal('240.00'),
+        'markup': Decimal('0.50'),
+    },
+    'Brayan Rafael Marcia Salina': {
+        'address': '212 Delvin Ct.',
+        'city_state_zip': 'Antioch, TN 37013',
+        'rate': Decimal('240.00'),
+        'markup': Decimal('0.50'),
     },
 }
 
@@ -600,7 +618,7 @@ class ContractLaborBillService:
         elements.append(Spacer(1, 10))
 
         # Vendor info and Bill To
-        vendor_address = VENDOR_ADDRESSES.get(vendor_name, {
+        vendor_address = VENDOR_CONFIG.get(vendor_name, {
             'address': '',
             'city_state_zip': '',
         })

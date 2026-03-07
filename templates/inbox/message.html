@@ -535,9 +535,15 @@
 
 <script>
 const MESSAGE_ID = "{{ email.message_id }}";
-const INBOX_RETURN_URL = (document.referrer && new URL(document.referrer).pathname === '/inbox')
+const MESSAGE_RECEIVED = "{{ email.received_datetime or '' }}";
+// Build inbox return URL, appending after_dt so the list can highlight
+// the next message the user should review (chronologically).
+const _refUrl = (document.referrer && new URL(document.referrer).pathname === '/inbox')
     ? document.referrer
     : '/inbox';
+const _refParsed = new URL(_refUrl, location.origin);
+_refParsed.searchParams.set('after_dt', MESSAGE_RECEIVED);
+const INBOX_RETURN_URL = _refParsed.pathname + _refParsed.search;
 document.getElementById('back-to-inbox').href = INBOX_RETURN_URL;
 let selectedAttachmentId = null;
 let extractionData = null;
@@ -869,35 +875,53 @@ function renderPreview(ex, errorMessage) {
     </div>`;
 
     // --- Description / Memo input ---
-    html += `<div class="preview-row">
+    const memoConf = ex.memo_confidence;
+    const memoConfPct = memoConf ? Math.round(memoConf * 100) : null;
+    const memoConfClass = memoConfPct == null ? '' : memoConfPct >= 80 ? 'confidence-high' : memoConfPct >= 50 ? 'confidence-med' : 'confidence-low';
+    const memoConfTag = memoConfPct != null ? `<span class="conf-tag">${memoConfPct}%</span>` : '';
+
+    html += `<div class="preview-row ${memoConfClass}">
         <span class="preview-label">Description</span>
         <div class="preview-field-wrapper">
             <input type="text" id="preview-memo" value="${ex.memo || ''}" placeholder="Line item description">
+            ${memoConfTag}
         </div>
     </div>`;
 
     // --- Project select ---
+    const projConf = ex.project_confidence;
+    const projConfPct = projConf ? Math.round(projConf * 100) : null;
+    const projConfClass = projConfPct == null ? '' : projConfPct >= 80 ? 'confidence-high' : projConfPct >= 50 ? 'confidence-med' : 'confidence-low';
+    const projConfTag = projConfPct != null ? `<span class="conf-tag">${projConfPct}%</span>` : '';
     const selectedProjectId = ex.project_match?.public_id || '';
-    html += `<div class="preview-row">
+
+    html += `<div class="preview-row ${projConfClass}">
         <span class="preview-label">Project</span>
         <div class="preview-field-wrapper">
             <select id="preview-project" style="width:100%;">
                 <option value="">(none)</option>
                 ${PROJECTS.map(p => `<option value="${p.publicId}" ${p.publicId === selectedProjectId ? 'selected' : ''}>${p.name}</option>`).join('')}
             </select>
+            ${projConfTag}
             ${ex.project_hint && !ex.project_match ? `<div class="preview-hint">AI suggestion: "${ex.project_hint}" (unmatched)</div>` : ''}
         </div>
     </div>`;
 
     // --- SubCostCode select ---
+    const sccConf = ex.sub_cost_code_confidence;
+    const sccConfPct = sccConf ? Math.round(sccConf * 100) : null;
+    const sccConfClass = sccConfPct == null ? '' : sccConfPct >= 80 ? 'confidence-high' : sccConfPct >= 50 ? 'confidence-med' : 'confidence-low';
+    const sccConfTag = sccConfPct != null ? `<span class="conf-tag">${sccConfPct}%</span>` : '';
     const selectedSccId = ex.sub_cost_code_match?.id || '';
-    html += `<div class="preview-row">
+
+    html += `<div class="preview-row ${sccConfClass}">
         <span class="preview-label">Cost Code</span>
         <div class="preview-field-wrapper">
             <select id="preview-scc" style="width:100%;">
                 <option value="">(none)</option>
                 ${SUB_COST_CODES.map(s => `<option value="${s.id}" ${String(s.id) === String(selectedSccId) ? 'selected' : ''}>${s.number ? s.number + ' ' : ''}${s.name}</option>`).join('')}
             </select>
+            ${sccConfTag}
             ${ex.sub_cost_code_hint && !ex.sub_cost_code_match ? `<div class="preview-hint">AI suggestion: "${ex.sub_cost_code_hint}" (unmatched)</div>` : ''}
         </div>
     </div>`;

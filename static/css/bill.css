@@ -1843,6 +1843,51 @@ textarea.bill-form-control {
 }
 
 /* ============================================
+   Bill Folder Summary Section
+   ============================================ */
+
+.bill-folder-summary-section {
+    margin-bottom: 1.5rem;
+}
+
+.bill-folder-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    background-color: var(--color-surface);
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+}
+
+.bill-folder-summary-info {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.bill-folder-summary-icon {
+    font-size: 1.25rem;
+}
+
+.bill-folder-summary-name {
+    font-weight: 600;
+    color: var(--color-text);
+    margin-right: 0.5rem;
+}
+
+.bill-folder-summary-count {
+    font-size: 0.875rem;
+    color: var(--color-text-secondary);
+}
+
+.bill-folder-summary-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+/* ============================================
    Pending Bill Imports Section
    ============================================ */
 

@@ -74,6 +74,106 @@
         </form>
     </div>
 
+    <!-- SharePoint Expense Folder Summary -->
+    {% if expense_folder_summary and expense_folder_summary.is_linked %}
+    <div class="expense-folder-summary-section">
+        <div class="expense-folder-summary">
+            <div class="expense-folder-summary-info">
+                <span class="expense-folder-summary-icon">📂</span>
+                <div>
+                    <span class="expense-folder-summary-name">{{ expense_folder_summary.folder_name or 'Source Folder' }}</span>
+                    <span class="expense-folder-summary-count">
+                        {{ expense_folder_summary.file_count }} file{{ 's' if expense_folder_summary.file_count != 1 else '' }} to process
+                    </span>
+                </div>
+            </div>
+            <div class="expense-folder-summary-actions">
+                {% if expense_folder_summary.file_count > 0 %}
+                <button type="button" class="btn btn-primary btn-sm" id="btn-process-expense-folder" onclick="triggerExpenseFolderProcessing()">
+                    Process Folder
+                </button>
+                {% endif %}
+                <a href="{{ expense_folder_summary.folder_web_url }}" target="_blank" class="btn btn-outline-secondary btn-sm">
+                    Open in SharePoint
+                </a>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Uncategorized QBO Transactions Section -->
+    {% if uncategorized_lines %}
+    <div class="expense-uncategorized-section">
+        <div class="expense-uncategorized-header">
+            <div class="expense-uncategorized-header-left">
+                <h3>Uncategorized Transactions ({{ uncategorized_count }})</h3>
+                <p class="expense-uncategorized-subtext">QBO purchases coded to suspense account — assign SubCostCode and Project</p>
+            </div>
+            <div class="expense-uncategorized-actions">
+                <button type="button" class="btn btn-outline-primary btn-sm" id="btn-suggest-all" onclick="suggestAllCategories()">
+                    AI Suggest All
+                </button>
+                <button type="button" class="btn btn-primary btn-sm" id="btn-apply-selected" onclick="applySelectedCategories()" disabled>
+                    Apply Selected (0)
+                </button>
+            </div>
+        </div>
+        <div class="expense-table-container">
+            <table class="expense-table expense-uncategorized-table">
+                <thead>
+                    <tr>
+                        <th style="width: 2rem;"><input type="checkbox" id="select-all-uncat" onchange="toggleSelectAllUncat(this)"></th>
+                        <th>Date</th>
+                        <th>Vendor</th>
+                        <th>Description</th>
+                        <th>Amount</th>
+                        <th>SubCostCode</th>
+                        <th>Project</th>
+                        <th style="width: 4rem;">Conf.</th>
+                        <th style="width: 3rem;">Rcpt</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for line in uncategorized_lines %}
+                    <tr data-line-id="{{ line.qbo_purchase_line_id }}"
+                        data-purchase-id="{{ line.qbo_purchase_id }}">
+                        <td><input type="checkbox" class="uncat-select" onchange="updateApplyButton()"></td>
+                        <td>{{ line.txn_date or '' }}</td>
+                        <td>{{ line.entity_ref_name or '' }}</td>
+                        <td class="expense-truncate" title="{{ line.line_description or '' }}">{{ (line.line_description or '')[:60] }}{% if (line.line_description or '')|length > 60 %}...{% endif %}</td>
+                        <td>${{ "%.2f"|format(line.line_amount or 0) }}</td>
+                        <td>
+                            <select class="uncat-scc-select expense-filter-select" style="min-width: 10rem;">
+                                <option value="">Select...</option>
+                                {% for scc in sub_cost_codes %}
+                                <option value="{{ scc.id }}">{{ scc.number }} - {{ scc.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </td>
+                        <td>
+                            <select class="uncat-project-select expense-filter-select" style="min-width: 8rem;">
+                                <option value="">Select...</option>
+                                {% for p in projects %}
+                                <option value="{{ p.public_id }}">{{ p.abbreviation or p.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </td>
+                        <td><span class="confidence-badge" data-line-id="{{ line.qbo_purchase_line_id }}">--</span></td>
+                        <td>
+                            {% if line.has_attachment %}
+                            <span title="Has receipt">📎</span>
+                            {% else %}
+                            <span class="text-muted" title="No receipt">--</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
     {% if expenses %}
     <!-- Drag and Drop Upload Zone - Compact when expenses exist -->
     <div class="expense-upload-section">
@@ -633,5 +733,337 @@
         }
 
     });
+
+    // ========================================================================
+    // Expense Folder Processing
+    // ========================================================================
+
+    async function triggerExpenseFolderProcessing() {
+        const btn = document.getElementById('btn-process-expense-folder');
+        if (!btn) return;
+
+        btn.disabled = true;
+        btn.textContent = 'Processing...';
+
+        // Open copilot panel and show user message
+        if (typeof toggleCopilot === 'function' && !copilotOpen) {
+            toggleCopilot();
+        }
+        if (typeof addCopilotMessage === 'function') {
+            addCopilotMessage('Process expense folder', 'user');
+        }
+
+        // Show typing indicator
+        let typingId = null;
+        if (typeof addCopilotTypingIndicator === 'function') {
+            typingId = addCopilotTypingIndicator('Starting folder processing...');
+        }
+
+        try {
+            const response = await fetch('/api/v1/expense-agent/run', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    company_id: 1,
+                    trigger_source: 'manual'
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to start processing');
+            }
+
+            const data = await response.json();
+            const runPublicId = data.run_public_id;
+
+            if (!runPublicId) {
+                throw new Error('No run ID returned');
+            }
+
+            // Poll for completion with copilot progress
+            await pollExpenseAgentRun(runPublicId, btn, typingId);
+        } catch (error) {
+            console.error('Expense folder processing error:', error);
+            btn.disabled = false;
+            btn.textContent = 'Process Folder';
+            if (typingId && typeof removeCopilotTypingIndicator === 'function') {
+                removeCopilotTypingIndicator(typingId);
+            }
+            if (typeof addCopilotMessage === 'function') {
+                addCopilotMessage('Failed to start folder processing: ' + error.message, 'assistant');
+            }
+        }
+    }
+
+    async function pollExpenseAgentRun(runPublicId, btn, typingId) {
+        const maxAttempts = 120;
+        let attempts = 0;
+
+        while (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            attempts++;
+
+            try {
+                const response = await fetch(`/api/v1/expense-agent/run/${runPublicId}`, {
+                    method: 'GET',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                if (!response.ok) continue;
+
+                const data = await response.json();
+
+                if (data.status === 'completed') {
+                    if (typingId && typeof removeCopilotTypingIndicator === 'function') {
+                        removeCopilotTypingIndicator(typingId);
+                    }
+
+                    let msg = `**Folder processing complete.**\n\n`;
+                    msg += `Files found: ${data.files_found || 0}\n`;
+                    msg += `Files processed: ${data.files_processed || 0}\n`;
+                    msg += `Expenses created: ${data.expenses_created || 0}`;
+                    if (data.files_skipped > 0) {
+                        msg += `\nFiles skipped: ${data.files_skipped}`;
+                    }
+                    if (data.error_count > 0) {
+                        msg += `\nErrors: ${data.error_count}`;
+                    }
+
+                    if (typeof addCopilotMessage === 'function') {
+                        addCopilotMessage(msg, 'assistant');
+                    }
+
+                    setTimeout(() => window.location.reload(), 2000);
+                    return;
+                }
+
+                if (data.status === 'failed') {
+                    if (typingId && typeof removeCopilotTypingIndicator === 'function') {
+                        removeCopilotTypingIndicator(typingId);
+                    }
+                    if (typeof addCopilotMessage === 'function') {
+                        addCopilotMessage('Processing failed. Check logs for details.', 'assistant');
+                    }
+                    btn.disabled = false;
+                    btn.textContent = 'Process Folder';
+                    return;
+                }
+
+                // Still running — update progress
+                if (typingId && typeof updateCopilotTypingStatus === 'function') {
+                    const found = data.files_found || 0;
+                    const done = (data.files_processed || 0) + (data.files_skipped || 0);
+                    if (found > 0) {
+                        updateCopilotTypingStatus(typingId, `Processing file ${done + 1} of ${found}...`);
+                    } else {
+                        updateCopilotTypingStatus(typingId, 'Scanning folder...');
+                    }
+                }
+
+                btn.textContent = `Processing...`;
+            } catch (e) {
+                console.warn('Poll error:', e);
+            }
+        }
+
+        // Timeout
+        if (typingId && typeof removeCopilotTypingIndicator === 'function') {
+            removeCopilotTypingIndicator(typingId);
+        }
+        if (typeof addCopilotMessage === 'function') {
+            addCopilotMessage('Processing is taking longer than expected. It will continue in the background.', 'assistant');
+        }
+        btn.disabled = false;
+        btn.textContent = 'Process Folder';
+    }
+
+    // ====================================================================
+    // Uncategorized Transactions - AI Categorization
+    // ====================================================================
+
+    function toggleSelectAllUncat(checkbox) {
+        document.querySelectorAll('.uncat-select').forEach(cb => {
+            cb.checked = checkbox.checked;
+        });
+        updateApplyButton();
+    }
+
+    function updateApplyButton() {
+        const selected = document.querySelectorAll('.uncat-select:checked').length;
+        const btn = document.getElementById('btn-apply-selected');
+        if (btn) {
+            btn.disabled = selected === 0;
+            btn.textContent = `Apply Selected (${selected})`;
+        }
+    }
+
+    function getSelectedRows() {
+        const rows = [];
+        document.querySelectorAll('.uncat-select:checked').forEach(cb => {
+            const tr = cb.closest('tr');
+            if (!tr) return;
+            const sccSelect = tr.querySelector('.uncat-scc-select');
+            const projSelect = tr.querySelector('.uncat-project-select');
+            rows.push({
+                qbo_purchase_id: parseInt(tr.dataset.purchaseId),
+                qbo_purchase_line_id: parseInt(tr.dataset.lineId),
+                sub_cost_code_id: sccSelect ? parseInt(sccSelect.value) || null : null,
+                project_public_id: projSelect ? projSelect.value || null : null,
+            });
+        });
+        return rows;
+    }
+
+    async function suggestAllCategories() {
+        const btn = document.getElementById('btn-suggest-all');
+        if (!btn) return;
+
+        btn.disabled = true;
+        btn.textContent = 'Analyzing...';
+
+        try {
+            const response = await fetch('/api/v1/expense-categorization/suggest-batch', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ realm_id: null }),
+            });
+
+            const data = await response.json();
+
+            if (data.status_code === 200 && data.suggestions) {
+                let applied = 0;
+                for (const [lineId, lineSug] of Object.entries(data.suggestions)) {
+                    const row = document.querySelector(`tr[data-line-id="${lineId}"]`);
+                    if (!row) continue;
+
+                    const suggestions = lineSug.suggestions || [];
+                    if (suggestions.length === 0) continue;
+
+                    const top = suggestions[0];
+
+                    // Set SubCostCode dropdown
+                    if (top.sub_cost_code_id) {
+                        const sccSelect = row.querySelector('.uncat-scc-select');
+                        if (sccSelect) {
+                            sccSelect.value = top.sub_cost_code_id;
+                        }
+                    }
+
+                    // Set Project dropdown
+                    if (top.project_id) {
+                        const projSelect = row.querySelector('.uncat-project-select');
+                        if (projSelect) {
+                            // Find option by project_id — options use public_id as value
+                            // Need to match by searching option text for abbreviation
+                            if (top.project_abbreviation) {
+                                for (const opt of projSelect.options) {
+                                    if (opt.textContent.trim() === top.project_abbreviation || opt.textContent.trim() === top.project_name) {
+                                        projSelect.value = opt.value;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Set confidence badge
+                    const badge = row.querySelector('.confidence-badge');
+                    if (badge) {
+                        const conf = Math.round(top.confidence * 100);
+                        badge.textContent = conf + '%';
+                        badge.title = top.reasoning || '';
+                        badge.classList.remove('confidence-high', 'confidence-medium', 'confidence-low');
+                        if (conf >= 80) badge.classList.add('confidence-high');
+                        else if (conf >= 60) badge.classList.add('confidence-medium');
+                        else badge.classList.add('confidence-low');
+                    }
+
+                    // Auto-check rows with high confidence
+                    if (top.confidence >= 0.80 && top.sub_cost_code_id) {
+                        const cb = row.querySelector('.uncat-select');
+                        if (cb) cb.checked = true;
+                    }
+
+                    applied++;
+                }
+
+                updateApplyButton();
+
+                if (typeof showToast === 'function') {
+                    showToast(`AI suggestions applied to ${applied} lines`, 'success');
+                }
+            } else {
+                if (typeof showToast === 'function') {
+                    showToast(data.message || 'Failed to get suggestions', 'error');
+                }
+            }
+        } catch (error) {
+            if (typeof showToast === 'function') {
+                showToast('Error: ' + error.message, 'error');
+            }
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'AI Suggest All';
+        }
+    }
+
+    async function applySelectedCategories() {
+        const rows = getSelectedRows();
+        if (rows.length === 0) return;
+
+        // Validate all selected rows have a SubCostCode
+        const missing = rows.filter(r => !r.sub_cost_code_id);
+        if (missing.length > 0) {
+            if (typeof showToast === 'function') {
+                showToast(`${missing.length} selected row(s) missing SubCostCode selection`, 'error');
+            }
+            return;
+        }
+
+        const btn = document.getElementById('btn-apply-selected');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Applying...';
+        }
+
+        try {
+            const response = await fetch('/api/v1/expense-categorization/apply-batch', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    categorizations: rows,
+                    push_to_qbo: true,
+                    realm_id: '',
+                }),
+            });
+
+            const data = await response.json();
+
+            if (data.status_code === 200 || data.status_code === 207) {
+                if (typeof showToast === 'function') {
+                    showToast(`Applied ${data.applied_count} categorizations`, 'success');
+                }
+                // Reload after a short delay to show updated data
+                setTimeout(() => window.location.reload(), 1500);
+            } else {
+                if (typeof showToast === 'function') {
+                    showToast(data.message || 'Failed to apply categorizations', 'error');
+                }
+            }
+        } catch (error) {
+            if (typeof showToast === 'function') {
+                showToast('Error: ' + error.message, 'error');
+            }
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                updateApplyButton();
+            }
+        }
+    }
 </script>
 {% endblock %}

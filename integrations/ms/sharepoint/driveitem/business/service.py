@@ -200,6 +200,30 @@ class MsDriveItemService:
             content_type
         )
 
+    def move_item(
+        self,
+        drive_public_id: str,
+        item_id: str,
+        new_parent_id: str,
+    ) -> dict:
+        """
+        Move a file or folder to a different parent folder.
+
+        Args:
+            drive_public_id: Public ID of the linked drive
+            item_id: MS Graph item ID of the item to move
+            new_parent_id: MS Graph item ID of the destination folder
+
+        Returns:
+            Dict with status_code, message, and moved item data
+        """
+        drive = self.drive_repo.read_by_public_id(drive_public_id)
+        if not drive:
+            return {"message": "Drive not found", "status_code": 404, "item": None}
+
+        from integrations.ms.sharepoint.external.client import move_item
+        return move_item(drive.drive_id, item_id, new_parent_id)
+
     def create_folder(
         self,
         drive_public_id: str,

@@ -77,6 +77,16 @@ def _build_user_message(
             parts.append(f"Attachment: {email_context['filename']}")
         parts.append("")
 
+    # Email body (approval context, project refs, descriptions)
+    body = email_context.get("body") if email_context else None
+    if body and body.strip():
+        body_text = body.strip()[:3000]
+        if len(body.strip()) > 3000:
+            body_text += "\n... [truncated]"
+        parts.append("=== EMAIL BODY ===")
+        parts.append(body_text)
+        parts.append("")
+
     # OCR content (truncated)
     if ocr_content:
         content = ocr_content[:6000]
@@ -212,6 +222,7 @@ def extract_from_ocr(
     attachment_filename: str = None,
     projects: list = None,
     sub_cost_codes: list = None,
+    email_body: str = None,
 ):
     """
     Extract bill fields from OCR content using the LangGraph agent.
@@ -224,6 +235,7 @@ def extract_from_ocr(
             "from_email": from_email,
             "subject": email_subject,
             "filename": attachment_filename,
+            "body": email_body,
         }
 
         state = initial_state(

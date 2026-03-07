@@ -311,11 +311,14 @@ def sync_local_to_qbo(
 
 def sync_qbo_term(resync_existing: bool = False) -> dict:
     """
-    Two-way sync for QBO Terms <-> PaymentTerm module.
-    
+    One-way sync for QBO Terms -> PaymentTerm module (QBO -> Local only).
+
     1. QBO -> Local: Fetch terms modified since last sync, store locally, sync to PaymentTerm
     2. Existing -> Module: Sync any existing QboTerm records that aren't mapped yet
-    3. Local -> QBO: Check for locally modified PaymentTerms, sync back to QboTerm
+
+    Note: Local -> QBO push is disabled in the batch sync process.
+    The sync_local_to_qbo function is preserved for one-time pushes
+    when a record is marked Complete.
     
     Args:
         resync_existing: If True, sync all existing QboTerm records to PaymentTerm
@@ -371,14 +374,10 @@ def sync_qbo_term(resync_existing: bool = False) -> dict:
             term_mapping_repo=term_mapping_repo,
         )
         
-        # Step 3: Sync from local to QBO (reverse sync)
-        local_to_qbo_result = sync_local_to_qbo(
-            realm_id=realm_id,
-            last_sync_time=last_sync_time,
-            qbo_term_service=qbo_term_service,
-            term_mapping_repo=term_mapping_repo,
-            qbo_term_repo=qbo_term_repo,
-        )
+        # Step 3: Local -> QBO push disabled in batch sync (one-way intake only).
+        # The sync_local_to_qbo function is preserved for one-time pushes
+        # when a record is marked Complete.
+        local_to_qbo_result = {"terms_pushed": 0}
         
         # Update Sync record
         end_time = datetime.now(timezone.utc)

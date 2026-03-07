@@ -91,6 +91,98 @@
             </div>
         </div>
 
+        <!-- Bill Processing Folders Section -->
+        <div class="company-detail-card">
+            <div class="company-detail-card-header">
+                <h5>Bill Processing Folders</h5>
+            </div>
+            <div class="company-detail-card-body">
+                {% if linked_drive %}
+                    <!-- Source Folder -->
+                    <div class="company-detail-row" style="margin-bottom: 1rem;">
+                        <div class="company-detail-label">Source Folder:</div>
+                        <div class="company-detail-value">
+                            {% if bill_source_folder %}
+                                <span>{{ bill_source_folder.name or 'Linked' }}</span>
+                                {% if bill_source_folder.web_url %}
+                                    <a href="{{ bill_source_folder.web_url }}" target="_blank" class="btn btn-sm btn-outline-primary" style="margin-left: 0.5rem;">Open</a>
+                                {% endif %}
+                                <button type="button" class="btn btn-danger btn-sm" style="margin-left: 0.25rem;" onclick="unlinkBillFolder('source')">Unlink</button>
+                            {% else %}
+                                <span class="text-muted">Not linked</span>
+                                <button type="button" class="btn btn-primary btn-sm" style="margin-left: 0.5rem;" onclick="openBillFolderPicker('source')">Link Folder</button>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <!-- Processed Folder -->
+                    <div class="company-detail-row">
+                        <div class="company-detail-label">Processed Folder:</div>
+                        <div class="company-detail-value">
+                            {% if bill_processed_folder %}
+                                <span>{{ bill_processed_folder.name or 'Linked' }}</span>
+                                {% if bill_processed_folder.web_url %}
+                                    <a href="{{ bill_processed_folder.web_url }}" target="_blank" class="btn btn-sm btn-outline-primary" style="margin-left: 0.5rem;">Open</a>
+                                {% endif %}
+                                <button type="button" class="btn btn-danger btn-sm" style="margin-left: 0.25rem;" onclick="unlinkBillFolder('processed')">Unlink</button>
+                            {% else %}
+                                <span class="text-muted">Not linked</span>
+                                <button type="button" class="btn btn-primary btn-sm" style="margin-left: 0.5rem;" onclick="openBillFolderPicker('processed')">Link Folder</button>
+                            {% endif %}
+                        </div>
+                    </div>
+                {% else %}
+                    <p class="text-muted">Link a cloud storage drive first to configure bill processing folders.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Expense Processing Folders Section -->
+        <div class="company-detail-card">
+            <div class="company-detail-card-header">
+                <h5>Expense Processing Folders</h5>
+            </div>
+            <div class="company-detail-card-body">
+                {% if linked_drive %}
+                    <!-- Source Folder -->
+                    <div class="company-detail-row" style="margin-bottom: 1rem;">
+                        <div class="company-detail-label">Source Folder:</div>
+                        <div class="company-detail-value">
+                            {% if expense_source_folder %}
+                                <span>{{ expense_source_folder.name or 'Linked' }}</span>
+                                {% if expense_source_folder.web_url %}
+                                    <a href="{{ expense_source_folder.web_url }}" target="_blank" class="btn btn-sm btn-outline-primary" style="margin-left: 0.5rem;">Open</a>
+                                {% endif %}
+                                <button type="button" class="btn btn-danger btn-sm" style="margin-left: 0.25rem;" onclick="unlinkExpenseFolder('source')">Unlink</button>
+                            {% else %}
+                                <span class="text-muted">Not linked</span>
+                                <button type="button" class="btn btn-primary btn-sm" style="margin-left: 0.5rem;" onclick="openExpenseFolderPicker('source')">Link Folder</button>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <!-- Processed Folder -->
+                    <div class="company-detail-row">
+                        <div class="company-detail-label">Processed Folder:</div>
+                        <div class="company-detail-value">
+                            {% if expense_processed_folder %}
+                                <span>{{ expense_processed_folder.name or 'Linked' }}</span>
+                                {% if expense_processed_folder.web_url %}
+                                    <a href="{{ expense_processed_folder.web_url }}" target="_blank" class="btn btn-sm btn-outline-primary" style="margin-left: 0.5rem;">Open</a>
+                                {% endif %}
+                                <button type="button" class="btn btn-danger btn-sm" style="margin-left: 0.25rem;" onclick="unlinkExpenseFolder('processed')">Unlink</button>
+                            {% else %}
+                                <span class="text-muted">Not linked</span>
+                                <button type="button" class="btn btn-primary btn-sm" style="margin-left: 0.5rem;" onclick="openExpenseFolderPicker('processed')">Link Folder</button>
+                            {% endif %}
+                        </div>
+                    </div>
+                {% else %}
+                    <p class="text-muted">Link a cloud storage drive first to configure expense processing folders.</p>
+                {% endif %}
+            </div>
+        </div>
+
         <div class="company-actions-card">
             <h6>Actions</h6>
             <div class="company-actions-list">
@@ -131,6 +223,34 @@
         </div>
     </div>
     
+    <!-- Bill Folder Picker Panel -->
+    <div class="aside-panel" id="bill-folder-picker-panel">
+        <div class="aside-panel-header">
+            <h5 id="bill-folder-picker-title">Select Folder</h5>
+            <button type="button" class="aside-close-btn" onclick="closeBillFolderPicker()">&times;</button>
+        </div>
+        <div class="aside-panel-body">
+            <div id="bill-folder-breadcrumbs" style="margin-bottom: 0.5rem; font-size: 0.85rem; color: var(--color-text-secondary);"></div>
+            <div id="bill-folder-results" class="aside-results-container">
+                <p class="text-muted">Loading...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Expense Folder Picker Panel -->
+    <div class="aside-panel" id="expense-folder-picker-panel">
+        <div class="aside-panel-header">
+            <h5 id="expense-folder-picker-title">Select Folder</h5>
+            <button type="button" class="aside-close-btn" onclick="closeExpenseFolderPicker()">&times;</button>
+        </div>
+        <div class="aside-panel-body">
+            <div id="expense-folder-breadcrumbs" style="margin-bottom: 0.5rem; font-size: 0.85rem; color: var(--color-text-secondary);"></div>
+            <div id="expense-folder-results" class="aside-results-container">
+                <p class="text-muted">Loading...</p>
+            </div>
+        </div>
+    </div>
+
     <!-- AI Copilot Panel -->
     {% include 'shared/partials/copilot.html' %}
 {% endblock %}
@@ -424,6 +544,347 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // ====================================================================
+        // Bill Folder Picker
+        // ====================================================================
+
+        let billFolderType = null; // 'source' or 'processed'
+        let billFolderDrivePublicId = null;
+        let billFolderNavStack = []; // [{item_id, name}]
+
+        function openBillFolderPicker(folderType) {
+            billFolderType = folderType;
+
+            // Close copilot if open
+            if (typeof closeCopilotPanel === 'function') closeCopilotPanel();
+
+            const panel = document.getElementById('bill-folder-picker-panel');
+            const sidebar = document.querySelector('.sidebar-right');
+            if (panel) panel.classList.add('aside-panel-open');
+            if (sidebar) sidebar.classList.add('sidebar-right-open');
+
+            const label = folderType === 'source' ? 'Source' : 'Processed';
+            document.getElementById('bill-folder-picker-title').textContent = 'Select ' + label + ' Folder';
+
+            // If linked_drive exists, use it to start browsing
+            {% if linked_drive %}
+                billFolderDrivePublicId = '{{ linked_drive.public_id }}';
+                billFolderNavStack = [{ item_id: null, name: '{{ linked_drive.name or "Drive" }}' }];
+                loadBillFolderContents(null);
+            {% else %}
+                document.getElementById('bill-folder-results').innerHTML = '<p class="text-muted">No drive linked.</p>';
+            {% endif %}
+        }
+
+        function closeBillFolderPicker() {
+            const panel = document.getElementById('bill-folder-picker-panel');
+            const sidebar = document.querySelector('.sidebar-right');
+            if (panel) panel.classList.remove('aside-panel-open');
+            if (sidebar) sidebar.classList.remove('sidebar-right-open');
+            billFolderType = null;
+            billFolderNavStack = [];
+        }
+
+        async function loadBillFolderContents(itemId) {
+            const container = document.getElementById('bill-folder-results');
+            container.innerHTML = '<p class="text-muted">Loading...</p>';
+            renderBillFolderBreadcrumbs();
+
+            let url;
+            if (itemId) {
+                url = `/api/v1/ms/sharepoint/driveitem/drive/${billFolderDrivePublicId}/browse/${itemId}`;
+            } else {
+                url = `/api/v1/ms/sharepoint/driveitem/drive/${billFolderDrivePublicId}/browse`;
+            }
+
+            try {
+                const response = await fetch(url, { method: 'GET', credentials: 'same-origin' });
+                const data = await response.json();
+
+                if (data.status_code !== 200) {
+                    container.innerHTML = `<p class="text-danger">${escapeHtml(data.message || 'Error')}</p>`;
+                    return;
+                }
+
+                const items = data.items || [];
+                const folders = items.filter(i => i.item_type === 'folder');
+
+                let html = '';
+
+                // "Link This Folder" button if we're inside a folder
+                if (itemId) {
+                    html += `<div style="margin-bottom: 0.75rem;">
+                        <button type="button" class="btn btn-primary btn-sm" onclick="linkBillFolder('${escapeHtml(itemId)}')">
+                            Link This Folder
+                        </button>
+                    </div>`;
+                }
+
+                if (folders.length > 0) {
+                    html += '<ul class="aside-results-list">';
+                    for (const folder of folders) {
+                        html += `
+                            <li class="aside-result-item" style="cursor: pointer;" onclick="navigateBillFolder('${escapeHtml(folder.item_id)}', '${escapeHtml(folder.name)}')">
+                                <div class="aside-result-info">
+                                    <div class="aside-result-name">📁 ${escapeHtml(folder.name)}</div>
+                                    <div class="aside-result-detail">${folder.child_count || 0} items</div>
+                                </div>
+                            </li>
+                        `;
+                    }
+                    html += '</ul>';
+                } else if (!itemId) {
+                    html += '<p class="text-muted">No folders found.</p>';
+                }
+
+                container.innerHTML = html;
+            } catch (error) {
+                container.innerHTML = `<p class="text-danger">Error: ${escapeHtml(error.message)}</p>`;
+            }
+        }
+
+        function navigateBillFolder(itemId, name) {
+            billFolderNavStack.push({ item_id: itemId, name: name });
+            loadBillFolderContents(itemId);
+        }
+
+        function billFolderNavigateTo(index) {
+            billFolderNavStack = billFolderNavStack.slice(0, index + 1);
+            const current = billFolderNavStack[billFolderNavStack.length - 1];
+            loadBillFolderContents(current.item_id);
+        }
+
+        function renderBillFolderBreadcrumbs() {
+            const container = document.getElementById('bill-folder-breadcrumbs');
+            let html = '';
+            for (let i = 0; i < billFolderNavStack.length; i++) {
+                if (i > 0) html += ' / ';
+                if (i < billFolderNavStack.length - 1) {
+                    html += `<a href="#" onclick="billFolderNavigateTo(${i}); return false;" style="color: var(--color-primary);">${escapeHtml(billFolderNavStack[i].name)}</a>`;
+                } else {
+                    html += `<strong>${escapeHtml(billFolderNavStack[i].name)}</strong>`;
+                }
+            }
+            container.innerHTML = html;
+        }
+
+        async function linkBillFolder(graphItemId) {
+            try {
+                const response = await fetch('/api/v1/ms/sharepoint/driveitem/connector/bill-folder', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        company_id: companyId,
+                        drive_public_id: billFolderDrivePublicId,
+                        graph_item_id: graphItemId,
+                        folder_type: billFolderType
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.status_code === 201 || data.status_code === 200) {
+                    closeBillFolderPicker();
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + (data.message || 'Failed to link folder'));
+                }
+            } catch (error) {
+                alert('Error linking folder: ' + error.message);
+            }
+        }
+
+        async function unlinkBillFolder(folderType) {
+            if (!confirm('Unlink this ' + folderType + ' folder?')) return;
+
+            try {
+                const response = await fetch(`/api/v1/ms/sharepoint/driveitem/connector/bill-folder/${companyId}/${folderType}`, {
+                    method: 'DELETE',
+                    credentials: 'same-origin'
+                });
+
+                const data = await response.json();
+
+                if (data.status_code === 200) {
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + (data.message || 'Failed to unlink folder'));
+                }
+            } catch (error) {
+                alert('Error unlinking folder: ' + error.message);
+            }
+        }
+
+        // ====================================================================
+        // Expense Folder Picker
+        // ====================================================================
+
+        let expenseFolderType = null;
+        let expenseFolderDrivePublicId = null;
+        let expenseFolderNavStack = [];
+
+        function openExpenseFolderPicker(folderType) {
+            expenseFolderType = folderType;
+
+            if (typeof closeCopilotPanel === 'function') closeCopilotPanel();
+
+            const panel = document.getElementById('expense-folder-picker-panel');
+            const sidebar = document.querySelector('.sidebar-right');
+            if (panel) panel.classList.add('aside-panel-open');
+            if (sidebar) sidebar.classList.add('sidebar-right-open');
+
+            const label = folderType === 'source' ? 'Source' : 'Processed';
+            document.getElementById('expense-folder-picker-title').textContent = 'Select ' + label + ' Folder';
+
+            {% if linked_drive %}
+                expenseFolderDrivePublicId = '{{ linked_drive.public_id }}';
+                expenseFolderNavStack = [{ item_id: null, name: '{{ linked_drive.name or "Drive" }}' }];
+                loadExpenseFolderContents(null);
+            {% else %}
+                document.getElementById('expense-folder-results').innerHTML = '<p class="text-muted">No drive linked.</p>';
+            {% endif %}
+        }
+
+        function closeExpenseFolderPicker() {
+            const panel = document.getElementById('expense-folder-picker-panel');
+            const sidebar = document.querySelector('.sidebar-right');
+            if (panel) panel.classList.remove('aside-panel-open');
+            if (sidebar) sidebar.classList.remove('sidebar-right-open');
+            expenseFolderType = null;
+            expenseFolderNavStack = [];
+        }
+
+        async function loadExpenseFolderContents(itemId) {
+            const container = document.getElementById('expense-folder-results');
+            container.innerHTML = '<p class="text-muted">Loading...</p>';
+            renderExpenseFolderBreadcrumbs();
+
+            let url;
+            if (itemId) {
+                url = `/api/v1/ms/sharepoint/driveitem/drive/${expenseFolderDrivePublicId}/browse/${itemId}`;
+            } else {
+                url = `/api/v1/ms/sharepoint/driveitem/drive/${expenseFolderDrivePublicId}/browse`;
+            }
+
+            try {
+                const response = await fetch(url, { method: 'GET', credentials: 'same-origin' });
+                const data = await response.json();
+
+                if (data.status_code !== 200) {
+                    container.innerHTML = `<p class="text-danger">${escapeHtml(data.message || 'Error')}</p>`;
+                    return;
+                }
+
+                const items = data.items || [];
+                const folders = items.filter(i => i.item_type === 'folder');
+
+                let html = '';
+
+                if (itemId) {
+                    html += `<div style="margin-bottom: 0.75rem;">
+                        <button type="button" class="btn btn-primary btn-sm" onclick="linkExpenseFolder('${escapeHtml(itemId)}')">
+                            Link This Folder
+                        </button>
+                    </div>`;
+                }
+
+                if (folders.length > 0) {
+                    html += '<ul class="aside-results-list">';
+                    for (const folder of folders) {
+                        html += `
+                            <li class="aside-result-item" style="cursor: pointer;" onclick="navigateExpenseFolder('${escapeHtml(folder.item_id)}', '${escapeHtml(folder.name)}')">
+                                <div class="aside-result-info">
+                                    <div class="aside-result-name">📁 ${escapeHtml(folder.name)}</div>
+                                    <div class="aside-result-detail">${folder.child_count || 0} items</div>
+                                </div>
+                            </li>
+                        `;
+                    }
+                    html += '</ul>';
+                } else if (!itemId) {
+                    html += '<p class="text-muted">No folders found.</p>';
+                }
+
+                container.innerHTML = html;
+            } catch (error) {
+                container.innerHTML = `<p class="text-danger">Error: ${escapeHtml(error.message)}</p>`;
+            }
+        }
+
+        function navigateExpenseFolder(itemId, name) {
+            expenseFolderNavStack.push({ item_id: itemId, name: name });
+            loadExpenseFolderContents(itemId);
+        }
+
+        function expenseFolderNavigateTo(index) {
+            expenseFolderNavStack = expenseFolderNavStack.slice(0, index + 1);
+            const current = expenseFolderNavStack[expenseFolderNavStack.length - 1];
+            loadExpenseFolderContents(current.item_id);
+        }
+
+        function renderExpenseFolderBreadcrumbs() {
+            const container = document.getElementById('expense-folder-breadcrumbs');
+            let html = '';
+            for (let i = 0; i < expenseFolderNavStack.length; i++) {
+                if (i > 0) html += ' / ';
+                if (i < expenseFolderNavStack.length - 1) {
+                    html += `<a href="#" onclick="expenseFolderNavigateTo(${i}); return false;" style="color: var(--color-primary);">${escapeHtml(expenseFolderNavStack[i].name)}</a>`;
+                } else {
+                    html += `<strong>${escapeHtml(expenseFolderNavStack[i].name)}</strong>`;
+                }
+            }
+            container.innerHTML = html;
+        }
+
+        async function linkExpenseFolder(graphItemId) {
+            try {
+                const response = await fetch('/api/v1/ms/sharepoint/driveitem/connector/expense-folder', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        company_id: companyId,
+                        drive_public_id: expenseFolderDrivePublicId,
+                        graph_item_id: graphItemId,
+                        folder_type: expenseFolderType
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.status_code === 201 || data.status_code === 200) {
+                    closeExpenseFolderPicker();
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + (data.message || 'Failed to link folder'));
+                }
+            } catch (error) {
+                alert('Error linking folder: ' + error.message);
+            }
+        }
+
+        async function unlinkExpenseFolder(folderType) {
+            if (!confirm('Unlink this ' + folderType + ' folder?')) return;
+
+            try {
+                const response = await fetch(`/api/v1/ms/sharepoint/driveitem/connector/expense-folder/${companyId}/${folderType}`, {
+                    method: 'DELETE',
+                    credentials: 'same-origin'
+                });
+
+                const data = await response.json();
+
+                if (data.status_code === 200) {
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + (data.message || 'Failed to unlink folder'));
+                }
+            } catch (error) {
+                alert('Error unlinking folder: ' + error.message);
+            }
         }
     </script>
 {% endblock %}

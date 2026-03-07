@@ -439,10 +439,13 @@ def sync_local_to_qbo(
 
 def sync_qbo_item() -> dict:
     """
-    Two-way sync for QBO Items <-> CostCode/SubCostCode modules.
-    
+    One-way sync for QBO Items -> CostCode/SubCostCode modules (QBO -> Local only).
+
     1. QBO -> Local: Fetch items modified since last sync, store locally, sync to CostCode/SubCostCode
-    2. Local -> QBO: Check for locally modified CostCodes/SubCostCodes, sync back to QboItem
+
+    Note: Local -> QBO push is disabled in the batch sync process.
+    The sync_local_to_qbo function is preserved for one-time pushes
+    when a record is marked Complete.
     """
     try:
         # Create start time variable
@@ -493,17 +496,10 @@ def sync_qbo_item() -> dict:
             sub_cost_code_connector=sub_cost_code_connector,
         )
         
-        # Step 2: Sync from local to QBO (reverse sync)
-        local_to_qbo_result = sync_local_to_qbo(
-            realm_id=realm_id,
-            last_sync_time=last_sync_time,
-            qbo_item_service=qbo_item_service,
-            cost_code_service=cost_code_service,
-            sub_cost_code_service=sub_cost_code_service,
-            cost_code_mapping_repo=cost_code_mapping_repo,
-            sub_cost_code_mapping_repo=sub_cost_code_mapping_repo,
-            qbo_item_repo=qbo_item_repo,
-        )
+        # Step 2: Local -> QBO push disabled in batch sync (one-way intake only).
+        # The sync_local_to_qbo function is preserved for one-time pushes
+        # when a record is marked Complete.
+        local_to_qbo_result = {"cost_codes_pushed": 0, "sub_cost_codes_pushed": 0}
         
         # Update Sync record
         end_time = datetime.now(timezone.utc)

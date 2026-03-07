@@ -89,6 +89,9 @@ class BillExtractionResult:
     bill_number_confidence: float = 0.0
     date_confidence: float = 0.0
     amount_confidence: float = 0.0
+    memo_confidence: float = 0.0
+    project_confidence: float = 0.0
+    sub_cost_code_confidence: float = 0.0
     overall_confidence: float = 0.0
 
     # --- Multi-candidate vendor list (for DB matching) ---

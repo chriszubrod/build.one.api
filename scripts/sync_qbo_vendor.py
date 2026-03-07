@@ -231,10 +231,13 @@ def sync_local_to_qbo(
 
 def sync_qbo_vendor() -> dict:
     """
-    Two-way sync for QBO Vendors <-> Vendor module.
-    
+    One-way sync for QBO Vendors -> Vendor module (QBO -> Local only).
+
     1. QBO -> Local: Fetch vendors modified since last sync, store locally, sync to Vendor
-    2. Local -> QBO: Check for locally modified Vendors, sync back to QboVendor
+
+    Note: Local -> QBO push is disabled in the batch sync process.
+    The sync_local_to_qbo function is preserved for one-time pushes
+    when a record is marked Complete.
     """
     try:
         # Create start time variable
@@ -280,14 +283,10 @@ def sync_qbo_vendor() -> dict:
             vendor_connector=vendor_connector,
         )
         
-        # Step 2: Sync from local to QBO (reverse sync)
-        local_to_qbo_result = sync_local_to_qbo(
-            realm_id=realm_id,
-            last_sync_time=last_sync_time,
-            qbo_vendor_service=qbo_vendor_service,
-            vendor_mapping_repo=vendor_mapping_repo,
-            qbo_vendor_repo=qbo_vendor_repo,
-        )
+        # Step 2: Local -> QBO push disabled in batch sync (one-way intake only).
+        # The sync_local_to_qbo function is preserved for one-time pushes
+        # when a record is marked Complete.
+        local_to_qbo_result = {"vendors_pushed": 0}
         
         # Update Sync record
         end_time = datetime.now(timezone.utc)

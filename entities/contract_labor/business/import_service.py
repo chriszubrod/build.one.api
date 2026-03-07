@@ -16,6 +16,7 @@ from entities.contract_labor.business.model import ContractLabor
 from entities.contract_labor.persistence.repo import ContractLaborRepository
 from entities.vendor.business.service import VendorService
 from entities.project.business.service import ProjectService
+from entities.contract_labor.business.bill_service import VENDOR_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -537,15 +538,23 @@ class ContractLaborImportService:
         
         return None
 
-    def _get_rate_for_vendor(self, vendor_id: int) -> Tuple[Optional[Decimal], Optional[Decimal]]:
+    def _get_rate_for_vendor(self, vendor_id: int, vendor_name: Optional[str] = None) -> Tuple[Optional[Decimal], Optional[Decimal]]:
         """
         Get the carry-forward rate and markup for a vendor.
-        First checks cache, then database.
+        First checks cache, then database, then falls back to VENDOR_CONFIG.
         """
         if vendor_id in self._rate_cache:
             return self._rate_cache[vendor_id]
-        
+
         hourly_rate, markup = self.repo.get_last_rate_for_vendor(vendor_id)
+
+        # Fall back to VENDOR_CONFIG if no historical rate found
+        if hourly_rate is None and vendor_name:
+            config = VENDOR_CONFIG.get(vendor_name)
+            if config:
+                hourly_rate = config.get('rate')
+                markup = config.get('markup')
+
         self._rate_cache[vendor_id] = (hourly_rate, markup)
         return (hourly_rate, markup)
 

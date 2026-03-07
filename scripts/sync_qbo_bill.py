@@ -634,14 +634,18 @@ def sync_qbo_bill(
     end_date: Optional[str] = None,
     skip_sync_record_update: bool = False,
     sync_attachments: bool = True,
-    pull_only: bool = False,
+    pull_only: bool = True,
     dry_run: bool = False,
 ) -> dict:
     """
-    Two-way sync for QBO Bills <-> Bill module.
+    One-way sync for QBO Bills -> Bill module (QBO -> Local only, by default).
 
     1. QBO -> Local: Fetch bills modified since last sync, store locally, sync to Bill
-    2. Local -> QBO: Check for locally modified Bills, sync back to QboBill (skip with --pull-only)
+
+    Note: Local -> QBO push is disabled by default (pull_only=True).
+    The sync_local_to_qbo function is preserved for one-time pushes
+    when a Bill is marked Complete. Use --push to explicitly enable
+    the push phase if needed.
 
     Args:
         start_date: Optional start date (YYYY-MM-DD) for filtering bills by TxnDate.
@@ -871,7 +875,14 @@ allowing you to track progress through historical batch imports.
     parser.add_argument(
         '--pull-only',
         action='store_true',
-        help='Only pull from QBO to local. Skip the push (local -> QBO) phase.'
+        default=True,
+        help='Only pull from QBO to local. Skip the push (local -> QBO) phase. This is now the default.'
+    )
+
+    parser.add_argument(
+        '--push',
+        action='store_true',
+        help='Explicitly enable push (local -> QBO) phase. Overrides the default pull-only behavior.'
     )
 
     parser.add_argument(
@@ -912,12 +923,15 @@ if __name__ == "__main__":
             print(f"Error: start-date ({args.start_date}) must be before or equal to end-date ({args.end_date}).")
             sys.exit(1)
     
+    # --push overrides the default pull-only behavior
+    pull_only = not args.push
+
     result = sync_qbo_bill(
         start_date=args.start_date,
         end_date=args.end_date,
         skip_sync_record_update=args.skip_sync_update,
         sync_attachments=not args.skip_attachments,
-        pull_only=args.pull_only,
+        pull_only=pull_only,
         dry_run=args.dry_run,
     )
     

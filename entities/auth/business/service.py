@@ -279,28 +279,31 @@ class AuthService:
 
     def update_by_public_id(self, *, public_id: str, auth) -> Auth:
         _auth = self.read_by_public_id(public_id=public_id)
-        if _auth:
-            _auth.row_version = auth.row_version
-            _auth.username = auth.username
-            if getattr(auth, "password", None):
-                _auth.password_hash = _hash_password(auth.password)
-            _auth.user_id = auth.user_id
+        if not _auth:
+            raise ValueError(f"Auth with public ID {public_id} not found.")
+        _auth.row_version = auth.row_version
+        _auth.username = auth.username
+        if getattr(auth, "password", None):
+            _auth.password_hash = _hash_password(auth.password)
+        _auth.user_id = auth.user_id
 
         return self.repo.update_by_id(_auth)
 
     def update_user_id_by_public_id(self, *, public_id: str, user_public_id: str) -> Auth:
         _auth = self.read_by_public_id(public_id=public_id)
-        if _auth:
-            _user = UserService().read_by_public_id(public_id=user_public_id)
-            if _user:
-                _auth.user_id = _user.id
-            else:
-                raise ValueError(f"User with public ID {user_public_id} not found.")
+        if not _auth:
+            raise ValueError(f"Auth with public ID {public_id} not found.")
+        _user = UserService().read_by_public_id(public_id=user_public_id)
+        if not _user:
+            raise ValueError(f"User with public ID {user_public_id} not found.")
+        _auth.user_id = _user.id
         return self.repo.update_by_id(_auth)
 
 
     def delete_by_public_id(self, *, public_id: str) -> Auth:
         _auth = self.read_by_public_id(public_id=public_id)
+        if not _auth:
+            raise ValueError(f"Auth with public ID {public_id} not found.")
         return self.repo.delete_by_id(_auth.id)
 
     def _build_token_payload(
@@ -410,10 +413,9 @@ class AuthService:
         refresh_token, _ = self._issue_refresh_token(auth=auth)
         return refresh_token
 
-    def login(self, *, username: str, password: str) -> Auth:
+    def login(self, *, username: str, password: str) -> Tuple[Auth, AuthToken, RefreshToken]:
         """
-        Login a auth.
-        Returns: (auth, access_token, refresh_token)
+        Authenticate and return auth record with access and refresh tokens.
         """
         auth = self.read_by_username(username=username)
         
@@ -442,10 +444,9 @@ class AuthService:
         
         return auth, access_token, refresh_token
 
-    def signup(self, *, username: str, password: str, confirm_password: str) -> Auth:
+    def signup(self, *, username: str, password: str, confirm_password: str) -> Tuple[Auth, AuthToken, RefreshToken]:
         """
-        Signup a auth.
-        Returns: (auth, access_token, refresh_token)
+        Create a new account and return auth record with access and refresh tokens.
         """
         if password != confirm_password:
             raise ValueError("Passwords do not match.")

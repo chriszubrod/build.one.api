@@ -154,18 +154,17 @@ class AuthRepository:
             logger.error(f"Error during update auth by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[Auth]:
+    def delete_by_id(self, id: int) -> Optional[Auth]:
         """
-        Delete auth by ID with optimistic concurrency control.
+        Hard delete auth by ID.
 
-        Marks a auth as deleted using the DeleteAuthById stored procedure.
-        Uses row version for optimistic concurrency control to prevent conflicts.
+        Permanently removes an auth record using the DeleteAuthById stored procedure.
 
         Args:
-            id: Auth unique identifier
+            id: Auth internal identifier
 
         Returns:
-            Soft deleted Auth object if successful, None if not found or version mismatch
+            Deleted Auth object if found, None otherwise
 
         Raises:
             DatabaseError: If database operation fails

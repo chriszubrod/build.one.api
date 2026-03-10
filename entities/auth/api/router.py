@@ -1,6 +1,5 @@
 # Python Standard Library Imports
 from typing import Optional
-import hmac
 import secrets
 
 # Third-party Imports
@@ -11,7 +10,6 @@ from config import Settings
 from entities.auth.api.schemas import (
     AuthCreate,
     AuthUpdate,
-    AuthUpdateUserId,
     AuthLogin,
     AuthSignup,
     AuthRefreshRequest
@@ -19,6 +17,10 @@ from entities.auth.api.schemas import (
 from entities.auth.business.service import (
     AuthService,
     get_current_user_api,
+    CSRF_COOKIE_NAME,
+    CSRF_HEADER_NAME,
+    UNSAFE_METHODS,
+    _require_csrf,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["auth"])
@@ -26,9 +28,6 @@ service = AuthService()
 
 ACCESS_COOKIE_NAME = "token.access_token"
 REFRESH_COOKIE_NAME = "token.refresh_token"
-CSRF_COOKIE_NAME = "token.csrf"
-CSRF_HEADER_NAME = "X-CSRF-Token"
-UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def _secure_cookie_enabled() -> bool:
@@ -76,17 +75,6 @@ def _clear_auth_cookies(*, response: Response) -> None:
     response.delete_cookie(CSRF_COOKIE_NAME, path="/")
 
 
-def _require_csrf(request: Request) -> None:
-    if request.method.upper() not in UNSAFE_METHODS:
-        return
-    csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME)
-    csrf_header = request.headers.get(CSRF_HEADER_NAME)
-    if not csrf_cookie or not csrf_header:
-        raise HTTPException(status_code=403, detail="CSRF token missing or invalid.")
-    if not hmac.compare_digest(csrf_cookie, csrf_header):
-        raise HTTPException(status_code=403, detail="CSRF token missing or invalid.")
-
-
 @router.post("/create/auth")
 def create_auth_router(body: AuthCreate, current_user: dict = Depends(get_current_user_api)):
     """
@@ -107,40 +95,51 @@ def get_auth_by_public_id_router(public_id: str, current_user: dict = Depends(ge
     if current_user.get("sub") != public_id:
         raise HTTPException(status_code=403, detail="Forbidden")
     auth = service.read_by_public_id(public_id=public_id)
+    if not auth:
+        raise HTTPException(status_code=404, detail="Auth not found.")
     return auth.to_dict()
 
 
 @router.put("/update/auth/{public_id}")
 def update_auth_by_id_router(public_id: str, body: AuthUpdate, current_user: dict = Depends(get_current_user_api)):
     """
-    Update a auth by ID.
+    Update an auth by public ID.
     """
     if current_user.get("sub") != public_id:
         raise HTTPException(status_code=403, detail="Forbidden")
-    auth = service.update_by_public_id(public_id=public_id, auth=body)
-    return auth.to_dict()
+    try:
+        auth = service.update_by_public_id(public_id=public_id, auth=body)
+        return auth.to_dict()
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.put("/update/auth/{public_id}/user-public-id/{user_public_id}")
 def update_auth_user_id_router(public_id: str, user_public_id: str, current_user: dict = Depends(get_current_user_api)):
     """
-    Update a auth user ID by public ID.
+    Update an auth user ID by public ID.
     """
     if current_user.get("sub") != public_id:
         raise HTTPException(status_code=403, detail="Forbidden")
-    auth = service.update_user_id_by_public_id(public_id=public_id, user_public_id=user_public_id)
-    return auth.to_dict()
+    try:
+        auth = service.update_user_id_by_public_id(public_id=public_id, user_public_id=user_public_id)
+        return auth.to_dict()
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.delete("/delete/auth/{public_id}")
 def delete_auth_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
     """
-    Soft delete a auth by ID.
+    Delete an auth by public ID.
     """
     if current_user.get("sub") != public_id:
         raise HTTPException(status_code=403, detail="Forbidden")
-    auth = service.delete_by_public_id(public_id=public_id)
-    return auth.to_dict()
+    try:
+        auth = service.delete_by_public_id(public_id=public_id)
+        return auth.to_dict()
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post("/auth/login")
@@ -157,13 +156,11 @@ def login_auth_router(body: AuthLogin, response: Response):
         return {
             "auth": auth.to_dict(),
             "token": access_token.to_dict(),
-            "refresh_token": refresh_token.to_dict()
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        # Catch all other exceptions (database errors, etc.) and return JSON
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Login failed.")
 
 
 @router.post("/signup/auth")
@@ -181,7 +178,6 @@ def signup_auth_router(body: AuthSignup, response: Response):
         return {
             "auth": auth.to_dict(),
             "token": access_token.to_dict(),
-            "refresh_token": refresh_token.to_dict()
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -207,11 +203,10 @@ def refresh_token_router(request: Request, response: Response, body: Optional[Au
         _set_auth_cookies(response=response, access_token=access_token, refresh_token=refresh_token)
         return {
             "token": access_token.to_dict(),
-            "refresh_token": refresh_token.to_dict()
         }
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Token refresh failed.")

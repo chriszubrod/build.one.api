@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     access_token_expire_seconds: int
     refresh_token_expire_seconds: int
     iterations: int
+    signup_registration_code: Optional[str] = None
 
     # Encryption
     encryption_key: Optional[str] = None

@@ -26,7 +26,12 @@ class AuthSignup(BaseModel):
     username: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=8, max_length=255)
     confirm_password: str = Field(min_length=8, max_length=255)
+    registration_code: str = Field(min_length=1, max_length=255)
 
 
 class AuthRefreshRequest(BaseModel):
     refresh_token: Optional[str] = Field(default=None, description="Refresh token (optional when sent via cookie)")
+
+
+class MobileRefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=1, description="Refresh token (required for mobile clients)")

@@ -12,7 +12,8 @@ from entities.auth.api.schemas import (
     AuthUpdate,
     AuthLogin,
     AuthSignup,
-    AuthRefreshRequest
+    AuthRefreshRequest,
+    MobileRefreshRequest
 )
 from entities.auth.business.service import (
     AuthService,
@@ -172,7 +173,8 @@ def signup_auth_router(body: AuthSignup, response: Response):
         auth, access_token, refresh_token = service.signup(
             username=body.username,
             password=body.password,
-            confirm_password=body.confirm_password
+            confirm_password=body.confirm_password,
+            registration_code=body.registration_code
         )
         _set_auth_cookies(response=response, access_token=access_token, refresh_token=refresh_token)
         return {
@@ -210,3 +212,60 @@ def refresh_token_router(request: Request, response: Response, body: Optional[Au
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail="Token refresh failed.")
+
+
+# ---------------------------------------------------------------------------
+# Mobile endpoints — token-based (no cookies, no CSRF)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/mobile/auth/login")
+def mobile_login_router(body: AuthLogin):
+    """
+    Mobile login. Returns access and refresh tokens in the response body.
+    Client stores tokens in secure device storage (e.g. iOS Keychain).
+    """
+    try:
+        auth, access_token, refresh_token = service.login(
+            username=body.username,
+            password=body.password
+        )
+        return {
+            "auth": auth.to_dict(),
+            "token": access_token.to_dict(),
+            "refresh_token": refresh_token.to_dict(),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Login failed.")
+
+
+@router.post("/mobile/auth/refresh")
+def mobile_refresh_router(body: MobileRefreshRequest):
+    """
+    Mobile token refresh. Accepts refresh token in request body,
+    returns new access and refresh tokens (token rotation).
+    """
+    try:
+        access_token, refresh_token = service.refresh_access_token(
+            refresh_token=body.refresh_token
+        )
+        return {
+            "token": access_token.to_dict(),
+            "refresh_token": refresh_token.to_dict(),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Token refresh failed.")
+
+
+@router.post("/mobile/auth/logout")
+def mobile_logout_router(body: MobileRefreshRequest, current_user: dict = Depends(get_current_user_api)):
+    """
+    Mobile logout. Revokes the refresh token server-side.
+    Client should discard both tokens from secure storage.
+    """
+    service.revoke_refresh_token(refresh_token=body.refresh_token)
+    return {"message": "Logged out."}

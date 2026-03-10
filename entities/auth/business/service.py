@@ -444,13 +444,20 @@ class AuthService:
         
         return auth, access_token, refresh_token
 
-    def signup(self, *, username: str, password: str, confirm_password: str) -> Tuple[Auth, AuthToken, RefreshToken]:
+    def signup(self, *, username: str, password: str, confirm_password: str, registration_code: str) -> Tuple[Auth, AuthToken, RefreshToken]:
         """
         Create a new account and return auth record with access and refresh tokens.
+        Requires a valid registration code to prevent open self-registration.
         """
+        settings = Settings()
+        if not settings.signup_registration_code:
+            raise ValueError("Registration is currently disabled.")
+        if not hmac.compare_digest(registration_code, settings.signup_registration_code):
+            raise ValueError("Invalid registration code.")
+
         if password != confirm_password:
             raise ValueError("Passwords do not match.")
-        
+
         _user = self.read_by_username(username=username)
         if _user:
             raise ValueError("Username already exists.")

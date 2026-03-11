@@ -6,11 +6,14 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from entities.sub_cost_code.business.service import SubCostCodeService
+from entities.sub_cost_code.business.alias_service import SubCostCodeAliasService
 from entities.cost_code.business.service import CostCodeService
 from entities.auth.business.service import get_current_user_web
+from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
+from integrations.intuit.qbo.item.business.service import QboItemService
 
 router = APIRouter(prefix="/sub-cost-code", tags=["web", "sub-cost-code"])
-templates = Jinja2Templates(directory="templates/sub_cost_code")
+templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
@@ -20,11 +23,12 @@ async def list_sub_cost_codes(request: Request, current_user: dict = Depends(get
     """
     sub_cost_codes = SubCostCodeService().read_all()
     return templates.TemplateResponse(
-        "list.html",
+        "sub_cost_code/list.html",
         {
             "request": request,
             "sub_cost_codes": sub_cost_codes,
             "current_user": current_user,
+            "current_path": request.url.path,
         }
     )
 
@@ -36,11 +40,12 @@ async def create_sub_cost_code(request: Request, current_user: dict = Depends(ge
     """
     cost_codes = CostCodeService().read_all()
     return templates.TemplateResponse(
-        "create.html",
+        "sub_cost_code/create.html",
         {
             "request": request,
             "cost_codes": cost_codes,
-            "current_user": current_user
+            "current_user": current_user,
+            "current_path": request.url.path,
         }
     )
 
@@ -52,13 +57,24 @@ async def view_sub_cost_code(request: Request, public_id: str, current_user: dic
     """
     sub_cost_code = SubCostCodeService().read_by_public_id(public_id=public_id)
     cost_code = CostCodeService().read_by_id(id=sub_cost_code.cost_code_id)
+    aliases = SubCostCodeAliasService().read_by_sub_cost_code_id(sub_cost_code_id=sub_cost_code.id)
+
+    # Load linked QBO Item if mapping exists
+    qbo_item = None
+    qbo_mapping = ItemSubCostCodeConnector().get_mapping_by_sub_cost_code_id(sub_cost_code.id)
+    if qbo_mapping:
+        qbo_item = QboItemService().read_by_id(qbo_mapping.qbo_item_id)
+
     return templates.TemplateResponse(
-        "view.html",
+        "sub_cost_code/view.html",
         {
             "request": request,
             "sub_cost_code": sub_cost_code.to_dict(),
             "cost_code": cost_code.to_dict(),
+            "aliases": [a.to_dict() for a in aliases],
+            "qbo_item": qbo_item.to_dict() if qbo_item else None,
             "current_user": current_user,
+            "current_path": request.url.path,
         }
     )
 
@@ -70,12 +86,15 @@ async def edit_sub_cost_code(request: Request, public_id: str, current_user: dic
     """
     cost_codes = CostCodeService().read_all()
     sub_cost_code = SubCostCodeService().read_by_public_id(public_id=public_id)
+    aliases = SubCostCodeAliasService().read_by_sub_cost_code_id(sub_cost_code_id=sub_cost_code.id)
     return templates.TemplateResponse(
-        "edit.html",
+        "sub_cost_code/edit.html",
         {
             "request": request,
             "sub_cost_code": sub_cost_code.to_dict(),
             "cost_codes": cost_codes,
+            "aliases": [a.to_dict() for a in aliases],
             "current_user": current_user,
+            "current_path": request.url.path,
         }
     )

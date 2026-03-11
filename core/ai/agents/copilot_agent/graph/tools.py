@@ -516,7 +516,7 @@ def create_bill_from_extraction(
         total_amount: Total bill amount.
         memo: Optional memo or description for the bill.
         payment_term_public_id: Optional public ID of the payment term.
-        line_items: Line items for the bill. Each item: {description, amount, quantity?, project_public_id?}
+        line_items: Line items for the bill. Each item: {description, amount, quantity?, project_public_id?, sub_cost_code_id?}
     """
     from decimal import Decimal
     from entities.bill.business.service import BillService
@@ -542,6 +542,7 @@ def create_bill_from_extraction(
     for li in line_items or []:
         item = line_item_service.create(
             bill_public_id=bill.public_id,
+            sub_cost_code_id=li.get("sub_cost_code_id"),
             description=li.get("description"),
             amount=Decimal(str(li["amount"])) if li.get("amount") else None,
             quantity=li.get("quantity"),

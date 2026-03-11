@@ -67,6 +67,60 @@
             </div>
         </div>
 
+        <div class="sub-cost-code-detail-card" style="margin-top: 1.5rem;">
+            <div class="sub-cost-code-detail-card-header">
+                <h5>Aliases</h5>
+            </div>
+            <div class="sub-cost-code-detail-card-body">
+                {% if aliases %}
+                    {% for alias in aliases %}
+                        <div class="sub-cost-code-detail-row">
+                            <div class="sub-cost-code-detail-value" style="flex: 1;">{{ alias.alias }}</div>
+                            <div class="sub-cost-code-detail-value" style="flex: 0 0 auto; color: var(--text-secondary, #6c757d); font-size: 0.85rem;">{{ alias.source or '' }}</div>
+                        </div>
+                    {% endfor %}
+                {% else %}
+                    <p style="color: var(--text-secondary, #6c757d); margin: 0;">No aliases defined.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="sub-cost-code-detail-card" style="margin-top: 1.5rem;">
+            <div class="sub-cost-code-detail-card-header">
+                <h5>Intuit QBO Item</h5>
+            </div>
+            <div class="sub-cost-code-detail-card-body">
+                {% if qbo_item %}
+                    <div class="sub-cost-code-detail-row">
+                        <div class="sub-cost-code-detail-label">Name:</div>
+                        <div class="sub-cost-code-detail-value">{{ qbo_item.name or 'Not specified' }}</div>
+                    </div>
+                    <div class="sub-cost-code-detail-row">
+                        <div class="sub-cost-code-detail-label">Fully Qualified Name:</div>
+                        <div class="sub-cost-code-detail-value">{{ qbo_item.fully_qualified_name or 'Not specified' }}</div>
+                    </div>
+                    <div class="sub-cost-code-detail-row">
+                        <div class="sub-cost-code-detail-label">QBO ID:</div>
+                        <div class="sub-cost-code-detail-value"><code>{{ qbo_item.qbo_id or 'Not available' }}</code></div>
+                    </div>
+                    <div class="sub-cost-code-detail-row">
+                        <div class="sub-cost-code-detail-label">Type:</div>
+                        <div class="sub-cost-code-detail-value">{{ qbo_item.type or 'Not specified' }}</div>
+                    </div>
+                    <div class="sub-cost-code-detail-row">
+                        <div class="sub-cost-code-detail-label">Active:</div>
+                        <div class="sub-cost-code-detail-value">{{ 'Yes' if qbo_item.active else 'No' }}</div>
+                    </div>
+                    <div class="sub-cost-code-detail-row">
+                        <div class="sub-cost-code-detail-label">Description:</div>
+                        <div class="sub-cost-code-detail-value">{{ qbo_item.description or 'Not specified' }}</div>
+                    </div>
+                {% else %}
+                    <p style="color: var(--text-secondary, #6c757d); margin: 0;">No linked QBO Item.</p>
+                {% endif %}
+            </div>
+        </div>
+
         <div class="sub-cost-code-actions-card">
             <h6>Actions</h6>
             <div class="sub-cost-code-actions-list">

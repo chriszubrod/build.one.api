@@ -1,0 +1,59 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Roles - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/role.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="role-page-header">
+        <h1>Roles</h1>
+        <a href="/role/create" class="btn btn-primary">Add Role</a>
+    </div>
+
+    {% if roles %}
+        <div class="role-grid">
+            {% for role in roles %}
+            <div class="role-card">
+                <div class="role-card-body">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
+                        <h5 class="role-card-title">
+                            {{ role.name or 'Unnamed Role' }}
+                        </h5>
+                    </div>
+                    <div class="role-metadata">
+                        <div class="role-metadata-item">
+                            <span>Created: {{ role.created_datetime or 'Unknown' }}</span>
+                        </div>
+                        <div class="role-metadata-item">
+                            <span>Modified: {{ role.modified_datetime or 'Unknown' }}</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="role-card-footer">
+                    <div class="role-btn-group">
+                        <a href="/role/{{ role.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
+                        <a href="/role/{{ role.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="role-empty-state">
+            <div class="role-empty-state-icon">
+                <i class="fas fa-shield-alt"></i>
+            </div>
+            <h3>No Roles Found</h3>
+            <p>Create your first role to get started.</p>
+            <a href="/role/create" class="btn btn-primary">Create Role</a>
+        </div>
+    {% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/auth.js"></script>
+{% endblock %}

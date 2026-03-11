@@ -22,6 +22,7 @@ from entities.bill_line_item_attachment.business.service import BillLineItemAtta
 from entities.payment_term.business.service import PaymentTermService
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
+from entities.sub_cost_code.business.alias_service import SubCostCodeAliasService
 from entities.vendor.business.service import VendorService
 from integrations.azure.ai.document_intelligence import AzureDocumentIntelligence
 from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
@@ -176,10 +177,11 @@ def _resolve_vendor(vendor_name: str, vendors: list) -> Optional[str]:
     return best_public_id
 
 
-def _resolve_sub_cost_code(raw: str, sub_cost_codes: list) -> Optional[int]:
+def _resolve_sub_cost_code(raw: str, sub_cost_codes: list, aliases: list = None) -> Optional[int]:
     """
     Match sub cost code number from filename to database.
     Normalizes decimal format: 18.1 -> 18.01 before matching.
+    Falls back to alias matching if direct number match fails.
     Returns sub_cost_code.id or None.
     """
     if not raw:
@@ -189,10 +191,21 @@ def _resolve_sub_cost_code(raw: str, sub_cost_codes: list) -> Optional[int]:
     if not normalized:
         return None
 
+    # Direct number match
     for scc in sub_cost_codes:
         scc_number = getattr(scc, 'number', None)
         if scc_number and str(scc_number).strip() == normalized:
             return scc.id
+
+    # Alias fallback
+    if aliases:
+        raw_stripped = raw.strip()
+        for alias_entry in aliases:
+            alias_value = getattr(alias_entry, 'alias', None)
+            if alias_value and alias_value.strip() == normalized:
+                return alias_entry.sub_cost_code_id
+            if alias_value and alias_value.strip() == raw_stripped:
+                return alias_entry.sub_cost_code_id
 
     return None
 
@@ -274,6 +287,7 @@ class BillFolderProcessor:
         projects = self.project_service.read_all()
         vendors = self.vendor_service.read_all()
         sub_cost_codes = self.sub_cost_code_service.read_all()
+        sub_cost_code_aliases = SubCostCodeAliasService().read_all()
 
         # Look up "Due on receipt" payment term
         payment_term = self.payment_term_service.read_by_name("Due on receipt")
@@ -291,6 +305,7 @@ class BillFolderProcessor:
                     projects=projects,
                     vendors=vendors,
                     sub_cost_codes=sub_cost_codes,
+                    sub_cost_code_aliases=sub_cost_code_aliases,
                     tenant_id=tenant_id,
                     payment_term_public_id=payment_term_public_id,
                     result=result,
@@ -341,6 +356,7 @@ class BillFolderProcessor:
         projects: list,
         vendors: list,
         sub_cost_codes: list,
+        sub_cost_code_aliases: list,
         tenant_id: int,
         payment_term_public_id: Optional[str],
         result: ProcessingResult,
@@ -360,7 +376,7 @@ class BillFolderProcessor:
         if parsed.vendor_name:
             parsed.vendor_public_id = _resolve_vendor(parsed.vendor_name, vendors)
         if parsed.sub_cost_code_raw:
-            parsed.sub_cost_code_id = _resolve_sub_cost_code(parsed.sub_cost_code_raw, sub_cost_codes)
+            parsed.sub_cost_code_id = _resolve_sub_cost_code(parsed.sub_cost_code_raw, sub_cost_codes, sub_cost_code_aliases)
 
         # Step 2: Download file
         content_result = sp_client.get_drive_item_content(drive_id, file_item_id)

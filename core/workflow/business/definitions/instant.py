@@ -74,6 +74,7 @@ INSTANT_ENTITIES = [
     
     # User management
     "user",
+    "role",
     "user_role",
     "role_module",
     

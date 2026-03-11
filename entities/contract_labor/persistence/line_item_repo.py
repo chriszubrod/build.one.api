@@ -196,7 +196,6 @@ class ContractLaborLineItemRepository:
                         "Markup": float(markup) if markup is not None else None,
                         "Price": float(price) if price is not None else None,
                         "IsBillable": is_billable,
-                        "BillLineItemId": bill_line_item_id,
                     },
                 )
                 row = cursor.fetchone()

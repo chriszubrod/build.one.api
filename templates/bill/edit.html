@@ -1887,7 +1887,7 @@
 
         function validateBillForm() {
             const errors = [];
-            
+
             if (!document.getElementById('vendor_public_id').value) {
                 errors.push('Vendor is required');
             }
@@ -1900,7 +1900,25 @@
             if (!document.getElementById('bill_number').value.trim()) {
                 errors.push('Bill Number is required');
             }
-            
+
+            // Validate that all saved line items have a Sub Cost Code
+            const savedForms = document.querySelectorAll('.line-item-existing-form, [id^="line-item-form-"]');
+            let missingSubCostCode = 0;
+            savedForms.forEach((form) => {
+                const publicId = form.querySelector('.line-item-public-id');
+                if (publicId && publicId.value) {
+                    const sccSelect = form.querySelector('.line-item-sub-cost-code-id');
+                    if (!sccSelect || !sccSelect.value) {
+                        missingSubCostCode++;
+                    }
+                }
+            });
+            if (missingSubCostCode > 0) {
+                errors.push(missingSubCostCode === 1
+                    ? '1 line item is missing a Sub Cost Code'
+                    : missingSubCostCode + ' line items are missing a Sub Cost Code');
+            }
+
             return errors;
         }
 
@@ -2032,11 +2050,20 @@
 
         async function handleCompleteBill(event) {
             event.preventDefault();
-            
-            // Cancel any pending auto-save to prevent race conditions
+
+            // Flush any pending auto-saves so all field changes are persisted before completing
             if (autoSaveTimeout) {
                 clearTimeout(autoSaveTimeout);
                 autoSaveTimeout = null;
+                await autoSaveBill();
+            }
+            for (const [formId, timeout] of lineItemSaveTimeouts.entries()) {
+                clearTimeout(timeout);
+                lineItemSaveTimeouts.delete(formId);
+                const formEl = document.getElementById(formId);
+                if (formEl) {
+                    await autoSaveLineItem(formEl);
+                }
             }
             
             const validationErrors = validateBillForm();

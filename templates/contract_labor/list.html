@@ -129,7 +129,7 @@
                             <strong>{{ entry.vendor_name or entry.employee_name or 'Unknown' }}</strong>
                         </td>
                         <td>{{ entry.job_name or '—' }}</td>
-                        <td>{{ "%.2f"|format(entry.total_hours or 0) }}</td>
+                        <td>{% set h = (entry.total_hours or 0)|int %}{% set m = (((entry.total_hours or 0) - h) * 60)|round|int %}{{ '%02d:%02d'|format(h, m) }}</td>
                         <td>
                             {% if entry.status == 'pending_review' %}
                                 <span class="cl-status-badge cl-status-pending">Pending</span>
@@ -143,7 +143,7 @@
                         </td>
                         <td>
                             <div class="cl-table-actions">
-                                <a href="/contract-labor/{{ entry.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
+                                <a href="/contract-labor/{{ entry.public_id }}/edit" class="btn btn-outline-secondary btn-sm" onclick="sessionStorage.setItem('clScrollY', document.getElementById('content').scrollTop)">Edit</a>
                             </div>
                         </td>
                     </tr>
@@ -266,6 +266,21 @@
         
         // Save filter state on page load (captures current filters from URL)
         saveFilterState();
+
+        // Restore scroll position after returning from edit page
+        // Note: the page scrolls via #content (main-content), not window
+        const savedScroll = sessionStorage.getItem('clScrollY');
+        if (savedScroll !== null) {
+            sessionStorage.removeItem('clScrollY');
+            const mainContent = document.getElementById('content');
+            if (mainContent) {
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        mainContent.scrollTop = parseInt(savedScroll, 10);
+                    });
+                });
+            }
+        }
         
         // Debounce for search
         let searchTimeout;

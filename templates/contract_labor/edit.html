@@ -383,21 +383,29 @@
     // Vendor config from server (address, rate, markup)
     const VENDOR_CONFIG = {{ vendor_config|tojson }};
 
-    // Get matched vendor name for this employee
+    // Get matched vendor name for this employee (fallback for auto-select)
     function getMatchedVendorName() {
         return EMPLOYEE_VENDOR_MAP[employeeNameLower] || null;
     }
 
-    // Get default rate for the matched vendor
+    // Get the vendor name from the currently selected vendor dropdown option
+    function getSelectedVendorName() {
+        const select = document.getElementById('bill_vendor_id');
+        if (!select || !select.value) return null;
+        const option = select.options[select.selectedIndex];
+        return option ? option.text.trim() : null;
+    }
+
+    // Get default rate for the selected vendor
     function getDefaultRate() {
-        const vendorName = getMatchedVendorName();
+        const vendorName = getSelectedVendorName() || getMatchedVendorName();
         const config = vendorName ? VENDOR_CONFIG[vendorName] : null;
         return config ? config.rate : null;
     }
 
-    // Get default markup for the matched vendor (as percentage for display)
+    // Get default markup for the selected vendor (as percentage for display)
     function getDefaultMarkupPercent() {
-        const vendorName = getMatchedVendorName();
+        const vendorName = getSelectedVendorName() || getMatchedVendorName();
         const config = vendorName ? VENDOR_CONFIG[vendorName] : null;
         return config ? (config.markup * 100) : null;
     }
@@ -468,6 +476,11 @@
         
         // Update Back to List and Cancel links to preserve filter state
         updateListLinks();
+
+        // Auto-add one line item if none exist yet
+        if (document.querySelectorAll('.cl-line-item').length === 0) {
+            addLineItem();
+        }
     });
     
     // Get list URL with saved filter state from sessionStorage

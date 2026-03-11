@@ -265,7 +265,7 @@ BEGIN
         [SourceFile],
         [SourceRow]
     FROM dbo.[ContractLabor]
-    ORDER BY [WorkDate] DESC, [EmployeeName] ASC;
+    ORDER BY [WorkDate] DESC, [EmployeeName] ASC, [JobName] ASC;
 
     COMMIT TRANSACTION;
 END;
@@ -404,7 +404,7 @@ BEGIN
         [SourceRow]
     FROM dbo.[ContractLabor]
     WHERE [VendorId] = @VendorId
-    ORDER BY [WorkDate] DESC;
+    ORDER BY [WorkDate] DESC, [EmployeeName] ASC, [JobName] ASC;
 
     COMMIT TRANSACTION;
 END;
@@ -422,36 +422,37 @@ BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [VendorId],
-        [ProjectId],
-        [EmployeeName],
-        [JobName],
-        CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
-        [TimeIn],
-        [TimeOut],
-        [BreakTime],
-        [RegularHours],
-        [OvertimeHours],
-        [TotalHours],
-        [HourlyRate],
-        [Markup],
-        [TotalAmount],
-        [SubCostCodeId],
-        [Description],
-        CONVERT(VARCHAR(10), [BillingPeriodStart], 120) AS [BillingPeriodStart],
-        [Status],
-        [BillLineItemId],
-        [ImportBatchId],
-        [SourceFile],
-        [SourceRow]
-    FROM dbo.[ContractLabor]
-    WHERE [BillingPeriodStart] = @BillingPeriodStart
-    ORDER BY [VendorId], [WorkDate];
+        cl.[Id],
+        cl.[PublicId],
+        cl.[RowVersion],
+        CONVERT(VARCHAR(19), cl.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), cl.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        cl.[VendorId],
+        cl.[ProjectId],
+        cl.[EmployeeName],
+        cl.[JobName],
+        CONVERT(VARCHAR(10), cl.[WorkDate], 120) AS [WorkDate],
+        cl.[TimeIn],
+        cl.[TimeOut],
+        cl.[BreakTime],
+        cl.[RegularHours],
+        cl.[OvertimeHours],
+        cl.[TotalHours],
+        cl.[HourlyRate],
+        cl.[Markup],
+        cl.[TotalAmount],
+        cl.[SubCostCodeId],
+        cl.[Description],
+        CONVERT(VARCHAR(10), cl.[BillingPeriodStart], 120) AS [BillingPeriodStart],
+        cl.[Status],
+        cl.[BillLineItemId],
+        cl.[ImportBatchId],
+        cl.[SourceFile],
+        cl.[SourceRow]
+    FROM dbo.[ContractLabor] cl
+    LEFT JOIN dbo.[Vendor] v ON cl.[VendorId] = v.[Id]
+    WHERE cl.[BillingPeriodStart] = @BillingPeriodStart
+    ORDER BY v.[Name] ASC, cl.[WorkDate] DESC, cl.[JobName] ASC;
 
     COMMIT TRANSACTION;
 END;
@@ -469,36 +470,37 @@ BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [VendorId],
-        [ProjectId],
-        [EmployeeName],
-        [JobName],
-        CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
-        [TimeIn],
-        [TimeOut],
-        [BreakTime],
-        [RegularHours],
-        [OvertimeHours],
-        [TotalHours],
-        [HourlyRate],
-        [Markup],
-        [TotalAmount],
-        [SubCostCodeId],
-        [Description],
-        CONVERT(VARCHAR(10), [BillingPeriodStart], 120) AS [BillingPeriodStart],
-        [Status],
-        [BillLineItemId],
-        [ImportBatchId],
-        [SourceFile],
-        [SourceRow]
-    FROM dbo.[ContractLabor]
-    WHERE [Status] = @Status
-    ORDER BY [BillingPeriodStart], [VendorId], [WorkDate];
+        cl.[Id],
+        cl.[PublicId],
+        cl.[RowVersion],
+        CONVERT(VARCHAR(19), cl.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), cl.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        cl.[VendorId],
+        cl.[ProjectId],
+        cl.[EmployeeName],
+        cl.[JobName],
+        CONVERT(VARCHAR(10), cl.[WorkDate], 120) AS [WorkDate],
+        cl.[TimeIn],
+        cl.[TimeOut],
+        cl.[BreakTime],
+        cl.[RegularHours],
+        cl.[OvertimeHours],
+        cl.[TotalHours],
+        cl.[HourlyRate],
+        cl.[Markup],
+        cl.[TotalAmount],
+        cl.[SubCostCodeId],
+        cl.[Description],
+        CONVERT(VARCHAR(10), cl.[BillingPeriodStart], 120) AS [BillingPeriodStart],
+        cl.[Status],
+        cl.[BillLineItemId],
+        cl.[ImportBatchId],
+        cl.[SourceFile],
+        cl.[SourceRow]
+    FROM dbo.[ContractLabor] cl
+    LEFT JOIN dbo.[Vendor] v ON cl.[VendorId] = v.[Id]
+    WHERE cl.[Status] = @Status
+    ORDER BY cl.[BillingPeriodStart] DESC, v.[Name] ASC, cl.[WorkDate] DESC, cl.[JobName] ASC;
 
     COMMIT TRANSACTION;
 END;
@@ -618,7 +620,7 @@ BEGIN
         AND (@BillingPeriodStart IS NULL OR cl.[BillingPeriodStart] = @BillingPeriodStart)
         AND (@StartDate IS NULL OR cl.[WorkDate] >= @StartDate)
         AND (@EndDate IS NULL OR cl.[WorkDate] <= @EndDate)
-    ORDER BY 
+    ORDER BY
         CASE WHEN @SortDirection = 'ASC' AND @SortBy = 'WorkDate' THEN cl.[WorkDate] END ASC,
         CASE WHEN @SortDirection = 'DESC' AND @SortBy = 'WorkDate' THEN cl.[WorkDate] END DESC,
         CASE WHEN @SortDirection = 'ASC' AND @SortBy = 'EmployeeName' THEN cl.[EmployeeName] END ASC,
@@ -626,7 +628,9 @@ BEGIN
         CASE WHEN @SortDirection = 'ASC' AND @SortBy = 'TotalHours' THEN cl.[TotalHours] END ASC,
         CASE WHEN @SortDirection = 'DESC' AND @SortBy = 'TotalHours' THEN cl.[TotalHours] END DESC,
         CASE WHEN @SortDirection = 'ASC' AND @SortBy = 'TotalAmount' THEN cl.[TotalAmount] END ASC,
-        CASE WHEN @SortDirection = 'DESC' AND @SortBy = 'TotalAmount' THEN cl.[TotalAmount] END DESC
+        CASE WHEN @SortDirection = 'DESC' AND @SortBy = 'TotalAmount' THEN cl.[TotalAmount] END DESC,
+        ISNULL(v.[Name], cl.[EmployeeName]) ASC,
+        cl.[JobName] ASC
     OFFSET @Offset ROWS
     FETCH NEXT @PageSize ROWS ONLY;
     

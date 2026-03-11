@@ -1,0 +1,81 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Create Role - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/role.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="role-page-header">
+        <h1>Create Role</h1>
+        <a href="/role/list" class="btn btn-secondary">Back to List</a>
+    </div>
+
+    <div class="role-form-container">
+        <div class="role-form-card">
+            <div class="role-form-card-header">
+                <h5>Role Details</h5>
+            </div>
+            <div class="role-form-card-body">
+                <form id="createRoleForm">
+                    <div class="role-form-group">
+                        <label for="name" class="role-form-label">
+                            Name <span class="required">*</span>
+                        </label>
+                        <input type="text"
+                               class="role-form-control"
+                               id="name"
+                               name="name"
+                               required
+                               maxlength="255"
+                               placeholder="Enter role name">
+                        <div class="role-form-text">Required field. Maximum 255 characters.</div>
+                    </div>
+
+                    <div class="role-form-actions">
+                        <div class="role-form-actions-left"></div>
+                        <div class="role-form-actions-right">
+                            <a href="/role/list" class="btn btn-secondary">Cancel</a>
+                            <button type="submit" class="btn btn-primary">Create Role</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        document.getElementById('createRoleForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const formData = new FormData(this);
+            const payload = {
+                name: formData.get('name')
+            };
+
+            try {
+                const response = await fetch('/api/v1/create/role', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.ok) {
+                    window.location.href = '/role/list';
+                } else {
+                    const error = await response.json();
+                    alert('Error creating role: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error creating role: ' + error.message);
+            }
+        });
+    </script>
+{% endblock %}

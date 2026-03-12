@@ -1,5 +1,121 @@
 # Session Notes
 
+## Session: Contact Entity Module (March 11, 2026)
+
+### What Was Built
+
+**Contact** — A polymorphic child entity for storing contact details (email, phone, fax, etc.) linked to User, Company, Customer, Project, and Vendor entities via nullable FK columns. Each parent can have multiple contacts. Managed inline on parent pages using reusable Jinja2 partials.
+
+#### Contact Entity (Full CRUD)
+- `dbo.Contact` table with nullable FKs: UserId, CompanyId, CustomerId, ProjectId, VendorId
+- Fields: Email (NVARCHAR 255), OfficePhone (NVARCHAR 50), MobilePhone (NVARCHAR 50), Fax (NVARCHAR 50), Notes (NVARCHAR MAX)
+- 11 stored procedures: Create, ReadAll, ReadById, ReadByPublicId, ReadByUserId/CompanyId/CustomerId/ProjectId/VendorId, UpdateById, DeleteById
+- Full entity module: model, repository, service, API schemas, API router (TriggerRouter instant)
+
+#### Inline UI on Parent Pages
+- **Reusable partials**: `shared/partials/contacts_view.html` (read-only table) and `shared/partials/contacts_edit.html` (inline CRUD with JS)
+- **Edit partial**: Add Contact form, per-row inline editing (onchange updates via API), delete per row with confirmation
+- **View partial**: Read-only table showing all contacts
+- Wired into all 5 parent entities (User, Company, Customer, Project, Vendor) — both view and edit pages
+- CSS: `static/css/contact.css`
+
+#### Workflow Registration
+- Added `"contact"` to `INSTANT_ENTITIES` in `core/workflow/business/definitions/instant.py`
+- Added `"contact"` to `SERVICE_REGISTRY` in `core/workflow/business/instant.py`
+- Registered API router in `app.py`
+
+### Files Created
+- `entities/contact/sql/dbo.contact.sql`
+- `entities/contact/business/model.py`
+- `entities/contact/persistence/repo.py`
+- `entities/contact/business/service.py`
+- `entities/contact/api/schemas.py`
+- `entities/contact/api/router.py`
+- `entities/contact/__init__.py`, `api/__init__.py`, `business/__init__.py`, `persistence/__init__.py`
+- `templates/shared/partials/contacts_view.html`
+- `templates/shared/partials/contacts_edit.html`
+- `static/css/contact.css`
+
+### Files Modified
+- `app.py` — imported and registered contact API router
+- `core/workflow/business/definitions/instant.py` — added "contact" to INSTANT_ENTITIES
+- `core/workflow/business/instant.py` — added ContactService to SERVICE_REGISTRY
+- `entities/user/web/controller.py` — ContactService import, fetch contacts in view/edit
+- `entities/company/web/controller.py` — ContactService import, fetch contacts in view/edit
+- `entities/customer/web/controller.py` — ContactService import, fetch contacts in view/edit
+- `entities/project/web/controller.py` — ContactService import, fetch contacts in view/edit
+- `entities/vendor/web/controller.py` — ContactService import, fetch contacts in view/edit
+- `templates/user/view.html`, `edit.html` — contact.css + partial includes
+- `templates/company/view.html`, `edit.html` — contact.css + partial includes
+- `templates/customer/view.html`, `edit.html` — contact.css + partial includes
+- `templates/project/view.html`, `edit.html` — contact.css + partial includes
+- `templates/vendor/view.html`, `edit.html` — contact.css + partial includes
+
+### Design Decisions
+- **Nullable FK columns** (not join table or generic FK) — simplest approach, consistent with codebase patterns
+- **No firstname/lastname/title** — Contact stores only communication details, not identity info
+- **Inline UI via reusable partials** — same pattern as UserRole on User pages, but using `{% include %}` partials for DRY across 5 parent entities
+- **Instant workflow** — uses TriggerRouter.route_instant for audit trail, same as UserRole
+
+---
+
+## Session: RBAC Wiring — Role into User, UserRole, RoleModule (March 11, 2026)
+
+### What Was Built
+
+Wired the Role entity into the UserRole and RoleModule join table UIs, and added inline role assignment to the User entity pages.
+
+#### UserRole & RoleModule — Dropdown + Name Resolution
+- **Controllers** (`entities/user_role/web/controller.py`, `entities/role_module/web/controller.py`):
+  - Import and load related services (UserService, RoleService, ModuleService)
+  - Create/edit routes pass entity lists for dropdown population
+  - List/view routes pass lookup maps (`user_map`, `role_map`, `module_map`) for UUID-to-name resolution
+  - Added missing `current_path` to all template contexts
+  - Fixed template directory from `templates/user_role` to `templates` with prefixed paths
+- **Templates** (8 files across `templates/user_role/` and `templates/role_module/`):
+  - Dropdowns now use `public_id` for values (was `id` — BIGINT vs UNIQUEIDENTIFIER mismatch)
+  - List/view pages show human-readable names instead of raw UUIDs
+  - Fixed broken navigation links (`/user_roles/list` → `/user_role/list`, `/role_modules/list` → `/role_module/list`)
+
+#### User Entity — Inline Role Assignment
+- **Controller** (`entities/user/web/controller.py`):
+  - Imports RoleService and UserRoleService
+  - `create_user` passes `roles` list for dropdown
+  - `view_user` resolves current role name via UserRoleService → RoleService
+  - `edit_user` passes `roles` list + current `user_role` (if any)
+- **Templates**:
+  - `templates/user/create.html` — Role dropdown (optional). After user creation, creates UserRole via API if role selected
+  - `templates/user/edit.html` — Role dropdown pre-selected with current role. Handles three cases on save: create (new assignment), update (role changed), delete (role cleared)
+  - `templates/user/view.html` — Displays resolved role name (or "No role assigned")
+
+### Files Modified
+- `entities/user/web/controller.py` — RoleService/UserRoleService imports, role data in create/view/edit contexts
+- `entities/user_role/web/controller.py` — UserService/RoleService imports, lookup maps, template fixes
+- `entities/role_module/web/controller.py` — RoleService/ModuleService imports, lookup maps, template fixes
+- `templates/user/create.html` — role dropdown + JS role assignment after create
+- `templates/user/edit.html` — role dropdown + JS create/update/delete role assignment
+- `templates/user/view.html` — role name display
+- `templates/user_role/list.html` — name resolution via maps
+- `templates/user_role/view.html` — name resolution, fixed links
+- `templates/user_role/create.html` — public_id for dropdown values
+- `templates/user_role/edit.html` — public_id for dropdown values + selected comparison
+- `templates/role_module/list.html` — name resolution via maps
+- `templates/role_module/view.html` — name resolution, fixed links
+- `templates/role_module/create.html` — public_id for dropdown values
+- `templates/role_module/edit.html` — public_id for dropdown values + selected comparison
+
+### Bug Fixes
+- **Dropdown value mismatch**: Templates used `id` (BIGINT) for dropdown values but join tables store `public_id` (UNIQUEIDENTIFIER) — selected state and submitted values never matched
+- **Missing `current_path`**: All UserRole and RoleModule template contexts were missing `current_path: request.url.path` (required by sidebar)
+- **Broken nav links**: View templates had plural routes (`/user_roles/list`, `/role_modules/list`) that don't exist
+
+### Remaining Work
+- **Authorization middleware**: Build middleware/dependency that checks current user's role(s) via UserRole → Role → RoleModule chain to gate access to modules
+- **Sidebar integration**: Register Role in the Modules table for sidebar navigation
+- **Default role seeding**: Create initial roles (e.g., Admin, Project Manager, Viewer)
+
+---
+
 ## Session: Role Entity Module (March 11, 2026)
 
 ### What Was Built
@@ -35,7 +151,7 @@
 - `app.py` — imported and registered role API + web routers
 
 ### Remaining Work
-- **Wire Role into UserRole/RoleModule**: UserRole and RoleModule templates currently show raw UUIDs for role_id — need to populate role dropdown options from RoleService in their web controllers
+- ~~**Wire Role into UserRole/RoleModule**~~ — DONE (March 11, 2026 session above)
 - **Authorization middleware**: Build middleware/dependency that checks current user's role(s) via UserRole → Role → RoleModule chain to gate access to modules
 - **Sidebar integration**: Register Role in the Modules table for sidebar navigation
 - **Role seeding**: Create default roles (e.g., Admin, Project Manager, Viewer)

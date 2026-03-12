@@ -7,6 +7,7 @@ from fastapi.templating import Jinja2Templates
 # Local Imports
 from entities.project.business.service import ProjectService
 from entities.module.business.service import ModuleService
+from entities.contact.business.service import ContactService
 from entities.auth.business.service import get_current_user_web
 from integrations.ms.sharepoint.driveitem.connector.project.business.service import DriveItemProjectConnector
 from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
@@ -114,6 +115,7 @@ async def view_project(request: Request, public_id: str, current_user: dict = De
     modules = ModuleService().read_all()
     modules_list = [module.to_dict() for module in modules]
     
+    contacts = ContactService().read_by_project_id(project_id=project.id)
     return templates.TemplateResponse(
         "project/view.html",
         {
@@ -125,6 +127,7 @@ async def view_project(request: Request, public_id: str, current_user: dict = De
             "linked_excel": linked_excel,
             "project_root_drive_public_id": project_root_drive_public_id,
             "modules": modules_list,
+            "contacts": [c.to_dict() for c in contacts],
             "current_user": current_user,
             "current_path": request.url.path,
         },
@@ -137,11 +140,15 @@ async def edit_project(request: Request, public_id: str, current_user: dict = De
     Edit a project.
     """
     project = ProjectService().read_by_public_id(public_id=public_id)
+    contacts = ContactService().read_by_project_id(project_id=project.id)
     return templates.TemplateResponse(
         "project/edit.html",
         {
             "request": request,
             "project": project.to_dict(),
+            "contacts": [c.to_dict() for c in contacts],
+            "parent_entity": "project",
+            "parent_id": project.id,
             "current_user": current_user,
             "current_path": request.url.path,
         },

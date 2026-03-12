@@ -72,6 +72,9 @@ SERVICE_REGISTRY: Dict[str, str] = {
     "taxpayer": "entities.taxpayer.business.service.TaxpayerService",
     "taxpayer_attachment": "entities.taxpayer_attachment.business.service.TaxpayerAttachmentService",
     
+    # Contact
+    "contact": "entities.contact.business.service.ContactService",
+
     # Other
     "integration": "entities.integration.business.service.IntegrationService",
     "contract_labor": "entities.contract_labor.business.service.ContractLaborService",

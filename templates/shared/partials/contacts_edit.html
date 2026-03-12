@@ -1,0 +1,192 @@
+<!-- Contacts Edit Partial — inline CRUD for contacts -->
+<!-- Required context: contacts (list of contact dicts), parent_entity (str), parent_id (int) -->
+<div class="contact-section">
+    <div class="contact-section-header">
+        <h5>Contacts</h5>
+        <button type="button" class="btn btn-sm btn-primary" onclick="showAddContactForm()">Add Contact</button>
+    </div>
+
+    <table class="contact-table" id="contactsTable">
+        <thead>
+            <tr>
+                <th>Email</th>
+                <th>Office Phone</th>
+                <th>Mobile Phone</th>
+                <th>Fax</th>
+                <th>Notes</th>
+                <th class="contact-actions"></th>
+            </tr>
+        </thead>
+        <tbody id="contactsTableBody">
+            {% if contacts and contacts|length > 0 %}
+            {% for contact in contacts %}
+            <tr id="contact-row-{{ contact.public_id }}">
+                <td>
+                    <input type="text" class="user-form-control" value="{{ contact.email or '' }}"
+                           data-field="email" data-public-id="{{ contact.public_id }}" data-row-version="{{ contact.row_version }}"
+                           maxlength="255" onchange="updateContact(this)">
+                </td>
+                <td>
+                    <input type="text" class="user-form-control" value="{{ contact.office_phone or '' }}"
+                           data-field="office_phone" data-public-id="{{ contact.public_id }}" data-row-version="{{ contact.row_version }}"
+                           maxlength="50" onchange="updateContact(this)">
+                </td>
+                <td>
+                    <input type="text" class="user-form-control" value="{{ contact.mobile_phone or '' }}"
+                           data-field="mobile_phone" data-public-id="{{ contact.public_id }}" data-row-version="{{ contact.row_version }}"
+                           maxlength="50" onchange="updateContact(this)">
+                </td>
+                <td>
+                    <input type="text" class="user-form-control" value="{{ contact.fax or '' }}"
+                           data-field="fax" data-public-id="{{ contact.public_id }}" data-row-version="{{ contact.row_version }}"
+                           maxlength="50" onchange="updateContact(this)">
+                </td>
+                <td>
+                    <input type="text" class="user-form-control" value="{{ contact.notes or '' }}"
+                           data-field="notes" data-public-id="{{ contact.public_id }}" data-row-version="{{ contact.row_version }}"
+                           onchange="updateContact(this)">
+                </td>
+                <td class="contact-actions">
+                    <button type="button" class="btn btn-sm btn-danger" onclick="deleteContact('{{ contact.public_id }}')">Delete</button>
+                </td>
+            </tr>
+            {% endfor %}
+            {% endif %}
+        </tbody>
+    </table>
+
+    <div id="addContactForm" class="contact-add-form" style="display: none;">
+        <div class="contact-form-row">
+            <div class="form-group">
+                <label>Email</label>
+                <input type="text" id="newContactEmail" maxlength="255">
+            </div>
+            <div class="form-group">
+                <label>Office Phone</label>
+                <input type="text" id="newContactOfficePhone" maxlength="50">
+            </div>
+            <div class="form-group">
+                <label>Mobile Phone</label>
+                <input type="text" id="newContactMobilePhone" maxlength="50">
+            </div>
+            <div class="form-group">
+                <label>Fax</label>
+                <input type="text" id="newContactFax" maxlength="50">
+            </div>
+        </div>
+        <div class="contact-form-full-row">
+            <div class="form-group">
+                <label>Notes</label>
+                <input type="text" id="newContactNotes">
+            </div>
+        </div>
+        <div class="contact-add-form-actions">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="hideAddContactForm()">Cancel</button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="createContact()">Save Contact</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    const PARENT_ENTITY = '{{ parent_entity }}';
+    const PARENT_ID = {{ parent_id }};
+
+    function showAddContactForm() {
+        document.getElementById('addContactForm').style.display = 'block';
+    }
+
+    function hideAddContactForm() {
+        document.getElementById('addContactForm').style.display = 'none';
+        document.getElementById('newContactEmail').value = '';
+        document.getElementById('newContactOfficePhone').value = '';
+        document.getElementById('newContactMobilePhone').value = '';
+        document.getElementById('newContactFax').value = '';
+        document.getElementById('newContactNotes').value = '';
+    }
+
+    async function createContact() {
+        const payload = {
+            email: document.getElementById('newContactEmail').value || null,
+            office_phone: document.getElementById('newContactOfficePhone').value || null,
+            mobile_phone: document.getElementById('newContactMobilePhone').value || null,
+            fax: document.getElementById('newContactFax').value || null,
+            notes: document.getElementById('newContactNotes').value || null,
+        };
+        payload[PARENT_ENTITY + '_id'] = PARENT_ID;
+
+        try {
+            const response = await fetch('/api/v1/create/contact', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (response.ok) {
+                window.location.reload();
+            } else {
+                const error = await response.json();
+                alert('Error creating contact: ' + (error.detail || JSON.stringify(error)));
+            }
+        } catch (error) {
+            alert('Error creating contact: ' + error.message);
+        }
+    }
+
+    async function updateContact(input) {
+        const publicId = input.dataset.publicId;
+        const rowVersion = input.dataset.rowVersion;
+
+        // Gather all field values from the same row
+        const row = input.closest('tr');
+        const inputs = row.querySelectorAll('input[data-public-id]');
+        const payload = { row_version: rowVersion };
+        inputs.forEach(function(inp) {
+            payload[inp.dataset.field] = inp.value || null;
+        });
+
+        try {
+            const response = await fetch(`/api/v1/update/contact/${publicId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                // Update row_version on all inputs in this row
+                if (result && result.row_version) {
+                    inputs.forEach(function(inp) {
+                        inp.dataset.rowVersion = result.row_version;
+                    });
+                }
+            } else {
+                const error = await response.json();
+                alert('Error updating contact: ' + (error.detail || JSON.stringify(error)));
+                window.location.reload();
+            }
+        } catch (error) {
+            alert('Error updating contact: ' + error.message);
+        }
+    }
+
+    async function deleteContact(publicId) {
+        if (!confirm('Are you sure you want to delete this contact?')) return;
+
+        try {
+            const response = await fetch(`/api/v1/delete/contact/${publicId}`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            if (response.ok) {
+                const row = document.getElementById('contact-row-' + publicId);
+                if (row) row.remove();
+            } else {
+                const error = await response.json();
+                alert('Error deleting contact: ' + (error.detail || JSON.stringify(error)));
+            }
+        } catch (error) {
+            alert('Error deleting contact: ' + error.message);
+        }
+    }
+</script>

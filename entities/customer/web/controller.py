@@ -6,6 +6,7 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from entities.customer.business.service import CustomerService
+from entities.contact.business.service import ContactService
 from entities.auth.business.service import get_current_user_web
 
 router = APIRouter(prefix="/customer", tags=["web", "customer"])
@@ -50,11 +51,13 @@ async def view_customer(request: Request, public_id: str, current_user: dict = D
     View a customer.
     """
     customer = CustomerService().read_by_public_id(public_id=public_id)
+    contacts = ContactService().read_by_customer_id(customer_id=customer.id)
     return templates.TemplateResponse(
         "customer/view.html",
         {
             "request": request,
             "customer": customer.to_dict(),
+            "contacts": [c.to_dict() for c in contacts],
             "current_user": current_user,
             "current_path": request.url.path,
         },
@@ -67,11 +70,15 @@ async def edit_customer(request: Request, public_id: str, current_user: dict = D
     Edit a customer.
     """
     customer = CustomerService().read_by_public_id(public_id=public_id)
+    contacts = ContactService().read_by_customer_id(customer_id=customer.id)
     return templates.TemplateResponse(
         "customer/edit.html",
         {
             "request": request,
             "customer": customer.to_dict(),
+            "contacts": [c.to_dict() for c in contacts],
+            "parent_entity": "customer",
+            "parent_id": customer.id,
             "current_user": current_user,
             "current_path": request.url.path,
         },

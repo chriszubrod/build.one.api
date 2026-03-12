@@ -7,6 +7,7 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from entities.company.business.service import CompanyService
+from entities.contact.business.service import ContactService
 from entities.auth.business.service import get_current_user_web
 from integrations.ms.sharepoint.drive.connector.company.business.service import DriveCompanyConnector
 from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
@@ -85,6 +86,7 @@ async def view_company(request: Request, public_id: str, current_user: dict = De
         except Exception:
             logger.debug("Expense folder connector not available for company %s", company.id)
 
+    contacts = ContactService().read_by_company_id(company_id=company.id)
     return templates.TemplateResponse(
         "company/view.html",
         {
@@ -95,6 +97,7 @@ async def view_company(request: Request, public_id: str, current_user: dict = De
             "bill_processed_folder": bill_processed_folder,
             "expense_source_folder": expense_source_folder,
             "expense_processed_folder": expense_processed_folder,
+            "contacts": [c.to_dict() for c in contacts],
             "current_user": current_user,
             "current_path": request.url.path,
         },
@@ -107,11 +110,15 @@ async def edit_company(request: Request, public_id: str, current_user: dict = De
     Edit a company.
     """
     company = CompanyService().read_by_public_id(public_id=public_id)
+    contacts = ContactService().read_by_company_id(company_id=company.id)
     return templates.TemplateResponse(
         "company/edit.html",
         {
             "request": request,
             "company": company.to_dict(),
+            "contacts": [c.to_dict() for c in contacts],
+            "parent_entity": "company",
+            "parent_id": company.id,
             "current_user": current_user,
             "current_path": request.url.path,
         },

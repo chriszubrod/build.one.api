@@ -17,7 +17,7 @@ class RoleModuleService:
         """Initialize the RoleModuleService."""
         self.repo = repo or RoleModuleRepository()
 
-    def create(self, *, tenant_id: int = None, role_id: str, module_id: str) -> RoleModule:
+    def create(self, *, tenant_id: int = None, role_id: int, module_id: int) -> RoleModule:
         """
         Create a new role module.
         """
@@ -42,13 +42,13 @@ class RoleModuleService:
         """
         return self.repo.read_by_public_id(public_id)
 
-    def read_by_role_id(self, role_id: str) -> Optional[RoleModule]:
+    def read_by_role_id(self, role_id: int) -> Optional[RoleModule]:
         """
         Read a role module by role ID.
         """
         return self.repo.read_by_role_id(role_id)
 
-    def read_by_module_id(self, module_id: str) -> Optional[RoleModule]:
+    def read_by_module_id(self, module_id: int) -> Optional[RoleModule]:
         """
         Read a role module by module ID.
         """
@@ -60,8 +60,8 @@ class RoleModuleService:
         *,
         tenant_id: int = None,
         row_version: str,
-        role_id: str = None,
-        module_id: str = None,
+        role_id: int = None,
+        module_id: int = None,
     ) -> Optional[RoleModule]:
         """
         Update a role module by public ID.

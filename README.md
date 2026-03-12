@@ -21,8 +21,10 @@ Repository for the build.one application.
 | Contract Labor | `entities/contract_labor/` | Contract labor tracking |
 | Project | `entities/project/` | Project management |
 | Role | `entities/role/` | RBAC roles for user authorization |
+| User | `entities/user/` | User management with inline role assignment |
 | User Role | `entities/user_role/` | User-to-role assignment (join table) |
 | Role Module | `entities/role_module/` | Role-to-module access mapping (join table) |
+| Contact | `entities/contact/` | Contact details (email, phone, fax) — inline on User, Company, Customer, Project, Vendor |
 | Vendor | `entities/vendor/` | Vendor management |
 
 ## Integrations

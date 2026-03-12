@@ -6,10 +6,12 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from entities.role_module.business.service import RoleModuleService
+from entities.role.business.service import RoleService
+from entities.module.business.service import ModuleService
 from entities.auth.business.service import get_current_user_web
 
 router = APIRouter(prefix="/role_module", tags=["web", "role_module"])
-templates = Jinja2Templates(directory="templates/role_module")
+templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
@@ -18,12 +20,19 @@ async def list_role_modules(request: Request, current_user: dict = Depends(get_c
     List all role modules.
     """
     role_modules = RoleModuleService().read_all()
+    roles = RoleService().read_all()
+    modules = ModuleService().read_all()
+    role_map = {r.id: r.name for r in roles}
+    module_map = {m.id: m.name for m in modules}
     return templates.TemplateResponse(
-        "list.html",
+        "role_module/list.html",
         {
             "request": request,
             "role_modules": role_modules,
-            "current_user": current_user
+            "role_map": role_map,
+            "module_map": module_map,
+            "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -33,11 +42,16 @@ async def create_role_module(request: Request, current_user: dict = Depends(get_
     """
     Render create role module form.
     """
+    roles = RoleService().read_all()
+    modules = ModuleService().read_all()
     return templates.TemplateResponse(
-        "create.html",
+        "role_module/create.html",
         {
             "request": request,
-            "current_user": current_user
+            "roles": [r.to_dict() for r in roles],
+            "modules": [m.to_dict() for m in modules],
+            "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -48,12 +62,19 @@ async def view_role_module(request: Request, public_id: str, current_user: dict 
     View a role module.
     """
     role_module = RoleModuleService().read_by_public_id(public_id=public_id)
+    roles = RoleService().read_all()
+    modules = ModuleService().read_all()
+    role_map = {r.id: r.name for r in roles}
+    module_map = {m.id: m.name for m in modules}
     return templates.TemplateResponse(
-        "view.html",
+        "role_module/view.html",
         {
             "request": request,
             "role_module": role_module.to_dict(),
-            "current_user": current_user
+            "role_map": role_map,
+            "module_map": module_map,
+            "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -64,11 +85,16 @@ async def edit_role_module(request: Request, public_id: str, current_user: dict 
     Edit a role module.
     """
     role_module = RoleModuleService().read_by_public_id(public_id=public_id)
+    roles = RoleService().read_all()
+    modules = ModuleService().read_all()
     return templates.TemplateResponse(
-        "edit.html",
+        "role_module/edit.html",
         {
             "request": request,
             "role_module": role_module.to_dict(),
-            "current_user": current_user
+            "roles": [r.to_dict() for r in roles],
+            "modules": [m.to_dict() for m in modules],
+            "current_user": current_user,
+            "current_path": request.url.path,
         },
     )

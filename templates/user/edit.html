@@ -4,6 +4,7 @@
 
 {% block head %}
     <link rel="stylesheet" href="{{ url_for('static', path='css/user.css') }}?v={{ range(1000, 9999) | random }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='css/contact.css') }}?v={{ range(1000, 9999) | random }}">
 {% endblock %}
 
 {% block content %}
@@ -53,6 +54,19 @@
                         <div class="user-form-text">Required field. Maximum 50 characters.</div>
                     </div>
 
+                    <div class="user-form-group">
+                        <label for="role_id" class="user-form-label">
+                            Role
+                        </label>
+                        <select class="user-form-control" id="role_id" name="role_id">
+                            <option value="">No role</option>
+                            {% for role in roles %}
+                            <option value="{{ role.id }}" {% if user_role and role.id == user_role.role_id %}selected{% endif %}>{{ role.name }}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="user-form-text">Optional. Assign a role to this user.</div>
+                    </div>
+
                     <div class="user-metadata" style="margin-top: 1rem; margin-bottom: 1rem;">
                         <div class="user-metadata-item">
                             <span>Created: {{ user.created_datetime or 'Unknown' }}</span>
@@ -75,6 +89,8 @@
             </div>
         </div>
     </div>
+
+    {% include 'shared/partials/contacts_edit.html' %}
 
 {% endblock %}
 
@@ -99,6 +115,44 @@
                 });
 
                 if (response.ok) {
+                    // Handle role assignment
+                    const selectedRoleId = formData.get('role_id');
+                    const userInternalId = {{ user.id }};
+                    const existingUserRolePublicId = '{{ user_role.public_id if user_role else "" }}';
+                    const existingRoleId = '{{ user_role.role_id if user_role else "" }}';
+                    const existingUserRoleRowVersion = '{{ user_role.row_version if user_role else "" }}';
+
+                    try {
+                        if (selectedRoleId && !existingUserRolePublicId) {
+                            // No existing role — create new user_role
+                            await fetch('/api/v1/create/user_role', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ user_id: userInternalId, role_id: parseInt(selectedRoleId) })
+                            });
+                        } else if (selectedRoleId && existingUserRolePublicId && selectedRoleId !== existingRoleId) {
+                            // Role changed — update existing user_role
+                            await fetch(`/api/v1/update/user_role/${existingUserRolePublicId}`, {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    user_id: userInternalId,
+                                    role_id: parseInt(selectedRoleId),
+                                    row_version: existingUserRoleRowVersion
+                                })
+                            });
+                        } else if (!selectedRoleId && existingUserRolePublicId) {
+                            // Role cleared — delete user_role
+                            await fetch(`/api/v1/delete/user_role/${existingUserRolePublicId}`, {
+                                method: 'DELETE',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ row_version: existingUserRoleRowVersion })
+                            });
+                        }
+                    } catch (err) {
+                        console.log('Error updating role assignment:', err);
+                    }
+
                     window.location.href = '/user/list';
                 } else {
                     const contentType = response.headers.get('content-type');

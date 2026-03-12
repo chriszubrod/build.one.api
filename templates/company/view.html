@@ -5,6 +5,7 @@
 {% block head %}
     <link rel="stylesheet" href="{{ url_for('static', path='css/company.css') }}?v={{ range(1000, 9999) | random }}">
     <link rel="stylesheet" href="{{ url_for('static', path='css/aside.css') }}?v={{ range(1000, 9999) | random }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='css/contact.css') }}?v={{ range(1000, 9999) | random }}">
 {% endblock %}
 
 {% block content %}
@@ -192,6 +193,8 @@
             </div>
         </div>
     </div>
+
+    {% include 'shared/partials/contacts_view.html' %}
 
 {% endblock %}
 

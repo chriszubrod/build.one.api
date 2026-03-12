@@ -6,10 +6,12 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from entities.user_role.business.service import UserRoleService
+from entities.user.business.service import UserService
+from entities.role.business.service import RoleService
 from entities.auth.business.service import get_current_user_web
 
 router = APIRouter(prefix="/user_role", tags=["web", "user_role"])
-templates = Jinja2Templates(directory="templates/user_role")
+templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
@@ -18,12 +20,19 @@ async def list_user_roles(request: Request, current_user: dict = Depends(get_cur
     List all user roles.
     """
     user_roles = UserRoleService().read_all()
+    users = UserService().read_all()
+    roles = RoleService().read_all()
+    user_map = {u.id: f"{u.firstname} {u.lastname or ''}".strip() for u in users}
+    role_map = {r.id: r.name for r in roles}
     return templates.TemplateResponse(
-        "list.html",
+        "user_role/list.html",
         {
             "request": request,
             "user_roles": user_roles,
-            "current_user": current_user
+            "user_map": user_map,
+            "role_map": role_map,
+            "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -33,11 +42,16 @@ async def create_user_role(request: Request, current_user: dict = Depends(get_cu
     """
     Render create user role form.
     """
+    users = UserService().read_all()
+    roles = RoleService().read_all()
     return templates.TemplateResponse(
-        "create.html",
+        "user_role/create.html",
         {
             "request": request,
-            "current_user": current_user
+            "users": [u.to_dict() for u in users],
+            "roles": [r.to_dict() for r in roles],
+            "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -48,12 +62,19 @@ async def view_user_role(request: Request, public_id: str, current_user: dict = 
     View a user role.
     """
     user_role = UserRoleService().read_by_public_id(public_id=public_id)
+    users = UserService().read_all()
+    roles = RoleService().read_all()
+    user_map = {u.id: f"{u.firstname} {u.lastname or ''}".strip() for u in users}
+    role_map = {r.id: r.name for r in roles}
     return templates.TemplateResponse(
-        "view.html",
+        "user_role/view.html",
         {
             "request": request,
             "user_role": user_role.to_dict(),
-            "current_user": current_user
+            "user_map": user_map,
+            "role_map": role_map,
+            "current_user": current_user,
+            "current_path": request.url.path,
         },
     )
 
@@ -64,11 +85,16 @@ async def edit_user_role(request: Request, public_id: str, current_user: dict = 
     Edit a user role.
     """
     user_role = UserRoleService().read_by_public_id(public_id=public_id)
+    users = UserService().read_all()
+    roles = RoleService().read_all()
     return templates.TemplateResponse(
-        "edit.html",
+        "user_role/edit.html",
         {
             "request": request,
             "user_role": user_role.to_dict(),
-            "current_user": current_user
+            "users": [u.to_dict() for u in users],
+            "roles": [r.to_dict() for r in roles],
+            "current_user": current_user,
+            "current_path": request.url.path,
         },
     )

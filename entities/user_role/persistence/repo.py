@@ -50,7 +50,7 @@ class UserRoleRepository:
             logger.error(f"Unexpected error during user role mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, user_id: str, role_id: str) -> UserRole:
+    def create(self, *, user_id: int, role_id: int) -> UserRole:
         """
         Create a new user role.
         """
@@ -128,7 +128,7 @@ class UserRoleRepository:
             logger.error(f"Error during read user role by public ID: {error}")
             raise map_database_error(error)
 
-    def read_by_user_id(self, user_id: str) -> Optional[UserRole]:
+    def read_by_user_id(self, user_id: int) -> Optional[UserRole]:
         """
         Read a user role by user ID.
         """
@@ -146,7 +146,7 @@ class UserRoleRepository:
             logger.error(f"Error during read user role by user ID: {error}")
             raise map_database_error(error)
 
-    def read_by_role_id(self, role_id: str) -> Optional[UserRole]:
+    def read_by_role_id(self, role_id: int) -> Optional[UserRole]:
         """
         Read a user role by role ID.
         """

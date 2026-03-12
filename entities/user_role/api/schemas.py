@@ -8,10 +8,10 @@ from pydantic import BaseModel, Field
 
 
 class UserRoleCreate(BaseModel):
-    user_id: str = Field(
+    user_id: int = Field(
         description="The ID of the user."
     )
-    role_id: str = Field(
+    role_id: int = Field(
         description="The ID of the role."
     )
 
@@ -20,9 +20,9 @@ class UserRoleUpdate(BaseModel):
     row_version: str = Field(
         description="The row version of the user role (base64 encoded)."
     )
-    user_id: str = Field(
+    user_id: int = Field(
         description="The ID of the user."
     )
-    role_id: str = Field(
+    role_id: int = Field(
         description="The ID of the role."
     )

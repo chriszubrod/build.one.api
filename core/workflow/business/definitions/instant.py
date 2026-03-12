@@ -83,6 +83,9 @@ INSTANT_ENTITIES = [
     "taxpayer",
     "taxpayer_attachment",
     
+    # Contact
+    "contact",
+
     # Other
     "integration",
     "contract_labor",

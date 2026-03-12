@@ -53,12 +53,9 @@
                             <div class="card-body">
                                 <div class="d-flex justify-content-between align-items-start mb-3">
                                     <h5 class="card-title mb-0">
-                                        {% if user_role.user_id or user_role.role_id %}
-                                            User: {{ user_role.user_id or '' }} Role: {{ user_role.role_id or '' }}
-                                        {% else %}
-                                            Unknown User Role
-                                        {% endif %}
+                                        {{ user_map.get(user_role.user_id, 'Unknown User') }}
                                     </h5>
+                                    <span class="badge bg-info">{{ role_map.get(user_role.role_id, 'Unknown Role') }}</span>
                                 </div>
                                 <div class="text-muted small mb-3">
                                     <div><i class="fas fa-calendar-plus me-1"></i>Created: {{ user_role.created_datetime or 'Unknown' }}</div>

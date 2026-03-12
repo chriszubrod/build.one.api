@@ -17,7 +17,7 @@ class UserRoleService:
         """Initialize the UserRoleService."""
         self.repo = repo or UserRoleRepository()
 
-    def create(self, *, tenant_id: int = None, user_id: str, role_id: str) -> UserRole:
+    def create(self, *, tenant_id: int = None, user_id: int, role_id: int) -> UserRole:
         """
         Create a new user role.
         """
@@ -42,13 +42,13 @@ class UserRoleService:
         """
         return self.repo.read_by_public_id(public_id)
 
-    def read_by_user_id(self, user_id: str) -> Optional[UserRole]:
+    def read_by_user_id(self, user_id: int) -> Optional[UserRole]:
         """
         Read a user role by user ID.
         """
         return self.repo.read_by_user_id(user_id)
 
-    def read_by_role_id(self, role_id: str) -> Optional[UserRole]:
+    def read_by_role_id(self, role_id: int) -> Optional[UserRole]:
         """
         Read a user role by role ID.
         """
@@ -60,8 +60,8 @@ class UserRoleService:
         *,
         tenant_id: int = None,
         row_version: str,
-        user_id: str = None,
-        role_id: str = None,
+        user_id: int = None,
+        role_id: int = None,
     ) -> Optional[UserRole]:
         """
         Update a user role by public ID.

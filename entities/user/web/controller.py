@@ -6,6 +6,9 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from entities.user.business.service import UserService
+from entities.role.business.service import RoleService
+from entities.user_role.business.service import UserRoleService
+from entities.contact.business.service import ContactService
 from entities.auth.business.service import get_current_user_web
 
 router = APIRouter(prefix="/user", tags=["web", "user"])
@@ -34,10 +37,12 @@ async def create_user(request: Request, current_user: dict = Depends(get_current
     """
     Render create user form.
     """
+    roles = RoleService().read_all()
     return templates.TemplateResponse(
         "user/create.html",
         {
             "request": request,
+            "roles": [r.to_dict() for r in roles],
             "current_user": current_user,
             "current_path": request.url.path,
         },
@@ -50,11 +55,20 @@ async def view_user(request: Request, public_id: str, current_user: dict = Depen
     View a user.
     """
     user = UserService().read_by_public_id(public_id=public_id)
+    user_role = UserRoleService().read_by_user_id(user_id=user.id)
+    role_name = None
+    if user_role:
+        role = RoleService().read_by_id(id=user_role.role_id)
+        if role:
+            role_name = role.name
+    contacts = ContactService().read_by_user_id(user_id=user.id)
     return templates.TemplateResponse(
         "user/view.html",
         {
             "request": request,
             "user": user.to_dict(),
+            "role_name": role_name,
+            "contacts": [c.to_dict() for c in contacts],
             "current_user": current_user,
             "current_path": request.url.path,
         },
@@ -67,11 +81,19 @@ async def edit_user(request: Request, public_id: str, current_user: dict = Depen
     Edit a user.
     """
     user = UserService().read_by_public_id(public_id=public_id)
+    roles = RoleService().read_all()
+    user_role = UserRoleService().read_by_user_id(user_id=user.id)
+    contacts = ContactService().read_by_user_id(user_id=user.id)
     return templates.TemplateResponse(
         "user/edit.html",
         {
             "request": request,
             "user": user.to_dict(),
+            "roles": [r.to_dict() for r in roles],
+            "user_role": user_role.to_dict() if user_role else None,
+            "contacts": [c.to_dict() for c in contacts],
+            "parent_entity": "user",
+            "parent_id": user.id,
             "current_user": current_user,
             "current_path": request.url.path,
         },

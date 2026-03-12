@@ -8,6 +8,7 @@ from fastapi.templating import Jinja2Templates
 from entities.address_type.business.service import AddressTypeService
 from entities.vendor_type.business.service import VendorTypeService
 from entities.vendor.business.service import VendorService
+from entities.contact.business.service import ContactService
 from entities.taxpayer.business.service import TaxpayerService
 from entities.address.business.service import AddressService
 from entities.vendor_address.business.service import VendorAddressService
@@ -151,6 +152,7 @@ async def view_vendor(request: Request, public_id: str, current_user: dict = Dep
                             "attachment": attachment.to_dict()
                         })
         
+        contacts = ContactService().read_by_vendor_id(vendor_id=vendor.id)
         return templates.TemplateResponse(
             "vendor/view.html",
             {
@@ -164,6 +166,7 @@ async def view_vendor(request: Request, public_id: str, current_user: dict = Dep
                 "linked_folder": linked_folder,
                 "linked_drives": linked_drives,
                 "vendor_root_drive_public_id": vendor_root_drive_public_id,
+                "contacts": [c.to_dict() for c in contacts],
                 "current_user": current_user,
                 "current_path": request.url.path,
             },
@@ -245,6 +248,7 @@ async def edit_vendor(request: Request, public_id: str, current_user: dict = Dep
                             "attachment": attachment.to_dict()
                         })
         
+        contacts = ContactService().read_by_vendor_id(vendor_id=vendor.id)
         return templates.TemplateResponse(
             "vendor/edit.html",
             {
@@ -257,6 +261,9 @@ async def edit_vendor(request: Request, public_id: str, current_user: dict = Dep
                 "addresses_by_type": addresses_by_type,
                 "vendor_addresses_by_type": vendor_addresses_by_type,
                 "attachments": attachments_data,
+                "contacts": [c.to_dict() for c in contacts],
+                "parent_entity": "vendor",
+                "parent_id": vendor.id,
                 "current_user": current_user,
                 "current_path": request.url.path,
             },

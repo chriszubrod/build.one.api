@@ -50,7 +50,7 @@ class RoleModuleRepository:
             logger.error(f"Unexpected error during role module mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, role_id: str, module_id: str) -> RoleModule:
+    def create(self, *, role_id: int, module_id: int) -> RoleModule:
         """
         Create a new role module.
         """
@@ -128,7 +128,7 @@ class RoleModuleRepository:
             logger.error(f"Error during read role module by public ID: {error}")
             raise map_database_error(error)
 
-    def read_by_role_id(self, role_id: str) -> Optional[RoleModule]:
+    def read_by_role_id(self, role_id: int) -> Optional[RoleModule]:
         """
         Read a role module by role ID.
         """
@@ -146,7 +146,7 @@ class RoleModuleRepository:
             logger.error(f"Error during read role module by role ID: {error}")
             raise map_database_error(error)
 
-    def read_by_module_id(self, module_id: str) -> Optional[RoleModule]:
+    def read_by_module_id(self, module_id: int) -> Optional[RoleModule]:
         """
         Read a role module by module ID.
         """

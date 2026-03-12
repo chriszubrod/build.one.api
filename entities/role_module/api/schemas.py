@@ -7,10 +7,10 @@ from pydantic import BaseModel, Field
 
 
 class RoleModuleCreate(BaseModel):
-    role_id: str = Field(
+    role_id: int = Field(
         description="The ID of the role."
     )
-    module_id: str = Field(
+    module_id: int = Field(
         description="The ID of the module."
     )
 
@@ -19,9 +19,9 @@ class RoleModuleUpdate(BaseModel):
     row_version: str = Field(
         description="The row version of the role module (base64 encoded)."
     )
-    role_id: str = Field(
+    role_id: int = Field(
         description="The ID of the role."
     )
-    module_id: str = Field(
+    module_id: int = Field(
         description="The ID of the module."
     )

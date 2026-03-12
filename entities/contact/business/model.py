@@ -1,7 +1,7 @@
 # Python Standard Library Imports
-import base64
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, asdict
 from typing import Optional
+import base64
 
 # Third-party Imports
 
@@ -9,14 +9,22 @@ from typing import Optional
 
 
 @dataclass
-class RoleModule:
-    id: Optional[int]
+class Contact:
+    id: Optional[str]
     public_id: Optional[str]
     row_version: Optional[str]
     created_datetime: Optional[str]
     modified_datetime: Optional[str]
-    role_id: Optional[int]
-    module_id: Optional[int]
+    email: Optional[str]
+    office_phone: Optional[str]
+    mobile_phone: Optional[str]
+    fax: Optional[str]
+    notes: Optional[str]
+    user_id: Optional[int]
+    company_id: Optional[int]
+    customer_id: Optional[int]
+    project_id: Optional[int]
+    vendor_id: Optional[int]
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:
@@ -32,6 +40,6 @@ class RoleModule:
 
     def to_dict(self) -> dict:
         """
-        Convert the role module dataclass to a dictionary.
+        Convert the contact dataclass to a dictionary.
         """
         return asdict(self)

@@ -1,0 +1,117 @@
+/* Contact inline section styles */
+
+.contact-section {
+    margin-top: 1.5rem;
+}
+
+.contact-section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.contact-section-header h5 {
+    font-size: var(--font-size-action);
+    font-weight: var(--font-weight-regular);
+    color: var(--color-text);
+    margin: 0;
+}
+
+.contact-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 1rem;
+}
+
+.contact-table th,
+.contact-table td {
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--color-border, #e0e0e0);
+    font-size: var(--font-size-body);
+}
+
+.contact-table th {
+    font-weight: var(--font-weight-regular);
+    color: var(--color-text-secondary, #666);
+    font-size: var(--font-size-caption, 0.85rem);
+}
+
+.contact-table td {
+    color: var(--color-text);
+}
+
+.contact-table .contact-actions {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.contact-table .btn-sm {
+    padding: 0.25rem 0.5rem;
+    font-size: var(--font-size-caption, 0.85rem);
+}
+
+.contact-empty {
+    color: var(--color-text-secondary, #666);
+    font-style: italic;
+    padding: 0.5rem 0;
+}
+
+/* Inline edit form */
+.contact-form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr auto;
+    gap: 0.5rem;
+    align-items: end;
+    margin-bottom: 0.75rem;
+}
+
+.contact-form-row .form-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.contact-form-row .form-group label {
+    font-size: var(--font-size-caption, 0.85rem);
+    color: var(--color-text-secondary, #666);
+    margin-bottom: 0.25rem;
+}
+
+.contact-form-row .form-group input,
+.contact-form-row .form-group textarea {
+    padding: 0.375rem 0.5rem;
+    font-size: var(--font-size-body);
+    border: 1px solid var(--color-border, #e0e0e0);
+    border-radius: 4px;
+    font-family: inherit;
+}
+
+.contact-form-row .form-group textarea {
+    resize: vertical;
+    min-height: 2.25rem;
+    height: 2.25rem;
+}
+
+.contact-form-full-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.5rem;
+    align-items: end;
+    margin-bottom: 0.75rem;
+}
+
+.contact-add-form {
+    border: 1px solid var(--color-border, #e0e0e0);
+    border-radius: 4px;
+    padding: 1rem;
+    margin-top: 0.5rem;
+    background-color: var(--color-surface, #fafafa);
+}
+
+.contact-add-form-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    margin-top: 0.75rem;
+}

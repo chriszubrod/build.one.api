@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ role_module.role_id or 'Unknown Role' }} - {{ role_module.module_id or 'Unknown Module' }} - Build.One</title>
+    <title>{{ role_map.get(role_module.role_id, 'Unknown Role') }} - {{ module_map.get(role_module.module_id, 'Unknown Module') }} - Build.One</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -31,13 +31,13 @@
             <div class="col">
                 <div class="d-flex justify-content-between align-items-center">
                     <h1 class="h3 mb-0">
-                        <i class="fas fa-layer-group me-2"></i>Role Module: {{ role_module.role_id or 'Unknown Role' }} - {{ role_module.module_id or 'Unknown Module' }}
+                        <i class="fas fa-layer-group me-2"></i>Role Module: {{ role_map.get(role_module.role_id, 'Unknown Role') }} - {{ module_map.get(role_module.module_id, 'Unknown Module') }}
                     </h1>
                     <div>
                         <a href="/role_module/{{ role_module.public_id }}/edit" class="btn btn-light me-2">
                             <i class="fas fa-edit me-1"></i>Edit
                         </a>
-                        <a href="/role_modules/list" class="btn btn-outline-light">
+                        <a href="/role_module/list" class="btn btn-outline-light">
                             <i class="fas fa-arrow-left me-1"></i>Back to List
                         </a>
                     </div>
@@ -64,7 +64,7 @@
                                         <strong><i class="fas fa-user-tag me-1"></i>Role:</strong>
                                     </div>
                                     <div class="col-sm-9">
-                                        {{ role_module.role_id or 'Unknown Role' }}
+                                        {{ role_map.get(role_module.role_id, 'Unknown Role') }}
                                     </div>
                                 </div>
                             </div>
@@ -75,7 +75,7 @@
                                         <strong><i class="fas fa-puzzle-piece me-1"></i>Module:</strong>
                                     </div>
                                     <div class="col-sm-9">
-                                        {{ role_module.module_id or 'Unknown Module' }}
+                                        {{ module_map.get(role_module.module_id, 'Unknown Module') }}
                                     </div>
                                 </div>
                             </div>
@@ -124,7 +124,7 @@
                                 <a href="/role_module/{{ role_module.public_id }}/edit" class="btn btn-primary">
                                     <i class="fas fa-edit me-1"></i>Edit Role Module
                                 </a>
-                                <a href="/role_modules/list" class="btn btn-secondary">
+                                <a href="/role_module/list" class="btn btn-secondary">
                                     <i class="fas fa-list me-1"></i>View All Role Modules
                                 </a>
                                 <button type="button" class="btn btn-danger" onclick="deleteRoleModule()">
@@ -156,7 +156,7 @@
                     });
 
                     if (response.ok) {
-                        window.location.href = '/role_modules/list';
+                        window.location.href = '/role_module/list';
                     } else {
                         const contentType = response.headers.get('content-type');
                         if (contentType && contentType.includes('application/json')) {

@@ -42,7 +42,10 @@ class InvoiceLineItemRepository:
                 bill_line_item_id=getattr(row, "BillLineItemId", None),
                 expense_line_item_id=getattr(row, "ExpenseLineItemId", None),
                 bill_credit_line_item_id=getattr(row, "BillCreditLineItemId", None),
+                sub_cost_code_id=getattr(row, "SubCostCodeId", None),
                 description=getattr(row, "Description", None),
+                quantity=Decimal(str(getattr(row, "Quantity", None))) if getattr(row, "Quantity", None) is not None else None,
+                rate=Decimal(str(getattr(row, "Rate", None))) if getattr(row, "Rate", None) is not None else None,
                 amount=Decimal(str(getattr(row, "Amount", None))) if getattr(row, "Amount", None) is not None else None,
                 markup=Decimal(str(getattr(row, "Markup", None))) if getattr(row, "Markup", None) is not None else None,
                 price=Decimal(str(getattr(row, "Price", None))) if getattr(row, "Price", None) is not None else None,
@@ -63,7 +66,10 @@ class InvoiceLineItemRepository:
         bill_line_item_id: Optional[int] = None,
         expense_line_item_id: Optional[int] = None,
         bill_credit_line_item_id: Optional[int] = None,
+        sub_cost_code_id: Optional[int] = None,
         description: Optional[str] = None,
+        quantity: Optional[Decimal] = None,
+        rate: Optional[Decimal] = None,
         amount: Optional[Decimal] = None,
         markup: Optional[Decimal] = None,
         price: Optional[Decimal] = None,
@@ -81,10 +87,13 @@ class InvoiceLineItemRepository:
                         "BillLineItemId": bill_line_item_id,
                         "ExpenseLineItemId": expense_line_item_id,
                         "BillCreditLineItemId": bill_credit_line_item_id,
+                        "SubCostCodeId": sub_cost_code_id,
                         "Description": description,
-                        "Amount": float(amount) if amount is not None else None,
-                        "Markup": float(markup) if markup is not None else None,
-                        "Price": float(price) if price is not None else None,
+                        "Quantity": Decimal(str(quantity)) if quantity is not None else None,
+                        "Rate": Decimal(str(rate)) if rate is not None else None,
+                        "Amount": Decimal(str(amount)) if amount is not None else None,
+                        "Markup": Decimal(str(markup)) if markup is not None else None,
+                        "Price": Decimal(str(price)) if price is not None else None,
                         "IsDraft": 1 if is_draft else 0,
                     },
                 )
@@ -153,10 +162,13 @@ class InvoiceLineItemRepository:
                     "BillLineItemId": line_item.bill_line_item_id,
                     "ExpenseLineItemId": line_item.expense_line_item_id,
                     "BillCreditLineItemId": line_item.bill_credit_line_item_id,
+                    "SubCostCodeId": line_item.sub_cost_code_id,
                     "Description": line_item.description,
-                    "Amount": float(line_item.amount) if line_item.amount is not None else None,
-                    "Markup": float(line_item.markup) if line_item.markup is not None else None,
-                    "Price": float(line_item.price) if line_item.price is not None else None,
+                    "Quantity": Decimal(str(line_item.quantity)) if line_item.quantity is not None else None,
+                    "Rate": Decimal(str(line_item.rate)) if line_item.rate is not None else None,
+                    "Amount": Decimal(str(line_item.amount)) if line_item.amount is not None else None,
+                    "Markup": Decimal(str(line_item.markup)) if line_item.markup is not None else None,
+                    "Price": Decimal(str(line_item.price)) if line_item.price is not None else None,
                 }
                 if line_item.is_draft is not None:
                     params["IsDraft"] = 1 if line_item.is_draft else 0
@@ -169,6 +181,15 @@ class InvoiceLineItemRepository:
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during update invoice line item by ID: {error}")
+            raise map_database_error(error)
+
+    def nullify_bill_line_item_id(self, bill_line_item_id: int) -> None:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor=cursor, name="NullifyInvoiceLineItemsByBillLineItemId", params={"BillLineItemId": bill_line_item_id})
+        except Exception as error:
+            logger.error(f"Error nullifying invoice line items for bill_line_item_id={bill_line_item_id}: {error}")
             raise map_database_error(error)
 
     def delete_by_id(self, id: int) -> Optional[InvoiceLineItem]:

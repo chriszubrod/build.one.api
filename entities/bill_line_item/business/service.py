@@ -163,5 +163,7 @@ class BillLineItemService:
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
         if existing:
+            from entities.invoice_line_item.persistence.repo import InvoiceLineItemRepository
+            InvoiceLineItemRepository().nullify_bill_line_item_id(existing.id)
             return self.repo.delete_by_id(existing.id)
         return None

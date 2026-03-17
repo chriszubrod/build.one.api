@@ -12,6 +12,9 @@
         <h1>Generate Bills</h1>
         <div class="cl-page-actions">
             <a href="/contract-labor/list?status=ready" class="btn btn-secondary">Back to List</a>
+            {% if vendors_with_entries %}
+            <button type="button" class="btn btn-primary" id="generate-all-btn" onclick="generateAllBills()">Generate All Bills</button>
+            {% endif %}
         </div>
     </div>
 
@@ -35,8 +38,8 @@
             </div>
             <div class="cl-bill-card-actions">
                 {% if vendor_data.vendor_id and vendor_data.vendor_id != 'None' and vendor_data.vendor_id|string != 'None' %}
-                <a href="/api/v1/contract-labor/preview-pdf/{{ vendor_data.vendor_id }}" 
-                   target="_blank" 
+                <a href="/api/v1/contract-labor/preview-pdf/{{ vendor_data.vendor_id }}{% if billing_period %}?billing_period={{ billing_period }}{% endif %}"
+                   target="_blank"
                    class="btn btn-secondary">
                     Preview PDF
                 </a>
@@ -103,6 +106,17 @@
 
 {% block scripts %}
 <script>
+    const BILLING_PERIOD = {{ (billing_period or '')|tojson }};
+
+    // All vendor IDs with ready entries (excludes unassigned vendors)
+    const ALL_VENDOR_IDS = [
+        {% for vendor_data in vendors_with_entries %}
+        {% if vendor_data.vendor_id and vendor_data.vendor_id|string != 'None' %}
+        { id: {{ vendor_data.vendor_id }}, name: {{ (vendor_data.vendor_name or 'Unknown Vendor')|tojson }} },
+        {% endif %}
+        {% endfor %}
+    ];
+
     function toggleEntries(button, vendorId) {
         const entriesDiv = document.getElementById('entries-' + vendorId);
         if (entriesDiv.style.display === 'none') {
@@ -112,6 +126,69 @@
             entriesDiv.style.display = 'none';
             button.textContent = 'Show Line Items Summary';
         }
+    }
+
+    async function generateAllBills() {
+        if (ALL_VENDOR_IDS.length === 0) {
+            showToast('No vendors with assigned entries to generate bills for.', 'warning');
+            return;
+        }
+
+        const allBtn = document.getElementById('generate-all-btn');
+        allBtn.textContent = `Generating 1 of ${ALL_VENDOR_IDS.length}...`;
+        allBtn.disabled = true;
+
+        // Also disable all individual Generate Bills buttons
+        document.querySelectorAll('.cl-bill-card .btn-primary').forEach(btn => btn.disabled = true);
+
+        const totals = { bills_created: 0, bills_updated: 0, line_items_created: 0, entries_billed: 0, pdf_urls: 0, errors: [] };
+        const billingParam = BILLING_PERIOD ? `?billing_period=${encodeURIComponent(BILLING_PERIOD)}` : '';
+
+        for (let i = 0; i < ALL_VENDOR_IDS.length; i++) {
+            const vendor = ALL_VENDOR_IDS[i];
+            allBtn.textContent = `Generating ${i + 1} of ${ALL_VENDOR_IDS.length}: ${vendor.name}...`;
+
+            try {
+                const response = await fetch(`/api/v1/contract-labor/generate-bills/${vendor.id}${billingParam}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                });
+                const result = await response.json();
+
+                if (response.ok) {
+                    totals.bills_created += result.bills_created ?? 0;
+                    totals.bills_updated += result.bills_updated ?? 0;
+                    totals.line_items_created += result.line_items_created ?? 0;
+                    totals.entries_billed += result.entries_billed ?? 0;
+                    totals.pdf_urls += (result.pdf_urls ?? []).length;
+                    if (result.errors && result.errors.length > 0) {
+                        totals.errors.push(...result.errors.map(e => `${vendor.name}: ${e}`));
+                    }
+                } else {
+                    totals.errors.push(`${vendor.name}: ${result.detail || 'Failed to generate bills'}`);
+                }
+            } catch (error) {
+                totals.errors.push(`${vendor.name}: Network error`);
+            }
+        }
+
+        // Build summary message
+        const parts = [];
+        if (totals.bills_created > 0) parts.push(`${totals.bills_created} new`);
+        if (totals.bills_updated > 0) parts.push(`${totals.bills_updated} updated`);
+        const billPhrase = parts.length > 0 ? parts.join(' and ') + ' bill(s)' : '0 bill(s)';
+        let message = `All done. Generated ${billPhrase} with ${totals.line_items_created} line items.`;
+        if (totals.entries_billed > 0) message += ` Marked ${totals.entries_billed} entries as billed.`;
+        if (totals.pdf_urls > 0) message += ` ${totals.pdf_urls} PDF(s) uploaded.`;
+
+        if (totals.errors.length > 0) {
+            message += ` Warnings: ${totals.errors.join('; ')}`;
+            showToast(message, 'warning', 15000);
+        } else {
+            showToast(message, 'success', 8000);
+        }
+
+        setTimeout(() => window.location.reload(), 3000);
     }
 
     async function generatePdf(vendorId) {
@@ -126,7 +203,8 @@
         button.disabled = true;
 
         try {
-            const response = await fetch(`/api/v1/contract-labor/generate-bills/${vendorId}`, {
+            const billingParam = BILLING_PERIOD ? `?billing_period=${encodeURIComponent(BILLING_PERIOD)}` : '';
+            const response = await fetch(`/api/v1/contract-labor/generate-bills/${vendorId}${billingParam}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

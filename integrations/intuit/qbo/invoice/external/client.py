@@ -9,8 +9,10 @@ import httpx
 # Local Imports
 from integrations.intuit.qbo.invoice.external.schemas import (
     QboInvoice,
+    QboInvoiceCreate,
     QboInvoiceQueryResponse,
     QboInvoiceResponse,
+    QboInvoiceUpdate,
 )
 from integrations.intuit.qbo.base.errors import (
     QboError,
@@ -109,6 +111,35 @@ class QboInvoiceClient:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
+    def create_invoice(self, invoice: QboInvoiceCreate) -> QboInvoice:
+        """
+        Create an invoice in QuickBooks.
+
+        Args:
+            invoice: QboInvoiceCreate payload
+
+        Returns:
+            QboInvoice: The created invoice as returned by QBO
+        """
+        payload = invoice.model_dump(by_alias=True, exclude_none=True, mode="json")
+        data = self._request("POST", "/invoice", json=payload)
+        return QboInvoiceResponse(**data).invoice
+
+    def update_invoice(self, invoice: QboInvoiceUpdate) -> QboInvoice:
+        """
+        Update an invoice in QuickBooks (full replace — QBO requires sparse=False
+        or the full record to avoid losing existing lines).
+
+        Args:
+            invoice: QboInvoiceUpdate payload (must include Id and SyncToken)
+
+        Returns:
+            QboInvoice: The updated invoice as returned by QBO
+        """
+        payload = invoice.model_dump(by_alias=True, exclude_none=True, mode="json")
+        data = self._request("POST", "/invoice", json=payload)
+        return QboInvoiceResponse(**data).invoice
 
     def get_invoice(self, invoice_id: str) -> QboInvoice:
         """

@@ -242,6 +242,7 @@ async def import_excel(
 @router.get("/bills")
 async def bills_page(
     request: Request,
+    billing_period: Optional[str] = None,
     current_user: dict = Depends(get_current_user_web),
 ):
     """
@@ -249,15 +250,15 @@ async def bills_page(
     """
     service = ContractLaborService()
     line_item_repo = ContractLaborLineItemRepository()
-    
+
     # Get lookups for display
     projects = ProjectService().read_all()
     sub_cost_codes = SubCostCodeService().read_all()
     project_map = {p.id: p for p in projects}
     scc_map = {s.id: s for s in sub_cost_codes}
-    
-    # Get all ready entries
-    ready_entries = service.read_by_status(status="ready")
+
+    # Get ready entries, optionally filtered by billing period
+    ready_entries = service.read_by_status(status="ready", billing_period_start=billing_period)
     
     # Group by bill_vendor_id (or employee_name if no vendor assigned)
     vendor_groups = {}
@@ -353,6 +354,7 @@ async def bills_page(
         {
             "request": request,
             "vendors_with_entries": vendors_with_entries,
+            "billing_period": billing_period or "",
             "current_user": current_user,
             "current_path": request.url.path,
         },

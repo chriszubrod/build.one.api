@@ -7,6 +7,7 @@ from decimal import Decimal
 
 # Local Imports
 from integrations.intuit.qbo.vendorcredit.business.model import QboVendorCreditLine
+from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.persistence.repo import VendorCreditLineItemBillCreditLineItemMappingRepository
 from entities.bill_credit_line_item.business.service import BillCreditLineItemService
 from entities.bill_credit_line_item.business.model import BillCreditLineItem
 from entities.project.business.service import ProjectService
@@ -22,6 +23,7 @@ class VendorCreditLineItemConnector:
         self.bill_credit_line_item_service = BillCreditLineItemService()
         self.project_service = ProjectService()
         self.sub_cost_code_service = SubCostCodeService()
+        self.mapping_repo = VendorCreditLineItemBillCreditLineItemMappingRepository()
 
     def sync_from_qbo_line(
         self,
@@ -66,9 +68,25 @@ class VendorCreditLineItemConnector:
                 billable_amount=billable_amount,
                 is_draft=False,
             )
-            
+
+            # Create VendorCreditLine <-> BillCreditLineItem mapping so that
+            # LinkedTxn references can be resolved when syncing invoices to QBO.
+            # qbo_line.id is the local DB ID of the QboVendorCreditLine record,
+            # which is always populated by the time this connector is called.
+            if line_item and qbo_line.id:
+                try:
+                    self.mapping_repo.create(
+                        qbo_vendor_credit_line_id=qbo_line.id,
+                        bill_credit_line_item_id=line_item.id,
+                    )
+                except Exception as mapping_err:
+                    logger.warning(
+                        f"Created BillCreditLineItem {line_item.id} but could not create "
+                        f"VendorCreditLineItemBillCreditLineItem mapping: {mapping_err}"
+                    )
+
             return line_item
-            
+
         except Exception as e:
             logger.error(f"Error syncing QBO line {qbo_line.qbo_line_id}: {e}")
             return None

@@ -69,7 +69,7 @@ class QboInvoiceLine(BaseModel):
     Can be SalesItemLine, GroupLine, DescriptionOnlyLine, DiscountLine, or SubTotalLine.
     """
     model_config = ConfigDict(populate_by_name=True)
-    
+
     id: Optional[str] = Field(default=None, alias="Id")
     line_num: Optional[int] = Field(default=None, alias="LineNum")
     description: Optional[str] = Field(default=None, alias="Description")
@@ -90,6 +90,7 @@ class QboInvoiceLine(BaseModel):
     group_line_detail: Optional[QboGroupLineDetail] = Field(
         default=None, alias="GroupLineDetail"
     )
+    linked_txn: Optional[List["QboLinkedTxn"]] = Field(default=None, alias="LinkedTxn")
 
     @field_validator('id', mode='before')
     @classmethod

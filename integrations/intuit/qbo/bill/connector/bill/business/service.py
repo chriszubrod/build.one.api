@@ -293,10 +293,12 @@ class BillBillConnector:
         # Build QBO line items
         qbo_lines = []
         skipped_lines = []
+        line_num_to_line_item_id = {}
         for idx, line_item in enumerate(bill_line_items, start=1):
             qbo_line = self._build_qbo_line(line_item, idx)
             if qbo_line:
                 qbo_lines.append(qbo_line)
+                line_num_to_line_item_id[idx] = line_item.id
             else:
                 skipped_lines.append(line_item.id)
         
@@ -374,10 +376,26 @@ class BillBillConnector:
         
         logger.info(f"Stored local QboBill {local_qbo_bill.id}")
         
-        # Store QboBillLines locally
+        # Store QboBillLines locally and create line item mappings
         if created_bill.line:
+            from integrations.intuit.qbo.bill.connector.bill_line_item.business.service import BillLineItemConnector
+            line_connector = BillLineItemConnector()
+
             for qbo_line in created_bill.line:
-                self._store_qbo_bill_line(local_qbo_bill.id, qbo_line)
+                stored_line = self._store_qbo_bill_line(local_qbo_bill.id, qbo_line)
+
+                # Create BillLineItem <-> QboBillLine mapping using line_num match
+                if stored_line and qbo_line.line_num and qbo_line.line_num in line_num_to_line_item_id:
+                    bill_line_item_id = line_num_to_line_item_id[qbo_line.line_num]
+                    stored_line_id = int(stored_line.id) if isinstance(stored_line.id, str) else stored_line.id
+                    try:
+                        line_connector.create_mapping(
+                            bill_line_item_id=bill_line_item_id,
+                            qbo_bill_line_id=stored_line_id,
+                        )
+                        logger.info(f"Created line mapping: BillLineItem {bill_line_item_id} <-> QboBillLine {stored_line_id}")
+                    except ValueError as e:
+                        logger.warning(f"Could not create line mapping: {e}")
         
         # Create mapping
         qbo_bill_id = int(local_qbo_bill.id) if isinstance(local_qbo_bill.id, str) else local_qbo_bill.id
@@ -575,13 +593,16 @@ class BillBillConnector:
             logger.warning(f"No item mapping for line item {line_item.id}, skipping line")
             return None
 
-    def _store_qbo_bill_line(self, qbo_bill_id: int, qbo_line: QboBillLineSchema) -> None:
+    def _store_qbo_bill_line(self, qbo_bill_id: int, qbo_line: QboBillLineSchema):
         """
         Store a QBO Bill line locally.
-        
+
         Args:
             qbo_bill_id: Local QboBill database ID
             qbo_line: QBO Bill line from API response
+
+        Returns:
+            QboBillLine: The created local record, or None on failure
         """
         try:
             # Extract references from line detail
@@ -625,7 +646,7 @@ class BillBillConnector:
                     class_ref_name = detail.class_ref.name
                 billable_status = detail.billable_status
             
-            self.qbo_bill_line_repo.create(
+            return self.qbo_bill_line_repo.create(
                 qbo_bill_id=qbo_bill_id,
                 qbo_line_id=qbo_line.id,
                 line_num=qbo_line.line_num,
@@ -647,3 +668,4 @@ class BillBillConnector:
             )
         except Exception as e:
             logger.error(f"Failed to store QboBillLine: {e}")
+            return None

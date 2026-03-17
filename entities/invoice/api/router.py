@@ -18,6 +18,214 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["api", "invoice"])
 
 
+# ── TOC helpers ─────────────────────────────────────────────────────────────
+
+def _toc_source_label(source_type: str) -> str:
+    return {"BillLineItem": "Bill", "BillCreditLineItem": "Credit", "ExpenseLineItem": "Expense"}.get(source_type, "")
+
+
+def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
+    """
+    Generate the basic Table of Contents PDF page.
+    rows must be pre-sorted (Bill → Credit → Expense, then vendor name).
+    """
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER
+
+    BLUE = colors.HexColor("#1F3864")
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=letter,
+        leftMargin=0.75 * inch, rightMargin=0.75 * inch,
+        topMargin=0.5 * inch, bottomMargin=0.5 * inch,
+    )
+
+    # Columns: Date, Vendor, Invoice, Description, Type, Amount  (total = 504pt)
+    col_widths = [58, 130, 80, 124, 46, 66]
+    headers = ["Date", "Vendor", "Invoice", "Description", "Type", "Amount"]
+
+    table_data = [headers]
+    for r in rows:
+        price = r.get("price")
+        try:
+            amt_str = f"${float(price):,.2f}" if price is not None else "\u2014"
+        except (TypeError, ValueError):
+            amt_str = "\u2014"
+        table_data.append([
+            r.get("source_date", ""),
+            r.get("vendor_name", ""),
+            r.get("parent_number", ""),
+            r.get("description", "") or "",
+            _toc_source_label(r.get("source_type", "")),
+            amt_str,
+        ])
+
+    grand_total = sum(float(r.get("price") or 0) for r in rows)
+    table_data.append(["", "", "", "", "Total", f"${grand_total:,.2f}"])
+    n = len(table_data)
+
+    table = Table(table_data, colWidths=col_widths)
+    table.setStyle(TableStyle([
+        # Header row
+        ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE",     (0, 0), (-1, 0), 9),
+        ("TEXTCOLOR",    (0, 0), (-1, 0), BLUE),
+        ("TOPPADDING",   (0, 0), (-1, 0), 4),
+        ("BOTTOMPADDING",(0, 0), (-1, 0), 5),
+        ("LINEBELOW",    (0, 0), (-1, 0), 0.75, BLUE),
+        # Data rows
+        ("FONTNAME",     (0, 1), (-1, n - 2), "Helvetica"),
+        ("FONTSIZE",     (0, 1), (-1, n - 2), 9),
+        ("TEXTCOLOR",    (0, 1), (-1, n - 2), colors.black),
+        ("TOPPADDING",   (0, 1), (-1, n - 2), 3),
+        ("BOTTOMPADDING",(0, 1), (-1, n - 2), 3),
+        ("LINEBELOW",    (0, 1), (-1, n - 2), 0.25, colors.HexColor("#CCCCCC")),
+        # Total row
+        ("FONTNAME",     (0, n - 1), (-1, n - 1), "Helvetica-Bold"),
+        ("FONTSIZE",     (0, n - 1), (-1, n - 1), 9),
+        ("TOPPADDING",   (0, n - 1), (-1, n - 1), 5),
+        ("BOTTOMPADDING",(0, n - 1), (-1, n - 1), 4),
+        ("LINEABOVE",    (0, n - 1), (-1, n - 1), 0.75, colors.black),
+        # Alignment: Amount col right-aligned throughout; "Total" label right-aligned
+        ("ALIGN",        (-1, 0), (-1, -1), "RIGHT"),
+        ("ALIGN",        (-2, n - 1), (-2, n - 1), "RIGHT"),
+        # Padding
+        ("LEFTPADDING",  (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ]))
+
+    doc.build([
+        Paragraph("Table Of Contents", ParagraphStyle(
+            "TOCTitle", fontName="Helvetica-Bold", fontSize=13,
+            textColor=BLUE, alignment=TA_CENTER, spaceAfter=8,
+        )),
+        table,
+    ])
+    return buf.getvalue()
+
+
+def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
+    """
+    Generate the expanded Table of Contents PDF (grouped by cost code, subtotals per group).
+    rows must be pre-sorted (cost_code_num, then type, then vendor).
+    """
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER
+    from itertools import groupby
+
+    BLUE = colors.HexColor("#1F3864")
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=letter,
+        leftMargin=0.75 * inch, rightMargin=0.75 * inch,
+        topMargin=0.5 * inch, bottomMargin=0.5 * inch,
+    )
+
+    # Columns: CostCode, Date, Vendor, Invoice, Description, Type, Amount  (total = 504pt)
+    col_widths = [42, 54, 114, 74, 110, 42, 68]
+    headers = ["Cost Code", "Date", "Vendor", "Invoice", "Description", "Type", "Amount"]
+
+    table_data = [headers]
+    subtotal_indices: list[int] = []
+    spacer_indices: list[int] = []
+
+    for cc, group_iter in groupby(rows, key=lambda r: r.get("cost_code_number") or ""):
+        group_items = list(group_iter)
+        for r in group_items:
+            price = r.get("price")
+            try:
+                amt_str = f"${float(price):,.2f}" if price is not None else "\u2014"
+            except (TypeError, ValueError):
+                amt_str = "\u2014"
+            table_data.append([
+                cc,
+                r.get("source_date", ""),
+                r.get("vendor_name", ""),
+                r.get("parent_number", ""),
+                r.get("description", "") or "",
+                _toc_source_label(r.get("source_type", "")),
+                amt_str,
+            ])
+        subtotal = sum(float(r.get("price") or 0) for r in group_items)
+        table_data.append(["", "", "", "", "", "Subtotal", f"${subtotal:,.2f}"])
+        subtotal_indices.append(len(table_data) - 1)
+        # Blank spacer row between groups
+        table_data.append(["", "", "", "", "", "", ""])
+        spacer_indices.append(len(table_data) - 1)
+
+    # Remove trailing spacer
+    if spacer_indices and spacer_indices[-1] == len(table_data) - 1:
+        table_data.pop()
+        spacer_indices.pop()
+
+    grand_total = sum(float(r.get("price") or 0) for r in rows)
+    table_data.append(["", "", "", "", "", "Total", f"${grand_total:,.2f}"])
+    total_idx = len(table_data) - 1
+    n = len(table_data)
+
+    style_cmds = [
+        # Header
+        ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE",     (0, 0), (-1, 0), 9),
+        ("TEXTCOLOR",    (0, 0), (-1, 0), BLUE),
+        ("TOPPADDING",   (0, 0), (-1, 0), 4),
+        ("BOTTOMPADDING",(0, 0), (-1, 0), 5),
+        ("LINEBELOW",    (0, 0), (-1, 0), 0.75, BLUE),
+        # All non-header rows default
+        ("FONTNAME",     (0, 1), (-1, n - 1), "Helvetica"),
+        ("FONTSIZE",     (0, 1), (-1, n - 1), 9),
+        ("TEXTCOLOR",    (0, 1), (-1, n - 1), colors.black),
+        ("TOPPADDING",   (0, 1), (-1, n - 1), 3),
+        ("BOTTOMPADDING",(0, 1), (-1, n - 1), 3),
+        ("LINEBELOW",    (0, 1), (-1, n - 1), 0.25, colors.HexColor("#CCCCCC")),
+        # Alignment: Amount col and label col right-aligned throughout
+        ("ALIGN",        (-1, 0), (-1, -1), "RIGHT"),
+        ("ALIGN",        (-2, 0), (-2, -1), "RIGHT"),
+        # Padding
+        ("LEFTPADDING",  (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        # Total row
+        ("FONTNAME",     (0, total_idx), (-1, total_idx), "Helvetica-Bold"),
+        ("LINEABOVE",    (0, total_idx), (-1, total_idx), 0.75, colors.black),
+        ("TOPPADDING",   (0, total_idx), (-1, total_idx), 5),
+        ("BOTTOMPADDING",(0, total_idx), (-1, total_idx), 4),
+    ]
+    for idx in subtotal_indices:
+        style_cmds.extend([
+            ("FONTNAME",     (0, idx), (-1, idx), "Helvetica-Bold"),
+            ("LINEABOVE",    (0, idx), (-1, idx), 0.5, colors.HexColor("#888888")),
+            ("TOPPADDING",   (0, idx), (-1, idx), 4),
+        ])
+    for idx in spacer_indices:
+        style_cmds.extend([
+            ("TOPPADDING",   (0, idx), (-1, idx), 2),
+            ("BOTTOMPADDING",(0, idx), (-1, idx), 2),
+            ("LINEBELOW",    (0, idx), (-1, idx), 0, colors.white),
+        ])
+
+    table = Table(table_data, colWidths=col_widths)
+    table.setStyle(TableStyle(style_cmds))
+
+    doc.build([
+        Paragraph("Table Of Contents", ParagraphStyle(
+            "TOCTitle", fontName="Helvetica-Bold", fontSize=13,
+            textColor=BLUE, alignment=TA_CENTER, spaceAfter=8,
+        )),
+        table,
+    ])
+    return buf.getvalue()
+
+
 @router.post("/create/invoice")
 def create_invoice_router(body: InvoiceCreate, current_user: dict = Depends(get_current_user_api)):
     try:
@@ -91,6 +299,29 @@ def generate_invoice_packet_router(public_id: str, current_user: dict = Depends(
     if not line_items:
         raise HTTPException(status_code=400, detail="Invoice has no line items")
 
+    # Build TOC pages from enriched data (all line items, including those without attachments)
+    from entities.invoice.web.controller import _enrich_line_items
+    enriched_items = _enrich_line_items(line_items)
+
+    _type_order_map = {"BillLineItem": 0, "BillCreditLineItem": 1, "ExpenseLineItem": 2}
+
+    basic_toc_rows = sorted(enriched_items, key=lambda r: (
+        _type_order_map.get(r.get("source_type", ""), 9),
+        (r.get("vendor_name") or "").lower(),
+    ))
+    basic_toc_bytes = _build_toc_basic_pdf(basic_toc_rows)
+
+    def _expanded_sort_key(r):
+        cc = (r.get("cost_code_number") or "").strip()
+        try:
+            cc_num = float(cc)
+        except (ValueError, TypeError):
+            cc_num = float("inf")
+        return (cc_num, cc.lower(), _type_order_map.get(r.get("source_type", ""), 9), (r.get("vendor_name") or "").lower())
+
+    expanded_toc_rows = sorted(enriched_items, key=_expanded_sort_key)
+    expanded_toc_bytes = _build_toc_expanded_pdf(expanded_toc_rows)
+
     bill_ids = []
     expense_ids = []
     credit_ids = []
@@ -102,50 +333,74 @@ def generate_invoice_packet_router(public_id: str, current_user: dict = Depends(
         elif li.source_type == "BillCreditLineItem" and li.bill_credit_line_item_id:
             credit_ids.append(li.bill_credit_line_item_id)
 
-    attachment_ids = []
+    # Collect (type_order, vendor_name_lower, attachment_id) for deterministic ordering:
+    # Bill (0) → BillCredit (1) → Expense (2), then vendor name ascending within each type.
+    ordered_entries = []  # list of (type_order, vendor_name_lower, attachment_id)
     with get_connection() as conn:
         cursor = conn.cursor()
         if bill_ids:
             ph = ",".join("?" * len(bill_ids))
             cursor.execute(f"""
-                SELECT blia.AttachmentId
+                SELECT blia.AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
                 FROM dbo.BillLineItemAttachment blia
+                JOIN dbo.BillLineItem bli ON bli.Id = blia.BillLineItemId
+                JOIN dbo.Bill b ON b.Id = bli.BillId
+                LEFT JOIN dbo.Vendor v ON v.Id = b.VendorId
                 WHERE blia.BillLineItemId IN ({ph})
-                ORDER BY blia.BillLineItemId, blia.AttachmentId
             """, bill_ids)
-            attachment_ids.extend(row.AttachmentId for row in cursor.fetchall())
-        if expense_ids:
-            ph = ",".join("?" * len(expense_ids))
-            cursor.execute(f"""
-                SELECT elia.AttachmentId
-                FROM dbo.ExpenseLineItemAttachment elia
-                WHERE elia.ExpenseLineItemId IN ({ph})
-                ORDER BY elia.ExpenseLineItemId, elia.AttachmentId
-            """, expense_ids)
-            attachment_ids.extend(row.AttachmentId for row in cursor.fetchall())
+            for row in cursor.fetchall():
+                ordered_entries.append((0, row.VendorNameLower, row.AttachmentId))
         if credit_ids:
             ph = ",".join("?" * len(credit_ids))
             cursor.execute(f"""
-                SELECT bclia.AttachmentId
+                SELECT bclia.AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
                 FROM dbo.BillCreditLineItemAttachment bclia
+                JOIN dbo.BillCreditLineItem bcli ON bcli.Id = bclia.BillCreditLineItemId
+                JOIN dbo.BillCredit bc ON bc.Id = bcli.BillCreditId
+                LEFT JOIN dbo.Vendor v ON v.Id = bc.VendorId
                 WHERE bclia.BillCreditLineItemId IN ({ph})
-                ORDER BY bclia.BillCreditLineItemId, bclia.AttachmentId
             """, credit_ids)
-            attachment_ids.extend(row.AttachmentId for row in cursor.fetchall())
+            for row in cursor.fetchall():
+                ordered_entries.append((1, row.VendorNameLower, row.AttachmentId))
+        if expense_ids:
+            ph = ",".join("?" * len(expense_ids))
+            cursor.execute(f"""
+                SELECT elia.AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
+                FROM dbo.ExpenseLineItemAttachment elia
+                JOIN dbo.ExpenseLineItem eli ON eli.Id = elia.ExpenseLineItemId
+                JOIN dbo.Expense e ON e.Id = eli.ExpenseId
+                LEFT JOIN dbo.Vendor v ON v.Id = e.VendorId
+                WHERE elia.ExpenseLineItemId IN ({ph})
+            """, expense_ids)
+            for row in cursor.fetchall():
+                ordered_entries.append((2, row.VendorNameLower, row.AttachmentId))
         cursor.close()
 
-    if not attachment_ids:
+    if not ordered_entries:
         raise HTTPException(status_code=400, detail="No PDF attachments found on line items")
 
+    ordered_entries.sort(key=lambda x: (x[0], x[1]))
+    attachment_ids = [x[2] for x in ordered_entries]
+
     att_service = AttachmentService()
-    attachments = att_service.read_by_ids(attachment_ids)
-    if not attachments:
+    att_list = att_service.read_by_ids(attachment_ids)
+    if not att_list:
         raise HTTPException(status_code=400, detail="No attachment records found")
+
+    att_map = {a.id: a for a in att_list}
+    attachments_sorted = [att_map[aid] for aid in attachment_ids if aid in att_map]
 
     storage = AzureBlobStorage()
     writer = PdfWriter()
+
+    # Prepend both TOC pages before the attachment images
+    for toc_bytes in [basic_toc_bytes, expanded_toc_bytes]:
+        toc_reader = PdfReader(io.BytesIO(toc_bytes))
+        for page in toc_reader.pages:
+            writer.add_page(page)
+
     skipped = 0
-    for att in attachments:
+    for att in attachments_sorted:
         if not att.blob_url:
             skipped += 1
             continue

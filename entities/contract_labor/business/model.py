@@ -167,6 +167,7 @@ class ContractLaborLineItem:
     markup: Optional[Decimal]          # Markup percentage (e.g., 0.05 for 5%)
     price: Optional[Decimal]           # Calculated: (Hours / 8 * Rate) * (1 + Markup)
     is_billable: Optional[bool]        # Whether this line is billable
+    is_overhead: Optional[bool]        # True = bill to company overhead (no project)
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

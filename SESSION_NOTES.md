@@ -1,5 +1,255 @@
 # Session Notes
 
+## Session: Contract Labor Entity Module — Deep Dive, Bug Fixes & Bill Generation (March 16, 2026)
+
+### What Was Done
+
+#### Full Module Review & Two Deep-Dive Bug Fix Passes
+
+Performed a comprehensive review of the Contract Labor entity module: `entities/contract_labor/`, `templates/contract_labor/`, and `entities/contract_labor/business/bill_service.py`. Fixed 13 bugs across two passes.
+
+**Bug 1 — Vendor sort A-Z not working** (`entities/contract_labor/sql/dbo.contract_labor.sql`)
+- `ReadContractLaborsPaginated` ordered by `v.[Name] ASC` but all entries had NULL VendorId (assigned during review step), so sort did nothing.
+- Fixed: `ISNULL(v.[Name], cl.[EmployeeName]) ASC`.
+
+**Bug 2 — BillLineItemId wiped on every line item save** (sql + repo + router)
+- SQL UPDATE sproc didn't have a `@BillLineItemId` parameter — field was silently reset to NULL on each save.
+- Repo had the param commented out; router didn't pass the existing value.
+- Fixed: added `@BillLineItemId` with CASE WHEN guard to sproc; repo passes it; router reads `existing_item.bill_line_item_id` and passes it through.
+
+**Bug 3 — "Too many arguments" on Save & Mark Ready** (`entities/contract_labor/persistence/line_item_repo.py`)
+- Repo was passing `BillLineItemId` before the sproc had the parameter (from an earlier partial fix).
+- Fixed: kept in sync — both sproc and repo now include `BillLineItemId`.
+
+**Bug 4 — Dead billing endpoints** (`entities/contract_labor/api/router.py`)
+- `GET /billing/summary` and `POST /billing/create-bills` called non-existent service methods.
+- Fixed: removed both dead endpoints.
+
+**Bug 5 — Import preview crash on tuple unpack** (`entities/contract_labor/business/import_service.py`)
+- `get_import_preview()` assigned `self._parse_row(row, row_num)` to a single variable and called `.get()` on the returned tuple — immediate AttributeError.
+- Fixed: `parsed, skip_reason = self._parse_row(...)` throughout.
+
+**Bug 6 — Import preview used hardcoded filename** (`entities/contract_labor/business/import_service.py`)
+- `get_import_preview()` called `load_workbook(io.BytesIO(file_content))` ignoring the actual filename, breaking `.csv` detection.
+- Fixed: added `filename` parameter; delegates to `_load_excel_rows()`.
+
+**Bug 7 — Variable shadowing corrupts bill total** (`entities/contract_labor/business/bill_service.py`)
+- Inner loop declared `total_amount = Decimal("0")` which shadowed the outer bill total. PDF packet received only the last SCC group's subtotal, not the full bill amount.
+- Fixed: renamed inner accumulator vars to `scc_amount` / `scc_price`.
+
+**Bug 8 — Non-billable items included in total_amount** (`entities/contract_labor/business/bill_service.py`)
+- `total_amount` summed all line items regardless of `IsBillable`.
+- Fixed: `sum(... for item in items if item["line_item"].is_billable is not False)`.
+
+**Bug 9 — Non-billable items shown with real amount on PDF** (`entities/contract_labor/business/bill_service.py`)
+- PDF used the item's actual `price` for non-billable items instead of $0.00.
+- Fixed: `amount = "$0.00" if li.is_billable is False else f"${float(li.price or 0):,.2f}"`.
+
+**Bug 10 — Non-billable SCC groups included in PDF** (`entities/contract_labor/business/bill_service.py`)
+- SCC groups where all items are non-billable still generated PDF sections with $0.00 subtotals.
+- Fixed: track `any_billable` flag; skip groups where no billable items exist.
+
+**Bug 11 — Zero markup corrupted to NULL on save (JS)** (`templates/contract_labor/edit.html`)
+- `markupPercent / 100 || null` evaluates to `null` when `markupPercent = 0`.
+- Fixed: `markup: markupPercent / 100` (never use `|| null` for numeric fields).
+
+**Bug 12 — Zero markup not displayed on edit page (Jinja2)** (`templates/contract_labor/edit.html`)
+- `value="{{ item.markup * 100 if item.markup else '' }}"` — Jinja2 treats `Decimal('0')` as falsy, showing blank.
+- Fixed: `value="{{ (item.markup * 100) if item.markup is not none else '' }}"`.
+
+**Bug 13 — Entries with no project-assigned line items silently skipped** (`entities/contract_labor/business/bill_service.py`)
+- If no line items had a `project` assigned, the entry was silently excluded from the bill with no feedback.
+- Fixed: added warning to `result["errors"]` for each skipped entry.
+
+#### Features Added
+
+**1. Scroll position restoration** (`templates/contract_labor/list.html`)
+- Edit link saves `document.getElementById('content').scrollTop` to `sessionStorage`.
+- On `DOMContentLoaded`, restores via double `requestAnimationFrame` (waits for list render).
+
+**2. Auto-populate one line item on edit page** (`templates/contract_labor/edit.html`)
+- If no `.cl-line-item` elements exist at page load, calls `addLineItem()` automatically.
+
+#### Operational Work
+
+**Reversed incorrect billing run (2026-01-31 and 2026-02-28)**
+- Generate Bills for 2026-02-15 incorrectly marked ALL billing periods as billed.
+- Used a Python script to reset 148 entries to their correct status (pending_review or ready), delete 41 draft bills, and clear 85 BillLineItem FK references from ContractLaborLineItems.
+- Left 2026-01-15 entries intact (correctly billed).
+
+**Deleted 16 incorrect draft bills (2026-02-15 run)**
+- Reset 2026-02-15 entries back to `ready` status after deletion.
+
+**8h/day compliance review (all 6 main subcontractors)**
+- Verified Brayan, Emilson, Elmer, Wilmer all total exactly 8.00h per day.
+- Denis had 2 days at 7h — corrected by user.
+- Selvin has intentional sub-8h days — left as-is by user's decision.
+
+**Marked Selvin's "DO NOT BILL" line item IsBillable=false**
+- ContractLaborLineItem ID=206 ("Met with Tanner. DO NOT BILL.") confirmed and verified as `IsBillable=false`.
+
+### Files Modified
+- `entities/contract_labor/sql/dbo.contract_labor.sql` — ORDER BY fix, BillLineItemId in all SELECT/UPDATE sprocs
+- `entities/contract_labor/persistence/line_item_repo.py` — BillLineItemId in update params
+- `entities/contract_labor/api/router.py` — removed dead billing endpoints, pass existing `bill_line_item_id` on update
+- `entities/contract_labor/business/bill_service.py` — variable shadowing fix, non-billable total/PDF fixes, all-non-billable group skip, missing-project warning
+- `entities/contract_labor/business/import_service.py` — tuple unpack fix, filename parameter for `get_import_preview`
+- `templates/contract_labor/list.html` — scroll position save/restore
+- `templates/contract_labor/edit.html` — auto-add line item, zero markup Jinja2 + JS fixes
+
+---
+
+## Session: Invoice Entity Module — Deep Dive, Bug Fixes & PDF Packet TOC (March 16, 2026)
+
+### What Was Done
+
+#### Deep Dive & Bug Fix Pass on Invoice Entity Module
+
+Performed a comprehensive review of `/entities/invoice`, `/entities/invoice_line_item`, `/entities/invoice_attachment`, `/entities/invoice_line_item_attachment`, and related templates. Identified and fixed 5 bugs.
+
+**Bug 1 — InvoiceLineItem delete: wrong cascade order** (`entities/invoice_line_item/business/service.py`)
+- `delete_by_public_id()` tried to delete the `Attachment` record before the `InvoiceLineItemAttachment` join record, causing FK violation. After the silent catch, the join record delete was skipped, leaving the InvoiceLineItem delete to fail on its own FK.
+- Fixed: correct order — read attachment info → delete join record → delete blob (best-effort) → delete Attachment record. Each step in its own try/except.
+
+**Bug 2 — complete_invoice project_id type mismatch** (`entities/invoice/business/service.py`)
+- `project_service.read_by_id(id=str(invoice.project_id))` passed a `str` but `ProjectService.read_by_id` expects `int`.
+- Fixed: removed `str()` cast.
+
+**Bug 3 — 404 crash on invalid invoice public_id** (`entities/invoice/web/controller.py`)
+- Both `view_invoice` and `edit_invoice` called `.to_dict()` on a potentially-None invoice, raising AttributeError instead of 404.
+- Fixed: added `if not invoice: raise HTTPException(status_code=404)` before any attribute access.
+
+**Bug 4 — saveInvoice() returned void, Complete ignored save failure** (`templates/invoice/edit.html`)
+- The Complete Invoice submit handler had no signal from `saveInvoice()` about whether the save succeeded. If the save failed, Complete would proceed with stale DB state.
+- Fixed: `saveInvoice()` now returns `true`/`false`; submit handler checks the return value and bails early on `false`.
+
+**Bug 5 — Falsy 0 display bug for zero-value amounts** (`templates/invoice/edit.html`, `templates/invoice/create.html`)
+- `buildRowHTML` and `reAddLineItem` used `||` short-circuit which treated `0` as falsy, showing `null` instead of `$0.00` for zero-value amount/markup/price fields.
+- Fixed: replaced with explicit `!== null && !== ''` guards in both templates.
+
+#### Features Added
+
+**1. Line items sort: Type → Vendor ascending**
+- Server-side sort in `edit_invoice` after `_enrich_line_items`: `(type_order, vendor_name.lower())` — Bill (0) → BillCredit (1) → Expense (2), then vendor A→Z.
+- Client-side `sortLineItemsTable()` uses the same compound key so newly loaded items (via "Load Billable Items") stay in sync with server order.
+
+**2. PDF Packet pre-flight missing attachment warning**
+- Added `getIncludedRowsMissingPDF()` in `edit.html` that scans included rows for items with a source record (`data-parent-public-id`) but no attachment (`data-attachment-id` empty).
+- If any found, `generatePacket()` shows a `confirm()` dialog listing each item (type, ref number, vendor) before proceeding. Manual line items are excluded from the warning.
+
+**3. PDF Packet TOC pages** (`entities/invoice/api/router.py`)
+- Two Table of Contents pages are now prepended to every generated PDF packet, before the attachment images.
+- **Basic TOC**: Ordered Bill → Credit → Expense, then vendor A→Z. Columns: Date, Vendor, Invoice, Description, Type, Amount. Grand total row.
+- **Expanded TOC**: Ordered by CostCode number (numeric ascending), then type, then vendor. Columns: Cost Code, Date, Vendor, Invoice, Description, Type, Amount. Subtotal row per CostCode group + grand total.
+- Styled with `reportlab` (Helvetica font, dark navy blue `#1F3864` headers) to match provided sample PDFs.
+- "Type" column shows "Bill", "Credit", or "Expense" derived from `source_type` — no new schema field needed.
+- TOC includes ALL invoice line items (including those without attachments); the merged pages that follow only include items with PDFs.
+
+**4. CostCode enrichment in `_enrich_line_items()`** (`entities/invoice/web/controller.py`)
+- All three source queries (bill, expense, credit) now join `dbo.CostCode` via `SubCostCode.CostCodeId`.
+- Returns `cost_code_number` and `cost_code_name` (parent CostCode) alongside existing `sub_cost_code_number/name`.
+- Used by the expanded TOC to group by CostCode rather than SubCostCode.
+
+### Files Modified
+- `entities/invoice/web/controller.py` — HTTPException import, 404 guards in view/edit, type+vendor sort in edit_invoice, CostCode join in all three enrichment queries, `cost_code_number/name` in result maps and defaults
+- `entities/invoice/business/service.py` — removed `str()` cast on `project_id` in `complete_invoice`
+- `entities/invoice/api/router.py` — `_toc_source_label()`, `_build_toc_basic_pdf()`, `_build_toc_expanded_pdf()` helper functions; TOC generation + prepend in `generate_invoice_packet_router`; expanded sort key uses `cost_code_number`
+- `entities/invoice_line_item/business/service.py` — delete cascade order fix (join record → blob → Attachment), each step in own try/except
+- `templates/invoice/edit.html` — `saveInvoice()` bool return, Complete guard on save failure, falsy 0 fixes in `buildRowHTML`/`reAddLineItem`, `getIncludedRowsMissingPDF()` pre-flight check in `generatePacket()`, `sortLineItemsTable()` compound sort key
+- `templates/invoice/create.html` — falsy 0 fixes in `buildRowHTML`/`reAddLineItem`
+
+---
+
+## Session: Expense Entity Module — Bug Fixes & Scheduler Cleanup (March 13, 2026)
+
+### What Was Done
+
+#### Deep Dive & 9-Bug Fix Pass on Expense Entity Module
+
+Performed a comprehensive review of `/entities/expense`, `/entities/expense_line_item`, `/entities/expense_line_item_attachment`, and `/templates/expense`. Identified and fixed 9 bugs.
+
+**Bug 1 — Auto-save race on Complete Expense** (`templates/expense/edit.html`)
+- `handleCompleteExpense()` was canceling the debounced auto-save timer instead of flushing it
+- Fixed: await `autoSaveExpense()` before sending the complete request (mirrors Bill fix)
+
+**Bug 2 — Delete without auto-save guard** (`templates/expense/edit.html`)
+- `deleteExpense()` did not set `isSaving = true` before canceling the timer, allowing a pending auto-save to fire after delete
+- Fixed: set `isSaving = true` at the top of `deleteExpense()`
+
+**Bug 3 — Float precision loss on Decimal fields** (`entities/expense/api/router.py`, `entities/expense_line_item/api/router.py`)
+- `float(body.total_amount)` and similar conversions introduced floating-point rounding errors on financial values
+- Fixed: replaced all `float(...)` with `Decimal(str(...)) if value is not None else None`
+
+**Bug 4 — Float precision in complete_expense()** (`entities/expense/business/service.py`)
+- `complete_expense()` passed `float(expense.total_amount)` to internal services
+- Fixed: same `Decimal(str(...))` pattern applied throughout
+
+**Bug 5 — Wrong module fallback in _upload_attachments_to_module_folder** (`entities/expense/business/service.py`)
+- Fell back to "Bills" module if "Expenses"/"Expense" not found, uploading expense files into the Bills SharePoint folder
+- Also had a last-resort `read_all()[0]` fallback which could silently upload to any random module
+- Fixed: return `{"success": False, "message": "Expense module not found..."}` if neither "Expenses" nor "Expense" found
+
+**Bug 6 — Success flag ignored synced_count** (`entities/expense/business/service.py`)
+- `_upload_attachments_to_module_folder` and `_sync_to_excel_workbook` returned `"success": synced_count > 0 or not errors` — zero files with no errors returned success=False
+- Fixed: changed to `"success": not errors`
+
+**Bug 7 — Expense 404 crash in web controller** (`entities/expense/web/controller.py`)
+- `view_expense` called `expense.to_dict()` without null-checking, crashing with AttributeError for missing expenses
+- Fixed: added `if not expense: raise HTTPException(status_code=404)`
+
+**Bug 8 — Missing cascade delete on ExpenseLineItem** (`entities/expense_line_item/business/service.py`)
+- `delete_by_public_id()` deleted the ExpenseLineItem directly, leaving orphaned ExpenseLineItemAttachment, Attachment records, and Azure blobs
+- Fixed: cascade delete order — blob → Attachment record → ExpenseLineItemAttachment link → ExpenseLineItem
+
+**Bug 9 — Raw SQL in ExpenseLineItemAttachment repo** (`entities/expense_line_item_attachment/persistence/repo.py`, `sql/dbo.expense_line_item_attachment.sql`)
+- `read_by_expense_line_item_public_ids()` built a raw SQL query with an IN clause instead of using a stored procedure
+- Fixed: replaced with `call_procedure("ReadExpenseLineItemAttachmentsByExpenseLineItemPublicIds", ...)` using STRING_SPLIT
+- Also added FK constraints, UNIQUE constraint, and indexes to the SQL table definition (with idempotent migration blocks)
+
+#### Removed Expense Processing from BillAgent Scheduler
+
+- Identified that `core/ai/agents/bill_agent/scheduler.py` was running both `run_bill_folder_processing` and `run_expense_folder_processing` every 30 minutes
+- Removed the `# --- Expense processing ---` block (lines 37–56) at user's request
+- Updated docstring and logger message to no longer reference ExpenseAgent
+
+### Files Modified
+- `entities/expense/business/service.py` — Decimal precision fix, module fallback fix, success flag fix
+- `entities/expense/api/router.py` — Decimal precision fix in update payload
+- `entities/expense/web/controller.py` — 404 guard in view_expense
+- `entities/expense_line_item/business/service.py` — cascade delete (blob → attachment → link → line item)
+- `entities/expense_line_item/api/router.py` — Decimal precision fix in create/update payloads
+- `entities/expense_line_item_attachment/persistence/repo.py` — replaced raw SQL with stored procedure call
+- `entities/expense_line_item_attachment/sql/dbo.expense_line_item_attachment.sql` — FK constraints, UNIQUE constraint, indexes, new `ReadExpenseLineItemAttachmentsByExpenseLineItemPublicIds` sproc
+- `templates/expense/edit.html` — auto-save flush on complete, isSaving guard on delete
+- `core/ai/agents/bill_agent/scheduler.py` — removed expense processing block
+
+### Pending
+- Run SQL migration: `python scripts/run_sql.py entities/expense_line_item_attachment/sql/dbo.expense_line_item_attachment.sql`
+
+---
+
+## Session: BillLineItem Delete & QBO Sync Deduplication Fix (March 11, 2026)
+
+### What Was Fixed
+
+#### 1. BillLineItem Delete FK Violation
+- **Bug**: Deleting a BillLineItem failed with `FK_InvoiceLineItem_BillLineItem` constraint violation when an InvoiceLineItem referenced it
+- **Root cause**: `BillLineItemService.delete_by_public_id()` didn't handle the InvoiceLineItem FK dependency, and the FK has no CASCADE DELETE
+- **Fix**: Added `NullifyInvoiceLineItemsByBillLineItemId` stored procedure that sets `BillLineItemId = NULL` on referencing InvoiceLineItem rows. Called from `BillLineItemService.delete_by_public_id()` before deleting the BillLineItem. This preserves the InvoiceLineItem records (description, amount, etc.) while breaking the FK link.
+
+#### 2. QBO Sync Line Item Deduplication
+- **Bug**: Bill with `public_id=4AE71E1F-A92F-4DF8-A5F2-C6CD24D9DAC8` had two BillLineItems — one with an attachment (original), one linked to QBO (duplicate created by sync)
+- **Root cause**: `sync_to_qbo_bill()` stored QboBillLine records locally but never created `BillLineItemBillLine` mappings. When a subsequent `sync_from_qbo` ran, QBO lines appeared unmapped, so `BillLineItemConnector.sync_from_qbo_bill_line()` created duplicate BillLineItems.
+- **Fix**: After storing QboBillLines in `sync_to_qbo_bill()`, now creates `BillLineItemBillLine` mappings by matching `line_num` between the request lines and QBO API response lines. Also changed `_store_qbo_bill_line()` to return the created record (was void) so its ID can be used for the mapping.
+
+### Files Modified
+- `entities/bill_line_item/business/service.py` — nullify InvoiceLineItem FKs before delete
+- `entities/invoice_line_item/sql/dbo.invoice_line_item.sql` — new `NullifyInvoiceLineItemsByBillLineItemId` stored procedure
+- `entities/invoice_line_item/persistence/repo.py` — new `nullify_bill_line_item_id()` method
+- `integrations/intuit/qbo/bill/connector/bill/business/service.py` — `line_num_to_line_item_id` tracking, line item mapping creation in `sync_to_qbo_bill()`, `_store_qbo_bill_line()` returns created record
+
+---
+
 ## Session: Contact Entity Module (March 11, 2026)
 
 ### What Was Built

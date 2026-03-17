@@ -269,9 +269,9 @@ class ContractLaborRepository:
             logger.error(f"Error during read contract labors by billing period: {error}")
             raise map_database_error(error)
 
-    def read_by_status(self, status: str) -> list[ContractLabor]:
+    def read_by_status(self, status: str, billing_period_start: Optional[str] = None) -> list[ContractLabor]:
         """
-        Read all contract labor entries with a specific status.
+        Read all contract labor entries with a specific status, optionally filtered by billing period.
         """
         try:
             with get_connection() as conn:
@@ -279,7 +279,7 @@ class ContractLaborRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadContractLaborsByStatus",
-                    params={"Status": status},
+                    params={"Status": status, "BillingPeriodStart": billing_period_start},
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]

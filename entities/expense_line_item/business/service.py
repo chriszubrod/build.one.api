@@ -156,10 +156,59 @@ class ExpenseLineItemService:
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[ExpenseLineItem]:
         """
-        Delete an expense line item by public ID.
+        Delete an expense line item by public ID, cascading to its attachment.
+
+        Process:
+        1. Find the ExpenseLineItemAttachment link for this line item
+        2. If found: delete the Attachment record + Azure blob, then delete the link
+        3. Delete the ExpenseLineItem record
         """
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
-        if existing:
-            return self.repo.delete_by_id(existing.id)
-        return None
+        if not existing:
+            return None
+
+        # Step 1-2: Clean up attachment (1-1 relationship)
+        try:
+            from entities.expense_line_item_attachment.persistence.repo import ExpenseLineItemAttachmentRepository
+            from entities.attachment.business.service import AttachmentService
+            from shared.storage import AzureBlobStorage, AzureBlobStorageError
+
+            attachment_link = ExpenseLineItemAttachmentRepository().read_by_expense_line_item_id(
+                expense_line_item_id=existing.id
+            )
+            if attachment_link:
+                attachment_service = AttachmentService()
+                attachment = attachment_service.read_by_id(id=attachment_link.attachment_id) if attachment_link.attachment_id else None
+                if attachment:
+                    if attachment.blob_url:
+                        try:
+                            AzureBlobStorage().delete_file(attachment.blob_url)
+                        except Exception as e:
+                            import logging
+                            logging.getLogger(__name__).warning(
+                                "Could not delete blob %s for attachment %s: %s",
+                                attachment.blob_url, attachment.id, e,
+                            )
+                    try:
+                        attachment_service.delete_by_public_id(public_id=attachment.public_id)
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            "Could not delete attachment record %s: %s", attachment.id, e
+                        )
+                try:
+                    ExpenseLineItemAttachmentRepository().delete_by_id(id=attachment_link.id)
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "Could not delete ExpenseLineItemAttachment %s: %s", attachment_link.id, e
+                    )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Error during attachment cleanup for ExpenseLineItem %s: %s", existing.id, e
+            )
+
+        # Step 3: Delete the line item
+        return self.repo.delete_by_id(existing.id)

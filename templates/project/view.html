@@ -110,7 +110,7 @@
             <div class="customer-detail-card-body">
                 {% if modules %}
                     {% for module in modules %}
-                        {% if module.name == 'Bills' %}
+                        {% if module.name in ['Bills', 'Expenses', 'Invoices'] %}
                             {% set module_id = module.id | int %}
                             {% set module_folder = module_folders.get(module_id) if module_folders else None %}
                             <div class="customer-detail-row" style="border-bottom: 1px solid #e0e0e0; padding: 1rem 0;">

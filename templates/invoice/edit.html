@@ -101,6 +101,9 @@
                                 <button type="button" class="btn btn-secondary btn-sm" id="loadBillableBtn" onclick="loadBillableItems()">
                                     Load Billable Items
                                 </button>
+                                <button type="button" class="btn btn-secondary btn-sm" id="toggleManualFormBtn" onclick="toggleManualForm()">
+                                    + Manual Line Item
+                                </button>
                                 <button type="button" class="btn btn-primary btn-sm" onclick="generatePacket()" id="generatePacketBtn">
                                     Generate PDF Packet
                                 </button>
@@ -163,7 +166,7 @@
                                             <td style="text-align: right;">{% if li.amount is not none %}${{ li.amount | format_amount }}{% else %}—{% endif %}</td>
                                             <td style="text-align: right;">{% if li.markup is not none and li.markup != 0 %}{{ "%.2f"|format(li.markup) }}%{% else %}—{% endif %}</td>
                                             <td style="text-align: right;">{% if li.price is not none %}${{ li.price | format_amount }}{% else %}—{% endif %}</td>
-                                            <td style="text-align: center;">{% if li.get and li.get('attachment_public_id') %}<a href="/api/v1/view/attachment/{{ li.get('attachment_public_id') }}" target="_blank" class="attachment-link" title="View PDF">📄</a>{% elif li.get and li.get('parent_public_id') %}<a href="{{ '/bill/' if li.source_type == 'BillLineItem' else '/expense/' if li.source_type == 'ExpenseLineItem' else '/bill-credit/' }}{{ li.get('parent_public_id') }}/edit?return_to=/invoice/{{ invoice.public_id }}/edit" class="attachment-link attachment-link--missing" title="Edit source record to add attachment">📎</a>{% else %}—{% endif %}</td>
+                                            <td style="text-align: center;">{% if li.get and li.get('attachment_public_id') %}<a href="/api/v1/view/attachment/{{ li.get('attachment_public_id') }}" target="_blank" class="attachment-link" title="View PDF">📄</a>{% elif li.source_type == 'Manual' %}<a href="#" class="attachment-link attachment-link--upload" title="Upload PDF" onclick="triggerManualAttachmentUpload('{{ li.public_id }}', event)">📎</a>{% elif li.get and li.get('parent_public_id') %}<a href="{{ '/bill/' if li.source_type == 'BillLineItem' else '/expense/' if li.source_type == 'ExpenseLineItem' else '/bill-credit/' }}{{ li.get('parent_public_id') }}/edit?return_to=/invoice/{{ invoice.public_id }}/edit" class="attachment-link attachment-link--missing" title="Edit source record to add attachment">📎</a>{% else %}—{% endif %}</td>
                                         </tr>
                                         {% endfor %}
                                     </tbody>
@@ -176,6 +179,43 @@
                                         </tr>
                                     </tfoot>
                                 </table>
+                            </div>
+                            <!-- Hidden file input for manual line item attachment upload -->
+                            <input type="file" id="manual-attachment-input" style="display:none;" accept=".pdf,image/*,.doc,.docx">
+                            <!-- Manual Line Item Form -->
+                            <div id="manual-form-section" style="display:none; margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid var(--color-border);">
+                                <h6 style="margin: 0 0 0.75rem; font-size: 0.85rem; font-weight: 600; color: var(--color-text-secondary); text-transform: uppercase; letter-spacing: 0.04em;">Add Manual Line Item</h6>
+                                <div class="invoice-form-group-row" style="align-items: flex-end; flex-wrap: wrap; gap: 0.75rem;">
+                                    <div class="invoice-form-group" style="flex: 2; min-width: 180px;">
+                                        <label class="invoice-form-label">Description <span class="required">*</span></label>
+                                        <input type="text" id="manual-description" class="invoice-form-control" placeholder="Line item description" autocomplete="off">
+                                    </div>
+                                    <div class="invoice-form-group" style="flex: 1.5; min-width: 160px;">
+                                        <label class="invoice-form-label">Sub Cost Code</label>
+                                        <select id="manual-sub-cost-code" class="invoice-form-control" autocomplete="off">
+                                            <option value="">— None —</option>
+                                            {% for scc in sub_cost_codes %}
+                                            <option value="{{ scc.id }}">{{ scc.number }} — {{ scc.name }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                    <div class="invoice-form-group" style="flex: 0 0 auto; min-width: 110px;">
+                                        <label class="invoice-form-label">Amount ($)</label>
+                                        <input type="number" id="manual-amount" class="invoice-form-control" placeholder="0.00" step="0.01" min="0" style="max-width: 110px;" autocomplete="off" oninput="calcManualPrice()">
+                                    </div>
+                                    <div class="invoice-form-group" style="flex: 0 0 auto; min-width: 90px;">
+                                        <label class="invoice-form-label">Markup (%)</label>
+                                        <input type="number" id="manual-markup" class="invoice-form-control" placeholder="0.00" step="0.01" style="max-width: 90px;" autocomplete="off" oninput="calcManualPrice()">
+                                    </div>
+                                    <div class="invoice-form-group" style="flex: 0 0 auto; min-width: 110px;">
+                                        <label class="invoice-form-label">Price ($)</label>
+                                        <input type="number" id="manual-price" class="invoice-form-control" placeholder="0.00" step="0.01" style="max-width: 110px;" autocomplete="off">
+                                    </div>
+                                    <div class="invoice-form-group" style="flex: 0 0 auto; align-self: flex-end;">
+                                        <button type="button" class="btn btn-primary btn-sm" id="addManualBtn" onclick="addManualLineItem()">Add</button>
+                                        <button type="button" class="btn btn-secondary btn-sm" onclick="toggleManualForm()" style="margin-left: 0.25rem;">Cancel</button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -440,6 +480,8 @@
         let attachCell;
         if (attachId) {
             attachCell = `<a href="/api/v1/view/attachment/${attachId}" target="_blank" class="attachment-link" title="View PDF">📄</a>`;
+        } else if (sourceType === 'Manual' && included) {
+            attachCell = `<a href="#" class="attachment-link attachment-link--upload" title="Upload PDF" onclick="triggerManualAttachmentUpload('${publicId}', event)">📎</a>`;
         } else if (parentPid) {
             const editUrl = editUrlForSource(sourceType, parentPid);
             attachCell = editUrl
@@ -460,9 +502,9 @@
             <td>${refLink(sourceType, row.getAttribute('data-parent-public-id'), row.getAttribute('data-parent-number'))}</td>
             <td>${row.getAttribute('data-description') || '—'}</td>
             <td>${costCode}</td>
-            <td style="text-align: right;">${fmt(amount ? parseFloat(amount) : null)}</td>
-            <td style="text-align: right;">${fmtMarkup(markup ? parseFloat(markup) : null)}</td>
-            <td style="text-align: right;">${fmt(price ? parseFloat(price) : null)}</td>
+            <td style="text-align: right;">${fmt(amount !== null && amount !== undefined && amount !== '' ? parseFloat(amount) : null)}</td>
+            <td style="text-align: right;">${fmtMarkup(markup !== null && markup !== undefined && markup !== '' ? parseFloat(markup) : null)}</td>
+            <td style="text-align: right;">${fmt(price !== null && price !== undefined && price !== '' ? parseFloat(price) : null)}</td>
             <td style="text-align: center;">${attachCell}</td>
         `;
     }
@@ -551,6 +593,7 @@
                 }
             }
 
+            sortLineItemsTable();
             updateTotal();
             updateCount();
 
@@ -613,6 +656,19 @@
         section.style.display = '';
     }
 
+    function sortLineItemsTable() {
+        const tbody = document.getElementById('line-items-tbody');
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        const typeOrder = { 'BillLineItem': 0, 'BillCreditLineItem': 1, 'ExpenseLineItem': 2, 'Manual': 3 };
+        rows.sort((a, b) => {
+            const ta = typeOrder[a.getAttribute('data-source-type')] ?? 9;
+            const tb = typeOrder[b.getAttribute('data-source-type')] ?? 9;
+            if (ta !== tb) return ta - tb;
+            return (a.getAttribute('data-vendor-name') || '').localeCompare(b.getAttribute('data-vendor-name') || '');
+        });
+        rows.forEach(row => tbody.appendChild(row));
+    }
+
     function addLineItemRow(li, extra) {
         const tbody = document.getElementById('line-items-tbody');
         const tr = document.createElement('tr');
@@ -635,6 +691,179 @@
         tr.innerHTML = buildRowHTML(li.source_type, true, li.public_id, tr);
         tbody.appendChild(tr);
     }
+
+    function toggleManualForm() {
+        const section = document.getElementById('manual-form-section');
+        const btn = document.getElementById('toggleManualFormBtn');
+        const visible = section.style.display !== 'none';
+        section.style.display = visible ? 'none' : '';
+        btn.textContent = visible ? '+ Manual Line Item' : '− Manual Line Item';
+        if (!visible) {
+            document.getElementById('manual-description').focus();
+        }
+    }
+
+    function calcManualPrice() {
+        const amount = parseFloat(document.getElementById('manual-amount').value);
+        const markup = parseFloat(document.getElementById('manual-markup').value);
+        if (!isNaN(amount)) {
+            const pct = !isNaN(markup) ? markup : 0;
+            document.getElementById('manual-price').value = (amount * (1 + pct / 100)).toFixed(2);
+        }
+    }
+
+    async function addManualLineItem() {
+        const desc = document.getElementById('manual-description').value.trim();
+        if (!desc) { showToast('Description is required', 'error'); return; }
+
+        const amountRaw = document.getElementById('manual-amount').value;
+        const markupRaw = document.getElementById('manual-markup').value;
+        const priceRaw  = document.getElementById('manual-price').value;
+        const sccSelect = document.getElementById('manual-sub-cost-code');
+        const sccId     = sccSelect.value ? parseInt(sccSelect.value, 10) : null;
+
+        const amount = amountRaw !== '' ? parseFloat(amountRaw) : null;
+        const markupPct = markupRaw !== '' ? parseFloat(markupRaw) : null;
+        const markupFrac = markupPct !== null ? markupPct / 100 : null;
+        const price  = priceRaw  !== '' ? parseFloat(priceRaw)  : null;
+
+        // Parse SCC number and name from the selected option text (e.g. "1.00 — Foundation")
+        let sccNumber = '', sccName = '';
+        if (sccId) {
+            const optText = sccSelect.options[sccSelect.selectedIndex]?.text || '';
+            const dash = optText.indexOf(' \u2014 ');
+            if (dash !== -1) {
+                sccNumber = optText.substring(0, dash).trim();
+                sccName   = optText.substring(dash + 3).trim();
+            } else {
+                sccNumber = optText.trim();
+            }
+        }
+
+        const invoicePublicId = document.getElementById('invoice_public_id').value;
+        btnBusy('addManualBtn', 'Adding…');
+        try {
+            const resp = await fetch('/api/v1/create/invoice_line_item', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    invoice_public_id: invoicePublicId,
+                    source_type: 'Manual',
+                    sub_cost_code_id: sccId,
+                    description: desc,
+                    amount: amount,
+                    markup: markupFrac,
+                    price: price,
+                }),
+            });
+            if (!resp.ok) {
+                const err = await resp.json();
+                showToast(err.detail || 'Failed to add line item', 'error');
+                return;
+            }
+            const li = await resp.json();
+
+            addLineItemRow(li, {
+                parent_number: '',
+                source_date: '',
+                vendor_name: '',
+                parent_public_id: '',
+                scc_number: sccNumber,
+                scc_name: sccName,
+                attachment_public_id: '',
+            });
+            sortLineItemsTable();
+            updateTotal();
+            updateCount();
+
+            // Show table if it was hidden (no previous line items)
+            document.getElementById('line-items-empty').style.display = 'none';
+            document.getElementById('line-items-table-wrapper').style.display = '';
+
+            // Reset form fields, keep form open for follow-on entries
+            document.getElementById('manual-description').value = '';
+            document.getElementById('manual-amount').value = '';
+            document.getElementById('manual-markup').value = '';
+            document.getElementById('manual-price').value = '';
+            sccSelect.value = '';
+            document.getElementById('manual-description').focus();
+
+            showToast('Manual line item added', 'success');
+        } catch (err) {
+            showToast(err.message || 'Failed to add line item', 'error');
+        } finally {
+            btnReady('addManualBtn');
+        }
+    }
+
+    let _pendingAttachUploadPublicId = null;
+
+    function triggerManualAttachmentUpload(lineItemPublicId, event) {
+        event.preventDefault();
+        _pendingAttachUploadPublicId = lineItemPublicId;
+        const input = document.getElementById('manual-attachment-input');
+        input.value = '';
+        input.click();
+    }
+
+    document.getElementById('manual-attachment-input').addEventListener('change', async function() {
+        const file = this.files[0];
+        if (!file || !_pendingAttachUploadPublicId) return;
+
+        const publicId = _pendingAttachUploadPublicId;
+        _pendingAttachUploadPublicId = null;
+
+        const row = document.querySelector(`tr[data-public-id="${publicId}"]`);
+        if (!row) return;
+
+        const tds = row.querySelectorAll('td');
+        const attachTd = tds[tds.length - 1];
+        const origHtml = attachTd.innerHTML;
+        attachTd.textContent = '⏳';
+
+        try {
+            // 1. Upload file to Azure Blob Storage
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('category', 'invoice_line_item');
+
+            const uploadResp = await fetch('/api/v1/upload/attachment', {
+                method: 'POST',
+                body: formData,
+            });
+            if (!uploadResp.ok) {
+                const err = await uploadResp.json();
+                showToast(err.detail || 'Upload failed', 'error');
+                attachTd.innerHTML = origHtml;
+                return;
+            }
+            const attachment = await uploadResp.json();
+
+            // 2. Link attachment to this invoice line item
+            const linkResp = await fetch('/api/v1/create/invoice-line-item-attachment', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    invoice_line_item_public_id: publicId,
+                    attachment_public_id: attachment.public_id,
+                }),
+            });
+            if (!linkResp.ok) {
+                const err = await linkResp.json();
+                showToast(err.detail || 'Failed to link attachment', 'error');
+                attachTd.innerHTML = origHtml;
+                return;
+            }
+
+            // 3. Update row data and cell
+            row.setAttribute('data-attachment-id', attachment.public_id);
+            attachTd.innerHTML = `<a href="/api/v1/view/attachment/${attachment.public_id}" target="_blank" class="attachment-link" title="View PDF">📄</a>`;
+            showToast('Attachment uploaded', 'success');
+        } catch (err) {
+            showToast(err.message || 'Upload failed', 'error');
+            attachTd.innerHTML = origHtml;
+        }
+    });
 
     async function removeLineItem(publicId, btnEl) {
         const row = btnEl.closest('tr');
@@ -675,9 +904,9 @@
             invoice_public_id: invoicePublicId,
             source_type: sourceType,
             description: row.getAttribute('data-description') || null,
-            amount: row.getAttribute('data-amount') ? parseFloat(row.getAttribute('data-amount')) : null,
-            markup: row.getAttribute('data-markup') ? parseFloat(row.getAttribute('data-markup')) : null,
-            price: row.getAttribute('data-price') ? parseFloat(row.getAttribute('data-price')) : null,
+            amount: (v => v !== null && v !== '' ? parseFloat(v) : null)(row.getAttribute('data-amount')),
+            markup: (v => v !== null && v !== '' ? parseFloat(v) : null)(row.getAttribute('data-markup')),
+            price: (v => v !== null && v !== '' ? parseFloat(v) : null)(row.getAttribute('data-price')),
             is_draft: true,
         };
         if (fkField && sourceId) body[fkField] = parseInt(sourceId);
@@ -737,14 +966,16 @@
             if (!response.ok) {
                 const error = await response.json();
                 showToast(error.detail || 'Failed to save', 'error');
-                return;
+                return false;
             }
 
             const invoice = await response.json();
             document.getElementById('row_version').value = invoice.row_version;
             showToast('Invoice saved', 'success', 2000);
+            return true;
         } catch (error) {
             showToast(error.message || 'Failed to save', 'error');
+            return false;
         } finally {
             btnReady('saveDraftBtn');
         }
@@ -754,7 +985,11 @@
         e.preventDefault();
         btnBusy('completeBtn', 'Completing…');
 
-        await saveInvoice();
+        const saved = await saveInvoice();
+        if (!saved) {
+            btnReady('completeBtn');
+            return;
+        }
 
         const publicId = document.getElementById('invoice_public_id').value;
         try {
@@ -778,9 +1013,44 @@
         }
     });
 
+    function getIncludedRowsMissingPDF() {
+        const rows = document.querySelectorAll('#line-items-tbody tr[data-included="true"]');
+        const missing = [];
+        rows.forEach(row => {
+            const attachId = row.getAttribute('data-attachment-id');
+            const parentPid = row.getAttribute('data-parent-public-id');
+            // Only flag rows that have a source record but are missing a PDF attachment.
+            // Manual lines (no parentPid) are not expected to have attachments.
+            if (!attachId && parentPid) {
+                missing.push({
+                    sourceType: row.getAttribute('data-source-type') || '',
+                    vendorName: row.getAttribute('data-vendor-name') || '',
+                    parentNumber: row.getAttribute('data-parent-number') || '',
+                });
+            }
+        });
+        return missing;
+    }
+
     async function generatePacket() {
         const publicId = document.getElementById('invoice_public_id').value;
         if (!publicId) { showToast('Save the invoice first', 'error'); return; }
+
+        // Pre-flight: warn if any included source items are missing a PDF attachment.
+        const missingPDF = getIncludedRowsMissingPDF();
+        if (missingPDF.length > 0) {
+            const lines = missingPDF.map(m => {
+                const type = m.sourceType.replace('LineItem', '') || 'Unknown';
+                const ref = m.parentNumber ? ` #${m.parentNumber}` : '';
+                const vendor = m.vendorName ? ` — ${m.vendorName}` : '';
+                return `  \u2022 ${type}${ref}${vendor}`;
+            }).join('\n');
+            const proceed = confirm(
+                `${missingPDF.length} line item${missingPDF.length > 1 ? 's are' : ' is'} missing a PDF attachment and will be excluded from the packet:\n\n${lines}\n\nProceed anyway?`
+            );
+            if (!proceed) return;
+        }
+
         btnBusy('generatePacketBtn', 'Generating…');
         const pdfTab = window.open('about:blank', '_blank');
         try {

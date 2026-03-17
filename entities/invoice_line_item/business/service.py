@@ -29,7 +29,10 @@ class InvoiceLineItemService:
         bill_line_item_id: Optional[int] = None,
         expense_line_item_id: Optional[int] = None,
         bill_credit_line_item_id: Optional[int] = None,
+        sub_cost_code_id: Optional[int] = None,
         description: Optional[str] = None,
+        quantity: Optional[Decimal] = None,
+        rate: Optional[Decimal] = None,
         amount: Optional[Decimal] = None,
         markup: Optional[Decimal] = None,
         price: Optional[Decimal] = None,
@@ -50,7 +53,10 @@ class InvoiceLineItemService:
             bill_line_item_id=bill_line_item_id,
             expense_line_item_id=expense_line_item_id,
             bill_credit_line_item_id=bill_credit_line_item_id,
+            sub_cost_code_id=sub_cost_code_id,
             description=description,
+            quantity=quantity,
+            rate=rate,
             amount=amount,
             markup=markup,
             price=price,
@@ -80,10 +86,13 @@ class InvoiceLineItemService:
         bill_line_item_id: int = None,
         expense_line_item_id: int = None,
         bill_credit_line_item_id: int = None,
+        sub_cost_code_id: int = None,
         description: str = None,
-        amount: float = None,
-        markup: float = None,
-        price: float = None,
+        quantity: Decimal = None,
+        rate: Decimal = None,
+        amount: Decimal = None,
+        markup: Decimal = None,
+        price: Decimal = None,
         is_draft: bool = None,
     ) -> Optional[InvoiceLineItem]:
         existing = self.read_by_public_id(public_id=public_id)
@@ -109,8 +118,14 @@ class InvoiceLineItemService:
             existing.expense_line_item_id = expense_line_item_id
         if bill_credit_line_item_id is not None:
             existing.bill_credit_line_item_id = bill_credit_line_item_id
+        if sub_cost_code_id is not None:
+            existing.sub_cost_code_id = sub_cost_code_id
         if description is not None:
             existing.description = description
+        if quantity is not None:
+            existing.quantity = Decimal(str(quantity))
+        if rate is not None:
+            existing.rate = Decimal(str(rate))
         if amount is not None:
             existing.amount = Decimal(str(amount))
         if markup is not None:
@@ -129,6 +144,7 @@ class InvoiceLineItemService:
 
         from entities.invoice_line_item_attachment.business.service import InvoiceLineItemAttachmentService
         from entities.attachment.business.service import AttachmentService
+        from shared.storage import AzureBlobStorage
         ilia_service = InvoiceLineItemAttachmentService()
         attachment_service = AttachmentService()
 
@@ -136,14 +152,32 @@ class InvoiceLineItemService:
             invoice_line_item_id=existing.id
         )
         for lia in line_item_attachments:
+            # Read attachment record before breaking the FK link
+            att = None
             try:
                 if lia.attachment_id:
                     att = attachment_service.read_by_id(id=lia.attachment_id)
-                    if att:
-                        attachment_service.delete_by_public_id(public_id=att.public_id)
+            except Exception:
+                pass
+
+            # Delete the join record FIRST (releases FK_InvoiceLineItemAttachment_Attachment
+            # and FK_InvoiceLineItemAttachment_InvoiceLineItem constraints)
+            try:
                 if lia.id:
                     ilia_service.repo.delete_by_id(lia.id)
             except Exception:
                 pass
+
+            # Then delete blob and attachment record
+            if att:
+                try:
+                    if att.blob_url:
+                        AzureBlobStorage().delete_file(att.blob_url)
+                except Exception:
+                    pass
+                try:
+                    attachment_service.delete_by_public_id(public_id=att.public_id)
+                except Exception:
+                    pass
 
         return self.repo.delete_by_id(existing.id)

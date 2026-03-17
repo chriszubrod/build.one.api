@@ -104,10 +104,13 @@ class QboInvoiceService:
 
         # Process each invoice with retry logic and batch delays
         synced_invoices = []
+        changed_invoices = []  # Only invoices actually modified (not sync_token-skipped)
         failed_invoices = []
 
         for i, qbo_invoice in enumerate(qbo_invoices):
             try:
+                # Capture pre-sync token to detect whether the invoice was skipped
+                existing_before = existing_map.get(qbo_invoice.id)
                 local_invoice = with_retry(
                     self._upsert_invoice,
                     qbo_invoice,
@@ -118,6 +121,9 @@ class QboInvoiceService:
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
                 synced_invoices.append(local_invoice)
+                # Only propagate to modules if the invoice was actually created or updated
+                if existing_before is None or existing_before.sync_token != qbo_invoice.sync_token:
+                    changed_invoices.append(local_invoice)
                 logger.debug(f"Upserted invoice {qbo_invoice.id} ({i + 1}/{len(qbo_invoices)})")
             except Exception as e:
                 logger.error(f"Failed to upsert invoice {qbo_invoice.id}: {e}")
@@ -130,9 +136,9 @@ class QboInvoiceService:
         if failed_invoices:
             logger.warning(f"Failed to upsert {len(failed_invoices)} invoices: {failed_invoices}")
         
-        # Sync to modules if requested
+        # Sync to modules if requested (only changed invoices — skipped ones haven't changed)
         if sync_to_modules:
-            self._sync_to_invoices(synced_invoices)
+            self._sync_to_invoices(changed_invoices)
         
         return synced_invoices
 
@@ -320,7 +326,7 @@ class QboInvoiceService:
                     discount_amt=discount_amt,
                 )
             else:
-                self.line_repo.create(
+                new_line = self.line_repo.create(
                     qbo_invoice_id=qbo_invoice_id,
                     qbo_line_id=line.id,
                     line_num=line.line_num,
@@ -339,6 +345,9 @@ class QboInvoiceService:
                     discount_rate=discount_rate,
                     discount_amt=discount_amt,
                 )
+                # Update cache so a retry or second pass on the same invoice doesn't duplicate the line
+                if existing_lines_map is not None and line.id:
+                    existing_lines_map[(qbo_invoice_id, line.id)] = new_line
 
     def _sync_to_invoices(self, invoices: List[QboInvoice]) -> None:
         """
@@ -352,9 +361,10 @@ class QboInvoiceService:
         
         # Import here to avoid circular dependencies
         from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
-        
+
         connector = InvoiceInvoiceConnector()
-        
+        connector.preload_caches()
+
         for invoice in invoices:
             try:
                 # Get invoice lines for this invoice

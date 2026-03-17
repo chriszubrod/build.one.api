@@ -131,7 +131,7 @@ class ContractLaborBillService:
         except Exception:
             return f"{billing_period.replace('-', '.')}.{project_abbreviation}"
 
-    def generate_bills_for_vendor(self, vendor_id: int) -> dict:
+    def generate_bills_for_vendor(self, vendor_id: int, billing_period_start: Optional[str] = None) -> dict:
         """
         Generate bills for all ready entries for a vendor.
         Groups by project and creates one bill per project.
@@ -160,8 +160,8 @@ class ContractLaborBillService:
             result["errors"].append(f"Vendor with ID {vendor_id} not found")
             return result
 
-        # Get all ready entries for this vendor
-        ready_entries = self.cl_service.read_by_status(status="ready")
+        # Get ready entries for this vendor, filtered by billing period if provided
+        ready_entries = self.cl_service.read_by_status(status="ready", billing_period_start=billing_period_start)
         vendor_entries = [e for e in ready_entries if e.bill_vendor_id == vendor_id]
 
         if not vendor_entries:
@@ -178,46 +178,62 @@ class ContractLaborBillService:
         project_groups = {}
         entry_ids_by_project = {}
 
+        all_entry_ids = {entry.id for entry in vendor_entries}
         for entry in vendor_entries:
             line_items = self.line_item_repo.read_by_contract_labor_id(contract_labor_id=entry.id)
-            
+            entry_added = False
             for li in line_items:
                 project_id = li.project_id
-                if not project_id:
-                    continue  # Skip line items without a project
-                
-                if project_id not in project_groups:
-                    project_groups[project_id] = []
-                    entry_ids_by_project[project_id] = set()
-                
-                project_groups[project_id].append({
+                if not project_id and not li.is_overhead:
+                    continue  # Skip line items without a project (unless overhead)
+
+                group_key = project_id  # None for overhead items
+
+                if group_key not in project_groups:
+                    project_groups[group_key] = []
+                    entry_ids_by_project[group_key] = set()
+
+                project_groups[group_key].append({
                     "line_item": li,
                     "entry": entry,
-                    "project": project_map.get(project_id),
+                    "project": project_map.get(project_id) if project_id else None,
                     "scc": scc_map.get(li.sub_cost_code_id),
                 })
-                entry_ids_by_project[project_id].add(entry.id)
+                entry_ids_by_project[group_key].add(entry.id)
+                entry_added = True
 
-        # Generate a bill for each project
+            if not entry_added:
+                result["errors"].append(
+                    f"Entry ID {entry.id} ({entry.employee_name}, {entry.work_date}) skipped: "
+                    f"no line items with a project assigned"
+                )
+
+        # Generate a bill for each project (project_id=None means overhead)
         for project_id, items in project_groups.items():
             try:
-                project = project_map.get(project_id)
-                if not project:
-                    result["errors"].append(f"Project ID {project_id} not found")
-                    continue
+                if project_id is not None:
+                    project = project_map.get(project_id)
+                    if not project:
+                        result["errors"].append(f"Project ID {project_id} not found")
+                        continue
+                    project_abbr = project.abbreviation or project.name[:10]
+                    memo = f"Contract Labor - {project.abbreviation or project.name}"
+                else:
+                    project = None
+                    project_abbr = "OVERHEAD"
+                    memo = "Contract Labor - Overhead"
 
                 first_entry = items[0]["entry"]
                 billing_period = first_entry.billing_period_start or first_entry.work_date
                 if not billing_period:
                     billing_period = datetime.now().strftime("%Y-%m-%d")
 
-                total_amount = sum(Decimal(str(item["line_item"].price or 0)) for item in items)
-                invoice_number = self.generate_invoice_number(
-                    billing_period,
-                    project.abbreviation or project.name[:10],
+                total_amount = sum(
+                    Decimal(str(item["line_item"].price or 0)) for item in items
+                    if item["line_item"].is_billable is not False
                 )
+                invoice_number = self.generate_invoice_number(billing_period, project_abbr)
                 due_date = self.get_due_date(billing_period)
-                memo = f"Contract Labor - {project.abbreviation or project.name}"
 
                 # Check for existing bill (edit path)
                 existing_bill = self.bill_service.repo.read_by_bill_number_and_vendor_id(
@@ -285,37 +301,42 @@ class ContractLaborBillService:
                         first_item = group[0]
                         li_first = first_item["line_item"]
                         scc = first_item["scc"]
-                        total_amount = Decimal("0")
-                        total_price = Decimal("0")
+                        scc_amount = Decimal("0")
+                        scc_price = Decimal("0")
                         any_billable = False
                         for item in group:
                             li = item["line_item"]
-                            markup_val = Decimal(str(li.markup or 0))
-                            price = Decimal(str(li.price or 0))
-                            amount = price / (Decimal("1") + markup_val) if markup_val else price
-                            total_amount += amount
-                            total_price += price
-                            if li.is_billable if li.is_billable is not None else True:
+                            if li.is_billable is not False:
+                                markup_val = Decimal(str(li.markup or 0))
+                                price = Decimal(str(li.price or 0))
+                                amount = price / (Decimal("1") + markup_val) if markup_val else price
+                                scc_amount += amount
+                                scc_price += price
                                 any_billable = True
 
                         description = (scc.description if scc else None) or li_first.description or ""
-                        if total_amount:
-                            effective_markup = (total_price - total_amount) / total_amount
+
+                        # Skip creating a BillLineItem if all items in this group are non-billable
+                        if not any_billable:
+                            continue
+
+                        if scc_amount:
+                            effective_markup = (scc_price - scc_amount) / scc_amount
                         else:
                             effective_markup = Decimal("0")
 
                         bli = self.bill_line_item_service.create(
                             bill_public_id=bill.public_id,
                             sub_cost_code_id=scc_id,
-                            project_public_id=project.public_id,
+                            project_public_id=project.public_id if project else None,
                             description=description,
                             quantity=1,
-                            rate=total_amount,
-                            amount=total_amount,
+                            rate=scc_amount,
+                            amount=scc_amount,
                             is_billable=any_billable,
                             is_billed=False,
                             markup=effective_markup,
-                            price=total_price,
+                            price=scc_price,
                             is_draft=True,
                         )
                         line_items_created_this_project += 1
@@ -377,7 +398,7 @@ class ContractLaborBillService:
                         file_size=len(pdf_bytes),
                         file_hash=None,
                         blob_url=pdf_url,
-                        description=f"Contract Labor invoice - {project.abbreviation or project.name}",
+                        description=f"Contract Labor invoice - {(project.abbreviation or project.name) if project else 'Overhead'}",
                         category="invoice",
                     )
                     for bli in created_blis_this_project:
@@ -405,11 +426,11 @@ class ContractLaborBillService:
 
         return result
 
-    def preview_pdf_for_vendor(self, vendor_id: int, project_id: Optional[int] = None) -> dict:
+    def preview_pdf_for_vendor(self, vendor_id: int, project_id: Optional[int] = None, billing_period_start: Optional[str] = None) -> dict:
         """
         Generate a preview PDF for a vendor (doesn't save to database or Azure).
         Returns the PDF bytes directly for viewing.
-        
+
         If project_id is provided, generates PDF only for that project.
         Otherwise, generates a combined PDF for all projects.
         """
@@ -419,8 +440,8 @@ class ContractLaborBillService:
         if not vendor:
             return {"error": f"Vendor with ID {vendor_id} not found"}
 
-        # Get all ready entries for this vendor
-        ready_entries = self.cl_service.read_by_status(status="ready")
+        # Get ready entries for this vendor, filtered by billing period if provided
+        ready_entries = self.cl_service.read_by_status(status="ready", billing_period_start=billing_period_start)
         vendor_entries = [e for e in ready_entries if e.bill_vendor_id == vendor_id]
 
         if not vendor_entries:
@@ -437,23 +458,25 @@ class ContractLaborBillService:
 
         for entry in vendor_entries:
             line_items = self.line_item_repo.read_by_contract_labor_id(contract_labor_id=entry.id)
-            
+
             for li in line_items:
                 pid = li.project_id
-                if not pid:
+                if not pid and not li.is_overhead:
                     continue
-                
-                # If project_id filter is set, skip other projects
-                if project_id is not None and pid != project_id:
+
+                group_key = pid  # None for overhead items
+
+                # If project_id filter is set, skip non-matching projects (overhead always included)
+                if project_id is not None and pid != project_id and not li.is_overhead:
                     continue
-                
-                if pid not in project_groups:
-                    project_groups[pid] = []
-                
-                project_groups[pid].append({
+
+                if group_key not in project_groups:
+                    project_groups[group_key] = []
+
+                project_groups[group_key].append({
                     "line_item": li,
                     "entry": entry,
-                    "project": project_map.get(pid),
+                    "project": project_map.get(pid) if pid else None,
                     "scc": scc_map.get(li.sub_cost_code_id),
                 })
 
@@ -509,8 +532,8 @@ class ContractLaborBillService:
         first_page = True
 
         for project_id, items in project_groups.items():
-            project = project_map.get(project_id)
-            if not project or not items:
+            project = project_map.get(project_id) if project_id else None
+            if not items:
                 continue
 
             # Add page break before each invoice (except the first)
@@ -524,14 +547,15 @@ class ContractLaborBillService:
             if not billing_period:
                 billing_period = datetime.now().strftime("%Y-%m-%d")
 
-            # Calculate totals
-            total_amount = sum(Decimal(str(item["line_item"].price or 0)) for item in items)
-            
-            # Generate invoice number and due date
-            invoice_number = self.generate_invoice_number(
-                billing_period, 
-                project.abbreviation or project.name[:10]
+            # Calculate totals (exclude non-billable items, matching generate_bills logic)
+            total_amount = sum(
+                Decimal(str(item["line_item"].price or 0)) for item in items
+                if item["line_item"].is_billable is not False
             )
+
+            # Generate invoice number and due date
+            project_abbr = (project.abbreviation or project.name[:10]) if project else "OVERHEAD"
+            invoice_number = self.generate_invoice_number(billing_period, project_abbr)
             due_date = self.get_due_date(billing_period)
 
             # Generate PDF elements for this invoice
@@ -650,7 +674,7 @@ class ContractLaborBillService:
             bill_date_display = bill_date
             due_date_display = due_date
 
-        project_display = project.name
+        project_display = project.name if project else "Overhead"
 
         # Style for wrapping text in details cells
         details_style = ParagraphStyle(
@@ -716,7 +740,7 @@ class ContractLaborBillService:
 
             service = f"{scc.number}" if scc else ""
             description = Paragraph(li.description or "", desc_style)
-            amount = f"${float(li.price or 0):,.2f}"
+            amount = "$0.00" if li.is_billable is False else f"${float(li.price or 0):,.2f}"
 
             line_items_data.append([item_date_display, service, description, amount])
 

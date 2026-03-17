@@ -14,11 +14,14 @@ Repository for the build.one application.
 |--------|------|-------------|
 | Bill | `entities/bill/` | Invoice management with BillAgent automation, inline email display, QBO sync |
 | Bill Line Item | `entities/bill_line_item/` | Bill line items with SubCostCode mapping and QBO Item sync |
+| Expense | `entities/expense/` | Expense management with ExpenseAgent automation, SharePoint upload, Excel sync, QBO sync |
+| Expense Line Item | `entities/expense_line_item/` | Expense line items with SubCostCode mapping and attachment support |
+| Expense Line Item Attachment | `entities/expense_line_item_attachment/` | 1-1 attachment link for expense line items (Azure Blob + Attachment record) |
 | Inbox | `entities/inbox/` | Email inbox integration (MS Graph) with bill/expense extraction |
 | Company | `entities/company/` | Company/organization management |
 | Cost Code | `entities/cost_code/` | Cost code hierarchy |
 | Sub Cost Code | `entities/sub_cost_code/` | Sub cost codes with alias matching support |
-| Contract Labor | `entities/contract_labor/` | Contract labor tracking |
+| Contract Labor | `entities/contract_labor/` | Subcontractor time tracking — Excel import, status workflow (pending_review→ready→billed), bill generation grouped by vendor+project, PDF generation with billable/non-billable line items |
 | Project | `entities/project/` | Project management |
 | Role | `entities/role/` | RBAC roles for user authorization |
 | User | `entities/user/` | User management with inline role assignment |
@@ -26,6 +29,10 @@ Repository for the build.one application.
 | Role Module | `entities/role_module/` | Role-to-module access mapping (join table) |
 | Contact | `entities/contact/` | Contact details (email, phone, fax) — inline on User, Company, Customer, Project, Vendor |
 | Vendor | `entities/vendor/` | Vendor management |
+| Invoice | `entities/invoice/` | Client invoices — draft/complete lifecycle, billable item loading, PDF packet generation |
+| Invoice Line Item | `entities/invoice_line_item/` | Polymorphic line items linking to BillLineItem, ExpenseLineItem, or BillCreditLineItem |
+| Invoice Attachment | `entities/invoice_attachment/` | Invoice-level attachment links (PDF packets stored here) |
+| Invoice Line Item Attachment | `entities/invoice_line_item_attachment/` | Per-line-item attachment links for packet source PDFs |
 
 ## Integrations
 

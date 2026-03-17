@@ -5,6 +5,7 @@
 {% block head %}
     <link rel="stylesheet" href="{{ url_for('static', path='css/bill.css') }}?v={{ range(1000, 9999) | random }}">
     <link rel="stylesheet" href="{{ url_for('static', path='css/agent.css') }}?v={{ range(1000, 9999) | random }}">
+    <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
 {% endblock %}
 
 {% block content %}
@@ -236,7 +237,7 @@
                                                 <!-- Markup -->
                                                 <div class="bill-form-group bill-line-item-narrow" style="margin-bottom: 0;">
                                                     <label class="bill-form-label">Markup (%)</label>
-                                                    <input type="number" class="bill-form-control line-item-markup" min="0" step="0.01" placeholder="0.00" value="{{ line_item.markup or '' }}">
+                                                    <input type="number" class="bill-form-control line-item-markup" min="0" step="0.01" placeholder="0.00" value="{{ (line_item.markup * 100) if line_item.markup else '' }}">
                                                 </div>
                                                 
                                                 <!-- Price (read-only, calculated) -->
@@ -449,7 +450,7 @@
                     </div>
                     <div class="bill-form-actions-right">
                         <a href="{{ return_to or '/bill/list' }}" class="btn btn-secondary">Cancel</a>
-                        <button type="submit" class="btn btn-primary">Complete Bill</button>
+                        <button type="submit" class="btn btn-primary" id="completeBillBtn">Complete Bill</button>
                     </div>
                 </div>
             </form>
@@ -1183,7 +1184,7 @@
                 rate: rate && rate.value ? parseFloat(rate.value) : null,
                 amount: amountInput && amountInput.value ? parseFloat(amountInput.value) : null,
                 is_billable: isBillable ? isBillable.checked : true,
-                markup: markup && markup.value ? parseFloat(markup.value) : null,
+                markup: markup && markup.value ? parseFloat(markup.value) / 100 : null,
                 price: priceInput && priceInput.value ? parseFloat(priceInput.value) : null,
                 is_draft: true
             };
@@ -1392,10 +1393,10 @@
                 if (!amountInput || !priceInput) {
                     return;
                 }
-                
+
                 const amount = parseFloat(amountInput.value) || 0;
                 const markupPercent = markupInput ? (parseFloat(markupInput.value) || 0) : 0;
-                // Convert markup percentage to decimal (e.g., 10% -> 0.10)
+                // Markup displayed as percentage (e.g., 10 for 10%), convert to decimal for calculation
                 const price = amount * (1 + markupPercent / 100);
                 priceInput.value = price.toFixed(2);
                 calculateTotalAmount();
@@ -2024,7 +2025,7 @@
                     rate: rate && rate.value ? parseFloat(rate.value) : null,
                     amount: amountInput && amountInput.value ? parseFloat(amountInput.value) : null,
                     is_billable: isBillable ? isBillable.checked : true,
-                    markup: markup && markup.value ? parseFloat(markup.value) : null,
+                    markup: markup && markup.value ? parseFloat(markup.value) / 100 : null,
                     price: priceInput && priceInput.value ? parseFloat(priceInput.value) : null,
                     is_draft: false
                 };
@@ -2051,6 +2052,25 @@
         async function handleCompleteBill(event) {
             event.preventDefault();
 
+            const validationErrors = validateBillForm();
+            if (validationErrors.length > 0) {
+                showToast(validationErrors.join(', '), 'error');
+                return;
+            }
+
+            const billPublicId = document.getElementById('bill_public_id').value;
+            const billNumber = document.getElementById('bill_number').value;
+            if (!billPublicId) {
+                showToast('Please fill in all required fields and wait for the bill to save before completing.', 'error');
+                return;
+            }
+
+            // Show loading state on button immediately after validation
+            const completeBtn = document.getElementById('completeBillBtn');
+            const originalBtnText = completeBtn.textContent;
+            completeBtn.disabled = true;
+            completeBtn.innerHTML = '<span style="display:inline-block;width:0.875rem;height:0.875rem;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:0.4rem;"></span>Completing...';
+
             // Flush any pending auto-saves so all field changes are persisted before completing
             if (autoSaveTimeout) {
                 clearTimeout(autoSaveTimeout);
@@ -2064,19 +2084,6 @@
                 if (formEl) {
                     await autoSaveLineItem(formEl);
                 }
-            }
-            
-            const validationErrors = validateBillForm();
-            if (validationErrors.length > 0) {
-                showToast(validationErrors.join(', '), 'error');
-                return;
-            }
-            
-            const billPublicId = document.getElementById('bill_public_id').value;
-            const billNumber = document.getElementById('bill_number').value;
-            if (!billPublicId) {
-                showToast('Please fill in all required fields and wait for the bill to save before completing.', 'error');
-                return;
             }
             
             const pendingAttachments = validatePendingAttachments();
@@ -2117,7 +2124,7 @@
                 status: 'processing'
             });
             sessionStorage.setItem('pendingBillCompletions', JSON.stringify(pendingBills));
-            
+
             // Start the Complete Bill API call (server returns 202 and runs completion in background)
             console.log('[Complete Bill] Starting API call for:', billPublicId);
             
@@ -2154,6 +2161,8 @@
                 window.location.href = getBillListUrl();
             } catch (error) {
                 console.error('[Complete Bill] Error:', error);
+                completeBtn.disabled = false;
+                completeBtn.textContent = originalBtnText;
                 const bills = JSON.parse(sessionStorage.getItem('pendingBillCompletions') || '[]');
                 const billIndex = bills.findIndex(b => b.publicId === billPublicId);
                 if (billIndex !== -1) {

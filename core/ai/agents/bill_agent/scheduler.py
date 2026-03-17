@@ -9,7 +9,7 @@ _interval_minutes = 30
 
 
 async def _run_scheduled():
-    """Background loop that runs BillAgent and ExpenseAgent at fixed intervals."""
+    """Background loop that runs BillAgent at fixed intervals."""
     while True:
         await asyncio.sleep(_interval_minutes * 60)
 
@@ -34,33 +34,12 @@ async def _run_scheduled():
         except Exception as e:
             logger.error("Scheduled bill folder processing failed: %s", e)
 
-        # --- Expense processing ---
-        try:
-            from core.ai.agents.expense_agent.business.runner import run_expense_folder_processing
-            result = run_expense_folder_processing(
-                company_id=1,
-                tenant_id=1,
-                user_id="scheduler",
-                trigger_source="scheduler",
-            )
-            if result.get("success"):
-                logger.info(
-                    "Scheduled expense processing: %d/%d files, %d expenses created",
-                    result.get("files_processed", 0),
-                    result.get("files_found", 0),
-                    result.get("expenses_created", 0),
-                )
-            else:
-                logger.error("Scheduled expense processing failed: %s", result.get("error"))
-        except Exception as e:
-            logger.error("Scheduled expense folder processing failed: %s", e)
-
 
 def start_scheduler():
     """Start the bill agent scheduler as a background asyncio task."""
     global _scheduler_task
     _scheduler_task = asyncio.create_task(_run_scheduled())
-    logger.info("BillAgent + ExpenseAgent scheduler started (interval: %d min)", _interval_minutes)
+    logger.info("BillAgent scheduler started (interval: %d min)", _interval_minutes)
 
 
 def stop_scheduler():

@@ -52,6 +52,7 @@ class ContractLaborLineItemRepository:
                 markup=Decimal(str(getattr(row, "Markup", None))) if getattr(row, "Markup", None) is not None else None,
                 price=Decimal(str(getattr(row, "Price", None))) if getattr(row, "Price", None) is not None else None,
                 is_billable=getattr(row, "IsBillable", True),
+                is_overhead=bool(getattr(row, "IsOverhead", False)),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during line item mapping: {error}")
@@ -73,6 +74,7 @@ class ContractLaborLineItemRepository:
         markup: Optional[Decimal] = None,
         price: Optional[Decimal] = None,
         is_billable: bool = True,
+        is_overhead: bool = False,
     ) -> ContractLaborLineItem:
         """
         Create a new contract labor line item.
@@ -94,6 +96,7 @@ class ContractLaborLineItemRepository:
                         "Markup": float(markup) if markup is not None else None,
                         "Price": float(price) if price is not None else None,
                         "IsBillable": is_billable,
+                        "IsOverhead": is_overhead,
                     },
                 )
                 row = cursor.fetchone()
@@ -173,6 +176,7 @@ class ContractLaborLineItemRepository:
         markup: Optional[Decimal] = None,
         price: Optional[Decimal] = None,
         is_billable: bool = True,
+        is_overhead: bool = False,
         bill_line_item_id: Optional[int] = None,
     ) -> Optional[ContractLaborLineItem]:
         """
@@ -196,6 +200,8 @@ class ContractLaborLineItemRepository:
                         "Markup": float(markup) if markup is not None else None,
                         "Price": float(price) if price is not None else None,
                         "IsBillable": is_billable,
+                        "IsOverhead": is_overhead,
+                        "BillLineItemId": bill_line_item_id,
                     },
                 )
                 row = cursor.fetchone()

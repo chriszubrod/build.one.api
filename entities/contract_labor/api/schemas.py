@@ -308,6 +308,7 @@ class ContractLaborLineItemUpdate(BaseModel):
     markup: Optional[Decimal] = None
     price: Optional[Decimal] = None
     is_billable: bool = True
+    is_overhead: bool = False
 
 
 class ContractLaborBillUpdate(BaseModel):

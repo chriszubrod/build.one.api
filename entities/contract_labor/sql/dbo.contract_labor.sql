@@ -90,7 +90,8 @@ CREATE TABLE [dbo].[ContractLaborLineItem]
     [Markup] DECIMAL(18,4) NULL,                   -- Markup percentage (e.g., 0.05 for 5%)
     [Price] DECIMAL(18,2) NULL,                    -- Calculated: (Hours / 8 * Rate) * (1 + Markup)
     [IsBillable] BIT NOT NULL DEFAULT 1,           -- Whether this line is billable
-    
+    [IsOverhead] BIT NOT NULL DEFAULT 0,           -- True = bill to company overhead (no project)
+
     CONSTRAINT [FK_ContractLaborLineItem_ContractLabor] FOREIGN KEY ([ContractLaborId]) REFERENCES [dbo].[ContractLabor]([Id]) ON DELETE CASCADE,
     CONSTRAINT [FK_ContractLaborLineItem_Project] FOREIGN KEY ([ProjectId]) REFERENCES [dbo].[Project]([Id]),
     CONSTRAINT [FK_ContractLaborLineItem_SubCostCode] FOREIGN KEY ([SubCostCodeId]) REFERENCES [dbo].[SubCostCode]([Id])
@@ -101,6 +102,13 @@ GO
 IF OBJECT_ID('dbo.ContractLaborLineItem', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ContractLaborLineItem_ContractLaborId' AND object_id = OBJECT_ID('dbo.ContractLaborLineItem'))
 BEGIN
 CREATE INDEX IX_ContractLaborLineItem_ContractLaborId ON [dbo].[ContractLaborLineItem] ([ContractLaborId]);
+END
+GO
+
+-- Add IsOverhead column to existing tables (idempotent migration)
+IF OBJECT_ID('dbo.ContractLaborLineItem', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.ContractLaborLineItem') AND name = 'IsOverhead')
+BEGIN
+    ALTER TABLE [dbo].[ContractLaborLineItem] ADD [IsOverhead] BIT NOT NULL DEFAULT 0;
 END
 GO
 
@@ -214,6 +222,10 @@ BEGIN
         CONVERT(VARCHAR(10), INSERTED.[BillingPeriodStart], 120) AS [BillingPeriodStart],
         INSERTED.[Status],
         INSERTED.[BillLineItemId],
+        INSERTED.[BillVendorId],
+        CONVERT(VARCHAR(10), INSERTED.[BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), INSERTED.[DueDate], 120) AS [DueDate],
+        INSERTED.[BillNumber],
         INSERTED.[ImportBatchId],
         INSERTED.[SourceFile],
         INSERTED.[SourceRow]
@@ -261,6 +273,10 @@ BEGIN
         CONVERT(VARCHAR(10), [BillingPeriodStart], 120) AS [BillingPeriodStart],
         [Status],
         [BillLineItemId],
+        [BillVendorId],
+        CONVERT(VARCHAR(10), [BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), [DueDate], 120) AS [DueDate],
+        [BillNumber],
         [ImportBatchId],
         [SourceFile],
         [SourceRow]
@@ -307,6 +323,10 @@ BEGIN
         CONVERT(VARCHAR(10), [BillingPeriodStart], 120) AS [BillingPeriodStart],
         [Status],
         [BillLineItemId],
+        [BillVendorId],
+        CONVERT(VARCHAR(10), [BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), [DueDate], 120) AS [DueDate],
+        [BillNumber],
         [ImportBatchId],
         [SourceFile],
         [SourceRow]
@@ -353,6 +373,10 @@ BEGIN
         CONVERT(VARCHAR(10), [BillingPeriodStart], 120) AS [BillingPeriodStart],
         [Status],
         [BillLineItemId],
+        [BillVendorId],
+        CONVERT(VARCHAR(10), [BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), [DueDate], 120) AS [DueDate],
+        [BillNumber],
         [ImportBatchId],
         [SourceFile],
         [SourceRow]
@@ -399,6 +423,10 @@ BEGIN
         CONVERT(VARCHAR(10), [BillingPeriodStart], 120) AS [BillingPeriodStart],
         [Status],
         [BillLineItemId],
+        [BillVendorId],
+        CONVERT(VARCHAR(10), [BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), [DueDate], 120) AS [DueDate],
+        [BillNumber],
         [ImportBatchId],
         [SourceFile],
         [SourceRow]
@@ -446,6 +474,10 @@ BEGIN
         CONVERT(VARCHAR(10), cl.[BillingPeriodStart], 120) AS [BillingPeriodStart],
         cl.[Status],
         cl.[BillLineItemId],
+        cl.[BillVendorId],
+        CONVERT(VARCHAR(10), cl.[BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), cl.[DueDate], 120) AS [DueDate],
+        cl.[BillNumber],
         cl.[ImportBatchId],
         cl.[SourceFile],
         cl.[SourceRow]
@@ -463,7 +495,8 @@ GO
 
 CREATE OR ALTER PROCEDURE ReadContractLaborsByStatus
 (
-    @Status NVARCHAR(20)
+    @Status NVARCHAR(20),
+    @BillingPeriodStart DATE = NULL
 )
 AS
 BEGIN
@@ -494,13 +527,18 @@ BEGIN
         CONVERT(VARCHAR(10), cl.[BillingPeriodStart], 120) AS [BillingPeriodStart],
         cl.[Status],
         cl.[BillLineItemId],
+        cl.[BillVendorId],
+        CONVERT(VARCHAR(10), cl.[BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), cl.[DueDate], 120) AS [DueDate],
+        cl.[BillNumber],
         cl.[ImportBatchId],
         cl.[SourceFile],
         cl.[SourceRow]
     FROM dbo.[ContractLabor] cl
     LEFT JOIN dbo.[Vendor] v ON cl.[VendorId] = v.[Id]
     WHERE cl.[Status] = @Status
-    ORDER BY cl.[BillingPeriodStart] DESC, v.[Name] ASC, cl.[WorkDate] DESC, cl.[JobName] ASC;
+        AND (@BillingPeriodStart IS NULL OR cl.[BillingPeriodStart] = @BillingPeriodStart)
+    ORDER BY cl.[BillingPeriodStart] DESC, ISNULL(v.[Name], cl.[EmployeeName]) ASC, cl.[WorkDate] DESC, cl.[JobName] ASC;
 
     COMMIT TRANSACTION;
 END;
@@ -542,6 +580,10 @@ BEGIN
         CONVERT(VARCHAR(10), [BillingPeriodStart], 120) AS [BillingPeriodStart],
         [Status],
         [BillLineItemId],
+        [BillVendorId],
+        CONVERT(VARCHAR(10), [BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), [DueDate], 120) AS [DueDate],
+        [BillNumber],
         [ImportBatchId],
         [SourceFile],
         [SourceRow]
@@ -601,6 +643,10 @@ BEGIN
         CONVERT(VARCHAR(10), cl.[BillingPeriodStart], 120) AS [BillingPeriodStart],
         cl.[Status],
         cl.[BillLineItemId],
+        cl.[BillVendorId],
+        CONVERT(VARCHAR(10), cl.[BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), cl.[DueDate], 120) AS [DueDate],
+        cl.[BillNumber],
         cl.[ImportBatchId],
         cl.[SourceFile],
         cl.[SourceRow]
@@ -763,6 +809,10 @@ BEGIN
         CONVERT(VARCHAR(10), INSERTED.[BillingPeriodStart], 120) AS [BillingPeriodStart],
         INSERTED.[Status],
         INSERTED.[BillLineItemId],
+        INSERTED.[BillVendorId],
+        CONVERT(VARCHAR(10), INSERTED.[BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), INSERTED.[DueDate], 120) AS [DueDate],
+        INSERTED.[BillNumber],
         INSERTED.[ImportBatchId],
         INSERTED.[SourceFile],
         INSERTED.[SourceRow]
@@ -809,6 +859,10 @@ BEGIN
         CONVERT(VARCHAR(10), DELETED.[BillingPeriodStart], 120) AS [BillingPeriodStart],
         DELETED.[Status],
         DELETED.[BillLineItemId],
+        DELETED.[BillVendorId],
+        CONVERT(VARCHAR(10), DELETED.[BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), DELETED.[DueDate], 120) AS [DueDate],
+        DELETED.[BillNumber],
         DELETED.[ImportBatchId],
         DELETED.[SourceFile],
         DELETED.[SourceRow]
@@ -1004,7 +1058,8 @@ CREATE OR ALTER PROCEDURE CreateContractLaborLineItem
     @Rate DECIMAL(18,4) NULL,
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
-    @IsBillable BIT = 1
+    @IsBillable BIT = 1,
+    @IsOverhead BIT = 0
 )
 AS
 BEGIN
@@ -1014,7 +1069,7 @@ BEGIN
 
     INSERT INTO dbo.[ContractLaborLineItem] (
         [CreatedDatetime], [ModifiedDatetime], [ContractLaborId], [LineDate], [ProjectId], [SubCostCodeId],
-        [Description], [Hours], [Rate], [Markup], [Price], [IsBillable]
+        [Description], [Hours], [Rate], [Markup], [Price], [IsBillable], [IsOverhead]
     )
     OUTPUT
         INSERTED.[Id],
@@ -1031,10 +1086,11 @@ BEGIN
         INSERTED.[Rate],
         INSERTED.[Markup],
         INSERTED.[Price],
-        INSERTED.[IsBillable]
+        INSERTED.[IsBillable],
+        INSERTED.[IsOverhead]
     VALUES (
         @Now, @Now, @ContractLaborId, @LineDate, @ProjectId, @SubCostCodeId,
-        @Description, @Hours, @Rate, @Markup, @Price, @IsBillable
+        @Description, @Hours, @Rate, @Markup, @Price, @IsBillable, @IsOverhead
     );
 
     COMMIT TRANSACTION;
@@ -1067,7 +1123,9 @@ BEGIN
         [Rate],
         [Markup],
         [Price],
-        [IsBillable]
+        [IsBillable],
+        [IsOverhead],
+        [BillLineItemId]
     FROM dbo.[ContractLaborLineItem]
     WHERE [ContractLaborId] = @ContractLaborId
     ORDER BY [Id] ASC;
@@ -1102,7 +1160,9 @@ BEGIN
         [Rate],
         [Markup],
         [Price],
-        [IsBillable]
+        [IsBillable],
+        [IsOverhead],
+        [BillLineItemId]
     FROM dbo.[ContractLaborLineItem]
     WHERE [Id] = @Id;
 
@@ -1136,7 +1196,9 @@ BEGIN
         [Rate],
         [Markup],
         [Price],
-        [IsBillable]
+        [IsBillable],
+        [IsOverhead],
+        [BillLineItemId]
     FROM dbo.[ContractLaborLineItem]
     WHERE [PublicId] = @PublicId;
 
@@ -1159,7 +1221,9 @@ CREATE OR ALTER PROCEDURE UpdateContractLaborLineItemById
     @Rate DECIMAL(18,4) NULL,
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
-    @IsBillable BIT = 1
+    @IsBillable BIT = 1,
+    @IsOverhead BIT = 0,
+    @BillLineItemId BIGINT NULL
 )
 AS
 BEGIN
@@ -1178,7 +1242,9 @@ BEGIN
         [Rate] = @Rate,
         [Markup] = @Markup,
         [Price] = @Price,
-        [IsBillable] = @IsBillable
+        [IsBillable] = @IsBillable,
+        [IsOverhead] = @IsOverhead,
+        [BillLineItemId] = CASE WHEN @BillLineItemId IS NULL THEN [BillLineItemId] ELSE @BillLineItemId END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -1194,7 +1260,9 @@ BEGIN
         INSERTED.[Rate],
         INSERTED.[Markup],
         INSERTED.[Price],
-        INSERTED.[IsBillable]
+        INSERTED.[IsBillable],
+        INSERTED.[IsOverhead],
+        INSERTED.[BillLineItemId]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;

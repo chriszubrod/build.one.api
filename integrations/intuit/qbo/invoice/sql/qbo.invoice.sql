@@ -48,9 +48,17 @@ CREATE TABLE [qbo].[Invoice]
 END
 GO
 
+-- Non-unique index on QboId for fast single-field lookups
 IF OBJECT_ID('qbo.Invoice', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboInvoice_QboId' AND object_id = OBJECT_ID('qbo.Invoice'))
 BEGIN
 CREATE INDEX IX_QboInvoice_QboId ON [qbo].[Invoice] ([QboId]);
+END
+GO
+
+-- Unique constraint: one row per QBO invoice per company realm
+IF OBJECT_ID('qbo.Invoice', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_QboInvoice_QboId_RealmId' AND object_id = OBJECT_ID('qbo.Invoice'))
+BEGIN
+CREATE UNIQUE INDEX UQ_QboInvoice_QboId_RealmId ON [qbo].[Invoice] ([QboId], [RealmId]) WHERE [QboId] IS NOT NULL AND [RealmId] IS NOT NULL;
 END
 GO
 
@@ -113,6 +121,13 @@ GO
 IF OBJECT_ID('qbo.InvoiceLine', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboInvoiceLine_QboLineId' AND object_id = OBJECT_ID('qbo.InvoiceLine'))
 BEGIN
 CREATE INDEX IX_QboInvoiceLine_QboLineId ON [qbo].[InvoiceLine] ([QboLineId]);
+END
+GO
+
+-- Unique constraint: one row per QBO line ID per QBO invoice
+IF OBJECT_ID('qbo.InvoiceLine', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_QboInvoiceLine_QboInvoiceId_QboLineId' AND object_id = OBJECT_ID('qbo.InvoiceLine'))
+BEGIN
+CREATE UNIQUE INDEX UQ_QboInvoiceLine_QboInvoiceId_QboLineId ON [qbo].[InvoiceLine] ([QboInvoiceId], [QboLineId]) WHERE [QboLineId] IS NOT NULL;
 END
 GO
 

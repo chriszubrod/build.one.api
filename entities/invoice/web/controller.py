@@ -2,7 +2,7 @@
 from decimal import Decimal
 from typing import Optional
 import logging
-from fastapi import APIRouter, Request, Depends
+from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.templating import Jinja2Templates
 
 # Third-party Imports
@@ -15,6 +15,7 @@ from entities.attachment.business.service import AttachmentService
 from entities.project.business.service import ProjectService
 from entities.payment_term.business.service import PaymentTermService
 from entities.customer.business.service import CustomerService
+from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.auth.business.service import get_current_user_web
 
 logger = logging.getLogger(__name__)
@@ -81,11 +82,13 @@ def _enrich_line_items(line_items) -> list[dict]:
                        b.BillDate AS SourceDate,
                        v.Name AS VendorName,
                        scc.Number AS SccNumber, scc.Name AS SccName,
+                       cc.Number AS CcNumber, cc.Name AS CcName,
                        att_first.PublicId AS AttachmentPublicId
                 FROM dbo.BillLineItem bli
                 JOIN dbo.Bill b ON b.Id = bli.BillId
                 LEFT JOIN dbo.Vendor v ON v.Id = b.VendorId
                 LEFT JOIN dbo.SubCostCode scc ON scc.Id = bli.SubCostCodeId
+                LEFT JOIN dbo.CostCode cc ON cc.Id = scc.CostCodeId
                 OUTER APPLY (
                     SELECT TOP 1 a.PublicId
                     FROM dbo.BillLineItemAttachment blia
@@ -103,6 +106,8 @@ def _enrich_line_items(line_items) -> list[dict]:
                     "vendor_name": row.VendorName or "",
                     "sub_cost_code_number": row.SccNumber or "",
                     "sub_cost_code_name": row.SccName or "",
+                    "cost_code_number": row.CcNumber or "",
+                    "cost_code_name": row.CcName or "",
                     "attachment_public_id": str(row.AttachmentPublicId) if row.AttachmentPublicId else "",
                 }
 
@@ -115,11 +120,13 @@ def _enrich_line_items(line_items) -> list[dict]:
                        e.ExpenseDate AS SourceDate,
                        v.Name AS VendorName,
                        scc.Number AS SccNumber, scc.Name AS SccName,
+                       cc.Number AS CcNumber, cc.Name AS CcName,
                        att_first.PublicId AS AttachmentPublicId
                 FROM dbo.ExpenseLineItem eli
                 JOIN dbo.Expense e ON e.Id = eli.ExpenseId
                 LEFT JOIN dbo.Vendor v ON v.Id = e.VendorId
                 LEFT JOIN dbo.SubCostCode scc ON scc.Id = eli.SubCostCodeId
+                LEFT JOIN dbo.CostCode cc ON cc.Id = scc.CostCodeId
                 OUTER APPLY (
                     SELECT TOP 1 a.PublicId
                     FROM dbo.ExpenseLineItemAttachment elia
@@ -137,6 +144,8 @@ def _enrich_line_items(line_items) -> list[dict]:
                     "vendor_name": row.VendorName or "",
                     "sub_cost_code_number": row.SccNumber or "",
                     "sub_cost_code_name": row.SccName or "",
+                    "cost_code_number": row.CcNumber or "",
+                    "cost_code_name": row.CcName or "",
                     "attachment_public_id": str(row.AttachmentPublicId) if row.AttachmentPublicId else "",
                 }
 
@@ -149,11 +158,13 @@ def _enrich_line_items(line_items) -> list[dict]:
                        bc.CreditDate AS SourceDate,
                        v.Name AS VendorName,
                        scc.Number AS SccNumber, scc.Name AS SccName,
+                       cc.Number AS CcNumber, cc.Name AS CcName,
                        att_first.PublicId AS AttachmentPublicId
                 FROM dbo.BillCreditLineItem bcli
                 JOIN dbo.BillCredit bc ON bc.Id = bcli.BillCreditId
                 LEFT JOIN dbo.Vendor v ON v.Id = bc.VendorId
                 LEFT JOIN dbo.SubCostCode scc ON scc.Id = bcli.SubCostCodeId
+                LEFT JOIN dbo.CostCode cc ON cc.Id = scc.CostCodeId
                 OUTER APPLY (
                     SELECT TOP 1 a.PublicId
                     FROM dbo.BillCreditLineItemAttachment bclia
@@ -171,6 +182,8 @@ def _enrich_line_items(line_items) -> list[dict]:
                     "vendor_name": row.VendorName or "",
                     "sub_cost_code_number": row.SccNumber or "",
                     "sub_cost_code_name": row.SccName or "",
+                    "cost_code_number": row.CcNumber or "",
+                    "cost_code_name": row.CcName or "",
                     "attachment_public_id": str(row.AttachmentPublicId) if row.AttachmentPublicId else "",
                 }
 
@@ -197,6 +210,8 @@ def _enrich_line_items(line_items) -> list[dict]:
         li_dict.setdefault("vendor_name", "")
         li_dict.setdefault("sub_cost_code_number", "")
         li_dict.setdefault("sub_cost_code_name", "")
+        li_dict.setdefault("cost_code_number", "")
+        li_dict.setdefault("cost_code_name", "")
         li_dict.setdefault("attachment_public_id", "")
         li_dict.update(enrichment)
 
@@ -384,6 +399,9 @@ async def view_invoice(request: Request, public_id: str, current_user: dict = De
                         "attachment": attachment.to_dict(),
                     })
 
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
     invoice_dict = invoice.to_dict()
     if project_name:
         invoice_dict['project_name'] = project_name
@@ -436,6 +454,14 @@ async def edit_invoice(request: Request, public_id: str, current_user: dict = De
     if invoice and invoice.id:
         line_items = InvoiceLineItemService().read_by_invoice_id(invoice_id=invoice.id)
         line_items_dicts = _enrich_line_items(line_items)
+        _type_order = {"BillLineItem": 0, "BillCreditLineItem": 1, "ExpenseLineItem": 2, "Manual": 3}
+        line_items_dicts.sort(key=lambda li: (
+            _type_order.get(li.get("source_type", ""), 9),
+            (li.get("vendor_name") or "").lower()
+        ))
+
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
 
     invoice_dict = invoice.to_dict()
     for key, value in invoice_dict.items():
@@ -454,6 +480,8 @@ async def edit_invoice(request: Request, public_id: str, current_user: dict = De
     if return_to and not return_to.startswith("/invoice/list"):
         return_to = ""
 
+    sub_cost_codes = SubCostCodeService().read_all()
+
     return templates.TemplateResponse(
         "invoice/edit.html",
         {
@@ -462,6 +490,7 @@ async def edit_invoice(request: Request, public_id: str, current_user: dict = De
             "projects": projects,
             "line_items": line_items_dicts,
             "payment_terms": payment_terms,
+            "sub_cost_codes": sub_cost_codes,
             "current_user": current_user,
             "current_path": request.url.path,
             "return_to": return_to,

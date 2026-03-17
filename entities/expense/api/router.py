@@ -126,7 +126,7 @@ def update_expense_by_public_id_router(public_id: str, body: ExpenseUpdate, curr
             "vendor_public_id": body.vendor_public_id,
             "expense_date": body.expense_date,
             "reference_number": body.reference_number,
-            "total_amount": float(body.total_amount) if body.total_amount else None,
+            "total_amount": Decimal(str(body.total_amount)) if body.total_amount is not None else None,
             "memo": body.memo,
             "is_draft": body.is_draft,
         },

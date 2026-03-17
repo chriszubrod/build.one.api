@@ -561,6 +561,7 @@ class ContractLaborImportService:
     def get_import_preview(
         self,
         file_content: bytes,
+        filename: str = "upload.xlsx",
         max_rows: int = 10,
     ) -> dict:
         """
@@ -584,29 +585,27 @@ class ContractLaborImportService:
         }
         
         try:
-            workbook = load_workbook(filename=io.BytesIO(file_content), read_only=True)
-            sheet = workbook.active
-            
-            if not sheet:
+            rows = self._load_excel_rows(file_content, filename)
+            if rows is None:
                 return preview
-            
+
             self._load_caches()
-            
+
             vendors_found = set()
             vendors_missing = set()
             projects_found = set()
             projects_missing = set()
-            
+
             row_num = 0
-            for row in sheet.iter_rows(min_row=2, values_only=True):
+            for row in rows:
                 row_num += 1
-                
+
                 if not row or not any(row):
                     continue
                 
                 preview["total_rows"] += 1
                 
-                parsed = self._parse_row(row, row_num)
+                parsed, skip_reason = self._parse_row(row, row_num)
                 if not parsed:
                     continue
                 

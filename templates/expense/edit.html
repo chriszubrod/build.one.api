@@ -1246,25 +1246,26 @@
 
         async function handleCompleteExpense(event) {
             event.preventDefault();
-            
-            if (autoSaveTimeout) {
-                clearTimeout(autoSaveTimeout);
-                autoSaveTimeout = null;
-            }
-            
+
             const validationErrors = validateExpenseForm();
             if (validationErrors.length > 0) {
                 showToast(validationErrors.join(', '), 'error');
                 return;
             }
-            
+
             const expensePublicId = document.getElementById('expense_public_id').value;
             const isDraft = {{ 'true' if expense.is_draft else 'false' }};
-            
+
             updateSaveStatus('saving', isDraft ? 'Completing...' : 'Saving...');
-            
+
             try {
                 if (isDraft) {
+                    // Flush any pending auto-saves before completing so the DB has current values
+                    if (autoSaveTimeout) {
+                        clearTimeout(autoSaveTimeout);
+                        autoSaveTimeout = null;
+                        await autoSaveExpense();
+                    }
                     const referenceNumber = document.getElementById('reference_number')?.value || expensePublicId;
                     let pending = JSON.parse(sessionStorage.getItem('pendingExpenseCompletions') || '[]');
                     const now = Date.now();
@@ -1325,7 +1326,14 @@
             if (!confirm('Are you sure you want to delete this expense? This action cannot be undone.')) {
                 return;
             }
-            
+
+            // Prevent pending auto-saves from firing during/after delete
+            isSaving = true;
+            if (autoSaveTimeout) {
+                clearTimeout(autoSaveTimeout);
+                autoSaveTimeout = null;
+            }
+
             const expensePublicId = document.getElementById('expense_public_id').value;
             
             try {

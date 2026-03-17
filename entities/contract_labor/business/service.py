@@ -145,11 +145,11 @@ class ContractLaborService:
         """
         return self.repo.read_by_billing_period(billing_period_start)
 
-    def read_by_status(self, status: str) -> list[ContractLabor]:
+    def read_by_status(self, status: str, billing_period_start: Optional[str] = None) -> list[ContractLabor]:
         """
-        Read all contract labor entries with a specific status.
+        Read all contract labor entries with a specific status, optionally filtered by billing period.
         """
-        return self.repo.read_by_status(status)
+        return self.repo.read_by_status(status, billing_period_start=billing_period_start)
 
     def read_by_import_batch_id(self, import_batch_id: str) -> list[ContractLabor]:
         """
@@ -342,8 +342,6 @@ class ContractLaborService:
         # Validate required fields
         if not existing.vendor_id:
             raise ValueError("Vendor is required before marking as ready.")
-        if not existing.project_id:
-            raise ValueError("Project is required before marking as ready.")
         if not existing.sub_cost_code_id:
             raise ValueError("SubCostCode is required before marking as ready.")
         if not existing.hourly_rate:

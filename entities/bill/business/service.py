@@ -1090,7 +1090,7 @@ class BillService:
                 all_errors.extend(upload_result["errors"])
             
             # Sync to Excel workbook
-            excel_result = self._sync_to_excel_workbook(
+            excel_result = self.sync_to_excel_workbook(
                 bill=bill,
                 line_items=project_line_items,
                 project_id=project_id
@@ -1209,7 +1209,7 @@ class BillService:
                 "errors": [{"step": "qbo_sync", "error": str(e)}]
             }
 
-    def _sync_to_excel_workbook(
+    def sync_to_excel_workbook(
         self,
         bill,
         line_items: List,
@@ -1367,7 +1367,7 @@ class BillService:
                             "",                   # W: Empty
                             "",                   # X: Empty
                             "",                   # Y: Empty
-                            ""                    # Z: Empty
+                            str(line_item.public_id) if line_item.public_id else ""  # Z: BillLineItem public_id (reconciliation key)
                         ]
                         group_rows.append(row)
                     except Exception as e:

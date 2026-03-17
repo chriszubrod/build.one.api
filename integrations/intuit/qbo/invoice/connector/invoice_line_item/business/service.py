@@ -63,13 +63,13 @@ class InvoiceLineItemConnector:
         description = qbo_invoice_line.description
         amount = qbo_invoice_line.amount
         
-        # Calculate markup and price from line detail
+        # Calculate price from line detail. QBO invoices don't have a direct "markup"
+        # concept (discount_rate is a reduction, not an addition), so markup is left None.
+        # The QBO amount field already reflects all discounts applied.
         markup = None
         price = None
         if qbo_invoice_line.unit_price is not None and qbo_invoice_line.qty is not None:
             price = qbo_invoice_line.unit_price
-        if qbo_invoice_line.discount_rate is not None:
-            markup = qbo_invoice_line.discount_rate / Decimal('100') if qbo_invoice_line.discount_rate else None
         
         # Check for existing mapping (use cache if populated, else fall back to DB)
         if self._line_mapping_cache:
@@ -89,9 +89,9 @@ class InvoiceLineItemConnector:
                     invoice_public_id=invoice_public_id,
                     source_type="Manual",
                     description=description,
-                    amount=float(amount) if amount is not None else None,
-                    markup=float(markup) if markup is not None else None,
-                    price=float(price) if price is not None else None,
+                    amount=Decimal(str(amount)) if amount is not None else None,
+                    markup=Decimal(str(markup)) if markup is not None else None,
+                    price=Decimal(str(price)) if price is not None else None,
                     is_draft=False,
                 )
                 # Update line item cache with fresh record

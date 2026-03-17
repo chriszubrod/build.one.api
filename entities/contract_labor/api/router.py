@@ -484,7 +484,7 @@ def update_contract_labor_bill(public_id: str, bill_update: ContractLaborBillUpd
                         id=item_data.id,
                         row_version=base64.b64decode(item_data.row_version) if item_data.row_version else existing_item.row_version_bytes,
                         line_date=item_data.line_date,
-                        project_id=item_data.project_id,
+                        project_id=item_data.project_id if not item_data.is_overhead else None,
                         sub_cost_code_id=item_data.sub_cost_code_id,
                         description=item_data.description,
                         hours=item_data.hours,
@@ -492,6 +492,8 @@ def update_contract_labor_bill(public_id: str, bill_update: ContractLaborBillUpd
                         markup=item_data.markup,
                         price=item_data.price,
                         is_billable=item_data.is_billable,
+                        is_overhead=item_data.is_overhead,
+                        bill_line_item_id=existing_item.bill_line_item_id,
                     )
                     items_updated += 1
             else:
@@ -499,7 +501,7 @@ def update_contract_labor_bill(public_id: str, bill_update: ContractLaborBillUpd
                 line_item_repo.create(
                     contract_labor_id=entry.id,
                     line_date=item_data.line_date,
-                    project_id=item_data.project_id,
+                    project_id=item_data.project_id if not item_data.is_overhead else None,
                     sub_cost_code_id=item_data.sub_cost_code_id,
                     description=item_data.description,
                     hours=item_data.hours,
@@ -507,6 +509,7 @@ def update_contract_labor_bill(public_id: str, bill_update: ContractLaborBillUpd
                     markup=item_data.markup,
                     price=item_data.price,
                     is_billable=item_data.is_billable,
+                    is_overhead=item_data.is_overhead,
                 )
                 items_created += 1
         
@@ -733,6 +736,7 @@ async def preview_contract_labor_import(
         import_service = ContractLaborImportService()
         preview = import_service.get_import_preview(
             file_content=file_content,
+            filename=file.filename,
             max_rows=max_rows,
         )
         
@@ -742,60 +746,6 @@ async def preview_contract_labor_import(
         raise
     except Exception as e:
         logger.exception("Error previewing contract labor import")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ============================================================================
-# Bill Creation Endpoints
-# ============================================================================
-
-@router.get("/billing/summary")
-async def get_billing_summary():
-    """
-    Get a summary of ready entries grouped by vendor and billing period.
-    Useful for previewing what bills would be created.
-    """
-    try:
-        from entities.contract_labor.business.bill_service import ContractLaborBillService
-        bill_service = ContractLaborBillService()
-        summary = bill_service.get_ready_entries_summary()
-        return summary
-    except Exception as e:
-        logger.exception("Error getting billing summary")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/billing/create-bills")
-async def create_bills_from_ready_entries(
-    vendor_id: Optional[int] = Query(default=None, description="Filter by vendor ID"),
-    billing_period_start: Optional[str] = Query(default=None, description="Filter by billing period (YYYY-MM-DD)"),
-):
-    """
-    Create Bills from ContractLabor entries with status='ready'.
-    
-    Process:
-    1. Groups ready entries by vendor + billing period
-    2. Creates a Bill for each group
-    3. Aggregates entries by (SubCostCode, Project) into BillLineItems
-    4. Marks entries as 'billed' and links to BillLineItem
-    
-    Returns:
-    - Number of bills created
-    - Number of line items created
-    - Number of entries billed
-    - Any errors encountered
-    - List of created bill public_ids
-    """
-    try:
-        from entities.contract_labor.business.bill_service import ContractLaborBillService
-        bill_service = ContractLaborBillService()
-        result = bill_service.create_bills_from_ready_entries(
-            vendor_id=vendor_id,
-            billing_period_start=billing_period_start,
-        )
-        return result
-    except Exception as e:
-        logger.exception("Error creating bills from contract labor")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -848,16 +798,16 @@ async def generate_all_pdfs(
 
 
 @router.post("/generate-bills/{vendor_id}")
-def generate_bills_for_vendor(vendor_id: int):
+def generate_bills_for_vendor(vendor_id: int, billing_period: Optional[str] = None):
     """
-    Generate bills for all ready entries for a vendor.
+    Generate bills for ready entries for a vendor within a billing period.
     Groups by project and creates one bill per project.
     Also generates invoice PDFs and uploads to Azure Blob Storage.
     """
     try:
         from entities.contract_labor.business.bill_service import ContractLaborBillService
         bill_service = ContractLaborBillService()
-        result = bill_service.generate_bills_for_vendor(vendor_id=vendor_id)
+        result = bill_service.generate_bills_for_vendor(vendor_id=vendor_id, billing_period_start=billing_period)
         return result
     except Exception as e:
         logger.exception("Error generating bills for vendor")
@@ -865,7 +815,7 @@ def generate_bills_for_vendor(vendor_id: int):
 
 
 @router.get("/preview-pdf/{vendor_id}")
-def preview_pdf_for_vendor(vendor_id: int, project_id: Optional[int] = None):
+def preview_pdf_for_vendor(vendor_id: int, project_id: Optional[int] = None, billing_period: Optional[str] = None):
     """
     Preview PDF for a vendor (returns PDF directly for download).
     If project_id is provided, generates PDF for that specific project only.
@@ -874,7 +824,7 @@ def preview_pdf_for_vendor(vendor_id: int, project_id: Optional[int] = None):
     try:
         from entities.contract_labor.business.bill_service import ContractLaborBillService
         bill_service = ContractLaborBillService()
-        result = bill_service.preview_pdf_for_vendor(vendor_id=vendor_id, project_id=project_id)
+        result = bill_service.preview_pdf_for_vendor(vendor_id=vendor_id, project_id=project_id, billing_period_start=billing_period)
         
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])

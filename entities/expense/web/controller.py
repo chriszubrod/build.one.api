@@ -415,10 +415,14 @@ async def view_expense(request: Request, public_id: str, current_user: dict = De
             
             line_items_with_attachments.append(line_item_dict)
     
+    if not expense:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Expense not found")
+
     expense_dict = expense.to_dict()
     if vendor_name:
         expense_dict['vendor_name'] = vendor_name
-    
+
     return templates.TemplateResponse(
         "expense/view.html",
         {

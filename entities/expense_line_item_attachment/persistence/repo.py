@@ -173,25 +173,20 @@ class ExpenseLineItemAttachmentRepository:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 try:
-                    # Build IN clause with placeholders
-                    placeholders = ",".join(["?" for _ in public_ids])
-                    query = f"""
-                        SELECT elia.Id, elia.PublicId, elia.RowVersion, elia.CreatedDatetime,
-                               elia.ModifiedDatetime, elia.ExpenseLineItemId, elia.AttachmentId,
-                               eli.PublicId AS ExpenseLineItemPublicId
-                        FROM dbo.ExpenseLineItemAttachment elia
-                        JOIN dbo.ExpenseLineItem eli ON eli.Id = elia.ExpenseLineItemId
-                        WHERE eli.PublicId IN ({placeholders})
-                    """
-                    cursor.execute(query, public_ids)
+                    # Pass as comma-separated string — sproc uses STRING_SPLIT internally
+                    ids_csv = ",".join(str(pid) for pid in public_ids)
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadExpenseLineItemAttachmentsByExpenseLineItemPublicIds",
+                        params={"PublicIds": ids_csv},
+                    )
                     rows = cursor.fetchall()
                     results = []
                     for row in rows:
                         if row:
                             attachment = self._from_db(row)
                             if attachment:
-                                # Add the expense_line_item_public_id for mapping
-                                attachment.expense_line_item_public_id = getattr(row, 'ExpenseLineItemPublicId', None)
+                                attachment.expense_line_item_public_id = getattr(row, "ExpenseLineItemPublicId", None)
                                 results.append(attachment)
                     return results
                 finally:

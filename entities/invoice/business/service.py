@@ -2,7 +2,7 @@
 import re
 import logging
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 # Third-party Imports
 
@@ -11,6 +11,8 @@ from entities.invoice.business.model import Invoice
 from entities.invoice.persistence.repo import InvoiceRepository
 from entities.payment_term.business.service import PaymentTermService
 from entities.project.business.service import ProjectService
+from entities.module.business.service import ModuleService
+from shared.storage import AzureBlobStorage, AzureBlobStorageError
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,31 @@ class InvoiceService:
         self.invoice_attachment_service = InvoiceAttachmentService()
         self.invoice_line_item_attachment_service = InvoiceLineItemAttachmentService()
         self.project_service = ProjectService()
+        self.module_service = ModuleService()
+        self._driveitem_service: Optional[Any] = None
+        self._drive_repo: Optional[Any] = None
+        self._project_module_connector: Optional[Any] = None
+
+    @property
+    def driveitem_service(self):
+        if self._driveitem_service is None:
+            from integrations.ms.sharepoint.driveitem.business.service import MsDriveItemService
+            self._driveitem_service = MsDriveItemService()
+        return self._driveitem_service
+
+    @property
+    def drive_repo(self):
+        if self._drive_repo is None:
+            from integrations.ms.sharepoint.drive.persistence.repo import MsDriveRepository
+            self._drive_repo = MsDriveRepository()
+        return self._drive_repo
+
+    @property
+    def project_module_connector(self):
+        if self._project_module_connector is None:
+            from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
+            self._project_module_connector = DriveItemProjectModuleConnector()
+        return self._project_module_connector
 
     def create(
         self,
@@ -228,8 +255,7 @@ class InvoiceService:
     def complete_invoice(self, public_id: str) -> dict:
         """
         Finalize an invoice: set is_draft=False on the invoice and all line items.
-        Mark source line items as billed.
-        Future phases will add QBO and SharePoint integration.
+        Mark source line items as billed. Syncs to QBO if auth is configured.
         """
         invoice = self.read_by_public_id(public_id=public_id)
         if not invoice:
@@ -240,7 +266,7 @@ class InvoiceService:
 
         # Finalize invoice
         try:
-            project = self.project_service.read_by_id(id=str(invoice.project_id)) if invoice.project_id else None
+            project = self.project_service.read_by_id(id=invoice.project_id) if invoice.project_id else None
             project_public_id = project.public_id if project else None
 
             payment_term_public_id = None
@@ -306,11 +332,35 @@ class InvoiceService:
                 logger.warning(f"Error marking source as billed for line item {line_item.id}: {e}")
                 errors.append({"line_item_id": line_item.id, "error": f"mark_billed: {str(e)}"})
 
+        # Step 3b: Upload attachments to SharePoint
+        sharepoint_result = self._upload_to_sharepoint(invoice=finalized, line_items=line_items)
+        if not sharepoint_result.get("success"):
+            errors.extend(sharepoint_result.get("errors", []))
+            logger.warning(f"SharePoint upload completed with errors for invoice {public_id}: {sharepoint_result.get('message')}")
+        else:
+            logger.info(f"SharePoint upload complete for invoice {public_id}: {sharepoint_result.get('message')}")
+
+        # QBO sync (non-blocking)
+        try:
+            from integrations.intuit.qbo.auth.business.service import QboAuthService
+            from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
+            qbo_auth = QboAuthService().ensure_valid_token()
+            if qbo_auth:
+                connector = InvoiceInvoiceConnector()
+                connector.sync_to_qbo_invoice(finalized, qbo_auth.realm_id)
+                logger.info(f"Invoice {public_id} synced to QBO successfully")
+            else:
+                logger.info(f"No QBO auth configured; skipping QBO sync for invoice {public_id}")
+        except Exception as e:
+            logger.error(f"QBO sync failed for invoice {public_id}: {e}")
+            errors.append({"step": "qbo_sync", "error": str(e)})
+
         status_code = 200 if not errors else 207
         return {
             "status_code": status_code,
             "message": "Invoice completed successfully" + (f" with {len(errors)} error(s)" if errors else ""),
             "invoice_finalized": True,
+            "sharepoint_upload": sharepoint_result,
             "errors": errors,
         }
 
@@ -593,6 +643,251 @@ class InvoiceService:
                         max_num = num
 
         return f"{prefix}-{max_num + 1}"
+
+    def _upload_to_sharepoint(self, invoice, line_items: list) -> dict:
+        """
+        Upload invoice line item attachments and the PDF packet to the Invoices SharePoint module folder.
+        Mirrors Expense._upload_attachments_to_module_folder pattern.
+        """
+        from shared.database import get_connection
+        from entities.attachment.business.service import AttachmentService
+
+        try:
+            # 1. Resolve the Invoices module folder
+            module = self.module_service.read_by_name("Invoices") or self.module_service.read_by_name("Invoice")
+            if not module:
+                return {"success": False, "message": "Invoices module not found — ensure a module named 'Invoices' exists", "synced_count": 0, "errors": [{"error": "Invoices module not found"}]}
+
+            if not invoice.project_id:
+                return {"success": False, "message": "Invoice has no project assigned", "synced_count": 0, "errors": [{"error": "Invoice has no project"}]}
+
+            module_folder = self.project_module_connector.get_folder_for_module(project_id=invoice.project_id, module_id=int(module.id))
+            if not module_folder:
+                return {"success": False, "message": "Invoices module folder not configured for this project", "synced_count": 0, "errors": [{"error": "Invoices module folder not configured for this project"}]}
+
+            folder_ms_drive_id = module_folder.get("ms_drive_id")
+            folder_item_id = module_folder.get("item_id")
+            if not folder_ms_drive_id or not folder_item_id:
+                return {"success": False, "message": "Module folder missing drive or item_id", "synced_count": 0, "errors": [{"error": "Module folder missing drive or item_id"}]}
+
+            drive = self.drive_repo.read_by_id(folder_ms_drive_id)
+            if not drive:
+                return {"success": False, "message": "Drive not found", "synced_count": 0, "errors": [{"error": "Drive not found"}]}
+
+            try:
+                storage = AzureBlobStorage()
+            except Exception as e:
+                return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
+
+            att_service = AttachmentService()
+            invoice_number = invoice.invoice_number or invoice.public_id
+            errors = []
+            synced_count = 0
+            uploaded_attachment_ids: set = set()
+
+            # 2. Collect attachment metadata for all line item source types
+            bill_ids = [li.bill_line_item_id for li in line_items if li.source_type == "BillLineItem" and li.bill_line_item_id]
+            expense_ids = [li.expense_line_item_id for li in line_items if li.source_type == "ExpenseLineItem" and li.expense_line_item_id]
+            credit_ids = [li.bill_credit_line_item_id for li in line_items if li.source_type == "BillCreditLineItem" and li.bill_credit_line_item_id]
+            manual_public_ids = [li.public_id for li in line_items if li.source_type == "Manual" and li.public_id]
+
+            attachment_rows = []  # list of dicts with attachment metadata + display fields
+
+            with get_connection() as conn:
+                cursor = conn.cursor()
+
+                if bill_ids:
+                    ph = ",".join("?" * len(bill_ids))
+                    cursor.execute(f"""
+                        SELECT a.Id, a.BlobUrl, a.ContentType, a.FileExtension, a.OriginalFilename,
+                               ISNULL(v.Name, '') AS VendorName, b.BillNumber AS ParentNumber,
+                               ISNULL(ili.Description, '') AS Description,
+                               ISNULL(scc.Number, '') AS SccNumber,
+                               ili.Price,
+                               CONVERT(VARCHAR(10), b.BillDate, 120) AS SourceDate
+                        FROM dbo.BillLineItemAttachment blia
+                        JOIN dbo.Attachment a ON a.Id = blia.AttachmentId
+                        JOIN dbo.BillLineItem bli ON bli.Id = blia.BillLineItemId
+                        JOIN dbo.Bill b ON b.Id = bli.BillId
+                        LEFT JOIN dbo.Vendor v ON v.Id = b.VendorId
+                        LEFT JOIN dbo.InvoiceLineItem ili ON ili.BillLineItemId = blia.BillLineItemId
+                        LEFT JOIN dbo.SubCostCode scc ON scc.Id = ili.SubCostCodeId
+                        WHERE blia.BillLineItemId IN ({ph})
+                    """, bill_ids)
+                    for row in cursor.fetchall():
+                        attachment_rows.append({
+                            "attachment_id": row.Id, "blob_url": row.BlobUrl,
+                            "content_type": row.ContentType, "file_extension": row.FileExtension,
+                            "original_filename": row.OriginalFilename,
+                            "vendor_name": row.VendorName, "parent_number": row.ParentNumber,
+                            "description": row.Description, "scc_number": row.SccNumber,
+                            "price": row.Price, "source_date": row.SourceDate,
+                        })
+
+                if expense_ids:
+                    ph = ",".join("?" * len(expense_ids))
+                    cursor.execute(f"""
+                        SELECT a.Id, a.BlobUrl, a.ContentType, a.FileExtension, a.OriginalFilename,
+                               ISNULL(v.Name, '') AS VendorName, e.ReferenceNumber AS ParentNumber,
+                               ISNULL(ili.Description, '') AS Description,
+                               ISNULL(scc.Number, '') AS SccNumber,
+                               ili.Price,
+                               CONVERT(VARCHAR(10), e.ExpenseDate, 120) AS SourceDate
+                        FROM dbo.ExpenseLineItemAttachment elia
+                        JOIN dbo.Attachment a ON a.Id = elia.AttachmentId
+                        JOIN dbo.ExpenseLineItem eli ON eli.Id = elia.ExpenseLineItemId
+                        JOIN dbo.Expense e ON e.Id = eli.ExpenseId
+                        LEFT JOIN dbo.Vendor v ON v.Id = e.VendorId
+                        LEFT JOIN dbo.InvoiceLineItem ili ON ili.ExpenseLineItemId = elia.ExpenseLineItemId
+                        LEFT JOIN dbo.SubCostCode scc ON scc.Id = ili.SubCostCodeId
+                        WHERE elia.ExpenseLineItemId IN ({ph})
+                    """, expense_ids)
+                    for row in cursor.fetchall():
+                        attachment_rows.append({
+                            "attachment_id": row.Id, "blob_url": row.BlobUrl,
+                            "content_type": row.ContentType, "file_extension": row.FileExtension,
+                            "original_filename": row.OriginalFilename,
+                            "vendor_name": row.VendorName, "parent_number": row.ParentNumber,
+                            "description": row.Description, "scc_number": row.SccNumber,
+                            "price": row.Price, "source_date": row.SourceDate,
+                        })
+
+                if credit_ids:
+                    ph = ",".join("?" * len(credit_ids))
+                    cursor.execute(f"""
+                        SELECT a.Id, a.BlobUrl, a.ContentType, a.FileExtension, a.OriginalFilename,
+                               ISNULL(v.Name, '') AS VendorName, bc.CreditNumber AS ParentNumber,
+                               ISNULL(ili.Description, '') AS Description,
+                               ISNULL(scc.Number, '') AS SccNumber,
+                               ili.Price,
+                               CONVERT(VARCHAR(10), bc.CreditDate, 120) AS SourceDate
+                        FROM dbo.BillCreditLineItemAttachment bclia
+                        JOIN dbo.Attachment a ON a.Id = bclia.AttachmentId
+                        JOIN dbo.BillCreditLineItem bcli ON bcli.Id = bclia.BillCreditLineItemId
+                        JOIN dbo.BillCredit bc ON bc.Id = bcli.BillCreditId
+                        LEFT JOIN dbo.Vendor v ON v.Id = bc.VendorId
+                        LEFT JOIN dbo.InvoiceLineItem ili ON ili.BillCreditLineItemId = bclia.BillCreditLineItemId
+                        LEFT JOIN dbo.SubCostCode scc ON scc.Id = ili.SubCostCodeId
+                        WHERE bclia.BillCreditLineItemId IN ({ph})
+                    """, credit_ids)
+                    for row in cursor.fetchall():
+                        attachment_rows.append({
+                            "attachment_id": row.Id, "blob_url": row.BlobUrl,
+                            "content_type": row.ContentType, "file_extension": row.FileExtension,
+                            "original_filename": row.OriginalFilename,
+                            "vendor_name": row.VendorName, "parent_number": row.ParentNumber,
+                            "description": row.Description, "scc_number": row.SccNumber,
+                            "price": row.Price, "source_date": row.SourceDate,
+                        })
+
+                if manual_public_ids:
+                    ph = ",".join("?" * len(manual_public_ids))
+                    cursor.execute(f"""
+                        SELECT a.Id, a.BlobUrl, a.ContentType, a.FileExtension, a.OriginalFilename,
+                               '' AS VendorName, '' AS ParentNumber,
+                               ISNULL(ili.Description, '') AS Description,
+                               ISNULL(scc.Number, '') AS SccNumber,
+                               ili.Price, '' AS SourceDate
+                        FROM dbo.InvoiceLineItemAttachment ilia
+                        JOIN dbo.Attachment a ON a.Id = ilia.AttachmentId
+                        JOIN dbo.InvoiceLineItem ili ON ili.Id = ilia.InvoiceLineItemId
+                        LEFT JOIN dbo.SubCostCode scc ON scc.Id = ili.SubCostCodeId
+                        WHERE ili.PublicId IN ({ph})
+                    """, manual_public_ids)
+                    for row in cursor.fetchall():
+                        attachment_rows.append({
+                            "attachment_id": row.Id, "blob_url": row.BlobUrl,
+                            "content_type": row.ContentType, "file_extension": row.FileExtension,
+                            "original_filename": row.OriginalFilename,
+                            "vendor_name": row.VendorName, "parent_number": row.ParentNumber,
+                            "description": row.Description, "scc_number": row.SccNumber,
+                            "price": row.Price, "source_date": row.SourceDate,
+                        })
+
+                cursor.close()
+
+            # 3. Upload each unique attachment
+            for row_data in attachment_rows:
+                att_id = row_data["attachment_id"]
+                if att_id in uploaded_attachment_ids:
+                    synced_count += 1
+                    continue
+                blob_url = row_data["blob_url"]
+                if not blob_url:
+                    errors.append({"attachment_id": att_id, "error": "Missing blob URL"})
+                    continue
+
+                vendor = row_data["vendor_name"] or ""
+                parent_num = row_data["parent_number"] or ""
+                description = row_data["description"] or ""
+                scc = row_data["scc_number"] or ""
+                price_str = f"${float(row_data['price']):,.2f}" if row_data["price"] is not None else ""
+                source_date = row_data["source_date"] or ""
+
+                filename_parts = [invoice_number, vendor, parent_num, description, scc, price_str, source_date]
+                base_filename = re.sub(r'[<>:"/\\|?*]', '_', " - ".join(p for p in filename_parts if p))
+
+                file_extension = row_data["file_extension"] or ""
+                if not file_extension and row_data["original_filename"] and "." in (row_data["original_filename"] or ""):
+                    file_extension = row_data["original_filename"].rsplit(".", 1)[-1]
+                if not file_extension and row_data["content_type"]:
+                    file_extension = {"application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif"}.get(row_data["content_type"], "")
+                if file_extension and not file_extension.startswith("."):
+                    file_extension = "." + file_extension
+
+                sharepoint_filename = base_filename + file_extension
+
+                try:
+                    file_content, metadata = storage.download_file(blob_url)
+                except Exception as e:
+                    errors.append({"attachment_id": att_id, "error": str(e)})
+                    continue
+
+                content_type = row_data["content_type"] or metadata.get("content_type", "application/octet-stream")
+                upload_result = self.driveitem_service.upload_file(
+                    drive_public_id=drive.public_id,
+                    parent_item_id=folder_item_id,
+                    filename=sharepoint_filename,
+                    content=file_content,
+                    content_type=content_type,
+                )
+                if upload_result.get("status_code") not in [200, 201]:
+                    errors.append({"attachment_id": att_id, "error": upload_result.get("message", "Unknown error")})
+                    continue
+
+                uploaded_attachment_ids.add(att_id)
+                synced_count += 1
+
+            # 4. Upload packet PDF if one has already been generated
+            existing_links = self.invoice_attachment_service.read_by_invoice_id(invoice_id=invoice.id)
+            for link in existing_links:
+                if not link.attachment_id:
+                    continue
+                packet_att = att_service.read_by_id(link.attachment_id)
+                if not packet_att or packet_att.category != "invoice_packet" or not packet_att.blob_url:
+                    continue
+                try:
+                    file_content, _ = storage.download_file(packet_att.blob_url)
+                    packet_filename = re.sub(r'[<>:"/\\|?*]', '_', invoice_number) + " - Packet.pdf"
+                    upload_result = self.driveitem_service.upload_file(
+                        drive_public_id=drive.public_id,
+                        parent_item_id=folder_item_id,
+                        filename=packet_filename,
+                        content=file_content,
+                        content_type="application/pdf",
+                    )
+                    if upload_result.get("status_code") in [200, 201]:
+                        synced_count += 1
+                    else:
+                        errors.append({"packet": True, "error": upload_result.get("message", "Unknown error")})
+                except Exception as e:
+                    errors.append({"packet": True, "error": str(e)})
+
+            return {"success": not errors, "message": f"Uploaded {synced_count} file(s)", "synced_count": synced_count, "errors": errors}
+
+        except Exception as e:
+            logger.exception("Error uploading invoice attachments to SharePoint")
+            return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
 
     def _mark_source_as_billed(self, line_item) -> None:
         """Mark the source line item (BillLineItem, ExpenseLineItem, BillCreditLineItem) as billed."""

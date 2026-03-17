@@ -27,9 +27,21 @@ class InvoiceLineItemCreate(BaseModel):
         default=None,
         description="The source BillCreditLineItem ID (if source_type is BillCreditLineItem)."
     )
+    sub_cost_code_id: Optional[int] = Field(
+        default=None,
+        description="The SubCostCode ID (required for Manual source type)."
+    )
     description: Optional[str] = Field(
         default=None,
         description="Snapshot of the line item description."
+    )
+    quantity: Optional[Decimal] = Field(
+        default=None,
+        description="Quantity (used for Manual source type)."
+    )
+    rate: Optional[Decimal] = Field(
+        default=None,
+        description="Unit rate (used for Manual source type)."
     )
     amount: Optional[Decimal] = Field(
         default=None,
@@ -72,9 +84,21 @@ class InvoiceLineItemUpdate(BaseModel):
         default=None,
         description="The source BillCreditLineItem ID."
     )
+    sub_cost_code_id: Optional[int] = Field(
+        default=None,
+        description="The SubCostCode ID (required for Manual source type)."
+    )
     description: Optional[str] = Field(
         default=None,
         description="Snapshot of the line item description."
+    )
+    quantity: Optional[Decimal] = Field(
+        default=None,
+        description="Quantity (used for Manual source type)."
+    )
+    rate: Optional[Decimal] = Field(
+        default=None,
+        description="Unit rate (used for Manual source type)."
     )
     amount: Optional[Decimal] = Field(
         default=None,

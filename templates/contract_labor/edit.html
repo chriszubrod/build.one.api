@@ -193,10 +193,10 @@
                                 </div>
                                 <div class="cl-form-group">
                                     <label class="cl-form-label">Project</label>
-                                    <select class="cl-form-control line-project-id">
+                                    <select class="cl-form-control line-project-id" {% if item.is_overhead %}disabled{% endif %}>
                                         <option value="">-- Select Project --</option>
                                         {% for project in projects %}
-                                        <option value="{{ project.id }}" data-abbreviation="{{ project.abbreviation or '' }}" {% if item.project_id == project.id %}selected{% endif %}>
+                                        <option value="{{ project.id }}" data-abbreviation="{{ project.abbreviation or '' }}" {% if item.project_id == project.id and not item.is_overhead %}selected{% endif %}>
                                             {% if project.abbreviation %}{{ project.abbreviation }} - {% endif %}{{ project.name }}
                                         </option>
                                         {% endfor %}
@@ -224,26 +224,30 @@
                                     <label class="cl-form-label">Rate (per day)</label>
                                     <div class="cl-input-group">
                                         <span class="cl-input-prefix">$</span>
-                                        <input type="number" class="cl-form-control line-rate" step="0.01" min="0" 
+                                        <input type="number" class="cl-form-control line-rate" step="0.01" min="0"
                                                value="{{ item.rate or '' }}" placeholder="0.00" onchange="calculateLinePrice(this)">
                                     </div>
                                 </div>
                                 <div class="cl-form-group cl-form-group-sm">
                                     <label class="cl-form-label">Markup (%)</label>
-                                    <input type="number" class="cl-form-control line-markup" step="0.01" min="0" max="100" 
-                                           value="{{ (item.markup * 100) if item.markup else '' }}" placeholder="0" onchange="calculateLinePrice(this)">
+                                    <input type="number" class="cl-form-control line-markup" step="0.01" min="0" max="100"
+                                           value="{{ (item.markup * 100) if item.markup is not none else '' }}" placeholder="0" onchange="calculateLinePrice(this)">
                                 </div>
                                 <div class="cl-form-group cl-form-group-sm">
                                     <label class="cl-form-label">Price</label>
                                     <div class="cl-input-group">
                                         <span class="cl-input-prefix">$</span>
-                                        <input type="text" class="cl-form-control line-price cl-calculated" 
+                                        <input type="text" class="cl-form-control line-price cl-calculated"
                                                value="{{ '%.2f'|format(item.price or 0) }}" readonly>
                                     </div>
                                 </div>
                                 <div class="cl-form-group cl-form-group-sm">
                                     <label class="cl-form-label">Billable</label>
                                     <input type="checkbox" class="line-is-billable" {% if item.is_billable %}checked{% endif %}>
+                                </div>
+                                <div class="cl-form-group cl-form-group-sm">
+                                    <label class="cl-form-label">Overhead</label>
+                                    <input type="checkbox" class="line-is-overhead" {% if item.is_overhead %}checked{% endif %} onchange="toggleOverhead(this)">
                                 </div>
                             </div>
                             <div class="cl-form-row">
@@ -347,6 +351,10 @@
                 <div class="cl-form-group cl-form-group-sm">
                     <label class="cl-form-label">Billable</label>
                     <input type="checkbox" class="line-is-billable" checked>
+                </div>
+                <div class="cl-form-group cl-form-group-sm">
+                    <label class="cl-form-label">Overhead</label>
+                    <input type="checkbox" class="line-is-overhead" onchange="toggleOverhead(this)">
                 </div>
             </div>
             <div class="cl-form-row">
@@ -642,23 +650,36 @@
         }
     }
 
+    function toggleOverhead(checkbox) {
+        const lineItem = checkbox.closest('.cl-line-item');
+        const projectSelect = lineItem.querySelector('.line-project-id');
+        if (checkbox.checked) {
+            projectSelect.disabled = true;
+            projectSelect.value = '';
+        } else {
+            projectSelect.disabled = false;
+        }
+    }
+
     function collectLineItems() {
         const items = [];
         document.querySelectorAll('.cl-line-item').forEach(item => {
             const markupPercent = parseFloat(item.querySelector('.line-markup').value) || 0;
+            const isOverhead = item.querySelector('.line-is-overhead').checked;
             items.push({
                 id: item.dataset.lineItemId ? parseInt(item.dataset.lineItemId) : null,
                 public_id: item.dataset.publicId || null,
                 row_version: item.dataset.rowVersion || null,
                 line_date: item.querySelector('.line-date').value || null,
-                project_id: parseInt(item.querySelector('.line-project-id').value) || null,
+                project_id: isOverhead ? null : (parseInt(item.querySelector('.line-project-id').value) || null),
                 sub_cost_code_id: parseInt(item.querySelector('.line-sub-cost-code-id').value) || null,
                 description: item.querySelector('.line-description').value || null,
                 hours: parseFloat(item.querySelector('.line-hours').value) || null,
                 rate: parseFloat(item.querySelector('.line-rate').value) || null,
-                markup: markupPercent / 100 || null,
+                markup: markupPercent / 100,
                 price: parseFloat(item.querySelector('.line-price').value) || null,
                 is_billable: item.querySelector('.line-is-billable').checked,
+                is_overhead: isOverhead,
             });
         });
         return items;

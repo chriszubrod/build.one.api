@@ -719,7 +719,7 @@
                 rate: rate && rate.value ? parseFloat(rate.value) : null,
                 amount: amountInput && amountInput.value ? parseFloat(amountInput.value) : null,
                 is_billable: isBillable ? isBillable.checked : true,
-                markup: markup && markup.value ? parseFloat(markup.value) : null,
+                markup: markup && markup.value ? parseFloat(markup.value) / 100 : null,
                 price: priceInput && priceInput.value ? parseFloat(priceInput.value) : null,
                 is_draft: true
             };
@@ -1561,7 +1561,7 @@
                     rate: rate && rate.value ? parseFloat(rate.value) : null,
                     amount: amountInput && amountInput.value ? parseFloat(amountInput.value) : null,
                     is_billable: isBillable ? isBillable.checked : true,
-                    markup: markup && markup.value ? parseFloat(markup.value) : null,
+                    markup: markup && markup.value ? parseFloat(markup.value) / 100 : null,
                     price: priceInput && priceInput.value ? parseFloat(priceInput.value) : null,
                     is_draft: false  // Mark as complete
                 };

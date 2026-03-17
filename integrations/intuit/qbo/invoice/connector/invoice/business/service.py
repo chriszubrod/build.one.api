@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 import logging
+from decimal import Decimal
 from typing import List, Optional
 
 # Third-party Imports
@@ -122,7 +123,7 @@ class InvoiceInvoiceConnector:
                     invoice_date=invoice_date,
                     due_date=due_date,
                     invoice_number=invoice_number,
-                    total_amount=float(total_amount) if total_amount is not None else None,
+                    total_amount=Decimal(str(total_amount)) if total_amount is not None else None,
                     memo=memo,
                     is_draft=False,
                 )
@@ -290,3 +291,370 @@ class InvoiceInvoiceConnector:
         Get mapping by QboInvoice ID.
         """
         return self.mapping_repo.read_by_qbo_invoice_id(qbo_invoice_id)
+
+    # ------------------------------------------------------------------
+    # Local → QBO direction
+    # ------------------------------------------------------------------
+
+    def sync_to_qbo_invoice(self, invoice: Invoice, realm_id: str):
+        """
+        Push a local Invoice to QuickBooks Online.
+
+        Creates the invoice in QBO if not yet synced. If already mapped,
+        returns the existing local QboInvoice mirror without making an API call.
+
+        Args:
+            invoice: Local Invoice record
+            realm_id: QBO realm ID
+
+        Returns:
+            QboInvoice: The local QboInvoice mirror record
+
+        Raises:
+            ValueError: If CustomerRef cannot be resolved or no valid lines exist
+        """
+        from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceRepository, QboInvoiceLineRepository
+        from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
+        from integrations.intuit.qbo.invoice.external.schemas import (
+            QboInvoiceCreate as QboInvoiceCreateSchema,
+            QboReferenceType,
+        )
+        from integrations.intuit.qbo.auth.business.service import QboAuthService
+        from entities.invoice_line_item.business.service import InvoiceLineItemService
+
+        qbo_invoice_repo = QboInvoiceRepository()
+        qbo_invoice_line_repo = QboInvoiceLineRepository()
+
+        invoice_id = int(invoice.id) if isinstance(invoice.id, str) else invoice.id
+
+        # Return early if already pushed to QBO
+        existing_mapping = self.mapping_repo.read_by_invoice_id(invoice_id)
+        if existing_mapping:
+            logger.info(f"Invoice {invoice_id} is already mapped to QboInvoice {existing_mapping.qbo_invoice_id}")
+            return qbo_invoice_repo.read_by_id(existing_mapping.qbo_invoice_id)
+
+        # Resolve QBO CustomerRef from project_id
+        customer_ref = self._get_qbo_customer_ref(invoice.project_id)
+        if not customer_ref:
+            raise ValueError(f"No QBO customer mapping found for project_id: {invoice.project_id}")
+
+        # Get invoice line items
+        invoice_line_items = InvoiceLineItemService().read_by_invoice_id(invoice_id)
+
+        # Build QBO line items
+        qbo_lines = []
+        skipped_lines = []
+        for line_item in invoice_line_items:
+            qbo_line = self._build_qbo_invoice_line(line_item)
+            if qbo_line:
+                qbo_lines.append(qbo_line)
+            else:
+                skipped_lines.append(line_item.id)
+
+        if not qbo_lines:
+            if invoice_line_items:
+                raise ValueError(
+                    f"Invoice {invoice_id} has {len(invoice_line_items)} line item(s) but none could be "
+                    f"built for QBO. Manual lines require a SubCostCode mapped to a QBO Item. "
+                    f"Skipped line item IDs: {skipped_lines}"
+                )
+            raise ValueError("Invoice has no line items. QBO requires at least one line item.")
+
+        # Build create payload
+        qbo_invoice_create = QboInvoiceCreateSchema(
+            customer_ref=QboReferenceType(value=customer_ref.value, name=customer_ref.name),
+            txn_date=invoice.invoice_date[:10] if invoice.invoice_date else None,
+            due_date=invoice.due_date[:10] if invoice.due_date else None,
+            doc_number=invoice.invoice_number,
+            private_note=invoice.memo,
+            line=qbo_lines,
+        )
+
+        # Get auth token
+        qbo_auth = QboAuthService().ensure_valid_token(realm_id=realm_id)
+        if not qbo_auth or not qbo_auth.access_token:
+            raise ValueError(f"No valid QBO auth found for realm {realm_id}")
+
+        logger.info(f"Creating Invoice in QBO for local Invoice {invoice_id}: doc_number={invoice.invoice_number}")
+
+        with QboInvoiceClient(access_token=qbo_auth.access_token, realm_id=realm_id) as client:
+            created_invoice = client.create_invoice(qbo_invoice_create)
+
+        logger.info(f"Created QBO Invoice {created_invoice.id} (SyncToken={created_invoice.sync_token})")
+
+        # Store local QboInvoice mirror
+        local_qbo_invoice = qbo_invoice_repo.create(
+            qbo_id=created_invoice.id,
+            sync_token=created_invoice.sync_token,
+            realm_id=realm_id,
+            customer_ref_value=customer_ref.value,
+            customer_ref_name=customer_ref.name,
+            txn_date=created_invoice.txn_date,
+            due_date=created_invoice.due_date,
+            ship_date=None,
+            doc_number=created_invoice.doc_number,
+            private_note=created_invoice.private_note,
+            customer_memo=None,
+            bill_email=None,
+            total_amt=created_invoice.total_amt,
+            balance=created_invoice.balance,
+            deposit=None,
+            sales_term_ref_value=None,
+            sales_term_ref_name=None,
+            currency_ref_value=created_invoice.currency_ref.value if created_invoice.currency_ref else None,
+            currency_ref_name=created_invoice.currency_ref.name if created_invoice.currency_ref else None,
+            exchange_rate=created_invoice.exchange_rate,
+            department_ref_value=None,
+            department_ref_name=None,
+            class_ref_value=None,
+            class_ref_name=None,
+            ship_method_ref_value=None,
+            ship_method_ref_name=None,
+            tracking_num=None,
+            print_status=None,
+            email_status=None,
+            allow_online_ach_payment=None,
+            allow_online_credit_card_payment=None,
+            apply_tax_after_discount=None,
+            global_tax_calculation=None,
+        )
+
+        logger.info(f"Stored local QboInvoice {local_qbo_invoice.id}")
+
+        # Store local QboInvoiceLine mirrors
+        if created_invoice.line:
+            for qbo_line in created_invoice.line:
+                if qbo_line.detail_type != "SalesItemLine":
+                    continue
+                try:
+                    detail = qbo_line.sales_item_line_detail
+                    qbo_invoice_line_repo.create(
+                        qbo_invoice_id=local_qbo_invoice.id,
+                        qbo_line_id=qbo_line.id,
+                        line_num=qbo_line.line_num,
+                        description=qbo_line.description,
+                        amount=qbo_line.amount,
+                        detail_type=qbo_line.detail_type,
+                        item_ref_value=detail.item_ref.value if detail and detail.item_ref else None,
+                        item_ref_name=detail.item_ref.name if detail and detail.item_ref else None,
+                        class_ref_value=detail.class_ref.value if detail and detail.class_ref else None,
+                        class_ref_name=detail.class_ref.name if detail and detail.class_ref else None,
+                        qty=detail.qty if detail else None,
+                        unit_price=detail.unit_price if detail else None,
+                        tax_code_ref_value=detail.tax_code_ref.value if detail and detail.tax_code_ref else None,
+                        tax_code_ref_name=detail.tax_code_ref.name if detail and detail.tax_code_ref else None,
+                        service_date=detail.service_date if detail else None,
+                        discount_rate=None,
+                        discount_amt=None,
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not store QboInvoiceLine for QBO line {qbo_line.id}: {e}")
+
+        # Create InvoiceInvoice mapping
+        qbo_invoice_id_local = int(local_qbo_invoice.id) if isinstance(local_qbo_invoice.id, str) else local_qbo_invoice.id
+        try:
+            self.create_mapping(invoice_id=invoice_id, qbo_invoice_id=qbo_invoice_id_local)
+            logger.info(f"Created mapping: Invoice {invoice_id} <-> QboInvoice {qbo_invoice_id_local}")
+        except ValueError as e:
+            logger.warning(f"Could not create InvoiceInvoice mapping: {e}")
+
+        return local_qbo_invoice
+
+    def _get_qbo_customer_ref(self, project_id: int):
+        """
+        Resolve local project_id to a QBO CustomerRef (value=qbo_id, name=display_name).
+
+        Returns None if the mapping chain cannot be resolved.
+        """
+        from integrations.intuit.qbo.invoice.external.schemas import QboReferenceType
+
+        if not project_id:
+            return None
+
+        customer_mapping = self.customer_project_repo.read_by_project_id(project_id)
+        if not customer_mapping:
+            logger.warning(f"CustomerProject mapping not found for project_id: {project_id}")
+            return None
+
+        qbo_customer = self.qbo_customer_repo.read_by_id(customer_mapping.qbo_customer_id)
+        if not qbo_customer or not qbo_customer.qbo_id:
+            logger.warning(f"QboCustomer not found for qbo_customer_id: {customer_mapping.qbo_customer_id}")
+            return None
+
+        from integrations.intuit.qbo.invoice.external.schemas import QboReferenceType
+        return QboReferenceType(value=qbo_customer.qbo_id, name=qbo_customer.display_name)
+
+    def _build_qbo_invoice_line(self, line_item):
+        """
+        Build a QBO SalesItemLine from a local InvoiceLineItem.
+
+        Returns None if the line cannot be resolved (no amount, no ItemRef).
+        """
+        from integrations.intuit.qbo.invoice.external.schemas import (
+            QboInvoiceLine as QboInvoiceLineSchema,
+            QboSalesItemLineDetail,
+            QboReferenceType,
+        )
+
+        # Amount charged on the invoice: prefer price (billable), fall back to cost amount
+        amount = line_item.price if line_item.price is not None else line_item.amount
+        if amount is None:
+            logger.warning(f"InvoiceLineItem {line_item.id} has no price or amount, skipping")
+            return None
+
+        # Resolve ItemRef — required by QBO for SalesItemLine
+        item_ref = self._get_qbo_item_ref_for_line(line_item)
+        if not item_ref:
+            logger.warning(
+                f"InvoiceLineItem {line_item.id} (source_type={line_item.source_type}) "
+                f"has no QBO Item mapping, skipping"
+            )
+            return None
+
+        # Qty / UnitPrice only sent for Manual lines
+        qty = line_item.quantity if line_item.source_type == "Manual" else None
+        unit_price = line_item.rate if line_item.source_type == "Manual" else None
+
+        detail = QboSalesItemLineDetail(
+            item_ref=item_ref,
+            qty=qty,
+            unit_price=unit_price,
+        )
+
+        # LinkedTxn for source-backed lines
+        linked_txn = self._resolve_linked_txn_for_line(line_item)
+
+        return QboInvoiceLineSchema(
+            description=line_item.description,
+            amount=amount,
+            detail_type="SalesItemLine",
+            sales_item_line_detail=detail,
+            linked_txn=[linked_txn] if linked_txn else None,
+        )
+
+    def _get_qbo_item_ref_for_line(self, line_item):
+        """
+        Resolve the QBO ItemRef for a line item by walking:
+          Manual           → InvoiceLineItem.sub_cost_code_id
+          BillLineItem     → BillLineItem.sub_cost_code_id
+          ExpenseLineItem  → ExpenseLineItem.sub_cost_code_id
+          BillCreditLineItem → BillCreditLineItem.sub_cost_code_id
+
+        Then: sub_cost_code_id → ItemSubCostCode → QboItem.qbo_id
+        """
+        from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
+        from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
+        from integrations.intuit.qbo.invoice.external.schemas import QboReferenceType
+
+        sub_cost_code_id = None
+
+        if line_item.source_type == "Manual":
+            sub_cost_code_id = line_item.sub_cost_code_id
+
+        elif line_item.source_type == "BillLineItem" and line_item.bill_line_item_id:
+            from entities.bill_line_item.business.service import BillLineItemService
+            bill_li = BillLineItemService().read_by_id(line_item.bill_line_item_id)
+            sub_cost_code_id = bill_li.sub_cost_code_id if bill_li else None
+
+        elif line_item.source_type == "ExpenseLineItem" and line_item.expense_line_item_id:
+            from entities.expense_line_item.business.service import ExpenseLineItemService
+            expense_li = ExpenseLineItemService().read_by_id(line_item.expense_line_item_id)
+            sub_cost_code_id = expense_li.sub_cost_code_id if expense_li else None
+
+        elif line_item.source_type == "BillCreditLineItem" and line_item.bill_credit_line_item_id:
+            from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+            credit_li = BillCreditLineItemService().read_by_id(line_item.bill_credit_line_item_id)
+            sub_cost_code_id = credit_li.sub_cost_code_id if credit_li else None
+
+        if not sub_cost_code_id:
+            return None
+
+        mapping = ItemSubCostCodeRepository().read_by_sub_cost_code_id(sub_cost_code_id)
+        if not mapping:
+            return None
+
+        qbo_item = QboItemRepository().read_by_id(mapping.qbo_item_id)
+        if not qbo_item or not qbo_item.qbo_id:
+            return None
+
+        return QboReferenceType(value=qbo_item.qbo_id, name=qbo_item.name)
+
+    def _resolve_linked_txn_for_line(self, line_item):
+        """
+        Resolve the QBO LinkedTxn for a source-backed line item.
+
+        Walk the mapping chain:
+          BillLineItem     → BillBill → QboBill.qbo_id       → TxnType "Bill"
+          ExpenseLineItem  → PurchaseExpense → QboPurchase.qbo_id → TxnType "Purchase"
+          BillCreditLineItem → VendorCreditBillCredit → QboVendorCredit.qbo_id → TxnType "VendorCredit"
+          Manual           → None (no linked transaction)
+
+        Returns None if the chain cannot be resolved or for Manual lines.
+        """
+        from integrations.intuit.qbo.invoice.external.schemas import QboLinkedTxn
+
+        try:
+            if line_item.source_type == "BillLineItem" and line_item.bill_line_item_id:
+                from entities.bill_line_item.business.service import BillLineItemService
+                from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
+                from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository
+
+                bill_li = BillLineItemService().read_by_id(line_item.bill_line_item_id)
+                if not bill_li or not bill_li.bill_id:
+                    return None
+
+                bill_mapping = BillBillRepository().read_by_bill_id(bill_li.bill_id)
+                if not bill_mapping:
+                    logger.debug(f"No BillBill mapping for bill_id={bill_li.bill_id}")
+                    return None
+
+                qbo_bill = QboBillRepository().read_by_id(bill_mapping.qbo_bill_id)
+                if not qbo_bill or not qbo_bill.qbo_id:
+                    return None
+
+                return QboLinkedTxn(txn_id=qbo_bill.qbo_id, txn_type="Bill")
+
+            elif line_item.source_type == "ExpenseLineItem" and line_item.expense_line_item_id:
+                from entities.expense_line_item.business.service import ExpenseLineItemService
+                from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import PurchaseExpenseRepository
+                from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
+
+                expense_li = ExpenseLineItemService().read_by_id(line_item.expense_line_item_id)
+                if not expense_li or not expense_li.expense_id:
+                    return None
+
+                purchase_mapping = PurchaseExpenseRepository().read_by_expense_id(expense_li.expense_id)
+                if not purchase_mapping:
+                    logger.debug(f"No PurchaseExpense mapping for expense_id={expense_li.expense_id}")
+                    return None
+
+                qbo_purchase = QboPurchaseRepository().read_by_id(purchase_mapping.qbo_purchase_id)
+                if not qbo_purchase or not qbo_purchase.qbo_id:
+                    return None
+
+                return QboLinkedTxn(txn_id=qbo_purchase.qbo_id, txn_type="Purchase")
+
+            elif line_item.source_type == "BillCreditLineItem" and line_item.bill_credit_line_item_id:
+                from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+                from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import VendorCreditBillCreditMappingRepository
+                from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
+
+                credit_li = BillCreditLineItemService().read_by_id(line_item.bill_credit_line_item_id)
+                if not credit_li or not credit_li.bill_credit_id:
+                    return None
+
+                vc_mapping = VendorCreditBillCreditMappingRepository().read_by_bill_credit_id(credit_li.bill_credit_id)
+                if not vc_mapping:
+                    logger.debug(f"No VendorCreditBillCredit mapping for bill_credit_id={credit_li.bill_credit_id}")
+                    return None
+
+                qbo_vc = QboVendorCreditRepository().read_by_id(vc_mapping.qbo_vendor_credit_id)
+                if not qbo_vc or not qbo_vc.qbo_id:
+                    return None
+
+                return QboLinkedTxn(txn_id=qbo_vc.qbo_id, txn_type="VendorCredit")
+
+        except Exception as e:
+            logger.warning(f"Error resolving LinkedTxn for InvoiceLineItem {line_item.id}: {e}")
+
+        return None

@@ -433,7 +433,7 @@ class ExpenseService:
                     vendor_public_id=vendor.public_id,
                     expense_date=expense.expense_date,
                     reference_number=expense.reference_number,
-                    total_amount=float(expense.total_amount) if expense.total_amount else None,
+                    total_amount=Decimal(str(expense.total_amount)) if expense.total_amount is not None else None,
                     memo=expense.memo,
                     is_draft=False,
                 )
@@ -483,11 +483,11 @@ class ExpenseService:
                         project_public_id=project_public_id,
                         description=line_item.description,
                         quantity=line_item.quantity,
-                        rate=float(line_item.rate) if line_item.rate else None,
-                        amount=float(line_item.amount) if line_item.amount else None,
+                        rate=Decimal(str(line_item.rate)) if line_item.rate is not None else None,
+                        amount=Decimal(str(line_item.amount)) if line_item.amount is not None else None,
                         is_billable=line_item.is_billable,
-                        markup=float(line_item.markup) if line_item.markup else None,
-                        price=float(line_item.price) if line_item.price else None,
+                        markup=Decimal(str(line_item.markup)) if line_item.markup is not None else None,
+                        price=Decimal(str(line_item.price)) if line_item.price is not None else None,
                         is_draft=False,
                     )
                 except Exception as e:
@@ -520,7 +520,7 @@ class ExpenseService:
             file_upload_results[project_id] = upload_result
             if upload_result.get("errors"):
                 all_errors.extend(upload_result["errors"])
-            excel_result = self._sync_to_excel_workbook(
+            excel_result = self.sync_to_excel_workbook(
                 expense=expense,
                 line_items=project_line_items,
                 project_id=project_id,
@@ -543,7 +543,7 @@ class ExpenseService:
             "errors": all_errors,
         }
 
-    def _sync_to_excel_workbook(self, expense, line_items: List, project_id: int) -> dict:
+    def sync_to_excel_workbook(self, expense, line_items: List, project_id: int) -> dict:
         """Sync Expense and ExpenseLineItems to project Excel workbook. Mirrors Bill _sync_to_excel_workbook."""
         try:
             from entities.bill.business.service import find_insertion_row_for_subcostcode
@@ -586,7 +586,7 @@ class ExpenseService:
                         ref_number = expense.reference_number or ""
                         description = line_item.description or ""
                         price = float(line_item.price) if line_item.price is not None else 0.0
-                        row = ["", cost_code_number, sub_cost_code_number, "", "", "", "", "", expense_date, vendor_name, ref_number, description, "Ck", price] + [""] * 12
+                        row = ["", cost_code_number, sub_cost_code_number, "", "", "", "", "", expense_date, vendor_name, ref_number, description, "Ck", price] + [""] * 11 + [str(line_item.public_id) if line_item.public_id else ""]  # Z: ExpenseLineItem public_id (reconciliation key)
                         group_rows.append(row)
                     except Exception as e:
                         errors.append({"line_item_id": line_item.id, "error": str(e)})
@@ -607,7 +607,7 @@ class ExpenseService:
                 append_result = append_excel_rows(drive_id=drive.drive_id, item_id=driveitem.item_id, worksheet_name=worksheet_name, values=rows_to_append)
                 if append_result.get("status_code") in [200, 201]:
                     synced_count += len(rows_to_append)
-            return {"success": synced_count > 0 or not errors, "message": f"Synced {synced_count} row(s)", "synced_count": synced_count, "errors": errors}
+            return {"success": not errors, "message": f"Synced {synced_count} row(s)", "synced_count": synced_count, "errors": errors}
         except Exception as e:
             logger.exception(f"Error syncing to Excel for project {project_id}")
             return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
@@ -617,11 +617,9 @@ class ExpenseService:
     ) -> dict:
         """Upload attachments to SharePoint module folder. Mirrors Bill _upload_attachments_to_module_folder."""
         try:
-            module = self.module_service.read_by_name("Expenses") or self.module_service.read_by_name("Expense") or self.module_service.read_by_name("Bills")
+            module = self.module_service.read_by_name("Expenses") or self.module_service.read_by_name("Expense")
             if not module:
-                module = (self.module_service.read_all() or [None])[0]
-            if not module:
-                return {"success": False, "message": "No modules found", "synced_count": 0, "errors": [{"error": "No modules found"}]}
+                return {"success": False, "message": "Expense module not found — ensure a module named 'Expenses' exists", "synced_count": 0, "errors": [{"error": "Expense module not found"}]}
             module_folder = self.project_module_connector.get_folder_for_module(project_id=project_id, module_id=int(module.id))
             if not module_folder:
                 return {"success": False, "message": f"Module folder not linked for project {project_id}", "synced_count": 0, "errors": [{"error": f"Module folder not linked for project {project_id}"}]}
@@ -701,7 +699,7 @@ class ExpenseService:
                     synced_count += 1
                 except Exception as e:
                     errors.append({"line_item_id": line_item.id, "error": str(e)})
-            return {"success": synced_count > 0 or not errors, "message": f"Uploaded {synced_count} file(s)", "synced_count": synced_count, "errors": errors}
+            return {"success": not errors, "message": f"Uploaded {synced_count} file(s)", "synced_count": synced_count, "errors": errors}
         except Exception as e:
             logger.exception(f"Error uploading attachments for project {project_id}")
             return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}

@@ -670,9 +670,9 @@
             <td>${refLink(sourceType, row.getAttribute('data-parent-public-id'), row.getAttribute('data-parent-number'))}</td>
             <td>${row.getAttribute('data-description') || '—'}</td>
             <td>${costCode}</td>
-            <td style="text-align: right;">${fmt(amount ? parseFloat(amount) : null)}</td>
-            <td style="text-align: right;">${fmtMarkup(markup ? parseFloat(markup) : null)}</td>
-            <td style="text-align: right;">${fmt(price ? parseFloat(price) : null)}</td>
+            <td style="text-align: right;">${fmt(amount !== null && amount !== undefined && amount !== '' ? parseFloat(amount) : null)}</td>
+            <td style="text-align: right;">${fmtMarkup(markup !== null && markup !== undefined && markup !== '' ? parseFloat(markup) : null)}</td>
+            <td style="text-align: right;">${fmt(price !== null && price !== undefined && price !== '' ? parseFloat(price) : null)}</td>
             <td style="text-align: center;">${attachCell}</td>
         `;
     }
@@ -727,9 +727,9 @@
             invoice_public_id: invoicePublicId,
             source_type: sourceType,
             description: row.getAttribute('data-description') || null,
-            amount: row.getAttribute('data-amount') ? parseFloat(row.getAttribute('data-amount')) : null,
-            markup: row.getAttribute('data-markup') ? parseFloat(row.getAttribute('data-markup')) : null,
-            price: row.getAttribute('data-price') ? parseFloat(row.getAttribute('data-price')) : null,
+            amount: (v => v !== null && v !== '' ? parseFloat(v) : null)(row.getAttribute('data-amount')),
+            markup: (v => v !== null && v !== '' ? parseFloat(v) : null)(row.getAttribute('data-markup')),
+            price: (v => v !== null && v !== '' ? parseFloat(v) : null)(row.getAttribute('data-price')),
             is_draft: true,
         };
         if (fkField && sourceId) body[fkField] = parseInt(sourceId);

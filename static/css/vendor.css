@@ -1,13 +1,36 @@
 /* Vendor module styles - matches app design system */
 
-/* Page header */
+/* Vendor Agent action cards (inline in copilot chat) */
+.vendor-agent-action-card {
+    background-color: var(--color-surface);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    padding: 0.75rem;
+    font-size: var(--font-size-base);
+    line-height: 1.5;
+}
+
+/* Clickable action cards (classify, etc.) */
+.vendor-agent-action-card-clickable {
+    cursor: pointer;
+    border: 1px dashed var(--color-text-secondary);
+    transition: border-color 0.15s, background-color 0.15s;
+}
+
+.vendor-agent-action-card-clickable:hover {
+    border-color: var(--color-text);
+    background-color: var(--color-background);
+}
+
+/* Page header — height matches sidebar-companies and aside-panel-header
+   so the border-bottom forms a continuous line across all three columns */
 .vendor-page-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 1rem 0;
-    margin-bottom: 1.5rem;
+    height: 3.5rem;
     border-bottom: 1px solid #e0e0e0;
+    flex-shrink: 0;
 }
 
 .vendor-page-header h1 {
@@ -176,6 +199,9 @@
     padding: 1rem 1.5rem;
     transition: box-shadow 0.2s ease, transform 0.2s ease;
     min-height: 60px;
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
 }
 
 .vendor-card:hover {
@@ -197,7 +223,16 @@
     color: var(--color-text);
     margin: 0;
     flex: 0 0 auto;
-    min-width: 200px;
+}
+
+.vendor-status-attention {
+    background-color: #dc3545;
+    color: #fff;
+}
+
+/* Push the first badge (attention or status) to the right */
+.vendor-card-content > span:first-of-type {
+    margin-left: auto;
 }
 
 .vendor-card-abbreviation {
@@ -218,15 +253,9 @@
     letter-spacing: 0.5px;
     white-space: nowrap;
     flex-shrink: 0;
-    margin-left: auto;
     margin-right: 2rem;
 }
 
-.vendor-card-actions {
-    display: flex;
-    gap: 0.5rem;
-    flex: 0 0 auto;
-}
 
 .vendor-status-draft {
     background-color: #fff3cd;
@@ -261,7 +290,7 @@
 
 /* List container with scrollbar */
 .vendor-list-container {
-    max-height: calc(100vh - 300px);
+    flex: 1;
     overflow-y: auto;
     padding-right: 0.5rem;
     padding-bottom: 2rem;
@@ -926,11 +955,6 @@
         width: 100%;
     }
 
-    .vendor-card-actions {
-        margin-left: 0;
-        width: 100%;
-        justify-content: flex-start;
-    }
 
     .vendor-form-group {
         flex-direction: column;

@@ -14,6 +14,7 @@ from integrations.ms.sharepoint.external.client import (
     get_drive_item as graph_get_drive_item,
     get_drive_item_content as graph_get_drive_item_content,
     upload_small_file as graph_upload_small_file,
+    upload_large_file as graph_upload_large_file,
     create_folder as graph_create_folder,
 )
 
@@ -183,14 +184,10 @@ class MsDriveItemService:
                 "item": None
             }
         
-        # Check file size (4MB limit for small file upload)
+        # Files > 4MB must use the resumable upload session API
         if len(content) > 4 * 1024 * 1024:
-            return {
-                "message": "File too large. Maximum size is 4MB for this endpoint.",
-                "status_code": 413,
-                "item": None
-            }
-        
+            return graph_upload_large_file(drive.drive_id, parent_item_id, filename, content, content_type)
+
         # Upload to MS Graph
         return graph_upload_small_file(
             drive.drive_id,

@@ -20,6 +20,7 @@ class Vendor:
     taxpayer_id: Optional[int]
     vendor_type_id: Optional[int]
     is_draft: Optional[bool]
+    is_deleted: Optional[bool] = False
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

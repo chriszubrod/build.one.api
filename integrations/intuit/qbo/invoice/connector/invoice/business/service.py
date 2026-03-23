@@ -301,7 +301,7 @@ class InvoiceInvoiceConnector:
         Push a local Invoice to QuickBooks Online.
 
         Creates the invoice in QBO if not yet synced. If already mapped,
-        returns the existing local QboInvoice mirror without making an API call.
+        updates the existing QBO invoice with the current local data.
 
         Args:
             invoice: Local Invoice record
@@ -317,6 +317,7 @@ class InvoiceInvoiceConnector:
         from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
         from integrations.intuit.qbo.invoice.external.schemas import (
             QboInvoiceCreate as QboInvoiceCreateSchema,
+            QboInvoiceUpdate as QboInvoiceUpdateSchema,
             QboReferenceType,
         )
         from integrations.intuit.qbo.auth.business.service import QboAuthService
@@ -327,16 +328,29 @@ class InvoiceInvoiceConnector:
 
         invoice_id = int(invoice.id) if isinstance(invoice.id, str) else invoice.id
 
-        # Return early if already pushed to QBO
-        existing_mapping = self.mapping_repo.read_by_invoice_id(invoice_id)
-        if existing_mapping:
-            logger.info(f"Invoice {invoice_id} is already mapped to QboInvoice {existing_mapping.qbo_invoice_id}")
-            return qbo_invoice_repo.read_by_id(existing_mapping.qbo_invoice_id)
-
         # Resolve QBO CustomerRef from project_id
         customer_ref = self._get_qbo_customer_ref(invoice.project_id)
         if not customer_ref:
             raise ValueError(f"No QBO customer mapping found for project_id: {invoice.project_id}")
+
+        # Get auth token (needed before QBO calls, including ReimburseCharge lookup)
+        qbo_auth = QboAuthService().ensure_valid_token(realm_id=realm_id)
+        if not qbo_auth or not qbo_auth.access_token:
+            raise ValueError(f"No valid QBO auth found for realm {realm_id}")
+
+        # Fetch ReimburseCharge lookup so we can link invoice lines to the QBO
+        # intermediate records that QBO created when bills/purchases were marked Billable.
+        # Falls back to Bill/Purchase TxnType if the lookup cannot be built.
+        reimburse_charge_lookup = {}
+        try:
+            reimburse_charge_lookup = self._build_reimburse_charge_lookup(
+                customer_ref_value=customer_ref.value,
+                access_token=qbo_auth.access_token,
+                realm_id=realm_id,
+            )
+            logger.info(f"ReimburseCharge lookup: {len(reimburse_charge_lookup)} entries for customer {customer_ref.value}")
+        except Exception as e:
+            logger.warning(f"Could not build ReimburseCharge lookup (LinkedTxn will fall back to Bill/Purchase): {e}")
 
         # Get invoice line items
         invoice_line_items = InvoiceLineItemService().read_by_invoice_id(invoice_id)
@@ -344,12 +358,29 @@ class InvoiceInvoiceConnector:
         # Build QBO line items
         qbo_lines = []
         skipped_lines = []
+        invoice_linked_txn_rc_ids = []  # ReimburseCharge IDs for invoice-level LinkedTxn
         for line_item in invoice_line_items:
-            qbo_line = self._build_qbo_invoice_line(line_item)
+            qbo_line = self._build_qbo_invoice_line(line_item, reimburse_charge_lookup)
             if qbo_line:
+                linked = qbo_line.linked_txn[0] if qbo_line.linked_txn else None
+                logger.info(
+                    f"InvoiceLineItem {line_item.id} (source={line_item.source_type}) → "
+                    f"LinkedTxn={linked.txn_type + ':' + linked.txn_id if linked else 'NONE'}"
+                )
+                # Collect ReimburseCharge IDs for the invoice-level LinkedTxn array
+                if linked and linked.txn_type == "ReimburseCharge" and linked.txn_id:
+                    if linked.txn_id not in invoice_linked_txn_rc_ids:
+                        invoice_linked_txn_rc_ids.append(linked.txn_id)
                 qbo_lines.append(qbo_line)
             else:
                 skipped_lines.append(line_item.id)
+
+        # Invoice-level LinkedTxn: one entry per ReimburseCharge (TxnId = rc_id)
+        from integrations.intuit.qbo.invoice.external.schemas import QboLinkedTxn as QboLinkedTxnSchema
+        invoice_linked_txns = [
+            QboLinkedTxnSchema(txn_id=rc_id, txn_type="ReimburseCharge")
+            for rc_id in invoice_linked_txn_rc_ids
+        ] or None
 
         if not qbo_lines:
             if invoice_line_items:
@@ -360,7 +391,88 @@ class InvoiceInvoiceConnector:
                 )
             raise ValueError("Invoice has no line items. QBO requires at least one line item.")
 
-        # Build create payload
+        # UPDATE path — invoice already synced to QBO
+        from integrations.intuit.qbo.base.errors import QboError, QboNotFoundError
+        existing_mapping = self.mapping_repo.read_by_invoice_id(invoice_id)
+        if existing_mapping:
+            local_qbo_invoice = qbo_invoice_repo.read_by_id(existing_mapping.qbo_invoice_id)
+            if not local_qbo_invoice or not local_qbo_invoice.qbo_id:
+                raise ValueError(f"Mapping exists but QboInvoice not found for invoice_id {invoice_id}")
+
+            logger.info(f"Updating existing QBO Invoice {local_qbo_invoice.qbo_id} for local Invoice {invoice_id}")
+
+            # Fetch fresh SyncToken. If the invoice was deleted in QBO, clear the stale mapping
+            # and fall through to the CREATE path below.
+            try:
+                with QboInvoiceClient(access_token=qbo_auth.access_token, realm_id=realm_id) as client:
+                    fresh = client.get_invoice(local_qbo_invoice.qbo_id)
+                    qbo_invoice_update = QboInvoiceUpdateSchema(
+                        id=local_qbo_invoice.qbo_id,
+                        sync_token=fresh.sync_token,
+                        customer_ref=QboReferenceType(value=customer_ref.value, name=customer_ref.name),
+                        txn_date=invoice.invoice_date[:10] if invoice.invoice_date else None,
+                        due_date=invoice.due_date[:10] if invoice.due_date else None,
+                        doc_number=invoice.invoice_number,
+                        private_note=invoice.memo,
+                        line=qbo_lines,
+                        linked_txn=invoice_linked_txns,
+                    )
+                    updated = client.update_invoice(qbo_invoice_update)
+
+                logger.info(f"Updated QBO Invoice {updated.id} (SyncToken={updated.sync_token})")
+
+                qbo_invoice_repo.update_by_qbo_id(
+                    qbo_id=local_qbo_invoice.qbo_id,
+                    row_version=local_qbo_invoice.row_version_bytes,
+                    sync_token=updated.sync_token,
+                    realm_id=realm_id,
+                    customer_ref_value=customer_ref.value,
+                    customer_ref_name=customer_ref.name,
+                    txn_date=updated.txn_date,
+                    due_date=updated.due_date,
+                    ship_date=None,
+                    doc_number=updated.doc_number,
+                    private_note=updated.private_note,
+                    customer_memo=None,
+                    bill_email=None,
+                    total_amt=updated.total_amt,
+                    balance=updated.balance,
+                    deposit=None,
+                    sales_term_ref_value=None,
+                    sales_term_ref_name=None,
+                    currency_ref_value=updated.currency_ref.value if updated.currency_ref else None,
+                    currency_ref_name=updated.currency_ref.name if updated.currency_ref else None,
+                    exchange_rate=updated.exchange_rate,
+                    department_ref_value=None,
+                    department_ref_name=None,
+                    class_ref_value=None,
+                    class_ref_name=None,
+                    ship_method_ref_value=None,
+                    ship_method_ref_name=None,
+                    tracking_num=None,
+                    print_status=None,
+                    email_status=None,
+                    allow_online_ach_payment=None,
+                    allow_online_credit_card_payment=None,
+                    apply_tax_after_discount=None,
+                    global_tax_calculation=None,
+                )
+                return qbo_invoice_repo.read_by_id(existing_mapping.qbo_invoice_id)
+
+            except QboError as e:
+                msg = str(e).lower()
+                if "not found" in msg or "inactive" in msg:
+                    logger.warning(
+                        f"QBO Invoice {local_qbo_invoice.qbo_id} is gone or inactive in QBO. "
+                        f"Clearing stale mapping and re-creating. Error: {e}"
+                    )
+                    self.mapping_repo.delete_by_id(existing_mapping.id)
+                else:
+                    raise
+
+        # CREATE path — first sync
+        logger.info(f"Creating Invoice in QBO for local Invoice {invoice_id}: doc_number={invoice.invoice_number}")
+
         qbo_invoice_create = QboInvoiceCreateSchema(
             customer_ref=QboReferenceType(value=customer_ref.value, name=customer_ref.name),
             txn_date=invoice.invoice_date[:10] if invoice.invoice_date else None,
@@ -368,14 +480,8 @@ class InvoiceInvoiceConnector:
             doc_number=invoice.invoice_number,
             private_note=invoice.memo,
             line=qbo_lines,
+            linked_txn=invoice_linked_txns,
         )
-
-        # Get auth token
-        qbo_auth = QboAuthService().ensure_valid_token(realm_id=realm_id)
-        if not qbo_auth or not qbo_auth.access_token:
-            raise ValueError(f"No valid QBO auth found for realm {realm_id}")
-
-        logger.info(f"Creating Invoice in QBO for local Invoice {invoice_id}: doc_number={invoice.invoice_number}")
 
         with QboInvoiceClient(access_token=qbo_auth.access_token, realm_id=realm_id) as client:
             created_invoice = client.create_invoice(qbo_invoice_create)
@@ -424,7 +530,7 @@ class InvoiceInvoiceConnector:
         # Store local QboInvoiceLine mirrors
         if created_invoice.line:
             for qbo_line in created_invoice.line:
-                if qbo_line.detail_type != "SalesItemLine":
+                if qbo_line.detail_type != "SalesItemLineDetail":
                     continue
                 try:
                     detail = qbo_line.sales_item_line_detail
@@ -484,7 +590,52 @@ class InvoiceInvoiceConnector:
         from integrations.intuit.qbo.invoice.external.schemas import QboReferenceType
         return QboReferenceType(value=qbo_customer.qbo_id, name=qbo_customer.display_name)
 
-    def _build_qbo_invoice_line(self, line_item):
+    def _build_reimburse_charge_lookup(self, customer_ref_value: str, access_token: str, realm_id: str) -> dict:
+        """
+        Query QBO for ReimburseCharge records for a customer and build a lookup dict.
+
+        Each ReimburseCharge carries a LinkedTxn back to its source Bill/Purchase. We
+        capture both so the invoice line can be built with the correct QBO payload:
+            Line.LinkedTxn[0].TxnId       = source Purchase/Bill QBO ID
+            Line.LinkedTxn[0].TxnType     = "ReimburseCharge"
+            Line.LinkedTxn[0].TxnLineId   = ReimburseCharge ID
+
+        Returns:
+            dict: {(qbo_item_id_str, amount_rounded_str): {"rc_id": str, "source_txn_id": str|None}}
+        """
+        from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
+
+        lookup = {}
+        with QboInvoiceClient(access_token=access_token, realm_id=realm_id) as client:
+            records = client.query_reimburse_charges(customer_ref_value)
+            for rc in records:
+                rc_id = rc.get("Id")
+                amount = rc.get("Amount")
+
+                # Extract the source Purchase/Bill ID from the ReimburseCharge's own LinkedTxn
+                source_txn_id = None
+                rc_linked = rc.get("LinkedTxn", [])
+                if isinstance(rc_linked, dict):
+                    rc_linked = [rc_linked]
+                for lt in rc_linked:
+                    if lt.get("TxnType") in ("Purchase", "Bill"):
+                        source_txn_id = str(lt.get("TxnId")) if lt.get("TxnId") else None
+                        break
+
+                lines = rc.get("Line", [])
+                if isinstance(lines, dict):
+                    lines = [lines]
+                for line in lines:
+                    detail = line.get("ReimburseLineDetail", {})
+                    item_ref = detail.get("ItemRef", {})
+                    item_ref_value = item_ref.get("value")
+                    if rc_id and amount is not None and item_ref_value:
+                        key = (str(item_ref_value), str(round(float(amount), 2)))
+                        lookup[key] = {"rc_id": str(rc_id), "source_txn_id": source_txn_id}
+
+        return lookup
+
+    def _build_qbo_invoice_line(self, line_item, reimburse_charge_lookup: dict = None):
         """
         Build a QBO SalesItemLine from a local InvoiceLineItem.
 
@@ -511,23 +662,35 @@ class InvoiceInvoiceConnector:
             )
             return None
 
-        # Qty / UnitPrice only sent for Manual lines
-        qty = line_item.quantity if line_item.source_type == "Manual" else None
-        unit_price = line_item.rate if line_item.source_type == "Manual" else None
+        # QBO requires UnitPrice + Qty + TaxCodeRef on every SalesItemLine to properly
+        # link the invoice line to its ReimburseCharge (flipping BillableStatus to
+        # HasBeenBilled on the source Bill/Purchase). Without these, QBO accepts the
+        # LinkedTxn reference but silently discards it and recreates the ReimburseCharge.
+        # For Manual lines use the stored quantity/rate; for source-backed lines default
+        # to Qty=1 / UnitPrice=amount (matching what QBO stores on the ReimburseCharge).
+        if line_item.source_type == "Manual":
+            qty = line_item.quantity if line_item.quantity is not None else Decimal("1")
+            unit_price = line_item.rate if line_item.rate is not None else amount
+        else:
+            qty = Decimal("1")
+            unit_price = amount
 
         detail = QboSalesItemLineDetail(
             item_ref=item_ref,
             qty=qty,
             unit_price=unit_price,
+            tax_code_ref=QboReferenceType(value="NON"),
         )
 
-        # LinkedTxn for source-backed lines
-        linked_txn = self._resolve_linked_txn_for_line(line_item)
+        # Resolve LinkedTxn — link to the QBO ReimburseCharge so QBO recognises the
+        # line as covering that billable transaction (flips HasBeenInvoiced on the
+        # ReimburseCharge and removes it from "Suggested Transactions").
+        linked_txn = self._resolve_linked_txn_for_line(line_item, reimburse_charge_lookup)
 
         return QboInvoiceLineSchema(
             description=line_item.description,
             amount=amount,
-            detail_type="SalesItemLine",
+            detail_type="SalesItemLineDetail",
             sales_item_line_detail=detail,
             linked_txn=[linked_txn] if linked_txn else None,
         )
@@ -579,14 +742,20 @@ class InvoiceInvoiceConnector:
 
         return QboReferenceType(value=qbo_item.qbo_id, name=qbo_item.name)
 
-    def _resolve_linked_txn_for_line(self, line_item):
+    def _resolve_linked_txn_for_line(self, line_item, reimburse_charge_lookup: dict = None):
         """
         Resolve the QBO LinkedTxn for a source-backed line item.
 
+        Prefers ReimburseCharge linking when a lookup dict is provided, which is the
+        correct QBO mechanism for linking invoice lines back to billable transactions
+        (causes QBO to flip HasBeenInvoiced on the ReimburseCharge and removes the
+        item from "Suggested Transactions"). Falls back to Bill/Purchase/VendorCredit
+        TxnType if the ReimburseCharge cannot be resolved.
+
         Walk the mapping chain:
-          BillLineItem     → BillBill → QboBill.qbo_id       → TxnType "Bill"
-          ExpenseLineItem  → PurchaseExpense → QboPurchase.qbo_id → TxnType "Purchase"
-          BillCreditLineItem → VendorCreditBillCredit → QboVendorCredit.qbo_id → TxnType "VendorCredit"
+          BillLineItem     → BillBill → QboBill.qbo_id → (ReimburseCharge or "Bill")
+          ExpenseLineItem  → PurchaseExpense → QboPurchase.qbo_id → "Purchase"
+          BillCreditLineItem → VendorCreditBillCredit → QboVendorCredit.qbo_id → "VendorCredit"
           Manual           → None (no linked transaction)
 
         Returns None if the chain cannot be resolved or for Manual lines.
@@ -594,25 +763,24 @@ class InvoiceInvoiceConnector:
         from integrations.intuit.qbo.invoice.external.schemas import QboLinkedTxn
 
         try:
-            if line_item.source_type == "BillLineItem" and line_item.bill_line_item_id:
-                from entities.bill_line_item.business.service import BillLineItemService
-                from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
-                from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository
-
-                bill_li = BillLineItemService().read_by_id(line_item.bill_line_item_id)
-                if not bill_li or not bill_li.bill_id:
-                    return None
-
-                bill_mapping = BillBillRepository().read_by_bill_id(bill_li.bill_id)
-                if not bill_mapping:
-                    logger.debug(f"No BillBill mapping for bill_id={bill_li.bill_id}")
-                    return None
-
-                qbo_bill = QboBillRepository().read_by_id(bill_mapping.qbo_bill_id)
-                if not qbo_bill or not qbo_bill.qbo_id:
-                    return None
-
-                return QboLinkedTxn(txn_id=qbo_bill.qbo_id, txn_type="Bill")
+            # For all source-backed lines, try ReimburseCharge matching.
+            # QBO correctly stores the LinkedTxn in the invoice for both Bill and Expense lines.
+            # Bill line BillableStatus is updated separately via _mark_source_bills_as_billed().
+            if reimburse_charge_lookup:
+                item_ref = self._get_qbo_item_ref_for_line(line_item)
+                amount = line_item.price if line_item.price is not None else line_item.amount
+                if item_ref and amount is not None:
+                    key = (str(item_ref.value), str(round(float(amount), 2)))
+                    rc_entry = reimburse_charge_lookup.get(key)
+                    if rc_entry:
+                        rc_id = rc_entry["rc_id"]
+                        source_txn_id = rc_entry.get("source_txn_id")
+                        # QBO expects: TxnId=ReimburseCharge ID, TxnType="ReimburseCharge", TxnLineId="1"
+                        return QboLinkedTxn(
+                            txn_id=rc_id,
+                            txn_type="ReimburseCharge",
+                            txn_line_id="1",
+                        )
 
             elif line_item.source_type == "ExpenseLineItem" and line_item.expense_line_item_id:
                 from entities.expense_line_item.business.service import ExpenseLineItemService

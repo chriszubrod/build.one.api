@@ -44,7 +44,10 @@ CREATE TABLE [dbo].[VendorAgentProposalField]
 END
 GO
 
-CREATE INDEX IX_VendorAgentProposalField_ProposalId ON [dbo].[VendorAgentProposalField]([ProposalId]);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_VendorAgentProposalField_ProposalId' AND object_id = OBJECT_ID('dbo.VendorAgentProposalField'))
+BEGIN
+    CREATE INDEX IX_VendorAgentProposalField_ProposalId ON [dbo].[VendorAgentProposalField]([ProposalId]);
+END
 GO
 
 
@@ -98,10 +101,11 @@ GO
 
 
 CREATE OR ALTER PROCEDURE ReadVendorAgentProposalFields
+(
+    @ProposalId BIGINT
+)
 AS
 BEGIN
-    BEGIN TRANSACTION;
-
     SELECT
         [Id],
         [PublicId],
@@ -116,9 +120,8 @@ BEGIN
         [NewDisplayValue],
         [FieldReasoning]
     FROM dbo.[VendorAgentProposalField]
+    WHERE [ProposalId] = @ProposalId
     ORDER BY [Id];
-
-    COMMIT TRANSACTION;
 END;
 GO
 

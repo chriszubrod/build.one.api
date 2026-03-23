@@ -204,6 +204,12 @@ def _enrich_line_items(line_items) -> list[dict]:
         elif li.source_type == "BillCreditLineItem" and li.bill_credit_line_item_id:
             enrichment = credit_map.get(li.bill_credit_line_item_id, {})
 
+        # Skip orphaned non-Manual items whose source record no longer exists
+        if li.source_type != "Manual" and li.source_type is not None:
+            has_fk = li.bill_line_item_id or li.expense_line_item_id or li.bill_credit_line_item_id
+            if not has_fk or not enrichment:
+                continue
+
         li_dict.setdefault("parent_number", "")
         li_dict.setdefault("parent_public_id", "")
         li_dict.setdefault("source_date", "")
@@ -452,6 +458,31 @@ async def edit_invoice(request: Request, public_id: str, current_user: dict = De
     line_items = []
     line_items_dicts = []
     if invoice and invoice.id:
+        # On draft invoices, refresh Price from source BillLineItem/ExpenseLineItem
+        # for any InvoiceLineItems where Price is NULL but the source now has a value.
+        # This handles the case where a bill was corrected after the line item was loaded.
+        if invoice.is_draft:
+            from shared.database import get_connection
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE ili
+                    SET ili.Price = bli.Price
+                    FROM dbo.InvoiceLineItem ili
+                    JOIN dbo.BillLineItem bli ON bli.Id = ili.BillLineItemId
+                    WHERE ili.InvoiceId = ?
+                      AND ili.Price IS NULL
+                      AND bli.Price IS NOT NULL
+                """, [invoice.id])
+                cursor.execute("""
+                    UPDATE ili
+                    SET ili.Price = eli.Price
+                    FROM dbo.InvoiceLineItem ili
+                    JOIN dbo.ExpenseLineItem eli ON eli.Id = ili.ExpenseLineItemId
+                    WHERE ili.InvoiceId = ?
+                      AND ili.Price IS NULL
+                      AND eli.Price IS NOT NULL
+                """, [invoice.id])
         line_items = InvoiceLineItemService().read_by_invoice_id(invoice_id=invoice.id)
         line_items_dicts = _enrich_line_items(line_items)
         _type_order = {"BillLineItem": 0, "BillCreditLineItem": 1, "ExpenseLineItem": 2, "Manual": 3}

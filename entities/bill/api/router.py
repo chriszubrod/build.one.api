@@ -1,6 +1,5 @@
 # Python Standard Library Imports
 import logging
-import time
 
 # Third-party Imports
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
@@ -20,12 +19,19 @@ router = APIRouter(prefix="/api/v1", tags=["api", "bill"])
 
 
 @router.post("/create/bill")
-def create_bill_router(body: BillCreate, current_user: dict = Depends(get_current_user_api)):
+def create_bill_router(
+    body: BillCreate,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user_api),
+):
     """
     Create a new bill.
-    
+
     Routes through the workflow engine for audit logging and state tracking.
+    When is_draft=False, triggers background completion (SharePoint, Excel, QBO).
     """
+    is_draft = body.is_draft if body.is_draft is not None else True
+
     context = TriggerContext(
         trigger_type=TriggerType.API_CALL,
         trigger_source=TriggerSource.API,
@@ -39,20 +45,32 @@ def create_bill_router(body: BillCreate, current_user: dict = Depends(get_curren
             "bill_number": body.bill_number,
             "total_amount": Decimal(str(body.total_amount)) if body.total_amount is not None else None,
             "memo": body.memo,
-            "is_draft": body.is_draft if body.is_draft is not None else True,
+            "is_draft": is_draft,
         },
         workflow_type="bill_create",
     )
-    
+
     result = TriggerRouter().route_instant(context)
-    
+
     if not result.get("success"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=result.get("error", "Failed to create bill")
         )
-    
-    return result.get("data")
+
+    data = result.get("data")
+
+    # If completing (not draft), queue background pipeline
+    if not is_draft and data and data.get("public_id"):
+        background_tasks.add_task(_run_complete_bill, data["public_id"])
+        import json
+        serializable = json.loads(json.dumps(data, default=str))
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content=serializable,
+        )
+
+    return data
 
 
 @router.get("/get/bills")
@@ -75,29 +93,15 @@ def get_bill_by_bill_number_and_vendor_router(bill_number: str, vendor_public_id
     return None
 
 
-def _clean_completion_cache():
-    now = time.time()
-    expired = [k for k, v in _BILL_COMPLETION_RESULT_CACHE.items() if v.get("expires_at", 0) < now]
-    for k in expired:
-        del _BILL_COMPLETION_RESULT_CACHE[k]
-
-
 @router.get("/get/bill/{public_id}/completion-result")
 def get_bill_completion_result_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
     """
-    Return the last completion result for a bill (Build One, SharePoint, Excel, QBO).
-    Used by the list page to show step status after a bill completes in the background.
-    Reads from DB (shared across workers) then in-memory cache. Returns 404 if no result or expired (1 hour TTL).
+    Return the completion result for a bill (Build One, SharePoint, Excel, QBO).
     """
-    # DB is shared across Gunicorn workers; in-memory is per-worker
     result = BillRepository().get_completion_result(public_id)
     if result is not None:
         return result
-    _clean_completion_cache()
-    entry = _BILL_COMPLETION_RESULT_CACHE.get(public_id)
-    if not entry or entry.get("expires_at", 0) < time.time():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No completion result found or expired")
-    return entry["result"]
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No completion result found")
 
 
 @router.get("/get/bill/{public_id}")
@@ -112,13 +116,24 @@ def get_bill_by_public_id_router(public_id: str, current_user: dict = Depends(ge
 
 
 @router.put("/update/bill/{public_id}")
-def update_bill_by_public_id_router(public_id: str, body: BillUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_bill_by_public_id_router(
+    public_id: str,
+    body: BillUpdate,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user_api),
+):
     """
     Update a bill by public ID.
-    If the bill is being completed (is_draft changing to False), attachments will be synced to SharePoint.
-    
-    Routes through the workflow engine for audit logging and state tracking.
+    When is_draft transitions from True to False, triggers background completion
+    (SharePoint, Excel, QBO).
     """
+    # Check if this is a draft-to-complete transition
+    is_completing = body.is_draft is False
+    if is_completing:
+        bill = BillService().read_by_public_id(public_id=public_id)
+        if bill and not getattr(bill, "is_draft", True):
+            is_completing = False  # Already completed, don't re-trigger
+
     context = TriggerContext(
         trigger_type=TriggerType.API_CALL,
         trigger_source=TriggerSource.API,
@@ -132,22 +147,35 @@ def update_bill_by_public_id_router(public_id: str, body: BillUpdate, current_us
             "bill_date": body.bill_date,
             "due_date": body.due_date,
             "bill_number": body.bill_number,
-            "total_amount": float(body.total_amount) if body.total_amount else None,
+            "total_amount": Decimal(str(body.total_amount)) if body.total_amount else None,
             "memo": body.memo,
             "is_draft": body.is_draft,
         },
         workflow_type="bill_update",
     )
-    
+
     result = TriggerRouter().route_instant(context)
-    
+
     if not result.get("success"):
         err = result.get("error", "Failed to update bill")
         if "concurrency" in err.lower() or "row-version" in err.lower():
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
-    
-    return result.get("data")
+
+    data = result.get("data")
+
+    # If completing, queue background pipeline
+    if is_completing:
+        background_tasks.add_task(_run_complete_bill, public_id)
+        # Convert Decimals to strings for JSON serialization
+        import json
+        serializable = json.loads(json.dumps(data, default=str))
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content=serializable,
+        )
+
+    return data
 
 
 @router.delete("/delete/bill/{public_id}")
@@ -179,11 +207,6 @@ def delete_bill_by_public_id_router(public_id: str, current_user: dict = Depends
     return result.get("data")
 
 
-# Cache last completion result per bill so list page can show Build One / SharePoint / Excel / QBO status (TTL 1 hour)
-_BILL_COMPLETION_RESULT_CACHE: dict[str, dict] = {}
-_BILL_COMPLETION_CACHE_TTL_SEC = 3600
-
-
 def _run_complete_bill(public_id: str) -> None:
     """Background task: run full bill completion (Build One, SharePoint, Excel, QBO)."""
     try:
@@ -192,14 +215,7 @@ def _run_complete_bill(public_id: str) -> None:
             "Complete bill background result: public_id=%s, status_code=%s, bill_finalized=%s",
             public_id, result.get("status_code"), result.get("bill_finalized"),
         )
-        expires_at = time.time() + _BILL_COMPLETION_CACHE_TTL_SEC
-        # In-memory for same-worker hits
-        _BILL_COMPLETION_RESULT_CACHE[public_id] = {
-            "result": result,
-            "expires_at": expires_at,
-        }
-        # DB so list page can read from any worker after redirect
-        BillRepository().set_completion_result(public_id, result, expires_at)
+        BillRepository().set_completion_result(public_id, result)
         logger.info("Completion result saved for bill %s (status_code=%s)", public_id, result.get("status_code"))
         if result.get("status_code") >= 400:
             logger.warning("Complete bill failed in background: %s", result.get("message"))

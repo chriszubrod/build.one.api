@@ -18,15 +18,11 @@ service = QboInvoiceService()
 @router.post("/sync/qbo-invoices")
 def sync_qbo_invoices_router(body: QboInvoiceSync, current_user: dict = Depends(get_current_qbo_invoice_api)):
     """
-    Sync Invoices from QBO.
+    Invoice QBO sync is disabled. Invoices are managed manually in QBO.
     """
-    invoices = service.sync_from_qbo(
-        realm_id=body.realm_id,
-        last_updated_time=body.last_updated_time,
-        customer_ref=body.customer_ref,
-        sync_to_modules=body.sync_to_modules,
-    )
-    return [invoice.to_dict() for invoice in invoices]
+    # QBO invoice sync disabled — invoices are managed manually in QBO
+    logger.info("Invoice QBO pull sync disabled; skipping sync_from_qbo")
+    return []
 
 
 @router.get("/get/qbo-invoices/realm/{realm_id}")

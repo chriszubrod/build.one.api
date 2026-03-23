@@ -13,7 +13,6 @@ CREATE TABLE [ms].[DriveItemProjectModule]
     [ModuleId] BIGINT NOT NULL,
     [MsDriveItemId] BIGINT NOT NULL,
     CONSTRAINT [UQ_DriveItemProjectModule_ProjectId_ModuleId] UNIQUE ([ProjectId], [ModuleId]),
-    CONSTRAINT [UQ_DriveItemProjectModule_MsDriveItemId] UNIQUE ([MsDriveItemId]),
     CONSTRAINT [FK_DriveItemProjectModule_DriveItem] FOREIGN KEY ([MsDriveItemId]) REFERENCES [ms].[DriveItem]([Id]) ON DELETE CASCADE,
     CONSTRAINT [FK_DriveItemProjectModule_Module] FOREIGN KEY ([ModuleId]) REFERENCES [dbo].[Module]([Id]) ON DELETE CASCADE
 );

@@ -76,8 +76,10 @@ INSTANT_ENTITIES = [
     "user",
     "role",
     "user_role",
+    "user_project",
     "role_module",
-    
+    "user_module",
+
     # Attachments
     "attachment",
     "taxpayer",

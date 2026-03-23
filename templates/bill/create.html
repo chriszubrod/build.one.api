@@ -15,6 +15,7 @@
         </div>
 
         <div class="bill-create-content">
+          <div class="bill-edit-form-column">
             <form id="createBillForm" autocomplete="off">
                 <!-- Hidden fields for tracking bill state -->
                 <input type="hidden" id="bill_public_id" name="bill_public_id" value="">
@@ -25,28 +26,7 @@
                     <div class="bill-form-card">
                         <div class="bill-form-card-header">
                             <h5>Bill Details</h5>
-                            <div class="process-status-container">
-                                <span id="bill-save-status" class="save-status"></span>
-                                <!-- Process Status Badges (shown during Complete Bill) -->
-                                <div id="process-status-badges" class="process-status-badges" style="display: none;">
-                                    <div id="status-badge-saved" class="process-badge" data-status="idle">
-                                        <span class="process-badge-icon"></span>
-                                        <span class="process-badge-text">Bill Saved</span>
-                                    </div>
-                                    <div id="status-badge-sharepoint" class="process-badge" data-status="idle">
-                                        <span class="process-badge-icon"></span>
-                                        <span class="process-badge-text">SharePoint</span>
-                                    </div>
-                                    <div id="status-badge-excel" class="process-badge" data-status="idle">
-                                        <span class="process-badge-icon"></span>
-                                        <span class="process-badge-text">Excel</span>
-                                    </div>
-                                    <div id="status-badge-qbo" class="process-badge" data-status="idle">
-                                        <span class="process-badge-icon"></span>
-                                        <span class="process-badge-text">QuickBooks</span>
-                                    </div>
-                                </div>
-                            </div>
+                            <span id="bill-save-status" class="save-status"></span>
                         </div>
                         <div class="bill-form-card-body">
                             <div class="bill-form-group">
@@ -119,18 +99,42 @@
                                     <label for="bill_number" class="bill-form-label">
                                         Bill Number <span class="required">*</span>
                                     </label>
-                                    <div style="position: relative; width: 100%;">
-                                        <input type="text"
-                                               class="bill-form-control"
-                                               id="bill_number"
-                                               name="bill_number"
-                                               required
-                                               maxlength="50"
-                                               autocomplete="off"
-                                               placeholder="Enter bill number"
-                                               style="width: 100%; padding-right: 0.5rem;">
-                                        <span id="bill_number_warning" class="bill-warning-label" style="display: none; position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%); z-index: 10; pointer-events: none;"></span>
-                                    </div>
+                                    <input type="text"
+                                           class="bill-form-control"
+                                           id="bill_number"
+                                           name="bill_number"
+                                           required
+                                           maxlength="50"
+                                           autocomplete="off"
+                                           placeholder="Enter bill number">
+                                </div>
+                            </div>
+
+                            <div class="bill-form-group-row" style="grid-template-columns: 1fr 1fr;">
+                                <div class="bill-form-group">
+                                    <label for="total_amount" class="bill-form-label">
+                                        Total Amount
+                                    </label>
+                                    <input type="number"
+                                           class="bill-form-control"
+                                           id="total_amount"
+                                           name="total_amount"
+                                           step="0.01"
+                                           readonly
+                                           tabindex="-1"
+                                           style="background-color: var(--color-surface);">
+                                </div>
+
+                                <div class="bill-form-group">
+                                    <label for="memo" class="bill-form-label">
+                                        Memo
+                                    </label>
+                                    <textarea class="bill-form-control"
+                                              id="memo"
+                                              name="memo"
+                                              rows="2"
+                                              autocomplete="off"
+                                              placeholder="Enter memo"></textarea>
                                 </div>
                             </div>
 
@@ -180,7 +184,7 @@
                                         </div>
                                         
                                         <!-- Description -->
-                                        <div class="bill-form-group bill-line-item-description" style="margin-bottom: 0;">
+                                        <div class="bill-form-group" style="margin-bottom: 0;">
                                             <label for="line_item_description" class="bill-form-label">Description <span class="required">*</span></label>
                                             <textarea class="bill-form-control" id="line_item_description" rows="1" placeholder="Enter description" style="resize: vertical;"></textarea>
                                         </div>
@@ -228,10 +232,18 @@
                                     </div>
                                     
                                     <!-- Attachment Section with Buttons -->
-                                    <div class="line-item-attachment-section" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed #e0e0e0;">
+                                    <div class="line-item-attachment-section" style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px dashed #e0e0e0;">
                                         <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                                            <!-- Same attachment checkbox (hidden until another line item has an attachment) -->
+                                            <div class="same-attachment-wrapper" style="display: none; align-items: center; gap: 0.5rem;">
+                                                <label class="bill-form-label" style="margin-bottom: 0; white-space: nowrap;">
+                                                    <input type="checkbox" class="same-attachment-checkbox" checked style="width: auto; height: auto; margin: 0 0.25rem 0 0;" onchange="toggleSameAttachment(this)">
+                                                    Same attachment
+                                                </label>
+                                                <span class="same-attachment-name" style="font-size: 0.85rem; color: var(--color-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px;"></span>
+                                            </div>
                                             <div style="display: flex; align-items: center; gap: 0.5rem;">
-                                                <label class="bill-form-label" style="margin-bottom: 0;">Attachment</label>
+                                                <label class="bill-form-label attachment-label" style="margin-bottom: 0;">Attachment</label>
                                                 <div class="attachment-upload-wrapper" style="display: flex; align-items: center; gap: 0.5rem;">
                                                     <input type="file" class="line-item-file-input" id="line_item_attachment" style="display: none;" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt">
                                                     <button type="button" class="btn btn-secondary btn-sm attachment-upload-btn" onclick="triggerFileInput(this)" style="white-space: nowrap;">
@@ -255,34 +267,9 @@
                                         <!-- Hidden fields for attachment tracking -->
                                         <input type="hidden" class="line-item-attachment-public-id" value="">
                                         <input type="hidden" class="line-item-attachment-link-public-id" value="">
+                                        <input type="hidden" class="line-item-use-same-attachment" value="">
                                     </div>
                                 </div>
-                            </div>
-
-                            <div class="bill-form-group">
-                                <label for="total_amount" class="bill-form-label">
-                                    Total Amount
-                                </label>
-                                <input type="number"
-                                       class="bill-form-control"
-                                       id="total_amount"
-                                       name="total_amount"
-                                       step="0.01"
-                                       readonly
-                                       tabindex="-1"
-                                       style="background-color: var(--color-surface);">
-                            </div>
-
-                            <div class="bill-form-group">
-                                <label for="memo" class="bill-form-label">
-                                    Memo
-                                </label>
-                                <textarea class="bill-form-control"
-                                          id="memo"
-                                          name="memo"
-                                          rows="4"
-                                          autocomplete="off"
-                                          placeholder="Enter memo"></textarea>
                             </div>
                         </div>
                     </div>
@@ -292,28 +279,24 @@
                     <div class="bill-form-actions-left"></div>
                     <div class="bill-form-actions-right">
                         <a href="/bill/list" class="btn btn-secondary">Cancel</a>
+                        <button type="button" class="btn btn-secondary" id="saveDraftBtn" onclick="handleSaveDraft()">Save Draft</button>
                         <button type="submit" class="btn btn-primary">Complete Bill</button>
                     </div>
                 </div>
             </form>
+          </div>
 
-            <!-- Attachment Preview Section (same as edit page) -->
-            <div id="attachment-preview-section" class="bill-form-card" style="margin-top: 2rem; display: none;">
-                <div class="bill-form-card-header" style="display: flex; justify-content: space-between; align-items: center;">
-                    <h5 style="margin: 0; display: flex; align-items: center; gap: 0.5rem;">
-                        <span>📎</span>
-                        <span id="attachment-preview-filename">Attachment Preview</span>
-                    </h5>
-                    <div style="display: flex; gap: 0.5rem;">
-                        <a id="attachment-preview-newtab" href="#" target="_blank" class="btn btn-secondary btn-sm" title="Open in new tab">↗ Open in New Tab</a>
-                    </div>
+          <div class="bill-edit-preview-column">
+            <div id="attachment-preview-section">
+                <div class="bill-preview-header">
+                    <span id="attachment-preview-filename">Attachment Preview</span>
+                    <a id="attachment-preview-newtab" href="#" target="_blank" class="btn btn-secondary btn-sm" title="Open in new tab" style="display:none;">↗</a>
                 </div>
-                <div class="bill-form-card-body" style="padding: 0;">
-                    <div id="attachment-preview-content" style="min-height: 500px; background: #f8f9fa;">
-                        <!-- Preview content inserted by JavaScript -->
-                    </div>
+                <div id="attachment-preview-content" class="bill-preview-content">
+                    <div class="bill-preview-placeholder">Select an attachment to preview</div>
                 </div>
             </div>
+          </div>
         </div>
     </div>
 
@@ -322,12 +305,7 @@
 {% block scripts %}
     <script>
         // Focus Vendor select on page load
-        document.addEventListener('DOMContentLoaded', function() {
-            const vendorSelect = document.getElementById('vendor_public_id');
-            if (vendorSelect) {
-                vendorSelect.focus();
-            }
-        });
+        // Vendor focus handled in consolidated DOMContentLoaded below
 
         // =====================
         // Attachment Preview (same as edit page)
@@ -351,7 +329,7 @@
             const isImage = (contentType || '').toLowerCase().startsWith('image/');
 
             if (isPdf) {
-                content.innerHTML = `<iframe src="/attachment/view/${publicId}#toolbar=0&navpanes=0&scrollbar=1&view=FitH" style="width: 100%; height: 600px; border: none;" title="PDF Preview"></iframe>`;
+                content.innerHTML = `<iframe src="/attachment/view/${publicId}#toolbar=0&navpanes=0&zoom=page-fit" title="PDF Preview"></iframe>`;
             } else if (isImage) {
                 const safeFilename = (filename || 'Attachment').replace(/"/g, '&quot;');
                 content.innerHTML = `<div style="padding: 1rem; text-align: center; background: #fff;"><img src="/attachment/view/${publicId}" alt="${safeFilename}" style="max-width: 100%; max-height: 600px; object-fit: contain; border-radius: 4px;"></div>`;
@@ -360,7 +338,7 @@
                 content.innerHTML = `<div style="padding: 3rem; text-align: center; color: var(--color-text-muted);"><div style="font-size: 4rem; margin-bottom: 1rem;">📄</div><div style="font-size: 1rem; margin-bottom: 0.5rem;">${safeFilename}</div><div style="font-size: 0.9rem; margin-bottom: 1.5rem;">Preview not available for this file type</div><a href="/attachment/view/${publicId}" target="_blank" class="btn btn-primary">Open File</a></div>`;
             }
 
-            section.style.display = 'block';
+            if (newTabLink) newTabLink.style.display = 'inline-flex';
             document.querySelectorAll('.attachment-preview-link').forEach(link => {
                 link.style.outline = link.dataset.attachmentId === publicId ? '2px solid var(--color-primary)' : 'none';
                 link.style.outlineOffset = link.dataset.attachmentId === publicId ? '2px' : '0';
@@ -468,26 +446,12 @@
             }
         }
 
-        document.addEventListener('DOMContentLoaded', function() {
-            const billDateInput = document.getElementById('bill_date');
-            const dueDateInput = document.getElementById('due_date');
-            if (billDateInput) {
-                billDateInput.addEventListener('blur', function() {
-                    normalizeDateInput(billDateInput);
-                    setDueDateFromBillDate();
-                });
-                billDateInput.addEventListener('change', setDueDateFromBillDate);
-            }
-            if (dueDateInput) {
-                dueDateInput.addEventListener('blur', function() { normalizeDateInput(dueDateInput); });
-            }
-        });
+        // Date handlers handled in consolidated DOMContentLoaded below
 
         // =====================
-        // Bill Auto-Save
+        // Bill Save
         // =====================
 
-        let autoSaveTimeout = null;
         let isSaving = false;
 
         // Update save status display (simple badge)
@@ -529,7 +493,7 @@
         }
 
         // Check if all required Bill fields have values
-        function canAutoSaveBill() {
+        function canSaveBill() {
             const vendor = document.getElementById('vendor_public_id');
             const billDate = document.getElementById('bill_date');
             const dueDate = document.getElementById('due_date');
@@ -541,116 +505,93 @@
                    billNumber && billNumber.value.trim();
         }
 
-        // Debounced auto-save trigger
-        function triggerAutoSaveBill() {
-            if (autoSaveTimeout) {
-                clearTimeout(autoSaveTimeout);
-            }
-            autoSaveTimeout = setTimeout(autoSaveBill, 300);
-        }
-
-        // Auto-save the Bill
-        async function autoSaveBill() {
-            if (!canAutoSaveBill() || isSaving) {
-                return;
+        // Create the Bill
+        async function saveBill() {
+            if (!canSaveBill() || isSaving) {
+                return false;
             }
 
             isSaving = true;
             updateSaveStatus('saving', 'Saving...');
 
-            const billPublicId = document.getElementById('bill_public_id').value;
-            const rowVersion = document.getElementById('row_version').value;
-
-            // Gather Bill data
-            const totalAmountEl = document.getElementById('total_amount');
-            const totalAmountValue = totalAmountEl && totalAmountEl.value ? parseFloat(totalAmountEl.value) : null;
-            console.log('Bill auto-save - total_amount element value:', totalAmountEl ? totalAmountEl.value : 'element not found');
-            console.log('Bill auto-save - total_amount parsed:', totalAmountValue);
-            
             const billData = {
                 vendor_public_id: document.getElementById('vendor_public_id').value,
                 payment_term_public_id: document.getElementById('payment_term_public_id').value || null,
                 bill_date: dateToApiFormat(document.getElementById('bill_date').value),
                 due_date: dateToApiFormat(document.getElementById('due_date').value),
                 bill_number: document.getElementById('bill_number').value.trim(),
-                total_amount: totalAmountValue,
+                total_amount: document.getElementById('total_amount').value ? parseFloat(document.getElementById('total_amount').value) : null,
                 memo: document.getElementById('memo').value || null,
                 is_draft: true
             };
-            
-            console.log('Bill auto-save - billData:', billData);
 
             try {
-                let response;
-                
-                if (billPublicId) {
-                    // Update existing Bill
-                    billData.row_version = rowVersion;
-                    response = await fetch(`/api/v1/update/bill/${billPublicId}`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(billData)
-                    });
-                } else {
-                    // Create new Bill
-                    response = await fetch('/api/v1/create/bill', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(billData)
-                    });
-                }
+                const response = await fetch('/api/v1/create/bill', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(billData)
+                });
 
                 if (!response.ok) {
                     const error = await response.json();
-                    console.error('Bill auto-save failed:', error);
+                    console.error('Bill save failed:', error);
                     updateSaveStatus('error', 'Error');
-                    // Show detailed message in toast
-                    if (error.detail) {
-                        showToast(error.detail, 'error');
-                    }
-                    return;
+                    if (error.detail) showToast(error.detail, 'error');
+                    return false;
                 }
 
                 const bill = await response.json();
-                
-                // Store the Bill public_id and row_version for future updates
                 document.getElementById('bill_public_id').value = bill.public_id;
                 document.getElementById('row_version').value = bill.row_version;
-                
-                console.log('Bill auto-saved:', bill.public_id);
                 updateSaveStatus('saved', 'Saved');
-                
+                return true;
+
             } catch (error) {
-                console.error('Bill auto-save error:', error);
+                console.error('Bill save error:', error);
                 updateSaveStatus('error', 'Error');
                 showToast(error.message || 'Save failed', 'error');
+                return false;
             } finally {
                 isSaving = false;
             }
         }
 
-        // Add listeners to trigger auto-save when fields change
-        document.addEventListener('DOMContentLoaded', function() {
-            const fieldsToWatch = ['vendor_public_id', 'bill_date', 'due_date', 'bill_number', 'memo'];
-            
-            fieldsToWatch.forEach(fieldId => {
-                const field = document.getElementById(fieldId);
-                if (field) {
-                    field.addEventListener('change', triggerAutoSaveBill);
-                    field.addEventListener('blur', triggerAutoSaveBill);
-                }
-            });
-        });
+        // Save Draft button handler — creates bill + line items, redirects to list
+        async function handleSaveDraft() {
+            if (!canSaveBill()) {
+                showToast('Please fill in all required fields before saving.', 'error');
+                return;
+            }
+
+            const btn = document.getElementById('saveDraftBtn');
+            btn.disabled = true;
+            btn.textContent = 'Saving...';
+
+            const saved = await saveBill();
+            if (!saved) {
+                btn.disabled = false;
+                btn.textContent = 'Save Draft';
+                return;
+            }
+
+            // Save all line item forms that have required fields filled (parallel)
+            const forms = getAllLineItemForms();
+            await Promise.all(
+                forms.filter(f => canSaveLineItem(f))
+                     .map(f => saveLineItem(f))
+            );
+
+            window.location.href = '/bill/list';
+        }
 
         // =====================
-        // BillLineItem Auto-Save
+        // BillLineItem Save
         // =====================
 
-        let lineItemSaveTimeouts = new Map(); // Track debounce per form
         let lineItemIsSaving = new Map(); // Track saving state per form
 
         // Check if a line item form has required fields filled
-        function canAutoSaveLineItem(formElement) {
+        function canSaveLineItem(formElement) {
             const billPublicId = document.getElementById('bill_public_id').value;
             if (!billPublicId) return false; // Bill must be saved first
             
@@ -665,30 +606,17 @@
                    rate && rate.value;
         }
 
-        // Debounced trigger for line item auto-save
-        function triggerAutoSaveLineItem(formElement) {
-            const formId = formElement.id;
-            
-            if (lineItemSaveTimeouts.has(formId)) {
-                clearTimeout(lineItemSaveTimeouts.get(formId));
-            }
-            
-            lineItemSaveTimeouts.set(formId, setTimeout(() => {
-                autoSaveLineItem(formElement);
-            }, 300));
-        }
-
-        // Auto-save a single line item
-        async function autoSaveLineItem(formElement) {
+        // Save a single line item
+        async function saveLineItem(formElement) {
             const formId = formElement.id;
             
             // Prevent concurrent saves for the same form
             if (lineItemIsSaving.get(formId)) {
-                console.log('Line item save already in progress for:', formId);
+                // Line item save already in progress
                 return;
             }
             
-            if (!canAutoSaveLineItem(formElement)) {
+            if (!canSaveLineItem(formElement)) {
                 return;
             }
 
@@ -733,7 +661,7 @@
                 
                 if (publicId) {
                     // Update existing line item
-                    console.log('Updating existing line item:', publicId);
+                    // Updating existing line item
                     lineItemData.row_version = rowVersion;
                     response = await fetch(`/api/v1/update/bill_line_item/${publicId}`, {
                         method: 'PUT',
@@ -742,7 +670,7 @@
                     });
                 } else {
                     // Create new line item
-                    console.log('Creating new line item for form:', formId);
+                    // Creating new line item
                     response = await fetch('/api/v1/create/bill_line_item', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -752,7 +680,7 @@
 
                 if (!response.ok) {
                     const error = await response.json();
-                    console.error('Line item auto-save failed:', error);
+                    console.error('Line item save failed:', error);
                     updateSaveStatus('error', 'Error');
                     showToast(error.detail || 'Line item save failed', 'error');
                     return;
@@ -765,7 +693,7 @@
                 if (publicIdField) publicIdField.value = lineItem.public_id;
                 if (rowVersionField) rowVersionField.value = lineItem.row_version;
                 
-                console.log('Line item auto-saved:', lineItem.public_id, 'for form:', formId);
+                // Line item saved
                 updateSaveStatus('saved', 'Saved');
                 showToast('Line item saved', 'success', 2000);
                 
@@ -775,7 +703,7 @@
                 }
                 
             } catch (error) {
-                console.error('Line item auto-save error:', error);
+                console.error('Line item save error:', error);
                 updateSaveStatus('error', 'Error');
                 showToast(error.message || 'Line item save failed', 'error');
             } finally {
@@ -784,34 +712,8 @@
             }
         }
 
-        // Set up auto-save listeners for a line item form
-        function setupLineItemAutoSave(formElement) {
-            const fieldsToWatch = [
-                '[id^="line_item_sub_cost_code_id"]',
-                '[id^="line_item_project_public_id"]',
-                '[id^="line_item_description"]',
-                '[id^="line_item_quantity"]',
-                '[id^="line_item_rate"]',
-                '[id^="line_item_is_billable"]',
-                '[id^="line_item_markup"]'
-            ];
-            
-            fieldsToWatch.forEach(selector => {
-                const field = formElement.querySelector(selector);
-                if (field) {
-                    field.addEventListener('change', () => triggerAutoSaveLineItem(formElement));
-                    field.addEventListener('blur', () => triggerAutoSaveLineItem(formElement));
-                }
-            });
-        }
-
         // Line Item Management
         let lineItemCounter = 0;
-
-        // Generate unique IDs for line item elements
-        function generateLineItemId(baseId) {
-            return `${baseId}_${lineItemCounter}`;
-        }
 
         // Clone and add a new line item form
         function addLineItemForm() {
@@ -863,22 +765,22 @@
 
             // Set up event listeners for calculations on the cloned form
             setupLineItemCalculations(clonedForm);
-            
-            // Set up auto-save listeners for the cloned form
-            setupLineItemAutoSave(clonedForm);
-            
+
             // Set up attachment listeners for the cloned form
             setupLineItemAttachment(clonedForm);
             
             // Reset attachment display for the cloned form
             resetAttachmentDisplay(clonedForm);
 
+            // Show same-attachment checkbox if first line item has an attachment
+            updateSameAttachmentUI(clonedForm);
+
             // Find all existing forms and insert after the last one
             const allForms = getAllLineItemForms();
             const lastForm = allForms[allForms.length - 1];
             lastForm.parentNode.insertBefore(clonedForm, lastForm.nextSibling);
             
-            console.log('Added new line item form:', clonedForm.id, 'Total forms:', countLineItemForms());
+            // New line item form added
         }
 
         // Set up calculation listeners for a specific line item form
@@ -937,10 +839,9 @@
             }
         }
 
-        // Add line item (placeholder - will be implemented later)
-        function addLineItem(formElement) {
-            console.log('Add line item called for form:', formElement);
-            // This will be implemented when we add the save functionality
+        // Add line item — delegates to addLineItemForm
+        function addLineItem() {
+            addLineItemForm();
         }
 
         // Get all line item forms
@@ -953,8 +854,7 @@
             return getAllLineItemForms().length;
         }
 
-        // Calculate Total Amount = sum of all BillLineItem.Price values
-        // Calculate Total Amount = sum of all BillLineItem.Amount values
+        // Calculate Total Amount = sum of all BillLineItem.Amount values (Quantity x Rate)
         function calculateTotalAmount() {
             const totalAmountInput = document.getElementById('total_amount');
             if (!totalAmountInput) {
@@ -972,9 +872,6 @@
             });
             
             totalAmountInput.value = total.toFixed(2);
-            
-            // Trigger Bill auto-save to persist the new total
-            triggerAutoSaveBill();
         }
 
         // Clear a specific line item form (reset to defaults)
@@ -1015,7 +912,7 @@
             }
             
             const formCount = countLineItemForms();
-            console.log('Cancel clicked - Form count:', formCount, 'Form ID:', formElement.id);
+            // Cancel — removing form
             
             if (formCount > 1) {
                 // More than one form exists - remove this one
@@ -1029,27 +926,8 @@
             calculateTotalAmount();
         }
 
-        // Set up initial line item form calculations and auto-save
-        document.addEventListener('DOMContentLoaded', function() {
-            const initialForm = document.getElementById('add-line-item-form');
-            if (initialForm) {
-                setupLineItemCalculations(initialForm);
-                setupLineItemAutoSave(initialForm);
-                setupLineItemAttachment(initialForm);
-                
-                // Update the Add Line Item button to add a new form instead
-                const addButton = initialForm.querySelector('button.btn-primary');
-                if (addButton) {
-                    addButton.onclick = function() {
-                        addLineItemForm();
-                    };
-                }
-                
-                // Check for pending file from drag-and-drop upload (sessionStorage or token)
-                checkForPendingFile(initialForm);
-                checkForPendingFileToken(initialForm);
-            }
-        });
+        // Set up initial line item form calculations
+        // Line item setup handled in consolidated DOMContentLoaded below
 
         function applyPendingFileToForm(formElement, file) {
             const fileInput = formElement.querySelector('.line-item-file-input');
@@ -1063,7 +941,7 @@
             const dt = new DataTransfer();
             dt.items.add(file);
             fileInput.files = dt.files;
-            console.log('[PendingFile] Triggering file upload for:', file.name);
+            // Triggering pending file upload
             fileInput.dispatchEvent(new Event('change', { bubbles: true }));
             showToast(`File "${file.name}" being uploaded...`, 'info');
         }
@@ -1169,7 +1047,7 @@
                 }
                 
                 const attachment = await uploadResponse.json();
-                console.log('File uploaded to Azure:', attachment.public_id);
+                // File uploaded to Azure
                 
                 // Store attachment public_id (link will be created when line item saves)
                 formElement.querySelector('.line-item-attachment-public-id').value = attachment.public_id;
@@ -1179,12 +1057,17 @@
                 if (lineItemPublicId) {
                     await createAttachmentLink(formElement, lineItemPublicId, attachment.public_id);
                 } else {
-                    console.log('Attachment uploaded, pending link (line item not saved yet)');
+                    // Attachment uploaded, pending link
                 }
                 
                 // Update UI to show success
                 updateAttachmentDisplay(formElement, attachment);
                 showToast('File uploaded successfully', 'success', 2000);
+
+                // Update same-attachment UI on other forms
+                getAllLineItemForms().forEach(f => {
+                    if (f !== formElement) updateSameAttachmentUI(f);
+                });
                 
             } catch (error) {
                 console.error('Attachment error:', error);
@@ -1219,7 +1102,7 @@
                 }
                 
                 const attachmentLink = await linkResponse.json();
-                console.log('Attachment linked:', attachmentLink.public_id);
+                // Attachment linked
                 
                 // Store the link public_id
                 formElement.querySelector('.line-item-attachment-link-public-id').value = attachmentLink.public_id;
@@ -1234,6 +1117,83 @@
             }
         }
 
+        // Get the attachment info from the first line item that has one
+        function getFirstLineItemAttachment() {
+            const allForms = document.querySelectorAll('[id^="add-line-item-form"]');
+            // Check saved line item forms first
+            const savedForms = document.querySelectorAll('[id^="line-item-form-"]');
+            for (const form of savedForms) {
+                const attachId = form.querySelector('.line-item-attachment-public-id');
+                if (attachId && attachId.value) {
+                    const filenameEl = form.querySelector('.attachment-filename');
+                    return {
+                        public_id: attachId.value,
+                        filename: filenameEl ? filenameEl.textContent.trim() : 'Attachment'
+                    };
+                }
+            }
+            // Check unsaved forms (add-line-item-form clones)
+            for (const form of allForms) {
+                const attachId = form.querySelector('.line-item-attachment-public-id');
+                if (attachId && attachId.value) {
+                    const filenameEl = form.querySelector('.attachment-filename');
+                    return {
+                        public_id: attachId.value,
+                        filename: filenameEl ? filenameEl.textContent.trim() : 'Attachment'
+                    };
+                }
+            }
+            return null;
+        }
+
+        // Toggle between same-attachment mode and upload mode
+        function toggleSameAttachment(checkbox) {
+            const form = checkbox.closest('[id^="add-line-item-form"], [id^="line-item-form-"]');
+            if (!form) return;
+
+            const uploadWrapper = form.querySelector('.attachment-upload-wrapper');
+            const attachLabel = form.querySelector('.attachment-label');
+            const useSameField = form.querySelector('.line-item-use-same-attachment');
+            const attachPublicId = form.querySelector('.line-item-attachment-public-id');
+
+            if (checkbox.checked) {
+                // Use same attachment — hide upload UI
+                if (uploadWrapper) uploadWrapper.style.display = 'none';
+                if (attachLabel) attachLabel.style.display = 'none';
+                const firstAttach = getFirstLineItemAttachment();
+                if (useSameField && firstAttach) useSameField.value = firstAttach.public_id;
+            } else {
+                // Upload own attachment — show upload UI
+                if (uploadWrapper) uploadWrapper.style.display = 'flex';
+                if (attachLabel) attachLabel.style.display = '';
+                if (useSameField) useSameField.value = '';
+                if (attachPublicId) attachPublicId.value = '';
+            }
+        }
+
+        // Show/configure same-attachment checkbox on a form if applicable
+        function updateSameAttachmentUI(formElement) {
+            const wrapper = formElement.querySelector('.same-attachment-wrapper');
+            if (!wrapper) return;
+
+            const firstAttach = getFirstLineItemAttachment();
+            // Only show if another line item already has an attachment
+            // and this form doesn't have its own attachment yet
+            const ownAttach = formElement.querySelector('.line-item-attachment-public-id');
+            if (firstAttach && (!ownAttach || !ownAttach.value)) {
+                wrapper.style.display = 'flex';
+                const nameEl = wrapper.querySelector('.same-attachment-name');
+                if (nameEl) nameEl.textContent = firstAttach.filename;
+                const checkbox = wrapper.querySelector('.same-attachment-checkbox');
+                if (checkbox) {
+                    checkbox.checked = true;
+                    toggleSameAttachment(checkbox);
+                }
+            } else {
+                wrapper.style.display = 'none';
+            }
+        }
+
         // Link pending attachment after line item is saved
         async function linkPendingAttachment(formElement, lineItemPublicId) {
             const attachmentPublicId = formElement.querySelector('.line-item-attachment-public-id').value;
@@ -1241,7 +1201,7 @@
             
             // Only create link if we have an attachment but no link yet
             if (attachmentPublicId && !linkPublicId) {
-                console.log('Creating link for pending attachment:', attachmentPublicId);
+                // Creating link for pending attachment
                 try {
                     await createAttachmentLink(formElement, lineItemPublicId, attachmentPublicId);
                     showToast('Attachment linked to line item', 'success', 2000);
@@ -1336,7 +1296,7 @@
                 if (attachmentPublicId) {
                     try {
                         await fetch(`/api/v1/delete/attachment/${attachmentPublicId}`, { method: 'DELETE' });
-                        console.log('Deleted attachment file:', attachmentPublicId);
+                        // Deleted attachment file
                     } catch (e) {
                         console.warn('Could not delete attachment file:', e);
                     }
@@ -1348,7 +1308,12 @@
                     hideAttachmentPreview();
                 }
                 showToast('Attachment removed', 'success', 2000);
-                
+
+                // Refresh same-attachment UI on all other forms
+                getAllLineItemForms().forEach(f => {
+                    if (f !== formElement) updateSameAttachmentUI(f);
+                });
+
             } catch (error) {
                 console.error('Remove attachment error:', error);
                 showToast(error.message || 'Failed to remove attachment', 'error');
@@ -1389,44 +1354,6 @@
         // =====================
         // Process Status Badges
         // =====================
-
-        // Show the process status badges container
-        function showProcessBadges() {
-            const container = document.getElementById('process-status-badges');
-            if (container) {
-                container.style.display = 'flex';
-                // Reset all badges to idle
-                setProcessBadgeStatus('status-badge-saved', 'idle');
-                setProcessBadgeStatus('status-badge-sharepoint', 'idle');
-                setProcessBadgeStatus('status-badge-excel', 'idle');
-                setProcessBadgeStatus('status-badge-qbo', 'idle');
-            }
-        }
-
-        // Hide the process status badges container
-        function hideProcessBadges() {
-            const container = document.getElementById('process-status-badges');
-            if (container) {
-                container.style.display = 'none';
-            }
-        }
-
-        // Set the status of a specific process badge
-        // status: 'idle', 'running', 'completed', 'error'
-        function setProcessBadgeStatus(badgeId, status, customText = null) {
-            const badge = document.getElementById(badgeId);
-            if (!badge) return;
-            
-            badge.setAttribute('data-status', status);
-            
-            // Update text if custom text provided
-            if (customText) {
-                const textEl = badge.querySelector('.process-badge-text');
-                if (textEl) {
-                    textEl.textContent = customText;
-                }
-            }
-        }
 
         // =====================
         // Complete Bill (Final Submit)
@@ -1473,416 +1400,186 @@
             return pendingAttachments;
         }
 
-        // Save Bill with is_draft = false
-        async function saveBillFinal() {
-            const billPublicId = document.getElementById('bill_public_id').value;
-            const rowVersion = document.getElementById('row_version').value;
-            
-            if (!billPublicId) {
-                throw new Error('Bill must be saved before completing');
-            }
-            
-            const totalAmountEl = document.getElementById('total_amount');
-            const totalAmountValue = totalAmountEl && totalAmountEl.value ? parseFloat(totalAmountEl.value) : null;
-            
-            const billData = {
-                row_version: rowVersion,
-                vendor_public_id: document.getElementById('vendor_public_id').value,
-                payment_term_public_id: document.getElementById('payment_term_public_id').value || null,
-                bill_date: dateToApiFormat(document.getElementById('bill_date').value),
-                due_date: dateToApiFormat(document.getElementById('due_date').value),
-                bill_number: document.getElementById('bill_number').value.trim(),
-                total_amount: totalAmountValue,
-                memo: document.getElementById('memo').value || null,
-                is_draft: false  // Mark as complete
-            };
-            
-            const response = await fetch(`/api/v1/update/bill/${billPublicId}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(billData)
-            });
-            
-            if (!response.ok) {
-                let errorMessage = 'Failed to complete bill';
-                try {
-                    const error = await response.json();
-                    errorMessage = error.detail || errorMessage;
-                } catch (e) {
-                    errorMessage = `Server error: ${response.status}`;
-                }
-                throw new Error(errorMessage);
-            }
-            
-            const result = await response.json();
-            // Update row_version for any subsequent operations
-            if (result.row_version) {
-                document.getElementById('row_version').value = result.row_version;
-            }
-            // Return result including sharepoint_sync if available
-            return result;
-        }
-
-        // Save all line items with is_draft = false
-        async function saveAllLineItemsFinal() {
-            const billPublicId = document.getElementById('bill_public_id').value;
-            const allForms = getAllLineItemForms();
-            const errors = [];
-            
-            for (const formElement of allForms) {
-                const publicIdField = formElement.querySelector('.line-item-public-id');
-                const rowVersionField = formElement.querySelector('.line-item-row-version');
-                
-                const publicId = publicIdField ? publicIdField.value : '';
-                const rowVersion = rowVersionField ? rowVersionField.value : '';
-                
-                // Skip forms that haven't been saved yet (no public_id)
-                if (!publicId) {
-                    continue;
-                }
-                
-                const subCostCode = formElement.querySelector('[id^="line_item_sub_cost_code_id"]');
-                const projectSelect = formElement.querySelector('[id^="line_item_project_public_id"]');
-                const description = formElement.querySelector('[id^="line_item_description"]');
-                const quantity = formElement.querySelector('[id^="line_item_quantity"]');
-                const rate = formElement.querySelector('[id^="line_item_rate"]');
-                const amountInput = formElement.querySelector('[id^="line_item_amount"]');
-                const isBillable = formElement.querySelector('[id^="line_item_is_billable"]');
-                const markup = formElement.querySelector('[id^="line_item_markup"]');
-                const priceInput = formElement.querySelector('[id^="line_item_price"]');
-                
-                const lineItemData = {
-                    row_version: rowVersion,
-                    bill_public_id: billPublicId,
-                    sub_cost_code_id: subCostCode && subCostCode.value ? parseInt(subCostCode.value) : null,
-                    project_public_id: projectSelect && projectSelect.value ? projectSelect.value : null,
-                    description: description ? description.value.trim() : null,
-                    quantity: quantity && quantity.value ? parseInt(quantity.value) : null,
-                    rate: rate && rate.value ? parseFloat(rate.value) : null,
-                    amount: amountInput && amountInput.value ? parseFloat(amountInput.value) : null,
-                    is_billable: isBillable ? isBillable.checked : true,
-                    markup: markup && markup.value ? parseFloat(markup.value) / 100 : null,
-                    price: priceInput && priceInput.value ? parseFloat(priceInput.value) : null,
-                    is_draft: false  // Mark as complete
-                };
-                
-                try {
-                    const response = await fetch(`/api/v1/update/bill_line_item/${publicId}`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(lineItemData)
-                    });
-                    
-                    if (!response.ok) {
-                        const error = await response.json();
-                        errors.push(error.detail || `Failed to complete line item`);
-                    }
-                } catch (error) {
-                    errors.push(error.message);
-                }
-            }
-            
-            return errors;
-        }
-
         // Handle Complete Bill form submission
         async function handleCompleteBill(event) {
             event.preventDefault();
-            
-            // Cancel any pending auto-save to prevent race conditions
-            if (autoSaveTimeout) {
-                clearTimeout(autoSaveTimeout);
-                autoSaveTimeout = null;
-            }
-            
-            // Validate form
+
             const validationErrors = validateBillForm();
             if (validationErrors.length > 0) {
                 showToast(validationErrors.join(', '), 'error');
                 return;
             }
-            
-            // Check if bill has been saved
-            const billPublicId = document.getElementById('bill_public_id').value;
-            const billNumber = document.getElementById('bill_number').value;
-            if (!billPublicId) {
-                showToast('Please fill in all required fields and wait for the bill to save before completing.', 'error');
+
+            if (!canSaveBill()) {
+                showToast('Please fill in all required fields.', 'error');
                 return;
             }
-            
-            // Check for pending attachments (uploaded but line item not saved)
+
+            // Ensure at least one line item has required fields filled
+            const completableForms = getAllLineItemForms().filter(f => canSaveLineItem(f));
+            if (completableForms.length === 0) {
+                showToast('Please add at least one line item with required fields (Sub Cost Code, Description, Quantity, Rate).', 'error');
+                return;
+            }
+
+            // Check for pending attachments (uploaded but line item not yet saveable)
             const pendingAttachments = validatePendingAttachments();
             if (pendingAttachments.length > 0) {
-                const message = pendingAttachments.length === 1
-                    ? 'Line item #' + pendingAttachments[0].formIndex + ' has an attachment but is not saved. Please fill in the required fields (Sub Cost Code, Description, Quantity, Rate) or remove the attachment.'
-                    : pendingAttachments.length + ' line items have attachments but are not saved. Please fill in their required fields or remove the attachments.';
-                showToast(message, 'error', 8000);
-                
-                // Highlight the first problematic form
-                const firstForm = pendingAttachments[0].formElement;
-                firstForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                firstForm.style.boxShadow = '0 0 0 2px #dc3545';
-                setTimeout(() => {
-                    firstForm.style.boxShadow = '';
-                }, 3000);
+                const msg = pendingAttachments.length === 1
+                    ? 'Line item #' + pendingAttachments[0].formIndex + ' has an attachment but is missing required fields. Please complete the line item or remove the attachment.'
+                    : pendingAttachments.length + ' line items have attachments but are missing required fields. Please complete them or remove the attachments.';
+                showToast(msg, 'error', 8000);
                 return;
             }
-            
-            // Clean up stale pending entries (older than 5 minutes)
-            const now = Date.now();
-            const STALE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
-            let pendingBills = JSON.parse(sessionStorage.getItem('pendingBillCompletions') || '[]');
-            pendingBills = pendingBills.filter(b => (now - b.startTime) < STALE_THRESHOLD);
-            
-            // Check if this bill is already being processed (prevent duplicates)
-            const existingBill = pendingBills.find(b => b.publicId === billPublicId && b.status === 'processing');
-            if (existingBill) {
-                showToast(`Bill "${billNumber}" is already being processed.`, 'warning', 3000);
-                window.location.href = '/bill/list';
-                return;
-            }
-            
-            // Add pending completion info
-            pendingBills.push({
-                publicId: billPublicId,
-                billNumber: billNumber,
-                startTime: now,
-                status: 'processing'
-            });
-            sessionStorage.setItem('pendingBillCompletions', JSON.stringify(pendingBills));
-            
-            // Show progress: button loading state + process badges
-            const form = document.getElementById('createBillForm');
-            const submitBtn = form ? form.querySelector('button[type="submit"]') : null;
-            const originalBtnText = submitBtn ? submitBtn.textContent : 'Complete Bill';
-            if (submitBtn) {
-                submitBtn.disabled = true;
-                submitBtn.textContent = 'Completing…';
-            }
-            showProcessBadges();
-            updateSaveStatus('', '');
-            setProcessBadgeStatus('status-badge-saved', 'running', 'Completing bill…');
-            setProcessBadgeStatus('status-badge-sharepoint', 'idle', 'SharePoint');
-            setProcessBadgeStatus('status-badge-excel', 'idle', 'Excel');
-            setProcessBadgeStatus('status-badge-qbo', 'idle', 'QuickBooks');
-            
-            // Start the Complete Bill API call (server runs completion in background, returns 202)
-            console.log('[Complete Bill] Starting API call for:', billPublicId);
-            
+
+            const submitBtn = document.querySelector('button[type="submit"]');
+            if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Completing...'; }
+
+            // Create bill with is_draft=false — server triggers background pipeline
+            isSaving = true;
+            const billData = {
+                vendor_public_id: document.getElementById('vendor_public_id').value,
+                payment_term_public_id: document.getElementById('payment_term_public_id').value || null,
+                bill_date: dateToApiFormat(document.getElementById('bill_date').value),
+                due_date: dateToApiFormat(document.getElementById('due_date').value),
+                bill_number: document.getElementById('bill_number').value.trim(),
+                total_amount: document.getElementById('total_amount').value ? parseFloat(document.getElementById('total_amount').value) : null,
+                memo: document.getElementById('memo').value || null,
+                is_draft: false
+            };
+
             try {
-                const response = await fetch(`/api/v1/complete/bill/${billPublicId}`, {
+                const response = await fetch('/api/v1/create/bill', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(billData)
                 });
-                
-                console.log('[Complete Bill] Response received:', response.status);
-                
-                const bills = JSON.parse(sessionStorage.getItem('pendingBillCompletions') || '[]');
-                const billIndex = bills.findIndex(b => b.publicId === billPublicId);
-                
-                if (response.status === 202) {
-                    // Accepted – completion runs in background; go to list and show status there
-                    showToast(`"${billNumber}" is completing. You can keep working on the list.`, 'info', 3000);
-                    window.location.href = '/bill/list';
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    showToast(error.detail || 'Failed to create bill', 'error');
+                    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Complete Bill'; }
+                    isSaving = false;
                     return;
                 }
-                
-                if (billIndex !== -1) {
-                    let errorMessage = 'Failed to complete bill';
-                    try {
-                        const err = await response.json();
-                        errorMessage = (typeof err.detail === 'string') ? err.detail : (err.detail?.msg || JSON.stringify(err.detail));
-                    } catch (e) {
-                        errorMessage = `Server error: ${response.status}`;
-                    }
-                    bills[billIndex].status = 'error';
-                    bills[billIndex].error = errorMessage;
-                    bills[billIndex].endTime = Date.now();
-                    sessionStorage.setItem('pendingBillCompletions', JSON.stringify(bills));
-                    setProcessBadgeStatus('status-badge-saved', 'error', 'Error');
-                    setProcessBadgeStatus('status-badge-qbo', 'error', 'Error');
-                    if (submitBtn) {
-                        submitBtn.disabled = false;
-                        submitBtn.textContent = originalBtnText;
-                    }
-                    showToast(`Failed: ${errorMessage}`, 'error', 5000);
-                }
-            } catch (error) {
-                console.error('[Complete Bill] Error:', error);
-                const bills = JSON.parse(sessionStorage.getItem('pendingBillCompletions') || '[]');
-                const billIndex = bills.findIndex(b => b.publicId === billPublicId);
-                if (billIndex !== -1) {
-                    bills[billIndex].status = 'error';
-                    bills[billIndex].error = error.message || 'Network error';
-                    bills[billIndex].endTime = Date.now();
-                    sessionStorage.setItem('pendingBillCompletions', JSON.stringify(bills));
-                }
-                setProcessBadgeStatus('status-badge-saved', 'error', 'Error');
-                setProcessBadgeStatus('status-badge-qbo', 'error', 'Error');
-                if (submitBtn) {
-                    submitBtn.disabled = false;
-                    submitBtn.textContent = originalBtnText;
-                }
-                showToast(`Error: ${error.message || 'Network error'}`, 'error', 5000);
-            }
-            
-            return;
-            
-            // --- OLD SYNCHRONOUS CODE (kept for reference, unreachable) ---
-            // Show process badges and hide save status
-            showProcessBadges();
-            updateSaveStatus('', '');
-            
-            // Step 1: Bill Saved - set to running
-            setProcessBadgeStatus('status-badge-saved', 'running', 'Saving...');
-            
-            try {
-                // Call the complete bill endpoint which handles everything
-                const response = await fetch(`/api/v1/complete/bill/${billPublicId}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    }
-                });
-                
-                if (!response.ok) {
-                    let errorMessage = 'Failed to complete bill';
-                    try {
-                        const error = await response.json();
-                        errorMessage = error.detail || errorMessage;
-                    } catch (e) {
-                        errorMessage = `Server error: ${response.status}`;
-                    }
-                    throw new Error(errorMessage);
-                }
-                
-                const result = await response.json();
-                
-                // Step 1 Complete: Bill Saved
-                setProcessBadgeStatus('status-badge-saved', 'completed', 'Bill Saved');
-                
-                // Step 2: SharePoint - check file upload results
-                const fileUploads = result.file_uploads || {};
-                let totalFilesSynced = 0;
-                let totalFileErrors = 0;
-                for (const projectId in fileUploads) {
-                    const upload = fileUploads[projectId];
-                    totalFilesSynced += upload.synced_count || 0;
-                    if (upload.errors) {
-                        totalFileErrors += upload.errors.length;
-                    }
-                }
-                
-                // Animate SharePoint badge
-                setProcessBadgeStatus('status-badge-sharepoint', 'running', 'Syncing...');
-                await new Promise(resolve => setTimeout(resolve, 300)); // Brief visual delay
-                
-                if (totalFileErrors > 0 && totalFilesSynced === 0) {
-                    setProcessBadgeStatus('status-badge-sharepoint', 'error', 'SharePoint Error');
-                } else if (totalFilesSynced > 0) {
-                    setProcessBadgeStatus('status-badge-sharepoint', 'completed', `SharePoint (${totalFilesSynced})`);
-                } else {
-                    setProcessBadgeStatus('status-badge-sharepoint', 'completed', 'SharePoint');
-                }
-                
-                // Step 3: Excel - check excel sync results
-                const excelSyncs = result.excel_syncs || {};
-                let totalRowsSynced = 0;
-                let totalExcelErrors = 0;
-                for (const projectId in excelSyncs) {
-                    const sync = excelSyncs[projectId];
-                    totalRowsSynced += sync.synced_count || 0;
-                    if (sync.errors) {
-                        totalExcelErrors += sync.errors.length;
-                    }
-                }
-                
-                // Animate Excel badge
-                setProcessBadgeStatus('status-badge-excel', 'running', 'Syncing...');
-                await new Promise(resolve => setTimeout(resolve, 300)); // Brief visual delay
-                
-                if (totalExcelErrors > 0 && totalRowsSynced === 0) {
-                    setProcessBadgeStatus('status-badge-excel', 'error', 'Excel Error');
-                } else if (totalRowsSynced > 0) {
-                    setProcessBadgeStatus('status-badge-excel', 'completed', `Excel (${totalRowsSynced})`);
-                } else {
-                    setProcessBadgeStatus('status-badge-excel', 'completed', 'Excel');
-                }
-                
-                // Build status message for toast
-                let statusMessage = 'Bill completed successfully!';
-                const messages = [];
-                
-                if (totalFilesSynced > 0) {
-                    messages.push(`${totalFilesSynced} file(s) uploaded to SharePoint`);
-                }
-                if (totalFileErrors > 0) {
-                    messages.push(`${totalFileErrors} file upload error(s)`);
-                }
-                if (totalRowsSynced > 0) {
-                    messages.push(`${totalRowsSynced} row(s) synced to Excel`);
-                }
-                if (totalExcelErrors > 0) {
-                    messages.push(`${totalExcelErrors} Excel sync error(s)`);
-                }
-                
-                if (messages.length > 0) {
-                    statusMessage += ' ' + messages.join(', ') + '.';
-                }
-                
-                // Determine toast type
-                let toastType = 'success';
-                if (result.errors && result.errors.length > 0) {
-                    toastType = 'warning';
-                }
-                
-                showToast(statusMessage, toastType, 10000);
-                
-                // Show detailed errors if any
-                if (result.errors && result.errors.length > 0) {
-                    console.error('Complete bill errors:', result.errors);
-                    setTimeout(() => {
-                        const errorDetails = result.errors.slice(0, 5).map(e => {
-                            if (e.line_item_id || e.line_item_public_id) {
-                                return `Line Item ${e.line_item_id || e.line_item_public_id}: ${e.error || e.message || 'Unknown error'}`;
-                            }
-                            return e.error || e.message || 'Unknown error';
-                        }).join('; ');
-                        const moreErrors = result.errors.length > 5 ? ` (and ${result.errors.length - 5} more)` : '';
-                        showToast(`Errors: ${errorDetails}${moreErrors}`, 'error', 15000);
-                    }, 2000);
-                }
-                
-                // Redirect to bill list after delay
-                setTimeout(() => {
-                    window.location.href = '/bill/list';
-                }, 2500);
-                
+
+                const bill = await response.json();
+                document.getElementById('bill_public_id').value = bill.public_id;
+
+                // Create all line items with is_draft=false (parallel)
+                const forms = getAllLineItemForms();
+                await Promise.all(
+                    forms.filter(f => canSaveLineItem(f))
+                         .map(f => saveLineItemWithDraft(f, false))
+                );
+
+                const billNumber = document.getElementById('bill_number').value;
+                showToast(`"${billNumber}" is completing in the background.`, 'info', 3000);
+                window.location.href = '/bill/list';
+
             } catch (error) {
                 console.error('Complete bill error:', error);
-                
-                // Mark current step as error
-                const savedBadge = document.getElementById('status-badge-saved');
-                if (savedBadge && savedBadge.getAttribute('data-status') === 'running') {
-                    setProcessBadgeStatus('status-badge-saved', 'error', 'Error');
-                }
-                
-                const sharepointBadge = document.getElementById('status-badge-sharepoint');
-                if (sharepointBadge && sharepointBadge.getAttribute('data-status') === 'running') {
-                    setProcessBadgeStatus('status-badge-sharepoint', 'error', 'Error');
-                }
-                
-                const excelBadge = document.getElementById('status-badge-excel');
-                if (excelBadge && excelBadge.getAttribute('data-status') === 'running') {
-                    setProcessBadgeStatus('status-badge-excel', 'error', 'Error');
-                }
-                
                 showToast(error.message || 'Failed to complete bill', 'error');
+                if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Complete Bill'; }
+            } finally {
+                isSaving = false;
+            }
+        }
+
+        // Create a line item with a specific is_draft value
+        async function saveLineItemWithDraft(formElement, isDraft) {
+            if (!canSaveLineItem(formElement)) return;
+
+            const billPublicId = document.getElementById('bill_public_id').value;
+            const subCostCode = formElement.querySelector('[id^="line_item_sub_cost_code_id"]');
+            const projectSelect = formElement.querySelector('[id^="line_item_project_public_id"]');
+            const description = formElement.querySelector('[id^="line_item_description"]');
+            const quantity = formElement.querySelector('[id^="line_item_quantity"]');
+            const rate = formElement.querySelector('[id^="line_item_rate"]');
+            const amountInput = formElement.querySelector('[id^="line_item_amount"]');
+            const isBillable = formElement.querySelector('[id^="line_item_is_billable"]');
+            const markup = formElement.querySelector('[id^="line_item_markup"]');
+            const priceInput = formElement.querySelector('[id^="line_item_price"]');
+
+            const lineItemData = {
+                bill_public_id: billPublicId,
+                sub_cost_code_id: subCostCode && subCostCode.value ? parseInt(subCostCode.value) : null,
+                project_public_id: projectSelect && projectSelect.value ? projectSelect.value : null,
+                description: description ? description.value.trim() : null,
+                quantity: quantity && quantity.value ? parseInt(quantity.value) : null,
+                rate: rate && rate.value ? parseFloat(rate.value) : null,
+                amount: amountInput && amountInput.value ? parseFloat(amountInput.value) : null,
+                is_billable: isBillable ? isBillable.checked : true,
+                markup: markup && markup.value ? parseFloat(markup.value) / 100 : null,
+                price: priceInput && priceInput.value ? parseFloat(priceInput.value) : null,
+                is_draft: isDraft
+            };
+
+            const response = await fetch('/api/v1/create/bill_line_item', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(lineItemData)
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                console.error('Line item create failed:', error);
+                return;
+            }
+
+            const lineItem = await response.json();
+
+            // Link attachment — either same-attachment or pending upload
+            const useSameField = formElement.querySelector('.line-item-use-same-attachment');
+            const sameAttachId = useSameField ? useSameField.value : '';
+            const pendingAttachId = formElement.querySelector('.line-item-attachment-public-id');
+            const attachIdToLink = sameAttachId || (pendingAttachId ? pendingAttachId.value : '');
+
+            if (attachIdToLink && lineItem.public_id) {
+                try {
+                    await createAttachmentLink(formElement, lineItem.public_id, attachIdToLink);
+                } catch (e) {
+                    console.error('Failed to link attachment:', e);
+                    showToast('Warning: attachment could not be linked to line item.', 'warning');
+                }
             }
         }
 
         // Attach form submit handler
+        // Consolidated DOMContentLoaded
         document.addEventListener('DOMContentLoaded', function() {
+            // Focus vendor select
+            const vendorSelect = document.getElementById('vendor_public_id');
+            if (vendorSelect) vendorSelect.focus();
+
+            // Date input handlers
+            const billDateInput = document.getElementById('bill_date');
+            const dueDateInput = document.getElementById('due_date');
+            if (billDateInput) {
+                billDateInput.addEventListener('blur', function() {
+                    normalizeDateInput(billDateInput);
+                    setDueDateFromBillDate();
+                });
+                billDateInput.addEventListener('change', setDueDateFromBillDate);
+            }
+            if (dueDateInput) {
+                dueDateInput.addEventListener('blur', function() { normalizeDateInput(dueDateInput); });
+            }
+
+            // Setup initial line item form
+            const initialForm = document.getElementById('add-line-item-form');
+            if (initialForm) {
+                setupLineItemCalculations(initialForm);
+                setupLineItemAttachment(initialForm);
+                const addButton = initialForm.querySelector('button.btn-primary');
+                if (addButton) {
+                    addButton.onclick = function() { addLineItemForm(); };
+                }
+                checkForPendingFile(initialForm);
+                checkForPendingFileToken(initialForm);
+            }
+
+            // Wire form submit handler
             const form = document.getElementById('createBillForm');
             if (form) {
                 form.addEventListener('submit', handleCompleteBill);

@@ -34,6 +34,7 @@ Usage:
 
 import argparse
 import os
+import re
 import sys
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -42,13 +43,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from entities.bill.business.service import BillService
 from entities.bill.persistence.repo import BillRepository
-from entities.bill_line_item.business.service import BillLineItemService
 from entities.bill_line_item.persistence.repo import BillLineItemRepository
 from entities.expense.business.service import ExpenseService
 from entities.expense.persistence.repo import ExpenseRepository
-from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.expense_line_item.persistence.repo import ExpenseLineItemRepository
-from entities.project.persistence.repo import ProjectRepository
 from entities.vendor.persistence.repo import VendorRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
@@ -69,16 +67,27 @@ from integrations.ms.sharepoint.external.client import (
 )
 from shared.database import get_connection
 
-# ── Excel column indices (0-based from used range, which starts at col B) ──
-# The used range omits the always-empty col A, so index 0 = col B.
-COL_I = 7    # Date              (I = B + 7)
-COL_J = 8    # Vendor Name       (J = B + 8)
-COL_K = 9    # Bill / Ref Number (K = B + 9)
-COL_L = 10   # Description       (L = B + 10)
-COL_N = 12   # Price             (N = B + 12)
-COL_Z = 24   # public_id key     (Z = B + 24)
+# ── Excel column indices (0-based from col A) ──
+# Range is always fetched as A1:Z{lastRow} so index 0 = col A.
+COL_H = 7    # Draw Request      (H)
+COL_I = 8    # Date              (I)
+COL_J = 9    # Vendor Name       (J)
+COL_K = 10   # Bill / Ref Number (K)
+COL_L = 11   # Description       (L)
+COL_N = 13   # Price             (N)
+COL_Z = 25   # public_id key     (Z)
 
 PRICE_TOLERANCE = Decimal("0.01")
+
+_VENDOR_SUFFIX_RE = re.compile(
+    r"[,.]?\s*(llc|inc|corp|ltd|co|company|limited|incorporated)\.?$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_vendor(name: str) -> str:
+    """Lowercase and strip common legal suffixes for fuzzy vendor matching."""
+    return _VENDOR_SUFFIX_RE.sub("", name.strip().lower()).strip().rstrip(",").strip()
 
 
 # ── Helpers ─────────────────────────────────────────────────────
@@ -89,6 +98,31 @@ def _cell(row: List[Any], idx: int) -> str:
         v = row[idx]
         return str(v).strip() if v is not None else ""
     return ""
+
+
+def _parse_date(value) -> Optional[str]:
+    """
+    Parse an Excel cell value to YYYY-MM-DD string.
+    Handles Excel serial numbers (int/float) and common string formats.
+    Returns None if unparsable.
+    """
+    if value is None or value == "":
+        return None
+    from datetime import datetime, timedelta
+    # Excel serial number
+    try:
+        serial = int(float(str(value)))
+        if 20000 < serial < 60000:  # sanity check: roughly 1954–2064
+            return (datetime(1899, 12, 30) + timedelta(days=serial)).strftime("%Y-%m-%d")
+    except (ValueError, OverflowError):
+        pass
+    # String date formats
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%B %d, %Y", "%b %d, %Y"):
+        try:
+            return datetime.strptime(str(value).strip(), fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
 
 
 def _safe_decimal(value) -> Optional[Decimal]:
@@ -171,6 +205,8 @@ def _load_bills_for_project(
             FROM dbo.Bill b
             INNER JOIN dbo.BillLineItem bli ON bli.BillId = b.Id
             WHERE bli.ProjectId = ? AND b.IsDraft = 0
+              AND YEAR(b.BillDate) = 2026
+              AND bli.IsBilled = 0
             """,
             (project_id,),
         )
@@ -215,6 +251,8 @@ def _load_expenses_for_project(
             FROM dbo.Expense e
             INNER JOIN dbo.ExpenseLineItem eli ON eli.ExpenseId = e.Id
             WHERE eli.ProjectId = ? AND e.IsDraft = 0
+              AND YEAR(e.ExpenseDate) = 2026
+              AND eli.IsBilled = 0
             """,
             (project_id,),
         )
@@ -423,17 +461,32 @@ def sync_qbo_to_db_bills(
     issues = []
     synced_count = 0
 
-    qbo_bills = qbo_bill_repo.read_by_realm_id(realm_id)
+    # Filter at SQL level — only bills with a line for this project, this year
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT b.Id
+            FROM qbo.Bill b
+            INNER JOIN qbo.BillLine bl ON bl.QboBillId = b.Id
+            WHERE b.RealmId = ?
+              AND bl.CustomerRefValue = ?
+              AND YEAR(b.TxnDate) = 2026
+            """,
+            (realm_id, qbo_customer_ref),
+        )
+        candidate_ids = [row[0] for row in cursor.fetchall()]
+        cursor.close()
 
-    for qbo_bill in qbo_bills:
-        lines = qbo_bill_line_repo.read_by_qbo_bill_id(qbo_bill.id)
-        project_lines = [l for l in lines if l.customer_ref_value == qbo_customer_ref]
-        if not project_lines:
+    for bill_id in candidate_ids:
+        qbo_bill = qbo_bill_repo.read_by_id(bill_id)
+        if not qbo_bill:
             continue
 
         if bill_bill_repo.read_by_qbo_bill_id(qbo_bill.id):
             continue  # Already mapped to a DB bill
 
+        lines = qbo_bill_line_repo.read_by_qbo_bill_id(qbo_bill.id)
         print(
             f"  [QBO->DB] QBO Bill #{qbo_bill.doc_number} "
             f"(qbo_id={qbo_bill.qbo_id}) — not in DB"
@@ -470,17 +523,31 @@ def sync_qbo_to_db_expenses(
     issues = []
     synced_count = 0
 
-    qbo_purchases = qbo_purchase_repo.read_all()
+    # Filter at SQL level — only purchases with a line for this project, this year
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT p.Id
+            FROM qbo.Purchase p
+            INNER JOIN qbo.PurchaseLine pl ON pl.QboPurchaseId = p.Id
+            WHERE pl.CustomerRefValue = ?
+              AND YEAR(p.TxnDate) = 2026
+            """,
+            (qbo_customer_ref,),
+        )
+        candidate_ids = [row[0] for row in cursor.fetchall()]
+        cursor.close()
 
-    for qbo_purchase in qbo_purchases:
-        lines = qbo_purchase_line_repo.read_by_qbo_purchase_id(qbo_purchase.id)
-        project_lines = [l for l in lines if l.customer_ref_value == qbo_customer_ref]
-        if not project_lines:
+    for purchase_id in candidate_ids:
+        qbo_purchase = qbo_purchase_repo.read_by_id(purchase_id)
+        if not qbo_purchase:
             continue
 
         if purchase_expense_repo.read_by_qbo_purchase_id(qbo_purchase.id):
             continue  # Already mapped to a DB expense
 
+        lines = qbo_purchase_line_repo.read_by_qbo_purchase_id(qbo_purchase.id)
         print(
             f"  [QBO->DB] QBO Purchase #{qbo_purchase.doc_number} "
             f"(qbo_id={qbo_purchase.qbo_id}) — not in DB"
@@ -624,6 +691,7 @@ def check_excel_to_db(
     all_bill_public_id_map: Dict[str, Any],
     all_expense_public_id_map: Dict[str, Any],
     vendor_map: Dict[str, Any],
+    vendor_norm_map: Dict[str, Any],
     bill_repo: BillRepository,
     expense_repo: ExpenseRepository,
     bill_line_item_repo: BillLineItemRepository,
@@ -632,28 +700,52 @@ def check_excel_to_db(
     drive_id: str,
     item_id: str,
     worksheet_name: str,
-) -> Tuple[List[str], int, List[Dict]]:
+    project_id: int = None,
+) -> Tuple[List[str], int, int, Set[str]]:
     """
-    Check every Excel row against DB.
-    - Rows with col Z: verify public_id resolves to a DB record.
-    - Rows without col Z: fuzzy-match then backfill col Z (if --write).
-    - Rows with no bill/expense match at all: returned as create_candidates.
+    Step 8 — Match scoped Excel rows to DB records.
 
-    Returns (issues, backfill_count, create_candidates).
-    create_candidates: list of dicts with parsed row data for draft record creation.
+    Scope: 2026 rows where col H (DRAW REQUEST) is empty (step 7).
+
+    - Rows with col Z: verify public_id exists in the scoped DB set.
+      Orphaned (not found) → clear col Z in write mode so the row
+      re-enters matching logic on the next run.
+    - Rows without col Z: attempt exact match on all five fields —
+        date + vendor (fuzzy) + bill/ref number + description + amount.
+        Unambiguous match → backfill col Z (write mode).
+        Any mismatch or ambiguous → flag for manual review.
+
+    No automatic DB record creation (step 10 is manual review only).
+
+    Returns (issues, backfill_count, orphan_clear_count, backfilled_public_ids).
     """
     issues = []
     backfill_count = 0
-    create_candidates = []
+    orphan_clear_count = 0
+    backfilled_public_ids: Set[str] = set()
 
     for row_idx, row in enumerate(data_rows):
         excel_row_num = row_idx + 2  # +2: row 1 is header, rows are 1-based
         col_z_val = _cell(row, COL_Z)
+        draw_request = _cell(row, COL_H)
+        date_str = _cell(row, COL_I)
         vendor_name = _cell(row, COL_J)
         ref_number = _cell(row, COL_K)
         description = _cell(row, COL_L)
         price = _safe_decimal(_cell(row, COL_N))
-        date_str = _cell(row, COL_I)
+
+        # ── Skip the secondary header row (Excel row 2) ─────────
+        if excel_row_num == 2:
+            continue
+
+        # ── Step 7 scope filter ──────────────────────────────────
+        # Only reconcile 2026 rows that have not yet been billed
+        # (col H "DRAW REQUEST" is empty).
+        if draw_request:
+            continue
+        parsed_date = _parse_date(date_str)
+        if not parsed_date or not parsed_date.startswith("2026"):
+            continue
 
         # ── Rows with col Z: direct lookup ──────────────────────
         if col_z_val:
@@ -662,22 +754,36 @@ def check_excel_to_db(
                 or col_z_val in all_expense_public_id_map
             )
             if not found:
-                issues.append(
+                print(
                     f"  [Excel->DB] Row {excel_row_num}: col Z='{col_z_val}' "
-                    f"— public_id not found in DB (orphaned row)"
+                    f"— orphaned (not in DB)"
                 )
-            continue
-
-        # ── Skip the secondary header row (Excel row 2) ─────────
-        if excel_row_num == 2:
+                if dry_run:
+                    print(f"    DRY RUN: would clear col Z")
+                    orphan_clear_count += 1
+                else:
+                    clear_result = update_excel_range(
+                        drive_id, item_id, worksheet_name,
+                        f"Z{excel_row_num}", [[""]]
+                    )
+                    if clear_result.get("status_code") in (200, 204):
+                        print(f"    Cleared col Z")
+                        orphan_clear_count += 1
+                    else:
+                        issues.append(
+                            f"  [Excel->DB] Row {excel_row_num}: failed to clear col Z: "
+                            f"{clear_result.get('message')}"
+                        )
             continue
 
         # ── Rows without col Z: skip if no vendor or ref# ───────
         if not vendor_name or not ref_number:
             continue
 
-        # ── Fuzzy match ──────────────────────────────────────────
+        # ── Vendor lookup (exact then normalized) ────────────────
         vendor = vendor_map.get(vendor_name.lower())
+        if not vendor:
+            vendor = vendor_norm_map.get(_normalize_vendor(vendor_name))
         if not vendor:
             issues.append(
                 f"  [Excel->DB] Row {excel_row_num}: vendor '{vendor_name}' not in DB — skipped"
@@ -686,14 +792,21 @@ def check_excel_to_db(
 
         matched_li = None
         source_type = None
-        bill_exists = False
-        expense_exists = False
 
-        # Try bill first
+        # Try bill first — match on all five fields: vendor (fuzzy, already
+        # resolved), ref number, date, description, amount.
         bill = bill_repo.read_by_bill_number_and_vendor_id(ref_number, vendor.id)
         if bill:
-            bill_exists = True
+            bill_date_str = str(bill.bill_date)[:10] if bill.bill_date else None
+            if bill_date_str != parsed_date:
+                issues.append(
+                    f"  [Excel->DB] Row {excel_row_num}: date mismatch for bill "
+                    f"#{ref_number} (Excel={parsed_date}, DB={bill_date_str}) — review manually"
+                )
+                continue
             bill_line_items = bill_line_item_repo.read_by_bill_id(bill.id)
+            if project_id is not None:
+                bill_line_items = [li for li in bill_line_items if li.project_id == project_id and not li.is_draft]
             matched, status = _find_line_item_match(description, price, bill_line_items)
             if status == "match":
                 matched_li = matched
@@ -701,7 +814,7 @@ def check_excel_to_db(
             elif status == "ambiguous":
                 issues.append(
                     f"  [Excel->DB] Row {excel_row_num}: ambiguous match among "
-                    f"BillLineItems for bill #{ref_number} — skipped"
+                    f"BillLineItems for bill #{ref_number} — review manually"
                 )
                 continue
 
@@ -709,8 +822,16 @@ def check_excel_to_db(
         if matched_li is None:
             expense = expense_repo.read_by_reference_number_and_vendor_id(ref_number, vendor.id)
             if expense:
-                expense_exists = True
+                exp_date_str = str(expense.expense_date)[:10] if expense.expense_date else None
+                if exp_date_str != parsed_date:
+                    issues.append(
+                        f"  [Excel->DB] Row {excel_row_num}: date mismatch for expense "
+                        f"#{ref_number} (Excel={parsed_date}, DB={exp_date_str}) — review manually"
+                    )
+                    continue
                 expense_line_items = expense_line_item_repo.read_by_expense_id(expense.id)
+                if project_id is not None:
+                    expense_line_items = [li for li in expense_line_items if li.project_id == project_id and not li.is_draft]
                 matched, status = _find_line_item_match(description, price, expense_line_items)
                 if status == "match":
                     matched_li = matched
@@ -718,34 +839,17 @@ def check_excel_to_db(
                 elif status == "ambiguous":
                     issues.append(
                         f"  [Excel->DB] Row {excel_row_num}: ambiguous match among "
-                        f"ExpenseLineItems for ref #{ref_number} — skipped"
+                        f"ExpenseLineItems for ref #{ref_number} — review manually"
                     )
                     continue
 
         if matched_li is None:
-            if not bill_exists and not expense_exists:
-                # No bill or expense with this vendor+ref# — candidate for creation
-                create_candidates.append({
-                    "row_idx": row_idx,
-                    "excel_row_num": excel_row_num,
-                    "vendor": vendor,
-                    "vendor_name": vendor_name,
-                    "ref_number": ref_number,
-                    "description": description,
-                    "price": price,
-                    "date_str": date_str,
-                })
-                print(
-                    f"  [Excel->DB] Row {excel_row_num}: no DB record for "
-                    f"vendor='{vendor_name}', ref='{ref_number}' "
-                    f"— {'will create draft Bill' if not dry_run else 'would create draft Bill'}"
-                )
-            else:
-                issues.append(
-                    f"  [Excel->DB] Row {excel_row_num}: no line item match "
-                    f"(vendor='{vendor_name}', ref='{ref_number}', "
-                    f"desc='{description}') — review manually"
-                )
+            # No match on all five fields — flag for manual review (step 10).
+            issues.append(
+                f"  [Excel->DB] Row {excel_row_num}: no DB match "
+                f"(vendor='{vendor_name}', ref='{ref_number}', "
+                f"date='{parsed_date}', desc='{description}', amount={price}) — review manually"
+            )
             continue
 
         # ── Matched: backfill col Z ──────────────────────────────
@@ -765,6 +869,7 @@ def check_excel_to_db(
         if dry_run:
             print(f"    DRY RUN: would write public_id to col Z, row {excel_row_num}")
             backfill_count += 1
+            backfilled_public_ids.add(public_id_str)
             continue
 
         # Re-read and validate before writing
@@ -802,93 +907,13 @@ def check_excel_to_db(
         if write_result.get("status_code") in (200, 204):
             print(f"    Wrote public_id to Z{excel_row_num}")
             backfill_count += 1
+            backfilled_public_ids.add(public_id_str)
         else:
             issues.append(
                 f"  [Excel->DB] Row {excel_row_num}: write failed: {write_result.get('message')}"
             )
 
-    return issues, backfill_count, create_candidates
-
-
-def create_db_records_from_excel(
-    create_candidates: List[Dict],
-    project_id: int,
-    bill_service: BillService,
-    bill_line_item_service: BillLineItemService,
-    project_repo: ProjectRepository,
-) -> Tuple[List[str], int]:
-    """
-    Create draft Bill + BillLineItem records for Excel rows that have no DB match.
-    Records are created with is_draft=True for manual review before completion.
-
-    Groups candidates by vendor+ref# so one Bill is created per unique ref#.
-    Returns (issues, created_count).
-    """
-    issues = []
-    created_count = 0
-
-    # Look up project public_id once
-    project = project_repo.read_by_id(project_id)
-    project_public_id = str(project.public_id) if project and project.public_id else None
-
-    # Group candidates by (vendor_id, ref_number) — one Bill per group
-    groups: Dict[Tuple, List[Dict]] = {}
-    for candidate in create_candidates:
-        key = (candidate["vendor"].id, candidate["ref_number"])
-        groups.setdefault(key, []).append(candidate)
-
-    for (vendor_id, ref_number), rows in groups.items():
-        first = rows[0]
-        vendor = first["vendor"]
-        date_str = first["date_str"] or "2000-01-01"
-        total_price = sum(
-            (r["price"] or Decimal("0")) for r in rows
-        )
-
-        print(
-            f"  [Excel->DB] Creating draft Bill: vendor='{first['vendor_name']}', "
-            f"ref='{ref_number}', {len(rows)} line item(s)"
-        )
-
-        try:
-            bill = bill_service.create(
-                vendor_public_id=str(vendor.public_id),
-                bill_date=date_str,
-                due_date=date_str,
-                bill_number=ref_number,
-                total_amount=Decimal(str(total_price)),
-                is_draft=True,
-            )
-        except Exception as e:
-            issues.append(
-                f"  [Excel->DB] Could not create Bill for ref='{ref_number}': {e}"
-            )
-            continue
-
-        print(f"    Created Bill id={bill.id} public_id={bill.public_id}")
-        created_count += 1
-
-        for row in rows:
-            try:
-                li = bill_line_item_service.create(
-                    bill_public_id=str(bill.public_id),
-                    description=row["description"] or "",
-                    price=Decimal(str(row["price"])) if row["price"] else None,
-                    amount=Decimal(str(row["price"])) if row["price"] else None,
-                    project_public_id=project_public_id,
-                    is_draft=True,
-                )
-                print(
-                    f"    Created BillLineItem id={li.id} "
-                    f"'{row['description']}' ${row['price']}"
-                )
-            except Exception as e:
-                issues.append(
-                    f"  [Excel->DB] Could not create BillLineItem "
-                    f"for bill id={bill.id} row {row['excel_row_num']}: {e}"
-                )
-
-    return issues, created_count
+    return issues, backfill_count, orphan_clear_count, backfilled_public_ids
 
 
 # ── Per-project entry point ──────────────────────────────────────
@@ -897,6 +922,7 @@ def process_project(
     project_id: int,
     dry_run: bool,
     vendor_map: Dict[str, Any],
+    vendor_norm_map: Dict[str, Any],
     bill_repo: BillRepository,
     bill_line_item_repo: BillLineItemRepository,
     expense_repo: ExpenseRepository,
@@ -915,8 +941,6 @@ def process_project(
     auth_service: QboAuthService,
     bill_service: BillService,
     expense_service: ExpenseService,
-    bill_line_item_service: BillLineItemService,
-    project_repo: ProjectRepository,
     driveitem_repo: MsDriveItemRepository,
     drive_repo: MsDriveRepository,
     excel_mapping_repo: DriveItemProjectExcelRepository,
@@ -931,7 +955,7 @@ def process_project(
         "db_to_excel_written": 0,
         "excel_to_db_issues": 0,
         "backfills": 0,
-        "excel_to_db_created": 0,
+        "orphan_clears": 0,
     }
 
     mapping = excel_mapping_repo.read_by_project_id(project_id)
@@ -1084,8 +1108,34 @@ def process_project(
         if total_synced == 0 and total_issues == 0:
             print(f"  OK — no unmatched QBO records found for this project")
 
-    # ── [3/4] DB -> Excel ────────────────────────────────────────
-    print(f"\n  [3/4] DB -> Excel")
+    # ── [3/4] Excel -> DB ────────────────────────────────────────
+    # Runs before DB->Excel so col Z backfills happen first — DB->Excel
+    # then skips rows that were already backfilled, preventing duplicate rows.
+    print(f"\n  [3/4] Excel -> DB {'(DRY RUN)' if dry_run else ''}")
+    e2db_issues, backfill_count, orphan_clear_count, backfilled_public_ids = check_excel_to_db(
+        data_rows=data_rows,
+        all_bill_public_id_map=all_bill_public_id_map,
+        all_expense_public_id_map=all_expense_public_id_map,
+        vendor_map=vendor_map,
+        vendor_norm_map=vendor_norm_map,
+        bill_repo=bill_repo,
+        expense_repo=expense_repo,
+        bill_line_item_repo=bill_line_item_repo,
+        expense_line_item_repo=expense_line_item_repo,
+        dry_run=dry_run,
+        drive_id=drive_id,
+        item_id=item_id,
+        worksheet_name=worksheet_name,
+        project_id=project_id,
+    )
+    for issue in e2db_issues:
+        print(issue)
+
+    # Merge backfilled IDs into the live set so DB->Excel doesn't re-write them
+    excel_public_ids |= backfilled_public_ids
+
+    # ── [4/4] DB -> Excel ────────────────────────────────────────
+    print(f"\n  [4/4] DB -> Excel")
     if not all_bill_li_by_id and not all_exp_li_by_id:
         print("  No completed DB line items — skipping.")
     else:
@@ -1112,42 +1162,9 @@ def process_project(
             for issue in write_issues:
                 print(issue)
             stats["db_to_excel_written"] = write_count
-
-    # ── [4/4] Excel -> DB ────────────────────────────────────────
-    print(f"\n  [4/4] Excel -> DB {'(DRY RUN)' if dry_run else ''}")
-    e2db_issues, backfill_count, create_candidates = check_excel_to_db(
-        data_rows=data_rows,
-        all_bill_public_id_map=all_bill_public_id_map,
-        all_expense_public_id_map=all_expense_public_id_map,
-        vendor_map=vendor_map,
-        bill_repo=bill_repo,
-        expense_repo=expense_repo,
-        bill_line_item_repo=bill_line_item_repo,
-        expense_line_item_repo=expense_line_item_repo,
-        dry_run=dry_run,
-        drive_id=drive_id,
-        item_id=item_id,
-        worksheet_name=worksheet_name,
-    )
-    for issue in e2db_issues:
-        print(issue)
     stats["excel_to_db_issues"] = len(e2db_issues)
     stats["backfills"] = backfill_count
-
-    # Create draft DB records for Excel rows with no DB match
-    if create_candidates and not dry_run:
-        create_issues, created_count = create_db_records_from_excel(
-            create_candidates=create_candidates,
-            project_id=project_id,
-            bill_service=bill_service,
-            bill_line_item_service=bill_line_item_service,
-            project_repo=project_repo,
-        )
-        for issue in create_issues:
-            print(issue)
-        stats["excel_to_db_created"] = created_count
-    elif create_candidates and dry_run:
-        stats["excel_to_db_created"] = len(create_candidates)
+    stats["orphan_clears"] = orphan_clear_count
 
     return stats
 
@@ -1181,7 +1198,6 @@ def main():
     bill_line_item_repo = BillLineItemRepository()
     expense_repo = ExpenseRepository()
     expense_line_item_repo = ExpenseLineItemRepository()
-    project_repo = ProjectRepository()
     bill_bill_repo = BillBillRepository()
     bill_line_item_bill_line_repo = BillLineItemBillLineRepository()
     qbo_bill_repo = QboBillRepository()
@@ -1198,7 +1214,6 @@ def main():
 
     bill_service = BillService()
     expense_service = ExpenseService()
-    bill_line_item_service = BillLineItemService()
     bill_bill_connector = BillBillConnector()
     purchase_expense_connector = PurchaseExpenseConnector()
 
@@ -1206,6 +1221,12 @@ def main():
     print("\nLoading reference data...")
     all_vendors = vendor_repo.read_all()
     vendor_map = {v.name.strip().lower(): v for v in all_vendors if v.name}
+    vendor_norm_map: Dict[str, Any] = {}
+    for v in all_vendors:
+        if v.name:
+            key = _normalize_vendor(v.name)
+            if key not in vendor_norm_map:
+                vendor_norm_map[key] = v
     print(f"  Loaded {len(vendor_map)} vendors")
 
     # ── Determine projects ───────────────────────────────────────
@@ -1231,7 +1252,7 @@ def main():
         "db_to_excel_written": 0,
         "excel_to_db_issues": 0,
         "backfills": 0,
-        "excel_to_db_created": 0,
+        "orphan_clears": 0,
     }
 
     for project_id in project_ids:
@@ -1242,6 +1263,7 @@ def main():
             project_id=project_id,
             dry_run=dry_run,
             vendor_map=vendor_map,
+            vendor_norm_map=vendor_norm_map,
             bill_repo=bill_repo,
             bill_line_item_repo=bill_line_item_repo,
             expense_repo=expense_repo,
@@ -1260,8 +1282,6 @@ def main():
             auth_service=auth_service,
             bill_service=bill_service,
             expense_service=expense_service,
-            bill_line_item_service=bill_line_item_service,
-            project_repo=project_repo,
             driveitem_repo=driveitem_repo,
             drive_repo=drive_repo,
             excel_mapping_repo=excel_mapping_repo,
@@ -1281,7 +1301,7 @@ def main():
         print(f"    DB->Excel written:       {stats['db_to_excel_written']} ({action} write)")
         print(f"    Excel->DB issues:        {stats['excel_to_db_issues']}")
         print(f"    Col Z backfills:         {stats['backfills']} ({action} write)")
-        print(f"    Excel->DB drafts:        {stats['excel_to_db_created']} ({action} create)")
+        print(f"    Col Z orphan clears:     {stats['orphan_clears']} ({action} clear)")
 
     print(f"\n{'=' * 70}")
     print(f"TOTAL SUMMARY {'(DRY RUN)' if dry_run else ''}")
@@ -1295,13 +1315,13 @@ def main():
     print(f"  DB->Excel written:       {totals['db_to_excel_written']} ({action} write)")
     print(f"  Excel->DB issues:        {totals['excel_to_db_issues']}")
     print(f"  Col Z backfills:         {totals['backfills']} ({action} write)")
-    print(f"  Excel->DB drafts:        {totals['excel_to_db_created']} ({action} create)")
+    print(f"  Col Z orphan clears:     {totals['orphan_clears']} ({action} clear)")
 
     if dry_run:
         any_action = any(
             totals[k] > 0 for k in [
                 "db_pushes", "qbo_repairs", "qbo_to_db_synced",
-                "db_to_excel_written", "backfills", "excel_to_db_created",
+                "db_to_excel_written", "backfills", "orphan_clears",
             ]
         )
         if any_action:

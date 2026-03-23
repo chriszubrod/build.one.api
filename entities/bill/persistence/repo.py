@@ -330,10 +330,9 @@ class BillRepository:
             logger.error(f"Error during delete bill by ID: {error}")
             raise map_database_error(error)
 
-    def set_completion_result(self, public_id: str, result: dict[str, Any], expires_at: float) -> None:
-        """Store completion result for a bill (shared across workers)."""
+    def set_completion_result(self, public_id: str, result: dict[str, Any]) -> None:
+        """Store completion result for a bill (permanent record)."""
         try:
-            expires_dt = datetime.fromtimestamp(expires_at, tz=timezone.utc)
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
@@ -342,7 +341,6 @@ class BillRepository:
                     params={
                         "BillPublicId": public_id,
                         "ResultJson": json.dumps(result, default=str),
-                        "ExpiresAt": expires_dt,
                     },
                 )
         except Exception as error:
@@ -350,7 +348,7 @@ class BillRepository:
             raise map_database_error(error)
 
     def get_completion_result(self, public_id: str) -> Optional[dict[str, Any]]:
-        """Return completion result for a bill if present and not expired."""
+        """Return completion result for a bill."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()

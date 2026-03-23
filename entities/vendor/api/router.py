@@ -13,11 +13,20 @@ router = APIRouter(prefix="/api/v1", tags=["api", "vendor"])
 service = VendorService()
 
 
+def _raise_from_workflow_error(err: str, default_message: str):
+    """Map workflow error strings to appropriate HTTP status codes."""
+    if "already exists" in err.lower():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err)
+    if "concurrency" in err.lower() or "row-version" in err.lower():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err)
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err or default_message)
+
+
 @router.post("/create/vendor")
 def create_vendor_router(body: VendorCreate, current_user: dict = Depends(get_current_vendor_api)):
     """
     Create a new vendor.
-    
+
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
@@ -34,15 +43,12 @@ def create_vendor_router(body: VendorCreate, current_user: dict = Depends(get_cu
         },
         workflow_type="vendor_create",
     )
-    
+
     result = TriggerRouter().route_instant(context)
-    
+
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create vendor")
-        )
-    
+        _raise_from_workflow_error(result.get("error", ""), "Failed to create vendor")
+
     return result.get("data")
 
 
@@ -63,18 +69,17 @@ def get_vendor_by_public_id_router(public_id: str, current_user: dict = Depends(
     """
     Read a vendor by public ID.
     """
-    try:
-        vendor = service.read_by_public_id(public_id=public_id)
-        return vendor.to_dict()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    vendor = service.read_by_public_id(public_id=public_id)
+    if not vendor:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vendor not found")
+    return vendor.to_dict()
 
 
 @router.put("/update/vendor/{public_id}")
 def update_vendor_by_public_id_router(public_id: str, body: VendorUpdate, current_user: dict = Depends(get_current_vendor_api)):
     """
     Update a vendor by public ID.
-    
+
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
@@ -93,23 +98,20 @@ def update_vendor_by_public_id_router(public_id: str, body: VendorUpdate, curren
         },
         workflow_type="vendor_update",
     )
-    
+
     result = TriggerRouter().route_instant(context)
-    
+
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update vendor")
-        )
-    
+        _raise_from_workflow_error(result.get("error", ""), "Failed to update vendor")
+
     return result.get("data")
 
 
 @router.delete("/delete/vendor/{public_id}")
 def delete_vendor_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_vendor_api)):
     """
-    Delete a vendor by public ID.
-    
+    Soft delete a vendor by public ID.
+
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
@@ -122,13 +124,10 @@ def delete_vendor_by_public_id_router(public_id: str, current_user: dict = Depen
         },
         workflow_type="vendor_delete",
     )
-    
+
     result = TriggerRouter().route_instant(context)
-    
+
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete vendor")
-        )
-    
+        _raise_from_workflow_error(result.get("error", ""), "Failed to delete vendor")
+
     return result.get("data")

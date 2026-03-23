@@ -108,6 +108,10 @@
     background-color: var(--color-surface);
 }
 
+.invoice-table tbody tr[data-parent-public-id]:not([data-parent-public-id=""]) {
+    cursor: pointer;
+}
+
 .invoice-table-actions {
     display: flex;
     gap: 0.5rem;

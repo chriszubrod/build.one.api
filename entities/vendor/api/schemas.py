@@ -1,16 +1,27 @@
 # Python Standard Library Imports
 from typing import Optional
+import re
 
 # Third-party Imports
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Local Imports
 
 
+def _sanitize_string(value: Optional[str]) -> Optional[str]:
+    """Strip whitespace and collapse internal whitespace for string fields."""
+    if value is None:
+        return None
+    value = value.strip()
+    value = re.sub(r'\s+', ' ', value)
+    return value if value else None
+
+
 class VendorCreate(BaseModel):
-    name: Optional[str] = Field(
-        default=None,
-        max_length=50,
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=450,
         description="The name of the vendor.",
     )
     abbreviation: Optional[str] = Field(
@@ -31,6 +42,16 @@ class VendorCreate(BaseModel):
         description="Whether the vendor is a draft (incomplete).",
     )
 
+    @field_validator('name', mode='before')
+    @classmethod
+    def sanitize_name(cls, v):
+        return _sanitize_string(v)
+
+    @field_validator('abbreviation', mode='before')
+    @classmethod
+    def sanitize_abbreviation(cls, v):
+        return _sanitize_string(v)
+
 
 class VendorUpdate(BaseModel):
     row_version: Optional[str] = Field(
@@ -39,7 +60,7 @@ class VendorUpdate(BaseModel):
     )
     name: Optional[str] = Field(
         default=None,
-        max_length=50,
+        max_length=450,
         description="The name of the vendor.",
     )
     abbreviation: Optional[str] = Field(
@@ -59,3 +80,13 @@ class VendorUpdate(BaseModel):
         default=None,
         description="Whether the vendor record is a draft (incomplete).",
     )
+
+    @field_validator('name', mode='before')
+    @classmethod
+    def sanitize_name(cls, v):
+        return _sanitize_string(v)
+
+    @field_validator('abbreviation', mode='before')
+    @classmethod
+    def sanitize_abbreviation(cls, v):
+        return _sanitize_string(v)

@@ -200,6 +200,27 @@ class BillLineItemAttachmentRepository:
             logger.error(f"Error during read bill line item attachments by public IDs: {error}")
             raise map_database_error(error)
 
+    def count_by_attachment_id(self, attachment_id: int) -> int:
+        """
+        Count how many BillLineItemAttachment records reference a given AttachmentId.
+        Used to check if an Attachment is shared before deleting it.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM dbo.BillLineItemAttachment WHERE AttachmentId = ?",
+                        [attachment_id],
+                    )
+                    row = cursor.fetchone()
+                    return row[0] if row else 0
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error counting bill line item attachments by attachment ID: {error}")
+            return 0
+
     def delete_by_id(self, id: int) -> Optional[BillLineItemAttachment]:
         """
         Delete a bill line item attachment by ID.

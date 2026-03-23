@@ -206,19 +206,7 @@ class DriveItemProjectModuleConnector:
             }
         
         ms_driveitem_id = driveitem.get("id") if isinstance(driveitem, dict) else driveitem.id
-        
-        # Check if this driveitem is already linked to another project module
-        existing_driveitem_mapping = self.mapping_repo.read_by_ms_driveitem_id(ms_driveitem_id)
-        if existing_driveitem_mapping:
-            # Get module name for the existing mapping
-            existing_module = module_service.read_by_id(id=str(existing_driveitem_mapping.module_id))
-            existing_module_name = existing_module.name if existing_module else f"ID {existing_driveitem_mapping.module_id}"
-            return {
-                "message": f"Folder is already linked to project {existing_driveitem_mapping.project_id}, module '{existing_module_name}'",
-                "status_code": 400,
-                "mapping": existing_driveitem_mapping.to_dict()
-            }
-        
+
         # Step 6: Create the DriveItemProjectModule mapping
         try:
             mapping = self.mapping_repo.create(

@@ -306,6 +306,10 @@ def sync_qbo_invoice(
         skip_sync_record_update: If True, don't update the sync record timestamp.
         dry_run: If True, fetch from QBO and report what would be synced without writing anything.
     """
+    # QBO invoice sync disabled — invoices are managed manually in QBO
+    logger.info("Invoice QBO sync is disabled; skipping sync_qbo_invoice")
+    return {"invoices_synced": 0, "invoices_module_synced": 0, "invoices": [], "disabled": True}
+
     try:
         # Create start time variable
         start_time = datetime.now(timezone.utc)

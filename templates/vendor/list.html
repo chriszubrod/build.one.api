@@ -22,6 +22,14 @@
                     <option value="desc">Z-A</option>
                 </select>
             </div>
+            <div class="vendor-sort-group">
+                <label for="vendor-status-filter" class="vendor-sort-label">Status</label>
+                <select id="vendor-status-filter" class="vendor-sort-select">
+                    <option value="all">All</option>
+                    <option value="active">Active</option>
+                    <option value="draft">Draft</option>
+                </select>
+            </div>
             <div class="vendor-filter-group">
                 <label for="vendor-filter" class="vendor-filter-label">Filter by Name or Abbreviation</label>
                 <input type="text"
@@ -35,11 +43,15 @@
         <div class="vendor-list-container">
             <div class="vendor-grid" id="vendor-grid">
                 {% for vendor in vendors %}
-                <div class="vendor-card" 
-                     data-vendor-public-id="{{ vendor.public_id }}" 
-                     data-vendor-name="{{ (vendor.name or 'Unnamed Vendor') | lower }}" 
-                     data-vendor-abbreviation="{{ (vendor.abbreviation or '') | lower }}">
+                <a class="vendor-card"
+                   href="/vendor/{{ vendor.public_id }}"
+                   data-vendor-public-id="{{ vendor.public_id }}"
+                   data-vendor-name="{{ (vendor.name or 'Unnamed Vendor') | lower }}"
+                   data-vendor-abbreviation="{{ (vendor.abbreviation or '') | lower }}"
+                   data-vendor-status="{% if vendor.is_draft %}draft{% else %}active{% endif %}">
                     <div class="vendor-card-content">
+                        {% set attention_items = [] %}
+                        {% if not vendor.vendor_type_id %}{% set _ = attention_items.append('Missing vendor type') %}{% endif %}
                         <h5 class="vendor-card-title">
                             {{ vendor.name or 'Unnamed Vendor' }}
                         </h5>
@@ -48,15 +60,16 @@
                             <span>{{ vendor.abbreviation }}</span>
                         </div>
                         {% endif %}
+                        {% if attention_items %}
+                            <span class="vendor-status-badge vendor-status-attention" title="{{ attention_items | join(', ') }}">
+                                {{ attention_items | length }}
+                            </span>
+                        {% endif %}
                         <span class="vendor-status-badge {% if vendor.is_draft %}vendor-status-draft{% else %}vendor-status-active{% endif %}">
                             {% if vendor.is_draft %}DRAFT{% else %}ACTIVE{% endif %}
                         </span>
-                        <div class="vendor-card-actions">
-                            <a href="/vendor/{{ vendor.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
-                            <a href="/vendor/{{ vendor.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
-                        </div>
                     </div>
-                </div>
+                </a>
                 {% endfor %}
             </div>
         </div>
@@ -81,8 +94,29 @@
     <script src="/static/js/auth.js"></script>
     <script>
         (function() {
+            const SCROLL_KEY = 'vendor_list_scroll';
+            const contentEl = document.querySelector('.vendor-list-container');
+
+            // Prevent double scroll — disable outer scrollbar; use flex column so list fills remaining height
+            const mainContent = document.getElementById('content');
+            if (mainContent) {
+                mainContent.style.overflow = 'hidden';
+                mainContent.style.display = 'flex';
+                mainContent.style.flexDirection = 'column';
+            }
+
+            // Save scroll position when navigating away
+            document.querySelectorAll('.vendor-card').forEach(card => {
+                card.addEventListener('click', () => {
+                    if (contentEl) {
+                        sessionStorage.setItem(SCROLL_KEY, contentEl.scrollTop);
+                    }
+                });
+            });
+
             const filterInput = document.getElementById('vendor-filter');
             const sortSelect = document.getElementById('vendor-sort');
+            const statusFilter = document.getElementById('vendor-status-filter');
             const vendorGrid = document.getElementById('vendor-grid');
             const noResults = document.getElementById('vendor-no-results');
             let allVendorCards = Array.from(vendorGrid.querySelectorAll('.vendor-card'));
@@ -90,14 +124,18 @@
             function filterAndSort() {
                 const filterValue = filterInput.value.trim().toLowerCase();
                 const sortValue = sortSelect.value;
+                const statusValue = statusFilter.value;
 
-                // Filter - search both name and abbreviation
+                // Filter - search both name and abbreviation, plus status
                 let visibleCards = allVendorCards.filter(card => {
                     const vendorName = card.getAttribute('data-vendor-name') || '';
                     const vendorAbbreviation = card.getAttribute('data-vendor-abbreviation') || '';
-                    
-                    // Match if filter value is found in either name or abbreviation
-                    return vendorName.includes(filterValue) || vendorAbbreviation.includes(filterValue);
+                    const vendorStatus = card.getAttribute('data-vendor-status') || '';
+
+                    const matchesText = vendorName.includes(filterValue) || vendorAbbreviation.includes(filterValue);
+                    const matchesStatus = statusValue === 'all' || vendorStatus === statusValue;
+
+                    return matchesText && matchesStatus;
                 });
 
                 // Sort
@@ -140,9 +178,19 @@
             // Event listeners
             filterInput.addEventListener('input', filterAndSort);
             sortSelect.addEventListener('change', filterAndSort);
+            statusFilter.addEventListener('change', filterAndSort);
 
             // Initial sort
             filterAndSort();
+
+            // Restore scroll position after grid is rendered
+            const savedScroll = sessionStorage.getItem(SCROLL_KEY);
+            if (savedScroll && contentEl) {
+                requestAnimationFrame(() => {
+                    contentEl.scrollTop = parseInt(savedScroll, 10);
+                    sessionStorage.removeItem(SCROLL_KEY);
+                });
+            }
         })();
     </script>
 {% endblock %}

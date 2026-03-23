@@ -3,12 +3,12 @@
     display: none; /* hidden on mobile */
     background-color: var(--color-background);
     border-right: 1px solid #e5e7eb;
-    padding: 1rem;
+    padding: 0;
     box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
     position: sticky;
     top: 0;
     height: 100%;
-    overflow-y: auto;
+    overflow: hidden;
 }
 
 @media (min-width: 1024px) {
@@ -17,24 +17,29 @@
     }
 }
 
-/* Sidebar navigation styling */
-.sidebar-left nav {
-    position: sticky;
-    top: 1.5rem;
+/* Sidebar nav — flex column with fixed header and scrollable list */
+.sidebar-nav {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
 }
 
-/* Companies section */
+/* Companies section — height matches vendor-page-header and aside-panel-header
+   so the border-bottom forms a continuous line across all three columns */
 .sidebar-companies {
-    margin-bottom: 1.5rem;
-    padding-top: 0;
-    padding-bottom: 1rem;
-    border-bottom: 1px solid #e5e7eb;
+    display: flex;
+    align-items: center;
+    height: 3.5rem;
+    padding: 0 1rem;
+    border-bottom: 1px solid #e0e0e0;
+    flex-shrink: 0;
 }
 
 .sidebar-company-name {
-    padding: 0.5rem 0.75rem;
-    font-size: 0.875rem;
-    font-weight: 600;
+    padding: 0;
+    font-size: var(--font-size-action);
+    font-weight: var(--font-weight-regular);
     color: var(--color-text);
 }
 
@@ -52,6 +57,32 @@
     outline: none;
     border-color: #3b82f6;
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+/* Scrollable area below the company header */
+.sidebar-nav-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+.sidebar-nav-scroll::-webkit-scrollbar {
+    width: 6px;
+}
+
+.sidebar-nav-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.sidebar-nav-scroll::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+}
+
+.sidebar-nav-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
 }
 
 /* Sidebar navigation list */

@@ -1,0 +1,171 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Edit User Module - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/user_module.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="user-module-page-header">
+        <h1>Edit User Module</h1>
+        <a href="/user_module/list" class="btn btn-secondary">Back to List</a>
+    </div>
+
+    <div class="user-module-form-container">
+        <div class="user-module-form-card">
+            <div class="user-module-form-card-header">
+                <h5>User Module Details</h5>
+            </div>
+            <div class="user-module-form-card-body">
+                <form id="editUserModuleForm">
+                    <input type="hidden" id="public_id" name="public_id" value="{{ user_module.public_id }}">
+                    <input type="hidden" id="row_version" name="row_version" value="{{ user_module.row_version }}">
+
+                    <div class="user-module-form-group">
+                        <label for="user_id" class="user-module-form-label">
+                            User <span class="required">*</span>
+                        </label>
+                        <select class="user-module-form-control"
+                                id="user_id"
+                                name="user_id"
+                                required>
+                            <option value="">Select User</option>
+                            {% for user in users %}
+                            <option value="{{ user.id }}" {% if user.id == user_module.user_id %}selected{% endif %}>{{ user.firstname }} {% if user.lastname %}{{ user.lastname }}{% endif %}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="user-module-form-text">Required field.</div>
+                    </div>
+
+                    <div class="user-module-form-group">
+                        <label for="module_id" class="user-module-form-label">
+                            Module <span class="required">*</span>
+                        </label>
+                        <select class="user-module-form-control"
+                                id="module_id"
+                                name="module_id"
+                                required>
+                            <option value="">Select Module</option>
+                            {% for module in modules %}
+                            <option value="{{ module.id }}" {% if module.id == user_module.module_id %}selected{% endif %}>{{ module.name }}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="user-module-form-text">Required field.</div>
+                    </div>
+
+                    <div class="user-module-metadata" style="margin-top: 1rem; margin-bottom: 1rem;">
+                        <div class="user-module-metadata-item">
+                            <span>Created: {{ user_module.created_datetime or 'Unknown' }}</span>
+                        </div>
+                        <div class="user-module-metadata-item">
+                            <span>Modified: {{ user_module.modified_datetime or 'Unknown' }}</span>
+                        </div>
+                    </div>
+
+                    <div class="user-module-form-actions">
+                        <div class="user-module-form-actions-left">
+                            <button type="button" class="btn btn-danger" onclick="deleteUserModule()">Delete</button>
+                        </div>
+                        <div class="user-module-form-actions-right">
+                            <a href="/user_module/list" class="btn btn-secondary">Cancel</a>
+                            <button type="submit" class="btn btn-primary">Update User Module</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        document.getElementById('editUserModuleForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            const data = {
+                user_id: parseInt(formData.get('user_id')),
+                module_id: parseInt(formData.get('module_id')),
+                row_version: formData.get('row_version')
+            };
+
+            try {
+                const response = await fetch(`/api/v1/update/user_module/${formData.get('public_id')}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                if (response.ok) {
+                    window.location.href = '/user_module/list';
+                } else {
+                    const contentType = response.headers.get('content-type');
+                    if (contentType && contentType.includes('application/json')) {
+                        const error = await response.json();
+                        let message = 'Unknown error';
+                        if (error.detail) {
+                            message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                        } else if (error.message) {
+                            message = error.message;
+                        } else if (typeof error === 'string') {
+                            message = error;
+                        } else {
+                            message = JSON.stringify(error);
+                        }
+                        alert('Error updating user module: ' + message);
+                    } else {
+                        const errorText = await response.text();
+                        alert('Error updating user module: ' + errorText);
+                    }
+                }
+            } catch (error) {
+                alert('Error updating user module: ' + error.message);
+            }
+        });
+
+        async function deleteUserModule() {
+            if (confirm('Are you sure you want to delete this user module? This action cannot be undone.')) {
+                const formData = new FormData(document.getElementById('editUserModuleForm'));
+
+                try {
+                    const response = await fetch(`/api/v1/delete/user_module/${formData.get('public_id')}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ row_version: formData.get('row_version') })
+                    });
+
+                    if (response.ok) {
+                        window.location.href = '/user_module/list';
+                    } else {
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const error = await response.json();
+                            let message = 'Unknown error';
+                            if (error.detail) {
+                                message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
+                            } else if (error.message) {
+                                message = error.message;
+                            } else if (typeof error === 'string') {
+                                message = error;
+                            } else {
+                                message = JSON.stringify(error);
+                            }
+                            alert('Error deleting user module: ' + message);
+                        } else {
+                            const errorText = await response.text();
+                            alert('Error deleting user module: ' + errorText);
+                        }
+                    }
+                } catch (error) {
+                    alert('Error deleting user module: ' + error.message);
+                }
+            }
+        }
+    </script>
+{% endblock %}

@@ -63,7 +63,7 @@
                                            id="name"
                                            name="name"
                                            required
-                                           maxlength="50"
+                                           maxlength="450"
                                        autocomplete="off"
                                            value="{{ vendor.name or '' }}"
                                            placeholder="Enter vendor name">
@@ -71,13 +71,12 @@
 
                             <div class="vendor-form-group">
                                 <label for="abbreviation" class="vendor-form-label">
-                                    Abbreviation <span class="required">*</span>
+                                    Abbreviation
                                     </label>
                                     <input type="text"
                                        class="vendor-form-control"
                                            id="abbreviation"
                                            name="abbreviation"
-                                           required
                                            maxlength="255"
                                        autocomplete="off"
                                            value="{{ vendor.abbreviation or '' }}"
@@ -162,6 +161,8 @@
                                        id="taxpayer_id_number"
                                        name="taxpayer_id_number"
                                        maxlength="9"
+                                       pattern="[0-9]*"
+                                       inputmode="numeric"
                                        autocomplete="off"
                                        value="{{ taxpayer.taxpayer_id_number if taxpayer else '' }}"
                                        placeholder="Enter taxpayer ID number">
@@ -434,6 +435,7 @@
                     </div>
                     <div class="vendor-form-actions-right">
                         <a href="/vendor/list" class="btn btn-secondary">Cancel</a>
+                        <button type="button" class="btn btn-outline-primary" onclick="saveDraft()">Save Draft</button>
                         <button type="submit" class="btn btn-primary">Complete Vendor</button>
                     </div>
                 </div>
@@ -523,18 +525,6 @@
             });
         });
 
-        // Debounced backup save function
-        let backupSaveTimeouts = {};
-
-        function setupBackupSave(section, saveFunction) {
-            if (backupSaveTimeouts[section]) {
-                clearTimeout(backupSaveTimeouts[section]);
-            }
-            backupSaveTimeouts[section] = setTimeout(() => {
-                saveFunction();
-                delete backupSaveTimeouts[section];
-            }, 8000);
-        }
 
         // Get row version helper
         function getRowVersion() {
@@ -579,15 +569,15 @@
             const abbreviation = document.getElementById('abbreviation').value.trim();
             const vendorTypeId = document.getElementById('vendor_type_id').value;
             const vendorPublicId = document.getElementById('vendor_public_id').value;
-            
-            if (!name || !abbreviation || !vendorPublicId) return;
-            
+
+            if (!name || !vendorPublicId) return;
+
             updateSaveStatus('vendor-details', 'saving');
             
             const payload = {
                 name,
                 abbreviation,
-                vendor_type_public_id: vendorTypeId || null,
+                vendor_type_public_id: vendorTypeId,
                 row_version: getRowVersion()
             };
 
@@ -605,18 +595,18 @@
                     document.getElementById('row_version').value = vendor.row_version;
                     updateSaveStatus('vendor-details', 'saved');
                     clearVendorNameError();
-                    if (backupSaveTimeouts['vendor-details']) {
-                        clearTimeout(backupSaveTimeouts['vendor-details']);
-                        delete backupSaveTimeouts['vendor-details'];
-                    }
                 } else {
                     updateSaveStatus('vendor-details', 'error');
                     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
                     
-                    // Handle duplicate name error (409 Conflict)
+                    // Handle duplicate name or concurrency conflict (409)
                     if (response.status === 409) {
-                        showVendorNameError(error.detail || 'A vendor with this name already exists.');
+                        if (error.detail && error.detail.toLowerCase().includes('concurrency')) {
+                            showVendorNameError('This record was modified by another user. Please refresh the page.');
                         } else {
+                            showVendorNameError(error.detail || 'A vendor with this name already exists.');
+                        }
+                    } else {
                         showVendorNameError(error.detail || 'Error saving vendor. Please try again.');
                     }
                     console.error('Error saving vendor:', error);
@@ -724,10 +714,6 @@
                         const vendor = await vendorResponse.json();
                         document.getElementById('row_version').value = vendor.row_version;
                         updateSaveStatus('taxpayer', 'saved');
-                        if (backupSaveTimeouts['taxpayer']) {
-                            clearTimeout(backupSaveTimeouts['taxpayer']);
-                            delete backupSaveTimeouts['taxpayer'];
-                        }
                     } else {
                         updateSaveStatus('taxpayer', 'error');
                         const error = await vendorResponse.json().catch(() => ({ detail: 'Unknown error' }));
@@ -880,10 +866,6 @@
                     }
                     
                     updateSaveStatus('addresses', 'saved');
-                    if (backupSaveTimeouts['addresses']) {
-                        clearTimeout(backupSaveTimeouts['addresses']);
-                        delete backupSaveTimeouts['addresses'];
-                    }
                 }
             } catch (error) {
                 updateSaveStatus('addresses', 'error');
@@ -935,45 +917,38 @@
             }
         }
 
-        // Event listeners for progressive saves
-        // Vendor fields
-        document.getElementById('name').addEventListener('blur', saveVendorDetails);
-        document.getElementById('name').addEventListener('input', () => {
-            clearVendorNameError();
-            setupBackupSave('vendor-details', saveVendorDetails);
-        });
-        document.getElementById('abbreviation').addEventListener('blur', saveVendorDetails);
-        document.getElementById('abbreviation').addEventListener('input', () => setupBackupSave('vendor-details', saveVendorDetails));
-        document.getElementById('vendor_type_id').addEventListener('change', () => {
-            saveVendorDetails();
-            setupBackupSave('vendor-details', saveVendorDetails);
-        });
+        // Clear vendor name error on input
+        document.getElementById('name').addEventListener('input', clearVendorNameError);
 
-        // Taxpayer fields
-        document.getElementById('entity_name').addEventListener('blur', saveTaxpayerInfo);
-        document.getElementById('entity_name').addEventListener('input', () => setupBackupSave('taxpayer', saveTaxpayerInfo));
-        document.getElementById('business_name').addEventListener('blur', saveTaxpayerInfo);
-        document.getElementById('business_name').addEventListener('input', () => setupBackupSave('taxpayer', saveTaxpayerInfo));
-        document.getElementById('classification').addEventListener('change', () => {
-            saveTaxpayerInfo();
-            setupBackupSave('taxpayer', saveTaxpayerInfo);
-        });
-        document.getElementById('taxpayer_id_number').addEventListener('blur', saveTaxpayerInfo);
-        document.getElementById('taxpayer_id_number').addEventListener('input', () => setupBackupSave('taxpayer', saveTaxpayerInfo));
+        // Save as draft
+        async function saveDraft() {
+            await saveAllSections();
+            const vendorPublicId = document.getElementById('vendor_public_id').value;
+            if (!vendorPublicId) return;
 
-        // Address fields
-        addressTypes.forEach(addressType => {
-            const fields = ['street_one', 'street_two', 'city', 'state', 'zip'];
-            fields.forEach(fieldName => {
-                const input = document.getElementById(`${fieldName}_${addressType.public_id}`);
-                if (input) {
-                    input.addEventListener('blur', () => saveAddress(addressType.public_id));
-                    input.addEventListener('input', () => setupBackupSave('addresses', () => saveAddress(addressType.public_id)));
+            try {
+                const response = await fetch(`/api/v1/update/vendor/${vendorPublicId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        row_version: getRowVersion(),
+                        is_draft: true
+                    })
+                });
+                if (response.ok) {
+                    const vendor = await response.json();
+                    document.getElementById('row_version').value = vendor.row_version;
+                    window.location.href = '/vendor/' + vendorPublicId;
+                } else {
+                    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                    alert('Error saving draft: ' + (error.detail || 'Unknown error'));
                 }
-            });
-        });
+            } catch (error) {
+                alert('Error saving draft: ' + error.message);
+            }
+        }
 
-        // Save all sections before navigation
+        // Save all sections
         async function saveAllSections() {
             await saveVendorDetails();
             await saveTaxpayerInfo();
@@ -982,16 +957,11 @@
             }
         }
 
-        // Navigation protection
-        window.addEventListener('beforeunload', (e) => {
-            saveAllSections();
-        });
-
         // Final form submission
         document.getElementById('editVendorForm').addEventListener('submit', async function(e) {
             e.preventDefault();
 
-            // Save all sections first
+            // Save all sections before completing
             await saveAllSections();
 
             const vendorPublicId = document.getElementById('vendor_public_id').value;
@@ -1004,8 +974,8 @@
             const name = document.getElementById('name').value.trim();
             const abbreviation = document.getElementById('abbreviation').value.trim();
             
-            if (!name || !abbreviation) {
-                alert('Name and Abbreviation are required.');
+            if (!name) {
+                alert('Name is required.');
                 switchSection('vendor-details');
                 return;
             }
@@ -1049,7 +1019,7 @@
 
         // Delete vendor function
         async function deleteVendor() {
-            if (confirm('Are you sure you want to delete this vendor? This action cannot be undone.')) {
+            if (confirm('Are you sure you want to delete this vendor? The vendor will be archived and no longer appear in lists.')) {
                 const payload = {
                     row_version: getRowVersion()
                 };

@@ -393,6 +393,104 @@ def get_vendor_bills(vendor_id: int, limit: int = DEFAULT_BILL_LIMIT) -> dict:
 
 
 @tool
+def get_vendor_expenses(vendor_id: int, limit: int = DEFAULT_EXPENSE_LIMIT) -> dict:
+    """
+    Get historical expenses for a vendor with line item coding details.
+
+    Use this tool to understand how the vendor's expenses have been coded.
+    Some vendors only have expenses (not bills), so this complements get_vendor_bills.
+    The coding_summary shows how line items have been categorized,
+    which can help determine the vendor type.
+
+    Args:
+        vendor_id: The database ID of the vendor
+        limit: Maximum number of expenses to return (default 20)
+
+    Returns:
+        Dict with 'expenses' list, 'expense_count', and 'coding_summary'
+    """
+    try:
+        from entities.expense.business.service import ExpenseService
+        from entities.expense_line_item.business.service import ExpenseLineItemService
+
+        expense_service = ExpenseService()
+        line_item_service = ExpenseLineItemService()
+
+        expenses_result = expense_service.read_paginated(
+            vendor_id=vendor_id,
+            page_number=1,
+            page_size=limit,
+            sort_by="ExpenseDate",
+            sort_direction="DESC",
+        )
+        if isinstance(expenses_result, list):
+            expenses = expenses_result
+            total_count = len(expenses)
+        else:
+            expenses = expenses_result.get("items", [])
+            total_count = expenses_result.get("total_count", 0)
+
+        coding_counts = {}
+
+        result_expenses = []
+        for expense in expenses:
+            line_items = line_item_service.read_by_expense_id(expense_id=expense.id)
+
+            line_item_data = []
+            for li in line_items:
+                account_name = None
+                account_code = None
+                if li.sub_cost_code_id:
+                    try:
+                        from entities.sub_cost_code.business.service import SubCostCodeService
+                        scc_service = SubCostCodeService()
+                        scc = scc_service.read_by_id(id=li.sub_cost_code_id)
+                        if scc:
+                            account_code = scc.code
+                            account_name = scc.name
+                            coding_counts[account_name] = coding_counts.get(account_name, 0) + 1
+                    except Exception:
+                        pass
+
+                project_name = None
+                if li.project_id:
+                    try:
+                        from entities.project.business.service import ProjectService
+                        project_service = ProjectService()
+                        project = project_service.read_by_id(id=li.project_id)
+                        if project:
+                            project_name = project.name
+                    except Exception:
+                        pass
+
+                line_item_data.append({
+                    "description": li.description,
+                    "amount": float(li.amount) if li.amount else None,
+                    "account_code": account_code,
+                    "account_name": account_name,
+                    "project_name": project_name,
+                })
+
+            result_expenses.append({
+                "public_id": expense.public_id,
+                "reference_number": expense.reference_number,
+                "total_amount": float(expense.total_amount) if expense.total_amount else None,
+                "expense_date": expense.expense_date,
+                "line_items": line_item_data,
+            })
+
+        return {
+            "expenses": result_expenses,
+            "expense_count": total_count,
+            "coding_summary": coding_counts,
+        }
+
+    except Exception as e:
+        logger.error(f"Error in get_vendor_expenses: {e}")
+        return {"error": str(e), "expenses": [], "expense_count": 0, "coding_summary": {}}
+
+
+@tool
 def get_vendor_documents(vendor_id: int) -> dict:
     """
     Get system attachments for a vendor (stored in Azure Blob Storage).
@@ -783,6 +881,7 @@ VENDOR_AGENT_TOOLS = [
     get_vendor_pending_proposals,
     get_vendor_rejection_history,
     get_vendor_bills,
+    get_vendor_expenses,
     get_vendor_documents,
     get_vendor_sharepoint_folder,
     # Reference

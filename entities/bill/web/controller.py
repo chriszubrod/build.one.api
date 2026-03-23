@@ -19,6 +19,7 @@ from entities.project.business.service import ProjectService
 from entities.payment_term.business.service import PaymentTermService
 from entities.auth.business.service import get_current_user_web
 from entities.inbox.persistence.repo import InboxRecordRepository
+from entities.bill.persistence.repo import BillRepository
 
 logger = logging.getLogger(__name__)
 
@@ -149,9 +150,6 @@ async def list_bills(
     # Get bill folder summary for SharePoint folder processing section
     bill_folder_summary = _get_bill_folder_summary(company_id=1)
 
-    # Preserve current list URL for "Back to List" when viewing a bill
-    return_to = request.url.path + ("?" + request.url.query if request.url.query else "")
-
     return templates.TemplateResponse(
         "bill/list.html",
         {
@@ -162,7 +160,6 @@ async def list_bills(
             "bill_folder_summary": bill_folder_summary,
             "current_user": current_user,
             "current_path": request.url.path,
-            "return_to": return_to,
             "page": page,
             "page_size": page_size,
             "total_count": total_count,
@@ -435,7 +432,6 @@ async def create_bill(request: Request, current_user: dict = Depends(get_current
 async def view_bill(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
     """
     View a bill.
-    Accepts return_to query param (e.g. from list) to restore list view on "Back to List".
     """
     bill = BillService().read_by_public_id(public_id=public_id)
     vendors = VendorService().read_all()
@@ -711,14 +707,16 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
     except Exception as exc:
         logger.debug("Inbox record lookup for bill %s failed (non-fatal): %s", public_id, exc)
 
-    _ALLOWED_RETURN_PREFIXES_VIEW = ("/bill/list", "/invoice/")
-    return_to = request.query_params.get("return_to") or ""
-    if return_to and not any(return_to.startswith(p) for p in _ALLOWED_RETURN_PREFIXES_VIEW):
-        return_to = ""
-
     # Display dates as MM-DD-YYYY (and normalize 0002 → 2002)
     for key in ("bill_date", "due_date"):
         bill_dict[key] = _date_to_mm_dd_yyyy(bill_dict.get(key))
+
+    # Fetch completion result if available
+    completion_result = None
+    try:
+        completion_result = BillRepository().get_completion_result(public_id)
+    except Exception as exc:
+        logger.debug("Completion result lookup for bill %s failed (non-fatal): %s", public_id, exc)
 
     return templates.TemplateResponse(
         "bill/view.html",
@@ -729,9 +727,9 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
             "workflow_conversation": workflow_conversation,
             "workflow_data": workflow_data,
             "source_email": source_email,
+            "completion_result": completion_result,
             "current_user": current_user,
             "current_path": request.url.path,
-            "return_to": return_to,
         },
     )
 
@@ -789,7 +787,8 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
         for line_item in line_items:
             line_item_dict = line_item.to_dict()
             
-            # Convert Decimal values to floats for JSON serialization
+            # Convert Decimal values to float for template rendering
+            # (display only — not stored back; Jinja2 needs numeric types for arithmetic like markup * 100)
             for key, value in line_item_dict.items():
                 if isinstance(value, Decimal):
                     line_item_dict[key] = float(value)
@@ -813,7 +812,7 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
     
     bill_dict = bill.to_dict()
     
-    # Convert Decimal values to floats for JSON serialization
+    # Convert Decimal values to float for template rendering
     for key, value in bill_dict.items():
         if isinstance(value, Decimal):
             bill_dict[key] = float(value)
@@ -845,11 +844,6 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
         if workflow_data:
             workflow_conversation = workflow_data.get("conversation", [])
 
-    _ALLOWED_RETURN_PREFIXES = ("/bill/list", "/invoice/")
-    return_to = request.query_params.get("return_to") or ""
-    if return_to and not any(return_to.startswith(p) for p in _ALLOWED_RETURN_PREFIXES):
-        return_to = ""
-
     # Display dates as MM-DD-YYYY for key-in (and normalize 0002 → 2002)
     for key in ("bill_date", "due_date"):
         bill_dict[key] = _date_to_mm_dd_yyyy(bill_dict.get(key))
@@ -869,6 +863,5 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
             "source_email": source_email,
             "current_user": current_user,
             "current_path": request.url.path,
-            "return_to": return_to,
         },
     )

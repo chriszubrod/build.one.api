@@ -215,11 +215,18 @@ class QboPurchaseService:
     def _upsert_purchase_lines(self, qbo_purchase_id: int, lines: list) -> None:
         """
         Upsert purchase line items.
-        
+
+        After inserting/updating all lines present in the QBO API response,
+        any locally-stored QboPurchaseLine whose qbo_line_id is NOT in the
+        current response is stale (line was removed in QBO). Stale lines are
+        deleted along with their PurchaseLineExpenseLineItem mappings.
+
         Args:
             qbo_purchase_id: Database ID of the QboPurchase
             lines: List of QboPurchaseLine from external API
         """
+        current_qbo_line_ids = {line.id for line in lines if line.id}
+
         for line in lines:
             # Extract detail-specific fields based on detail type
             item_ref_value = None
@@ -314,6 +321,30 @@ class QboPurchaseService:
                     unit_price=unit_price,
                     markup_percent=markup_percent,
                 )
+
+        # Delete stale lines — any locally-stored QboPurchaseLine whose qbo_line_id is
+        # no longer present in the QBO API response means QBO removed that line.
+        # Delete the PurchaseLineExpenseLineItem mapping first (FK constraint), then the line.
+        from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import PurchaseLineExpenseLineItemRepository
+        mapping_repo = PurchaseLineExpenseLineItemRepository()
+        stored_lines = self.line_repo.read_by_qbo_purchase_id(qbo_purchase_id)
+        for stored_line in stored_lines:
+            if stored_line.qbo_line_id not in current_qbo_line_ids:
+                logger.info(
+                    f"Deleting stale QboPurchaseLine id={stored_line.id} "
+                    f"qbo_line_id={stored_line.qbo_line_id} (no longer in QBO response)"
+                )
+                try:
+                    stale_mapping = mapping_repo.read_by_qbo_purchase_line_id(stored_line.id)
+                    if stale_mapping:
+                        mapping_repo.delete_by_id(stale_mapping.id)
+                        logger.info(f"Deleted stale PurchaseLineExpenseLineItem mapping id={stale_mapping.id}")
+                except Exception as e:
+                    logger.warning(f"Could not delete stale mapping for QboPurchaseLine {stored_line.id}: {e}")
+                try:
+                    self.line_repo.delete_by_id(stored_line.id)
+                except Exception as e:
+                    logger.warning(f"Could not delete stale QboPurchaseLine {stored_line.id}: {e}")
 
     def _sync_to_expenses(self, purchases: List[QboPurchase]) -> None:
         """

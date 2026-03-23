@@ -9,12 +9,53 @@ CREATE TABLE [dbo].[Vendor]
     [RowVersion] ROWVERSION NOT NULL,
     [CreatedDatetime] DATETIME2(3) NOT NULL,
     [ModifiedDatetime] DATETIME2(3) NULL,
-    [Name] NVARCHAR(MAX) NOT NULL,
+    [Name] NVARCHAR(450) NOT NULL,
     [Abbreviation] NVARCHAR(255) NULL,
     [VendorTypeId] BIGINT NULL,
     [TaxpayerId] BIGINT NULL,
-    [IsDraft] BIT NOT NULL DEFAULT 1
+    [IsDraft] BIT NOT NULL DEFAULT 1,
+    [IsDeleted] BIT NOT NULL DEFAULT 0
 );
+END
+GO
+
+-- Migrate Name column from NVARCHAR(MAX) to NVARCHAR(450) for indexability
+IF EXISTS (
+    SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'Vendor' AND TABLE_SCHEMA = 'dbo' AND COLUMN_NAME = 'Name' AND CHARACTER_MAXIMUM_LENGTH = -1
+)
+BEGIN
+    ALTER TABLE [dbo].[Vendor] ALTER COLUMN [Name] NVARCHAR(450) NOT NULL;
+END
+GO
+
+-- Add IsDeleted column if it does not exist (migration for existing tables)
+IF COL_LENGTH('dbo.Vendor', 'IsDeleted') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Vendor] ADD [IsDeleted] BIT NOT NULL DEFAULT 0;
+END
+GO
+
+-- FK constraint: VendorTypeId -> VendorType.Id
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Vendor_VendorType')
+BEGIN
+    ALTER TABLE [dbo].[Vendor]
+    ADD CONSTRAINT [FK_Vendor_VendorType] FOREIGN KEY ([VendorTypeId]) REFERENCES [dbo].[VendorType]([Id]);
+END
+GO
+
+-- FK constraint: TaxpayerId -> Taxpayer.Id
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Vendor_Taxpayer')
+BEGIN
+    ALTER TABLE [dbo].[Vendor]
+    ADD CONSTRAINT [FK_Vendor_Taxpayer] FOREIGN KEY ([TaxpayerId]) REFERENCES [dbo].[Taxpayer]([Id]);
+END
+GO
+
+-- Unique index on Name for active (non-deleted) vendors
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_Vendor_Name_Active' AND object_id = OBJECT_ID('dbo.Vendor'))
+BEGIN
+    CREATE UNIQUE INDEX [UQ_Vendor_Name_Active] ON [dbo].[Vendor] ([Name]) WHERE [IsDeleted] = 0;
 END
 GO
 
@@ -23,7 +64,7 @@ GO
 
 CREATE OR ALTER PROCEDURE CreateVendor
 (
-    @Name NVARCHAR(50),
+    @Name NVARCHAR(450),
     @Abbreviation NVARCHAR(255),
     @VendorTypeId BIGINT NULL,
     @TaxpayerId BIGINT NULL,
@@ -35,7 +76,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Vendor] ([CreatedDatetime], [ModifiedDatetime], [Name], [Abbreviation], [VendorTypeId], [TaxpayerId], [IsDraft])
+    INSERT INTO dbo.[Vendor] ([CreatedDatetime], [ModifiedDatetime], [Name], [Abbreviation], [VendorTypeId], [TaxpayerId], [IsDraft], [IsDeleted])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -46,8 +87,9 @@ BEGIN
         INSERTED.[Abbreviation],
         INSERTED.[VendorTypeId],
         INSERTED.[TaxpayerId],
-        INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @Name, @Abbreviation, @VendorTypeId, @TaxpayerId, @IsDraft);
+        INSERTED.[IsDraft],
+        INSERTED.[IsDeleted]
+    VALUES (@Now, @Now, @Name, @Abbreviation, @VendorTypeId, @TaxpayerId, @IsDraft, 0);
 
     COMMIT TRANSACTION;
 END;
@@ -59,8 +101,6 @@ GO
 CREATE OR ALTER PROCEDURE ReadVendors
 AS
 BEGIN
-    BEGIN TRANSACTION;
-
     SELECT
         [Id],
         [PublicId],
@@ -71,11 +111,11 @@ BEGIN
         [Abbreviation],
         [VendorTypeId],
         [TaxpayerId],
-        [IsDraft]
+        [IsDraft],
+        [IsDeleted]
     FROM dbo.[Vendor]
+    WHERE [IsDeleted] = 0
     ORDER BY [Name] ASC;
-
-    COMMIT TRANSACTION;
 END;
 
 
@@ -88,8 +128,6 @@ CREATE OR ALTER PROCEDURE ReadVendorById
 )
 AS
 BEGIN
-    BEGIN TRANSACTION;
-
     SELECT
         [Id],
         [PublicId],
@@ -100,11 +138,10 @@ BEGIN
         [Abbreviation],
         [VendorTypeId],
         [TaxpayerId],
-        [IsDraft]
+        [IsDraft],
+        [IsDeleted]
     FROM dbo.[Vendor]
-    WHERE [Id] = @Id;
-
-    COMMIT TRANSACTION;
+    WHERE [Id] = @Id AND [IsDeleted] = 0;
 END;
 
 
@@ -117,8 +154,6 @@ CREATE OR ALTER PROCEDURE ReadVendorByPublicId
 )
 AS
 BEGIN
-    BEGIN TRANSACTION;
-
     SELECT
         [Id],
         [PublicId],
@@ -129,11 +164,10 @@ BEGIN
         [Abbreviation],
         [VendorTypeId],
         [TaxpayerId],
-        [IsDraft]
+        [IsDraft],
+        [IsDeleted]
     FROM dbo.[Vendor]
-    WHERE [PublicId] = @PublicId;
-
-    COMMIT TRANSACTION;
+    WHERE [PublicId] = @PublicId AND [IsDeleted] = 0;
 END;
 
 
@@ -142,13 +176,11 @@ GO
 
 CREATE OR ALTER PROCEDURE ReadVendorByName
 (
-    @Name NVARCHAR(50)
+    @Name NVARCHAR(450)
 )
 AS
 BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
+    SELECT TOP 1
         [Id],
         [PublicId],
         [RowVersion],
@@ -158,11 +190,10 @@ BEGIN
         [Abbreviation],
         [VendorTypeId],
         [TaxpayerId],
-        [IsDraft]
+        [IsDraft],
+        [IsDeleted]
     FROM dbo.[Vendor]
-    WHERE [Name] = @Name;
-
-    COMMIT TRANSACTION;
+    WHERE [Name] = @Name AND [IsDeleted] = 0;
 END;
 
 
@@ -173,7 +204,7 @@ CREATE OR ALTER PROCEDURE UpdateVendorById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
-    @Name NVARCHAR(50),
+    @Name NVARCHAR(450),
     @Abbreviation NVARCHAR(255),
     @VendorTypeId BIGINT NULL,
     @TaxpayerId BIGINT NULL,
@@ -182,6 +213,22 @@ CREATE OR ALTER PROCEDURE UpdateVendorById
 AS
 BEGIN
     BEGIN TRANSACTION;
+
+    -- Verify the record exists and is not deleted
+    IF NOT EXISTS (SELECT 1 FROM dbo.[Vendor] WHERE [Id] = @Id AND [IsDeleted] = 0)
+    BEGIN
+        ROLLBACK TRANSACTION;
+        RAISERROR('Vendor not found.', 16, 1);
+        RETURN;
+    END
+
+    -- Verify RowVersion matches (optimistic concurrency check)
+    IF NOT EXISTS (SELECT 1 FROM dbo.[Vendor] WHERE [Id] = @Id AND [RowVersion] = @RowVersion AND [IsDeleted] = 0)
+    BEGIN
+        ROLLBACK TRANSACTION;
+        RAISERROR('Concurrency conflict: the vendor record has been modified by another user. Please refresh and try again.', 16, 1);
+        RETURN;
+    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
@@ -203,7 +250,8 @@ BEGIN
         INSERTED.[Abbreviation],
         INSERTED.[VendorTypeId],
         INSERTED.[TaxpayerId],
-        INSERTED.[IsDraft]
+        INSERTED.[IsDraft],
+        INSERTED.[IsDeleted]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -213,28 +261,40 @@ END;
 
 GO
 
-CREATE OR ALTER PROCEDURE DeleteVendorById
+CREATE OR ALTER PROCEDURE SoftDeleteVendorByPublicId
 (
-    @Id BIGINT
+    @PublicId UNIQUEIDENTIFIER
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
 
-    DELETE FROM dbo.[Vendor]
+    IF NOT EXISTS (SELECT 1 FROM dbo.[Vendor] WHERE [PublicId] = @PublicId AND [IsDeleted] = 0)
+    BEGIN
+        ROLLBACK TRANSACTION;
+        RAISERROR('Vendor not found.', 16, 1);
+        RETURN;
+    END
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    UPDATE dbo.[Vendor]
+    SET
+        [ModifiedDatetime] = @Now,
+        [IsDeleted] = 1
     OUTPUT
-        DELETED.[Id],
-        DELETED.[PublicId],
-        DELETED.[RowVersion],
-        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        DELETED.[Name],
-        DELETED.[Abbreviation],
-        DELETED.[VendorTypeId],
-        DELETED.[TaxpayerId],
-        DELETED.[IsDraft]
-    WHERE [Id] = @Id;
+        INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[RowVersion],
+        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        INSERTED.[Name],
+        INSERTED.[Abbreviation],
+        INSERTED.[VendorTypeId],
+        INSERTED.[TaxpayerId],
+        INSERTED.[IsDraft],
+        INSERTED.[IsDeleted]
+    WHERE [PublicId] = @PublicId AND [IsDeleted] = 0;
 
     COMMIT TRANSACTION;
 END;
-

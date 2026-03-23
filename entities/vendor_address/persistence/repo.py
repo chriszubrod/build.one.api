@@ -130,9 +130,9 @@ class VendorAddressRepository:
             logger.error(f"Error during read vendor address by public ID: {error}")
             raise map_database_error(error)
 
-    def read_by_vendor_id(self, vendor_id: str) -> Optional[VendorAddress]:
+    def read_by_vendor_id(self, vendor_id: int) -> Optional[VendorAddress]:
         """
-        Read a vendor address by vendor ID.
+        Read a single vendor address by vendor ID (first match).
         """
         try:
             with get_connection() as conn:
@@ -146,6 +146,24 @@ class VendorAddressRepository:
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during read vendor address by vendor ID: {error}")
+            raise map_database_error(error)
+
+    def read_all_by_vendor_id(self, vendor_id: int) -> list[VendorAddress]:
+        """
+        Read all vendor addresses for a given vendor ID.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadVendorAddressByVendorId",
+                    params={"VendorId": vendor_id},
+                )
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(f"Error during read all vendor addresses by vendor ID: {error}")
             raise map_database_error(error)
     
     def read_by_address_id(self, address_id: str) -> Optional[VendorAddress]:

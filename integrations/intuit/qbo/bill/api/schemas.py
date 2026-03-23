@@ -16,8 +16,8 @@ class QboBillSync(BaseModel):
         description="Optional ISO format datetime. If provided, only sync bills updated after this time.",
     )
     sync_to_modules: bool = Field(
-        default=False,
-        description="If True, also sync to Bill/BillLineItem modules.",
+        default=True,
+        description="If True, also sync to Bill/BillLineItem modules. Defaults to True — a pull sync should always update local application data.",
     )
 
 

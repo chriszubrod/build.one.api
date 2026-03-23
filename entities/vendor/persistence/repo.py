@@ -45,6 +45,7 @@ class VendorRepository:
                 taxpayer_id=row.TaxpayerId,
                 vendor_type_id=row.VendorTypeId,
                 is_draft=row.IsDraft,
+                is_deleted=row.IsDeleted,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during vendor mapping: {error}")
@@ -192,20 +193,20 @@ class VendorRepository:
             logger.error(f"Error during update vendor by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: int) -> Optional[Vendor]:
+    def soft_delete_by_public_id(self, public_id: str) -> Optional[Vendor]:
         """
-        Delete a vendor by ID.
+        Soft delete a vendor by public ID (sets IsDeleted = 1).
         """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="DeleteVendorById",
-                    params={"Id": id},
+                    name="SoftDeleteVendorByPublicId",
+                    params={"PublicId": public_id},
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
         except Exception as error:
-            logger.error(f"Error during delete vendor by ID: {error}")
+            logger.error(f"Error during soft delete vendor by public ID: {error}")
             raise map_database_error(error)

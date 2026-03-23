@@ -92,16 +92,7 @@ class DriveItemProjectConnector:
             }
         
         ms_driveitem_id = driveitem.get("id") if isinstance(driveitem, dict) else driveitem.id
-        
-        # Check if this driveitem is already linked to another project
-        existing_driveitem_mapping = self.mapping_repo.read_by_ms_driveitem_id(ms_driveitem_id)
-        if existing_driveitem_mapping:
-            return {
-                "message": f"DriveItem is already linked to project ID {existing_driveitem_mapping.project_id}",
-                "status_code": 400,
-                "mapping": existing_driveitem_mapping.to_dict()
-            }
-        
+
         # Step 2: Create the DriveItemProject mapping
         try:
             mapping = self.mapping_repo.create(

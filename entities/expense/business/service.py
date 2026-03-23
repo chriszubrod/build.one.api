@@ -520,11 +520,8 @@ class ExpenseService:
             file_upload_results[project_id] = upload_result
             if upload_result.get("errors"):
                 all_errors.extend(upload_result["errors"])
-            excel_result = self.sync_to_excel_workbook(
-                expense=expense,
-                line_items=project_line_items,
-                project_id=project_id,
-            )
+            # Excel workbook sync disabled
+            excel_result = {"success": True, "message": "Disabled", "synced_count": 0, "errors": []}
             excel_sync_results[project_id] = excel_result
             if excel_result.get("errors"):
                 all_errors.extend(excel_result["errors"])
@@ -586,7 +583,7 @@ class ExpenseService:
                         ref_number = expense.reference_number or ""
                         description = line_item.description or ""
                         price = float(line_item.price) if line_item.price is not None else 0.0
-                        row = ["", cost_code_number, sub_cost_code_number, "", "", "", "", "", expense_date, vendor_name, ref_number, description, "Ck", price] + [""] * 11 + [str(line_item.public_id) if line_item.public_id else ""]  # Z: ExpenseLineItem public_id (reconciliation key)
+                        row = ["", cost_code_number, sub_cost_code_number, "", "", "", "", "", expense_date, vendor_name, ref_number, description, "Expense", price] + [""] * 11 + [str(line_item.public_id) if line_item.public_id else ""]  # Z: ExpenseLineItem public_id (reconciliation key)
                         group_rows.append(row)
                     except Exception as e:
                         errors.append({"line_item_id": line_item.id, "error": str(e)})

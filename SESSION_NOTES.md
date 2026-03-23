@@ -1,5 +1,128 @@
 # Session Notes
 
+## Session: Invoice SharePoint Upload, Manual Attachment UI & Module Folder Picker (March 17, 2026)
+
+### What Was Done
+
+#### 1. Manual InvoiceLineItem Attachment Upload UI (`templates/invoice/edit.html`)
+- Added a hidden `<input type="file" id="manual-attachment-input">` outside the table (avoids nesting issues).
+- Jinja2: for Manual rows with no attachment, renders a paperclip `📎` as an upload trigger link instead of `—`.
+- `buildRowHTML` JS: same logic — Manual rows get the upload trigger link.
+- `triggerManualAttachmentUpload(lineItemPublicId, event)`: stores the pending public ID, resets the file input, and calls `.click()`.
+- File input `change` listener:
+  1. `POST /api/v1/upload/attachment` (FormData, `category=invoice_line_item`) → creates Attachment record + Azure blob.
+  2. `POST /api/v1/create/invoice-line-item-attachment` (JSON) → links Attachment to InvoiceLineItem.
+  3. Updates row's `data-attachment-id`, swaps `📎` → `📄` link to the attachment.
+
+#### 2. Complete Invoice SharePoint Upload (`entities/invoice/business/service.py`)
+- Added SharePoint lazy properties: `_driveitem_service`, `_drive_repo`, `_project_module_connector`.
+- Added `_upload_to_sharepoint(invoice, line_items)` method:
+  1. Resolves "Invoices" module folder via `DriveItemProjectModuleConnector.get_folder_for_module`.
+  2. Batch-fetches attachment metadata for all source types (Bill, Expense, BillCredit, Manual) in one DB connection using raw SQL joins.
+  3. Uploads each unique attachment with filename `{InvoiceNumber} - {Vendor} - {ParentNumber} - {Description} - {SccNumber} - ${Price} - {Date}`.
+  4. Uploads the PDF packet (if exists, `category="invoice_packet"`) as `{InvoiceNumber} - Packet.pdf`.
+- `complete_invoice()` now calls `_upload_to_sharepoint()` after `_mark_source_as_billed`, before QBO sync; result included in response dict.
+
+#### 3. Invoices Module Seed (`entities/module/sql/seed.InvoicesModule.sql`)
+- New idempotent seed script: `IF NOT EXISTS ... INSERT INTO dbo.[Module] ... ('Invoices', '/invoice/list')`.
+- Executed successfully via `python scripts/run_sql.py entities/module/sql/seed.InvoicesModule.sql`.
+
+#### 4. Project View Folder Picker for Bills, Expenses, and Invoices (`templates/project/view.html`)
+- Updated module folder loop condition from `{% if module.name == 'Bills' %}` to `{% if module.name in ['Bills', 'Expenses', 'Invoices'] %}`.
+- Fixed `linkModuleFolder` JS to read FastAPI's `{"detail": "..."}` error format: `data.detail || data.message || 'Unknown error'` (FastAPI HTTPException serializes to `detail`, not `message`).
+
+#### 5. Allow Same SharePoint Folder for Multiple Modules
+- **Problem**: Needed to link the same SharePoint folder to Bills, Expenses, and Invoices modules simultaneously.
+- **Fix 1** (`integrations/ms/sharepoint/driveitem/connector/project_module/business/service.py`): Removed Python-level check that prevented a driveitem from being linked to more than one project+module combination.
+- **Fix 2** (`scripts/drop_UQ_DriveItemProjectModule_MsDriveItemId.sql`): New migration script to drop `UQ_DriveItemProjectModule_MsDriveItemId` unique constraint from `ms.DriveItemProjectModule`. Executed successfully.
+- **Fix 3** (`integrations/ms/sharepoint/driveitem/connector/project_module/sql/ms.driveitem_project_module.sql`): Removed the `UNIQUE ([MsDriveItemId])` constraint from the table DDL.
+
+### Files Modified
+- `templates/invoice/edit.html` — manual attachment upload UI (file input, trigger function, change listener)
+- `entities/invoice/business/service.py` — SharePoint lazy properties, `_upload_to_sharepoint()`, `complete_invoice()` integration
+- `entities/module/sql/seed.InvoicesModule.sql` — new seed script (Invoices module)
+- `templates/project/view.html` — module name filter for Bills/Expenses/Invoices, JS error reads `data.detail`
+- `integrations/ms/sharepoint/driveitem/connector/project_module/business/service.py` — removed duplicate driveitem check
+- `integrations/ms/sharepoint/driveitem/connector/project_module/sql/ms.driveitem_project_module.sql` — removed `UQ_DriveItemProjectModule_MsDriveItemId`
+- `scripts/drop_UQ_DriveItemProjectModule_MsDriveItemId.sql` — new migration script (executed)
+
+---
+
+## Session: Budget Tracker Reconciliation — First Principles (March 18–19, 2026)
+
+### Project Reconciliation Health Checks (per project)
+
+These checks are run manually or via script for a given project to verify DB integrity and QBO sync state.
+
+#### Step 1 — Orphaned BillLineItems
+**Question**: Does every BillLineItem have a parent Bill?
+**Query**: `SELECT bli.* FROM dbo.BillLineItem bli LEFT JOIN dbo.Bill b ON b.Id = bli.BillId WHERE b.Id IS NULL`
+**MR2-MAIN (project 93) result**: ✅ 0 orphaned BillLineItems
+
+#### Step 2 — QBO Mapping Coverage (DB → QBO)
+**Question**: Does every non-draft BillLineItem have a mapping to a QBO BillLine (`qbo.BillLineItemBillLine`)?
+**Query**: Join `dbo.BillLineItem` → `qbo.BillLineItemBillLine` on `BillLineItemId`, filter `IsDraft = 0` and `ProjectId = {id}`, find rows with no mapping.
+**MR2-MAIN (project 93) result**: ✅ 0 unmapped non-draft BillLineItems
+
+#### Step 3 — Orphaned QBO BillLines
+**Question**: Does every QBO BillLine have a parent QBO Bill?
+**Query**: `SELECT bl.* FROM qbo.BillLine bl LEFT JOIN qbo.Bill b ON b.Id = bl.QboBillId WHERE b.Id IS NULL` — filtered to lines mapped to project BillLineItems.
+**MR2-MAIN (project 93) result**: ✅ 0 orphaned QBO BillLines
+
+#### Step 4 — QBO Mapping Coverage (QBO → DB)
+**Question**: Does every QBO BillLine for this project have a mapping to a DB BillLineItem?
+**Query**: Join `qbo.BillLine` → `qbo.BillLineItemBillLine` on `QboBillLineId`, filter by `CustomerRefValue` matching the project's QBO customer, find rows with no mapping.
+**MR2-MAIN (project 93) result**: ✅ 0 unmapped QBO BillLines
+
+### Reconciliation Scope Rules
+- **Date**: Only items dated 2026-01-01 or later
+- **Billed status**: Only items not yet billed — Excel col H ("DRAW REQUEST") must be null; DB `IsBilled = False`
+- **Draft status**: DB records must be non-draft (`IsDraft = False`)
+- **Direction**: Both — DB is authoritative for what exists, Excel is authoritative for what should exist
+- **New records going forward**: DB → Excel push happens automatically when a Bill is marked Complete (no change to current process)
+
+#### Step 5 — Sync DB ↔ QBO if variances found
+**Action**: If step 2 or step 4 has variances, run the appropriate sync:
+- DB missing QBO mapping → `sync_to_qbo_bill()` to push DB record to QBO, or create `BillLineItemBillLine` mapping manually.
+- QBO missing DB mapping → `sync_from_qbo_bill()` to pull QBO record into DB, or create mapping manually.
+**MR2-MAIN (project 93) result**: ✅ No action required — steps 2 and 4 were clean.
+
+### Excel Column Map (range always fetched as A1:Z{lastRow}; index 0 = col A)
+| 0-based index | Excel col | Field |
+|---|---|---|
+| 7 | H | DRAW REQUEST (null = not yet billed) |
+| 8 | I | Date |
+| 9 | J | Vendor Name |
+| 10 | K | Bill / Ref Number |
+| 11 | L | Description |
+| 13 | N | Price (amount) |
+| 25 | Z | public_id anchor (col Z) |
+
+Note: `get_excel_used_range_values` now calls `usedRange` only to find the last row, then fetches `A1:Z{lastRow}` explicitly. Append function pads all rows to 26 columns.
+
+#### Step 6 — Build scoped DB set
+**Scope**: Non-draft, unbilled BillLineItems for this project dated >= 2026-01-01 (`IsDraft = False`, `IsBilled = False`, `BillDate >= 2026-01-01`).
+
+#### Step 7 — Build scoped Excel set
+**Scope**: Excel rows dated >= 2026-01-01 where col H ("DRAW REQUEST") is null.
+
+#### Step 8 — Match Excel → DB
+For each scoped Excel row:
+- **Col Z present**: verify public_id exists in scoped DB set. If not → orphaned row (flag for manual cleanup).
+- **Col Z absent**: attempt match on all five fields: date + vendor (fuzzy) + bill number + description + amount. All five must agree.
+  - Unambiguous match → backfill col Z (write mode only).
+  - Any field off, or ambiguous (multiple candidates) → flag for manual review. Do not auto-link.
+
+#### Step 9 — Match DB → Excel
+For each scoped DB record:
+- Public_id found in col Z of a scoped Excel row → verified, no action.
+- Public_id not found in any col Z → missing from Excel. Flag it (Bill completion push may have failed or not yet run).
+
+#### Step 10 — Resolve variances
+Manual review of all flagged items from steps 8 and 9. No automatic record creation.
+
+---
+
 ## Session: Contract Labor Entity Module — Deep Dive, Bug Fixes & Bill Generation (March 16, 2026)
 
 ### What Was Done

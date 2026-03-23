@@ -276,6 +276,40 @@ class QboInvoiceClient:
         logger.info(f"Retrieved {len(all_invoices)} invoices from QBO")
         return all_invoices
 
+    def query_reimburse_charges(self, customer_ref: str) -> List[Dict[str, Any]]:
+        """
+        Query ReimburseCharge records from QuickBooks for a given customer.
+
+        QBO automatically creates a ReimburseCharge for every Bill/Purchase line
+        that is marked Billable with a CustomerRef. These are the intermediate
+        records that appear as "Suggested Transactions" in QBO's invoice UI.
+        Each ReimburseCharge carries a LinkedTxn back to the source Bill/Purchase
+        and line, which is what we use to build the LinkedTxn on invoice lines.
+
+        Args:
+            customer_ref: QBO Customer ID (the ``value`` from CustomerRef)
+
+        Returns:
+            List of raw ReimburseCharge dicts from QBO
+        """
+        path = "/query"
+        query_string = f"SELECT * FROM ReimburseCharge WHERE CustomerRef = '{customer_ref}'"
+        logger.info(f"Querying ReimburseCharge for customer {customer_ref}")
+        data = self._request("GET", path, params={"query": query_string})
+
+        if "QueryResponse" in data:
+            query_response = data["QueryResponse"]
+            records = query_response.get("ReimburseCharge", [])
+            if not records:
+                logger.info(f"No ReimburseCharge records found for customer {customer_ref}")
+                return []
+            if isinstance(records, dict):
+                records = [records]
+            logger.info(f"ReimburseCharge query result ({len(records)} records): {records}")
+            return records
+
+        return []
+
     def _request(
         self,
         method: str,

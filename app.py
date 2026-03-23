@@ -45,6 +45,8 @@ from entities.role.api.router import router as role_api_router
 from entities.role.web.controller import router as role_web_router
 from entities.user_role.api.router import router as user_role_api_router
 from entities.user_role.web.controller import router as user_role_web_router
+from entities.user_project.api.router import router as user_project_api_router
+from entities.user_project.web.controller import router as user_project_web_router
 from entities.vendor.api.router import router as vendor_api_router
 from entities.vendor.web.controller import router as vendor_web_router
 from entities.vendor_address.api.router import router as vendor_address_api_router
@@ -55,6 +57,8 @@ from entities.taxpayer.api.router import router as taxpayer_api_router
 from entities.taxpayer.web.controller import router as taxpayer_web_router
 from entities.role_module.api.router import router as role_module_api_router
 from entities.role_module.web.controller import router as role_module_web_router
+from entities.user_module.api.router import router as user_module_api_router
+from entities.user_module.web.controller import router as user_module_web_router
 from entities.contact.api.router import router as contact_api_router
 from entities.admin.api.router import router as admin_api_router
 from entities.admin.web.controller import router as admin_web_router
@@ -192,6 +196,8 @@ app.include_router(role_api_router)
 app.include_router(role_web_router)
 app.include_router(user_role_api_router)
 app.include_router(user_role_web_router)
+app.include_router(user_project_api_router)
+app.include_router(user_project_web_router)
 app.include_router(contact_api_router)
 app.include_router(vendor_api_router)
 app.include_router(vendor_web_router)
@@ -223,6 +229,8 @@ app.include_router(taxpayer_api_router)
 app.include_router(taxpayer_web_router)
 app.include_router(role_module_api_router)
 app.include_router(role_module_web_router)
+app.include_router(user_module_api_router)
+app.include_router(user_module_web_router)
 app.include_router(admin_api_router)
 app.include_router(admin_web_router)
 app.include_router(dashboard_api_router)

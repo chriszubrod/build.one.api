@@ -25,34 +25,36 @@
         {% endif %}
     </div>
 
-    <!-- Inbox (permanent — always shown) -->
-    {% if current_user %}
-    <ul class="sidebar-nav-list" style="margin-bottom:0; padding-bottom:0; border-bottom:1px solid var(--sidebar-border,rgba(255,255,255,.1)); margin-bottom:0.5rem;">
-        <li class="sidebar-nav-item">
-            <a href="/inbox" class="sidebar-nav-link {{ 'active' if request.url.path.startswith('/inbox') else '' }}">
-                📬 Inbox
-            </a>
-        </li>
-    </ul>
-    {% endif %}
-
-    <!-- Modules Section -->
-    {% if current_user and current_user.modules and current_user.modules|length > 0 %}
-        <ul class="sidebar-nav-list">
-            {% for module in current_user.modules %}
-                <li class="sidebar-nav-item">
-                    <a href="{{ module.route }}" class="sidebar-nav-link {{ 'active' if current_path.startswith(module.route) else '' }}">
-                        {{ module.name }}
-                    </a>
-                </li>
-            {% endfor %}
-        </ul>
-    {% else %}
-        <ul class="sidebar-nav-list">
+    <div class="sidebar-nav-scroll">
+        <!-- Inbox (permanent — always shown) -->
+        {% if current_user %}
+        <ul class="sidebar-nav-list" style="margin-bottom:0; padding-bottom:0; border-bottom:1px solid var(--sidebar-border,rgba(255,255,255,.1)); margin-bottom:0.5rem;">
             <li class="sidebar-nav-item">
-                <span class="sidebar-nav-link sidebar-nav-link--disabled">No modules available</span>
+                <a href="/inbox" class="sidebar-nav-link {{ 'active' if request.url.path.startswith('/inbox') else '' }}">
+                    📬 Inbox
+                </a>
             </li>
         </ul>
-    {% endif %}
+        {% endif %}
+
+        <!-- Modules Section -->
+        {% if current_user and current_user.modules and current_user.modules|length > 0 %}
+            <ul class="sidebar-nav-list">
+                {% for module in current_user.modules %}
+                    <li class="sidebar-nav-item">
+                        <a href="{{ module.route }}" class="sidebar-nav-link {{ 'active' if current_path.startswith(module.route) else '' }}">
+                            {{ module.name }}
+                        </a>
+                    </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <ul class="sidebar-nav-list">
+                <li class="sidebar-nav-item">
+                    <span class="sidebar-nav-link sidebar-nav-link--disabled">No modules available</span>
+                </li>
+            </ul>
+        {% endif %}
+    </div>
 
 </nav>

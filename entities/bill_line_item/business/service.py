@@ -164,6 +164,11 @@ class BillLineItemService:
         existing = self.read_by_public_id(public_id=public_id)
         if existing:
             from entities.invoice_line_item.persistence.repo import InvoiceLineItemRepository
-            InvoiceLineItemRepository().nullify_bill_line_item_id(existing.id)
+            from entities.contract_labor.persistence.repo import ContractLaborRepository
+            InvoiceLineItemRepository().delete_by_bill_line_item_id(existing.id)
+            cl_repo = ContractLaborRepository()
+            for cl_entry in cl_repo.read_by_bill_line_item_id(existing.id):
+                cl_entry.bill_line_item_id = None
+                cl_repo.update_by_id(cl_entry)
             return self.repo.delete_by_id(existing.id)
         return None

@@ -249,6 +249,11 @@ class QboInvoiceService:
         """
         Upsert invoice line items.
 
+        After inserting/updating all lines present in the QBO API response,
+        any locally-stored QboInvoiceLine whose qbo_line_id is NOT in the
+        current response is stale (line was removed in QBO). Stale lines are
+        deleted along with their InvoiceLineItemInvoiceLine mappings.
+
         Args:
             qbo_invoice_id: Database ID of the QboInvoice
             lines: List of QboInvoiceLine from external API
@@ -256,6 +261,8 @@ class QboInvoiceService:
         """
         # Only store actual detail lines, skip computed summary lines
         SKIP_DETAIL_TYPES = {"SubTotalLineDetail"}
+
+        current_qbo_line_ids = {line.id for line in lines if line.id and line.detail_type not in SKIP_DETAIL_TYPES}
 
         for line in lines:
             if line.detail_type in SKIP_DETAIL_TYPES:
@@ -348,6 +355,33 @@ class QboInvoiceService:
                 # Update cache so a retry or second pass on the same invoice doesn't duplicate the line
                 if existing_lines_map is not None and line.id:
                     existing_lines_map[(qbo_invoice_id, line.id)] = new_line
+
+        # Delete stale lines — any locally-stored QboInvoiceLine whose qbo_line_id is
+        # no longer present in the QBO API response means QBO removed that line.
+        # Delete the InvoiceLineItemInvoiceLine mapping first (FK constraint), then the line.
+        from integrations.intuit.qbo.invoice.connector.invoice_line_item.persistence.repo import InvoiceLineItemInvoiceLineRepository
+        mapping_repo = InvoiceLineItemInvoiceLineRepository()
+        stored_lines = self.line_repo.read_by_qbo_invoice_id(qbo_invoice_id)
+        for stored_line in stored_lines:
+            if stored_line.qbo_line_id not in current_qbo_line_ids:
+                logger.info(
+                    f"Deleting stale QboInvoiceLine id={stored_line.id} "
+                    f"qbo_line_id={stored_line.qbo_line_id} (no longer in QBO response)"
+                )
+                try:
+                    stale_mapping = mapping_repo.read_by_qbo_invoice_line_id(stored_line.id)
+                    if stale_mapping:
+                        mapping_repo.delete_by_id(stale_mapping.id)
+                        logger.info(f"Deleted stale InvoiceLineItemInvoiceLine mapping id={stale_mapping.id}")
+                except Exception as e:
+                    logger.warning(f"Could not delete stale mapping for QboInvoiceLine {stored_line.id}: {e}")
+                try:
+                    self.line_repo.delete_by_id(stored_line.id)
+                    # Remove from cache so subsequent passes don't try to use the deleted line
+                    if existing_lines_map is not None and stored_line.qbo_line_id:
+                        existing_lines_map.pop((qbo_invoice_id, stored_line.qbo_line_id), None)
+                except Exception as e:
+                    logger.warning(f"Could not delete stale QboInvoiceLine {stored_line.id}: {e}")
 
     def _sync_to_invoices(self, invoices: List[QboInvoice]) -> None:
         """

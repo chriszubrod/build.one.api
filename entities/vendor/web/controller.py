@@ -20,6 +20,37 @@ router = APIRouter(prefix="/vendor", tags=["web", "vendor"])
 templates = Jinja2Templates(directory="templates")
 
 
+def _build_addresses_by_type(vendor_id: int, address_types: list) -> tuple[dict, dict]:
+    """
+    Fetch vendor addresses and build lookup dicts keyed by address_type public_id.
+
+    Returns:
+        (addresses_by_type, vendor_addresses_by_type) where values are dicts or model objects.
+    """
+    vendor_address_service = VendorAddressService()
+    vendor_addresses = vendor_address_service.read_all_by_vendor_id(vendor_id=vendor_id)
+
+    address_type_id_to_public_id = {}
+    for at in address_types:
+        if at.id:
+            address_type_id_to_public_id[int(at.id)] = at.public_id
+
+    address_service = AddressService()
+    addresses_by_type = {}
+    vendor_addresses_by_type = {}
+
+    for va in vendor_addresses:
+        if va.address_id and va.address_type_id:
+            address_type_public_id = address_type_id_to_public_id.get(int(va.address_type_id))
+            if address_type_public_id:
+                address = address_service.read_by_id(id=va.address_id)
+                if address:
+                    addresses_by_type[address_type_public_id] = address
+                    vendor_addresses_by_type[address_type_public_id] = va
+
+    return addresses_by_type, vendor_addresses_by_type
+
+
 @router.get("/list")
 async def list_vendors(request: Request, current_user: dict = Depends(get_current_vendor_web)):
     """
@@ -68,43 +99,22 @@ async def view_vendor(request: Request, public_id: str, current_user: dict = Dep
         vendor = VendorService().read_by_public_id(public_id=public_id)
         if not vendor:
             raise HTTPException(status_code=404, detail="Vendor not found")
-        
+
         vendor_dict = vendor.to_dict()
-        
+
         # Fetch related data
         taxpayer = None
         if vendor.taxpayer_id:
             taxpayer = TaxpayerService().read_by_id(id=vendor.taxpayer_id)
-        
+
         vendor_type = None
         if vendor.vendor_type_id:
-            vendor_type = VendorTypeService().read_by_id(id=str(vendor.vendor_type_id))
-        
-        # Get all vendor addresses for this vendor
-        all_vendor_addresses = VendorAddressService().read_all()
-        vendor_addresses = [va for va in all_vendor_addresses if va.vendor_id and int(va.vendor_id) == vendor.id]
-        
-        # Get addresses and address types
+            vendor_type = VendorTypeService().read_by_id(id=int(vendor.vendor_type_id))
+
+        # Fetch address types once and build address lookups
         address_types = AddressTypeService().read_all()
-        addresses_by_type = {}
-        
-        # Create a map of address_type database ID to public_id
-        address_type_id_to_public_id = {}
-        for at in address_types:
-            if at.id:
-                address_type_id_to_public_id[int(at.id)] = at.public_id
-        
-        for va in vendor_addresses:
-            if va.address_id and va.address_type_id:
-                address = AddressService().read_by_id(id=va.address_id)
-                address_type_id = int(va.address_type_id)
-                address_type_public_id = address_type_id_to_public_id.get(address_type_id)
-                if address_type_public_id:
-                    addresses_by_type[address_type_public_id] = address
-        
-        # Get all address types for display
-        all_address_types = AddressTypeService().read_all()
-        
+        addresses_by_type, _ = _build_addresses_by_type(vendor.id, address_types)
+
         # Linked SharePoint folder (for W9 backfill etc.)
         linked_folder = None
         linked_drives = []
@@ -132,16 +142,13 @@ async def view_vendor(request: Request, public_id: str, current_user: dict = Dep
             linked_drives = []
 
         # Fetch taxpayer attachments if taxpayer exists
-        taxpayer_attachments = []
         attachments_data = []
-        seen_attachment_ids = set()  # Track unique attachment IDs to prevent duplicates
+        seen_attachment_ids = set()
         if taxpayer:
             taxpayer_attachment_service = TaxpayerAttachmentService()
             attachment_service = AttachmentService()
             taxpayer_attachments = taxpayer_attachment_service.read_by_taxpayer_id(taxpayer_public_id=taxpayer.public_id)
-            
-            # Get full attachment details for each taxpayer attachment
-            # Deduplicate by attachment_id to handle duplicate TaxpayerAttachment records
+
             for ta in taxpayer_attachments:
                 if ta.attachment_id and ta.attachment_id not in seen_attachment_ids:
                     attachment = attachment_service.read_by_id(id=ta.attachment_id)
@@ -151,7 +158,7 @@ async def view_vendor(request: Request, public_id: str, current_user: dict = Dep
                             "taxpayer_attachment": ta.to_dict(),
                             "attachment": attachment.to_dict()
                         })
-        
+
         contacts = ContactService().read_by_vendor_id(vendor_id=vendor.id)
         return templates.TemplateResponse(
             "vendor/view.html",
@@ -160,7 +167,7 @@ async def view_vendor(request: Request, public_id: str, current_user: dict = Dep
                 "vendor": vendor_dict,
                 "taxpayer": taxpayer.to_dict() if taxpayer else None,
                 "vendor_type": vendor_type.to_dict() if vendor_type else None,
-                "address_types": all_address_types,
+                "address_types": address_types,
                 "addresses_by_type": addresses_by_type,
                 "attachments": attachments_data,
                 "linked_folder": linked_folder,
@@ -186,58 +193,37 @@ async def edit_vendor(request: Request, public_id: str, current_user: dict = Dep
         vendor = VendorService().read_by_public_id(public_id=public_id)
         if not vendor:
             raise HTTPException(status_code=404, detail="Vendor not found")
-        
+
         vendor_dict = vendor.to_dict()
-        
+
         # Fetch related data
         taxpayer = None
         if vendor.taxpayer_id:
             taxpayer = TaxpayerService().read_by_id(id=vendor.taxpayer_id)
-        
+
         vendor_type = None
         if vendor.vendor_type_id:
-            vendor_type = VendorTypeService().read_by_id(id=str(vendor.vendor_type_id))
-        
-        # Get all vendor addresses for this vendor
-        all_vendor_addresses = VendorAddressService().read_all()
-        vendor_addresses = [va for va in all_vendor_addresses if va.vendor_id and int(va.vendor_id) == vendor.id]
-        
-        # Get addresses and address types
+            vendor_type = VendorTypeService().read_by_id(id=int(vendor.vendor_type_id))
+
+        # Fetch address types once and build address lookups
         address_types = AddressTypeService().read_all()
-        addresses_by_type = {}
-        vendor_addresses_by_type = {}
-        
-        # Create a map of address_type database ID to public_id
-        address_type_id_to_public_id = {}
-        for at in address_types:
-            if at.id:
-                address_type_id_to_public_id[int(at.id)] = at.public_id
-        
-        for va in vendor_addresses:
-            if va.address_id and va.address_type_id:
-                address = AddressService().read_by_id(id=va.address_id)
-                if address:
-                    address_type_id = int(va.address_type_id)
-                    address_type_public_id = address_type_id_to_public_id.get(address_type_id)
-                    if address_type_public_id:
-                        addresses_by_type[address_type_public_id] = address.to_dict()
-                        vendor_addresses_by_type[address_type_public_id] = va.to_dict()
-        
-        # Get all address types and vendor types for dropdowns
-        all_address_types = AddressTypeService().read_all()
+        addresses_by_type_obj, vendor_addresses_by_type_obj = _build_addresses_by_type(vendor.id, address_types)
+
+        # Convert to dicts for edit template
+        addresses_by_type = {k: v.to_dict() for k, v in addresses_by_type_obj.items()}
+        vendor_addresses_by_type = {k: v.to_dict() for k, v in vendor_addresses_by_type_obj.items()}
+
+        # Get vendor types for dropdown
         vendor_types = VendorTypeService().read_all()
-        
+
         # Fetch taxpayer attachments if taxpayer exists
-        taxpayer_attachments = []
         attachments_data = []
-        seen_attachment_ids = set()  # Track unique attachment IDs to prevent duplicates
+        seen_attachment_ids = set()
         if taxpayer:
             taxpayer_attachment_service = TaxpayerAttachmentService()
             attachment_service = AttachmentService()
             taxpayer_attachments = taxpayer_attachment_service.read_by_taxpayer_id(taxpayer_public_id=taxpayer.public_id)
-            
-            # Get full attachment details for each taxpayer attachment
-            # Deduplicate by attachment_id to handle duplicate TaxpayerAttachment records
+
             for ta in taxpayer_attachments:
                 if ta.attachment_id and ta.attachment_id not in seen_attachment_ids:
                     attachment = attachment_service.read_by_id(id=ta.attachment_id)
@@ -247,7 +233,7 @@ async def edit_vendor(request: Request, public_id: str, current_user: dict = Dep
                             "taxpayer_attachment": ta.to_dict(),
                             "attachment": attachment.to_dict()
                         })
-        
+
         contacts = ContactService().read_by_vendor_id(vendor_id=vendor.id)
         return templates.TemplateResponse(
             "vendor/edit.html",
@@ -257,7 +243,7 @@ async def edit_vendor(request: Request, public_id: str, current_user: dict = Dep
                 "taxpayer": taxpayer.to_dict() if taxpayer else None,
                 "vendor_type": vendor_type.to_dict() if vendor_type else None,
                 "vendor_types": vendor_types,
-                "address_types": all_address_types,
+                "address_types": address_types,
                 "addresses_by_type": addresses_by_type,
                 "vendor_addresses_by_type": vendor_addresses_by_type,
                 "attachments": attachments_data,

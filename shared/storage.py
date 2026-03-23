@@ -189,8 +189,8 @@ class AzureBlobStorage:
             # Ensure container exists (create if needed) - must succeed before upload
             self._ensure_container_exists(container)
             
-            # Upload blob
-            with httpx.Client(timeout=30.0) as client:
+            # Upload blob — use a longer timeout for large files (e.g. merged PDF packets)
+            with httpx.Client(timeout=120.0) as client:
                 response = client.put(url, content=file_content, headers=headers)
                 response.raise_for_status()
             

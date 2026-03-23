@@ -42,11 +42,17 @@ class VendorAddressService:
         """
         return self.repo.read_by_public_id(public_id)
 
-    def read_by_vendor_id(self, vendor_id: str) -> Optional[VendorAddress]:
+    def read_by_vendor_id(self, vendor_id: int) -> Optional[VendorAddress]:
         """
-        Read a vendor address by vendor ID.
+        Read a single vendor address by vendor ID (first match).
         """
         return self.repo.read_by_vendor_id(vendor_id=vendor_id)
+
+    def read_all_by_vendor_id(self, vendor_id: int) -> list[VendorAddress]:
+        """
+        Read all vendor addresses for a given vendor ID.
+        """
+        return self.repo.read_all_by_vendor_id(vendor_id=vendor_id)
 
     def read_by_address_id(self, address_id: str) -> Optional[VendorAddress]:
         """

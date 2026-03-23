@@ -813,11 +813,11 @@
 
                 const data = await response.json();
 
-                if (data.status_code === 201 || data.status_code === 200) {
+                if (response.ok && (data.status_code === 201 || data.status_code === 200)) {
                     // Success - reload page to show linked folder
                     window.location.reload();
                 } else {
-                    alert('Error linking folder: ' + (data.message || 'Unknown error'));
+                    alert('Error linking folder: ' + (data.detail || data.message || 'Unknown error'));
                 }
             } catch (error) {
                 alert('Error linking folder: ' + error.message);

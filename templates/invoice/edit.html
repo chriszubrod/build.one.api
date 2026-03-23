@@ -387,6 +387,17 @@
         }
         updateTotal();
         updateCount();
+
+        // Make line item rows clickable to navigate to source record
+        document.getElementById('line-items-tbody').addEventListener('click', function(e) {
+            if (e.target.closest('button, a')) return;
+            const tr = e.target.closest('tr');
+            if (!tr) return;
+            const sourceType = tr.getAttribute('data-source-type');
+            const parentPublicId = tr.getAttribute('data-parent-public-id');
+            const url = editUrlForSource(sourceType, parentPublicId);
+            if (url) window.location.href = url;
+        });
     });
 
     function fmt(val) {
@@ -636,6 +647,13 @@
 
             const tr = document.createElement('tr');
             tr.classList.add('line-item-draft');
+            if (editUrl) {
+                tr.style.cursor = 'pointer';
+                tr.addEventListener('click', function(e) {
+                    if (e.target.closest('a')) return;
+                    window.location.href = editUrl;
+                });
+            }
             tr.innerHTML = `
                 <td><span class="invoice-source-badge invoice-source-badge--${(item.source_type || '').toLowerCase()}">${sourceLabel(item.source_type)}</span></td>
                 <td>${item.source_date || '—'}</td>
@@ -1036,6 +1054,9 @@
         const publicId = document.getElementById('invoice_public_id').value;
         if (!publicId) { showToast('Save the invoice first', 'error'); return; }
 
+        // Open the PDF tab immediately (direct click response) so browsers don't block the popup.
+        const pdfTab = window.open('about:blank', '_blank');
+
         // Pre-flight: warn if any included source items are missing a PDF attachment.
         const missingPDF = getIncludedRowsMissingPDF();
         if (missingPDF.length > 0) {
@@ -1048,11 +1069,13 @@
             const proceed = confirm(
                 `${missingPDF.length} line item${missingPDF.length > 1 ? 's are' : ' is'} missing a PDF attachment and will be excluded from the packet:\n\n${lines}\n\nProceed anyway?`
             );
-            if (!proceed) return;
+            if (!proceed) {
+                if (pdfTab) pdfTab.close();
+                return;
+            }
         }
 
         btnBusy('generatePacketBtn', 'Generating…');
-        const pdfTab = window.open('about:blank', '_blank');
         try {
             const resp = await fetch(`/api/v1/generate/invoice/${publicId}/packet`, { method: 'POST' });
             if (!resp.ok) {

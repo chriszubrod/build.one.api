@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 from decimal import Decimal
 
 # Third-party Imports
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 # Local Imports
 from integrations.intuit.qbo.base.schemas import _QboBaseModel
@@ -20,7 +20,7 @@ class QboReferenceType(BaseModel):
 class QboSalesItemLineDetail(BaseModel):
     """Sales item line detail for Invoice line items."""
     model_config = ConfigDict(populate_by_name=True)
-    
+
     item_ref: Optional[QboReferenceType] = Field(default=None, alias="ItemRef")
     class_ref: Optional[QboReferenceType] = Field(default=None, alias="ClassRef")
     unit_price: Optional[Decimal] = Field(default=None, alias="UnitPrice")
@@ -30,6 +30,10 @@ class QboSalesItemLineDetail(BaseModel):
     discount_rate: Optional[Decimal] = Field(default=None, alias="DiscountRate")
     discount_amt: Optional[Decimal] = Field(default=None, alias="DiscountAmt")
     item_account_ref: Optional[QboReferenceType] = Field(default=None, alias="ItemAccountRef")
+
+    @field_serializer('unit_price', 'qty', 'discount_rate', 'discount_amt', when_used='json')
+    def serialize_decimal(self, v):
+        return float(v) if v is not None else None
 
 
 class QboDiscountLineDetail(BaseModel):
@@ -75,6 +79,10 @@ class QboInvoiceLine(BaseModel):
     description: Optional[str] = Field(default=None, alias="Description")
     amount: Optional[Decimal] = Field(default=None, alias="Amount")
     detail_type: Optional[str] = Field(default=None, alias="DetailType")
+
+    @field_serializer('amount', when_used='json')
+    def serialize_amount(self, v):
+        return float(v) if v is not None else None
     sales_item_line_detail: Optional[QboSalesItemLineDetail] = Field(
         default=None, alias="SalesItemLineDetail"
     )
@@ -103,9 +111,10 @@ class QboInvoiceLine(BaseModel):
 class QboLinkedTxn(BaseModel):
     """Linked transaction reference."""
     model_config = ConfigDict(populate_by_name=True)
-    
+
     txn_id: Optional[str] = Field(default=None, alias="TxnId")
     txn_type: Optional[str] = Field(default=None, alias="TxnType")
+    txn_line_id: Optional[str] = Field(default=None, alias="TxnLineId")
 
 
 class QboEmailAddress(BaseModel):
@@ -157,7 +166,7 @@ class QboInvoiceBase(_QboBaseModel):
     bill_email_cc: Optional[QboEmailAddress] = Field(default=None, alias="BillEmailCc")
     bill_email_bcc: Optional[QboEmailAddress] = Field(default=None, alias="BillEmailBcc")
     sales_term_ref: Optional[QboReferenceType] = Field(default=None, alias="SalesTermRef")
-    linked_txn: Optional[List[QboLinkedTxn]] = Field(default_factory=list, alias="LinkedTxn")
+    linked_txn: Optional[List[QboLinkedTxn]] = Field(default=None, alias="LinkedTxn")
     total_amt: Optional[Decimal] = Field(default=None, alias="TotalAmt")
     balance: Optional[Decimal] = Field(default=None, alias="Balance")
     deposit: Optional[Decimal] = Field(default=None, alias="Deposit")

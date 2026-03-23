@@ -10,6 +10,7 @@ from integrations.intuit.qbo.bill.connector.bill_line_item.business.model import
 from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import BillLineItemBillLineRepository
 from integrations.intuit.qbo.bill.business.model import QboBillLine
 from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
+from integrations.intuit.qbo.bill.persistence.repo import QboBillLineRepository
 from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
 from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
@@ -34,6 +35,7 @@ class BillLineItemConnector:
         bill_service: Optional[BillService] = None,
         bill_bill_repo: Optional[BillBillRepository] = None,
         qbo_item_repo: Optional[QboItemRepository] = None,
+        qbo_bill_line_repo: Optional[QboBillLineRepository] = None,
         item_sub_cost_code_repo: Optional[ItemSubCostCodeRepository] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
         customer_project_repo: Optional[CustomerProjectRepository] = None,
@@ -45,6 +47,7 @@ class BillLineItemConnector:
         self.bill_service = bill_service or BillService()
         self.bill_bill_repo = bill_bill_repo or BillBillRepository()
         self.qbo_item_repo = qbo_item_repo or QboItemRepository()
+        self.qbo_bill_line_repo = qbo_bill_line_repo or QboBillLineRepository()
         self.item_sub_cost_code_repo = item_sub_cost_code_repo or ItemSubCostCodeRepository()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
@@ -135,35 +138,56 @@ class BillLineItemConnector:
             else:
                 logger.debug(f"QboCustomer with QboId {qbo_bill_line.customer_ref_value} not found in local database")
         
-        # Check for existing mapping
+        # Check for existing mapping by current qbo_bill_line.id
         mapping = self.mapping_repo.read_by_qbo_bill_line_id(qbo_bill_line.id)
-        
+
+        if not mapping:
+            # No direct mapping found. Before creating a new BillLineItem, check for
+            # an orphaned one on this bill — stale-line cleanup deletes QboBillLine
+            # mappings when QBO regenerates line IDs (e.g. after editing a bill),
+            # which leaves the existing BillLineItem without a QBO mapping.
+            # If exactly one BillLineItem on this bill has no QBO mapping, reuse it.
+            existing_line_items = self.bill_line_item_service.read_by_bill_id(bill_id)
+            unmapped = [
+                li for li in existing_line_items
+                if not self.mapping_repo.read_by_bill_line_item_id(li.id)
+            ]
+            if len(unmapped) == 1:
+                orphan = unmapped[0]
+                logger.info(
+                    f"Reusing orphaned BillLineItem {orphan.id} for QboBillLine {qbo_bill_line.id} "
+                    f"(QBO line ID regenerated — previous mapping was to a stale QboBillLine)"
+                )
+                try:
+                    mapping = self.mapping_repo.create(
+                        bill_line_item_id=orphan.id,
+                        qbo_bill_line_id=qbo_bill_line.id,
+                    )
+                except ValueError as e:
+                    logger.warning(f"Could not reuse orphaned BillLineItem {orphan.id}: {e}")
+
         if mapping:
             # Found existing mapping - update the BillLineItem
             line_item = self.bill_line_item_service.read_by_id(mapping.bill_line_item_id)
             if line_item:
                 logger.info(f"Updating existing BillLineItem {line_item.id} from QboBillLine {qbo_bill_line.id}")
-                
-                # Create an update object
-                class LineItemUpdate:
-                    pass
-                
-                update = LineItemUpdate()
-                update.bill_public_id = bill_public_id
-                update.sub_cost_code_id = sub_cost_code_id
-                update.project_public_id = project_public_id
-                update.description = description
-                update.quantity = qty
-                update.rate = rate
-                update.amount = amount
-                update.is_billable = is_billable
-                update.is_billed = is_billed
-                update.markup = markup
-                update.price = price
-                update.is_draft = False
-                update.row_version = line_item.row_version
-                
-                line_item = self.bill_line_item_service.update_by_public_id(line_item.public_id, update)
+
+                line_item = self.bill_line_item_service.update_by_public_id(
+                    line_item.public_id,
+                    bill_public_id=bill_public_id,
+                    sub_cost_code_id=sub_cost_code_id,
+                    project_public_id=project_public_id,
+                    description=description,
+                    quantity=qty,
+                    rate=rate,
+                    amount=amount,
+                    is_billable=is_billable,
+                    is_billed=is_billed,
+                    markup=markup,
+                    price=price,
+                    is_draft=False,
+                    row_version=line_item.row_version,
+                )
                 return line_item
             else:
                 # Mapping exists but BillLineItem not found - recreate

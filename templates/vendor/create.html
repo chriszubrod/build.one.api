@@ -60,20 +60,19 @@
                                        id="name"
                                        name="name"
                                        required
-                                       maxlength="50"
+                                       maxlength="450"
                                        autocomplete="off"
                                        placeholder="Enter vendor name">
                             </div>
 
                             <div class="vendor-form-group">
                                 <label for="abbreviation" class="vendor-form-label">
-                                    Abbreviation <span class="required">*</span>
+                                    Abbreviation
                                 </label>
                                 <input type="text"
                                        class="vendor-form-control"
                                        id="abbreviation"
                                        name="abbreviation"
-                                       required
                                        maxlength="255"
                                        autocomplete="off"
                                        placeholder="Enter vendor abbreviation">
@@ -155,6 +154,8 @@
                                        id="taxpayer_id_number"
                                        name="taxpayer_id_number"
                                        maxlength="9"
+                                       pattern="[0-9]*"
+                                       inputmode="numeric"
                                        autocomplete="off"
                                        placeholder="Enter taxpayer ID number">
                             </div>
@@ -1579,8 +1580,8 @@
             const name = document.getElementById('name').value.trim();
             const abbreviation = document.getElementById('abbreviation').value.trim();
             
-            if (!name || !abbreviation) {
-                alert('Name and Abbreviation are required.');
+            if (!name) {
+                alert('Name is required.');
                 switchSection('vendor-details');
                 return;
             }

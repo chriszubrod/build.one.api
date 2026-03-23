@@ -112,6 +112,7 @@ def tool_node(state: VendorAgentState) -> dict:
         tool_args = tool_call["args"]
 
         logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
+        print(f"[VendorAgent] Tool call: {tool_name}({tool_args})")
 
         try:
             tool = TOOLS_BY_NAME.get(tool_name)
@@ -119,6 +120,16 @@ def tool_node(state: VendorAgentState) -> dict:
                 observation = f"Error: Unknown tool '{tool_name}'"
             else:
                 observation = tool.invoke(tool_args)
+
+            # Log result summary
+            if isinstance(observation, dict):
+                summary_keys = {k: v for k, v in observation.items() if k in ('bill_count', 'expense_count', 'document_count', 'success', 'error', 'confidence', 'vendor_name')}
+                if summary_keys:
+                    print(f"[VendorAgent] Tool result: {tool_name} -> {summary_keys}")
+                else:
+                    print(f"[VendorAgent] Tool result: {tool_name} -> OK")
+            else:
+                print(f"[VendorAgent] Tool result: {tool_name} -> {str(observation)[:100]}")
 
             # Track proposals created
             if tool_name == "create_vendor_type_proposal":
@@ -128,6 +139,7 @@ def tool_node(state: VendorAgentState) -> dict:
 
         except Exception as e:
             logger.error(f"Tool {tool_name} failed: {e}")
+            print(f"[VendorAgent] Tool FAILED: {tool_name} -> {e}")
             observation = f"Error executing tool: {str(e)}"
 
         result.append(

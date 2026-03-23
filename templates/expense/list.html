@@ -513,11 +513,11 @@
                 expenseUploadedFiles.splice(index, 1);
                 persistExpenseFiles();
                 updateExpenseUploadedFilesTable();
-                window.location.href = '/expense/create?new=true&pendingFileToken=' + encodeURIComponent(token);
+                window.location.href = '/expense/create?pendingFileToken=' + encodeURIComponent(token);
             } catch (e) {
                 console.error('Temp expense upload failed:', e);
                 showToast('Could not transfer file. Open Create Expense and attach the file there.', 'error', 6000);
-                window.location.href = '/expense/create?new=true';
+                window.location.href = '/expense/create';
             }
         };
 
@@ -535,14 +535,14 @@
                 return;
             }
             showToast('Could not transfer file. Open Create Expense and attach it there.', 'error', 6000);
-            window.location.href = '/expense/create?new=true';
+            window.location.href = '/expense/create';
             return;
         }
 
         expenseUploadedFiles.splice(index, 1);
         persistExpenseFiles();
         updateExpenseUploadedFilesTable();
-        window.location.href = '/expense/create?new=true&hasFile=true';
+        window.location.href = '/expense/create?hasFile=true';
     };
 
     async function checkPendingCompletions() {

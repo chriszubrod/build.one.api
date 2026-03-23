@@ -22,10 +22,7 @@
 
     <div class="bill-page-header">
         <h1>{% if search %}Search Results{% elif is_draft == 'true' or is_draft == '' %}Draft Bills{% elif is_draft == 'false' %}Completed Bills{% else %}All Bills{% endif %}</h1>
-        <form method="get" action="/bill/create" style="display: inline;">
-            <input type="hidden" name="new" value="true">
-            <button type="submit" class="btn btn-primary">Add Bill</button>
-        </form>
+        <a href="/bill/create" class="btn btn-primary">Add Bill</a>
     </div>
 
     <!-- Search and Filters -->
@@ -290,8 +287,8 @@
                         </td>
                         <td>
                             <div class="bill-table-actions">
-                                <a href="/bill/{{ bill.public_id }}{% if return_to %}?return_to={{ return_to | urlencode }}{% endif %}" class="btn btn-outline-primary btn-sm">View</a>
-                                <a href="/bill/{{ bill.public_id }}/edit{% if return_to %}?return_to={{ return_to | urlencode }}{% endif %}" class="btn btn-outline-secondary btn-sm">Edit</a>
+                                <a href="/bill/{{ bill.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
+                                <a href="/bill/{{ bill.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
                             </div>
                         </td>
                     </tr>
@@ -359,10 +356,7 @@
                     <input type="file" id="file-input" multiple accept=".pdf,.png,.jpg,.jpeg,.gif,.webp" style="display: none;">
                     
                     <div class="bill-drop-zone-actions">
-                        <form method="get" action="/bill/create" style="display: inline;">
-                            <input type="hidden" name="new" value="true">
-                            <button type="submit" class="btn btn-primary">Create Bill Manually</button>
-                        </form>
+                        <a href="/bill/create" class="btn btn-primary">Create Bill Manually</a>
                         {% if search %}
                         <a href="/bill/list" class="btn btn-secondary">Clear Filters</a>
                         {% endif %}
@@ -861,11 +855,11 @@
                 const token = await uploadPendingFileToTemp(file);
                 uploadedFiles.splice(index, 1);
                 persistFiles();
-                window.location.href = '/bill/create?new=true&pendingFileToken=' + encodeURIComponent(token);
+                window.location.href = '/bill/create?pendingFileToken=' + encodeURIComponent(token);
             } catch (e) {
                 console.error('Temp upload failed:', e);
                 showToast('Could not transfer file. Open Create Bill and attach the file there.', 'error', 6000);
-                window.location.href = '/bill/create?new=true';
+                window.location.href = '/bill/create';
             }
         };
 
@@ -883,13 +877,13 @@
                 return;
             }
             showToast('Could not transfer file. Open Create Bill and attach it there.', 'error', 6000);
-            window.location.href = '/bill/create?new=true';
+            window.location.href = '/bill/create';
             return;
         }
 
         uploadedFiles.splice(index, 1);
         persistFiles();
-        window.location.href = '/bill/create?new=true&hasFile=true';
+        window.location.href = '/bill/create?hasFile=true';
     }
 
     // Retry a workflow with a manually selected vendor
@@ -1246,5 +1240,37 @@
         btn.disabled = false;
         btn.textContent = 'Process Folder';
     }
+
+    // =====================
+    // Scroll Position Persistence
+    // =====================
+
+    // Save scroll position before navigating away
+    document.addEventListener('click', function(e) {
+        const link = e.target.closest('a[href^="/bill/"]');
+        if (link && !link.href.includes('/bill/list')) {
+            const content = document.getElementById('content');
+            if (content) {
+                sessionStorage.setItem('billListScrollTop', content.scrollTop);
+            }
+        }
+    });
+
+    // Restore scroll position on page load (returning from edit/view)
+    document.addEventListener('DOMContentLoaded', function() {
+        const savedScroll = sessionStorage.getItem('billListScrollTop');
+        if (savedScroll) {
+            sessionStorage.removeItem('billListScrollTop');
+            const scrollTop = parseInt(savedScroll, 10);
+            if (scrollTop > 0) {
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        const content = document.getElementById('content');
+                        if (content) content.scrollTop = scrollTop;
+                    });
+                });
+            }
+        }
+    });
 </script>
 {% endblock %}

@@ -11,26 +11,27 @@
 
 {% block content %}
 
-    <div id="bill-view-data" data-return-to="{{ return_to or '' }}" style="display: none;" aria-hidden="true"></div>
-    <div class="bill-page-header">
-        <h1>{{ bill.bill_number or 'Bill Details' }}</h1>
-        <div style="display: flex; gap: 0.5rem;">
-            {% if source_email %}
-            <button type="button"
-                    class="btn btn-secondary"
-                    id="toggle-source-email-btn"
-                    onclick="toggleSourceEmail()"
-                    title="Show the email this bill was created from"
-                    style="font-size:0.8rem;">
-                Show Source Email
-            </button>
-            {% endif %}
-            <a href="/bill/{{ bill.public_id }}/edit{% if return_to %}?return_to={{ return_to | urlencode }}{% endif %}" class="btn btn-primary">Edit</a>
-            <a href="{{ return_to or '/bill/list' }}" class="btn btn-secondary">Back to List</a>
+    <div class="bill-create-fullpage">
+        <div class="bill-create-header">
+            <h1>{{ bill.bill_number or 'Bill' }}</h1>
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                {% if source_email %}
+                <button type="button"
+                        class="btn btn-secondary"
+                        id="toggle-source-email-btn"
+                        onclick="toggleSourceEmail()"
+                        title="Show the email this bill was created from"
+                        style="font-size:0.8rem;">
+                    Show Source Email
+                </button>
+                {% endif %}
+                <a href="/bill/{{ bill.public_id }}/edit" class="btn btn-primary">Edit</a>
+                <a href="/bill/list" class="btn btn-secondary">Back to List</a>
+            </div>
         </div>
-    </div>
 
-    <div class="bill-detail-container">
+        <div class="bill-create-content">
+          <div class="bill-edit-form-column">
         <div class="bill-detail-card">
             <div class="bill-detail-card-header">
                 <h5>Bill Information</h5>
@@ -71,22 +72,6 @@
                     <div class="bill-detail-value">{{ bill.memo or 'Not specified' }}</div>
                 </div>
 
-                <div class="bill-detail-row">
-                    <div class="bill-detail-label">Public ID:</div>
-                    <div class="bill-detail-value">
-                        <code>{{ bill.public_id or 'Not available' }}</code>
-                    </div>
-                </div>
-
-                <div class="bill-detail-row">
-                    <div class="bill-detail-label">Created:</div>
-                    <div class="bill-detail-value">{{ bill.created_datetime or 'Unknown' }}</div>
-                </div>
-
-                <div class="bill-detail-row">
-                    <div class="bill-detail-label">Last Modified:</div>
-                    <div class="bill-detail-value">{{ bill.modified_datetime or 'Unknown' }}</div>
-                </div>
             </div>
         </div>
 
@@ -99,11 +84,9 @@
                 <div class="line-item-grid" style="display: grid; grid-template-columns: 1fr; gap: 1rem;">
                     {% for line_item in line_items %}
                     <div class="line-item-card" style="border: 1px solid #e0e0e0; border-radius: 4px;">
-                        <div class="line-item-card-body" style="padding: 1rem;">
-                            <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem;">
-                                <h6 style="margin: 0; font-size: var(--font-size-action-lg);">{{ line_item.description or 'No Description' }}</h6>
-                                <div style="display: flex; gap: 0.5rem;">
-                                </div>
+                        <div class="line-item-card-body" style="padding: 0.75rem;">
+                            <div style="margin-bottom: 0.5rem;">
+                                <h6 style="margin: 0; font-size: var(--font-size-action);">{{ line_item.description or 'No Description' }}</h6>
                             </div>
                             <div class="line-item-metadata" style="display: flex; flex-direction: column; gap: 0.25rem; font-size: var(--font-size-base); color: var(--color-text-secondary);">
                                 {% if line_item.project_name %}
@@ -150,7 +133,15 @@
                             <div class="line-item-attachment-display" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed #e0e0e0;">
                                 <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background-color: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px; margin-bottom: 0.75rem;">
                                     <span style="font-size: 1.2rem; flex-shrink: 0;">📎</span>
-                                    <a href="/attachment/view/{{ line_item.attachment.public_id }}" target="_blank" style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-primary, #1976d2); text-decoration: none; font-size: 0.9rem;">
+                                    <a href="#"
+                                       class="attachment-preview-link"
+                                       onclick="showAttachmentPreview('{{ line_item.attachment.public_id }}', '{{ line_item.attachment.content_type or '' }}', '{{ line_item.attachment.file_extension or '' }}', '{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}'); return false;"
+                                       data-attachment-id="{{ line_item.attachment.public_id }}"
+                                       data-content-type="{{ line_item.attachment.content_type or '' }}"
+                                       data-file-extension="{{ line_item.attachment.file_extension or '' }}"
+                                       data-filename="{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}"
+                                       style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-primary, #1976d2); text-decoration: none; font-size: 0.9rem; cursor: pointer;"
+                                       title="{{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}">
                                         {{ line_item.attachment.original_filename or line_item.attachment.filename or 'Attachment' }}
                                     </a>
                                 </div>
@@ -222,6 +213,101 @@
                         </div>
                     </div>
                     {% endfor %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if completion_result %}
+        <div class="bill-detail-card" style="margin-top: 0.75rem;">
+            <div class="bill-detail-card-header">
+                <h5>Completion Status</h5>
+                {% if completion_result.status_code == 200 %}
+                <span style="color: #2e7d32; font-size: var(--font-size-base);">Complete</span>
+                {% elif completion_result.status_code == 207 %}
+                <span style="color: #e65100; font-size: var(--font-size-base);">Partial</span>
+                {% else %}
+                <span style="color: #c62828; font-size: var(--font-size-base);">Failed</span>
+                {% endif %}
+            </div>
+            <div class="bill-detail-card-body" style="font-size: var(--font-size-base);">
+                <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+
+                    <!-- SharePoint -->
+                    {% if completion_result.file_uploads %}
+                    {% set sp_projects = completion_result.file_uploads.keys() | list %}
+                    {% set sp_total = namespace(synced=0, errors=0) %}
+                    {% for pid in sp_projects %}
+                    {% set sp_total.synced = sp_total.synced + (completion_result.file_uploads[pid].synced_count or 0) %}
+                    {% set sp_total.errors = sp_total.errors + (completion_result.file_uploads[pid].errors | length if completion_result.file_uploads[pid].errors else 0) %}
+                    {% endfor %}
+                    <div class="bill-detail-row">
+                        <div class="bill-detail-label">SharePoint:</div>
+                        <div class="bill-detail-value">
+                            {% if sp_total.errors > 0 %}
+                            {{ sp_total.synced }} uploaded, {{ sp_total.errors }} error(s)
+                            {% elif sp_total.synced > 0 %}
+                            {{ sp_total.synced }} uploaded
+                            {% else %}
+                            No files to upload
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- Excel -->
+                    {% if completion_result.excel_syncs %}
+                    {% set xl_projects = completion_result.excel_syncs.keys() | list %}
+                    {% set xl_total = namespace(synced=0, errors=0) %}
+                    {% for pid in xl_projects %}
+                    {% set xl_total.synced = xl_total.synced + (completion_result.excel_syncs[pid].synced_count or 0) %}
+                    {% set xl_total.errors = xl_total.errors + (completion_result.excel_syncs[pid].errors | length if completion_result.excel_syncs[pid].errors else 0) %}
+                    {% endfor %}
+                    <div class="bill-detail-row">
+                        <div class="bill-detail-label">Excel:</div>
+                        <div class="bill-detail-value">
+                            {% if completion_result.excel_syncs[xl_projects[0]].message == 'Disabled' %}
+                            Disabled
+                            {% elif xl_total.errors > 0 %}
+                            {{ xl_total.synced }} synced, {{ xl_total.errors }} error(s)
+                            {% elif xl_total.synced > 0 %}
+                            {{ xl_total.synced }} synced
+                            {% else %}
+                            No rows to sync
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- QBO -->
+                    {% if completion_result.qbo_sync %}
+                    <div class="bill-detail-row">
+                        <div class="bill-detail-label">QuickBooks:</div>
+                        <div class="bill-detail-value">
+                            {% if completion_result.qbo_sync.success %}
+                            {{ completion_result.qbo_sync.message }}
+                            {% else %}
+                            {{ completion_result.qbo_sync.message or 'Failed' }}
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- Errors -->
+                    {% if completion_result.errors and completion_result.errors | length > 0 %}
+                    <div style="margin-top: 0.25rem; padding: 0.5rem; background-color: #fff3e0; border: 1px solid #ffcc80; border-radius: 4px;">
+                        <div style="font-weight: 500; margin-bottom: 0.25rem; color: #e65100;">{{ completion_result.errors | length }} error(s)</div>
+                        {% for err in completion_result.errors[:5] %}
+                        <div style="font-size: var(--font-size-base); color: var(--color-text-secondary);">
+                            {{ err.error or err.message or err }}
+                        </div>
+                        {% endfor %}
+                        {% if completion_result.errors | length > 5 %}
+                        <div style="font-size: var(--font-size-base); color: var(--color-text-muted);">...and {{ completion_result.errors | length - 5 }} more</div>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+
                 </div>
             </div>
         </div>
@@ -354,13 +440,19 @@
         </div>
         {% endif %}
 
-        <div class="bill-actions-card">
-            <h6>Actions</h6>
-            <div class="bill-actions-list">
-                <a href="/bill/{{ bill.public_id }}/edit" class="btn btn-primary">Edit Bill</a>
-                <a href="{{ return_to or '/bill/list' }}" class="btn btn-secondary">View All Bills</a>
-                <button type="button" class="btn btn-danger" onclick="deleteBill()">Delete Bill</button>
+          </div>
+
+          <div class="bill-edit-preview-column">
+            <div id="attachment-preview-section">
+                <div class="bill-preview-header">
+                    <span id="attachment-preview-filename">Attachment Preview</span>
+                    <a id="attachment-preview-newtab" href="#" target="_blank" class="btn btn-secondary btn-sm" title="Open in new tab" style="display:none;">↗</a>
+                </div>
+                <div id="attachment-preview-content" class="bill-preview-content">
+                    <div class="bill-preview-placeholder">Select an attachment to preview</div>
+                </div>
             </div>
+          </div>
         </div>
     </div>
 
@@ -499,48 +591,60 @@
             return div.innerHTML;
         }
 
-        async function deleteBill() {
-            if (confirm('Are you sure you want to delete this bill? This action cannot be undone.')) {
-                const payload = {
-                    row_version: "{{ bill.row_version }}"
-                };
+        // =====================
+        // Attachment Preview
+        // =====================
 
-                try {
-                    const response = await fetch(`/api/v1/delete/bill/{{ bill.public_id }}`, {
-                        method: 'DELETE',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify(payload)
-                    });
+        let currentPreviewAttachmentId = null;
 
-                    if (response.ok) {
-                        const returnTo = document.getElementById('bill-view-data')?.dataset?.returnTo || '';
-                        window.location.href = (returnTo && returnTo.startsWith('/bill/list')) ? returnTo : '/bill/list';
-                    } else {
-                        const contentType = response.headers.get('content-type');
-                        if (contentType && contentType.includes('application/json')) {
-                            const error = await response.json();
-                            let message = 'Unknown error';
-                            if (error.detail) {
-                                message = Array.isArray(error.detail) ? error.detail.join(', ') : error.detail;
-                            } else if (error.message) {
-                                message = error.message;
-                            } else if (typeof error === 'string') {
-                                message = error;
-                            } else {
-                                message = JSON.stringify(error);
-                            }
-                            alert('Error deleting bill: ' + message);
-                        } else {
-                            const errorText = await response.text();
-                            alert('Error deleting bill: ' + errorText);
-                        }
-                    }
-                } catch (error) {
-                    alert('Error deleting bill: ' + error.message);
+        function showAttachmentPreview(publicId, contentType, fileExtension, filename) {
+            const content = document.getElementById('attachment-preview-content');
+            const filenameEl = document.getElementById('attachment-preview-filename');
+            const newTabLink = document.getElementById('attachment-preview-newtab');
+
+            if (!content) return;
+
+            currentPreviewAttachmentId = publicId;
+            if (filenameEl) filenameEl.textContent = filename || 'Attachment';
+            if (newTabLink) {
+                newTabLink.href = `/attachment/view/${publicId}`;
+                newTabLink.style.display = 'inline-flex';
+            }
+
+            const ext = (fileExtension || '').toLowerCase().replace(/^\./, '');
+            const isPdf = (contentType || '').toLowerCase().includes('pdf') || ext === 'pdf';
+            const isImage = (contentType || '').toLowerCase().startsWith('image/');
+
+            if (isPdf) {
+                content.innerHTML = `<iframe src="/attachment/view/${publicId}#toolbar=0&navpanes=0&zoom=page-fit" title="PDF Preview"></iframe>`;
+            } else if (isImage) {
+                const safeFilename = (filename || 'Attachment').replace(/"/g, '&quot;');
+                content.innerHTML = `<div style="display:flex; align-items:center; justify-content:center; height:100%; background:#fff;"><img src="/attachment/view/${publicId}" alt="${safeFilename}" style="max-width:100%; max-height:100%; object-fit:contain;"></div>`;
+            } else {
+                const safeFilename = (filename || 'Attachment').replace(/"/g, '&quot;');
+                content.innerHTML = `<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; color:var(--color-text-muted);"><div style="font-size:3rem; margin-bottom:0.75rem;">📄</div><div style="font-size:0.85rem; margin-bottom:0.5rem;">${safeFilename}</div><a href="/attachment/view/${publicId}" target="_blank" class="btn btn-primary btn-sm">Open File</a></div>`;
+            }
+
+            // Highlight clicked attachment link
+            document.querySelectorAll('.attachment-preview-link').forEach(link => {
+                if (link.dataset.attachmentId === publicId) {
+                    link.style.outline = '2px solid var(--color-primary)';
+                    link.style.outlineOffset = '2px';
+                } else {
+                    link.style.outline = 'none';
+                }
+            });
+        }
+
+        // Auto-show first attachment on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            const firstLink = document.querySelector('.attachment-preview-link');
+            if (firstLink) {
+                const { attachmentId, contentType, fileExtension, filename } = firstLink.dataset;
+                if (attachmentId) {
+                    showAttachmentPreview(attachmentId, contentType, fileExtension, filename);
                 }
             }
-        }
+        });
     </script>
 {% endblock %}

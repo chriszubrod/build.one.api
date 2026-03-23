@@ -221,7 +221,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 1.5rem 2rem;
+    padding: 0.5rem 1rem;
     border-bottom: 1px solid #e0e0e0;
     flex-shrink: 0;
     background-color: var(--color-background);
@@ -234,31 +234,116 @@
     margin: 0;
 }
 
-/* Full-page content layout */
+/* Full-page content layout — two-column: form left, preview right */
 .bill-create-content {
     flex: 1;
+    display: flex;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* Right column: form (scrollable) */
+.bill-edit-form-column {
+    order: 2;
+    width: 480px;
+    min-width: 400px;
+    flex-shrink: 0;
     overflow-y: auto;
-    padding: 2rem;
+    padding: 0.75rem 1rem;
+    border-left: 1px solid #e0e0e0;
     scrollbar-width: thin;
     scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
 }
 
-/* Minimal scrollbar styling for create content - WebKit browsers */
-.bill-create-content::-webkit-scrollbar {
+.bill-edit-form-column::-webkit-scrollbar {
     width: 6px;
 }
-
-.bill-create-content::-webkit-scrollbar-track {
+.bill-edit-form-column::-webkit-scrollbar-track {
     background: transparent;
 }
-
-.bill-create-content::-webkit-scrollbar-thumb {
+.bill-edit-form-column::-webkit-scrollbar-thumb {
     background: rgba(0, 0, 0, 0.2);
     border-radius: 3px;
 }
 
-.bill-create-content::-webkit-scrollbar-thumb:hover {
-    background: rgba(0, 0, 0, 0.3);
+/* Left column: attachment preview (fills remaining space) */
+.bill-edit-preview-column {
+    order: 1;
+    flex: 1;
+    min-width: 300px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #f8f9fa;
+}
+
+#attachment-preview-section {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.bill-preview-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid #e0e0e0;
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    flex-shrink: 0;
+}
+
+.bill-preview-content {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.bill-preview-content iframe {
+    width: 100%;
+    height: 100%;
+    flex: 1;
+    border: none;
+}
+
+.bill-preview-content img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    margin: auto;
+}
+
+.bill-preview-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--color-text-muted, #999);
+    font-size: var(--font-size-base);
+}
+
+/* Stack columns on narrow viewports */
+@media (max-width: 768px) {
+    .bill-create-content {
+        flex-direction: column;
+    }
+    .bill-edit-form-column {
+        order: 2;
+        width: 100%;
+        min-width: auto;
+        border-left: none;
+        border-top: 1px solid #e0e0e0;
+    }
+    .bill-edit-preview-column {
+        order: 1;
+        width: 100%;
+        min-width: auto;
+        max-height: 40vh;
+    }
 }
 
 /* Sidebar navigation layout (kept for edit page) */
@@ -406,7 +491,7 @@
 }
 
 .bill-form-card-header {
-    padding: 1rem 1.5rem;
+    padding: 0.5rem 0.75rem;
     border-bottom: 1px solid #e0e0e0;
     display: flex;
     justify-content: space-between;
@@ -414,7 +499,7 @@
 }
 
 .bill-form-card-header h5 {
-    font-size: var(--font-size-action-lg);
+    font-size: var(--font-size-action);
     font-weight: 600;
     color: var(--color-text);
     margin: 0;
@@ -583,25 +668,25 @@
 }
 
 .bill-form-card-body {
-    padding: 1.5rem;
+    padding: 0.75rem;
 }
 
 /* Form fields */
 .bill-form-group {
-    margin-bottom: 1.5rem;
+    margin-bottom: 0.75rem;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    max-width: 400px;
+    gap: 0.25rem;
+    max-width: none;
 }
 
 /* Form group row for side-by-side fields */
 .bill-form-group-row {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 1rem;
-    margin-bottom: 1.5rem;
-    max-width: 600px;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    max-width: none;
 }
 
 .bill-form-group-row .bill-form-group {
@@ -612,7 +697,7 @@
 .bill-form-label {
     display: flex;
     align-items: center;
-    font-size: var(--font-size-action);
+    font-size: var(--font-size-base);
     font-weight: var(--font-weight-regular);
     color: var(--color-text);
     width: 100%;
@@ -643,9 +728,9 @@
 
 .bill-form-control {
     width: 100%;
-    height: 2.5rem;
-    padding: 0.5rem 0.75rem;
-    font-size: var(--font-size-action);
+    height: 2rem;
+    padding: 0.25rem 0.5rem;
+    font-size: var(--font-size-base);
     font-family: inherit;
     color: var(--color-text);
     background-color: var(--color-background);
@@ -680,7 +765,7 @@
 
 textarea.bill-form-control {
     height: auto;
-    min-height: 2.5rem;
+    min-height: 2rem;
     resize: vertical;
 }
 
@@ -693,22 +778,44 @@ textarea.bill-form-control {
     accent-color: var(--color-text);
 }
 
+/* Line item cards — ensure they don't overflow the form column */
+.line-item-existing-form,
+#add-line-item-form,
+.line-item-card {
+    box-sizing: border-box;
+    max-width: 100%;
+    overflow: hidden;
+}
+
+/* Prevent long text from overflowing line item cards */
+.bill-edit-form-column .line-item-card,
+.bill-edit-form-column .line-item-existing-form,
+.bill-edit-form-column .bill-detail-card {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
+.bill-edit-form-column h6 {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
 /* Line item form grid - responsive */
 .bill-line-item-grid {
     display: grid;
-    gap: 1rem;
-    margin-bottom: 1rem;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
     align-items: start;
 }
 
-/* Row 1: Project, SubCostCode, Description (3 columns) - Description takes remaining space */
+/* Row 1: Project, SubCostCode, Description — each full width, stacked */
 .bill-line-item-row-1 {
-    grid-template-columns: minmax(150px, auto) minmax(180px, auto) 1fr;
+    grid-template-columns: 1fr;
 }
 
-/* Row 2: Quantity, Rate, Amount, IsBillable, Markup, Price (6 columns) - evenly distributed */
+/* Row 2: Quantity, Rate, Amount, IsBillable, Markup, Price — 3 columns x 2 rows */
 .bill-line-item-row-2 {
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(3, 1fr);
 }
 
 /* Narrow fields for Quantity, Rate, Amount, Markup, Price */
@@ -730,39 +837,10 @@ textarea.bill-form-control {
     white-space: nowrap;
 }
 
-@media (max-width: 1400px) {
-    .bill-line-item-row-1 {
-        grid-template-columns: minmax(140px, auto) minmax(170px, auto) 1fr;
-    }
-    
-    .bill-line-item-row-2 {
-        grid-template-columns: repeat(6, 1fr);
-    }
-}
-
-@media (max-width: 1200px) {
-    .bill-line-item-row-1 {
-        grid-template-columns: minmax(130px, auto) minmax(160px, auto) 1fr;
-    }
-    
-    .bill-line-item-row-2 {
-        grid-template-columns: repeat(6, 1fr);
-    }
-}
-
 @media (max-width: 768px) {
     .bill-line-item-row-1,
     .bill-line-item-row-2 {
         grid-template-columns: 1fr;
-    }
-    
-    .bill-line-item-narrow {
-        max-width: 100%;
-    }
-    
-    .bill-line-item-checkbox {
-        width: 100%;
-        max-width: 100%;
     }
 }
 
@@ -790,8 +868,8 @@ textarea.bill-form-control {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-top: 2rem;
-    gap: 1rem;
+    margin-top: 0.75rem;
+    gap: 0.5rem;
 }
 
 .bill-form-actions-left {

@@ -35,6 +35,7 @@ class InvoiceService:
         self._driveitem_service: Optional[Any] = None
         self._drive_repo: Optional[Any] = None
         self._project_module_connector: Optional[Any] = None
+        self._project_excel_connector: Optional[Any] = None
 
     @property
     def driveitem_service(self):
@@ -56,6 +57,13 @@ class InvoiceService:
             from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
             self._project_module_connector = DriveItemProjectModuleConnector()
         return self._project_module_connector
+
+    @property
+    def project_excel_connector(self):
+        if self._project_excel_connector is None:
+            from integrations.ms.sharepoint.driveitem.connector.project_excel.business.service import DriveItemProjectExcelConnector
+            self._project_excel_connector = DriveItemProjectExcelConnector()
+        return self._project_excel_connector
 
     def create(
         self,
@@ -221,8 +229,15 @@ class InvoiceService:
 
         invoice_id = existing.id
 
-        # Delete invoice line items
+        # Reset IsBilled on source line items before deleting
         line_items = self.invoice_line_item_service.read_by_invoice_id(invoice_id=invoice_id)
+        for line_item in line_items:
+            try:
+                self._reset_source_as_unbilled(line_item)
+            except Exception as e:
+                logger.warning(f"Error resetting IsBilled for line item {line_item.id}: {e}")
+
+        # Delete invoice line items
         for line_item in line_items:
             try:
                 if line_item.id:
@@ -340,7 +355,11 @@ class InvoiceService:
         else:
             logger.info(f"SharePoint upload complete for invoice {public_id}: {sharepoint_result.get('message')}")
 
-        # QBO sync (non-blocking)
+        # Excel workbook sync disabled
+        excel_result = {"success": True, "message": "Disabled", "synced_count": 0, "errors": []}
+
+        # QBO push sync — push completed invoice to QBO
+        qbo_result = {"success": False, "message": "Not attempted"}
         try:
             from integrations.intuit.qbo.auth.business.service import QboAuthService
             from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
@@ -348,12 +367,15 @@ class InvoiceService:
             if qbo_auth:
                 connector = InvoiceInvoiceConnector()
                 connector.sync_to_qbo_invoice(finalized, qbo_auth.realm_id)
-                logger.info(f"Invoice {public_id} synced to QBO successfully")
+                qbo_result = {"success": True, "message": "Invoice synced to QBO successfully"}
+                logger.info(f"QBO push sync complete for invoice {public_id}")
             else:
-                logger.info(f"No QBO auth configured; skipping QBO sync for invoice {public_id}")
+                qbo_result = {"success": False, "message": "No QBO auth configured"}
+                logger.warning(f"QBO push sync skipped for invoice {public_id}: no auth")
         except Exception as e:
-            logger.error(f"QBO sync failed for invoice {public_id}: {e}")
-            errors.append({"step": "qbo_sync", "error": str(e)})
+            qbo_result = {"success": False, "message": str(e)}
+            errors.append({"error": f"QBO sync failed: {str(e)}"})
+            logger.error(f"QBO push sync failed for invoice {public_id}: {e}")
 
         status_code = 200 if not errors else 207
         return {
@@ -361,8 +383,158 @@ class InvoiceService:
             "message": "Invoice completed successfully" + (f" with {len(errors)} error(s)" if errors else ""),
             "invoice_finalized": True,
             "sharepoint_upload": sharepoint_result,
+            "excel_sync": excel_result,
+            "qbo_sync": qbo_result,
             "errors": errors,
         }
+
+    def sync_to_excel_workbook(self, invoice, line_items: list, project_id: int) -> dict:
+        """
+        Update the DRAW REQUEST column (H) in the project Excel workbook for each
+        source line item row that was previously written by the Bill/Expense sync.
+
+        Each Bill/Expense sync row stores the source line item's public_id in column Z
+        as a reconciliation key. This method scans the worksheet, finds those rows, and
+        writes the invoice number into column H ("DRAW REQUEST").
+
+        Manual line items have no source row in the worksheet and are skipped.
+        """
+        from integrations.ms.sharepoint.external.client import (
+            get_excel_used_range_values,
+            update_excel_range,
+        )
+        from integrations.ms.sharepoint.driveitem.persistence.repo import MsDriveItemRepository
+
+        try:
+            excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
+            if not excel_mapping:
+                return {"success": False, "message": f"Excel workbook not linked for project {project_id}", "synced_count": 0, "errors": []}
+
+            worksheet_name = excel_mapping.get("worksheet_name")
+            if not worksheet_name:
+                return {"success": False, "message": "Worksheet name not found in Excel mapping", "synced_count": 0, "errors": []}
+
+            driveitem = next(
+                (item for item in MsDriveItemRepository().read_all() if item.id == excel_mapping.get("id")),
+                None,
+            )
+            if not driveitem:
+                return {"success": False, "message": "DriveItem not found for Excel workbook", "synced_count": 0, "errors": []}
+
+            drive = self.drive_repo.read_by_id(driveitem.ms_drive_id)
+            if not drive:
+                return {"success": False, "message": "Drive not found for Excel workbook", "synced_count": 0, "errors": []}
+
+            # Read current worksheet data
+            worksheet_result = get_excel_used_range_values(
+                drive_id=drive.drive_id,
+                item_id=driveitem.item_id,
+                worksheet_name=worksheet_name,
+            )
+            if worksheet_result.get("status_code") != 200:
+                return {"success": False, "message": f"Could not read worksheet: {worksheet_result.get('message')}", "synced_count": 0, "errors": []}
+
+            range_data = worksheet_result.get("range", {})
+            worksheet_values = range_data.get("values", [])
+            range_address = range_data.get("address", "")
+
+            if not worksheet_values:
+                return {"success": True, "message": "Worksheet is empty, nothing to update", "synced_count": 0, "errors": []}
+
+            # Parse the range address to determine starting column and row.
+            # Address format: "SheetName!B2:Z150" or "B2:Z150"
+            addr = range_address.split("!")[-1] if "!" in range_address else range_address
+            addr_match = re.match(r"([A-Z]+)(\d+)", addr)
+            start_col_letter = addr_match.group(1) if addr_match else "A"
+            start_row_num = int(addr_match.group(2)) if addr_match else 1
+
+            def col_letter_to_index(letters: str) -> int:
+                """0-based index: A=0, B=1, ..., Z=25"""
+                result = 0
+                for ch in letters:
+                    result = result * 26 + (ord(ch) - ord("A") + 1)
+                return result - 1
+
+            start_col_index = col_letter_to_index(start_col_letter)
+            # Column Z = index 25 absolute; relative to range start:
+            z_col_relative = col_letter_to_index("Z") - start_col_index
+            # Column H = index 7 absolute; relative to range start:
+            h_col_relative = col_letter_to_index("H") - start_col_index
+
+            if z_col_relative < 0 or z_col_relative >= len(worksheet_values[0]) if worksheet_values else True:
+                return {"success": False, "message": "Column Z (reconciliation key) is outside the used range", "synced_count": 0, "errors": []}
+
+            # Build a lookup: source_public_id → worksheet row number (1-based, absolute)
+            key_to_row = {}
+            for row_idx, row in enumerate(worksheet_values):
+                if len(row) > z_col_relative:
+                    cell_val = row[z_col_relative]
+                    if cell_val and isinstance(cell_val, str) and len(cell_val) == 36:
+                        key_to_row[cell_val.lower()] = start_row_num + row_idx
+
+            # Collect source public_ids for each line item
+            errors = []
+            synced_count = 0
+            invoice_number = invoice.invoice_number or ""
+
+            for line_item in line_items:
+                source_public_id = None
+                try:
+                    if line_item.source_type == "BillLineItem" and line_item.bill_line_item_id:
+                        from entities.bill_line_item.business.service import BillLineItemService
+                        bill_li = BillLineItemService().read_by_id(line_item.bill_line_item_id)
+                        source_public_id = str(bill_li.public_id) if bill_li else None
+
+                    elif line_item.source_type == "ExpenseLineItem" and line_item.expense_line_item_id:
+                        from entities.expense_line_item.business.service import ExpenseLineItemService
+                        expense_li = ExpenseLineItemService().read_by_id(line_item.expense_line_item_id)
+                        source_public_id = str(expense_li.public_id) if expense_li else None
+
+                    elif line_item.source_type == "BillCreditLineItem" and line_item.bill_credit_line_item_id:
+                        from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+                        credit_li = BillCreditLineItemService().read_by_id(line_item.bill_credit_line_item_id)
+                        source_public_id = str(credit_li.public_id) if credit_li else None
+
+                    # Manual lines have no source row in the worksheet — skip
+                    if not source_public_id:
+                        continue
+
+                    ws_row = key_to_row.get(source_public_id.lower())
+                    if not ws_row:
+                        logger.info(f"No worksheet row found for source public_id {source_public_id} (InvoiceLineItem {line_item.id})")
+                        continue
+
+                    # Update column H ("DRAW REQUEST") in this row
+                    cell_address = f"H{ws_row}"
+                    update_result = update_excel_range(
+                        drive_id=drive.drive_id,
+                        item_id=driveitem.item_id,
+                        worksheet_name=worksheet_name,
+                        range_address=cell_address,
+                        values=[[invoice_number]],
+                    )
+                    if update_result.get("status_code") == 200:
+                        synced_count += 1
+                        logger.info(f"Updated {cell_address} = '{invoice_number}' for source {source_public_id}")
+                    else:
+                        err = f"Failed to update {cell_address}: {update_result.get('message')}"
+                        logger.error(err)
+                        errors.append({"line_item_id": line_item.id, "error": err})
+
+                except Exception as e:
+                    logger.error(f"Error syncing InvoiceLineItem {line_item.id} to Excel: {e}")
+                    errors.append({"line_item_id": line_item.id, "error": str(e)})
+
+            return {
+                "success": not errors,
+                "message": f"Updated {synced_count} row(s) in Excel workbook",
+                "synced_count": synced_count,
+                "errors": errors,
+            }
+
+        except Exception as e:
+            logger.exception(f"Error syncing invoice to Excel workbook for project {project_id}")
+            return {"success": False, "message": f"Error syncing to Excel: {str(e)}", "synced_count": 0, "errors": [{"error": str(e)}]}
 
     def get_billable_items_for_project(self, project_public_id: str, invoice_public_id: str = None) -> dict:
         """
@@ -685,6 +857,17 @@ class InvoiceService:
             synced_count = 0
             uploaded_attachment_ids: set = set()
 
+            # Create (or reuse) a subfolder named after the invoice number
+            safe_folder_name = re.sub(r'[<>:"/\\|?*]', '_', invoice_number)
+            folder_result = self.driveitem_service.create_folder(
+                drive_public_id=drive.public_id,
+                parent_item_id=folder_item_id,
+                folder_name=safe_folder_name,
+            )
+            if folder_result.get("status_code") not in [200, 201] or not folder_result.get("item"):
+                return {"success": False, "message": f"Failed to create invoice subfolder: {folder_result.get('message')}", "synced_count": 0, "errors": [{"error": folder_result.get("message")}]}
+            upload_folder_item_id = folder_result["item"]["item_id"]
+
             # 2. Collect attachment metadata for all line item source types
             bill_ids = [li.bill_line_item_id for li in line_items if li.source_type == "BillLineItem" and li.bill_line_item_id]
             expense_ids = [li.expense_line_item_id for li in line_items if li.source_type == "ExpenseLineItem" and li.expense_line_item_id]
@@ -846,7 +1029,7 @@ class InvoiceService:
                 content_type = row_data["content_type"] or metadata.get("content_type", "application/octet-stream")
                 upload_result = self.driveitem_service.upload_file(
                     drive_public_id=drive.public_id,
-                    parent_item_id=folder_item_id,
+                    parent_item_id=upload_folder_item_id,
                     filename=sharepoint_filename,
                     content=file_content,
                     content_type=content_type,
@@ -871,7 +1054,7 @@ class InvoiceService:
                     packet_filename = re.sub(r'[<>:"/\\|?*]', '_', invoice_number) + " - Packet.pdf"
                     upload_result = self.driveitem_service.upload_file(
                         drive_public_id=drive.public_id,
-                        parent_item_id=folder_item_id,
+                        parent_item_id=upload_folder_item_id,
                         filename=packet_filename,
                         content=file_content,
                         content_type="application/pdf",
@@ -888,6 +1071,37 @@ class InvoiceService:
         except Exception as e:
             logger.exception("Error uploading invoice attachments to SharePoint")
             return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
+
+    def _sync_billed_status_to_qbo(self, line_items: list, realm_id: str) -> None:
+        """
+        After invoice completion, re-push each affected QBO Bill/Purchase with
+        BillableStatus = HasBeenBilled so they no longer appear as unbilled in QBO.
+        Deduplicates by parent bill/expense — one QBO API call per affected bill.
+        """
+        from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
+        from entities.bill_line_item.business.service import BillLineItemService
+
+        bill_connector = BillBillConnector()
+        bill_li_svc = BillLineItemService()
+        updated_bill_ids: set = set()
+
+        for line_item in line_items:
+            if line_item.source_type == "BillLineItem" and line_item.bill_line_item_id:
+                source = bill_li_svc.read_by_id(line_item.bill_line_item_id)
+                if source and source.bill_id and source.bill_id not in updated_bill_ids:
+                    try:
+                        bill_connector.update_has_been_billed_in_qbo(source.bill_id, realm_id)
+                        updated_bill_ids.add(source.bill_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to update HasBeenBilled for QBO Bill (bill_id={source.bill_id}): {e}")
+
+        # Expense/Purchase side: log for now — purchase connector update can be added if needed
+        for line_item in line_items:
+            if line_item.source_type == "ExpenseLineItem" and line_item.expense_line_item_id:
+                logger.info(
+                    f"ExpenseLineItem {line_item.expense_line_item_id} billed — "
+                    f"QBO Purchase HasBeenBilled update not yet implemented"
+                )
 
     def _mark_source_as_billed(self, line_item) -> None:
         """Mark the source line item (BillLineItem, ExpenseLineItem, BillCreditLineItem) as billed."""
@@ -937,6 +1151,57 @@ class InvoiceService:
                         row_version=source.row_version,
                         bill_credit_public_id=credit_public_id,
                         is_billed=True,
+                    )
+                    svc.update_by_public_id(
+                        public_id=source.public_id,
+                        bill_credit_line_item=update_schema,
+                    )
+
+    def _reset_source_as_unbilled(self, line_item) -> None:
+        """Reset IsBilled=False on the source line item when an invoice is deleted."""
+        if line_item.source_type == "BillLineItem" and line_item.bill_line_item_id:
+            from entities.bill_line_item.business.service import BillLineItemService
+            svc = BillLineItemService()
+            source = svc.read_by_id(id=line_item.bill_line_item_id)
+            if source and source.is_billed:
+                from entities.bill.business.service import BillService
+                bill = BillService().read_by_id(id=source.bill_id) if source.bill_id else None
+                if bill:
+                    svc.update_by_public_id(
+                        public_id=source.public_id,
+                        row_version=source.row_version,
+                        bill_public_id=bill.public_id,
+                        is_billed=False,
+                    )
+
+        elif line_item.source_type == "ExpenseLineItem" and line_item.expense_line_item_id:
+            from entities.expense_line_item.business.service import ExpenseLineItemService
+            svc = ExpenseLineItemService()
+            source = svc.read_by_id(id=line_item.expense_line_item_id)
+            if source and source.is_billed:
+                from entities.expense.business.service import ExpenseService
+                expense = ExpenseService().read_by_id(id=source.expense_id) if source.expense_id else None
+                if expense:
+                    svc.update_by_public_id(
+                        public_id=source.public_id,
+                        row_version=source.row_version,
+                        expense_public_id=expense.public_id,
+                        is_billed=False,
+                    )
+
+        elif line_item.source_type == "BillCreditLineItem" and line_item.bill_credit_line_item_id:
+            from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+            from entities.bill_credit_line_item.api.schemas import BillCreditLineItemUpdate
+            svc = BillCreditLineItemService()
+            source = svc.read_by_id(id=line_item.bill_credit_line_item_id)
+            if source and source.is_billed:
+                from entities.bill_credit.business.service import BillCreditService
+                credit = BillCreditService().read_by_id(id=source.bill_credit_id) if source.bill_credit_id else None
+                if credit:
+                    update_schema = BillCreditLineItemUpdate(
+                        row_version=source.row_version,
+                        bill_credit_public_id=credit.public_id,
+                        is_billed=False,
                     )
                     svc.update_by_public_id(
                         public_id=source.public_id,

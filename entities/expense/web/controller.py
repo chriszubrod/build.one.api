@@ -2,7 +2,7 @@
 from decimal import Decimal
 from typing import Optional
 import logging
-from fastapi import APIRouter, Request, Depends
+from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -501,8 +501,11 @@ async def edit_expense(request: Request, public_id: str, current_user: dict = De
             
             line_items_with_attachments.append(line_item_dict)
     
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
     expense_dict = expense.to_dict()
-    
+
     # Convert Decimal values to floats for JSON serialization
     for key, value in expense_dict.items():
         if isinstance(value, Decimal):

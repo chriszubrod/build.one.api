@@ -297,6 +297,29 @@ END;
 GO
 
 
+CREATE OR ALTER PROCEDURE DeleteInvoiceLineItemsByBillLineItemId
+(
+    @BillLineItemId BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    -- Remove InvoiceLineItemAttachment join records first (FK constraint)
+    DELETE ila
+    FROM dbo.InvoiceLineItemAttachment ila
+    JOIN dbo.InvoiceLineItem ili ON ili.Id = ila.InvoiceLineItemId
+    WHERE ili.BillLineItemId = @BillLineItemId;
+
+    -- Delete the InvoiceLineItem records
+    DELETE FROM dbo.InvoiceLineItem
+    WHERE BillLineItemId = @BillLineItemId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
 CREATE OR ALTER PROCEDURE DeleteInvoiceLineItemById
 (
     @Id BIGINT

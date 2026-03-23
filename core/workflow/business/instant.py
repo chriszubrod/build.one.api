@@ -65,7 +65,9 @@ SERVICE_REGISTRY: Dict[str, str] = {
     "user": "entities.user.business.service.UserService",
     "role": "entities.role.business.service.RoleService",
     "user_role": "entities.user_role.business.service.UserRoleService",
+    "user_project": "entities.user_project.business.service.UserProjectService",
     "role_module": "entities.role_module.business.service.RoleModuleService",
+    "user_module": "entities.user_module.business.service.UserModuleService",
     
     # Attachments
     "attachment": "entities.attachment.business.service.AttachmentService",

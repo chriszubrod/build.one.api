@@ -292,13 +292,15 @@ def sync_qbo_to_local(
     else:
         logger.info(f"Syncing Bills from QBO API for realm_id: {realm_id}")
     
-    # Fetch bills from QBO and store locally (without auto-syncing to modules)
+    # Fetch and upsert QboBill/QboBillLine mirror records only.
+    # Module sync (Bill/BillLineItem) is handled below per-bill with retry logic
+    # and attachment sync — passing sync_to_modules=True here would double-sync.
     bills = qbo_bill_service.sync_from_qbo(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
         start_date=start_date,
         end_date=end_date,
-        sync_to_modules=False  # We'll handle module sync separately for better control
+        sync_to_modules=False,
     )
     
     if not bills:

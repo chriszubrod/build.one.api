@@ -1,0 +1,58 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}User Modules - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/user_module.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="user-module-page-header">
+        <h1>User Modules</h1>
+        <a href="/user_module/create" class="btn btn-primary">Add User Module</a>
+    </div>
+
+    {% if user_modules %}
+        <div class="user-module-grid">
+            {% for user_module in user_modules %}
+            <div class="user-module-card">
+                <div class="user-module-card-body">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
+                        <h5 class="user-module-card-title">
+                            {{ user_map.get(user_module.user_id, 'Unknown User') }}
+                        </h5>
+                        <span class="badge badge-info">{{ module_map.get(user_module.module_id, 'Unknown Module') }}</span>
+                    </div>
+                    <div class="user-module-metadata">
+                        <div class="user-module-metadata-item">
+                            <span>Created: {{ user_module.created_datetime or 'Unknown' }}</span>
+                        </div>
+                        <div class="user-module-metadata-item">
+                            <span>Modified: {{ user_module.modified_datetime or 'Unknown' }}</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="user-module-card-footer">
+                    <div class="user-module-btn-group">
+                        <a href="/user_module/{{ user_module.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
+                        <a href="/user_module/{{ user_module.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="user-module-empty-state">
+            <div class="user-module-empty-state-icon">--</div>
+            <h3>No User Modules Found</h3>
+            <p>Create your first user module to get started.</p>
+            <a href="/user_module/create" class="btn btn-primary">Create User Module</a>
+        </div>
+    {% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/auth.js"></script>
+{% endblock %}

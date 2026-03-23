@@ -25,6 +25,8 @@ from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
 from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.account.persistence.repo import QboAccountRepository
+from integrations.intuit.qbo.term.connector.payment_term.persistence.repo import TermPaymentTermRepository
+from integrations.intuit.qbo.term.persistence.repo import QboTermRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from entities.bill.business.service import BillService
 from entities.bill.business.model import Bill
@@ -54,6 +56,8 @@ class BillBillConnector:
         customer_project_repo: Optional[CustomerProjectRepository] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
         qbo_account_repo: Optional[QboAccountRepository] = None,
+        term_payment_term_repo: Optional[TermPaymentTermRepository] = None,
+        qbo_term_repo: Optional[QboTermRepository] = None,
         auth_service: Optional[QboAuthService] = None,
     ):
         """Initialize the BillBillConnector."""
@@ -70,6 +74,8 @@ class BillBillConnector:
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.qbo_account_repo = qbo_account_repo or QboAccountRepository()
+        self.term_payment_term_repo = term_payment_term_repo or TermPaymentTermRepository()
+        self.qbo_term_repo = qbo_term_repo or QboTermRepository()
         self.auth_service = auth_service or QboAuthService()
 
     def sync_from_qbo_bill(self, qbo_bill: QboBill, qbo_bill_lines: List[QboBillLine]) -> Bill:
@@ -282,6 +288,14 @@ class BillBillConnector:
             logger.info(f"Bill {bill_id} is already mapped to QboBill {existing_mapping.qbo_bill_id}")
             return self.qbo_bill_repo.read_by_id(existing_mapping.qbo_bill_id)
         
+        # Require bill_number — QBO DocNumber must be present; exclude_none=True would silently drop it
+        if not bill.bill_number:
+            raise ValueError(f"Bill {bill_id} has no bill_number. Set a bill number before syncing to QBO.")
+
+        # Require bill_date — TxnDate must be present; without it QBO silently uses today's date
+        if not bill.bill_date:
+            raise ValueError(f"Bill {bill_id} has no bill_date. Set a bill date before syncing to QBO.")
+
         # Get QBO vendor reference
         qbo_vendor_ref = self._get_qbo_vendor_ref(bill.vendor_id)
         if not qbo_vendor_ref:
@@ -290,35 +304,30 @@ class BillBillConnector:
         # Get bill line items
         bill_line_items = self.bill_line_item_service.read_by_bill_id(bill_id=bill_id)
         
-        # Build QBO line items
+        # Build QBO line items — all line items must have valid mappings.
+        # A partial sync is not allowed; if any line item cannot be mapped, the entire sync fails.
         qbo_lines = []
-        skipped_lines = []
         line_num_to_line_item_id = {}
+
+        if not bill_line_items:
+            raise ValueError("Bill has no line items. QBO requires at least one line item.")
+
         for idx, line_item in enumerate(bill_line_items, start=1):
             qbo_line = self._build_qbo_line(line_item, idx)
-            if qbo_line:
-                qbo_lines.append(qbo_line)
-                line_num_to_line_item_id[idx] = line_item.id
-            else:
-                skipped_lines.append(line_item.id)
-        
-        # QBO requires at least one line item
-        if not qbo_lines:
-            if bill_line_items:
-                raise ValueError(
-                    f"Bill has {len(bill_line_items)} line item(s) but none have QBO Item mappings. "
-                    f"SubCostCodes must be mapped to QBO Items first. Skipped line item IDs: {skipped_lines}"
-                )
-            else:
-                raise ValueError("Bill has no line items. QBO requires at least one line item.")
+            qbo_lines.append(qbo_line)
+            line_num_to_line_item_id[idx] = line_item.id
         
         # Get AP Account reference
         ap_account_ref = self._get_ap_account_ref(realm_id)
-        
+
+        # Get SalesTerm reference from PaymentTerm mapping
+        sales_term_ref = self._get_qbo_sales_term_ref(bill.payment_term_id)
+
         # Build QBO Bill create payload
         qbo_bill_create = QboBillCreate(
             vendor_ref=qbo_vendor_ref,
             ap_account_ref=ap_account_ref,
+            sales_term_ref=sales_term_ref,
             txn_date=bill.bill_date[:10] if bill.bill_date else None,  # YYYY-MM-DD
             due_date=bill.due_date[:10] if bill.due_date else None,
             doc_number=bill.bill_number,
@@ -406,6 +415,114 @@ class BillBillConnector:
             logger.warning(f"Could not create mapping: {e}")
         
         return local_qbo_bill
+
+    def update_has_been_billed_in_qbo(self, bill_id: int, realm_id: str) -> None:
+        """
+        Re-push a QBO Bill with updated BillableStatus = HasBeenBilled on billed line items.
+        Called after invoice completion to reflect the billed state in QBO.
+        """
+        from integrations.intuit.qbo.bill.external.schemas import QboBillUpdate
+
+        mapping = self.mapping_repo.read_by_bill_id(bill_id)
+        if not mapping:
+            logger.debug(f"No QBO mapping for bill_id={bill_id}, skipping HasBeenBilled update")
+            return
+
+        local_qbo_bill = self.qbo_bill_repo.read_by_id(mapping.qbo_bill_id)
+        if not local_qbo_bill or not local_qbo_bill.qbo_id:
+            return
+
+        qbo_auth = self.auth_service.ensure_valid_token(realm_id=realm_id)
+        if not qbo_auth or not qbo_auth.access_token:
+            return
+
+        # Rebuild all bill lines — _build_qbo_line reads is_billed from local DB,
+        # so billed items will now get BillableStatus = "HasBeenBilled".
+        # Use sequential line_nums with no gaps to match QBO's numbering.
+        bill_line_items = self.bill_line_item_service.read_by_bill_id(bill_id=bill_id)
+        qbo_lines = []
+        seq = 0
+        for line_item in bill_line_items:
+            qbo_line = self._build_qbo_line(line_item, seq + 1)
+            if qbo_line:
+                seq += 1
+                qbo_lines.append(qbo_line)
+
+        if not qbo_lines:
+            logger.warning(f"No QBO lines could be built for bill_id={bill_id}, skipping update")
+            return
+
+        vendor_ref = QboReferenceType(
+            value=local_qbo_bill.vendor_ref_value,
+            name=local_qbo_bill.vendor_ref_name,
+        )
+
+        # QBO Bill updates are full-replace — any field not included is cleared.
+        # Re-send all header fields from the locally stored QboBill to preserve them.
+        ap_account_ref = (
+            QboReferenceType(value=local_qbo_bill.ap_account_ref_value, name=local_qbo_bill.ap_account_ref_name)
+            if local_qbo_bill.ap_account_ref_value else None
+        )
+        sales_term_ref = (
+            QboReferenceType(value=local_qbo_bill.sales_term_ref_value, name=local_qbo_bill.sales_term_ref_name)
+            if local_qbo_bill.sales_term_ref_value else None
+        )
+        currency_ref = (
+            QboReferenceType(value=local_qbo_bill.currency_ref_value, name=local_qbo_bill.currency_ref_name)
+            if local_qbo_bill.currency_ref_value else None
+        )
+        department_ref = (
+            QboReferenceType(value=local_qbo_bill.department_ref_value, name=local_qbo_bill.department_ref_name)
+            if local_qbo_bill.department_ref_value else None
+        )
+
+        with QboBillClient(access_token=qbo_auth.access_token, realm_id=realm_id) as client:
+            fresh = client.get_bill(local_qbo_bill.qbo_id)
+            qbo_bill_update = QboBillUpdate(
+                id=local_qbo_bill.qbo_id,
+                sync_token=fresh.sync_token,
+                vendor_ref=vendor_ref,
+                ap_account_ref=ap_account_ref,
+                sales_term_ref=sales_term_ref,
+                currency_ref=currency_ref,
+                department_ref=department_ref,
+                txn_date=local_qbo_bill.txn_date,
+                due_date=local_qbo_bill.due_date,
+                doc_number=local_qbo_bill.doc_number,
+                private_note=local_qbo_bill.private_note,
+                exchange_rate=local_qbo_bill.exchange_rate,
+                global_tax_calculation=local_qbo_bill.global_tax_calculation,
+                line=qbo_lines,
+            )
+            updated = client.update_bill(qbo_bill_update)
+
+        logger.info(f"Updated QBO Bill {local_qbo_bill.qbo_id} — billed line items now HasBeenBilled")
+
+        # Persist the new SyncToken locally
+        self.qbo_bill_repo.update_by_qbo_id(
+            qbo_id=local_qbo_bill.qbo_id,
+            row_version=local_qbo_bill.row_version_bytes,
+            sync_token=updated.sync_token,
+            realm_id=realm_id,
+            vendor_ref_value=local_qbo_bill.vendor_ref_value,
+            vendor_ref_name=local_qbo_bill.vendor_ref_name,
+            txn_date=local_qbo_bill.txn_date,
+            due_date=local_qbo_bill.due_date,
+            doc_number=local_qbo_bill.doc_number,
+            private_note=local_qbo_bill.private_note,
+            total_amt=updated.total_amt,
+            balance=updated.balance,
+            ap_account_ref_value=local_qbo_bill.ap_account_ref_value,
+            ap_account_ref_name=local_qbo_bill.ap_account_ref_name,
+            sales_term_ref_value=local_qbo_bill.sales_term_ref_value,
+            sales_term_ref_name=local_qbo_bill.sales_term_ref_name,
+            currency_ref_value=local_qbo_bill.currency_ref_value,
+            currency_ref_name=local_qbo_bill.currency_ref_name,
+            exchange_rate=local_qbo_bill.exchange_rate,
+            department_ref_value=local_qbo_bill.department_ref_value,
+            department_ref_name=local_qbo_bill.department_ref_name,
+            global_tax_calculation=local_qbo_bill.global_tax_calculation,
+        )
 
     def _get_qbo_vendor_ref(self, vendor_id: int) -> Optional[QboReferenceType]:
         """
@@ -513,6 +630,33 @@ class BillBillConnector:
         logger.warning(f"No Accounts Payable account found for realm_id: {realm_id}")
         return None
 
+    def _get_qbo_sales_term_ref(self, payment_term_id: int) -> Optional[QboReferenceType]:
+        """
+        Get QBO SalesTermRef from local payment_term_id.
+
+        Args:
+            payment_term_id: Local PaymentTerm database ID
+
+        Returns:
+            QboReferenceType with QBO term value and name, or None
+        """
+        if not payment_term_id:
+            return None
+
+        # Find TermPaymentTerm mapping
+        term_mapping = self.term_payment_term_repo.read_by_payment_term_id(payment_term_id)
+        if not term_mapping:
+            logger.debug(f"TermPaymentTerm mapping not found for payment_term_id: {payment_term_id}")
+            return None
+
+        # Get QboTerm
+        qbo_term = self.qbo_term_repo.read_by_id(term_mapping.qbo_term_id)
+        if not qbo_term or not qbo_term.qbo_id:
+            logger.debug(f"QboTerm not found for qbo_term_id: {term_mapping.qbo_term_id}")
+            return None
+
+        return QboReferenceType(value=qbo_term.qbo_id, name=qbo_term.name)
+
     def _build_qbo_line(self, line_item, line_num: int) -> Optional[QboBillLineSchema]:
         """
         Build a QBO Bill line from a local BillLineItem.
@@ -526,28 +670,34 @@ class BillBillConnector:
         """
         logger.debug(f"Building QBO line for BillLineItem {line_item.id}: sub_cost_code_id={line_item.sub_cost_code_id}, project_id={line_item.project_id}")
         
-        # Get QBO references
+        # Get QBO references — all line items must have valid mappings
         item_ref = None
         if line_item.sub_cost_code_id:
             item_ref = self._get_qbo_item_ref(line_item.sub_cost_code_id)
             if not item_ref:
-                logger.warning(f"No QBO Item mapping for sub_cost_code_id={line_item.sub_cost_code_id}")
+                raise ValueError(
+                    f"BillLineItem {line_item.id}: no QBO Item mapping for sub_cost_code_id={line_item.sub_cost_code_id}. "
+                    f"Map the SubCostCode to a QBO Item before syncing."
+                )
         else:
-            logger.warning(f"BillLineItem {line_item.id} has no sub_cost_code_id")
+            raise ValueError(f"BillLineItem {line_item.id} has no sub_cost_code_id. All line items require a SubCostCode for QBO sync.")
         
         customer_ref = self._get_qbo_customer_ref(line_item.project_id) if line_item.project_id else None
         
-        # Determine billable status
-        # Note: If BillableStatus is "Billable", CustomerRef is REQUIRED by QBO
-        billable_status = None
-        if line_item.is_billable is True:
+        # Determine billable status.
+        # is_billable=None means default billable (treat same as True).
+        # is_billable=False means explicitly not billable.
+        # Note: If BillableStatus is "Billable", CustomerRef is REQUIRED by QBO.
+        if line_item.is_billable is not False:
             if customer_ref:
-                billable_status = "Billable" if not getattr(line_item, 'is_billed', False) else "HasBeenBilled"
+                billable_status = "HasBeenBilled" if line_item.is_billed is True else "Billable"
             else:
-                # Can't set as Billable without a customer reference - skip billable status
-                logger.warning(f"Line item {line_item.id} is billable but no CustomerRef available (project_id={line_item.project_id}). Setting to NotBillable.")
+                logger.warning(
+                    f"Line item {line_item.id} is billable but no CustomerRef available "
+                    f"(project_id={line_item.project_id}). Setting to NotBillable."
+                )
                 billable_status = "NotBillable"
-        elif line_item.is_billable is False:
+        else:
             billable_status = "NotBillable"
         
         # Calculate markup percent (convert from decimal like 0.10 to percentage like 10)
@@ -555,43 +705,38 @@ class BillBillConnector:
         if line_item.markup is not None:
             markup_percent = line_item.markup * Decimal('100')
         
-        if item_ref:
-            # Item-based expense line
-            # Ensure we have an amount - QBO requires either Amount or (Qty + UnitPrice)
-            line_amount = line_item.amount
-            qty = Decimal(str(line_item.quantity)) if line_item.quantity else None
-            unit_price = line_item.rate
-            
-            # If no amount, try to calculate from qty * rate
-            if line_amount is None and qty is not None and unit_price is not None:
-                line_amount = qty * unit_price
-            
-            # If still no amount, use 0 as fallback
-            if line_amount is None:
-                logger.warning(f"Line item {line_item.id} has no amount, qty, or rate. Using 0.")
-                line_amount = Decimal('0')
-            
-            detail = QboItemBasedExpenseLineDetail(
-                item_ref=item_ref,
-                customer_ref=customer_ref,
-                billable_status=billable_status,
-                qty=qty,
-                unit_price=unit_price,
-                markup_info={"Percent": float(markup_percent)} if markup_percent is not None else None,
-            )
-            return QboBillLineSchema(
-                line_num=line_num,
-                description=line_item.description,
-                amount=line_amount,
-                detail_type="ItemBasedExpenseLineDetail",
-                item_based_expense_line_detail=detail,
-            )
-        else:
-            # Account-based expense line (fallback when no item mapping)
-            # Note: This requires an account reference; we skip for now
-            # if there's no item mapping and log a warning
-            logger.warning(f"No item mapping for line item {line_item.id}, skipping line")
-            return None
+        # Item-based expense line
+        # Ensure we have an amount - QBO requires either Amount or (Qty + UnitPrice)
+        line_amount = line_item.amount
+        qty = Decimal(str(line_item.quantity)) if line_item.quantity else None
+        unit_price = line_item.rate
+
+        # If no amount, try to calculate from qty * rate
+        if line_amount is None and qty is not None and unit_price is not None:
+            line_amount = qty * unit_price
+
+        # If still no amount, use 0 as fallback
+        if line_amount is None:
+            logger.warning(f"Line item {line_item.id} has no amount, qty, or rate. Using 0.")
+            line_amount = Decimal('0')
+
+        detail = QboItemBasedExpenseLineDetail(
+            item_ref=item_ref,
+            customer_ref=customer_ref,
+            billable_status=billable_status,
+            qty=qty,
+            unit_price=unit_price,
+            # float() is acceptable here: percentage value inside Dict[str, Any] needs
+            # JSON-serializable numeric type; Pydantic won't auto-convert Decimal in dicts.
+            markup_info={"Percent": float(markup_percent)} if markup_percent is not None else None,
+        )
+        return QboBillLineSchema(
+            line_num=line_num,
+            description=line_item.description,
+            amount=line_amount,
+            detail_type="ItemBasedExpenseLineDetail",
+            item_based_expense_line_detail=detail,
+        )
 
     def _store_qbo_bill_line(self, qbo_bill_id: int, qbo_line: QboBillLineSchema):
         """
@@ -633,6 +778,10 @@ class BillBillConnector:
                 billable_status = detail.billable_status
                 qty = detail.qty
                 unit_price = detail.unit_price
+                if detail.markup_info and isinstance(detail.markup_info, dict):
+                    raw_pct = detail.markup_info.get("Percent") or detail.markup_info.get("percent")
+                    if raw_pct is not None:
+                        markup_percent = Decimal(str(raw_pct))
             elif qbo_line.account_based_expense_line_detail:
                 detail = qbo_line.account_based_expense_line_detail
                 if detail.account_ref:

@@ -40,102 +40,79 @@ logger = logging.getLogger(__name__)
 def find_insertion_row_for_subcostcode(worksheet_values: List[List[Any]], target_subcostcode: str) -> Optional[int]:
     """
     Find the row number where a new line item should be inserted based on SubCostCode.
-    
+
     Logic:
     1. Find all rows where Column C matches the target SubCostCode (the "block")
-    2. Within that block:
-       - First priority: Insert after the last row that has BOTH Date (Column I) AND Payable To (Column J)
-       - Fallback: If no row has both Date and Payable To, insert after the SECOND row with the SubCostCode
-    
+    2. Within that block, find the last row that has BOTH Date (Column I) AND Vendor (Column J)
+    3. Insert BEFORE that last data row (at its position, pushing it down)
+       — this places new rows at the bottom of the group, above the last entry
+    4. Fallback: if no data rows, insert after the last matching row in the block
+    5. If no matching SubCostCode at all, return None (append at end)
+
     Args:
         worksheet_values: 2D array of cell values from the worksheet
         target_subcostcode: The SubCostCode number to match (e.g., "65.03" or "37")
-    
+
     Returns:
         The 1-based row number where the new row should be inserted,
         or None if no matching SubCostCode found (append at end)
     """
     if not worksheet_values:
         return None
-    
-    # Collect all matching rows for this SubCostCode
-    matching_rows = []  # List of (excel_row, has_date_and_payable)
-    
-    # Skip row 0 (header row in 0-based index = row 1 in Excel)
+
+    matching_rows = []  # List of (excel_row, has_date_and_vendor)
+
     for row_index, row in enumerate(worksheet_values):
-        # Skip header row (row_index 0 = Excel row 1)
         if row_index == 0:
-            continue
-        
-        # Excel row number is 1-based
-        excel_row = row_index + 1
-        
-        # Get column C (index 2) - SubCostCode
+            continue  # Skip header row
+
+        excel_row = row_index + 1  # 1-based
+
         col_c_value = row[2] if len(row) > 2 else None
-        
-        # Get column I (index 8) - DATE
-        col_i_value = row[8] if len(row) > 8 else None
-        
-        # Get column J (index 9) - Payable To (Vendor)
-        col_j_value = row[9] if len(row) > 9 else None
-        
-        # Normalize the SubCostCode for comparison
-        subcostcode_match = False
-        if col_c_value is not None:
-            col_c_str = str(col_c_value).strip()
-            target_str = str(target_subcostcode).strip()
-            
-            # Skip empty values
-            if not col_c_str:
-                continue
-            
-            # Try exact match first
-            if col_c_str == target_str:
-                subcostcode_match = True
-            else:
-                # Try numeric comparison (65.03 == 65.03, 37 == 37.0)
-                try:
-                    if float(col_c_str) == float(target_str):
-                        subcostcode_match = True
-                except (ValueError, TypeError):
-                    pass
-        
+        if col_c_value is None:
+            continue
+        col_c_str = str(col_c_value).strip()
+        if not col_c_str:
+            continue
+
+        target_str = str(target_subcostcode).strip()
+
+        # Match: exact string or numeric equivalence
+        subcostcode_match = col_c_str == target_str
+        if not subcostcode_match:
+            try:
+                subcostcode_match = float(col_c_str) == float(target_str)
+            except (ValueError, TypeError):
+                pass
+
         if subcostcode_match:
-            # Check if this row has both Date (Column I) AND Payable To (Column J)
-            has_date = col_i_value is not None and str(col_i_value).strip() != ""
-            has_payable = col_j_value is not None and str(col_j_value).strip() != ""
-            has_date_and_payable = has_date and has_payable
-            
-            matching_rows.append((excel_row, has_date_and_payable))
-    
+            col_i = row[8] if len(row) > 8 else None
+            col_j = row[9] if len(row) > 9 else None
+            has_data = (
+                col_i is not None and str(col_i).strip() != ""
+                and col_j is not None and str(col_j).strip() != ""
+            )
+            matching_rows.append((excel_row, has_data))
+
     if not matching_rows:
         logger.info(f"SubCostCode '{target_subcostcode}': No matching rows found, will append at end")
         return None
-    
-    # Find the last row with both Date and Payable To
-    last_row_with_data = None
-    for excel_row, has_date_and_payable in matching_rows:
-        if has_date_and_payable:
-            last_row_with_data = excel_row
-    
-    if last_row_with_data is not None:
-        # Insert after the last row with Date and Payable To
-        logger.info(f"SubCostCode '{target_subcostcode}': Found data row at {last_row_with_data}, inserting at row {last_row_with_data + 1}")
-        return last_row_with_data + 1
-    
-    # Fallback: Insert after the second row with the SubCostCode (if exists)
-    if len(matching_rows) >= 2:
-        second_row = matching_rows[1][0]
-        logger.info(f"SubCostCode '{target_subcostcode}': No data rows, inserting after second template row at {second_row}, inserting at row {second_row + 1}")
-        return second_row + 1
-    elif len(matching_rows) == 1:
-        # Only one matching row, insert after it
-        first_row = matching_rows[0][0]
-        logger.info(f"SubCostCode '{target_subcostcode}': Only one template row at {first_row}, inserting at row {first_row + 1}")
-        return first_row + 1
-    
-    logger.info(f"SubCostCode '{target_subcostcode}': No matching rows found, will append at end")
-    return None
+
+    # Find the last row with data (Date + Vendor)
+    last_data_row = None
+    for excel_row, has_data in matching_rows:
+        if has_data:
+            last_data_row = excel_row
+
+    if last_data_row is not None:
+        # Insert before the last data row (at its position, pushing it down)
+        logger.info(f"SubCostCode '{target_subcostcode}': inserting before last data row {last_data_row}")
+        return last_data_row
+
+    # Fallback: no data rows in block, insert after the last matching row
+    last_match_row = matching_rows[-1][0]
+    logger.info(f"SubCostCode '{target_subcostcode}': no data rows, inserting after last template row {last_match_row}")
+    return last_match_row + 1
 
 
 class BillService:
@@ -161,6 +138,7 @@ class BillService:
         self._drive_repo: Optional[Any] = None
         self._qbo_bill_connector: Optional[Any] = None
         self._qbo_auth_service: Optional[Any] = None
+        self._attachable_attachment_connector: Optional[Any] = None
 
     @property
     def project_module_connector(self):
@@ -199,6 +177,13 @@ class BillService:
             from integrations.intuit.qbo.auth.business.service import QboAuthService
             self._qbo_auth_service = QboAuthService()
         return self._qbo_auth_service
+
+    @property
+    def attachable_attachment_connector(self):
+        if self._attachable_attachment_connector is None:
+            from integrations.intuit.qbo.attachable.connector.attachment.business.service import AttachableAttachmentConnector
+            self._attachable_attachment_connector = AttachableAttachmentConnector()
+        return self._attachable_attachment_connector
 
     def create(self, *, tenant_id: int = 1, vendor_public_id: str, payment_term_public_id: Optional[str] = None, bill_date: str, due_date: str, bill_number: str, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True) -> Bill:
         """
@@ -568,8 +553,8 @@ class BillService:
                     amount_str = ""
                     if bill.total_amount is not None:
                         try:
-                            amount_str = f"${float(bill.total_amount):,.2f}"
-                        except (ValueError, TypeError):
+                            amount_str = f"${Decimal(str(bill.total_amount)):,.2f}"
+                        except Exception:
                             amount_str = f"${bill.total_amount}"
                     filename_parts = [
                         project_abbreviation,
@@ -799,32 +784,13 @@ class BillService:
                         bill_line_item_public_id=line_item.public_id
                     )
 
-                    if attachment_link and attachment_link.attachment_id:
-                        # Get the attachment record
-                        attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
-                        if attachment:
-                            # Delete from Azure Blob Storage if blob_url exists
-                            if attachment.blob_url and storage:
-                                try:
-                                    storage.delete_file(attachment.blob_url)
-                                    logger.info(f"Deleted blob {attachment.blob_url} for attachment {attachment.id}")
-                                except (AzureBlobStorageError, Exception) as e:
-                                    logger.warning(f"Error deleting blob {attachment.blob_url} for attachment {attachment.id}: {e}")
-
-                            # Delete the Attachment record
-                            try:
-                                self.attachment_service.delete_by_public_id(public_id=attachment.public_id)
-                                logger.info(f"Deleted attachment {attachment.id}")
-                            except Exception as e:
-                                logger.warning(f"Error deleting attachment {attachment.id}: {e}")
-
-                        # Delete the BillLineItemAttachment record
-                        if attachment_link.id:
-                            try:
-                                bill_line_item_attachment_repo.delete_by_id(id=attachment_link.id)
-                                logger.info(f"Deleted bill line item attachment {attachment_link.id}")
-                            except Exception as e:
-                                logger.warning(f"Error deleting bill line item attachment {attachment_link.id}: {e}")
+                    if attachment_link and attachment_link.id:
+                        # Only delete the link — leave Attachment + blob untouched
+                        try:
+                            bill_line_item_attachment_repo.delete_by_id(id=attachment_link.id)
+                            logger.info(f"Deleted bill line item attachment link {attachment_link.id}")
+                        except Exception as e:
+                            logger.warning(f"Error deleting bill line item attachment link {attachment_link.id}: {e}")
             except Exception as e:
                 logger.warning(f"Error cleaning up attachments for line item {line_item.id}: {e}")
 
@@ -1089,11 +1055,11 @@ class BillService:
             if upload_result.get("errors"):
                 all_errors.extend(upload_result["errors"])
             
-            # Sync to Excel workbook
+            # Excel workbook sync
             excel_result = self.sync_to_excel_workbook(
                 bill=bill,
                 line_items=project_line_items,
-                project_id=project_id
+                project_id=project_id,
             )
             excel_sync_results[project_id] = excel_result
             if excel_result.get("errors"):
@@ -1166,12 +1132,25 @@ class BillService:
             if qbo_bill:
 
                 logger.info(f"Successfully synced Bill {bill.public_id} to QBO as QboBill {qbo_bill.id} (qbo_id: {qbo_bill.qbo_id})")
-                
+
+                # Sync attachments to QBO
+                attachment_errors = []
+                attachments_synced = 0
+                if qbo_bill.qbo_id:
+                    attachments_synced, attachment_errors = self._sync_attachments_to_qbo(
+                        bill=bill,
+                        qbo_bill_id=qbo_bill.qbo_id,
+                        realm_id=realm_id,
+                    )
+
+                errors = [{"step": "qbo_attachment_sync", "error": e} for e in attachment_errors]
+
                 return {
                     "success": True,
                     "message": f"Synced to QBO Bill {qbo_bill.qbo_id}",
                     "qbo_bill_id": qbo_bill.qbo_id,
-                    "errors": []
+                    "attachments_synced": attachments_synced,
+                    "errors": errors
                 }
 
             else:
@@ -1208,6 +1187,126 @@ class BillService:
                 "qbo_bill_id": None,
                 "errors": [{"step": "qbo_sync", "error": str(e)}]
             }
+
+    @staticmethod
+    def _compress_file(file_content: bytes, content_type: str, file_extension: str) -> bytes:
+        """
+        Compress file content when applicable.
+        - PDF: compress with Ghostscript-free pypdf if available
+        - Images (JPEG/PNG): optimize with Pillow if available
+        Returns original content if compression fails or is not applicable.
+        """
+        ext = (file_extension or "").lower().lstrip(".")
+        ct = (content_type or "").lower()
+
+        # PDF compression via pypdf
+        if ext == "pdf" or "pdf" in ct:
+            try:
+                import io
+                from pypdf import PdfReader, PdfWriter
+
+                reader = PdfReader(io.BytesIO(file_content))
+                writer = PdfWriter()
+                for page in reader.pages:
+                    page.compress_content_streams()
+                    writer.add_page(page)
+                writer.remove_unreferenced_resources()
+
+                output = io.BytesIO()
+                writer.write(output)
+                compressed = output.getvalue()
+                # Only use compressed version if it's actually smaller
+                if len(compressed) < len(file_content):
+                    return compressed
+            except Exception as e:
+                logger.debug(f"PDF compression skipped: {e}")
+            return file_content
+
+        # Image compression via Pillow
+        if ext in ("jpg", "jpeg", "png") or ct.startswith("image/"):
+            try:
+                import io
+                from PIL import Image
+
+                img = Image.open(io.BytesIO(file_content))
+
+                output = io.BytesIO()
+                if ext == "png" or ct == "image/png":
+                    img.save(output, format="PNG", optimize=True)
+                else:
+                    # JPEG — convert RGBA to RGB if needed
+                    if img.mode in ("RGBA", "P"):
+                        img = img.convert("RGB")
+                    img.save(output, format="JPEG", quality=85, optimize=True)
+
+                compressed = output.getvalue()
+                if len(compressed) < len(file_content):
+                    return compressed
+            except Exception as e:
+                logger.debug(f"Image compression skipped: {e}")
+            return file_content
+
+        # No compression applicable
+        return file_content
+
+    def _sync_attachments_to_qbo(self, bill, qbo_bill_id: str, realm_id: str) -> tuple:
+        """
+        Sync all attachments for a Bill to QBO as Attachable objects.
+
+        Args:
+            bill: The finalized Bill record
+            qbo_bill_id: The QBO Bill ID (string) to link attachments to
+            realm_id: QBO realm ID
+
+        Returns:
+            Tuple of (attachments_synced: int, errors: list[str])
+        """
+        bill_id = int(bill.id) if isinstance(bill.id, str) else bill.id
+        line_items = self.bill_line_item_service.read_by_bill_id(bill_id=bill_id)
+        if not line_items:
+            return 0, []
+
+        attachments_synced = 0
+        errors = []
+        synced_attachment_ids = set()
+
+        for line_item in line_items:
+            if not line_item.public_id:
+                continue
+
+            # Get attachment link for this line item
+            attachment_link = self.bill_line_item_attachment_service.read_by_bill_line_item_id(
+                bill_line_item_public_id=line_item.public_id
+            )
+            if not attachment_link or not attachment_link.attachment_id:
+                continue
+
+            # Skip if already synced (same attachment shared across line items)
+            if attachment_link.attachment_id in synced_attachment_ids:
+                continue
+
+            attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
+            if not attachment or not attachment.blob_url:
+                continue
+
+            try:
+                self.attachable_attachment_connector.sync_attachment_to_qbo(
+                    attachment=attachment,
+                    realm_id=realm_id,
+                    entity_type="Bill",
+                    entity_id=qbo_bill_id,
+                )
+                synced_attachment_ids.add(attachment_link.attachment_id)
+                attachments_synced += 1
+            except Exception as e:
+                error_msg = f"Attachment {attachment.id} sync failed: {str(e)}"
+                logger.error(f"Failed to sync attachment {attachment.id} to QBO for Bill {bill_id}: {e}")
+                errors.append(error_msg)
+
+        if attachments_synced > 0:
+            logger.info(f"Synced {attachments_synced} attachment(s) to QBO for Bill {bill_id}")
+
+        return attachments_synced, errors
 
     def sync_to_excel_workbook(
         self,
@@ -1301,10 +1400,48 @@ class BillService:
                 logger.info(f"Worksheet has {len(worksheet_values)} rows")
             else:
                 logger.warning(f"Could not read worksheet data: {worksheet_result.get('message')}. Will append at end.")
-            
+
+            # Idempotency check: collect existing public_ids from column Z (index 25)
+            existing_public_ids = set()
+            short_rows = 0
+            for row in worksheet_values:
+                if len(row) > 25:
+                    val = row[25]
+                    if val is not None and str(val).strip():
+                        existing_public_ids.add(str(val).strip())
+                else:
+                    short_rows += 1
+            if short_rows > 1 and not existing_public_ids:
+                # First row (header) is expected to be short; warn only if data rows are also short
+                logger.warning(
+                    f"Worksheet has {short_rows} row(s) with fewer than 26 columns. "
+                    f"Column Z (reconciliation key) may not exist. Idempotency check may not prevent duplicates."
+                )
+
+            # Filter out line items that are already in the worksheet
+            new_line_items = []
+            for line_item in line_items:
+                pid = str(line_item.public_id).strip() if line_item.public_id else ""
+                if pid and pid in existing_public_ids:
+                    logger.info(f"BillLineItem {pid} already in worksheet, skipping")
+                else:
+                    new_line_items.append(line_item)
+
+            if not new_line_items:
+                logger.info(f"All {len(line_items)} line item(s) already in worksheet, nothing to sync")
+                return {
+                    "success": True,
+                    "message": f"All {len(line_items)} row(s) already synced",
+                    "synced_count": 0,
+                    "errors": []
+                }
+
+            if len(new_line_items) < len(line_items):
+                logger.info(f"{len(line_items) - len(new_line_items)} line item(s) already in worksheet, syncing {len(new_line_items)} new")
+
             # Group line items by SubCostCode
             line_items_by_subcostcode = defaultdict(list)
-            for line_item in line_items:
+            for line_item in new_line_items:
                 sub_cost_code_id = line_item.sub_cost_code_id if line_item.sub_cost_code_id else None
                 line_items_by_subcostcode[sub_cost_code_id].append(line_item)
             
@@ -1312,62 +1449,36 @@ class BillService:
             synced_count = 0
             rows_to_append = []  # Rows that couldn't find a SubCostCode match
             
-            # Process each SubCostCode group
+            # Build groups: resolve SubCostCode details, build rows, find insertion points
+            # Row structure: A(empty), B(CostCode), C(SubCostCode), D-H(empty), I(Date), J(Vendor), K(BillNum), L(Desc), M("Bill"), N(Price), O-Y(empty), Z(public_id)
+            insert_groups = []  # List of (insertion_row, group_rows, sub_cost_code_number)
+
             for sub_cost_code_id, subcostcode_line_items in line_items_by_subcostcode.items():
-                # Get SubCostCode details
-                sub_cost_code = None
                 sub_cost_code_number = ""
                 cost_code_number = ""
-                
+
                 if sub_cost_code_id:
                     sub_cost_code = self.sub_cost_code_service.read_by_id(id=str(sub_cost_code_id))
                     if sub_cost_code:
                         sub_cost_code_number = sub_cost_code.number or ""
-                        # Derive CostCode from SubCostCode (e.g., "65" from "65.03")
-                        if "." in sub_cost_code_number:
-                            cost_code_number = sub_cost_code_number.split(".")[0]
-                        else:
-                            cost_code_number = sub_cost_code_number
-                
-                # Build rows for this SubCostCode group
-                # Row structure: A(empty), B(CostCode), C(SubCostCode), D-H(empty), I(Date), J(Vendor), K(BillNum), L(Desc), M("Ck"), N(Price)
+                        cost_code_number = sub_cost_code_number.split(".")[0] if "." in sub_cost_code_number else sub_cost_code_number
+
                 group_rows = []
                 for line_item in subcostcode_line_items:
                     try:
-                        bill_date = bill.bill_date[:10] if bill.bill_date else ""  # YYYY-MM-DD
-                        vendor_name = vendor.name or ""
-                        bill_number = bill.bill_number or ""
-                        description = line_item.description or ""
-                        price = float(line_item.price) if line_item.price is not None else 0.0
-                        
-                        # Build full row (columns A through Z = 26 columns)
                         row = [
-                            "",                   # A: Empty
-                            cost_code_number,     # B: CostCode
-                            sub_cost_code_number, # C: SubCostCode
-                            "",                   # D: Empty
-                            "",                   # E: Empty
-                            "",                   # F: Empty
-                            "",                   # G: Empty
-                            "",                   # H: Empty
-                            bill_date,            # I: Bill Date
-                            vendor_name,          # J: Vendor
-                            bill_number,          # K: Bill Number
-                            description,          # L: Description
-                            "Ck",                 # M: "Ck"
-                            price,                # N: Price
-                            "",                   # O: Empty
-                            "",                   # P: Empty
-                            "",                   # Q: Empty
-                            "",                   # R: Empty
-                            "",                   # S: Empty
-                            "",                   # T: Empty
-                            "",                   # U: Empty
-                            "",                   # V: Empty
-                            "",                   # W: Empty
-                            "",                   # X: Empty
-                            "",                   # Y: Empty
-                            str(line_item.public_id) if line_item.public_id else ""  # Z: BillLineItem public_id (reconciliation key)
+                            "",                                                          # A: Empty
+                            cost_code_number,                                            # B: CostCode
+                            sub_cost_code_number,                                        # C: SubCostCode
+                            "", "", "", "", "",                                          # D-H: Empty
+                            bill.bill_date[:10] if bill.bill_date else "",               # I: Bill Date
+                            vendor.name or "",                                           # J: Vendor
+                            bill.bill_number or "",                                      # K: Bill Number
+                            line_item.description or "",                                 # L: Description
+                            "Bill",                                                      # M: Type
+                            float(line_item.price) if line_item.price is not None else 0, # N: Price (numeric for Excel formulas)
+                            "", "", "", "", "", "", "", "", "", "", "",                   # O-Y: Empty
+                            str(line_item.public_id) if line_item.public_id else ""      # Z: Reconciliation key
                         ]
                         group_rows.append(row)
                     except Exception as e:
@@ -1377,50 +1488,49 @@ class BillService:
                             "line_item_public_id": line_item.public_id,
                             "error": f"Error building Excel row: {str(e)}"
                         })
-                
+
                 if not group_rows:
                     continue
-                
-                # Find insertion row for this SubCostCode
+
+                # Find insertion row
                 insertion_row = None
                 if sub_cost_code_number and worksheet_values:
                     insertion_row = find_insertion_row_for_subcostcode(
                         worksheet_values=worksheet_values,
                         target_subcostcode=sub_cost_code_number
                     )
-                    if insertion_row:
-                        logger.info(f"SubCostCode {sub_cost_code_number}: inserting at row {insertion_row}")
-                
+
                 if insertion_row:
-                    # Insert rows at the calculated position
-                    insert_result = insert_excel_rows(
-                        drive_id=drive.drive_id,
-                        item_id=driveitem.item_id,
-                        worksheet_name=worksheet_name,
-                        row_index=insertion_row,
-                        values=group_rows
-                    )
-                    
-                    if insert_result.get("status_code") in [200, 201]:
-                        synced_count += len(group_rows)
-                        logger.info(f"Inserted {len(group_rows)} row(s) at row {insertion_row}")
-                        # Update worksheet_values to account for inserted rows
-                        # This is important for subsequent SubCostCode groups
-                        for i, row in enumerate(group_rows):
-                            # Insert at the correct position (0-based index is insertion_row - 1)
-                            worksheet_values.insert(insertion_row - 1 + i, row)
-                    else:
-                        error_msg = insert_result.get('message', 'Unknown error')
-                        logger.error(f"Failed to insert rows: {error_msg}")
-                        errors.append({
-                            "sub_cost_code": sub_cost_code_number,
-                            "error": f"Failed to insert rows: {error_msg}"
-                        })
-                        # Fall back to appending these rows
-                        rows_to_append.extend(group_rows)
+                    insert_groups.append((insertion_row, group_rows, sub_cost_code_number))
                 else:
-                    # No matching SubCostCode found, append at end
                     logger.info(f"SubCostCode {sub_cost_code_number or 'None'}: no match found, will append at end")
+                    rows_to_append.extend(group_rows)
+
+            # Process insertions from bottom to top so earlier insertions
+            # don't shift the row positions of later ones
+            # Sort by insertion_row descending (bottom-to-top), then by sub_cost_code_number
+            # descending for deterministic ordering when two groups share the same row
+            insert_groups.sort(key=lambda g: (g[0], g[2]), reverse=True)
+
+            for insertion_row, group_rows, sub_cost_code_number in insert_groups:
+                insert_result = insert_excel_rows(
+                    drive_id=drive.drive_id,
+                    item_id=driveitem.item_id,
+                    worksheet_name=worksheet_name,
+                    row_index=insertion_row,
+                    values=group_rows
+                )
+
+                if insert_result.get("status_code") in [200, 201]:
+                    synced_count += len(group_rows)
+                    logger.info(f"Inserted {len(group_rows)} row(s) at row {insertion_row} for SubCostCode {sub_cost_code_number}")
+                else:
+                    error_msg = insert_result.get('message', 'Unknown error')
+                    logger.error(f"Failed to insert rows for SubCostCode {sub_cost_code_number}: {error_msg}")
+                    errors.append({
+                        "sub_cost_code": sub_cost_code_number,
+                        "error": f"Failed to insert rows: {error_msg}"
+                    })
                     rows_to_append.extend(group_rows)
             
             # Append any rows that didn't have matching SubCostCodes
@@ -1485,22 +1595,17 @@ class BillService:
             Dict with success, synced_count, and errors
         """
         try:
-            # Get the Bill module
+            # Get the Bills module — fail fast if not found
             module = self.module_service.read_by_name("Bills")
             if not module:
                 module = self.module_service.read_by_name("Bill")
-            if not module:
-                module = self.module_service.read_by_name("Invoices")
-            if not module:
-                all_modules = self.module_service.read_all()
-                module = all_modules[0] if all_modules else None
-            
+
             if not module:
                 return {
                     "success": False,
-                    "message": "No modules found",
+                    "message": "Bills module not found. Create a module named 'Bills' before syncing.",
                     "synced_count": 0,
-                    "errors": [{"error": "No modules found"}]
+                    "errors": [{"error": "Bills module not found"}]
                 }
             
             module_id = int(module.id) if module.id else None
@@ -1577,29 +1682,24 @@ class BillService:
             errors = []
             uploaded_attachments = {}  # Track to avoid duplicates
             
-            print(f"  SharePoint sync: Processing {len(line_items)} line items for project {project_id}")
             logger.info(f"SharePoint sync: Processing {len(line_items)} line items for project {project_id}")
-            
+
             # Process each line item
             for line_item in line_items:
-                print(f"    Checking line item {line_item.public_id}")
-                logger.info(f"  Checking line item {line_item.public_id}")
                 try:
                     if not line_item.public_id:
                         continue
-                    
+
                     # Get attachment link
                     attachment_link = self.bill_line_item_attachment_service.read_by_bill_line_item_id(
                         bill_line_item_public_id=line_item.public_id
                     )
-                    
+
                     if not attachment_link or not attachment_link.attachment_id:
-                        print(f"      -> No attachment for this line item")
-                        logger.info(f"    No attachment for line item {line_item.public_id}")
-                        continue  # No attachment for this line item
-                    
-                    print(f"      -> Found attachment, attachment_id={attachment_link.attachment_id}")
-                    logger.info(f"    Found attachment link for line item {line_item.public_id}, attachment_id={attachment_link.attachment_id}")
+                        logger.debug(f"No attachment for line item {line_item.public_id}")
+                        continue
+
+                    logger.debug(f"Found attachment for line item {line_item.public_id}, attachment_id={attachment_link.attachment_id}")
                     
                     # Check if already uploaded
                     if attachment_link.attachment_id in uploaded_attachments:
@@ -1633,9 +1733,8 @@ class BillService:
                     price = ""
                     if line_item.price is not None:
                         try:
-                            price_val = float(line_item.price)
-                            price = f"${price_val:,.2f}"
-                        except (ValueError, TypeError):
+                            price = f"${Decimal(str(line_item.price)):,.2f}"
+                        except Exception:
                             price = f"${line_item.price}"
                     # Format date as mm-dd-yyyy
                     bill_date = ""
@@ -1653,8 +1752,8 @@ class BillService:
                         amount_str = ""
                         if bill.total_amount is not None:
                             try:
-                                amount_str = f"${float(bill.total_amount):,.2f}"
-                            except (ValueError, TypeError):
+                                amount_str = f"${Decimal(str(bill.total_amount)):,.2f}"
+                            except Exception:
                                 amount_str = f"${bill.total_amount}"
                         filename_parts = [
                             project_identifier,
@@ -1727,10 +1826,17 @@ class BillService:
                         })
                         continue
                     
-                    # Upload to SharePoint
+                    # Compress file if applicable
                     content_type = attachment.content_type or metadata.get("content_type", "application/octet-stream")
-                    logger.info(f"Uploading '{sharepoint_filename}' to SharePoint folder '{module_folder.get('name')}'")
-                    
+                    original_size = len(file_content)
+                    file_content = self._compress_file(file_content, content_type, file_extension)
+                    compressed_size = len(file_content)
+                    if compressed_size < original_size:
+                        logger.info(f"Compressed {original_size} -> {compressed_size} bytes ({100 - (compressed_size * 100 // original_size)}% reduction)")
+
+                    # Upload to SharePoint
+                    logger.info(f"Uploading '{sharepoint_filename}' ({compressed_size} bytes) to SharePoint folder '{module_folder.get('name')}'")
+
                     upload_result = self.driveitem_service.upload_file(
                         drive_public_id=drive.public_id,
                         parent_item_id=folder_item_id,

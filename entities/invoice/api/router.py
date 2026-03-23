@@ -24,19 +24,72 @@ def _toc_source_label(source_type: str) -> str:
     return {"BillLineItem": "Bill", "BillCreditLineItem": "Credit", "ExpenseLineItem": "Expense"}.get(source_type, "")
 
 
+def _consolidate_basic_toc_rows(rows: list[dict]) -> list[dict]:
+    """
+    Consolidate line items from the same source bill/expense into one row.
+    Groups by (source_type, parent_number, vendor_name, source_date).
+    Single-item groups: keep original description and type label.
+    Multi-item groups: description="Multiple", type_label="See Image", price=sum.
+    Manual lines (no parent_number) are never consolidated — each stays its own row.
+    """
+    from itertools import groupby
+
+    def _key(r):
+        pn = r.get("parent_number") or ""
+        if not pn:
+            # Unique per-row key so Manual lines are never merged
+            return ("__manual__", id(r), "", "")
+        return (
+            r.get("source_type", ""),
+            pn,
+            r.get("vendor_name", "") or "",
+            r.get("source_date", "") or "",
+        )
+
+    consolidated = []
+    for key, group_iter in groupby(rows, key=_key):
+        group = list(group_iter)
+        if len(group) == 1 or key[0] == "__manual__":
+            for r in group:
+                consolidated.append(dict(r, type_label=_toc_source_label(r.get("source_type", ""))))
+        else:
+            total_price = sum(float(r.get("price") or 0) for r in group)
+            first = group[0]
+            consolidated.append({
+                "source_date": first.get("source_date", ""),
+                "vendor_name": first.get("vendor_name", ""),
+                "parent_number": first.get("parent_number", ""),
+                "description": "Multiple See Image",
+                "source_type": first.get("source_type", ""),
+                "price": total_price,
+                "type_label": _toc_source_label(first.get("source_type", "")),
+            })
+    return consolidated
+
+
 def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
     """
     Generate the basic Table of Contents PDF page.
     rows must be pre-sorted (Bill → Credit → Expense, then vendor name).
     """
+    import html as _html
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.units import inch
     from reportlab.lib import colors
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
     from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 
     BLUE = colors.HexColor("#1F3864")
+
+    wrap_style = ParagraphStyle("toc_wrap", fontName="Helvetica", fontSize=9, leading=11)
+    wrap_hdr = ParagraphStyle("toc_wrap_hdr", fontName="Helvetica-Bold", fontSize=9, leading=11, textColor=BLUE)
+    bold_right = ParagraphStyle("toc_bold_right", fontName="Helvetica-Bold", fontSize=9, leading=11, alignment=TA_RIGHT)
+    hdr_right = ParagraphStyle("toc_hdr_right", fontName="Helvetica-Bold", fontSize=9, leading=11, textColor=BLUE, alignment=TA_RIGHT)
+
+    def W(text):
+        """Wrapping Paragraph for Vendor / Description columns. HTML-escape so & < > are safe in ReportLab XML."""
+        return Paragraph(_html.escape(str(text)) if text else "", wrap_style)
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -45,12 +98,18 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
         topMargin=0.5 * inch, bottomMargin=0.5 * inch,
     )
 
-    # Columns: Date, Vendor, Invoice, Description, Type, Amount  (total = 504pt)
-    col_widths = [58, 130, 80, 124, 46, 66]
-    headers = ["Date", "Vendor", "Invoice", "Description", "Type", "Amount"]
+    # Columns: Date(65) Vendor(110) Invoice(80) Description(120) Type(52) Amount(77) = 504pt
+    # Date/Invoice/Type/Amount sized to fit content on one line; Vendor/Description wrap.
+    col_widths = [65, 110, 80, 120, 52, 77]
+    headers = [
+        Paragraph("Date", wrap_hdr), Paragraph("Vendor", wrap_hdr), Paragraph("Invoice", wrap_hdr),
+        Paragraph("Description", wrap_hdr), Paragraph("Type", wrap_hdr), Paragraph("Amount", hdr_right),
+    ]
+
+    consolidated = _consolidate_basic_toc_rows(rows)
 
     table_data = [headers]
-    for r in rows:
+    for r in consolidated:
         price = r.get("price")
         try:
             amt_str = f"${float(price):,.2f}" if price is not None else "\u2014"
@@ -58,15 +117,15 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
             amt_str = "\u2014"
         table_data.append([
             r.get("source_date", ""),
-            r.get("vendor_name", ""),
+            W(r.get("vendor_name", "")),
             r.get("parent_number", ""),
-            r.get("description", "") or "",
-            _toc_source_label(r.get("source_type", "")),
+            W(r.get("description", "") or ""),
+            r.get("type_label", ""),
             amt_str,
         ])
 
-    grand_total = sum(float(r.get("price") or 0) for r in rows)
-    table_data.append(["", "", "", "", "Total", f"${grand_total:,.2f}"])
+    grand_total = sum(float(r.get("price") or 0) for r in consolidated)
+    table_data.append(["", "", "", "", Paragraph("Total", bold_right), Paragraph(f"${grand_total:,.2f}", bold_right)])
     n = len(table_data)
 
     table = Table(table_data, colWidths=col_widths)
@@ -81,7 +140,6 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
         # Data rows
         ("FONTNAME",     (0, 1), (-1, n - 2), "Helvetica"),
         ("FONTSIZE",     (0, 1), (-1, n - 2), 9),
-        ("TEXTCOLOR",    (0, 1), (-1, n - 2), colors.black),
         ("TOPPADDING",   (0, 1), (-1, n - 2), 3),
         ("BOTTOMPADDING",(0, 1), (-1, n - 2), 3),
         ("LINEBELOW",    (0, 1), (-1, n - 2), 0.25, colors.HexColor("#CCCCCC")),
@@ -91,12 +149,13 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
         ("TOPPADDING",   (0, n - 1), (-1, n - 1), 5),
         ("BOTTOMPADDING",(0, n - 1), (-1, n - 1), 4),
         ("LINEABOVE",    (0, n - 1), (-1, n - 1), 0.75, colors.black),
-        # Alignment: Amount col right-aligned throughout; "Total" label right-aligned
+        # Amount col right-aligned (plain string cells)
         ("ALIGN",        (-1, 0), (-1, -1), "RIGHT"),
-        ("ALIGN",        (-2, n - 1), (-2, n - 1), "RIGHT"),
         # Padding
         ("LEFTPADDING",  (0, 0), (-1, -1), 4),
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        # Top-align so wrapped rows don't look odd
+        ("VALIGN",       (0, 0), (-1, -1), "TOP"),
     ]))
 
     doc.build([
@@ -114,15 +173,25 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
     Generate the expanded Table of Contents PDF (grouped by cost code, subtotals per group).
     rows must be pre-sorted (cost_code_num, then type, then vendor).
     """
+    import html as _html
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.units import inch
     from reportlab.lib import colors
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
     from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT
     from itertools import groupby
 
     BLUE = colors.HexColor("#1F3864")
+
+    wrap_style = ParagraphStyle("toc_ewrap", fontName="Helvetica", fontSize=9, leading=11)
+    wrap_hdr = ParagraphStyle("toc_ewrap_hdr", fontName="Helvetica-Bold", fontSize=9, leading=11, textColor=BLUE)
+    bold_right = ParagraphStyle("toc_ebold_right", fontName="Helvetica-Bold", fontSize=9, leading=11, alignment=TA_RIGHT)
+    hdr_right = ParagraphStyle("toc_ehdr_right", fontName="Helvetica-Bold", fontSize=9, leading=11, textColor=BLUE, alignment=TA_RIGHT)
+
+    def W(text):
+        """Wrapping Paragraph for Vendor / Description columns. HTML-escape so & < > are safe in ReportLab XML."""
+        return Paragraph(_html.escape(str(text)) if text else "", wrap_style)
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -131,9 +200,14 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
         topMargin=0.5 * inch, bottomMargin=0.5 * inch,
     )
 
-    # Columns: CostCode, Date, Vendor, Invoice, Description, Type, Amount  (total = 504pt)
-    col_widths = [42, 54, 114, 74, 110, 42, 68]
-    headers = ["Cost Code", "Date", "Vendor", "Invoice", "Description", "Type", "Amount"]
+    # Columns: CostCode(45) Date(62) Vendor(95) Invoice(78) Description(100) Type(52) Amount(72) = 504pt
+    # Date/Invoice/Type/Amount sized to fit content on one line; Vendor/Description wrap.
+    col_widths = [45, 62, 95, 78, 100, 52, 72]
+    headers = [
+        Paragraph("Cost Code", wrap_hdr), Paragraph("Date", wrap_hdr), Paragraph("Vendor", wrap_hdr),
+        Paragraph("Invoice", wrap_hdr), Paragraph("Description", wrap_hdr),
+        Paragraph("Type", wrap_hdr), Paragraph("Amount", hdr_right),
+    ]
 
     table_data = [headers]
     subtotal_indices: list[int] = []
@@ -150,14 +224,14 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
             table_data.append([
                 cc,
                 r.get("source_date", ""),
-                r.get("vendor_name", ""),
+                W(r.get("vendor_name", "")),
                 r.get("parent_number", ""),
-                r.get("description", "") or "",
+                W(r.get("description", "") or ""),
                 _toc_source_label(r.get("source_type", "")),
                 amt_str,
             ])
         subtotal = sum(float(r.get("price") or 0) for r in group_items)
-        table_data.append(["", "", "", "", "", "Subtotal", f"${subtotal:,.2f}"])
+        table_data.append(["", "", "", "", "", Paragraph("Subtotal", bold_right), Paragraph(f"${subtotal:,.2f}", bold_right)])
         subtotal_indices.append(len(table_data) - 1)
         # Blank spacer row between groups
         table_data.append(["", "", "", "", "", "", ""])
@@ -169,7 +243,7 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
         spacer_indices.pop()
 
     grand_total = sum(float(r.get("price") or 0) for r in rows)
-    table_data.append(["", "", "", "", "", "Total", f"${grand_total:,.2f}"])
+    table_data.append(["", "", "", "", "", Paragraph("Total", bold_right), Paragraph(f"${grand_total:,.2f}", bold_right)])
     total_idx = len(table_data) - 1
     n = len(table_data)
 
@@ -184,16 +258,16 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
         # All non-header rows default
         ("FONTNAME",     (0, 1), (-1, n - 1), "Helvetica"),
         ("FONTSIZE",     (0, 1), (-1, n - 1), 9),
-        ("TEXTCOLOR",    (0, 1), (-1, n - 1), colors.black),
         ("TOPPADDING",   (0, 1), (-1, n - 1), 3),
         ("BOTTOMPADDING",(0, 1), (-1, n - 1), 3),
         ("LINEBELOW",    (0, 1), (-1, n - 1), 0.25, colors.HexColor("#CCCCCC")),
-        # Alignment: Amount col and label col right-aligned throughout
+        # Amount col right-aligned (plain string cells)
         ("ALIGN",        (-1, 0), (-1, -1), "RIGHT"),
-        ("ALIGN",        (-2, 0), (-2, -1), "RIGHT"),
         # Padding
         ("LEFTPADDING",  (0, 0), (-1, -1), 4),
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        # Top-align so wrapped rows don't look odd
+        ("VALIGN",       (0, 0), (-1, -1), "TOP"),
         # Total row
         ("FONTNAME",     (0, total_idx), (-1, total_idx), "Helvetica-Bold"),
         ("LINEABOVE",    (0, total_idx), (-1, total_idx), 0.75, colors.black),
@@ -283,6 +357,16 @@ def generate_invoice_packet_router(public_id: str, current_user: dict = Depends(
     store it as an Attachment, and link it via InvoiceAttachment.
     Returns the attachment public_id so the UI can open it.
     """
+    try:
+        return _generate_invoice_packet(public_id)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(f"Unhandled error generating packet for invoice {public_id}")
+        raise HTTPException(status_code=500, detail="Failed to generate invoice packet — check server logs for details")
+
+
+def _generate_invoice_packet(public_id: str):
     from pypdf import PdfReader, PdfWriter
     from entities.invoice_line_item.business.service import InvoiceLineItemService
     from entities.attachment.business.service import AttachmentService
@@ -301,6 +385,7 @@ def generate_invoice_packet_router(public_id: str, current_user: dict = Depends(
 
     # Build TOC pages from enriched data (all line items, including those without attachments)
     from entities.invoice.web.controller import _enrich_line_items
+    logger.info(f"Packet [{public_id}]: enriching {len(line_items)} line items")
     enriched_items = _enrich_line_items(line_items)
 
     _type_order_map = {"BillLineItem": 0, "BillCreditLineItem": 1, "ExpenseLineItem": 2}
@@ -308,6 +393,7 @@ def generate_invoice_packet_router(public_id: str, current_user: dict = Depends(
     basic_toc_rows = sorted(enriched_items, key=lambda r: (
         _type_order_map.get(r.get("source_type", ""), 9),
         (r.get("vendor_name") or "").lower(),
+        (r.get("parent_number") or "").lower(),
     ))
     basic_toc_bytes = _build_toc_basic_pdf(basic_toc_rows)
 
@@ -341,36 +427,39 @@ def generate_invoice_packet_router(public_id: str, current_user: dict = Depends(
         if bill_ids:
             ph = ",".join("?" * len(bill_ids))
             cursor.execute(f"""
-                SELECT blia.AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
+                SELECT MIN(blia.AttachmentId) AS AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
                 FROM dbo.BillLineItemAttachment blia
                 JOIN dbo.BillLineItem bli ON bli.Id = blia.BillLineItemId
                 JOIN dbo.Bill b ON b.Id = bli.BillId
                 LEFT JOIN dbo.Vendor v ON v.Id = b.VendorId
                 WHERE blia.BillLineItemId IN ({ph})
+                GROUP BY b.Id, LOWER(ISNULL(v.Name, ''))
             """, bill_ids)
             for row in cursor.fetchall():
                 ordered_entries.append((0, row.VendorNameLower, row.AttachmentId))
         if credit_ids:
             ph = ",".join("?" * len(credit_ids))
             cursor.execute(f"""
-                SELECT bclia.AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
+                SELECT MIN(bclia.AttachmentId) AS AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
                 FROM dbo.BillCreditLineItemAttachment bclia
                 JOIN dbo.BillCreditLineItem bcli ON bcli.Id = bclia.BillCreditLineItemId
                 JOIN dbo.BillCredit bc ON bc.Id = bcli.BillCreditId
                 LEFT JOIN dbo.Vendor v ON v.Id = bc.VendorId
                 WHERE bclia.BillCreditLineItemId IN ({ph})
+                GROUP BY bc.Id, LOWER(ISNULL(v.Name, ''))
             """, credit_ids)
             for row in cursor.fetchall():
                 ordered_entries.append((1, row.VendorNameLower, row.AttachmentId))
         if expense_ids:
             ph = ",".join("?" * len(expense_ids))
             cursor.execute(f"""
-                SELECT elia.AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
+                SELECT MIN(elia.AttachmentId) AS AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
                 FROM dbo.ExpenseLineItemAttachment elia
                 JOIN dbo.ExpenseLineItem eli ON eli.Id = elia.ExpenseLineItemId
                 JOIN dbo.Expense e ON e.Id = eli.ExpenseId
                 LEFT JOIN dbo.Vendor v ON v.Id = e.VendorId
                 WHERE elia.ExpenseLineItemId IN ({ph})
+                GROUP BY e.Id, LOWER(ISNULL(v.Name, ''))
             """, expense_ids)
             for row in cursor.fetchall():
                 ordered_entries.append((2, row.VendorNameLower, row.AttachmentId))
@@ -380,7 +469,13 @@ def generate_invoice_packet_router(public_id: str, current_user: dict = Depends(
         raise HTTPException(status_code=400, detail="No PDF attachments found on line items")
 
     ordered_entries.sort(key=lambda x: (x[0], x[1]))
-    attachment_ids = [x[2] for x in ordered_entries]
+    seen_attachment_ids: set = set()
+    deduped_entries = []
+    for entry in ordered_entries:
+        if entry[2] not in seen_attachment_ids:
+            seen_attachment_ids.add(entry[2])
+            deduped_entries.append(entry)
+    attachment_ids = [x[2] for x in deduped_entries]
 
     att_service = AttachmentService()
     att_list = att_service.read_by_ids(attachment_ids)
@@ -416,9 +511,27 @@ def generate_invoice_packet_router(public_id: str, current_user: dict = Depends(
     if len(writer.pages) == 0:
         raise HTTPException(status_code=400, detail="Could not read any PDF pages from attachments")
 
+    # Write the merged PDF first, then compress with pikepdf
     merged_buf = io.BytesIO()
     writer.write(merged_buf)
-    merged_bytes = merged_buf.getvalue()
+    uncompressed_bytes = merged_buf.getvalue()
+
+    try:
+        import pikepdf
+        compressed_buf = io.BytesIO()
+        with pikepdf.open(io.BytesIO(uncompressed_bytes)) as pdf:
+            pdf.save(
+                compressed_buf,
+                compress_streams=True,
+                object_stream_mode=pikepdf.ObjectStreamMode.generate,
+                recompress_flate=True,
+                normalize_content=True,
+            )
+        merged_bytes = compressed_buf.getvalue()
+        logger.info(f"Packet [{public_id}]: compressed {len(uncompressed_bytes):,} → {len(merged_bytes):,} bytes")
+    except Exception as e:
+        logger.warning(f"Packet [{public_id}]: pikepdf compression failed, using uncompressed: {e}")
+        merged_bytes = uncompressed_bytes
 
     file_hash = hashlib.sha256(merged_bytes).hexdigest()
     new_public_id = str(uuid.uuid4())
@@ -783,7 +896,38 @@ def complete_invoice_router(public_id: str, current_user: dict = Depends(get_cur
     invoice = service.read_by_public_id(public_id=public_id)
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    if not getattr(invoice, "is_draft", True):
-        raise HTTPException(status_code=400, detail="Invoice is already completed")
     result = service.complete_invoice(public_id=public_id)
     return result
+
+
+@router.post("/sync/invoice/{public_id}/sharepoint")
+def sync_invoice_sharepoint_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+    """
+    Re-run the SharePoint upload step for a completed invoice.
+    Useful when the Invoices module folder was not configured at completion time.
+    """
+    from entities.invoice_line_item.business.service import InvoiceLineItemService
+
+    service = InvoiceService()
+    invoice = service.read_by_public_id(public_id=public_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    line_items = InvoiceLineItemService().read_by_invoice_id(invoice_id=invoice.id)
+    result = service._upload_to_sharepoint(invoice=invoice, line_items=line_items)
+    if not result.get("success"):
+        logger.warning(f"SharePoint re-sync failed for invoice {public_id}: {result.get('message')}")
+        raise HTTPException(status_code=500, detail=result.get("message", "SharePoint upload failed"))
+
+    logger.info(f"SharePoint re-sync complete for invoice {public_id}: {result.get('message')}")
+    return result
+
+
+@router.post("/sync/invoice/{public_id}/qbo")
+def sync_invoice_to_qbo_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+    """
+    Invoice QBO sync is disabled. Invoices are created manually in QBO.
+    """
+    # QBO invoice sync disabled — invoices are managed manually in QBO
+    logger.info(f"Invoice QBO push sync disabled; skipping for invoice {public_id}")
+    return {"status_code": 200, "message": "Invoice QBO sync is disabled. Manage invoices manually in QBO."}

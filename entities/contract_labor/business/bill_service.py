@@ -274,6 +274,11 @@ class ContractLaborBillService:
                                 if link.attachment_id:
                                     orphan_attachment_ids.add(link.attachment_id)
                                 blia_service.delete_by_public_id(link.public_id)
+                        # Nullify ContractLabor.BillLineItemId before deleting to satisfy FK constraint
+                        cl_refs = self.cl_repo.read_by_bill_line_item_id(bli.id)
+                        for cl_entry in cl_refs:
+                            cl_entry.bill_line_item_id = None
+                            self.cl_repo.update_by_id(cl_entry)
                         self.bill_line_item_service.repo.delete_by_id(bli.id)
                     for att_id in orphan_attachment_ids:
                         try:

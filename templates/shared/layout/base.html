@@ -40,8 +40,8 @@
                         {% block content %}{% endblock %}
                     </main>
             
-                    <!-- Right: Aside panel (open by default) -->
-                    <aside class="sidebar-right sidebar-right-open" aria-label="Aside">
+                    <!-- Right: Aside panel (collapsed by default, opened by page-specific agents) -->
+                    <aside class="sidebar-right" aria-label="Aside">
                         {% block aside %}
                             {% include 'shared/partials/aside.html' %}
                         {% endblock %}

@@ -660,7 +660,7 @@ BEGIN
          cl.[Description] LIKE '%' + @SearchTerm + '%' OR
          v.[Name] LIKE '%' + @SearchTerm + '%' OR
          p.[Name] LIKE '%' + @SearchTerm + '%')
-        AND (@VendorId IS NULL OR cl.[VendorId] = @VendorId)
+        AND (@VendorId IS NULL OR cl.[VendorId] = @VendorId OR cl.[BillVendorId] = @VendorId)
         AND (@ProjectId IS NULL OR cl.[ProjectId] = @ProjectId)
         AND (@Status IS NULL OR cl.[Status] = @Status)
         AND (@BillingPeriodStart IS NULL OR cl.[BillingPeriodStart] = @BillingPeriodStart)
@@ -712,13 +712,13 @@ BEGIN
          cl.[Description] LIKE '%' + @SearchTerm + '%' OR
          v.[Name] LIKE '%' + @SearchTerm + '%' OR
          p.[Name] LIKE '%' + @SearchTerm + '%')
-        AND (@VendorId IS NULL OR cl.[VendorId] = @VendorId)
+        AND (@VendorId IS NULL OR cl.[VendorId] = @VendorId OR cl.[BillVendorId] = @VendorId)
         AND (@ProjectId IS NULL OR cl.[ProjectId] = @ProjectId)
         AND (@Status IS NULL OR cl.[Status] = @Status)
         AND (@BillingPeriodStart IS NULL OR cl.[BillingPeriodStart] = @BillingPeriodStart)
         AND (@StartDate IS NULL OR cl.[WorkDate] >= @StartDate)
         AND (@EndDate IS NULL OR cl.[WorkDate] <= @EndDate);
-    
+
     COMMIT TRANSACTION;
 END;
 GO

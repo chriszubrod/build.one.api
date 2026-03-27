@@ -115,7 +115,7 @@
                         <span class="cl-drop-zone-icon">📊</span>
                         <p class="cl-drop-zone-text">Drag & drop Excel file here</p>
                         <p class="cl-drop-zone-subtext">or <label for="file" class="cl-drop-zone-browse">browse files</label></p>
-                        <input type="file" id="file" name="file" accept=".xlsx,.xls" required style="display: none;">
+                        <input type="file" id="file" name="file" accept=".xlsx,.xls" style="display: none;">
                         <p id="selected-file-name" class="cl-selected-file"></p>
                     </div>
                 </div>
@@ -176,7 +176,12 @@
         if (form) {
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
-                if (!fileInput || !fileInput.files || fileInput.files.length === 0) return;
+                if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+                    var dz = document.getElementById('drop-zone');
+                    if (dz) { dz.style.borderColor = '#e74c3c'; }
+                    alert('Please select an Excel file first.');
+                    return;
+                }
                 var btn = document.getElementById('cl-import-btn');
                 var btnText = btn && btn.querySelector('.cl-import-btn-text');
                 var btnLoading = btn && btn.querySelector('.cl-import-btn-loading');

@@ -26,7 +26,7 @@
                 </button>
                 {% endif %}
                 <a href="/bill/{{ bill.public_id }}/edit" class="btn btn-primary">Edit</a>
-                <a href="/bill/list" class="btn btn-secondary">Back to List</a>
+                <a href="/bill/list" class="btn btn-secondary" onclick="this.href=getBillListUrl()">Back to List</a>
             </div>
         </div>
 
@@ -460,6 +460,17 @@
 
 {% block scripts %}
     <script>
+        function getBillListUrl() {
+            try {
+                const saved = sessionStorage.getItem('billListState');
+                if (saved) {
+                    const state = JSON.parse(saved);
+                    if (state.url) return state.url;
+                }
+            } catch (e) {}
+            return '/bill/list';
+        }
+
         // Message toggle functions for email conversation
         function toggleBillMessage(index) {
             const msg = document.querySelector(`[data-bill-msg-index="${index}"]`);

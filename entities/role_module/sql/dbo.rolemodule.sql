@@ -8,7 +8,14 @@ CREATE TABLE [dbo].[RoleModule]
     [CreatedDatetime] DATETIME2(3) NOT NULL,
     [ModifiedDatetime] DATETIME2(3) NULL,
     [RoleId] BIGINT NOT NULL,
-    [ModuleId] BIGINT NOT NULL
+    [ModuleId] BIGINT NOT NULL,
+    [CanCreate] BIT NOT NULL DEFAULT 0,
+    [CanRead] BIT NOT NULL DEFAULT 0,
+    [CanUpdate] BIT NOT NULL DEFAULT 0,
+    [CanDelete] BIT NOT NULL DEFAULT 0,
+    [CanSubmit] BIT NOT NULL DEFAULT 0,
+    [CanApprove] BIT NOT NULL DEFAULT 0,
+    [CanComplete] BIT NOT NULL DEFAULT 0
 );
 END
 GO
@@ -22,7 +29,14 @@ GO
 CREATE OR ALTER PROCEDURE CreateRoleModule
 (
     @RoleId BIGINT,
-    @ModuleId BIGINT
+    @ModuleId BIGINT,
+    @CanCreate BIT = 0,
+    @CanRead BIT = 0,
+    @CanUpdate BIT = 0,
+    @CanDelete BIT = 0,
+    @CanSubmit BIT = 0,
+    @CanApprove BIT = 0,
+    @CanComplete BIT = 0
 )
 AS
 BEGIN
@@ -30,7 +44,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[RoleModule] ([CreatedDatetime], [ModifiedDatetime], [RoleId], [ModuleId])
+    INSERT INTO dbo.[RoleModule] ([CreatedDatetime], [ModifiedDatetime], [RoleId], [ModuleId], [CanCreate], [CanRead], [CanUpdate], [CanDelete], [CanSubmit], [CanApprove], [CanComplete])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -38,8 +52,15 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[RoleId],
-        INSERTED.[ModuleId]
-    VALUES (@Now, @Now, @RoleId, @ModuleId);
+        INSERTED.[ModuleId],
+        INSERTED.[CanCreate],
+        INSERTED.[CanRead],
+        INSERTED.[CanUpdate],
+        INSERTED.[CanDelete],
+        INSERTED.[CanSubmit],
+        INSERTED.[CanApprove],
+        INSERTED.[CanComplete]
+    VALUES (@Now, @Now, @RoleId, @ModuleId, @CanCreate, @CanRead, @CanUpdate, @CanDelete, @CanSubmit, @CanApprove, @CanComplete);
 
     COMMIT TRANSACTION;
 END;
@@ -60,7 +81,14 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [RoleId],
-        [ModuleId]
+        [ModuleId],
+        [CanCreate],
+        [CanRead],
+        [CanUpdate],
+        [CanDelete],
+        [CanSubmit],
+        [CanApprove],
+        [CanComplete]
     FROM dbo.[RoleModule]
     ORDER BY [RoleId] ASC, [ModuleId] ASC;
 
@@ -86,7 +114,14 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [RoleId],
-        [ModuleId]
+        [ModuleId],
+        [CanCreate],
+        [CanRead],
+        [CanUpdate],
+        [CanDelete],
+        [CanSubmit],
+        [CanApprove],
+        [CanComplete]
     FROM dbo.[RoleModule]
     WHERE [Id] = @Id;
 
@@ -112,7 +147,14 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [RoleId],
-        [ModuleId]
+        [ModuleId],
+        [CanCreate],
+        [CanRead],
+        [CanUpdate],
+        [CanDelete],
+        [CanSubmit],
+        [CanApprove],
+        [CanComplete]
     FROM dbo.[RoleModule]
     WHERE [PublicId] = @PublicId;
 
@@ -138,7 +180,14 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [RoleId],
-        [ModuleId]
+        [ModuleId],
+        [CanCreate],
+        [CanRead],
+        [CanUpdate],
+        [CanDelete],
+        [CanSubmit],
+        [CanApprove],
+        [CanComplete]
     FROM dbo.[RoleModule]
     WHERE [RoleId] = @RoleId;
 
@@ -164,7 +213,14 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [RoleId],
-        [ModuleId]
+        [ModuleId],
+        [CanCreate],
+        [CanRead],
+        [CanUpdate],
+        [CanDelete],
+        [CanSubmit],
+        [CanApprove],
+        [CanComplete]
     FROM dbo.[RoleModule]
     WHERE [ModuleId] = @ModuleId;
 
@@ -180,7 +236,14 @@ CREATE OR ALTER PROCEDURE UpdateRoleModuleById
     @Id BIGINT,
     @RowVersion BINARY(8),
     @RoleId BIGINT,
-    @ModuleId BIGINT
+    @ModuleId BIGINT,
+    @CanCreate BIT = 0,
+    @CanRead BIT = 0,
+    @CanUpdate BIT = 0,
+    @CanDelete BIT = 0,
+    @CanSubmit BIT = 0,
+    @CanApprove BIT = 0,
+    @CanComplete BIT = 0
 )
 AS
 BEGIN
@@ -192,7 +255,14 @@ BEGIN
     SET
         [ModifiedDatetime] = @Now,
         [RoleId] = @RoleId,
-        [ModuleId] = @ModuleId
+        [ModuleId] = @ModuleId,
+        [CanCreate] = @CanCreate,
+        [CanRead] = @CanRead,
+        [CanUpdate] = @CanUpdate,
+        [CanDelete] = @CanDelete,
+        [CanSubmit] = @CanSubmit,
+        [CanApprove] = @CanApprove,
+        [CanComplete] = @CanComplete
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -200,7 +270,14 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[RoleId],
-        INSERTED.[ModuleId]
+        INSERTED.[ModuleId],
+        INSERTED.[CanCreate],
+        INSERTED.[CanRead],
+        INSERTED.[CanUpdate],
+        INSERTED.[CanDelete],
+        INSERTED.[CanSubmit],
+        INSERTED.[CanApprove],
+        INSERTED.[CanComplete]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -226,7 +303,14 @@ BEGIN
         CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.[RoleId],
-        DELETED.[ModuleId]
+        DELETED.[ModuleId],
+        DELETED.[CanCreate],
+        DELETED.[CanRead],
+        DELETED.[CanUpdate],
+        DELETED.[CanDelete],
+        DELETED.[CanSubmit],
+        DELETED.[CanApprove],
+        DELETED.[CanComplete]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;

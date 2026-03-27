@@ -14,7 +14,8 @@ CREATE TABLE [dbo].[Vendor]
     [VendorTypeId] BIGINT NULL,
     [TaxpayerId] BIGINT NULL,
     [IsDraft] BIT NOT NULL DEFAULT 1,
-    [IsDeleted] BIT NOT NULL DEFAULT 0
+    [IsDeleted] BIT NOT NULL DEFAULT 0,
+    [IsContractLabor] BIT NOT NULL DEFAULT 0
 );
 END
 GO
@@ -33,6 +34,13 @@ GO
 IF COL_LENGTH('dbo.Vendor', 'IsDeleted') IS NULL
 BEGIN
     ALTER TABLE [dbo].[Vendor] ADD [IsDeleted] BIT NOT NULL DEFAULT 0;
+END
+GO
+
+-- Add IsContractLabor column if it does not exist (migration for existing tables)
+IF COL_LENGTH('dbo.Vendor', 'IsContractLabor') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Vendor] ADD [IsContractLabor] BIT NOT NULL DEFAULT 0;
 END
 GO
 
@@ -68,7 +76,8 @@ CREATE OR ALTER PROCEDURE CreateVendor
     @Abbreviation NVARCHAR(255),
     @VendorTypeId BIGINT NULL,
     @TaxpayerId BIGINT NULL,
-    @IsDraft BIT = 1
+    @IsDraft BIT = 1,
+    @IsContractLabor BIT = 0
 )
 AS
 BEGIN
@@ -76,7 +85,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Vendor] ([CreatedDatetime], [ModifiedDatetime], [Name], [Abbreviation], [VendorTypeId], [TaxpayerId], [IsDraft], [IsDeleted])
+    INSERT INTO dbo.[Vendor] ([CreatedDatetime], [ModifiedDatetime], [Name], [Abbreviation], [VendorTypeId], [TaxpayerId], [IsDraft], [IsDeleted], [IsContractLabor])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -88,8 +97,9 @@ BEGIN
         INSERTED.[VendorTypeId],
         INSERTED.[TaxpayerId],
         INSERTED.[IsDraft],
-        INSERTED.[IsDeleted]
-    VALUES (@Now, @Now, @Name, @Abbreviation, @VendorTypeId, @TaxpayerId, @IsDraft, 0);
+        INSERTED.[IsDeleted],
+        INSERTED.[IsContractLabor]
+    VALUES (@Now, @Now, @Name, @Abbreviation, @VendorTypeId, @TaxpayerId, @IsDraft, 0, @IsContractLabor);
 
     COMMIT TRANSACTION;
 END;
@@ -112,7 +122,8 @@ BEGIN
         [VendorTypeId],
         [TaxpayerId],
         [IsDraft],
-        [IsDeleted]
+        [IsDeleted],
+        [IsContractLabor]
     FROM dbo.[Vendor]
     WHERE [IsDeleted] = 0
     ORDER BY [Name] ASC;
@@ -139,7 +150,8 @@ BEGIN
         [VendorTypeId],
         [TaxpayerId],
         [IsDraft],
-        [IsDeleted]
+        [IsDeleted],
+        [IsContractLabor]
     FROM dbo.[Vendor]
     WHERE [Id] = @Id AND [IsDeleted] = 0;
 END;
@@ -165,7 +177,8 @@ BEGIN
         [VendorTypeId],
         [TaxpayerId],
         [IsDraft],
-        [IsDeleted]
+        [IsDeleted],
+        [IsContractLabor]
     FROM dbo.[Vendor]
     WHERE [PublicId] = @PublicId AND [IsDeleted] = 0;
 END;
@@ -191,7 +204,8 @@ BEGIN
         [VendorTypeId],
         [TaxpayerId],
         [IsDraft],
-        [IsDeleted]
+        [IsDeleted],
+        [IsContractLabor]
     FROM dbo.[Vendor]
     WHERE [Name] = @Name AND [IsDeleted] = 0;
 END;
@@ -208,7 +222,8 @@ CREATE OR ALTER PROCEDURE UpdateVendorById
     @Abbreviation NVARCHAR(255),
     @VendorTypeId BIGINT NULL,
     @TaxpayerId BIGINT NULL,
-    @IsDraft BIT = NULL
+    @IsDraft BIT = NULL,
+    @IsContractLabor BIT = NULL
 )
 AS
 BEGIN
@@ -239,7 +254,8 @@ BEGIN
         [Abbreviation] = @Abbreviation,
         [VendorTypeId] = @VendorTypeId,
         [TaxpayerId] = @TaxpayerId,
-        [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END
+        [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END,
+        [IsContractLabor] = CASE WHEN @IsContractLabor IS NULL THEN [IsContractLabor] ELSE @IsContractLabor END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -251,7 +267,8 @@ BEGIN
         INSERTED.[VendorTypeId],
         INSERTED.[TaxpayerId],
         INSERTED.[IsDraft],
-        INSERTED.[IsDeleted]
+        INSERTED.[IsDeleted],
+        INSERTED.[IsContractLabor]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -293,7 +310,8 @@ BEGIN
         INSERTED.[VendorTypeId],
         INSERTED.[TaxpayerId],
         INSERTED.[IsDraft],
-        INSERTED.[IsDeleted]
+        INSERTED.[IsDeleted],
+        INSERTED.[IsContractLabor]
     WHERE [PublicId] = @PublicId AND [IsDeleted] = 0;
 
     COMMIT TRANSACTION;

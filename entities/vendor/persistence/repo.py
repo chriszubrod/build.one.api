@@ -46,6 +46,7 @@ class VendorRepository:
                 vendor_type_id=row.VendorTypeId,
                 is_draft=row.IsDraft,
                 is_deleted=row.IsDeleted,
+                is_contract_labor=row.IsContractLabor,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during vendor mapping: {error}")
@@ -54,7 +55,7 @@ class VendorRepository:
             logger.error(f"Unexpected error during vendor mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, name: Optional[str], abbreviation: Optional[str], taxpayer_id: Optional[int] = None, vendor_type_id: Optional[int] = None, is_draft: bool = True) -> Vendor:
+    def create(self, *, tenant_id: int = 1, name: Optional[str], abbreviation: Optional[str], taxpayer_id: Optional[int] = None, vendor_type_id: Optional[int] = None, is_draft: bool = True, is_contract_labor: bool = False) -> Vendor:
         """
         Create a new vendor.
         
@@ -77,6 +78,7 @@ class VendorRepository:
                     "VendorTypeId": vendor_type_id,
                     "TaxpayerId": taxpayer_id,
                     "IsDraft": is_draft,
+                    "IsContractLabor": is_contract_labor,
                 }
                 call_procedure(
                     cursor=cursor,
@@ -179,9 +181,11 @@ class VendorRepository:
                     "VendorTypeId": vendor.vendor_type_id,
                     "TaxpayerId": vendor.taxpayer_id,
                 }
-                # Only include IsDraft if it's explicitly set (not None)
+                # Only include IsDraft/IsContractLabor if explicitly set (not None)
                 if vendor.is_draft is not None:
                     params["IsDraft"] = 1 if vendor.is_draft else 0
+                if vendor.is_contract_labor is not None:
+                    params["IsContractLabor"] = 1 if vendor.is_contract_labor else 0
                 call_procedure(
                     cursor=cursor,
                     name="UpdateVendorById",

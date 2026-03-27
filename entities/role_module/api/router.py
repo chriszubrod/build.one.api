@@ -27,6 +27,13 @@ def create_role_module_router(body: RoleModuleCreate, current_user: dict = Depen
         payload={
             "role_id": body.role_id,
             "module_id": body.module_id,
+            "can_create": body.can_create,
+            "can_read": body.can_read,
+            "can_update": body.can_update,
+            "can_delete": body.can_delete,
+            "can_submit": body.can_submit,
+            "can_approve": body.can_approve,
+            "can_complete": body.can_complete,
         },
         workflow_type="role_module_create",
     )
@@ -77,6 +84,13 @@ def update_role_module_by_public_id_router(public_id: str, body: RoleModuleUpdat
             "row_version": body.row_version,
             "role_id": body.role_id,
             "module_id": body.module_id,
+            "can_create": body.can_create,
+            "can_read": body.can_read,
+            "can_update": body.can_update,
+            "can_delete": body.can_delete,
+            "can_submit": body.can_submit,
+            "can_approve": body.can_approve,
+            "can_complete": body.can_complete,
         },
         workflow_type="role_module_update",
     )

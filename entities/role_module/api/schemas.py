@@ -13,6 +13,13 @@ class RoleModuleCreate(BaseModel):
     module_id: int = Field(
         description="The ID of the module."
     )
+    can_create: bool = Field(default=False, description="Permission to create.")
+    can_read: bool = Field(default=False, description="Permission to read.")
+    can_update: bool = Field(default=False, description="Permission to update.")
+    can_delete: bool = Field(default=False, description="Permission to delete.")
+    can_submit: bool = Field(default=False, description="Permission to submit.")
+    can_approve: bool = Field(default=False, description="Permission to approve.")
+    can_complete: bool = Field(default=False, description="Permission to complete.")
 
 
 class RoleModuleUpdate(BaseModel):
@@ -25,3 +32,10 @@ class RoleModuleUpdate(BaseModel):
     module_id: int = Field(
         description="The ID of the module."
     )
+    can_create: bool = Field(default=False, description="Permission to create.")
+    can_read: bool = Field(default=False, description="Permission to read.")
+    can_update: bool = Field(default=False, description="Permission to update.")
+    can_delete: bool = Field(default=False, description="Permission to delete.")
+    can_submit: bool = Field(default=False, description="Permission to submit.")
+    can_approve: bool = Field(default=False, description="Permission to approve.")
+    can_complete: bool = Field(default=False, description="Permission to complete.")

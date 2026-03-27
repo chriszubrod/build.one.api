@@ -42,6 +42,13 @@ class PurchaseExpenseConnector:
         self.qbo_vendor_repo = qbo_vendor_repo or QboVendorRepository()
         self.qbo_purchase_repo = qbo_purchase_repo or QboPurchaseRepository()
         self.qbo_purchase_line_repo = qbo_purchase_line_repo or QboPurchaseLineRepository()
+        # Per-sync cache: avoids 3 DB round-trips per purchase when multiple purchases
+        # share the same QBO vendor (the common case).
+        self._vendor_cache: dict = {}
+        # Single line connector shared across all purchases so _sub_cost_code_cache and
+        # _project_cache persist for the entire sync run, not just per-purchase.
+        from integrations.intuit.qbo.purchase.connector.expense_line_item.business.service import PurchaseLineExpenseLineItemConnector
+        self._line_connector = PurchaseLineExpenseLineItemConnector()
 
     def sync_from_qbo_purchase(self, qbo_purchase: QboPurchase, qbo_purchase_lines: List[QboPurchaseLine]) -> Expense:
         """
@@ -67,7 +74,7 @@ class PurchaseExpenseConnector:
         
         # Map QBO Purchase fields to Expense module fields
         reference_number = qbo_purchase.doc_number or f"QBO-{qbo_purchase.qbo_id}"
-        expense_date = qbo_purchase.txn_date or ""
+        expense_date = qbo_purchase.txn_date
         memo = qbo_purchase.private_note
         total_amount = qbo_purchase.total_amt
         
@@ -86,13 +93,13 @@ class PurchaseExpenseConnector:
                     vendor_public_id=vendor_public_id,
                     expense_date=expense_date,
                     reference_number=reference_number,
-                    total_amount=float(total_amount) if total_amount else None,
+                    total_amount=total_amount,
                     memo=memo,
                     is_draft=False,
                 )
                 
                 # Sync line items for existing expense
-                self._sync_line_items(expense.id, qbo_purchase_lines)
+                self._sync_line_items(expense.id, expense.public_id, qbo_purchase_lines)
                 
                 return expense
             else:
@@ -112,16 +119,27 @@ class PurchaseExpenseConnector:
             is_draft=False,
         )
         
-        # Create mapping
+        # Create mapping — if this fails we must roll back the expense we just created,
+        # otherwise the unmapped expense will be duplicated on every subsequent sync run.
         expense_id = int(expense.id) if isinstance(expense.id, str) else expense.id
         try:
             mapping = self.create_mapping(expense_id=expense_id, qbo_purchase_id=qbo_purchase.id)
             logger.info(f"Created mapping: Expense {expense_id} <-> QboPurchase {qbo_purchase.id}")
-        except ValueError as e:
-            logger.warning(f"Could not create mapping: {e}")
+        except Exception as e:
+            try:
+                self.expense_service.delete_by_public_id(expense.public_id)
+                logger.warning(
+                    f"Rolled back orphan Expense {expense_id} after mapping failure "
+                    f"for QboPurchase {qbo_purchase.id}"
+                )
+            except Exception as del_e:
+                logger.error(f"Could not delete orphan Expense {expense_id}: {del_e}")
+            raise ValueError(
+                f"Failed to create PurchaseExpense mapping for QboPurchase {qbo_purchase.id}: {e}"
+            ) from e
         
         # Sync line items for new expense
-        self._sync_line_items(expense_id, qbo_purchase_lines)
+        self._sync_line_items(expense_id, expense.public_id, qbo_purchase_lines)
         
         return expense
 
@@ -137,48 +155,62 @@ class PurchaseExpenseConnector:
         """
         if not qbo_entity_ref_value:
             return None
-        
+
+        if qbo_entity_ref_value in self._vendor_cache:
+            return self._vendor_cache[qbo_entity_ref_value]
+
         # First find the QboVendor by qbo_id
         qbo_vendor = self.qbo_vendor_repo.read_by_qbo_id(qbo_entity_ref_value)
         if not qbo_vendor:
             logger.warning(f"QboVendor not found for qbo_id: {qbo_entity_ref_value}")
+            self._vendor_cache[qbo_entity_ref_value] = None
             return None
-        
+
         # Then find the VendorVendor mapping
         vendor_mapping = self.vendor_vendor_repo.read_by_qbo_vendor_id(qbo_vendor.id)
         if not vendor_mapping:
             logger.warning(f"VendorVendor mapping not found for QboVendor ID: {qbo_vendor.id}")
+            self._vendor_cache[qbo_entity_ref_value] = None
             return None
-        
+
         # Get the Vendor
         vendor = self.vendor_service.read_by_id(vendor_mapping.vendor_id)
         if not vendor:
             logger.warning(f"Vendor not found for ID: {vendor_mapping.vendor_id}")
+            self._vendor_cache[qbo_entity_ref_value] = None
             return None
-        
+
+        self._vendor_cache[qbo_entity_ref_value] = vendor.public_id
         return vendor.public_id
 
-    def _sync_line_items(self, expense_id: int, qbo_purchase_lines: List[QboPurchaseLine]) -> None:
+    def _sync_line_items(self, expense_id: int, expense_public_id: str, qbo_purchase_lines: List[QboPurchaseLine]) -> None:
         """
         Sync purchase line items to ExpenseLineItem module.
-        
+
         Args:
             expense_id: Database ID of the Expense
+            expense_public_id: Public ID of the Expense (avoids per-line DB read)
             qbo_purchase_lines: List of QboPurchaseLine records
         """
         if not qbo_purchase_lines:
             return
-        
-        # Import here to avoid circular dependencies
-        from integrations.intuit.qbo.purchase.connector.expense_line_item.business.service import PurchaseLineExpenseLineItemConnector
-        
-        line_connector = PurchaseLineExpenseLineItemConnector()
-        
+
+        line_connector = self._line_connector
+        failed_line_ids = []
+
         for qbo_line in qbo_purchase_lines:
             try:
-                line_connector.sync_from_qbo_purchase_line(expense_id, qbo_line)
+                line_connector.sync_from_qbo_purchase_line(expense_id, expense_public_id, qbo_line)
             except Exception as e:
                 logger.error(f"Failed to sync QboPurchaseLine {qbo_line.id} to ExpenseLineItem: {e}")
+                failed_line_ids.append(qbo_line.id)
+
+        if failed_line_ids:
+            logger.warning(
+                f"Expense {expense_id}: {len(failed_line_ids)} of {len(qbo_purchase_lines)} "
+                f"line items failed to sync and are missing locally. "
+                f"Failed QboPurchaseLine ids: {failed_line_ids}"
+            )
 
     def create_mapping(self, expense_id: int, qbo_purchase_id: int) -> PurchaseExpense:
         """
@@ -614,8 +646,16 @@ def sync_purchase_attachments_to_expense_line_items(
         attachment = attachment_service.read_by_id(mapping.attachment_id)
         if not attachment or not attachment.public_id:
             continue
+        # ExpenseLineItemAttachment is 1:1 — each line item can only hold one attachment.
+        # Link this attachment to any line items that are not yet linked; skip those that are.
+        attachment_linked_count = 0
         for line_item in line_items:
             if not line_item.public_id:
+                continue
+            existing = expense_line_item_attachment_service.read_by_expense_line_item_id(
+                expense_line_item_public_id=line_item.public_id
+            )
+            if existing:
                 continue
             try:
                 expense_line_item_attachment_service.create(
@@ -623,8 +663,15 @@ def sync_purchase_attachments_to_expense_line_items(
                     attachment_public_id=attachment.public_id,
                 )
                 linked += 1
+                attachment_linked_count += 1
             except Exception as e:
                 logger.debug(f"Could not link Attachment {attachment.id} to ExpenseLineItem {line_item.id}: {e}")
+        if attachment_linked_count == 0:
+            logger.warning(
+                f"Expense {expense_id}: Attachment {attachment.id} (QboAttachable {qbo_attachable.id}) "
+                f"could not be linked — all {len(line_items)} line item(s) already have an attachment. "
+                f"ExpenseLineItemAttachment is 1:1; this attachment is unlinked."
+            )
 
     if linked > 0:
         logger.info(f"Created {linked} ExpenseLineItemAttachment links for Expense {expense_id}")
@@ -640,13 +687,23 @@ def sync_purchase_attachments_to_needing_categorize_lines(
     """
     Link QBO attachables (already synced to Attachments) to ExpenseLineItem(s)
     that correspond to PurchaseLines with AccountRefName containing 'NEED TO CATEGORIZE' or 'NEED TO UPDATE'.
+
+    QBO attachments are entity-level (not line-level), so we cannot do ID-based matching.
+    When there is exactly 1 "needing" line and 1 attachment, we link them 1:1.
+    When counts match, we link by position order (line_num ascending).
+    When counts don't match, we log a warning and link each attachment to ALL needing lines
+    (same pattern as sync_purchase_attachments_to_expense_line_items) to avoid wrong pairings.
+
     Returns count of attachments linked.
     """
     NEED_PATTERNS = ("NEED TO CATEGORIZE", "NEED TO UPDATE")
-    needing_lines = [
-        pl for pl in qbo_purchase_lines
-        if pl.account_ref_name and any(p.upper() in (pl.account_ref_name or "").upper() for p in NEED_PATTERNS)
-    ]
+    needing_lines = sorted(
+        [
+            pl for pl in qbo_purchase_lines
+            if pl.account_ref_name and any(p.upper() in (pl.account_ref_name or "").upper() for p in NEED_PATTERNS)
+        ],
+        key=lambda pl: pl.line_num or 0,
+    )
     if not needing_lines or not qbo_attachables:
         return 0
 
@@ -666,35 +723,82 @@ def sync_purchase_attachments_to_needing_categorize_lines(
     attachment_service = AttachmentService()
     linked = 0
 
-    for i, qbo_line in enumerate(needing_lines):
-        if i >= len(qbo_attachables):
-            break
+    # Resolve all needing lines to their ExpenseLineItems
+    resolved_line_items = []
+    for qbo_line in needing_lines:
         mapping = mapping_repo.read_by_qbo_purchase_line_id(qbo_line.id)
         if not mapping:
             continue
         line_item = expense_line_item_service.read_by_id(mapping.expense_line_item_id)
         if not line_item or not line_item.public_id:
             continue
-        existing = expense_line_item_attachment_service.read_by_expense_line_item_id(
-            expense_line_item_public_id=line_item.public_id
-        )
-        if existing:
-            continue
+        resolved_line_items.append(line_item)
 
-        qbo_att = qbo_attachables[i]
+    if not resolved_line_items:
+        return 0
+
+    # Resolve all attachables to Attachments
+    resolved_attachments = []
+    for qbo_att in qbo_attachables:
         att_mapping = attachment_connector.get_mapping_by_qbo_attachable_id(qbo_att.id)
         if not att_mapping:
             continue
         attachment = attachment_service.read_by_id(att_mapping.attachment_id)
         if not attachment or not attachment.public_id:
             continue
-        try:
-            expense_line_item_attachment_service.create(
-                expense_line_item_public_id=line_item.public_id,
-                attachment_public_id=attachment.public_id,
+        resolved_attachments.append(attachment)
+
+    if not resolved_attachments:
+        return 0
+
+    # Sort attachments by DB id for a stable, deterministic ordering across runs.
+    # QBO does not guarantee attachment order, so without this the position-based
+    # 1:1 pairing could match a different attachment to the same line on re-sync.
+    resolved_attachments.sort(key=lambda a: a.id if a.id else 0)
+
+    # Determine linking strategy based on count match
+    counts_match = len(resolved_line_items) == len(resolved_attachments)
+
+    if not counts_match:
+        logger.warning(
+            f"Expense {expense_id}: {len(resolved_line_items)} needing-categorize lines vs "
+            f"{len(resolved_attachments)} attachments — counts don't match. "
+            f"Linking each attachment to ALL needing lines to avoid wrong pairings."
+        )
+        # Link each attachment to each line item (safe fallback)
+        for attachment in resolved_attachments:
+            for line_item in resolved_line_items:
+                existing = expense_line_item_attachment_service.read_by_expense_line_item_id(
+                    expense_line_item_public_id=line_item.public_id
+                )
+                if existing:
+                    continue
+                try:
+                    expense_line_item_attachment_service.create(
+                        expense_line_item_public_id=line_item.public_id,
+                        attachment_public_id=attachment.public_id,
+                    )
+                    linked += 1
+                except Exception as e:
+                    logger.debug(f"Could not link Attachment {attachment.id} to ExpenseLineItem {line_item.id}: {e}")
+    else:
+        # Counts match — link 1:1 by position (sorted by line_num)
+        for line_item, attachment in zip(resolved_line_items, resolved_attachments):
+            existing = expense_line_item_attachment_service.read_by_expense_line_item_id(
+                expense_line_item_public_id=line_item.public_id
             )
-            linked += 1
-        except Exception as e:
-            logger.error(f"Failed to link attachment to line item: {e}")
+            if existing:
+                continue
+            try:
+                expense_line_item_attachment_service.create(
+                    expense_line_item_public_id=line_item.public_id,
+                    attachment_public_id=attachment.public_id,
+                )
+                linked += 1
+            except Exception as e:
+                logger.error(f"Failed to link attachment {attachment.id} to line item {line_item.id}: {e}")
+
+    if linked > 0:
+        logger.info(f"Linked {linked} attachments to needing-categorize lines for Expense {expense_id}")
 
     return linked

@@ -44,9 +44,8 @@ def find_insertion_row_for_subcostcode(worksheet_values: List[List[Any]], target
     Logic:
     1. Find all rows where Column C matches the target SubCostCode (the "block")
     2. Within that block, find the last row that has BOTH Date (Column I) AND Vendor (Column J)
-    3. Insert BEFORE that last data row (at its position, pushing it down)
-       — this places new rows at the bottom of the group, above the last entry
-    4. Fallback: if no data rows, insert after the last matching row in the block
+    3. Insert AFTER that last data row
+    4. Fallback: if no data rows, insert two rows after the first matching row
     5. If no matching SubCostCode at all, return None (append at end)
 
     Args:
@@ -105,14 +104,14 @@ def find_insertion_row_for_subcostcode(worksheet_values: List[List[Any]], target
             last_data_row = excel_row
 
     if last_data_row is not None:
-        # Insert before the last data row (at its position, pushing it down)
-        logger.info(f"SubCostCode '{target_subcostcode}': inserting before last data row {last_data_row}")
-        return last_data_row
+        # Insert after the last data row
+        logger.info(f"SubCostCode '{target_subcostcode}': inserting after last data row {last_data_row}")
+        return last_data_row + 1
 
-    # Fallback: no data rows in block, insert after the last matching row
-    last_match_row = matching_rows[-1][0]
-    logger.info(f"SubCostCode '{target_subcostcode}': no data rows, inserting after last template row {last_match_row}")
-    return last_match_row + 1
+    # Fallback: no data rows in block, insert two rows after the first matching row
+    first_match_row = matching_rows[0][0]
+    logger.info(f"SubCostCode '{target_subcostcode}': no data rows, inserting two rows after first match row {first_match_row}")
+    return first_match_row + 2
 
 
 class BillService:

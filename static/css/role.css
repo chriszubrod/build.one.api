@@ -300,6 +300,55 @@
     gap: 0.5rem;
 }
 
+/* Permissions table */
+.role-permissions-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.role-permissions-table th,
+.role-permissions-table td {
+    padding: 0.625rem 0.75rem;
+    text-align: center;
+    border-bottom: 1px solid #e0e0e0;
+    font-size: var(--font-size-action);
+}
+
+.role-permissions-table th:first-child,
+.role-permissions-table td:first-child {
+    text-align: left;
+}
+
+.role-permissions-table th:last-child,
+.role-permissions-table td:last-child {
+    text-align: right;
+}
+
+.role-permissions-table th {
+    font-weight: var(--font-weight-regular);
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-base);
+    border-bottom: 2px solid #e0e0e0;
+}
+
+.role-permissions-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.role-permissions-table input[type="checkbox"] {
+    width: 1rem;
+    height: 1rem;
+    cursor: pointer;
+}
+
+.role-no-permissions {
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-action);
+    text-align: center;
+    padding: 1.5rem 0;
+    margin: 0;
+}
+
 /* Responsive adjustments */
 @media (max-width: 767px) {
     .role-page-header {

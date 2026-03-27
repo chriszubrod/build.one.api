@@ -46,6 +46,46 @@
             </div>
         </div>
 
+        <div class="role-detail-card">
+            <div class="role-detail-card-header">
+                <h5>Module Permissions</h5>
+            </div>
+            <div class="role-detail-card-body">
+                {% if role_modules %}
+                <table class="role-permissions-table">
+                    <thead>
+                        <tr>
+                            <th>Module</th>
+                            <th>Create</th>
+                            <th>Read</th>
+                            <th>Update</th>
+                            <th>Delete</th>
+                            <th>Submit</th>
+                            <th>Approve</th>
+                            <th>Complete</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for rm in role_modules %}
+                        <tr>
+                            <td>{{ module_map.get(rm.module_id, 'Unknown') }}</td>
+                            <td>{{ 'Yes' if rm.can_create else '-' }}</td>
+                            <td>{{ 'Yes' if rm.can_read else '-' }}</td>
+                            <td>{{ 'Yes' if rm.can_update else '-' }}</td>
+                            <td>{{ 'Yes' if rm.can_delete else '-' }}</td>
+                            <td>{{ 'Yes' if rm.can_submit else '-' }}</td>
+                            <td>{{ 'Yes' if rm.can_approve else '-' }}</td>
+                            <td>{{ 'Yes' if rm.can_complete else '-' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="role-no-permissions">No module permissions assigned.</p>
+                {% endif %}
+            </div>
+        </div>
+
         <div class="role-actions-card">
             <h6>Actions</h6>
             <div class="role-actions-list">

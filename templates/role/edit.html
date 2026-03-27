@@ -61,6 +61,60 @@
         </div>
     </div>
 
+    <div class="role-form-container" style="max-width: 900px;">
+        <div class="role-form-card">
+            <div class="role-form-card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <h5>Module Permissions</h5>
+                {% if available_modules %}
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <select id="addModuleSelect" class="role-form-control" style="width: auto; min-width: 200px;">
+                        <option value="">Add module...</option>
+                        {% for m in available_modules %}
+                        <option value="{{ m.id }}">{{ m.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <button type="button" class="btn btn-primary" onclick="addModule()">Add</button>
+                </div>
+                {% endif %}
+            </div>
+            <div class="role-form-card-body">
+                <table class="role-permissions-table" id="permissionsTable">
+                    <thead>
+                        <tr>
+                            <th>Module</th>
+                            <th>Create</th>
+                            <th>Read</th>
+                            <th>Update</th>
+                            <th>Delete</th>
+                            <th>Submit</th>
+                            <th>Approve</th>
+                            <th>Complete</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for rm in role_modules %}
+                        <tr data-public-id="{{ rm.public_id }}" data-row-version="{{ rm.row_version }}" data-module-id="{{ rm.module_id }}">
+                            <td>{{ module_map.get(rm.module_id, 'Unknown') }}</td>
+                            <td><input type="checkbox" data-perm="can_create" {{ 'checked' if rm.can_create }}></td>
+                            <td><input type="checkbox" data-perm="can_read" {{ 'checked' if rm.can_read }}></td>
+                            <td><input type="checkbox" data-perm="can_update" {{ 'checked' if rm.can_update }}></td>
+                            <td><input type="checkbox" data-perm="can_delete" {{ 'checked' if rm.can_delete }}></td>
+                            <td><input type="checkbox" data-perm="can_submit" {{ 'checked' if rm.can_submit }}></td>
+                            <td><input type="checkbox" data-perm="can_approve" {{ 'checked' if rm.can_approve }}></td>
+                            <td><input type="checkbox" data-perm="can_complete" {{ 'checked' if rm.can_complete }}></td>
+                            <td><button type="button" class="btn btn-danger btn-sm" onclick="removeModule(this)">Remove</button></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% if not role_modules %}
+                <p class="role-no-permissions" id="noPermissionsMsg">No module permissions assigned.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -108,6 +162,180 @@
                 alert('Error updating role: ' + error.message);
             }
         });
+
+        // --- Module Permissions ---
+        const roleInternalId = {{ role.id }};
+        const moduleMap = {{ module_map | tojson }};
+
+        async function addModule() {
+            const select = document.getElementById('addModuleSelect');
+            const moduleId = parseInt(select.value);
+            if (!moduleId) return;
+            const moduleName = select.options[select.selectedIndex].text;
+
+            try {
+                const response = await fetch('/api/v1/create/role_module', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        role_id: roleInternalId,
+                        module_id: moduleId,
+                        can_create: false,
+                        can_read: false,
+                        can_update: false,
+                        can_delete: false,
+                        can_submit: false,
+                        can_approve: false,
+                        can_complete: false
+                    })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    // Remove from dropdown
+                    select.querySelector(`option[value="${moduleId}"]`).remove();
+                    select.value = '';
+
+                    // Hide empty message
+                    const msg = document.getElementById('noPermissionsMsg');
+                    if (msg) msg.style.display = 'none';
+
+                    // Add row to table
+                    const tbody = document.querySelector('#permissionsTable tbody');
+                    const tr = document.createElement('tr');
+                    tr.dataset.publicId = data.public_id;
+                    tr.dataset.rowVersion = data.row_version;
+                    tr.dataset.moduleId = moduleId;
+                    tr.innerHTML = `
+                        <td>${moduleName}</td>
+                        <td><input type="checkbox" data-perm="can_create"></td>
+                        <td><input type="checkbox" data-perm="can_read"></td>
+                        <td><input type="checkbox" data-perm="can_update"></td>
+                        <td><input type="checkbox" data-perm="can_delete"></td>
+                        <td><input type="checkbox" data-perm="can_submit"></td>
+                        <td><input type="checkbox" data-perm="can_approve"></td>
+                        <td><input type="checkbox" data-perm="can_complete"></td>
+                        <td><button type="button" class="btn btn-danger btn-sm" onclick="removeModule(this)">Remove</button></td>
+                    `;
+                    tbody.appendChild(tr);
+                    attachCheckboxListeners(tr);
+                } else {
+                    const error = await response.json();
+                    alert('Error adding module: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error adding module: ' + error.message);
+            }
+        }
+
+        async function removeModule(btn) {
+            const tr = btn.closest('tr');
+            const publicId = tr.dataset.publicId;
+            if (!confirm('Remove this module permission?')) return;
+
+            try {
+                const response = await fetch(`/api/v1/delete/role_module/${publicId}`, {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                if (response.ok) {
+                    // Re-add to dropdown
+                    const select = document.getElementById('addModuleSelect');
+                    if (select) {
+                        const moduleName = tr.querySelector('td').textContent;
+                        const option = document.createElement('option');
+                        option.value = tr.dataset.moduleId;
+                        option.textContent = moduleName;
+                        select.appendChild(option);
+                    }
+                    tr.remove();
+
+                    // Show empty message if no rows left
+                    const tbody = document.querySelector('#permissionsTable tbody');
+                    if (tbody.children.length === 0) {
+                        const msg = document.getElementById('noPermissionsMsg');
+                        if (msg) msg.style.display = '';
+                    }
+                } else {
+                    const error = await response.json();
+                    alert('Error removing module: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error removing module: ' + error.message);
+            }
+        }
+
+        // Serialize updates per row to prevent row_version race conditions
+        const pendingUpdates = new Map();
+
+        async function updatePermission(tr) {
+            const publicId = tr.dataset.publicId;
+
+            // If an update is already in-flight for this row, queue another after it finishes
+            if (pendingUpdates.has(publicId)) {
+                pendingUpdates.set(publicId, true);
+                return;
+            }
+            pendingUpdates.set(publicId, false);
+
+            await _doUpdate(tr);
+
+            // If another change came in while we were saving, send it now
+            while (pendingUpdates.get(publicId)) {
+                pendingUpdates.set(publicId, false);
+                await _doUpdate(tr);
+            }
+            pendingUpdates.delete(publicId);
+        }
+
+        async function _doUpdate(tr) {
+            const publicId = tr.dataset.publicId;
+            const rowVersion = tr.dataset.rowVersion;
+            const moduleId = parseInt(tr.dataset.moduleId);
+
+            const data = {
+                row_version: rowVersion,
+                role_id: roleInternalId,
+                module_id: moduleId,
+                can_create: tr.querySelector('[data-perm="can_create"]').checked,
+                can_read: tr.querySelector('[data-perm="can_read"]').checked,
+                can_update: tr.querySelector('[data-perm="can_update"]').checked,
+                can_delete: tr.querySelector('[data-perm="can_delete"]').checked,
+                can_submit: tr.querySelector('[data-perm="can_submit"]').checked,
+                can_approve: tr.querySelector('[data-perm="can_approve"]').checked,
+                can_complete: tr.querySelector('[data-perm="can_complete"]').checked
+            };
+
+            try {
+                const response = await fetch(`/api/v1/update/role_module/${publicId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                if (response.ok) {
+                    const updated = await response.json();
+                    if (updated && updated.row_version) {
+                        tr.dataset.rowVersion = updated.row_version;
+                    }
+                } else {
+                    const error = await response.json();
+                    alert('Error updating permission: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error updating permission: ' + error.message);
+            }
+        }
+
+        function attachCheckboxListeners(tr) {
+            tr.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+                cb.addEventListener('change', () => updatePermission(tr));
+            });
+        }
+
+        // Attach listeners to existing rows
+        document.querySelectorAll('#permissionsTable tbody tr').forEach(attachCheckboxListeners);
 
         async function deleteRole() {
             if (confirm('Are you sure you want to delete this role? This action cannot be undone.')) {

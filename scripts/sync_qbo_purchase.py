@@ -24,8 +24,8 @@ from integrations.intuit.qbo.purchase.connector.expense.business.service import 
     sync_purchase_attachments_to_expense_line_items,
 )
 from integrations.intuit.qbo.attachable.business.service import QboAttachableService
-from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import PurchaseExpenseRepository
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
+from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 
 logger = logging.getLogger(__name__)
@@ -84,6 +84,60 @@ def _update_sync_record(sync_service: SyncService, sync_record: Sync, end_time_s
     return updated_sync
 
 
+def _dry_run_preview(
+    realm_id: str,
+    qbo_auth,
+    last_sync_time: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> dict:
+    """
+    Dry-run preview: fetch purchases from QBO and report what would be synced
+    without writing anything to the local database.
+    """
+    logger.info("[DRY RUN] Fetching purchases from QBO to preview sync (no writes will occur)...")
+
+    with QboPurchaseClient(access_token=qbo_auth.access_token, realm_id=realm_id) as client:
+        qbo_purchases = client.query_all_purchases(
+            last_updated_time=last_sync_time,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    logger.info(f"[DRY RUN] QBO returned {len(qbo_purchases)} purchases")
+
+    # Check existing local QBO purchase records (read-only)
+    purchase_repo = QboPurchaseRepository()
+    existing = purchase_repo.read_by_realm_id(realm_id)
+    existing_qbo_ids = {p.qbo_id for p in existing}
+
+    would_create = [p for p in qbo_purchases if p.id not in existing_qbo_ids]
+    would_update = [p for p in qbo_purchases if p.id in existing_qbo_ids]
+
+    logger.info(f"[DRY RUN] QBO staging table (qbo.Purchase):")
+    logger.info(f"[DRY RUN]   {len(would_create)} would be CREATED")
+    logger.info(f"[DRY RUN]   {len(would_update)} would be UPDATED")
+    logger.info(f"[DRY RUN] Existing local purchases: {len(existing)}")
+    logger.info("[DRY RUN] No changes were made to the local database.")
+
+    sample = [
+        {"qbo_id": p.id, "doc_number": p.doc_number, "vendor": p.entity_ref.name if p.entity_ref else None, "txn_date": p.txn_date, "total": float(p.total_amt) if p.total_amt else None}
+        for p in would_create[:5]
+    ]
+
+    return {
+        "dry_run": True,
+        "direction": "QBO → BuildOne only (read-only from QBO)",
+        "qbo_records_found": len(qbo_purchases),
+        "qbo_staging": {
+            "would_create": len(would_create),
+            "would_update": len(would_update),
+        },
+        "local_purchases_existing": len(existing),
+        "sample_new_records": sample,
+    }
+
+
 def sync_qbo_to_local(
     realm_id: str,
     last_sync_time: Optional[str],
@@ -117,7 +171,8 @@ def sync_qbo_to_local(
         last_updated_time=last_sync_time,
         start_date=start_date,
         end_date=end_date,
-        sync_to_modules=False  # We'll handle module sync separately for better control
+        sync_to_modules=False,  # Module sync handled below for better control
+        reconcile_deletes=True,  # Removes local records for purchases deleted in QBO (full syncs only)
     )
     
     if not purchases:
@@ -182,11 +237,13 @@ def sync_qbo_to_local(
     
     if failed_purchases:
         logger.warning(f"Failed to sync {len(failed_purchases)} purchases: {failed_purchases}")
-    
+
     return {
         "purchases_synced": len(purchases),
         "expenses_module_synced": expenses_module_synced,
         "attachments_linked": attachments_linked,
+        "failed_count": len(failed_purchases),
+        "failed_purchase_ids": failed_purchases,
         "purchases": [purchase.to_dict() for purchase in purchases],
     }
 
@@ -195,61 +252,84 @@ def sync_qbo_purchase(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     skip_sync_record_update: bool = False,
+    dry_run: bool = False,
 ) -> dict:
     """
     Sync QBO Purchases to Expense module.
-    
+
     1. QBO -> Local: Fetch purchases modified since last sync, store locally, sync to Expense
-    
+
     Args:
         start_date: Optional start date (YYYY-MM-DD) for filtering purchases by TxnDate.
-                   Use this for historical batch syncing.
         end_date: Optional end date (YYYY-MM-DD) for filtering purchases by TxnDate.
-                 Use this for historical batch syncing.
         skip_sync_record_update: If True, don't update the sync record timestamp.
-                                Use this when doing historical batch syncs to preserve
-                                the incremental sync tracking.
+        dry_run: If True, fetch from QBO and report what would be synced without writing anything.
     """
     try:
         # Create start time variable
         start_time = datetime.now(timezone.utc)
         start_time_str = _normalize_last_sync(start_time.isoformat())
         logger.info(f"QBO Purchase sync triggered at: {start_time_str}")
-        
+
         if start_date or end_date:
             logger.info(f"Date range filter: {start_date or 'beginning'} to {end_date or 'now'}")
-        
+
         # Initialize services
         sync_service = SyncService()
         qbo_purchase_service = QboPurchaseService()
         purchase_connector = PurchaseExpenseConnector()
         auth_service = QboAuthService()
-        
+
         # Get realm ID
         all_auths = auth_service.read_all()
         if not all_auths or len(all_auths) == 0:
             raise ValueError("No QBO authentication found. Please connect your QuickBooks account first.")
         realm_id = all_auths[0].realm_id
         logger.info(f"Using realm_id: {realm_id}")
-        
+
         # Get or create Sync record
         provider = 'qbo'
         entity = 'purchase'
         env = 'prod'
-        
+
         sync_record = _get_or_create_sync_record(sync_service, provider, env, entity)
-        
+
         # For date range queries, don't use last_sync_time (we're doing historical batch)
         # For regular incremental sync, use last_sync_time
         last_sync_time = None
         if start_date or end_date:
-            logger.info(f"Historical batch sync mode - using date range filter instead of last sync time")
+            logger.info("Historical batch sync mode - using date range filter instead of last sync time")
         elif sync_record and sync_record.last_sync_datetime:
             last_sync_time = sync_record.last_sync_datetime
             logger.info(f"Last sync time: {last_sync_time}. Fetching only updated records.")
         else:
             logger.info("No previous sync found. Performing full sync.")
-        
+
+        # --- DRY RUN path: fetch from QBO only, no DB writes ---
+        if dry_run:
+            qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
+            if not qbo_auth or not qbo_auth.access_token:
+                raise ValueError(f"No valid access token found for realm_id: {realm_id}")
+            preview = _dry_run_preview(
+                realm_id=realm_id,
+                qbo_auth=qbo_auth,
+                last_sync_time=last_sync_time,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            end_time = datetime.now(timezone.utc)
+            return {
+                "result": {
+                    "success": True,
+                    "dry_run": True,
+                    "realm_id": realm_id,
+                    "start_time": start_time_str,
+                    "end_time": _normalize_last_sync(end_time.isoformat()),
+                    "preview": preview,
+                },
+                "status_code": 200,
+            }
+
         # Sync from QBO to local
         qbo_to_local_result = sync_qbo_to_local(
             realm_id=realm_id,
@@ -264,8 +344,19 @@ def sync_qbo_purchase(
         end_time = datetime.now(timezone.utc)
         end_time_str = _normalize_last_sync(end_time.isoformat())
         
+        failed_count = qbo_to_local_result.get("failed_count", 0)
+
         if skip_sync_record_update:
             logger.info("Skipping sync record update (--skip-sync-update flag)")
+            updated_sync = sync_record
+        elif failed_count > 0:
+            # Do not advance the timestamp when purchases failed — they must be
+            # retried on the next run.  QBO will re-return them because their
+            # LastUpdatedTime is older than the preserved last_sync_time.
+            logger.warning(
+                f"Sync record timestamp NOT updated: {failed_count} purchase(s) failed. "
+                f"They will be re-fetched and retried on the next incremental sync."
+            )
             updated_sync = sync_record
         elif end_date:
             # When end_date is provided, use it as the sync record timestamp
@@ -273,7 +364,7 @@ def sync_qbo_purchase(
             logger.info(f"Setting sync record to end_date: {sync_datetime}")
             updated_sync = _update_sync_record(sync_service, sync_record, sync_datetime)
         else:
-            # Normal incremental sync - use current time
+            # Normal incremental sync — advance to current time
             updated_sync = _update_sync_record(sync_service, sync_record, end_time_str)
         
         result = {
@@ -355,7 +446,13 @@ allowing you to track progress through historical batch imports.
         action='store_true',
         help='Skip updating the sync record timestamp. Use for historical batch imports.'
     )
-    
+
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Fetch from QBO and report what would be synced without writing to the database.'
+    )
+
     return parser.parse_args()
 
 
@@ -392,6 +489,7 @@ if __name__ == "__main__":
         start_date=args.start_date,
         end_date=args.end_date,
         skip_sync_record_update=args.skip_sync_update,
+        dry_run=args.dry_run,
     )
     
     import json

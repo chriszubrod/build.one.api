@@ -21,6 +21,7 @@ class Vendor:
     vendor_type_id: Optional[int]
     is_draft: Optional[bool]
     is_deleted: Optional[bool] = False
+    is_contract_labor: Optional[bool] = False
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

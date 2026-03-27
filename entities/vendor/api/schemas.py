@@ -41,6 +41,10 @@ class VendorCreate(BaseModel):
         default=True,
         description="Whether the vendor is a draft (incomplete).",
     )
+    is_contract_labor: Optional[bool] = Field(
+        default=False,
+        description="Whether the vendor is eligible for contract labor records.",
+    )
 
     @field_validator('name', mode='before')
     @classmethod
@@ -79,6 +83,10 @@ class VendorUpdate(BaseModel):
     is_draft: Optional[bool] = Field(
         default=None,
         description="Whether the vendor record is a draft (incomplete).",
+    )
+    is_contract_labor: Optional[bool] = Field(
+        default=None,
+        description="Whether the vendor is eligible for contract labor records.",
     )
 
     @field_validator('name', mode='before')

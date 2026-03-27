@@ -40,6 +40,7 @@ def create_vendor_router(body: VendorCreate, current_user: dict = Depends(get_cu
             "taxpayer_public_id": body.taxpayer_public_id,
             "vendor_type_public_id": body.vendor_type_public_id,
             "is_draft": body.is_draft,
+            "is_contract_labor": body.is_contract_labor,
         },
         workflow_type="vendor_create",
     )
@@ -95,6 +96,7 @@ def update_vendor_by_public_id_router(public_id: str, body: VendorUpdate, curren
             "taxpayer_public_id": body.taxpayer_public_id,
             "vendor_type_public_id": body.vendor_type_public_id,
             "is_draft": body.is_draft,
+            "is_contract_labor": body.is_contract_labor,
         },
         workflow_type="vendor_update",
     )

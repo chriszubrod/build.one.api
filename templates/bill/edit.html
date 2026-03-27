@@ -26,7 +26,7 @@
                     Show Source Email
                 </button>
                 {% endif %}
-                <a href="/bill/list" class="btn btn-secondary">Back to List</a>
+                <a href="/bill/list" class="btn btn-secondary" onclick="this.href=getBillListUrl()">Back to List</a>
             </div>
         </div>
 
@@ -442,7 +442,7 @@
                         <button type="button" class="btn btn-danger" onclick="deleteBill()">Delete Bill</button>
                     </div>
                     <div class="bill-form-actions-right">
-                        <a href="/bill/list" class="btn btn-secondary">Cancel</a>
+                        <a href="/bill/list" class="btn btn-secondary" onclick="this.href=getBillListUrl()">Cancel</a>
                         <button type="button" class="btn btn-secondary" id="saveDraftBtn" onclick="handleSaveDraft()">Save Draft</button>
                         <button type="submit" class="btn btn-primary" id="completeBillBtn">Complete Bill</button>
                     </div>
@@ -597,6 +597,13 @@
 {% block scripts %}
     <script>
         function getBillListUrl() {
+            try {
+                const saved = sessionStorage.getItem('billListState');
+                if (saved) {
+                    const state = JSON.parse(saved);
+                    if (state.url) return state.url;
+                }
+            } catch (e) {}
             return '/bill/list';
         }
         // =====================

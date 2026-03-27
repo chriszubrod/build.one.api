@@ -346,12 +346,31 @@ class BillBillConnector:
         payload_dict = qbo_bill_create.model_dump(by_alias=True, exclude_none=True)
         logger.info(f"QBO Bill payload: {payload_dict}")
         
+        from integrations.intuit.qbo.base.errors import QboValidationError
+
         with QboBillClient(
             access_token=qbo_auth.access_token,
             realm_id=realm_id
         ) as client:
-            created_bill = client.create_bill(qbo_bill_create)
-        
+            try:
+                created_bill = client.create_bill(qbo_bill_create)
+            except QboValidationError as e:
+                if "duplicate" in str(e).lower():
+                    # Bill already exists in QBO — query for it and create mapping
+                    logger.warning(
+                        f"Bill {bill_id} doc_number={bill.bill_number} already exists in QBO. "
+                        f"Querying for existing bill to create mapping."
+                    )
+                    return self._recover_duplicate_qbo_bill(
+                        client=client,
+                        bill=bill,
+                        bill_id=bill_id,
+                        realm_id=realm_id,
+                        qbo_vendor_ref=qbo_vendor_ref,
+                        line_num_to_line_item_id=line_num_to_line_item_id,
+                    )
+                raise
+
         logger.info(f"Created QBO Bill {created_bill.id} with SyncToken {created_bill.sync_token}")
         
         # Get vendor name for storage
@@ -414,6 +433,97 @@ class BillBillConnector:
         except ValueError as e:
             logger.warning(f"Could not create mapping: {e}")
         
+        return local_qbo_bill
+
+    def _recover_duplicate_qbo_bill(
+        self,
+        client: QboBillClient,
+        bill: Bill,
+        bill_id: int,
+        realm_id: str,
+        qbo_vendor_ref,
+        line_num_to_line_item_id: dict,
+    ) -> Optional[QboBill]:
+        """
+        Handle duplicate DocNumber: query QBO for the existing bill,
+        store it locally, and create the Bill<->QboBill mapping.
+        """
+        # Query QBO for bills with this doc number
+        query = f"SELECT * FROM Bill WHERE DocNumber = '{bill.bill_number}'"
+        path = "/query"
+        params = {"query": query}
+        data = client._request("GET", path, params=params)
+
+        qbo_bills = data.get("QueryResponse", {}).get("Bill", [])
+        if not qbo_bills:
+            raise ValueError(
+                f"QBO reported duplicate DocNumber '{bill.bill_number}' but query returned no matching bills."
+            )
+
+        # Use the first match
+        from integrations.intuit.qbo.bill.external.schemas import QboBillResponse
+        existing_qbo_bill = QboBillResponse.from_qbo_response(qbo_bills[0])
+
+        logger.info(f"Found existing QBO Bill {existing_qbo_bill.id} for DocNumber '{bill.bill_number}'")
+
+        # Get vendor name
+        vendor = self.vendor_service.read_by_id(bill.vendor_id) if bill.vendor_id else None
+        vendor_name = vendor.name if vendor else None
+
+        # Store locally
+        local_qbo_bill = self.qbo_bill_repo.create(
+            qbo_id=existing_qbo_bill.id,
+            sync_token=existing_qbo_bill.sync_token,
+            realm_id=realm_id,
+            vendor_ref_value=qbo_vendor_ref.value,
+            vendor_ref_name=vendor_name,
+            txn_date=existing_qbo_bill.txn_date,
+            due_date=existing_qbo_bill.due_date,
+            doc_number=existing_qbo_bill.doc_number,
+            private_note=existing_qbo_bill.private_note,
+            total_amt=existing_qbo_bill.total_amt,
+            balance=existing_qbo_bill.balance,
+            ap_account_ref_value=existing_qbo_bill.ap_account_ref.value if existing_qbo_bill.ap_account_ref else None,
+            ap_account_ref_name=existing_qbo_bill.ap_account_ref.name if existing_qbo_bill.ap_account_ref else None,
+            sales_term_ref_value=existing_qbo_bill.sales_term_ref.value if existing_qbo_bill.sales_term_ref else None,
+            sales_term_ref_name=existing_qbo_bill.sales_term_ref.name if existing_qbo_bill.sales_term_ref else None,
+            currency_ref_value=existing_qbo_bill.currency_ref.value if existing_qbo_bill.currency_ref else None,
+            currency_ref_name=existing_qbo_bill.currency_ref.name if existing_qbo_bill.currency_ref else None,
+            exchange_rate=existing_qbo_bill.exchange_rate,
+            department_ref_value=existing_qbo_bill.department_ref.value if existing_qbo_bill.department_ref else None,
+            department_ref_name=existing_qbo_bill.department_ref.name if existing_qbo_bill.department_ref else None,
+            global_tax_calculation=existing_qbo_bill.global_tax_calculation,
+        )
+
+        logger.info(f"Stored local QboBill {local_qbo_bill.id} from existing QBO Bill {existing_qbo_bill.id}")
+
+        # Store lines and create mappings
+        if existing_qbo_bill.line:
+            from integrations.intuit.qbo.bill.connector.bill_line_item.business.service import BillLineItemConnector
+            line_connector = BillLineItemConnector()
+
+            for qbo_line in existing_qbo_bill.line:
+                stored_line = self._store_qbo_bill_line(local_qbo_bill.id, qbo_line)
+                if stored_line and qbo_line.line_num and qbo_line.line_num in line_num_to_line_item_id:
+                    bill_line_item_id = line_num_to_line_item_id[qbo_line.line_num]
+                    stored_line_id = int(stored_line.id) if isinstance(stored_line.id, str) else stored_line.id
+                    try:
+                        line_connector.create_mapping(
+                            bill_line_item_id=bill_line_item_id,
+                            qbo_bill_line_id=stored_line_id,
+                        )
+                        logger.info(f"Created line mapping: BillLineItem {bill_line_item_id} <-> QboBillLine {stored_line_id}")
+                    except ValueError as e:
+                        logger.warning(f"Could not create line mapping: {e}")
+
+        # Create bill mapping
+        qbo_bill_id = int(local_qbo_bill.id) if isinstance(local_qbo_bill.id, str) else local_qbo_bill.id
+        try:
+            self.create_mapping(bill_id=bill_id, qbo_bill_id=qbo_bill_id)
+            logger.info(f"Created mapping: Bill {bill_id} <-> QboBill {qbo_bill_id} (recovered from duplicate)")
+        except ValueError as e:
+            logger.warning(f"Could not create mapping: {e}")
+
         return local_qbo_bill
 
     def update_has_been_billed_in_qbo(self, bill_id: int, realm_id: str) -> None:

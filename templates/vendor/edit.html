@@ -95,7 +95,18 @@
                                         <option value="{{ vendor_type_option.public_id }}" {% if vendor_type and vendor_type.public_id == vendor_type_option.public_id %}selected{% endif %}>{{ vendor_type_option.name }}</option>
                                     {% endfor %}
                                 </select>
-                                        </div>
+                                </div>
+
+                            <div class="vendor-form-group">
+                                <label class="vendor-form-label" style="display: flex; align-items: center; gap: 0.75rem; cursor: pointer;">
+                                    <input type="checkbox"
+                                           id="is_contract_labor"
+                                           name="is_contract_labor"
+                                           {% if vendor.is_contract_labor %}checked{% endif %}
+                                           style="width: 1rem; height: 1rem;">
+                                    Contract Labor Eligible
+                                </label>
+                            </div>
                                         </div>
                                     </div>
                 </section>
@@ -578,6 +589,7 @@
                 name,
                 abbreviation,
                 vendor_type_public_id: vendorTypeId,
+                is_contract_labor: document.getElementById('is_contract_labor').checked,
                 row_version: getRowVersion()
             };
 

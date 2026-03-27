@@ -591,19 +591,22 @@
         let lineItemIsSaving = new Map(); // Track saving state per form
 
         // Check if a line item form has required fields filled
-        function canSaveLineItem(formElement) {
-            const billPublicId = document.getElementById('bill_public_id').value;
-            if (!billPublicId) return false; // Bill must be saved first
-            
+        function hasRequiredLineItemFields(formElement) {
             const subCostCode = formElement.querySelector('[id^="line_item_sub_cost_code_id"]');
             const description = formElement.querySelector('[id^="line_item_description"]');
             const quantity = formElement.querySelector('[id^="line_item_quantity"]');
             const rate = formElement.querySelector('[id^="line_item_rate"]');
-            
+
             return subCostCode && subCostCode.value &&
                    description && description.value.trim() &&
                    quantity && quantity.value &&
                    rate && rate.value;
+        }
+
+        function canSaveLineItem(formElement) {
+            const billPublicId = document.getElementById('bill_public_id').value;
+            if (!billPublicId) return false; // Bill must be saved first
+            return hasRequiredLineItemFields(formElement);
         }
 
         // Save a single line item
@@ -846,7 +849,7 @@
 
         // Get all line item forms
         function getAllLineItemForms() {
-            return document.querySelectorAll('[id^="add-line-item-form"]');
+            return Array.from(document.querySelectorAll('[id^="add-line-item-form"]'));
         }
 
         // Count how many line item forms exist
@@ -1383,20 +1386,19 @@
         function validatePendingAttachments() {
             const pendingAttachments = [];
             const allForms = getAllLineItemForms();
-            
+
             allForms.forEach((formElement, index) => {
                 const attachmentPublicId = formElement.querySelector('.line-item-attachment-public-id').value;
-                const lineItemPublicId = formElement.querySelector('.line-item-public-id').value;
-                
-                // Has attachment but line item not saved
-                if (attachmentPublicId && !lineItemPublicId) {
+
+                // Has attachment but missing required fields (can't be saved)
+                if (attachmentPublicId && !canSaveLineItem(formElement)) {
                     pendingAttachments.push({
                         formIndex: index + 1,
                         formElement: formElement
                     });
                 }
             });
-            
+
             return pendingAttachments;
         }
 
@@ -1416,7 +1418,7 @@
             }
 
             // Ensure at least one line item has required fields filled
-            const completableForms = getAllLineItemForms().filter(f => canSaveLineItem(f));
+            const completableForms = Array.from(getAllLineItemForms()).filter(f => hasRequiredLineItemFields(f));
             if (completableForms.length === 0) {
                 showToast('Please add at least one line item with required fields (Sub Cost Code, Description, Quantity, Rate).', 'error');
                 return;

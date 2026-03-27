@@ -112,8 +112,8 @@ class QboAccountRepository:
                         "SubAccount": 1 if sub_account is True else (0 if sub_account is False else None),
                         "ParentRefValue": parent_ref_value,
                         "ParentRefName": parent_ref_name,
-                        "CurrentBalance": float(current_balance) if current_balance is not None else None,
-                        "CurrentBalanceWithSubAccounts": float(current_balance_with_sub_accounts) if current_balance_with_sub_accounts is not None else None,
+                        "CurrentBalance": Decimal(str(current_balance)) if current_balance is not None else None,
+                        "CurrentBalanceWithSubAccounts": Decimal(str(current_balance_with_sub_accounts)) if current_balance_with_sub_accounts is not None else None,
                         "CurrencyRefValue": currency_ref_value,
                         "CurrencyRefName": currency_ref_name,
                     }
@@ -302,8 +302,8 @@ class QboAccountRepository:
                         "SubAccount": 1 if sub_account is True else (0 if sub_account is False else None),
                         "ParentRefValue": parent_ref_value,
                         "ParentRefName": parent_ref_name,
-                        "CurrentBalance": float(current_balance) if current_balance is not None else None,
-                        "CurrentBalanceWithSubAccounts": float(current_balance_with_sub_accounts) if current_balance_with_sub_accounts is not None else None,
+                        "CurrentBalance": Decimal(str(current_balance)) if current_balance is not None else None,
+                        "CurrentBalanceWithSubAccounts": Decimal(str(current_balance_with_sub_accounts)) if current_balance_with_sub_accounts is not None else None,
                         "CurrencyRefValue": currency_ref_value,
                         "CurrencyRefName": currency_ref_name,
                     }
@@ -315,8 +315,8 @@ class QboAccountRepository:
                     )
                     row = cursor.fetchone()
                     if not row:
-                        logger.error("Update qbo account did not return a row.")
-                        raise map_database_error(Exception("update qbo account by QBO ID failed"))
+                        logger.warning(f"Update QBO account {qbo_id} returned no row (likely RowVersion conflict)")
+                        return None
                     return self._from_db(row)
                 finally:
                     try:

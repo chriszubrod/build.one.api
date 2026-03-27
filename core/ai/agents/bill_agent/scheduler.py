@@ -13,10 +13,11 @@ async def _run_scheduled():
     while True:
         await asyncio.sleep(_interval_minutes * 60)
 
-        # --- Bill processing ---
+        # --- Bill processing (run in thread to avoid blocking the event loop) ---
         try:
             from core.ai.agents.bill_agent.business.runner import run_bill_folder_processing
-            result = run_bill_folder_processing(
+            result = await asyncio.to_thread(
+                run_bill_folder_processing,
                 company_id=1,
                 tenant_id=1,
                 user_id="scheduler",

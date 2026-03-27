@@ -17,6 +17,13 @@ class RoleModule:
     modified_datetime: Optional[str]
     role_id: Optional[int]
     module_id: Optional[int]
+    can_create: Optional[bool] = False
+    can_read: Optional[bool] = False
+    can_update: Optional[bool] = False
+    can_delete: Optional[bool] = False
+    can_submit: Optional[bool] = False
+    can_approve: Optional[bool] = False
+    can_complete: Optional[bool] = False
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

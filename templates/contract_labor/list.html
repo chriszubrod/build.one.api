@@ -90,6 +90,7 @@
         <div class="cl-bulk-right">
             <button type="button" class="btn btn-danger btn-sm" onclick="deleteSelected()" id="bulk-delete-btn" disabled>Delete Selected</button>
             <button type="button" class="btn btn-primary btn-sm" onclick="markSelectedAsReady()" id="bulk-ready-btn" disabled>Mark as Ready</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="regeneratePdfs()" id="bulk-pdf-btn" disabled>View PDF</button>
         </div>
     </div>
 
@@ -327,6 +328,7 @@
         document.getElementById('selected-count').textContent = `(${count} selected)`;
         document.getElementById('bulk-ready-btn').disabled = count === 0;
         document.getElementById('bulk-delete-btn').disabled = count === 0;
+        document.getElementById('bulk-pdf-btn').disabled = count === 0;
         
         // Update select-all checkbox state
         const allCheckboxes = document.querySelectorAll('.entry-checkbox');
@@ -408,6 +410,40 @@
         }
     }
     
+    async function regeneratePdfs() {
+        const checkboxes = document.querySelectorAll('.entry-checkbox:checked');
+        const publicIds = Array.from(checkboxes).map(cb => cb.dataset.publicId);
+
+        if (publicIds.length === 0) return;
+
+        const btn = document.getElementById('bulk-pdf-btn');
+        btn.disabled = true;
+        btn.textContent = 'Generating...';
+
+        try {
+            const response = await fetch('/api/v1/contract-labor/billing/regenerate-pdf', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ public_ids: publicIds }),
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || response.statusText);
+            }
+
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            window.open(url, '_blank');
+        } catch (error) {
+            console.error('Error:', error);
+            showToast(error.message || 'Error generating PDF', 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'View PDF';
+        }
+    }
+
     function showToast(message, type = 'info', duration = 5000) {
         const container = document.getElementById('toast-container');
         if (!container) return;

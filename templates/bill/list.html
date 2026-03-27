@@ -74,6 +74,12 @@
         </form>
     </div>
 
+    {% if db_error %}
+    <div style="padding: 1rem; margin-bottom: 1rem; background-color: #fff3e0; border: 1px solid #ffcc80; border-radius: 4px; color: #e65100; font-size: var(--font-size-action);">
+        {{ db_error }}
+    </div>
+    {% endif %}
+
     <!-- SharePoint Bill Folder Summary -->
     {% if bill_folder_summary and bill_folder_summary.is_linked %}
     <div class="bill-folder-summary-section">
@@ -1242,34 +1248,36 @@
     }
 
     // =====================
-    // Scroll Position Persistence
+    // List State Persistence (filters + scroll)
     // =====================
 
-    // Save scroll position before navigating away
+    // Save filter state + scroll position before navigating to a bill
     document.addEventListener('click', function(e) {
         const link = e.target.closest('a[href^="/bill/"]');
-        if (link && !link.href.includes('/bill/list')) {
+        if (link && !link.href.includes('/bill/list') && !link.href.includes('/bill/create')) {
             const content = document.getElementById('content');
-            if (content) {
-                sessionStorage.setItem('billListScrollTop', content.scrollTop);
-            }
+            sessionStorage.setItem('billListState', JSON.stringify({
+                url: window.location.href,
+                scrollTop: content ? content.scrollTop : 0
+            }));
         }
     });
 
-    // Restore scroll position on page load (returning from edit/view)
+    // Restore scroll position on page load
     document.addEventListener('DOMContentLoaded', function() {
-        const savedScroll = sessionStorage.getItem('billListScrollTop');
-        if (savedScroll) {
-            sessionStorage.removeItem('billListScrollTop');
-            const scrollTop = parseInt(savedScroll, 10);
-            if (scrollTop > 0) {
+        const saved = sessionStorage.getItem('billListState');
+        if (!saved) return;
+
+        const state = JSON.parse(saved);
+        sessionStorage.removeItem('billListState');
+
+        if (state.scrollTop > 0) {
+            requestAnimationFrame(() => {
                 requestAnimationFrame(() => {
-                    requestAnimationFrame(() => {
-                        const content = document.getElementById('content');
-                        if (content) content.scrollTop = scrollTop;
-                    });
+                    const content = document.getElementById('content');
+                    if (content) content.scrollTop = state.scrollTop;
                 });
-            }
+            });
         }
     });
 </script>

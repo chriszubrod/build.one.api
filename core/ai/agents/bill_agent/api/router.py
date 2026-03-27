@@ -57,20 +57,26 @@ def _run_processing_background(
     trigger_source: str,
     user_id: str,
 ):
-    """Background task wrapper — completes or fails the pre-created run."""
-    from core.ai.agents.bill_agent.business.processor import BillFolderProcessor
-    service = BillAgentService()
+    """Background task wrapper — runs in a separate thread to avoid blocking the event loop."""
+    import threading
 
-    try:
-        processor = BillFolderProcessor()
-        result = processor.process(
-            company_id=company_id,
-            on_progress=lambda r: service.update_progress(run_public_id, r),
-        )
-        service.complete_run(run_public_id, result)
-    except Exception as e:
-        logger.exception("Background bill folder processing failed")
-        service.fail_run(run_public_id, error=str(e))
+    def _run():
+        from core.ai.agents.bill_agent.business.processor import BillFolderProcessor
+        service = BillAgentService()
+
+        try:
+            processor = BillFolderProcessor()
+            result = processor.process(
+                company_id=company_id,
+                on_progress=lambda r: service.update_progress(run_public_id, r),
+            )
+            service.complete_run(run_public_id, result)
+        except Exception as e:
+            logger.exception("Background bill folder processing failed")
+            service.fail_run(run_public_id, error=str(e))
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
 
 
 @router.get("/run/{public_id}", response_model=BillAgentRunResponse)

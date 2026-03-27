@@ -8,6 +8,7 @@ import json
 import logging
 import secrets
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 # Third-party Imports
 import jwt
@@ -26,6 +27,11 @@ from entities.organization.business.service import OrganizationService
 from entities.company.business.service import CompanyService
 from entities.user.business.service import UserService
 from entities.module.business.service import ModuleService
+from entities.project.business.service import ProjectService
+from entities.role.business.service import RoleService
+from entities.user_module.business.service import UserModuleService
+from entities.user_project.business.service import UserProjectService
+from entities.user_role.business.service import UserRoleService
 from shared.database import (
     DatabaseConcurrencyError,
     DatabaseOperationError,
@@ -209,26 +215,67 @@ def get_current_user_web(request: Request):
             allow_legacy=True,
         )
 
+        # Resolve user role for scoping modules and projects
+        _auth = None
+        _is_admin = False
         try:
-            _organizations = OrganizationService().read_all()
-            auth_payload["organizations"] = [org.to_dict() for org in _organizations]
+            _auth = AuthService().read_by_public_id(public_id=auth_payload["sub"])
+            if _auth and _auth.user_id:
+                _user_role = UserRoleService().read_by_user_id(user_id=_auth.user_id)
+                if _user_role:
+                    _role = RoleService().read_by_id(id=_user_role.role_id)
+                    if _role and _role.name and _role.name.lower() == "admin":
+                        _is_admin = True
         except Exception:
-            auth_payload["organizations"] = []
-        
-        try:
-            _companies = CompanyService().read_all()
-            auth_payload["companies"] = [company.to_dict() for company in _companies]
-        except Exception:
-            auth_payload["companies"] = []
-        
-        try:
-            _modules = ModuleService().read_all()
-            auth_payload["modules"] = [module.to_dict() for module in _modules]
-        except Exception:
-            auth_payload["modules"] = []
-        
-        # TODO: Add projects when available
-        auth_payload["projects"] = []
+            pass
+
+        # Fetch enrichment data concurrently
+        def _fetch_organizations():
+            try:
+                return [org.to_dict() for org in OrganizationService().read_all()]
+            except Exception:
+                return []
+
+        def _fetch_companies():
+            try:
+                return [c.to_dict() for c in CompanyService().read_all()]
+            except Exception:
+                return []
+
+        def _fetch_modules():
+            try:
+                if _is_admin:
+                    return [m.to_dict() for m in ModuleService().read_all()]
+                elif _auth and _auth.user_id:
+                    _user_modules = UserModuleService().read_all_by_user_id(user_id=_auth.user_id)
+                    _assigned_ids = {um.module_id for um in _user_modules}
+                    return [m.to_dict() for m in ModuleService().read_all() if m.id in _assigned_ids]
+                return []
+            except Exception:
+                return []
+
+        def _fetch_projects():
+            try:
+                if _is_admin:
+                    return [p.to_dict() for p in ProjectService().read_all()]
+                elif _auth and _auth.user_id:
+                    _user_projects = UserProjectService().read_by_user_id(user_id=_auth.user_id)
+                    _assigned_ids = {up.project_id for up in _user_projects}
+                    return [p.to_dict() for p in ProjectService().read_all() if p.id in _assigned_ids]
+                return []
+            except Exception:
+                return []
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            orgs_future = executor.submit(_fetch_organizations)
+            companies_future = executor.submit(_fetch_companies)
+            modules_future = executor.submit(_fetch_modules)
+            projects_future = executor.submit(_fetch_projects)
+
+            auth_payload["organizations"] = orgs_future.result()
+            auth_payload["companies"] = companies_future.result()
+            auth_payload["modules"] = modules_future.result()
+            auth_payload["projects"] = projects_future.result()
 
         return auth_payload
     except ValueError as e:

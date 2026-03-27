@@ -20,7 +20,7 @@ class VendorService:
         """Initialize the VendorService."""
         self.repo = repo or VendorRepository()
 
-    def create(self, *, tenant_id: int = 1, name: str, abbreviation: Optional[str] = None, taxpayer_public_id: Optional[str] = None, vendor_type_public_id: Optional[str] = None, is_draft: bool = True) -> Vendor:
+    def create(self, *, tenant_id: int = 1, name: str, abbreviation: Optional[str] = None, taxpayer_public_id: Optional[str] = None, vendor_type_public_id: Optional[str] = None, is_draft: bool = True, is_contract_labor: bool = False) -> Vendor:
         """
         Create a new vendor.
 
@@ -51,7 +51,7 @@ class VendorService:
             if vendor_type:
                 vendor_type_id = vendor_type.id
 
-        return self.repo.create(tenant_id=tenant_id, name=name, abbreviation=abbreviation, taxpayer_id=taxpayer_id, vendor_type_id=vendor_type_id, is_draft=is_draft)
+        return self.repo.create(tenant_id=tenant_id, name=name, abbreviation=abbreviation, taxpayer_id=taxpayer_id, vendor_type_id=vendor_type_id, is_draft=is_draft, is_contract_labor=is_contract_labor)
 
     def read_all(self) -> list[Vendor]:
         """
@@ -88,6 +88,7 @@ class VendorService:
         taxpayer_public_id: str = None,
         vendor_type_public_id: str = None,
         is_draft: bool = None,
+        is_contract_labor: bool = None,
     ) -> Optional[Vendor]:
         """
         Update a vendor by public ID.
@@ -113,6 +114,8 @@ class VendorService:
             existing.abbreviation = abbreviation
         if is_draft is not None:
             existing.is_draft = is_draft
+        if is_contract_labor is not None:
+            existing.is_contract_labor = is_contract_labor
 
         # Handle taxpayer FK — empty string clears, valid public_id sets
         if taxpayer_public_id is not None:

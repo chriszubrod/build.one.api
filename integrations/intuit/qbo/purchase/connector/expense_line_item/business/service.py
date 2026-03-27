@@ -15,7 +15,6 @@ from integrations.intuit.qbo.customer.connector.project.persistence.repo import 
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.expense_line_item.business.model import ExpenseLineItem
-from entities.expense.business.service import ExpenseService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
 
@@ -31,7 +30,6 @@ class PurchaseLineExpenseLineItemConnector:
         self,
         mapping_repo: Optional[PurchaseLineExpenseLineItemRepository] = None,
         expense_line_item_service: Optional[ExpenseLineItemService] = None,
-        expense_service: Optional[ExpenseService] = None,
         item_sub_cost_code_repo: Optional[ItemSubCostCodeRepository] = None,
         qbo_item_repo: Optional[QboItemRepository] = None,
         customer_project_repo: Optional[CustomerProjectRepository] = None,
@@ -40,27 +38,27 @@ class PurchaseLineExpenseLineItemConnector:
         """Initialize the PurchaseLineExpenseLineItemConnector."""
         self.mapping_repo = mapping_repo or PurchaseLineExpenseLineItemRepository()
         self.expense_line_item_service = expense_line_item_service or ExpenseLineItemService()
-        self.expense_service = expense_service or ExpenseService()
         self.item_sub_cost_code_repo = item_sub_cost_code_repo or ItemSubCostCodeRepository()
+        # Per-sync caches: the same QBO item / customer ref appears on many lines.
+        # Caching avoids 2 DB queries per line for each repeated value.
+        self._sub_cost_code_cache: dict = {}  # qbo_item_ref_value -> sub_cost_code_id | None
+        self._project_cache: dict = {}        # qbo_customer_ref_value -> project_public_id | None
         self.qbo_item_repo = qbo_item_repo or QboItemRepository()
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
 
-    def sync_from_qbo_purchase_line(self, expense_id: int, qbo_line: QboPurchaseLine) -> ExpenseLineItem:
+    def sync_from_qbo_purchase_line(self, expense_id: int, expense_public_id: str, qbo_line: QboPurchaseLine) -> ExpenseLineItem:
         """
         Sync data from QboPurchaseLine to ExpenseLineItem module.
-        
+
         Args:
             expense_id: Database ID of the Expense
+            expense_public_id: Public ID of the Expense (passed in to avoid a per-line DB read)
             qbo_line: QboPurchaseLine record
-        
+
         Returns:
             ExpenseLineItem: The synced ExpenseLineItem record
         """
-        # Get expense to get public_id
-        expense = self.expense_service.read_by_id(expense_id)
-        if not expense:
-            raise ValueError(f"Expense with ID {expense_id} not found")
         
         # Resolve sub_cost_code from item reference
         sub_cost_code_id = None
@@ -116,13 +114,13 @@ class PurchaseLineExpenseLineItemConnector:
                     sub_cost_code_id=sub_cost_code_id,
                     project_public_id=project_public_id,
                     description=qbo_line.description,
-                    quantity=int(qbo_line.qty) if qbo_line.qty else None,
+                    quantity=qbo_line.qty,
                     rate=qbo_line.unit_price,
                     amount=qbo_line.amount,
                     is_billable=is_billable,
                     is_billed=is_billed,
                     markup=markup,
-                    price=float(price) if price is not None else None,
+                    price=price,
                     is_draft=False,
                 )
                 
@@ -136,11 +134,11 @@ class PurchaseLineExpenseLineItemConnector:
         # Create new ExpenseLineItem
         logger.debug(f"Creating new ExpenseLineItem from QboPurchaseLine {qbo_line.id}")
         line_item = self.expense_line_item_service.create(
-            expense_public_id=expense.public_id,
+            expense_public_id=expense_public_id,
             sub_cost_code_id=sub_cost_code_id,
             project_public_id=project_public_id,
             description=qbo_line.description,
-            quantity=int(qbo_line.qty) if qbo_line.qty else None,
+            quantity=qbo_line.qty,
             rate=qbo_line.unit_price,
             amount=qbo_line.amount,
             is_billable=is_billable,
@@ -150,13 +148,24 @@ class PurchaseLineExpenseLineItemConnector:
             is_draft=False,
         )
         
-        # Create mapping
+        # Create mapping — if this fails we must roll back the line item we just created,
+        # otherwise the unmapped line item will be duplicated on every subsequent sync run.
         line_item_id = int(line_item.id) if isinstance(line_item.id, str) else line_item.id
         try:
             mapping = self.create_mapping(expense_line_item_id=line_item_id, qbo_purchase_line_id=qbo_line.id)
             logger.debug(f"Created mapping: ExpenseLineItem {line_item_id} <-> QboPurchaseLine {qbo_line.id}")
-        except ValueError as e:
-            logger.warning(f"Could not create mapping: {e}")
+        except Exception as e:
+            try:
+                self.expense_line_item_service.delete_by_public_id(line_item.public_id)
+                logger.warning(
+                    f"Rolled back orphan ExpenseLineItem {line_item_id} after mapping failure "
+                    f"for QboPurchaseLine {qbo_line.id}"
+                )
+            except Exception as del_e:
+                logger.error(f"Could not delete orphan ExpenseLineItem {line_item_id}: {del_e}")
+            raise ValueError(
+                f"Failed to create PurchaseLineExpenseLineItem mapping for QboPurchaseLine {qbo_line.id}: {e}"
+            ) from e
         
         return line_item
 
@@ -172,19 +181,25 @@ class PurchaseLineExpenseLineItemConnector:
         """
         if not qbo_item_ref_value:
             return None
-        
+
+        if qbo_item_ref_value in self._sub_cost_code_cache:
+            return self._sub_cost_code_cache[qbo_item_ref_value]
+
         # First find the QboItem by qbo_id
         qbo_item = self.qbo_item_repo.read_by_qbo_id(qbo_item_ref_value)
         if not qbo_item:
-            logger.debug(f"QboItem not found for qbo_id: {qbo_item_ref_value}")
+            logger.warning(f"QboItem not found for qbo_id: {qbo_item_ref_value} — ExpenseLineItem will have no SubCostCode (billing gap)")
+            self._sub_cost_code_cache[qbo_item_ref_value] = None
             return None
-        
+
         # Then find the ItemSubCostCode mapping
         item_mapping = self.item_sub_cost_code_repo.read_by_qbo_item_id(qbo_item.id)
         if not item_mapping:
-            logger.debug(f"ItemSubCostCode mapping not found for QboItem ID: {qbo_item.id}")
+            logger.warning(f"ItemSubCostCode mapping not found for QboItem ID: {qbo_item.id} (QBO Item '{qbo_item_ref_value}') — ExpenseLineItem will have no SubCostCode (billing gap)")
+            self._sub_cost_code_cache[qbo_item_ref_value] = None
             return None
-        
+
+        self._sub_cost_code_cache[qbo_item_ref_value] = item_mapping.sub_cost_code_id
         return item_mapping.sub_cost_code_id
 
     def _get_project_public_id(self, qbo_customer_ref_value: str) -> Optional[str]:
@@ -199,25 +214,32 @@ class PurchaseLineExpenseLineItemConnector:
         """
         if not qbo_customer_ref_value:
             return None
-        
+
+        if qbo_customer_ref_value in self._project_cache:
+            return self._project_cache[qbo_customer_ref_value]
+
         # First find the QboCustomer by qbo_id
         qbo_customer = self.qbo_customer_repo.read_by_qbo_id(qbo_customer_ref_value)
         if not qbo_customer:
             logger.debug(f"QboCustomer not found for qbo_id: {qbo_customer_ref_value}")
+            self._project_cache[qbo_customer_ref_value] = None
             return None
-        
+
         # Then find the CustomerProject mapping
         customer_mapping = self.customer_project_repo.read_by_qbo_customer_id(qbo_customer.id)
         if not customer_mapping:
             logger.debug(f"CustomerProject mapping not found for QboCustomer ID: {qbo_customer.id}")
+            self._project_cache[qbo_customer_ref_value] = None
             return None
-        
+
         # Get the Project
         project = ProjectService().read_by_id(customer_mapping.project_id)
         if not project:
             logger.debug(f"Project not found for ID: {customer_mapping.project_id}")
+            self._project_cache[qbo_customer_ref_value] = None
             return None
-        
+
+        self._project_cache[qbo_customer_ref_value] = project.public_id
         return project.public_id
 
     def create_mapping(self, expense_line_item_id: int, qbo_purchase_line_id: int) -> PurchaseLineExpenseLineItem:

@@ -42,6 +42,13 @@ class RoleModuleRepository:
                 modified_datetime=row.ModifiedDatetime,
                 role_id=row.RoleId,
                 module_id=row.ModuleId,
+                can_create=row.CanCreate,
+                can_read=row.CanRead,
+                can_update=row.CanUpdate,
+                can_delete=row.CanDelete,
+                can_submit=row.CanSubmit,
+                can_approve=row.CanApprove,
+                can_complete=row.CanComplete,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during role module mapping: {error}")
@@ -50,7 +57,19 @@ class RoleModuleRepository:
             logger.error(f"Unexpected error during role module mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, role_id: int, module_id: int) -> RoleModule:
+    def create(
+        self,
+        *,
+        role_id: int,
+        module_id: int,
+        can_create: bool = False,
+        can_read: bool = False,
+        can_update: bool = False,
+        can_delete: bool = False,
+        can_submit: bool = False,
+        can_approve: bool = False,
+        can_complete: bool = False,
+    ) -> RoleModule:
         """
         Create a new role module.
         """
@@ -63,6 +82,13 @@ class RoleModuleRepository:
                     params={
                         "RoleId": role_id,
                         "ModuleId": module_id,
+                        "CanCreate": can_create,
+                        "CanRead": can_read,
+                        "CanUpdate": can_update,
+                        "CanDelete": can_delete,
+                        "CanSubmit": can_submit,
+                        "CanApprove": can_approve,
+                        "CanComplete": can_complete,
                     },
                 )
                 row = cursor.fetchone()
@@ -146,6 +172,24 @@ class RoleModuleRepository:
             logger.error(f"Error during read role module by role ID: {error}")
             raise map_database_error(error)
 
+    def read_all_by_role_id(self, role_id: int) -> list[RoleModule]:
+        """
+        Read all role modules by role ID.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadRoleModuleByRoleId",
+                    params={"RoleId": role_id},
+                )
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(f"Error during read all role modules by role ID: {error}")
+            raise map_database_error(error)
+
     def read_by_module_id(self, module_id: int) -> Optional[RoleModule]:
         """
         Read a role module by module ID.
@@ -179,6 +223,13 @@ class RoleModuleRepository:
                         "RowVersion": role_module.row_version_bytes,
                         "RoleId": role_module.role_id,
                         "ModuleId": role_module.module_id,
+                        "CanCreate": role_module.can_create,
+                        "CanRead": role_module.can_read,
+                        "CanUpdate": role_module.can_update,
+                        "CanDelete": role_module.can_delete,
+                        "CanSubmit": role_module.can_submit,
+                        "CanApprove": role_module.can_approve,
+                        "CanComplete": role_module.can_complete,
                     },
                 )
                 row = cursor.fetchone()

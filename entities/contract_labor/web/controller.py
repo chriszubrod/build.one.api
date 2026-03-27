@@ -98,12 +98,13 @@ async def list_contract_labor(
     has_next = page < total_pages
     
     # Get lookups
-    vendors = VendorService().read_all()
+    all_vendors = VendorService().read_all()
+    vendors = [v for v in all_vendors if v.is_contract_labor]
     projects = ProjectService().read_all()
     sub_cost_codes = SubCostCodeService().read_all()
-    
+
     # Create mappings
-    vendor_map = {v.id: v for v in vendors}
+    vendor_map = {v.id: v for v in all_vendors}
     project_map = {p.id: p for p in projects}
     sub_cost_code_map = {s.id: s for s in sub_cost_codes}
     

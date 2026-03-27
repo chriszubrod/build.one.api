@@ -74,6 +74,11 @@
                             <label class="vendor-form-label">Vendor Type</label>
                             <div class="vendor-form-value">{{ vendor_type.name if vendor_type else 'Not specified' }}</div>
                         </div>
+
+                        <div class="vendor-form-group">
+                            <label class="vendor-form-label">Contract Labor Eligible</label>
+                            <div class="vendor-form-value">{{ 'Yes' if vendor.is_contract_labor else 'No' }}</div>
+                        </div>
                     </div>
                 </div>
             </section>

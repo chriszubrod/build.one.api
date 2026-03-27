@@ -6,6 +6,8 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from entities.role.business.service import RoleService
+from entities.module.business.service import ModuleService
+from entities.role_module.business.service import RoleModuleService
 from entities.auth.business.service import get_current_user_web
 
 router = APIRouter(prefix="/role", tags=["web", "role"])
@@ -50,11 +52,16 @@ async def view_role(request: Request, public_id: str, current_user: dict = Depen
     View a role.
     """
     role = RoleService().read_by_public_id(public_id=public_id)
+    role_modules = RoleModuleService().read_all_by_role_id(role_id=role.id)
+    modules = ModuleService().read_all()
+    module_map = {m.id: m.name for m in modules}
     return templates.TemplateResponse(
         "role/view.html",
         {
             "request": request,
             "role": role.to_dict(),
+            "role_modules": [rm.to_dict() for rm in role_modules],
+            "module_map": module_map,
             "current_user": current_user,
             "current_path": request.url.path,
         },
@@ -67,11 +74,20 @@ async def edit_role(request: Request, public_id: str, current_user: dict = Depen
     Edit a role.
     """
     role = RoleService().read_by_public_id(public_id=public_id)
+    role_modules = RoleModuleService().read_all_by_role_id(role_id=role.id)
+    modules = ModuleService().read_all()
+    module_map = {m.id: m.name for m in modules}
+    # Modules not yet assigned to this role (for the add dropdown)
+    assigned_module_ids = {rm.module_id for rm in role_modules}
+    available_modules = [m for m in modules if m.id not in assigned_module_ids]
     return templates.TemplateResponse(
         "role/edit.html",
         {
             "request": request,
             "role": role.to_dict(),
+            "role_modules": [rm.to_dict() for rm in role_modules],
+            "module_map": module_map,
+            "available_modules": [m.to_dict() for m in available_modules],
             "current_user": current_user,
             "current_path": request.url.path,
         },

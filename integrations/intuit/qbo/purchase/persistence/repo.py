@@ -112,10 +112,10 @@ class QboPurchaseRepository:
                         "TxnDate": txn_date,
                         "DocNumber": doc_number,
                         "PrivateNote": private_note,
-                        "TotalAmt": float(total_amt) if total_amt is not None else None,
+                        "TotalAmt": Decimal(str(total_amt)) if total_amt is not None else None,
                         "CurrencyRefValue": currency_ref_value,
                         "CurrencyRefName": currency_ref_name,
-                        "ExchangeRate": float(exchange_rate) if exchange_rate is not None else None,
+                        "ExchangeRate": Decimal(str(exchange_rate)) if exchange_rate is not None else None,
                         "DepartmentRefValue": department_ref_value,
                         "DepartmentRefName": department_ref_name,
                         "GlobalTaxCalculation": global_tax_calculation,
@@ -304,10 +304,10 @@ class QboPurchaseRepository:
                         "TxnDate": txn_date,
                         "DocNumber": doc_number,
                         "PrivateNote": private_note,
-                        "TotalAmt": float(total_amt) if total_amt is not None else None,
+                        "TotalAmt": Decimal(str(total_amt)) if total_amt is not None else None,
                         "CurrencyRefValue": currency_ref_value,
                         "CurrencyRefName": currency_ref_name,
-                        "ExchangeRate": float(exchange_rate) if exchange_rate is not None else None,
+                        "ExchangeRate": Decimal(str(exchange_rate)) if exchange_rate is not None else None,
                         "DepartmentRefValue": department_ref_value,
                         "DepartmentRefName": department_ref_name,
                         "GlobalTaxCalculation": global_tax_calculation,
@@ -320,8 +320,8 @@ class QboPurchaseRepository:
                     )
                     row = cursor.fetchone()
                     if not row:
-                        logger.error("Update qbo purchase did not return a row.")
-                        raise map_database_error(Exception("update qbo purchase by QBO ID failed"))
+                        logger.warning(f"Update QBO purchase {qbo_id} returned no row (likely RowVersion conflict)")
+                        return None
                     return self._from_db(row)
                 finally:
                     try:
@@ -441,7 +441,7 @@ class QboPurchaseLineRepository:
                         "QboLineId": qbo_line_id,
                         "LineNum": line_num,
                         "Description": description,
-                        "Amount": float(amount) if amount is not None else None,
+                        "Amount": Decimal(str(amount)) if amount is not None else None,
                         "DetailType": detail_type,
                         "ItemRefValue": item_ref_value,
                         "ItemRefName": item_ref_name,
@@ -452,9 +452,9 @@ class QboPurchaseLineRepository:
                         "ClassRefValue": class_ref_value,
                         "ClassRefName": class_ref_name,
                         "BillableStatus": billable_status,
-                        "Qty": float(qty) if qty is not None else None,
-                        "UnitPrice": float(unit_price) if unit_price is not None else None,
-                        "MarkupPercent": float(markup_percent) if markup_percent is not None else None,
+                        "Qty": Decimal(str(qty)) if qty is not None else None,
+                        "UnitPrice": Decimal(str(unit_price)) if unit_price is not None else None,
+                        "MarkupPercent": Decimal(str(markup_percent)) if markup_percent is not None else None,
                     }
                     call_procedure(
                         cursor=cursor,
@@ -556,7 +556,7 @@ class QboPurchaseLineRepository:
                         "RowVersion": row_version,
                         "LineNum": line_num,
                         "Description": description,
-                        "Amount": float(amount) if amount is not None else None,
+                        "Amount": Decimal(str(amount)) if amount is not None else None,
                         "DetailType": detail_type,
                         "ItemRefValue": item_ref_value,
                         "ItemRefName": item_ref_name,
@@ -567,9 +567,9 @@ class QboPurchaseLineRepository:
                         "ClassRefValue": class_ref_value,
                         "ClassRefName": class_ref_name,
                         "BillableStatus": billable_status,
-                        "Qty": float(qty) if qty is not None else None,
-                        "UnitPrice": float(unit_price) if unit_price is not None else None,
-                        "MarkupPercent": float(markup_percent) if markup_percent is not None else None,
+                        "Qty": Decimal(str(qty)) if qty is not None else None,
+                        "UnitPrice": Decimal(str(unit_price)) if unit_price is not None else None,
+                        "MarkupPercent": Decimal(str(markup_percent)) if markup_percent is not None else None,
                     }
                     call_procedure(
                         cursor=cursor,
@@ -656,7 +656,7 @@ class QboPurchaseLineRepository:
                             "qbo_purchase_line_id": getattr(row, "QboPurchaseLineId", None),
                             "line_num": getattr(row, "LineNum", None),
                             "line_description": getattr(row, "LineDescription", None),
-                            "line_amount": float(getattr(row, "LineAmount", 0)) if getattr(row, "LineAmount", None) is not None else None,
+                            "line_amount": Decimal(str(getattr(row, "LineAmount"))) if getattr(row, "LineAmount", None) is not None else None,
                             "account_ref_name": getattr(row, "AccountRefName", None),
                             "expense_public_id": str(expense_public_id) if expense_public_id else None,
                             "has_attachment": int(attachable_count) > 0,

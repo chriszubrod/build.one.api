@@ -90,12 +90,8 @@ async def list_bills(
             vendor_id_int = None
     
     # Parse is_draft filter (default to True for drafts only)
-    # When searching, automatically search across all bills
     is_draft_filter = None
-    if search and search.strip():
-        # Search across all bills regardless of status filter
-        is_draft_filter = None
-    elif is_draft is not None and is_draft.strip():
+    if is_draft is not None and is_draft.strip():
         if is_draft.lower() in ('true', '1', 'yes'):
             is_draft_filter = True
         elif is_draft.lower() in ('false', '0', 'no'):
@@ -104,51 +100,65 @@ async def list_bills(
             is_draft_filter = None  # Show all bills
     
     # Get bills with pagination
-    bills = BillService().read_paginated(
-        page_number=page,
-        page_size=page_size,
-        search_term=search,
-        vendor_id=vendor_id_int,
-        start_date=start_date,
-        end_date=end_date,
-        is_draft=is_draft_filter,
-        sort_by=sort_by,
-        sort_direction=sort_direction,
-    )
-    
-    # Get total count for pagination
-    total_count = BillService().count(
-        search_term=search,
-        vendor_id=vendor_id_int,
-        start_date=start_date,
-        end_date=end_date,
-        is_draft=is_draft_filter,
-    )
-    
-    # Calculate pagination info
-    total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 1
-    has_previous = page > 1
-    has_next = page < total_pages
-    
-    # Get vendors for filter dropdown
-    vendors = VendorService().read_all()
-    
-    # Create a mapping of vendor_id to vendor_name
-    vendor_map = {vendor.id: vendor.name for vendor in vendors}
-    
-    # Add vendor names to bills
+    bills = []
     bills_with_vendors = []
-    for bill in bills:
-        bill_dict = bill.to_dict()
-        if bill.vendor_id and bill.vendor_id in vendor_map:
-            bill_dict['vendor_name'] = vendor_map[bill.vendor_id]
-        bills_with_vendors.append(bill_dict)
-    
-    # Get pending bill workflows (confirmed as "bill" but not yet processed)
-    pending_workflows = _get_pending_bill_workflows(current_user.get("tenant_id", 1))
+    total_count = 0
+    total_pages = 1
+    has_previous = False
+    has_next = False
+    vendors = []
+    pending_workflows = []
+    bill_folder_summary = None
+    db_error = None
 
-    # Get bill folder summary for SharePoint folder processing section
-    bill_folder_summary = _get_bill_folder_summary(company_id=1)
+    try:
+        bills = BillService().read_paginated(
+            page_number=page,
+            page_size=page_size,
+            search_term=search,
+            vendor_id=vendor_id_int,
+            start_date=start_date,
+            end_date=end_date,
+            is_draft=is_draft_filter,
+            sort_by=sort_by,
+            sort_direction=sort_direction,
+        )
+
+        total_count = BillService().count(
+            search_term=search,
+            vendor_id=vendor_id_int,
+            start_date=start_date,
+            end_date=end_date,
+            is_draft=is_draft_filter,
+        )
+
+        # Calculate pagination info
+        total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 1
+        has_previous = page > 1
+        has_next = page < total_pages
+
+        # Get vendors for filter dropdown
+        vendors = VendorService().read_all()
+
+        # Create a mapping of vendor_id to vendor_name
+        vendor_map = {vendor.id: vendor.name for vendor in vendors}
+
+        # Add vendor names to bills
+        for bill in bills:
+            bill_dict = bill.to_dict()
+            if bill.vendor_id and bill.vendor_id in vendor_map:
+                bill_dict['vendor_name'] = vendor_map[bill.vendor_id]
+            bills_with_vendors.append(bill_dict)
+
+        # Get pending bill workflows (confirmed as "bill" but not yet processed)
+        pending_workflows = _get_pending_bill_workflows(current_user.get("tenant_id", 1))
+
+        # Get bill folder summary for SharePoint folder processing section
+        bill_folder_summary = _get_bill_folder_summary(company_id=1)
+
+    except Exception as e:
+        logger.error(f"Error loading bill list: {e}")
+        db_error = "Unable to load bills. Please try again in a moment."
 
     return templates.TemplateResponse(
         "bill/list.html",
@@ -173,6 +183,7 @@ async def list_bills(
             "is_draft": is_draft or "",
             "sort_by": sort_by,
             "sort_direction": sort_direction,
+            "db_error": db_error,
         },
     )
 

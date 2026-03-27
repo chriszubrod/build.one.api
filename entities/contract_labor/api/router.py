@@ -753,6 +753,36 @@ async def preview_contract_labor_import(
 # PDF Generation Endpoints
 # ============================================================================
 
+@router.post("/billing/regenerate-pdf")
+async def regenerate_pdf_for_entries(body: ContractLaborBulkDelete):
+    """
+    Regenerate invoice PDF for selected billed ContractLabor entries.
+    Returns the PDF directly for viewing in a new browser tab.
+    Accepts {"public_ids": ["...", "..."]}
+    """
+    from fastapi.responses import Response
+    try:
+        from entities.contract_labor.business.bill_service import ContractLaborBillService
+        bill_service = ContractLaborBillService()
+        result = bill_service.regenerate_pdf_for_entries(public_ids=body.public_ids)
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+
+        return Response(
+            content=result["pdf_bytes"],
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"inline; filename=\"{result['filename']}\""
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error regenerating PDF for entries")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/billing/generate-pdfs/{bill_public_id}")
 async def generate_pdfs_for_bill(bill_public_id: str):
     """

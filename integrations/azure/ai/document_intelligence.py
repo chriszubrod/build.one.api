@@ -161,7 +161,7 @@ class AzureDocumentIntelligence:
         """
         import base64
         
-        url = self._build_url("documentModels/prebuilt-layout:analyze")
+        url = self._build_url("documentModels/prebuilt-read:analyze")
         headers = self._get_headers()
         headers["Content-Type"] = "application/json"
 
@@ -200,7 +200,7 @@ class AzureDocumentIntelligence:
         """
         Start document analysis from URL and return the operation location for polling.
         """
-        url = self._build_url("documentModels/prebuilt-layout:analyze")
+        url = self._build_url("documentModels/prebuilt-read:analyze")
         headers = self._get_headers("application/json")
 
         payload = {"urlSource": document_url}

@@ -431,6 +431,135 @@ class ContractLaborBillService:
 
         return result
 
+    def regenerate_pdf_for_entries(self, public_ids: list[str]) -> dict:
+        """
+        Regenerate invoice PDF for selected billed ContractLabor entries.
+        Traces entries → BillLineItem → Bill, groups by bill, and generates
+        a combined PDF returned as bytes for viewing.
+        """
+        from entities.bill_line_item.business.service import BillLineItemService
+
+        cl_service = self.cl_service
+        bill_line_item_service = BillLineItemService()
+
+        # Resolve entries and group by bill
+        bills = {}  # bill_id -> { bill, vendor, project_groups }
+        projects = self.project_service.read_all()
+        project_map = {p.id: p for p in projects}
+        sub_cost_codes = self.scc_service.read_all()
+        scc_map = {s.id: s for s in sub_cost_codes}
+        vendors = self.vendor_service.read_all()
+        vendor_map = {v.id: v for v in vendors}
+
+        for pub_id in public_ids:
+            entry = cl_service.read_by_public_id(public_id=pub_id)
+            if not entry:
+                continue
+
+            # Find the bill: try BillLineItemId first, fall back to bill_number + bill_vendor_id
+            bill = None
+            if entry.bill_line_item_id:
+                bli = bill_line_item_service.read_by_id(id=entry.bill_line_item_id)
+                if bli and bli.bill_id:
+                    bill = self.bill_service.read_by_id(id=bli.bill_id)
+
+            if not bill and entry.bill_number and entry.bill_vendor_id:
+                bill = self.bill_service.repo.read_by_bill_number_and_vendor_id(
+                    bill_number=entry.bill_number, vendor_id=entry.bill_vendor_id,
+                )
+
+            if not bill:
+                continue
+
+            bill_id = bill.id
+            if bill_id not in bills:
+                vendor = vendor_map.get(bill.vendor_id)
+                bills[bill_id] = {
+                    "bill": bill,
+                    "vendor": vendor,
+                    "project_groups": {},
+                }
+
+            # Get line items for this entry and add to project groups
+            line_items = self.line_item_repo.read_by_contract_labor_id(contract_labor_id=entry.id)
+            for li in line_items:
+                project_id = li.project_id
+                group_key = project_id  # None for overhead
+
+                if group_key not in bills[bill_id]["project_groups"]:
+                    bills[bill_id]["project_groups"][group_key] = []
+
+                bills[bill_id]["project_groups"][group_key].append({
+                    "line_item": li,
+                    "entry": entry,
+                    "project": project_map.get(project_id) if project_id else None,
+                    "scc": scc_map.get(li.sub_cost_code_id),
+                })
+
+        if not bills:
+            return {"error": "No billed entries with linked bills found for the selected records"}
+
+        # Generate combined PDF across all bills
+        from reportlab.platypus import PageBreak
+
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=letter,
+            rightMargin=0.5 * inch,
+            leftMargin=0.5 * inch,
+            topMargin=0.5 * inch,
+            bottomMargin=0.5 * inch,
+        )
+
+        all_elements = []
+        first_page = True
+
+        for bill_id, bill_data in bills.items():
+            bill = bill_data["bill"]
+            vendor = bill_data["vendor"]
+            vendor_name = vendor.name if vendor else "Unknown"
+
+            for project_id, items in bill_data["project_groups"].items():
+                if not items:
+                    continue
+
+                if not first_page:
+                    all_elements.append(PageBreak())
+                first_page = False
+
+                project = project_map.get(project_id) if project_id else None
+                total_amount = sum(
+                    Decimal(str(item["line_item"].price or 0)) for item in items
+                    if item["line_item"].is_billable is not False
+                )
+
+                elements = self._generate_pdf_elements(
+                    vendor_name=vendor_name,
+                    project=project,
+                    invoice_number=bill.bill_number or "",
+                    bill_date=bill.bill_date or "",
+                    due_date=bill.due_date or "",
+                    total_amount=float(total_amount),
+                    line_items=items,
+                )
+                all_elements.extend(elements)
+
+        doc.build(all_elements)
+        buffer.seek(0)
+        pdf_bytes = buffer.read()
+
+        vendor_names = set(
+            b["vendor"].name for b in bills.values() if b["vendor"]
+        )
+        filename = "-".join(vendor_names).replace(" ", "-") + "-invoices.pdf"
+
+        return {
+            "pdf_bytes": pdf_bytes,
+            "filename": filename,
+            "bill_count": len(bills),
+        }
+
     def preview_pdf_for_vendor(self, vendor_id: int, project_id: Optional[int] = None, billing_period_start: Optional[str] = None) -> dict:
         """
         Generate a preview PDF for a vendor (doesn't save to database or Azure).

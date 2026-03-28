@@ -36,7 +36,7 @@ INSTANT_OPERATIONS = ["create", "update", "delete"]
 # All services that support instant workflows.
 # These map to services in entities/{entity}/business/service.py
 
-INSTANT_ENTITIES = [
+SYNCHRONOUS_TASKS = [
     # Core billing entities
     "bill",
     "bill_line_item",
@@ -115,7 +115,7 @@ def get_instant_workflow_definition(entity: str, operation: str) -> WorkflowDefi
     Raises:
         ValueError: If entity or operation is not supported
     """
-    if entity not in INSTANT_ENTITIES:
+    if entity not in SYNCHRONOUS_TASKS:
         raise ValueError(f"Entity '{entity}' not supported for instant workflows")
     if operation not in INSTANT_OPERATIONS:
         raise ValueError(f"Operation '{operation}' not supported for instant workflows")
@@ -136,7 +136,7 @@ def get_all_instant_workflow_definitions() -> List[WorkflowDefinition]:
         List of WorkflowDefinition for all entity/operation combinations
     """
     definitions = []
-    for entity in INSTANT_ENTITIES:
+    for entity in SYNCHRONOUS_TASKS:
         for operation in INSTANT_OPERATIONS:
             definitions.append(get_instant_workflow_definition(entity, operation))
     return definitions
@@ -161,7 +161,7 @@ def is_instant_workflow_type(workflow_type: str) -> bool:
         return False
     
     entity, operation = parts
-    return entity in INSTANT_ENTITIES and operation in INSTANT_OPERATIONS
+    return entity in SYNCHRONOUS_TASKS and operation in INSTANT_OPERATIONS
 
 
 def parse_instant_workflow_type(workflow_type: str) -> tuple:

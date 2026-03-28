@@ -13,7 +13,7 @@ class ClassificationOverride:
 
     match_type: str             # 'email' | 'domain'
     match_value: str            # 'ar@acme.com' or 'acme.com'
-    classification_type: str    # bill | expense | vendor_credit | inquiry | statement
+    classification_type: str    # BILL_DOCUMENT | BILL_CREDIT_DOCUMENT | EXPENSE_DOCUMENT | EXPENSE_REFUND_DOCUMENT | UNKNOWN
 
     notes: Optional[str]
     is_active: bool

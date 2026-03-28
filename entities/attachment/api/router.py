@@ -17,7 +17,7 @@ from entities.attachment.business.extraction_service import ExtractionService
 from entities.auth.business.service import get_current_user_api as get_current_attachment_api
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
 from shared.pdf_utils import compact_pdf
-from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +44,8 @@ def create_attachment_router(body: AttachmentCreate, current_user: dict = Depend
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -67,7 +67,7 @@ def create_attachment_router(body: AttachmentCreate, current_user: dict = Depend
         workflow_type="attachment_create",
     )
     
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
         raise HTTPException(
@@ -159,8 +159,8 @@ def update_attachment_by_public_id_router(
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -184,7 +184,7 @@ def update_attachment_by_public_id_router(
         workflow_type="attachment_update",
     )
     
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
         raise HTTPException(

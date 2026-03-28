@@ -105,11 +105,11 @@
             font-size: 0.75rem;
             font-weight: 600;
         }
-        .type-bill         { background:#dbeafe;color:#1d4ed8; }
-        .type-expense      { background:#d1fae5;color:#065f46; }
-        .type-vendor_credit{ background:#fef3c7;color:#92400e; }
-        .type-inquiry      { background:#e0e7ff;color:#3730a3; }
-        .type-statement    { background:#f3e8ff;color:#6b21a8; }
+        .type-BILL_DOCUMENT         { background:#dbeafe;color:#1d4ed8; }
+        .type-BILL_CREDIT_DOCUMENT  { background:#d1fae5;color:#065f46; }
+        .type-EXPENSE_DOCUMENT      { background:#fef3c7;color:#92400e; }
+        .type-EXPENSE_REFUND_DOCUMENT{ background:#e0e7ff;color:#3730a3; }
+        .type-UNKNOWN               { background:#f3e8ff;color:#6b21a8; }
 
         .status-active   { color: #059669; font-weight: 600; }
         .status-inactive { color: #9ca3af; }
@@ -204,11 +204,11 @@
         <div class="modal-field">
             <label>Classify As</label>
             <select id="classification_type">
-                <option value="bill">Bill</option>
-                <option value="expense">Expense</option>
-                <option value="vendor_credit">Vendor Credit</option>
-                <option value="inquiry">Inquiry</option>
-                <option value="statement">Statement</option>
+                <option value="BILL_DOCUMENT">Bill Document</option>
+                <option value="BILL_CREDIT_DOCUMENT">Bill Credit Document</option>
+                <option value="EXPENSE_DOCUMENT">Expense Document</option>
+                <option value="EXPENSE_REFUND_DOCUMENT">Expense Refund Document</option>
+                <option value="UNKNOWN">Unknown</option>
             </select>
         </div>
 
@@ -272,8 +272,9 @@ function renderTable() {
     }
 
     const typeLabels = {
-        bill: 'Bill', expense: 'Expense', vendor_credit: 'Vendor Credit',
-        inquiry: 'Inquiry', statement: 'Statement',
+        BILL_DOCUMENT: 'Bill Document', BILL_CREDIT_DOCUMENT: 'Bill Credit Document',
+        EXPENSE_DOCUMENT: 'Expense Document', EXPENSE_REFUND_DOCUMENT: 'Expense Refund Document',
+        UNKNOWN: 'Unknown',
     };
 
     tbody.innerHTML = overridesData.map(o => `

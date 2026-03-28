@@ -1,0 +1,211 @@
+{
+  "_comment": "Entity Process Registry — defines stage maps for business entity lifecycles. Each process type represents the full lifecycle of a financial entity after it is created, either manually, via the web UI, or handed off from the Email Process Registry.",
+  "version": "1.0.0",
+  "registry_type": "entity",
+  "processes": {
+
+    "BILL": {
+      "description": "A vendor bill from receipt through QBO sync. May originate from a BILL_DOCUMENT email thread or be created manually in the web UI.",
+      "initial_stage": "DRAFT",
+      "origin_email_process": "BILL_DOCUMENT",
+      "stages": [
+        "DRAFT",
+        "UNDER_REVIEW",
+        "APPROVED",
+        "DISPUTED",
+        "REJECTED",
+        "SCHEDULED",
+        "PAID",
+        "QBO_SYNCED",
+        "CLOSED"
+      ],
+      "transitions": {
+        "DRAFT":        ["UNDER_REVIEW"],
+        "UNDER_REVIEW": ["APPROVED", "DISPUTED", "REJECTED"],
+        "APPROVED":     ["SCHEDULED"],
+        "DISPUTED":     ["UNDER_REVIEW", "REJECTED"],
+        "REJECTED":     ["CLOSED"],
+        "SCHEDULED":    ["PAID"],
+        "PAID":         ["QBO_SYNCED"],
+        "QBO_SYNCED":   ["CLOSED"]
+      },
+      "requires_action_at": ["UNDER_REVIEW", "DISPUTED", "REJECTED"],
+      "auto_advance_at":    ["QBO_SYNCED"],
+      "maps_to_entity_field": {
+        "stage_field": "is_draft",
+        "complete_stage": "UNDER_REVIEW",
+        "complete_value": false
+      },
+      "sla": {
+        "UNDER_REVIEW": { "max_hours": 48, "on_breach": "SLA_BREACH" },
+        "SCHEDULED":    { "max_hours": 168, "on_breach": "SLA_BREACH" }
+      }
+    },
+
+    "BILL_CREDIT": {
+      "description": "A vendor credit note lifecycle. May originate from a BILL_CREDIT_DOCUMENT email thread or be created manually.",
+      "initial_stage": "DRAFT",
+      "origin_email_process": "BILL_CREDIT_DOCUMENT",
+      "stages": [
+        "DRAFT",
+        "UNDER_REVIEW",
+        "APPROVED",
+        "DISPUTED",
+        "REJECTED",
+        "APPLIED",
+        "QBO_SYNCED",
+        "CLOSED"
+      ],
+      "transitions": {
+        "DRAFT":        ["UNDER_REVIEW"],
+        "UNDER_REVIEW": ["APPROVED", "DISPUTED", "REJECTED"],
+        "APPROVED":     ["APPLIED"],
+        "DISPUTED":     ["UNDER_REVIEW", "REJECTED"],
+        "REJECTED":     ["CLOSED"],
+        "APPLIED":      ["QBO_SYNCED"],
+        "QBO_SYNCED":   ["CLOSED"]
+      },
+      "requires_action_at": ["UNDER_REVIEW", "DISPUTED", "REJECTED"],
+      "auto_advance_at":    ["QBO_SYNCED"],
+      "maps_to_entity_field": {
+        "stage_field": "is_draft",
+        "complete_stage": "UNDER_REVIEW",
+        "complete_value": false
+      },
+      "sla": {
+        "UNDER_REVIEW": { "max_hours": 48, "on_breach": "SLA_BREACH" }
+      }
+    },
+
+    "EXPENSE": {
+      "description": "An expense from receipt through QBO sync. Includes a CATEGORIZED stage reflecting the Expense Categorization Agent assigning cost codes.",
+      "initial_stage": "DRAFT",
+      "origin_email_process": "EXPENSE_DOCUMENT",
+      "stages": [
+        "DRAFT",
+        "CATEGORIZED",
+        "UNDER_REVIEW",
+        "APPROVED",
+        "DISPUTED",
+        "REJECTED",
+        "QBO_SYNCED",
+        "CLOSED"
+      ],
+      "transitions": {
+        "DRAFT":        ["CATEGORIZED"],
+        "CATEGORIZED":  ["UNDER_REVIEW"],
+        "UNDER_REVIEW": ["APPROVED", "DISPUTED", "REJECTED"],
+        "APPROVED":     ["QBO_SYNCED"],
+        "DISPUTED":     ["UNDER_REVIEW", "REJECTED"],
+        "REJECTED":     ["CLOSED"],
+        "QBO_SYNCED":   ["CLOSED"]
+      },
+      "requires_action_at": ["UNDER_REVIEW", "DISPUTED", "REJECTED"],
+      "auto_advance_at":    ["QBO_SYNCED"],
+      "maps_to_entity_field": {
+        "stage_field": "is_draft",
+        "complete_stage": "UNDER_REVIEW",
+        "complete_value": false
+      },
+      "sla": {
+        "UNDER_REVIEW": { "max_hours": 48, "on_breach": "SLA_BREACH" }
+      }
+    },
+
+    "EXPENSE_REFUND": {
+      "description": "An expense refund. Processed identically to an Expense but represents a return of funds. Rare occurrence.",
+      "initial_stage": "DRAFT",
+      "origin_email_process": "EXPENSE_REFUND_DOCUMENT",
+      "stages": [
+        "DRAFT",
+        "CATEGORIZED",
+        "UNDER_REVIEW",
+        "APPROVED",
+        "DISPUTED",
+        "REJECTED",
+        "QBO_SYNCED",
+        "CLOSED"
+      ],
+      "transitions": {
+        "DRAFT":        ["CATEGORIZED"],
+        "CATEGORIZED":  ["UNDER_REVIEW"],
+        "UNDER_REVIEW": ["APPROVED", "DISPUTED", "REJECTED"],
+        "APPROVED":     ["QBO_SYNCED"],
+        "DISPUTED":     ["UNDER_REVIEW", "REJECTED"],
+        "REJECTED":     ["CLOSED"],
+        "QBO_SYNCED":   ["CLOSED"]
+      },
+      "requires_action_at": ["UNDER_REVIEW", "DISPUTED", "REJECTED"],
+      "auto_advance_at":    ["QBO_SYNCED"],
+      "maps_to_entity_field": {
+        "stage_field": "is_draft",
+        "complete_stage": "UNDER_REVIEW",
+        "complete_value": false
+      },
+      "sla": {
+        "UNDER_REVIEW": { "max_hours": 48, "on_breach": "SLA_BREACH" }
+      }
+    },
+
+    "CONTRACT_LABOR": {
+      "description": "A contract labor record uploaded from an Excel worksheet. Not email-originated. Lifecycle tracks from Excel upload through bill generation.",
+      "initial_stage": "PENDING_REVIEW",
+      "origin_email_process": null,
+      "stages": [
+        "PENDING_REVIEW",
+        "READY",
+        "BILLED",
+        "CLOSED"
+      ],
+      "transitions": {
+        "PENDING_REVIEW": ["READY"],
+        "READY":          ["BILLED"],
+        "BILLED":         ["CLOSED"]
+      },
+      "requires_action_at": ["PENDING_REVIEW"],
+      "auto_advance_at":    ["BILLED"],
+      "maps_to_entity_field": {
+        "stage_field": "status",
+        "stage_map": {
+          "PENDING_REVIEW": "pending_review",
+          "READY":          "ready",
+          "BILLED":         "billed"
+        }
+      },
+      "_note": "Stage values map directly to existing ContractLabor.status field values in the database. No is_draft pattern — uses the status field."
+    },
+
+    "INVOICE": {
+      "description": "A system-generated outbound invoice sent to a client billing for cost of construction. Not email-originated. Created by the web UI and sent to the client.",
+      "initial_stage": "DRAFT",
+      "origin_email_process": null,
+      "stages": [
+        "DRAFT",
+        "FINALIZED",
+        "SENT",
+        "QBO_SYNCED",
+        "PAID",
+        "CLOSED"
+      ],
+      "transitions": {
+        "DRAFT":      ["FINALIZED"],
+        "FINALIZED":  ["SENT"],
+        "SENT":       ["QBO_SYNCED", "PAID"],
+        "QBO_SYNCED": ["PAID"],
+        "PAID":       ["CLOSED"]
+      },
+      "requires_action_at": [],
+      "auto_advance_at":    ["QBO_SYNCED"],
+      "maps_to_entity_field": {
+        "stage_field": "is_draft",
+        "complete_stage": "FINALIZED",
+        "complete_value": false
+      },
+      "sla": {
+        "SENT": { "max_hours": 720, "on_breach": "SLA_BREACH" }
+      },
+      "_note": "SLA on SENT is 30 days — flags unpaid invoices for follow-up."
+    }
+
+  }
+}

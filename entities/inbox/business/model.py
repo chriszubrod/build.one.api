@@ -6,42 +6,46 @@ import base64
 
 @dataclass
 class InboxRecord:
-    id: Optional[int]
-    public_id: Optional[str]
-    row_version: Optional[str]
-    created_datetime: Optional[str]
-    modified_datetime: Optional[str]
+    id: Optional[int]                           = None
+    public_id: Optional[str]                    = None
+    row_version: Optional[str]                  = None
+    created_datetime: Optional[str]             = None
+    modified_datetime: Optional[str]            = None
 
     # MS Graph message ID
-    message_id: Optional[str]
+    message_id: Optional[str]                   = None
 
     # Workflow status
-    status: Optional[str]
+    status: Optional[str]                       = None
 
     # Submit-for-review metadata
-    submitted_to_email: Optional[str]
-    submitted_at: Optional[str]
+    submitted_to_email: Optional[str]           = None
+    submitted_at: Optional[str]                 = None
 
     # Process metadata
-    processed_at: Optional[str]
-    record_type: Optional[str]
-    record_public_id: Optional[str]
+    processed_at: Optional[str]                 = None
+    record_type: Optional[str]                  = None
+    record_public_id: Optional[str]             = None
 
     # Classification data (ML training)
-    classification_type: Optional[str]
-    classification_confidence: Optional[float]
-    classification_signals: Optional[str]
-    classified_at: Optional[str]
-    user_override_type: Optional[str]
+    classification_type: Optional[str]          = None
+    classification_confidence: Optional[float]  = None
+    classification_signals: Optional[str]       = None
+    classified_at: Optional[str]                = None
+    user_override_type: Optional[str]           = None
 
     # Email feature columns
-    subject: Optional[str]
-    from_email: Optional[str]
-    from_name: Optional[str]
-    has_attachments: Optional[bool]
+    subject: Optional[str]                      = None
+    from_email: Optional[str]                   = None
+    from_name: Optional[str]                    = None
+    has_attachments: Optional[bool]             = None
 
     # Processing channel
-    processed_via: Optional[str]
+    processed_via: Optional[str]                = None
+
+    # Email threading headers
+    internet_message_id: Optional[str]          = None
+    conversation_id: Optional[str]              = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

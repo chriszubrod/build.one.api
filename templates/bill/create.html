@@ -1391,7 +1391,7 @@
                 const attachmentPublicId = formElement.querySelector('.line-item-attachment-public-id').value;
 
                 // Has attachment but missing required fields (can't be saved)
-                if (attachmentPublicId && !canSaveLineItem(formElement)) {
+                if (attachmentPublicId && !hasRequiredLineItemFields(formElement)) {
                     pendingAttachments.push({
                         formIndex: index + 1,
                         formElement: formElement

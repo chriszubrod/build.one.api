@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 _UNAVAILABLE_MSG = (
     "Async workflow execution (email intake, bill intake, etc.) is not available; "
-    "required modules were removed. Use route_instant() for CRUD."
+    "required modules were removed. Use execute_synchronous() for CRUD."
 )
 
 

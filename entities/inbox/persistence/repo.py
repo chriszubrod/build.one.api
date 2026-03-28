@@ -54,6 +54,8 @@ class InboxRecordRepository:
                 has_attachments=bool(getattr(row, "HasAttachments", False))
                     if getattr(row, "HasAttachments", None) is not None else None,
                 processed_via=getattr(row, "ProcessedVia", None),
+                internet_message_id=getattr(row, "InternetMessageId", None),
+                conversation_id=getattr(row, "ConversationId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during inbox record mapping: {error}")
@@ -82,6 +84,8 @@ class InboxRecordRepository:
         from_name: Optional[str] = None,
         has_attachments: Optional[bool] = None,
         processed_via: Optional[str] = None,
+        internet_message_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
     ) -> Optional[InboxRecord]:
         """Insert or update an InboxRecord by MessageId."""
         try:
@@ -108,6 +112,8 @@ class InboxRecordRepository:
                         "FromName": from_name,
                         "HasAttachments": 1 if has_attachments else (0 if has_attachments is False else None),
                         "ProcessedVia": processed_via,
+                        "InternetMessageId": internet_message_id,
+                        "ConversationId": conversation_id,
                     },
                 )
                 row = cursor.fetchone()

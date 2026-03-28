@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from entities.project.api.schemas import ProjectCreate, ProjectUpdate
 from entities.project.business.service import ProjectService
 from entities.auth.business.service import get_current_user_api
-from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "project"])
 
@@ -21,8 +21,8 @@ def create_project_router(body: ProjectCreate, current_user: dict = Depends(get_
     """
     # Create trigger context for the instant workflow
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -36,7 +36,7 @@ def create_project_router(body: ProjectCreate, current_user: dict = Depends(get_
     )
     
     # Route through workflow engine
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
         raise HTTPException(
@@ -74,8 +74,8 @@ def update_project_by_public_id_router(public_id: str, body: ProjectUpdate, curr
     """
     # Create trigger context for the instant workflow
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -91,7 +91,7 @@ def update_project_by_public_id_router(public_id: str, body: ProjectUpdate, curr
     )
     
     # Route through workflow engine
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
         raise HTTPException(
@@ -111,8 +111,8 @@ def delete_project_by_public_id_router(public_id: str, current_user: dict = Depe
     """
     # Create trigger context for the instant workflow
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -122,7 +122,7 @@ def delete_project_by_public_id_router(public_id: str, current_user: dict = Depe
     )
     
     # Route through workflow engine
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
         raise HTTPException(

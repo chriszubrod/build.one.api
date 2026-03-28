@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from entities.vendor.api.schemas import VendorCreate, VendorUpdate
 from entities.vendor.business.service import VendorService
 from entities.auth.business.service import get_current_user_api as get_current_vendor_api
-from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "vendor"])
 service = VendorService()
@@ -30,8 +30,8 @@ def create_vendor_router(body: VendorCreate, current_user: dict = Depends(get_cu
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -45,7 +45,7 @@ def create_vendor_router(body: VendorCreate, current_user: dict = Depends(get_cu
         workflow_type="vendor_create",
     )
 
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
         _raise_from_workflow_error(result.get("error", ""), "Failed to create vendor")
@@ -84,8 +84,8 @@ def update_vendor_by_public_id_router(public_id: str, body: VendorUpdate, curren
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -101,7 +101,7 @@ def update_vendor_by_public_id_router(public_id: str, body: VendorUpdate, curren
         workflow_type="vendor_update",
     )
 
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
         _raise_from_workflow_error(result.get("error", ""), "Failed to update vendor")
@@ -117,8 +117,8 @@ def delete_vendor_by_public_id_router(public_id: str, current_user: dict = Depen
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -127,7 +127,7 @@ def delete_vendor_by_public_id_router(public_id: str, current_user: dict = Depen
         workflow_type="vendor_delete",
     )
 
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
         _raise_from_workflow_error(result.get("error", ""), "Failed to delete vendor")

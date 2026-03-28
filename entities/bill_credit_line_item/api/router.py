@@ -8,7 +8,7 @@ from decimal import Decimal
 from entities.bill_credit_line_item.api.schemas import BillCreditLineItemCreate, BillCreditLineItemUpdate
 from entities.bill_credit_line_item.business.service import BillCreditLineItemService
 from entities.auth.business.service import get_current_user_api
-from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_credit_line_item"])
 
@@ -21,8 +21,8 @@ def create_bill_credit_line_item_router(body: BillCreditLineItemCreate, current_
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -41,7 +41,7 @@ def create_bill_credit_line_item_router(body: BillCreditLineItemCreate, current_
         workflow_type="bill_credit_line_item_create",
     )
     
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
         raise HTTPException(
@@ -95,8 +95,8 @@ def update_bill_credit_line_item_by_public_id_router(public_id: str, body: BillC
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -117,7 +117,7 @@ def update_bill_credit_line_item_by_public_id_router(public_id: str, body: BillC
         workflow_type="bill_credit_line_item_update",
     )
     
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
         raise HTTPException(
@@ -136,8 +136,8 @@ def delete_bill_credit_line_item_by_public_id_router(public_id: str, current_use
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -146,7 +146,7 @@ def delete_bill_credit_line_item_by_public_id_router(public_id: str, current_use
         workflow_type="bill_credit_line_item_delete",
     )
     
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
         raise HTTPException(

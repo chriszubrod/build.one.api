@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from entities.payment_term.api.schemas import PaymentTermCreate, PaymentTermUpdate
 from entities.payment_term.business.service import PaymentTermService
 from entities.auth.business.service import get_current_user_api as get_current_payment_term_api
-from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "payment-term"])
 service = PaymentTermService()
@@ -21,8 +21,8 @@ def create_payment_term_router(body: PaymentTermCreate, current_user: dict = Dep
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -35,7 +35,7 @@ def create_payment_term_router(body: PaymentTermCreate, current_user: dict = Dep
         workflow_type="payment_term_create",
     )
     
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
         raise HTTPException(
@@ -82,8 +82,8 @@ def update_payment_term_by_public_id_router(public_id: str, body: PaymentTermUpd
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -98,7 +98,7 @@ def update_payment_term_by_public_id_router(public_id: str, body: PaymentTermUpd
         workflow_type="payment_term_update",
     )
     
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
         raise HTTPException(
@@ -117,8 +117,8 @@ def delete_payment_term_by_public_id_router(public_id: str, current_user: dict =
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -127,7 +127,7 @@ def delete_payment_term_by_public_id_router(public_id: str, current_user: dict =
         workflow_type="payment_term_delete",
     )
     
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
         raise HTTPException(

@@ -13,30 +13,30 @@ _EXECUTOR_UNAVAILABLE = object()
 
 
 # =============================================================================
-# Trigger Types and Sources
+# Event Types and Channels
 # =============================================================================
 
-class TriggerType(str, Enum):
-    """Types of triggers that can initiate a workflow."""
-    
-    # Web triggers
-    FORM_SUBMIT = "form_submit"      # Form submission
-    FILE_DROP = "file_drop"          # Drag-and-drop file upload
-    BUTTON_CLICK = "button_click"    # Button action (e.g., "Extract", "Sync")
-    
-    # Scheduler triggers
-    EMAIL_POLL = "email_poll"        # New email with attachment
-    REPLY_CHECK = "reply_check"      # Check for approval response
-    TIMEOUT_CHECK = "timeout_check"  # Send reminder after timeout
-    
-    # External triggers
-    WEBHOOK = "webhook"              # External system callback (e.g., QBO)
-    
-    # API triggers
-    API_CALL = "api_call"            # Programmatic API request
+class EventType(str, Enum):
+    """Types of events that can initiate a workflow."""
+
+    # User-initiated
+    API_CALL        = "API_CALL"        # REST API call from any client
+    FORM_SUBMIT     = "FORM_SUBMIT"     # Web UI form submission
+    USER_ACTION     = "USER_ACTION"     # Button, tap, or explicit user trigger
+    MANUAL          = "MANUAL"          # Human-initiated outside normal flow
+
+    # Channel-driven
+    EMAIL_RECEIVED  = "EMAIL_RECEIVED"  # Inbound email, new or reply
+    FILE_DROP       = "FILE_DROP"       # File uploaded or dropped (SharePoint/blob)
+    WEBHOOK         = "WEBHOOK"         # External system callback (QBO, etc.)
+
+    # System-driven
+    SCHEDULED       = "SCHEDULED"       # APScheduler triggered
+    SYSTEM_EVENT    = "SYSTEM_EVENT"    # Internal cross-component signal
+    SLA_BREACH      = "SLA_BREACH"      # Stage exceeded max allowed time
 
 
-class TriggerSource(str, Enum):
+class Channel(str, Enum):
     """Source/entry point of a trigger."""
     
     WEB = "web"            # Browser-based interaction
@@ -92,8 +92,8 @@ class TriggerContext:
     """
     
     # Source identification
-    trigger_type: TriggerType
-    trigger_source: TriggerSource
+    trigger_type: EventType
+    trigger_source: Channel
     
     # Tenant/user context
     tenant_id: int
@@ -124,8 +124,8 @@ class TriggerContext:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for logging/storage."""
         return {
-            "trigger_type": self.trigger_type.value if isinstance(self.trigger_type, TriggerType) else self.trigger_type,
-            "trigger_source": self.trigger_source.value if isinstance(self.trigger_source, TriggerSource) else self.trigger_source,
+            "trigger_type": self.trigger_type.value if isinstance(self.trigger_type, EventType) else self.trigger_type,
+            "trigger_source": self.trigger_source.value if isinstance(self.trigger_source, Channel) else self.trigger_source,
             "tenant_id": self.tenant_id,
             "user_id": self.user_id,
             "payload": self.payload,
@@ -158,19 +158,19 @@ class TriggerContext:
 
 
 # =============================================================================
-# Trigger Router
+# Process Engine
 # =============================================================================
 
-class TriggerRouter:
+class ProcessEngine:
     """
     Routes triggers from all entry points to the workflow engine.
-    
+
     Responsibilities:
     1. Normalize inputs from different sources into TriggerContext
     2. Determine workflow type from trigger type + payload (if not specified)
     3. Route to workflow engine - create workflow and return handle
     4. Handle sync vs async - wait for result or return workflow ID
-    
+
     Supports two types of workflows:
     - Instant workflows: Synchronous CRUD operations (< 1 second)
     - Long-running workflows: Multi-step async processes (email intake, approvals)
@@ -196,7 +196,7 @@ class TriggerRouter:
         if self._executor is _EXECUTOR_UNAVAILABLE:
             raise RuntimeError(
                 "Async workflow execution (email intake, bill intake, etc.) is not available; "
-                "required modules were removed. Use route_instant() for CRUD."
+                "required modules were removed. Use execute_synchronous() for CRUD."
             )
         if self._executor is None:
             try:
@@ -206,7 +206,7 @@ class TriggerRouter:
                 self._executor = _EXECUTOR_UNAVAILABLE
                 raise RuntimeError(
                     "Async workflow execution (email intake, bill intake, etc.) is not available; "
-                    "required modules were removed. Use route_instant() for CRUD."
+                    "required modules were removed. Use execute_synchronous() for CRUD."
                 )
         return self._executor
     
@@ -241,8 +241,8 @@ class TriggerRouter:
             access_token: Optional access token for downstream API calls
         """
         return TriggerContext(
-            trigger_type=TriggerType.FORM_SUBMIT,
-            trigger_source=TriggerSource.WEB,
+            trigger_type=EventType.FORM_SUBMIT,
+            trigger_source=Channel.WEB,
             tenant_id=tenant_id,
             user_id=user_id,
             access_token=access_token,
@@ -272,8 +272,8 @@ class TriggerRouter:
             access_token: Optional access token
         """
         return TriggerContext(
-            trigger_type=TriggerType.FILE_DROP,
-            trigger_source=TriggerSource.WEB,
+            trigger_type=EventType.FILE_DROP,
+            trigger_source=Channel.WEB,
             tenant_id=tenant_id,
             user_id=user_id,
             access_token=access_token,
@@ -306,8 +306,8 @@ class TriggerRouter:
             access_token: Optional access token
         """
         return TriggerContext(
-            trigger_type=TriggerType.BUTTON_CLICK,
-            trigger_source=TriggerSource.WEB,
+            trigger_type=EventType.USER_ACTION,
+            trigger_source=Channel.WEB,
             tenant_id=tenant_id,
             user_id=user_id,
             access_token=access_token,
@@ -344,8 +344,8 @@ class TriggerRouter:
             expects_response: Whether caller waits for result
         """
         return TriggerContext(
-            trigger_type=TriggerType.API_CALL,
-            trigger_source=TriggerSource.API,
+            trigger_type=EventType.API_CALL,
+            trigger_source=Channel.API,
             tenant_id=tenant_id,
             user_id=user_id,
             access_token=access_token,
@@ -378,8 +378,8 @@ class TriggerRouter:
             access_token: MS Graph access token
         """
         return TriggerContext(
-            trigger_type=TriggerType.EMAIL_POLL,
-            trigger_source=TriggerSource.SCHEDULER,
+            trigger_type=EventType.EMAIL_RECEIVED,
+            trigger_source=Channel.SCHEDULER,
             tenant_id=tenant_id,
             user_id=None,  # System trigger
             access_token=access_token,
@@ -414,8 +414,8 @@ class TriggerRouter:
             access_token: MS Graph access token
         """
         return TriggerContext(
-            trigger_type=TriggerType.REPLY_CHECK,
-            trigger_source=TriggerSource.SCHEDULER,
+            trigger_type=EventType.EMAIL_RECEIVED,
+            trigger_source=Channel.SCHEDULER,
             tenant_id=tenant_id,
             user_id=None,
             access_token=access_token,
@@ -445,8 +445,8 @@ class TriggerRouter:
             access_token: Optional access token
         """
         return TriggerContext(
-            trigger_type=TriggerType.TIMEOUT_CHECK,
-            trigger_source=TriggerSource.SCHEDULER,
+            trigger_type=EventType.SLA_BREACH,
+            trigger_source=Channel.SCHEDULER,
             tenant_id=tenant_id,
             user_id=None,
             access_token=access_token,
@@ -474,8 +474,8 @@ class TriggerRouter:
             payload: Webhook payload
         """
         return TriggerContext(
-            trigger_type=TriggerType.WEBHOOK,
-            trigger_source=TriggerSource.WEBHOOK,
+            trigger_type=EventType.WEBHOOK,
+            trigger_source=Channel.WEBHOOK,
             tenant_id=tenant_id,
             user_id=None,
             payload={
@@ -502,7 +502,7 @@ class TriggerRouter:
             For async (expects_response=False): {"workflow_id": "...", "status": "started"}
         """
         workflow_type = context.workflow_type or self._infer_workflow_type(context)
-        print(f"[TriggerRouter] route trigger_type={context.trigger_type.value} workflow_type={workflow_type} correlation_id={context.correlation_id}")
+        print(f"[ProcessEngine] route trigger_type={context.trigger_type.value} workflow_type={workflow_type} correlation_id={context.correlation_id}")
         logger.info(
             f"Routing trigger: type={context.trigger_type.value}, "
             f"source={context.trigger_source.value}, "
@@ -514,7 +514,7 @@ class TriggerRouter:
         handler = self._get_handler(workflow_type)
         
         if handler is None:
-            print(f"[TriggerRouter] no handler for workflow_type={workflow_type}")
+            print(f"[ProcessEngine] no handler for workflow_type={workflow_type}")
             logger.warning(f"No handler for workflow type: {workflow_type}")
             return {
                 "success": False,
@@ -543,20 +543,19 @@ class TriggerRouter:
         
         This is a fallback when workflow_type is not explicitly set.
         """
-        # Email-based triggers default to email_intake
-        if context.trigger_type == TriggerType.EMAIL_POLL:
-            return "email_intake"
-        
-        # Reply checks continue the parent workflow
-        if context.trigger_type == TriggerType.REPLY_CHECK:
-            return "approval_response"
-        
+        # EMAIL_RECEIVED covers both new inbound emails and replies;
+        # is_reply (from email headers) determines the branch.
+        if context.trigger_type == EventType.EMAIL_RECEIVED:
+            if context.metadata.get("is_reply"):
+                return "approval_response_workflow"
+            return "new_email_workflow"
+
         # Timeout checks trigger reminders
-        if context.trigger_type == TriggerType.TIMEOUT_CHECK:
+        if context.trigger_type == EventType.SLA_BREACH:
             return "timeout_handler"
-        
+
         # Button clicks use the action from payload
-        if context.trigger_type == TriggerType.BUTTON_CLICK:
+        if context.trigger_type == EventType.USER_ACTION:
             action = context.payload.get("action", "unknown")
             entity_type = context.payload.get("entity_type", "")
             if entity_type:
@@ -564,7 +563,7 @@ class TriggerRouter:
             return action
         
         # Form submissions - check payload for entity type
-        if context.trigger_type == TriggerType.FORM_SUBMIT:
+        if context.trigger_type == EventType.FORM_SUBMIT:
             entity_type = context.payload.get("entity_type")
             if entity_type:
                 return f"{entity_type}_create"
@@ -616,7 +615,7 @@ class TriggerRouter:
         total_attachments = context.payload.get("total_attachments", len(context.attachments))
         module = (context.payload.get("module") or "bill").lower()
         preferred_module = "bill" if module == "bill" else None
-        print(f"[TriggerRouter] _handle_email_intake message_id={message_id[:20] if message_id else None}... workflow_type=email_intake module={module}")
+        print(f"[ProcessEngine] _handle_email_intake message_id={message_id[:20] if message_id else None}... workflow_type=email_intake module={module}")
         workflow, is_duplicate, task_created = await self.executor.start_from_email(
             tenant_id=context.tenant_id,
             access_token=context.access_token,
@@ -627,7 +626,7 @@ class TriggerRouter:
             workflow_type="email_intake",
             preferred_module=preferred_module,
         )
-        print(f"[TriggerRouter] _handle_email_intake done workflow_id={workflow.public_id} state={workflow.state} duplicate={is_duplicate} task_created={task_created}")
+        print(f"[ProcessEngine] _handle_email_intake done workflow_id={workflow.public_id} state={workflow.state} duplicate={is_duplicate} task_created={task_created}")
         return {
             "workflow_id": workflow.public_id,
             "workflow_type": workflow.workflow_type,
@@ -641,7 +640,7 @@ class TriggerRouter:
         message_id = context.payload.get("message_id")
         conversation = context.payload.get("conversation", [])
         total_attachments = context.payload.get("total_attachments", len(context.attachments))
-        print(f"[TriggerRouter] _handle_expense_intake message_id={message_id[:20] if message_id else None}... workflow_type=expense_intake")
+        print(f"[ProcessEngine] _handle_expense_intake message_id={message_id[:20] if message_id else None}... workflow_type=expense_intake")
         workflow, is_duplicate, task_created = await self.executor.start_from_email(
             tenant_id=context.tenant_id,
             access_token=context.access_token,
@@ -651,7 +650,7 @@ class TriggerRouter:
             total_attachments=total_attachments,
             workflow_type="expense_intake",
         )
-        print(f"[TriggerRouter] _handle_expense_intake done workflow_id={workflow.public_id} state={workflow.state} duplicate={is_duplicate} task_created={task_created}")
+        print(f"[ProcessEngine] _handle_expense_intake done workflow_id={workflow.public_id} state={workflow.state} duplicate={is_duplicate} task_created={task_created}")
         return {
             "workflow_id": workflow.public_id,
             "workflow_type": workflow.workflow_type,
@@ -757,27 +756,27 @@ class TriggerRouter:
     # Synchronous Routing (for instant workflows)
     # =========================================================================
     
-    def route_instant(self, context: TriggerContext) -> Dict[str, Any]:
+    def execute_synchronous(self, context: TriggerContext) -> Dict[str, Any]:
         """
         Synchronously route an instant workflow.
-        
+
         This is a convenience method for callers that don't need async.
         Only works for instant workflows (CRUD operations).
-        
+
         Args:
             context: TriggerContext with workflow_type like 'project_create'
-            
+
         Returns:
             Result dict with success status and data/error
-            
+
         Raises:
             ValueError: If workflow_type is not an instant workflow
         """
         workflow_type = context.workflow_type or self._infer_workflow_type(context)
-        
+
         if not self._is_instant_workflow(workflow_type):
             raise ValueError(
-                f"route_instant() only supports instant workflows. "
+                f"execute_synchronous() only supports instant workflows. "
                 f"'{workflow_type}' is not an instant workflow. Use route() instead."
             )
         
@@ -805,12 +804,12 @@ class TriggerRouter:
 # Module-level convenience
 # =============================================================================
 
-_router_instance: Optional[TriggerRouter] = None
+_engine_instance: Optional[ProcessEngine] = None
 
 
-def get_trigger_router() -> TriggerRouter:
-    """Get or create the singleton TriggerRouter instance."""
-    global _router_instance
-    if _router_instance is None:
-        _router_instance = TriggerRouter()
-    return _router_instance
+def get_process_engine() -> ProcessEngine:
+    """Get or create the singleton ProcessEngine instance."""
+    global _engine_instance
+    if _engine_instance is None:
+        _engine_instance = ProcessEngine()
+    return _engine_instance

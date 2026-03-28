@@ -13,7 +13,7 @@ from entities.sub_cost_code.api.schemas import (
     SubCostCodeAliasUpdate,
 )
 from entities.auth.business.service import get_current_user_api
-from workflows.workflow.api.router import TriggerRouter, TriggerContext, TriggerType, TriggerSource
+from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "sub-cost-code"])
 service = SubCostCodeService()
@@ -28,8 +28,8 @@ def create_sub_cost_code_router(body: SubCostCodeCreate, current_user: dict = De
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -41,7 +41,7 @@ def create_sub_cost_code_router(body: SubCostCodeCreate, current_user: dict = De
         workflow_type="sub_cost_code_create",
     )
     
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
         raise HTTPException(
@@ -82,8 +82,8 @@ def update_sub_cost_code_by_id_router(public_id: str, body: SubCostCodeUpdate, c
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -97,7 +97,7 @@ def update_sub_cost_code_by_id_router(public_id: str, body: SubCostCodeUpdate, c
         workflow_type="sub_cost_code_update",
     )
     
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
         raise HTTPException(
@@ -116,8 +116,8 @@ def delete_sub_cost_code_by_public_id_router(public_id: str, current_user: dict 
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
-        trigger_type=TriggerType.API_CALL,
-        trigger_source=TriggerSource.API,
+        trigger_type=EventType.API_CALL,
+        trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
@@ -126,7 +126,7 @@ def delete_sub_cost_code_by_public_id_router(public_id: str, current_user: dict 
         workflow_type="sub_cost_code_delete",
     )
 
-    result = TriggerRouter().route_instant(context)
+    result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
         raise HTTPException(

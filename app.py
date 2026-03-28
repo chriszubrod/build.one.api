@@ -101,6 +101,7 @@ from entities.copilot.api.router import router as copilot_api_router
 from entities.inbox.web.controller import router as inbox_web_router
 from entities.classification_override.api.router import router as classification_override_api_router
 from entities.classification_override.web.controller import router as classification_override_web_router
+from entities.email_thread.api.router import router as email_thread_api_router
 from core.workflow.api.pending_action_router import router as pending_action_api_router
 from core.ai.agents.vendor_agent.api.router import router as vendor_agent_api_router
 from core.ai.agents.bill_agent.api.router import router as bill_agent_api_router
@@ -240,6 +241,7 @@ app.include_router(attachment_web_router)
 app.include_router(inbox_web_router)
 app.include_router(classification_override_api_router)
 app.include_router(classification_override_web_router)
+app.include_router(email_thread_api_router)
 app.include_router(bill_api_router)
 app.include_router(bill_web_router)
 app.include_router(bill_line_item_api_router)

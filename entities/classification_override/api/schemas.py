@@ -20,8 +20,8 @@ class ClassificationOverrideCreate(BaseModel):
     )
     classification_type: str = Field(
         ...,
-        description="Classification type to assign: bill, expense, vendor_credit, inquiry, or statement",
-        pattern=r"^(bill|expense|vendor_credit|inquiry|statement)$",
+        description="Classification type to assign: BILL_DOCUMENT, BILL_CREDIT_DOCUMENT, EXPENSE_DOCUMENT, EXPENSE_REFUND_DOCUMENT, or UNKNOWN",
+        pattern=r"^(BILL_DOCUMENT|BILL_CREDIT_DOCUMENT|EXPENSE_DOCUMENT|EXPENSE_REFUND_DOCUMENT|UNKNOWN)$",
     )
     notes: Optional[str] = Field(
         default=None,
@@ -51,7 +51,7 @@ class ClassificationOverrideUpdate(BaseModel):
     )
     classification_type: str = Field(
         ...,
-        pattern=r"^(bill|expense|vendor_credit|inquiry|statement)$",
+        pattern=r"^(BILL_DOCUMENT|BILL_CREDIT_DOCUMENT|EXPENSE_DOCUMENT|EXPENSE_REFUND_DOCUMENT|UNKNOWN)$",
     )
     notes: Optional[str] = Field(
         default=None,

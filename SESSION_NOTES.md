@@ -383,7 +383,7 @@ Performed a comprehensive review of `/entities/expense`, `/entities/expense_line
 - `dbo.Contact` table with nullable FKs: UserId, CompanyId, CustomerId, ProjectId, VendorId
 - Fields: Email (NVARCHAR 255), OfficePhone (NVARCHAR 50), MobilePhone (NVARCHAR 50), Fax (NVARCHAR 50), Notes (NVARCHAR MAX)
 - 11 stored procedures: Create, ReadAll, ReadById, ReadByPublicId, ReadByUserId/CompanyId/CustomerId/ProjectId/VendorId, UpdateById, DeleteById
-- Full entity module: model, repository, service, API schemas, API router (TriggerRouter instant)
+- Full entity module: model, repository, service, API schemas, API router (ProcessEngine instant)
 
 #### Inline UI on Parent Pages
 - **Reusable partials**: `shared/partials/contacts_view.html` (read-only table) and `shared/partials/contacts_edit.html` (inline CRUD with JS)
@@ -393,8 +393,8 @@ Performed a comprehensive review of `/entities/expense`, `/entities/expense_line
 - CSS: `static/css/contact.css`
 
 #### Workflow Registration
-- Added `"contact"` to `INSTANT_ENTITIES` in `core/workflow/business/definitions/instant.py`
-- Added `"contact"` to `SERVICE_REGISTRY` in `core/workflow/business/instant.py`
+- Added `"contact"` to `SYNCHRONOUS_TASKS` in `core/workflow/business/definitions/instant.py`
+- Added `"contact"` to `PROCESS_REGISTRY` in `core/workflow/business/instant.py`
 - Registered API router in `app.py`
 
 ### Files Created
@@ -411,8 +411,8 @@ Performed a comprehensive review of `/entities/expense`, `/entities/expense_line
 
 ### Files Modified
 - `app.py` — imported and registered contact API router
-- `core/workflow/business/definitions/instant.py` — added "contact" to INSTANT_ENTITIES
-- `core/workflow/business/instant.py` — added ContactService to SERVICE_REGISTRY
+- `core/workflow/business/definitions/instant.py` — added "contact" to SYNCHRONOUS_TASKS
+- `core/workflow/business/instant.py` — added ContactService to PROCESS_REGISTRY
 - `entities/user/web/controller.py` — ContactService import, fetch contacts in view/edit
 - `entities/company/web/controller.py` — ContactService import, fetch contacts in view/edit
 - `entities/customer/web/controller.py` — ContactService import, fetch contacts in view/edit
@@ -428,7 +428,7 @@ Performed a comprehensive review of `/entities/expense`, `/entities/expense_line
 - **Nullable FK columns** (not join table or generic FK) — simplest approach, consistent with codebase patterns
 - **No firstname/lastname/title** — Contact stores only communication details, not identity info
 - **Inline UI via reusable partials** — same pattern as UserRole on User pages, but using `{% include %}` partials for DRY across 5 parent entities
-- **Instant workflow** — uses TriggerRouter.route_instant for audit trail, same as UserRole
+- **Instant workflow** — uses ProcessEngine.execute_synchronous for audit trail, same as UserRole
 
 ---
 
@@ -498,13 +498,13 @@ Wired the Role entity into the UserRole and RoleModule join table UIs, and added
 #### Role Entity (Full CRUD)
 - `dbo.Role` table with `Name` (NVARCHAR(255)) field + standard fields (Id, PublicId, RowVersion, timestamps)
 - 7 stored procedures: Create, ReadAll, ReadById, ReadByPublicId, ReadByName, UpdateById, DeleteById
-- Full entity module: model, repository, service, API router (5 endpoints via TriggerRouter), web controller (4 routes)
+- Full entity module: model, repository, service, API router (5 endpoints via ProcessEngine), web controller (4 routes)
 - Templates: list (card grid), create, view, edit — all following User entity pattern
 - CSS: `static/css/role.css`
 
 #### Workflow Registration
-- Added `"role"` to `INSTANT_ENTITIES` in `core/workflow/business/definitions/instant.py`
-- Added `"role"` to `SERVICE_REGISTRY` in `core/workflow/business/instant.py`
+- Added `"role"` to `SYNCHRONOUS_TASKS` in `core/workflow/business/definitions/instant.py`
+- Added `"role"` to `PROCESS_REGISTRY` in `core/workflow/business/instant.py`
 - Registered routers in `app.py`
 
 ### Files Created
@@ -519,8 +519,8 @@ Wired the Role entity into the UserRole and RoleModule join table UIs, and added
 - `static/css/role.css`
 
 ### Files Modified
-- `core/workflow/business/definitions/instant.py` — added "role" to INSTANT_ENTITIES
-- `core/workflow/business/instant.py` — added "role" to SERVICE_REGISTRY
+- `core/workflow/business/definitions/instant.py` — added "role" to SYNCHRONOUS_TASKS
+- `core/workflow/business/instant.py` — added "role" to PROCESS_REGISTRY
 - `app.py` — imported and registered role API + web routers
 
 ### Remaining Work

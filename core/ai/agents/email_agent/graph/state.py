@@ -1,10 +1,6 @@
-"""
-Email Classification Agent State
-"""
 from __future__ import annotations
 
-from typing import Optional
-
+from typing import Any, Optional
 from core.ai.agents.base.state import BaseAgentState
 
 
@@ -12,42 +8,61 @@ class EmailClassificationState(BaseAgentState):
     """
     State for the email classification agent.
 
-    Extends BaseAgentState with email-specific fields.
+    Input fields are populated before the agent runs.
+    Output fields are set by the submit_classification tool.
+    Thread fields are populated by the pre-flight header detection
+    step before the heuristic or agent runs.
     """
-    subject: str
-    from_email: str
-    body: str
-    attachments: list[dict]  # [{name, content_type}]
 
-    # Output fields (set by submit_classification tool)
+    # ------------------------------------------------------------------
+    # Email content inputs (unchanged from original)
+    # ------------------------------------------------------------------
+    subject:        str
+    from_email:     str
+    body:           str
+    attachments:    list[dict]   # [{name, content_type}, ...]
+
+    # ------------------------------------------------------------------
+    # Classification outputs (set by submit_classification tool)
+    # ------------------------------------------------------------------
     classification: Optional[str]
-    confidence: float
-    reasoning: str
-    signals: list[str]
+    confidence:     float
+    reasoning:      str
+    signals:        list[Any]
+
+    # ------------------------------------------------------------------
+    # Thread awareness (populated by pre-flight before heuristic runs)
+    # ------------------------------------------------------------------
+    is_reply:               bool        # derived from subject Re: prefix
+    is_forward:             bool        # derived from subject Fw:/Fwd: prefix
+    internet_message_id:    Optional[str]  # RFC 2822 Message-ID header
+    thread_id:              Optional[str]  # EmailThread.PublicId if found
+    thread_stage:           Optional[str]  # EmailThread.CurrentStage if found
 
 
-def initial_state(
-    tenant_id: int,
-    subject: str = "",
-    from_email: str = "",
-    body: str = "",
-    attachments: list = None,
-) -> EmailClassificationState:
-    """Create initial state for email classification."""
-    return EmailClassificationState(
-        messages=[],
-        llm_calls=0,
-        tenant_id=tenant_id,
-        agent_run_id=None,
-        user_id=None,
-        errors=[],
-        mode="interactive",
-        subject=subject,
-        from_email=from_email,
-        body=body,
-        attachments=attachments or [],
-        classification=None,
-        confidence=0.0,
-        reasoning="",
-        signals=[],
-    )
+def initial_state() -> dict:
+    """
+    Factory for a blank EmailClassificationState.
+    Thread fields default to safe values — pre-flight will populate them
+    before the heuristic or agent runs.
+    """
+    return {
+        # Email content
+        "subject":              "",
+        "from_email":           "",
+        "body":                 "",
+        "attachments":          [],
+
+        # Classification outputs
+        "classification":       None,
+        "confidence":           0.0,
+        "reasoning":            "",
+        "signals":              [],
+
+        # Thread awareness
+        "is_reply":             False,
+        "is_forward":           False,
+        "internet_message_id":  None,
+        "thread_id":            None,
+        "thread_stage":         None,
+    }

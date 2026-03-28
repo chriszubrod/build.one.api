@@ -1,7 +1,7 @@
 # Workflow definitions
 
 from workflows.workflow.business.definitions.instant import (
-    INSTANT_ENTITIES,
+    SYNCHRONOUS_TASKS,
     INSTANT_OPERATIONS,
     get_instant_workflow_definition,
     get_all_instant_workflow_definitions,

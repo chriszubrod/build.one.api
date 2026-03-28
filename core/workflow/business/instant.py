@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 # Local Imports
 from workflows.workflow.business.definitions.instant import (
-    INSTANT_ENTITIES,
+    SYNCHRONOUS_TASKS,
     INSTANT_OPERATIONS,
     get_instant_workflow_definition,
     is_instant_workflow_type,
@@ -14,7 +14,7 @@ from workflows.workflow.business.definitions.instant import (
 )
 from workflows.workflow.business.models import Workflow
 from workflows.workflow.business.orchestrator import WorkflowOrchestrator
-from workflows.workflow.api.router import TriggerContext
+from workflows.workflow.api.process_engine import TriggerContext
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Maps entity names to their service module paths.
 # All services follow the pattern: entities/{entity}/business/service.py
 
-SERVICE_REGISTRY: Dict[str, str] = {
+PROCESS_REGISTRY: Dict[str, str] = {
     # Core billing entities
     "bill": "entities.bill.business.service.BillService",
     "bill_line_item": "entities.bill_line_item.business.service.BillLineItemService",
@@ -180,7 +180,7 @@ class InstantWorkflowHandler:
     
     def _register_definitions(self) -> None:
         """Register all instant workflow definitions with the orchestrator."""
-        for entity in INSTANT_ENTITIES:
+        for entity in SYNCHRONOUS_TASKS:
             for operation in INSTANT_OPERATIONS:
                 try:
                     definition = get_instant_workflow_definition(entity, operation)
@@ -201,10 +201,10 @@ class InstantWorkflowHandler:
         Raises:
             ValueError: If entity is not in the registry
         """
-        if entity not in SERVICE_REGISTRY:
+        if entity not in PROCESS_REGISTRY:
             raise ValueError(f"No service registered for entity '{entity}'")
-        
-        module_path = SERVICE_REGISTRY[entity]
+
+        module_path = PROCESS_REGISTRY[entity]
         module_name, class_name = module_path.rsplit(".", 1)
         
         try:
@@ -277,7 +277,7 @@ class InstantWorkflowHandler:
         logger.info(f"Executing instant workflow: {workflow_type}")
         
         # Validate entity and operation
-        if entity not in INSTANT_ENTITIES:
+        if entity not in SYNCHRONOUS_TASKS:
             return InstantWorkflowResult(
                 success=False,
                 workflow_id="",

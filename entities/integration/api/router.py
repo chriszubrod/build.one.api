@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.integration.api.schemas import IntegrationCreate, IntegrationUpdate
 from entities.integration.business.service import IntegrationService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "integration"])
 
 
 @router.post("/create/integration")
-def create_integration_router(body: IntegrationCreate, current_user: dict = Depends(get_current_user_api)):
+def create_integration_router(body: IntegrationCreate, current_user: dict = Depends(require_module_api(Modules.INTEGRATIONS, "can_create"))):
     """
     Create a new integration.
     
@@ -43,7 +44,7 @@ def create_integration_router(body: IntegrationCreate, current_user: dict = Depe
 
 
 @router.get("/get/integrations")
-def get_integrations_router(current_user: dict = Depends(get_current_user_api)):
+def get_integrations_router(current_user: dict = Depends(require_module_api(Modules.INTEGRATIONS))):
     """
     Read all integrations.
     """
@@ -52,7 +53,7 @@ def get_integrations_router(current_user: dict = Depends(get_current_user_api)):
 
 
 @router.get("/get/integration/{public_id}")
-def get_integration_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_integration_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INTEGRATIONS))):
     """
     Read a integration by public ID.
     """
@@ -61,7 +62,7 @@ def get_integration_by_public_id_router(public_id: str, current_user: dict = Dep
 
 
 @router.put("/update/integration/{public_id}")
-def update_integration_by_public_id_router(public_id: str, body: IntegrationUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_integration_by_public_id_router(public_id: str, body: IntegrationUpdate, current_user: dict = Depends(require_module_api(Modules.INTEGRATIONS, "can_update"))):
     """
     Update a integration by public ID.
     
@@ -93,7 +94,7 @@ def update_integration_by_public_id_router(public_id: str, body: IntegrationUpda
 
 
 @router.delete("/delete/integration/{public_id}")
-def delete_integration_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_integration_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INTEGRATIONS, "can_delete"))):
     """
     Delete a integration by public ID.
     
@@ -122,7 +123,7 @@ def delete_integration_by_public_id_router(public_id: str, current_user: dict = 
 
 
 @router.get("/connect/integration/{public_id}")
-def connect_integration_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def connect_integration_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INTEGRATIONS))):
     """
     Connect an integration by routing to the appropriate integration handler.
     Returns a dict with redirect_url for OAuth flows or success/error message.
@@ -132,7 +133,7 @@ def connect_integration_router(public_id: str, current_user: dict = Depends(get_
 
 
 @router.post("/disconnect/integration/{public_id}")
-def disconnect_integration_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def disconnect_integration_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INTEGRATIONS, "can_update"))):
     """
     Disconnect an integration by routing to the appropriate integration handler.
     Returns a dict with success/error message.

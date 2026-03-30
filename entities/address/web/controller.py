@@ -6,14 +6,15 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from entities.address.business.service import AddressService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/address", tags=["web", "address"])
 templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
-async def list_addresses(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def list_addresses(request: Request, current_user: dict = Depends(require_module_web(Modules.VENDORS))):
     """
     List all addresses.
     """
@@ -30,7 +31,7 @@ async def list_addresses(request: Request, current_user: dict = Depends(get_curr
 
 
 @router.get("/create")
-async def create_address(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_address(request: Request, current_user: dict = Depends(require_module_web(Modules.VENDORS, "can_create"))):
     """
     Render create address form.
     """
@@ -45,7 +46,7 @@ async def create_address(request: Request, current_user: dict = Depends(get_curr
 
 
 @router.get("/{public_id}")
-async def view_address(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_address(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.VENDORS))):
     """
     View an address.
     """
@@ -62,7 +63,7 @@ async def view_address(request: Request, public_id: str, current_user: dict = De
 
 
 @router.get("/{public_id}/edit")
-async def edit_address(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_address(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.VENDORS, "can_update"))):
     """
     Edit an address.
     """

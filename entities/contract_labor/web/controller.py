@@ -18,7 +18,8 @@ from entities.contract_labor.persistence.line_item_repo import ContractLaborLine
 from entities.vendor.business.service import VendorService
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ templates = Jinja2Templates(directory="templates")
 @router.get("/list")
 async def list_contract_labor(
     request: Request,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.CONTRACT_LABOR)),
     page: int = 1,
     page_size: int = 50,
     search: Optional[str] = None,
@@ -168,7 +169,7 @@ async def list_contract_labor(
 @router.get("/import")
 async def import_page(
     request: Request,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.CONTRACT_LABOR)),
 ):
     """
     Render the Excel import page.
@@ -187,7 +188,7 @@ async def import_page(
 async def import_excel(
     request: Request,
     file: UploadFile = File(...),
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.CONTRACT_LABOR, "can_create")),
 ):
     """
     Handle Excel file upload and import.
@@ -244,7 +245,7 @@ async def import_excel(
 async def bills_page(
     request: Request,
     billing_period: Optional[str] = None,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.CONTRACT_LABOR)),
 ):
     """
     Bills page - view and generate bills from ready entries.
@@ -366,7 +367,7 @@ async def bills_page(
 async def edit_entry(
     request: Request,
     public_id: str,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.CONTRACT_LABOR)),
 ):
     """
     Edit a contract labor entry.
@@ -472,7 +473,7 @@ async def edit_entry(
 async def view_entry(
     request: Request,
     public_id: str,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.CONTRACT_LABOR)),
 ):
     """
     View a contract labor entry (redirects to edit for now).

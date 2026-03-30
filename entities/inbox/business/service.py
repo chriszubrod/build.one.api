@@ -771,33 +771,32 @@ class InboxService:
         except Exception:
             return dt_str
 
-    def _classify_message(self, email: dict) -> object:
+    def _classify_message(self, email: dict, inbox_record_id: int = None, internet_message_id: str = None) -> object:
         """Run the email classifier (heuristic + LangGraph agent fallback)."""
         attachments = email.get("attachments") or []
         return classify_email(
-            tenant_id=1,
-            subject=email.get("subject"),
-            from_email=email.get("from_email"),
+            subject=email.get("subject") or "",
+            from_email=email.get("from_email") or "",
             body=email.get("body_content") or email.get("body_preview") or "",
             attachments=[
                 {"name": a.get("name", ""), "content_type": a.get("content_type", "")}
                 for a in attachments
             ],
-            override_service=self._override_svc,
+            inbox_record_id=inbox_record_id,
+            internet_message_id=internet_message_id,
         )
 
     def _classify_message_heuristic(self, email: dict) -> object:
         """Run heuristic-only classification (no agent fallback). Used for fast page loads."""
         attachments = email.get("attachments") or []
         return classify_email_heuristic(
-            subject=email.get("subject"),
-            from_email=email.get("from_email"),
+            subject=email.get("subject") or "",
+            from_email=email.get("from_email") or "",
             body=email.get("body_content") or email.get("body_preview") or "",
             attachments=[
                 {"name": a.get("name", ""), "content_type": a.get("content_type", "")}
                 for a in attachments
             ],
-            override_service=self._override_svc,
         )
 
     def _is_extractable(self, attachment: dict) -> bool:

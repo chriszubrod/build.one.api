@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.taxpayer.api.schemas import TaxpayerCreate, TaxpayerUpdate
 from entities.taxpayer.business.service import TaxpayerService
-from entities.auth.business.service import get_current_user_api as get_current_taxpayer_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "taxpayer"])
@@ -14,7 +15,7 @@ service = TaxpayerService()
 
 
 @router.post("/create/taxpayer")
-def create_taxpayer_router(body: TaxpayerCreate, current_user: dict = Depends(get_current_taxpayer_api)):
+def create_taxpayer_router(body: TaxpayerCreate, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_create"))):
     """
     Create a new taxpayer.
     
@@ -48,7 +49,7 @@ def create_taxpayer_router(body: TaxpayerCreate, current_user: dict = Depends(ge
 
 
 @router.get("/get/taxpayers")
-def get_taxpayers_router(current_user: dict = Depends(get_current_taxpayer_api)):
+def get_taxpayers_router(current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read all taxpayers.
     """
@@ -57,7 +58,7 @@ def get_taxpayers_router(current_user: dict = Depends(get_current_taxpayer_api))
 
 
 @router.get("/get/taxpayer/{public_id}")
-def get_taxpayer_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_taxpayer_api)):
+def get_taxpayer_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read a taxpayer by public ID.
     """
@@ -66,7 +67,7 @@ def get_taxpayer_by_public_id_router(public_id: str, current_user: dict = Depend
 
 
 @router.put("/update/taxpayer/{public_id}")
-def update_taxpayer_by_public_id_router(public_id: str, body: TaxpayerUpdate, current_user: dict = Depends(get_current_taxpayer_api)):
+def update_taxpayer_by_public_id_router(public_id: str, body: TaxpayerUpdate, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_update"))):
     """
     Update a taxpayer by public ID.
     
@@ -102,7 +103,7 @@ def update_taxpayer_by_public_id_router(public_id: str, body: TaxpayerUpdate, cu
 
 
 @router.delete("/delete/taxpayer/{public_id}")
-def delete_taxpayer_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_taxpayer_api)):
+def delete_taxpayer_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_delete"))):
     """
     Delete a taxpayer by public ID.
     

@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.user_project.api.schemas import UserProjectCreate, UserProjectUpdate
 from entities.user_project.business.service import UserProjectService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "user_project"])
 
 
 @router.post("/create/user_project")
-def create_user_project_router(body: UserProjectCreate, current_user: dict = Depends(get_current_user_api)):
+def create_user_project_router(body: UserProjectCreate, current_user: dict = Depends(require_module_api(Modules.PROJECTS, "can_create"))):
     """
     Create a new user project.
 
@@ -43,7 +44,7 @@ def create_user_project_router(body: UserProjectCreate, current_user: dict = Dep
 
 
 @router.get("/get/user_projects")
-def get_user_projects_router(current_user: dict = Depends(get_current_user_api)):
+def get_user_projects_router(current_user: dict = Depends(require_module_api(Modules.PROJECTS))):
     """
     Read all user projects.
     """
@@ -52,7 +53,7 @@ def get_user_projects_router(current_user: dict = Depends(get_current_user_api))
 
 
 @router.get("/get/user_projects/user/{user_id}")
-def get_user_projects_by_user_id_router(user_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_user_projects_by_user_id_router(user_id: int, current_user: dict = Depends(require_module_api(Modules.PROJECTS))):
     """
     Read all user projects by user ID.
     """
@@ -61,7 +62,7 @@ def get_user_projects_by_user_id_router(user_id: int, current_user: dict = Depen
 
 
 @router.get("/get/user_project/{public_id}")
-def get_user_project_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_user_project_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.PROJECTS))):
     """
     Read a user project by public ID.
     """
@@ -70,7 +71,7 @@ def get_user_project_by_public_id_router(public_id: str, current_user: dict = De
 
 
 @router.put("/update/user_project/{public_id}")
-def update_user_project_by_public_id_router(public_id: str, body: UserProjectUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_user_project_by_public_id_router(public_id: str, body: UserProjectUpdate, current_user: dict = Depends(require_module_api(Modules.PROJECTS, "can_update"))):
     """
     Update a user project by public ID.
 
@@ -102,7 +103,7 @@ def update_user_project_by_public_id_router(public_id: str, body: UserProjectUpd
 
 
 @router.delete("/delete/user_project/{public_id}")
-def delete_user_project_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_user_project_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.PROJECTS, "can_delete"))):
     """
     Delete a user project by public ID.
 

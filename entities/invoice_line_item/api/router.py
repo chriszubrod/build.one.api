@@ -8,7 +8,8 @@ from decimal import Decimal
 # Local Imports
 from entities.invoice_line_item.api.schemas import InvoiceLineItemCreate, InvoiceLineItemUpdate
 from entities.invoice_line_item.business.service import InvoiceLineItemService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/api/v1", tags=["api", "invoice_line_item"])
 
 
 @router.post("/create/invoice_line_item")
-def create_invoice_line_item_router(body: InvoiceLineItemCreate, current_user: dict = Depends(get_current_user_api)):
+def create_invoice_line_item_router(body: InvoiceLineItemCreate, current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_create"))):
     try:
         line_item = InvoiceLineItemService().create(
             tenant_id=current_user.get("tenant_id", 1),
@@ -40,13 +41,13 @@ def create_invoice_line_item_router(body: InvoiceLineItemCreate, current_user: d
 
 
 @router.get("/get/invoice_line_items")
-def get_invoice_line_items_router(current_user: dict = Depends(get_current_user_api)):
+def get_invoice_line_items_router(current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     items = InvoiceLineItemService().read_all()
     return [item.to_dict() for item in items]
 
 
 @router.get("/get/invoice_line_item/{public_id}")
-def get_invoice_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_invoice_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     item = InvoiceLineItemService().read_by_public_id(public_id=public_id)
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice line item not found")
@@ -54,13 +55,13 @@ def get_invoice_line_item_by_public_id_router(public_id: str, current_user: dict
 
 
 @router.get("/get/invoice_line_items/invoice/{invoice_id}")
-def get_invoice_line_items_by_invoice_id_router(invoice_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_invoice_line_items_by_invoice_id_router(invoice_id: int, current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     items = InvoiceLineItemService().read_by_invoice_id(invoice_id=invoice_id)
     return [item.to_dict() for item in items]
 
 
 @router.put("/update/invoice_line_item/{public_id}")
-def update_invoice_line_item_by_public_id_router(public_id: str, body: InvoiceLineItemUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_invoice_line_item_by_public_id_router(public_id: str, body: InvoiceLineItemUpdate, current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_update"))):
     try:
         item = InvoiceLineItemService().update_by_public_id(
             public_id=public_id,
@@ -87,7 +88,7 @@ def update_invoice_line_item_by_public_id_router(public_id: str, body: InvoiceLi
 
 
 @router.delete("/delete/invoice_line_item/{public_id}")
-def delete_invoice_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_invoice_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_delete"))):
     item = InvoiceLineItemService().delete_by_public_id(public_id=public_id)
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice line item not found")

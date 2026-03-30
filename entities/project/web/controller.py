@@ -8,7 +8,8 @@ from fastapi.templating import Jinja2Templates
 from entities.project.business.service import ProjectService
 from entities.module.business.service import ModuleService
 from entities.contact.business.service import ContactService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 from integrations.ms.sharepoint.driveitem.connector.project.business.service import DriveItemProjectConnector
 from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
 from integrations.ms.sharepoint.driveitem.connector.project_excel.business.service import DriveItemProjectExcelConnector
@@ -20,7 +21,7 @@ templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
-async def list_projects(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def list_projects(request: Request, current_user: dict = Depends(require_module_web(Modules.PROJECTS))):
     """
     List all projects.
     """
@@ -37,7 +38,7 @@ async def list_projects(request: Request, current_user: dict = Depends(get_curre
 
 
 @router.get("/create")
-async def create_project(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_project(request: Request, current_user: dict = Depends(require_module_web(Modules.PROJECTS))):
     """
     Render create project form.
     """
@@ -52,7 +53,7 @@ async def create_project(request: Request, current_user: dict = Depends(get_curr
 
 
 @router.get("/{public_id}")
-async def view_project(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_project(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.PROJECTS))):
     """
     View a project.
     """
@@ -135,7 +136,7 @@ async def view_project(request: Request, public_id: str, current_user: dict = De
 
 
 @router.get("/{public_id}/edit")
-async def edit_project(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_project(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.PROJECTS))):
     """
     Edit a project.
     """

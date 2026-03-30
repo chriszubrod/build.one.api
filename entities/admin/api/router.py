@@ -6,7 +6,8 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 # Local Imports
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from entities.admin.api.schemas import ApproveRequest, CancelRequest, RejectRequest
 from workflows.workflow.business.admin import WorkflowAdmin
 
@@ -14,7 +15,7 @@ router = APIRouter(prefix="/api/v1", tags=["api", "admin"])
 
 
 @router.get("/admin/inbox-stats")
-def get_inbox_classification_stats(current_user: dict = Depends(get_current_user_api)):
+def get_inbox_classification_stats(current_user: dict = Depends(require_module_api(Modules.ROLES))):
     """
     Get inbox classification accuracy metrics for the admin dashboard.
     """
@@ -24,7 +25,7 @@ def get_inbox_classification_stats(current_user: dict = Depends(get_current_user
 
 
 @router.get("/admin/stats")
-def get_dashboard_stats(current_user: dict = Depends(get_current_user_api)):
+def get_dashboard_stats(current_user: dict = Depends(require_module_api(Modules.ROLES))):
     """
     Get workflow statistics for dashboard.
     
@@ -39,7 +40,7 @@ def get_dashboard_stats(current_user: dict = Depends(get_current_user_api)):
 @router.get("/admin/recent-workflows")
 def get_recent_workflows(
     limit: int = Query(default=50, ge=1, le=100),
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.ROLES)),
 ):
     """
     Get recent workflows for dashboard display.
@@ -54,7 +55,7 @@ def get_recent_workflows(
 @router.get("/admin/workflows-by-state")
 def get_workflows_by_state(
     state: str = Query(..., description="Workflow state to filter by"),
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.ROLES)),
 ):
     """
     Get workflows in a specific state.
@@ -67,7 +68,7 @@ def get_workflows_by_state(
 @router.get("/admin/failed-workflows")
 def get_failed_workflows(
     limit: int = Query(default=20, ge=1, le=50),
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.ROLES)),
 ):
     """
     Get recent failed workflows for debugging.
@@ -84,7 +85,7 @@ def search_workflows(
     q: Optional[str] = Query(default=None, description="Search term - matches vendor, invoice #, or amount"),
     state: Optional[str] = Query(default=None, description="Filter by workflow state"),
     limit: int = Query(default=50, ge=1, le=100),
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.ROLES)),
 ) -> List[dict]:
     """
     Search workflows by vendor name, invoice number, or amount.
@@ -99,7 +100,7 @@ def search_workflows(
 @router.get("/workflow/{public_id}")
 def get_workflow_detail(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.ROLES)),
 ):
     """
     Get workflow with full event history.
@@ -125,7 +126,7 @@ def get_workflow_detail(
 @router.get("/notifications/poll")
 def poll_notifications(
     since: str = Query(..., description="ISO timestamp to fetch notifications after"),
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.ROLES)),
 ) -> List[dict]:
     """
     Poll for new workflow notifications.
@@ -162,7 +163,7 @@ def poll_notifications(
 @router.post("/workflow/{public_id}/retry")
 def retry_workflow(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.ROLES, "can_update")),
 ):
     """
     Retry a failed workflow.
@@ -191,7 +192,7 @@ def retry_workflow(
 def cancel_workflow(
     public_id: str,
     body: CancelRequest,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.ROLES, "can_update")),
 ):
     """
     Cancel a workflow.
@@ -223,7 +224,7 @@ def cancel_workflow(
 def approve_workflow(
     public_id: str,
     body: ApproveRequest,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.ROLES, "can_approve")),
 ):
     """
     Manually approve a workflow.
@@ -257,7 +258,7 @@ def approve_workflow(
 def reject_workflow(
     public_id: str,
     body: RejectRequest,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.ROLES, "can_update")),
 ):
     """
     Reject a workflow awaiting approval.

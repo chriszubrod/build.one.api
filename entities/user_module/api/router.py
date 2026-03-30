@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.user_module.api.schemas import UserModuleCreate, UserModuleUpdate
 from entities.user_module.business.service import UserModuleService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "user_module"])
 
 
 @router.post("/create/user_module")
-def create_user_module_router(body: UserModuleCreate, current_user: dict = Depends(get_current_user_api)):
+def create_user_module_router(body: UserModuleCreate, current_user: dict = Depends(require_module_api(Modules.ROLES, "can_create"))):
     """
     Create a new user module.
 
@@ -43,7 +44,7 @@ def create_user_module_router(body: UserModuleCreate, current_user: dict = Depen
 
 
 @router.get("/get/user_modules")
-def get_user_modules_router(current_user: dict = Depends(get_current_user_api)):
+def get_user_modules_router(current_user: dict = Depends(require_module_api(Modules.ROLES))):
     """
     Read all user modules.
     """
@@ -52,7 +53,7 @@ def get_user_modules_router(current_user: dict = Depends(get_current_user_api)):
 
 
 @router.get("/get/user_module/{public_id}")
-def get_user_module_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_user_module_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ROLES))):
     """
     Read a user module by public ID.
     """
@@ -61,7 +62,7 @@ def get_user_module_by_public_id_router(public_id: str, current_user: dict = Dep
 
 
 @router.get("/get/user_modules/user/{user_id}")
-def get_user_modules_by_user_id_router(user_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_user_modules_by_user_id_router(user_id: int, current_user: dict = Depends(require_module_api(Modules.ROLES))):
     """
     Read all user modules by user ID.
     """
@@ -70,7 +71,7 @@ def get_user_modules_by_user_id_router(user_id: int, current_user: dict = Depend
 
 
 @router.put("/update/user_module/{public_id}")
-def update_user_module_by_public_id_router(public_id: str, body: UserModuleUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_user_module_by_public_id_router(public_id: str, body: UserModuleUpdate, current_user: dict = Depends(require_module_api(Modules.ROLES, "can_update"))):
     """
     Update a user module by public ID.
 
@@ -102,7 +103,7 @@ def update_user_module_by_public_id_router(public_id: str, body: UserModuleUpdat
 
 
 @router.delete("/delete/user_module/{public_id}")
-def delete_user_module_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_user_module_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ROLES, "can_delete"))):
     """
     Delete a user module by public ID.
 

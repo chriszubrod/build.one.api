@@ -9,7 +9,8 @@ from entities.cost_code.api.schemas import (
     CostCodeCreate,
     CostCodeUpdate,
 )
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "cost-code"])
@@ -17,7 +18,7 @@ service = CostCodeService()
 
 
 @router.post("/create/cost-code")
-def create_cost_code_router(body: CostCodeCreate, current_user: dict = Depends(get_current_user_api)):
+def create_cost_code_router(body: CostCodeCreate, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_create"))):
     """
     Create a new cost code.
     
@@ -48,7 +49,7 @@ def create_cost_code_router(body: CostCodeCreate, current_user: dict = Depends(g
 
 
 @router.get("/get/cost-codes")
-def get_cost_codes_router(current_user: dict = Depends(get_current_user_api)):
+def get_cost_codes_router(current_user: dict = Depends(require_module_api(Modules.COST_CODES))):
     """
     Read all cost codes.
     """
@@ -57,7 +58,7 @@ def get_cost_codes_router(current_user: dict = Depends(get_current_user_api)):
 
 
 @router.get("/get/cost-code/{public_id}")
-def get_cost_code_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_cost_code_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.COST_CODES))):
     """
     Read a cost code by public ID.
     """
@@ -68,7 +69,7 @@ def get_cost_code_by_public_id_router(public_id: str, current_user: dict = Depen
 
 
 @router.put("/update/cost-code/{public_id}")
-def update_cost_code_by_id_router(public_id: str, body: CostCodeUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_cost_code_by_id_router(public_id: str, body: CostCodeUpdate, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_update"))):
     """
     Update a cost code by ID.
     
@@ -101,7 +102,7 @@ def update_cost_code_by_id_router(public_id: str, body: CostCodeUpdate, current_
 
 
 @router.delete("/delete/cost-code/{public_id}")
-def delete_cost_code_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_cost_code_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_delete"))):
     """
     Soft delete a cost code by ID.
     

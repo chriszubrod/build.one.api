@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 # Local Imports
 from entities.search.business.service import get_search_service
-from entities.auth.business.service import get_current_user_api as get_current_search_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from integrations.azure.ai.search_client import AzureSearchError
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ def search_documents_router(
     category: Optional[str] = Query(None, description="Filter by category"),
     content_type: Optional[str] = Query(None, description="Filter by content type"),
     top: int = Query(10, ge=1, le=50, description="Maximum results to return"),
-    current_user: dict = Depends(get_current_search_api),
+    current_user: dict = Depends(require_module_api(Modules.SEARCH)),
 ):
     """
     Search documents using keyword, semantic, or hybrid search.
@@ -79,7 +80,7 @@ def search_documents_router(
 @router.post("/search/index/{public_id}")
 def index_document_router(
     public_id: str,
-    current_user: dict = Depends(get_current_search_api),
+    current_user: dict = Depends(require_module_api(Modules.SEARCH, "can_create")),
 ):
     """
     Manually index a document in Azure AI Search.
@@ -126,7 +127,7 @@ def index_document_router(
 @router.delete("/search/index/{public_id}")
 def remove_from_index_router(
     public_id: str,
-    current_user: dict = Depends(get_current_search_api),
+    current_user: dict = Depends(require_module_api(Modules.SEARCH, "can_delete")),
 ):
     """
     Remove a document from the search index.

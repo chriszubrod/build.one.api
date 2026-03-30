@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.project.api.schemas import ProjectCreate, ProjectUpdate
 from entities.project.business.service import ProjectService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "project"])
 
 
 @router.post("/create/project")
-def create_project_router(body: ProjectCreate, current_user: dict = Depends(get_current_user_api)):
+def create_project_router(body: ProjectCreate, current_user: dict = Depends(require_module_api(Modules.PROJECTS, "can_create"))):
     """
     Create a new project.
     
@@ -48,7 +49,7 @@ def create_project_router(body: ProjectCreate, current_user: dict = Depends(get_
 
 
 @router.get("/get/projects")
-def get_projects_router(current_user: dict = Depends(get_current_user_api)):
+def get_projects_router(current_user: dict = Depends(require_module_api(Modules.PROJECTS))):
     """
     Read all projects.
     """
@@ -57,7 +58,7 @@ def get_projects_router(current_user: dict = Depends(get_current_user_api)):
 
 
 @router.get("/get/project/{public_id}")
-def get_project_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_project_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.PROJECTS))):
     """
     Read a project by public ID.
     """
@@ -66,7 +67,7 @@ def get_project_by_public_id_router(public_id: str, current_user: dict = Depends
 
 
 @router.put("/update/project/{public_id}")
-def update_project_by_public_id_router(public_id: str, body: ProjectUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_project_by_public_id_router(public_id: str, body: ProjectUpdate, current_user: dict = Depends(require_module_api(Modules.PROJECTS, "can_update"))):
     """
     Update a project by public ID.
     
@@ -103,7 +104,7 @@ def update_project_by_public_id_router(public_id: str, body: ProjectUpdate, curr
 
 
 @router.delete("/delete/project/{public_id}")
-def delete_project_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_project_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.PROJECTS, "can_delete"))):
     """
     Delete a project by public ID.
     

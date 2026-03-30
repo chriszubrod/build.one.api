@@ -14,7 +14,8 @@ from fastapi.responses import Response, StreamingResponse
 from entities.attachment.api.schemas import AttachmentCreate, AttachmentUpdate
 from entities.attachment.business.service import AttachmentService
 from entities.attachment.business.extraction_service import ExtractionService
-from entities.auth.business.service import get_current_user_api as get_current_attachment_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
 from shared.pdf_utils import compact_pdf
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -37,7 +38,7 @@ def trigger_extraction_background(attachment_id: int):
 
 
 @router.post("/create/attachment")
-def create_attachment_router(body: AttachmentCreate, current_user: dict = Depends(get_current_attachment_api)):
+def create_attachment_router(body: AttachmentCreate, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_create"))):
     """
     Create a new attachment (metadata only, upload handled separately).
     
@@ -83,7 +84,7 @@ def get_attachments_router(
     category: Optional[str] = None,
     is_archived: Optional[bool] = None,
     status: Optional[str] = None,
-    current_user: dict = Depends(get_current_attachment_api),
+    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS)),
 ):
     """
     Read all attachments with optional filters.
@@ -106,7 +107,7 @@ def get_attachments_router(
 
 
 @router.get("/get/attachment/{public_id}")
-def get_attachment_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_attachment_api)):
+def get_attachment_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     """
     Read an attachment by public ID.
     """
@@ -122,7 +123,7 @@ def get_attachment_by_public_id_router(public_id: str, current_user: dict = Depe
 
 
 @router.get("/get/attachments/by-category/{category}")
-def get_attachments_by_category_router(category: str, current_user: dict = Depends(get_current_attachment_api)):
+def get_attachments_by_category_router(category: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     """
     List attachments by category.
     """
@@ -134,7 +135,7 @@ def get_attachments_by_category_router(category: str, current_user: dict = Depen
 
 
 @router.get("/get/attachments/by-hash/{hash}")
-def get_attachment_by_hash_router(hash: str, current_user: dict = Depends(get_current_attachment_api)):
+def get_attachment_by_hash_router(hash: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     """
     Find duplicate attachments by hash.
     """
@@ -151,7 +152,7 @@ def get_attachment_by_hash_router(hash: str, current_user: dict = Depends(get_cu
 
 @router.put("/update/attachment/{public_id}")
 def update_attachment_by_public_id_router(
-    public_id: str, body: AttachmentUpdate, current_user: dict = Depends(get_current_attachment_api)
+    public_id: str, body: AttachmentUpdate, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_update"))
 ):
     """
     Update an attachment by public ID.
@@ -196,7 +197,7 @@ def update_attachment_by_public_id_router(
 
 
 @router.put("/archive/attachment/{public_id}")
-def archive_attachment_router(public_id: str, current_user: dict = Depends(get_current_attachment_api)):
+def archive_attachment_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_update"))):
     """
     Archive an attachment (soft delete).
     """
@@ -212,7 +213,7 @@ def archive_attachment_router(public_id: str, current_user: dict = Depends(get_c
 
 
 @router.put("/unarchive/attachment/{public_id}")
-def unarchive_attachment_router(public_id: str, current_user: dict = Depends(get_current_attachment_api)):
+def unarchive_attachment_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_update"))):
     """
     Unarchive an attachment.
     """
@@ -228,7 +229,7 @@ def unarchive_attachment_router(public_id: str, current_user: dict = Depends(get
 
 
 @router.delete("/delete/attachment/{public_id}")
-def delete_attachment_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_attachment_api)):
+def delete_attachment_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_delete"))):
     """
     Delete an attachment by public ID (and blob).
     """
@@ -264,7 +265,7 @@ async def upload_attachment_router(
     tags: Optional[str] = Form(None),
     status: Optional[str] = Form(None),
     expiration_date: Optional[str] = Form(None),
-    current_user: dict = Depends(get_current_attachment_api),
+    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_create")),
 ):
     """
     Upload a file to blob storage and create attachment record.
@@ -348,7 +349,7 @@ async def upload_bill_line_item_attachment_router(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     description: Optional[str] = Form(None),
-    current_user: dict = Depends(get_current_attachment_api),
+    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_create")),
 ):
     """
     Upload a bill line item attachment to Azure Blob Storage only.
@@ -423,7 +424,7 @@ async def upload_bill_line_item_attachment_router(
 
 
 @router.get("/view/attachment/{public_id}")
-def view_attachment_router(public_id: str, current_user: dict = Depends(get_current_attachment_api)):
+def view_attachment_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     """
     View a file in the browser (displays inline instead of downloading).
     """
@@ -465,7 +466,7 @@ def view_attachment_router(public_id: str, current_user: dict = Depends(get_curr
 
 
 @router.get("/download/attachment/{public_id}")
-def download_attachment_router(public_id: str, current_user: dict = Depends(get_current_attachment_api)):
+def download_attachment_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     """
     Download a file from blob storage (increments download count).
     """
@@ -515,7 +516,7 @@ def download_attachment_router(public_id: str, current_user: dict = Depends(get_
 def extract_attachment_router(
     public_id: str,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(get_current_attachment_api),
+    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS)),
 ):
     """
     Manually trigger text extraction for an attachment.
@@ -551,7 +552,7 @@ def extract_attachment_router(
 @router.get("/extraction-status/attachment/{public_id}")
 def get_extraction_status_router(
     public_id: str,
-    current_user: dict = Depends(get_current_attachment_api),
+    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS)),
 ):
     """
     Get the extraction status for an attachment.
@@ -579,7 +580,7 @@ def get_extraction_status_router(
 @router.get("/extracted-text/attachment/{public_id}")
 def get_extracted_text_router(
     public_id: str,
-    current_user: dict = Depends(get_current_attachment_api),
+    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS)),
 ):
     """
     Get the extracted text content for an attachment.
@@ -626,7 +627,7 @@ def get_extracted_text_router(
 @router.get("/extraction-result/attachment/{public_id}")
 def get_extraction_result_router(
     public_id: str,
-    current_user: dict = Depends(get_current_attachment_api),
+    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS)),
 ):
     """
     Get the full extraction result for an attachment.
@@ -687,7 +688,7 @@ def _clean_expired_pending_files():
 @router.post("/temp/pending-bill-file")
 async def upload_temp_pending_bill_file(
     file: UploadFile = File(...),
-    current_user: dict = Depends(get_current_attachment_api),
+    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_create")),
 ):
     """
     Store a file temporarily for transfer to the bill create page.
@@ -713,7 +714,7 @@ async def upload_temp_pending_bill_file(
 @router.get("/temp/pending-bill-file")
 async def get_temp_pending_bill_file(
     token: str,
-    current_user: dict = Depends(get_current_attachment_api),
+    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS)),
 ):
     """
     Retrieve a temporarily stored file by token. File is removed after retrieval.
@@ -735,7 +736,7 @@ async def get_temp_pending_bill_file(
 @router.post("/temp/pending-expense-file")
 async def upload_temp_pending_expense_file(
     file: UploadFile = File(...),
-    current_user: dict = Depends(get_current_attachment_api),
+    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_create")),
 ):
     """
     Store a file temporarily for transfer to the expense create page.
@@ -761,7 +762,7 @@ async def upload_temp_pending_expense_file(
 @router.get("/temp/pending-expense-file")
 async def get_temp_pending_expense_file(
     token: str,
-    current_user: dict = Depends(get_current_attachment_api),
+    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS)),
 ):
     """
     Retrieve a temporarily stored file by token. File is removed after retrieval.

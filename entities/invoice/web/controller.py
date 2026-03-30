@@ -16,7 +16,8 @@ from entities.project.business.service import ProjectService
 from entities.payment_term.business.service import PaymentTermService
 from entities.customer.business.service import CustomerService
 from entities.sub_cost_code.business.service import SubCostCodeService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +230,7 @@ def _enrich_line_items(line_items) -> list[dict]:
 @router.get("/list")
 async def list_invoices(
     request: Request,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.INVOICES)),
     page: int = 1,
     page_size: int = 50,
     search: Optional[str] = None,
@@ -328,7 +329,7 @@ async def list_invoices(
 
 
 @router.get("/create")
-async def create_invoice(request: Request, id: Optional[str] = None, current_user: dict = Depends(get_current_user_web)):
+async def create_invoice(request: Request, id: Optional[str] = None, current_user: dict = Depends(require_module_web(Modules.INVOICES, "can_create"))):
     projects = ProjectService().read_all()
     payment_terms = PaymentTermService().read_all()
 
@@ -366,7 +367,7 @@ async def create_invoice(request: Request, id: Optional[str] = None, current_use
 
 
 @router.get("/{public_id}")
-async def view_invoice(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_invoice(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.INVOICES))):
     invoice = InvoiceService().read_by_public_id(public_id=public_id)
     projects = ProjectService().read_all()
     payment_terms = PaymentTermService().read_all()
@@ -436,7 +437,7 @@ async def view_invoice(request: Request, public_id: str, current_user: dict = De
 
 
 @router.get("/{public_id}/edit")
-async def edit_invoice(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_invoice(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.INVOICES, "can_update"))):
     invoice = InvoiceService().read_by_public_id(public_id=public_id)
     projects = ProjectService().read_all()
     payment_terms = PaymentTermService().read_all()

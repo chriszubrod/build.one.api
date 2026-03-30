@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends
 # Local Imports
 from integrations.intuit.qbo.client.api.schemas import QboClientCreate, QboClientUpdate
 from integrations.intuit.qbo.client.business.service import QboClientService
-from entities.auth.business.service import get_current_user_api as get_current_qbo_client_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-client"])
 service = QboClientService()
 
 
 @router.post("/create/qbo-client")
-def create_qbo_client_router(body: QboClientCreate, current_user: dict = Depends(get_current_qbo_client_api)):
+def create_qbo_client_router(body: QboClientCreate, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Create a new QBO client.
     """
@@ -26,7 +27,7 @@ def create_qbo_client_router(body: QboClientCreate, current_user: dict = Depends
 
 
 @router.get("/get/qbo-clients")
-def get_qbo_clients_router(current_user: dict = Depends(get_current_qbo_client_api)):
+def get_qbo_clients_router(current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO clients.
     """
@@ -35,7 +36,7 @@ def get_qbo_clients_router(current_user: dict = Depends(get_current_qbo_client_a
 
 
 @router.get("/get/qbo-client/{app}")
-def get_qbo_client_by_app_router(app: str, current_user: dict = Depends(get_current_qbo_client_api)):
+def get_qbo_client_by_app_router(app: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO client by app.
     """
@@ -44,7 +45,7 @@ def get_qbo_client_by_app_router(app: str, current_user: dict = Depends(get_curr
 
 
 @router.put("/update/qbo-client/{app}")
-def update_qbo_client_by_app_router(app: str, body: QboClientUpdate, current_user: dict = Depends(get_current_qbo_client_api)):
+def update_qbo_client_by_app_router(app: str, body: QboClientUpdate, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_update"))):
     """
     Update a QBO client by app.
     """
@@ -53,7 +54,7 @@ def update_qbo_client_by_app_router(app: str, body: QboClientUpdate, current_use
 
 
 @router.delete("/delete/qbo-client/{app}")
-def delete_qbo_client_by_app_router(app: str, current_user: dict = Depends(get_current_qbo_client_api)):
+def delete_qbo_client_by_app_router(app: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))):
     """
     Delete a QBO client by app.
     """

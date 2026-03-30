@@ -8,14 +8,15 @@ from fastapi.templating import Jinja2Templates
 from entities.user_project.business.service import UserProjectService
 from entities.user.business.service import UserService
 from entities.project.business.service import ProjectService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/user_project", tags=["web", "user_project"])
 templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
-async def list_user_projects(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def list_user_projects(request: Request, current_user: dict = Depends(require_module_web(Modules.PROJECTS))):
     """
     List all user projects.
     """
@@ -38,7 +39,7 @@ async def list_user_projects(request: Request, current_user: dict = Depends(get_
 
 
 @router.get("/create")
-async def create_user_project(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_user_project(request: Request, current_user: dict = Depends(require_module_web(Modules.PROJECTS, "can_create"))):
     """
     Render create user project form.
     """
@@ -57,7 +58,7 @@ async def create_user_project(request: Request, current_user: dict = Depends(get
 
 
 @router.get("/{public_id}")
-async def view_user_project(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_user_project(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.PROJECTS))):
     """
     View a user project.
     """
@@ -80,7 +81,7 @@ async def view_user_project(request: Request, public_id: str, current_user: dict
 
 
 @router.get("/{public_id}/edit")
-async def edit_user_project(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_user_project(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.PROJECTS, "can_update"))):
     """
     Edit a user project.
     """

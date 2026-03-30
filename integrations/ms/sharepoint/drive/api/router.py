@@ -13,7 +13,8 @@ from integrations.ms.sharepoint.drive.api.schemas import (
 from integrations.ms.sharepoint.drive.business.service import MsDriveService
 from integrations.ms.sharepoint.drive.connector.company.business.service import DriveCompanyConnector
 from integrations.ms.sharepoint.external.client import get_my_drive
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ router = APIRouter(prefix="/api/v1/ms/sharepoint/drive", tags=["api", "ms-sharep
 
 @router.get("/me")
 def get_my_drive_router(
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get the current user's OneDrive.
@@ -36,7 +37,7 @@ def get_my_drive_router(
 @router.get("/site/{site_public_id}/available")
 def list_available_drives_router(
     site_public_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     List available drives from MS Graph for a linked site.
@@ -57,7 +58,7 @@ def list_available_drives_router(
 @router.post("")
 def link_drive_router(
     body: DriveLinkRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Link a drive by fetching from MS Graph and storing locally.
@@ -79,7 +80,7 @@ def link_drive_router(
 
 @router.get("")
 def list_linked_drives_router(
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     List all linked drives.
@@ -96,7 +97,7 @@ def list_linked_drives_router(
 @router.get("/site/{site_public_id}")
 def list_linked_drives_for_site_router(
     site_public_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     List linked drives for a specific site.
@@ -116,7 +117,7 @@ def list_linked_drives_for_site_router(
 @router.get("/{public_id}")
 def get_linked_drive_router(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get a linked drive by public ID.
@@ -141,7 +142,7 @@ def get_linked_drive_router(
 def update_linked_drive_router(
     public_id: str,
     body: DriveUpdateRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_update"))
 ):
     """
     Update a linked drive's name.
@@ -164,7 +165,7 @@ def update_linked_drive_router(
 @router.delete("/{public_id}")
 def unlink_drive_router(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))
 ):
     """
     Unlink a drive by removing it from the database.
@@ -184,7 +185,7 @@ def unlink_drive_router(
 @router.post("/{public_id}/refresh")
 def refresh_linked_drive_router(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Refresh a linked drive by fetching latest data from MS Graph.
@@ -209,7 +210,7 @@ def refresh_linked_drive_router(
 @router.post("/connector/company")
 def link_drive_to_company_router(
     body: DriveCompanyLinkRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Link a Drive (OneDrive or SharePoint) to a Company.
@@ -237,7 +238,7 @@ def link_drive_to_company_router(
 @router.get("/connector/company/{company_id}")
 def get_drive_for_company_router(
     company_id: int,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get the linked Drive for a Company.
@@ -262,7 +263,7 @@ def get_drive_for_company_router(
 @router.delete("/connector/company/{company_id}")
 def unlink_drive_from_company_router(
     company_id: int,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))
 ):
     """
     Unlink the Drive from a Company.

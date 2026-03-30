@@ -8,7 +8,8 @@ from fastapi.templating import Jinja2Templates
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.sub_cost_code.business.alias_service import SubCostCodeAliasService
 from entities.cost_code.business.service import CostCodeService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
 from integrations.intuit.qbo.item.business.service import QboItemService
 
@@ -17,7 +18,7 @@ templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
-async def list_sub_cost_codes(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def list_sub_cost_codes(request: Request, current_user: dict = Depends(require_module_web(Modules.COST_CODES))):
     """
     Get all sub cost codes.
     """
@@ -34,7 +35,7 @@ async def list_sub_cost_codes(request: Request, current_user: dict = Depends(get
 
 
 @router.get("/create")
-async def create_sub_cost_code(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_sub_cost_code(request: Request, current_user: dict = Depends(require_module_web(Modules.COST_CODES))):
     """
     Create a sub cost code.
     """
@@ -51,7 +52,7 @@ async def create_sub_cost_code(request: Request, current_user: dict = Depends(ge
 
 
 @router.get("/{public_id}")
-async def view_sub_cost_code(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_sub_cost_code(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.COST_CODES))):
     """
     View a sub cost code.
     """
@@ -80,7 +81,7 @@ async def view_sub_cost_code(request: Request, public_id: str, current_user: dic
 
 
 @router.get("/{public_id}/edit")
-async def edit_sub_cost_code(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_sub_cost_code(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.COST_CODES))):
     """
     Edit a sub cost code.
     """

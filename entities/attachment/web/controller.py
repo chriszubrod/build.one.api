@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import RedirectResponse, StreamingResponse
 
 # Local Imports
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 from entities.attachment.business.service import AttachmentService
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
 
@@ -17,7 +18,7 @@ router = APIRouter(prefix="/attachment", tags=["web", "attachment"])
 
 
 @router.get("/view/{public_id}")
-def view_attachment(public_id: str, current_user: dict = Depends(get_current_user_web)):
+def view_attachment(public_id: str, current_user: dict = Depends(require_module_web(Modules.ATTACHMENTS))):
     """
     View an attachment file in the browser (uses session auth).
     """
@@ -61,7 +62,7 @@ def view_attachment(public_id: str, current_user: dict = Depends(get_current_use
 
 
 @router.get("/download/{public_id}")
-def download_attachment(public_id: str, current_user: dict = Depends(get_current_user_web)):
+def download_attachment(public_id: str, current_user: dict = Depends(require_module_web(Modules.ATTACHMENTS))):
     """
     Download an attachment file (uses session auth).
     """

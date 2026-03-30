@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.role.api.schemas import RoleCreate, RoleUpdate
 from entities.role.business.service import RoleService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "role"])
 
 
 @router.post("/create/role")
-def create_role_router(body: RoleCreate, current_user: dict = Depends(get_current_user_api)):
+def create_role_router(body: RoleCreate, current_user: dict = Depends(require_module_api(Modules.ROLES, "can_create"))):
     """
     Create a new role.
 
@@ -42,7 +43,7 @@ def create_role_router(body: RoleCreate, current_user: dict = Depends(get_curren
 
 
 @router.get("/get/roles")
-def get_roles_router(current_user: dict = Depends(get_current_user_api)):
+def get_roles_router(current_user: dict = Depends(require_module_api(Modules.ROLES))):
     """
     Read all roles.
     """
@@ -51,7 +52,7 @@ def get_roles_router(current_user: dict = Depends(get_current_user_api)):
 
 
 @router.get("/get/role/{public_id}")
-def get_role_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_role_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ROLES))):
     """
     Read a role by public ID.
     """
@@ -60,7 +61,7 @@ def get_role_by_public_id_router(public_id: str, current_user: dict = Depends(ge
 
 
 @router.put("/update/role/{public_id}")
-def update_role_by_public_id_router(public_id: str, body: RoleUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_role_by_public_id_router(public_id: str, body: RoleUpdate, current_user: dict = Depends(require_module_api(Modules.ROLES, "can_update"))):
     """
     Update a role by public ID.
 
@@ -91,7 +92,7 @@ def update_role_by_public_id_router(public_id: str, body: RoleUpdate, current_us
 
 
 @router.delete("/delete/role/{public_id}")
-def delete_role_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_role_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ROLES, "can_delete"))):
     """
     Delete a role by public ID.
 

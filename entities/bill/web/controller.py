@@ -17,7 +17,8 @@ from entities.attachment.business.service import AttachmentService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
 from entities.payment_term.business.service import PaymentTermService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 from entities.inbox.persistence.repo import InboxRecordRepository
 from entities.bill.persistence.repo import BillRepository
 
@@ -56,7 +57,7 @@ def _date_to_mm_dd_yyyy(val: Optional[str]) -> str:
 @router.get("/list")
 async def list_bills(
     request: Request,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.BILLS)),
     page: int = 1,
     page_size: int = 50,
     search: Optional[str] = None,
@@ -417,7 +418,7 @@ def _get_workflow_for_bill(bill_public_id: str) -> Optional[dict]:
 
 
 @router.get("/create")
-async def create_bill(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_bill(request: Request, current_user: dict = Depends(require_module_web(Modules.BILLS, "can_create"))):
     """
     Render create bill form.
     """
@@ -440,7 +441,7 @@ async def create_bill(request: Request, current_user: dict = Depends(get_current
 
 
 @router.get("/{public_id}")
-async def view_bill(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_bill(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.BILLS))):
     """
     View a bill.
     """
@@ -746,7 +747,7 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
 
 
 @router.get("/{public_id}/edit")
-async def edit_bill(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_bill(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.BILLS, "can_update"))):
     """
     Edit a bill.
     """

@@ -6,14 +6,15 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from entities.address_type.business.service import AddressTypeService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/address_type", tags=["web", "address_type"])
 templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
-async def list_address_types(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def list_address_types(request: Request, current_user: dict = Depends(require_module_web(Modules.VENDORS))):
     """
     List all address types.
     """
@@ -30,7 +31,7 @@ async def list_address_types(request: Request, current_user: dict = Depends(get_
 
 
 @router.get("/create")
-async def create_address_type(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_address_type(request: Request, current_user: dict = Depends(require_module_web(Modules.VENDORS, "can_create"))):
     """
     Render create address type form.
     """
@@ -45,7 +46,7 @@ async def create_address_type(request: Request, current_user: dict = Depends(get
 
 
 @router.get("/{public_id}")
-async def view_address_type(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_address_type(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.VENDORS))):
     """
     View an address type.
     """
@@ -62,7 +63,7 @@ async def view_address_type(request: Request, public_id: str, current_user: dict
 
 
 @router.get("/{public_id}/edit")
-async def edit_address_type(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_address_type(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.VENDORS, "can_update"))):
     """
     Edit an address type.
     """

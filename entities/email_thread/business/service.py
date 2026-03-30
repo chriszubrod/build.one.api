@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 import uuid
 from typing import Optional
@@ -48,6 +49,7 @@ class EmailThreadService:
         new_classification_type: str,
         notes:                   Optional[str] = None,
         user_id:                 Optional[int] = None,
+        row_version:             Optional[str] = None,
     ) -> EmailThread:
         """
         Correct a misclassified EmailThread.
@@ -101,6 +103,9 @@ class EmailThreadService:
             notes=           correction_note,
         )
 
+        # Decode row_version for optimistic concurrency
+        row_version_bytes = base64.b64decode(row_version) if row_version else None
+
         # Update the thread
         action_required = requires_action(
             new_classification_type,
@@ -121,6 +126,7 @@ class EmailThreadService:
             owner_user_id=   thread.owner_user_id,
             is_resolved=     False,
             requires_action= action_required,
+            row_version=     row_version_bytes,
         )
 
         logger.info(

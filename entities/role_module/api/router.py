@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.role_module.api.schemas import RoleModuleCreate, RoleModuleUpdate
 from entities.role_module.business.service import RoleModuleService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import invalidate_all_caches, require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "role_module"])
 
 
 @router.post("/create/role_module")
-def create_role_module_router(body: RoleModuleCreate, current_user: dict = Depends(get_current_user_api)):
+def create_role_module_router(body: RoleModuleCreate, current_user: dict = Depends(require_module_api(Modules.ROLES, "can_create"))):
     """
     Create a new role module.
     
@@ -39,18 +40,19 @@ def create_role_module_router(body: RoleModuleCreate, current_user: dict = Depen
     )
     
     result = ProcessEngine().execute_synchronous(context)
-    
+
     if not result.get("success"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=result.get("error", "Failed to create role module")
         )
-    
+
+    invalidate_all_caches()
     return result.get("data")
 
 
 @router.get("/get/role_modules")
-def get_role_modules_router(current_user: dict = Depends(get_current_user_api)):
+def get_role_modules_router(current_user: dict = Depends(require_module_api(Modules.ROLES))):
     """
     Read all role modules.
     """
@@ -59,7 +61,7 @@ def get_role_modules_router(current_user: dict = Depends(get_current_user_api)):
 
 
 @router.get("/get/role_module/{public_id}")
-def get_role_module_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_role_module_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ROLES))):
     """
     Read a role module by public ID.
     """
@@ -68,7 +70,7 @@ def get_role_module_by_public_id_router(public_id: str, current_user: dict = Dep
 
 
 @router.put("/update/role_module/{public_id}")
-def update_role_module_by_public_id_router(public_id: str, body: RoleModuleUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_role_module_by_public_id_router(public_id: str, body: RoleModuleUpdate, current_user: dict = Depends(require_module_api(Modules.ROLES, "can_update"))):
     """
     Update a role module by public ID.
     
@@ -96,18 +98,19 @@ def update_role_module_by_public_id_router(public_id: str, body: RoleModuleUpdat
     )
     
     result = ProcessEngine().execute_synchronous(context)
-    
+
     if not result.get("success"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=result.get("error", "Failed to update role module")
         )
-    
+
+    invalidate_all_caches()
     return result.get("data")
 
 
 @router.delete("/delete/role_module/{public_id}")
-def delete_role_module_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_role_module_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ROLES, "can_delete"))):
     """
     Delete a role module by public ID.
     
@@ -125,11 +128,12 @@ def delete_role_module_by_public_id_router(public_id: str, current_user: dict = 
     )
     
     result = ProcessEngine().execute_synchronous(context)
-    
+
     if not result.get("success"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=result.get("error", "Failed to delete role module")
         )
-    
+
+    invalidate_all_caches()
     return result.get("data")

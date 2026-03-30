@@ -8,7 +8,8 @@ from pydantic import BaseModel
 
 # Local Imports
 from entities.qa.business.service import get_qa_service
-from entities.auth.business.service import get_current_user_api as get_current_qa_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from integrations.azure.ai.openai_client import AzureOpenAIError
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ class QuestionResponse(BaseModel):
 @router.post("/qa/ask", response_model=QuestionResponse)
 def ask_question_router(
     body: QuestionRequest,
-    current_user: dict = Depends(get_current_qa_api),
+    current_user: dict = Depends(require_module_api(Modules.SEARCH)),
 ):
     """
     Ask a natural language question about your documents.
@@ -79,7 +80,7 @@ def ask_question_get_router(
     category: Optional[str] = Query(None, description="Filter by document category"),
     max_documents: int = Query(5, ge=1, le=10, description="Maximum documents to search"),
     search_mode: str = Query("hybrid", description="Search mode: keyword, semantic, or hybrid"),
-    current_user: dict = Depends(get_current_qa_api),
+    current_user: dict = Depends(require_module_api(Modules.SEARCH)),
 ):
     """
     Ask a question using GET request (for easy testing).
@@ -113,7 +114,7 @@ def ask_question_get_router(
 @router.post("/qa/analyze")
 def analyze_question_router(
     body: QuestionRequest,
-    current_user: dict = Depends(get_current_qa_api),
+    current_user: dict = Depends(require_module_api(Modules.SEARCH)),
 ):
     """
     Analyze a question to understand intent and entities.

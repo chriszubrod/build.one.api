@@ -29,7 +29,8 @@ from core.ai.agents.vendor_agent.graph.agent import (
 )
 from entities.vendor.business.service import VendorService
 from entities.vendor_type.business.service import VendorTypeService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ def conversation_to_response(msg) -> ConversationMessageResponse:
 )
 async def get_agent_context(
     vendor_public_id: str,
-    current_user: Annotated[dict, Depends(get_current_user_api)],
+    current_user: Annotated[dict, Depends(require_module_api(Modules.VENDORS))],
 ):
     """
     Get the agent context for a vendor.
@@ -165,7 +166,7 @@ async def get_agent_context(
 async def chat_with_agent(
     vendor_public_id: str,
     request: ChatMessageRequest,
-    current_user: Annotated[dict, Depends(get_current_user_api)],
+    current_user: Annotated[dict, Depends(require_module_api(Modules.VENDORS, "can_update"))],
 ):
     """
     Send a message to the VendorAgent for a specific vendor.
@@ -219,7 +220,7 @@ async def approve_proposal(
     vendor_public_id: str,
     proposal_public_id: str,
     request: ApproveProposalRequest,
-    current_user: Annotated[dict, Depends(get_current_user_api)],
+    current_user: Annotated[dict, Depends(require_module_api(Modules.VENDORS, "can_update"))],
 ):
     """
     Approve a pending proposal.
@@ -268,7 +269,7 @@ async def reject_proposal(
     vendor_public_id: str,
     proposal_public_id: str,
     request: RejectProposalRequest,
-    current_user: Annotated[dict, Depends(get_current_user_api)],
+    current_user: Annotated[dict, Depends(require_module_api(Modules.VENDORS, "can_update"))],
 ):
     """
     Reject a pending proposal.
@@ -319,7 +320,7 @@ async def apply_proposal(
     vendor_public_id: str,
     proposal_public_id: str,
     request: ApplyProposalRequest,
-    current_user: Annotated[dict, Depends(get_current_user_api)],
+    current_user: Annotated[dict, Depends(require_module_api(Modules.VENDORS, "can_update"))],
 ):
     """
     Apply an approved proposal to update the vendor.
@@ -383,7 +384,7 @@ async def apply_proposal(
 )
 async def run_batch(
     request: RunBatchClassificationRequest,
-    current_user: Annotated[dict, Depends(get_current_user_api)],
+    current_user: Annotated[dict, Depends(require_module_api(Modules.VENDORS, "can_update"))],
 ):
     """
     Run batch vendor classification.
@@ -420,7 +421,7 @@ async def run_batch(
 )
 async def clear_conversation(
     vendor_public_id: str,
-    current_user: Annotated[dict, Depends(get_current_user_api)],
+    current_user: Annotated[dict, Depends(require_module_api(Modules.VENDORS, "can_delete"))],
 ):
     """
     Clear the conversation history for a vendor.

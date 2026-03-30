@@ -13,7 +13,8 @@ from entities.bill.business.service import BillService
 from entities.bill_line_item.business.service import BillLineItemService
 from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
 from entities.attachment.business.service import AttachmentService
-from entities.auth.business.service import get_current_user_api as get_current_qbo_bill_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ service = QboBillService()
 
 
 @router.post("/sync/qbo-bills")
-def sync_qbo_bills_router(body: QboBillSync, current_user: dict = Depends(get_current_qbo_bill_api)):
+def sync_qbo_bills_router(body: QboBillSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync Bills from QBO.
     """
@@ -35,7 +36,7 @@ def sync_qbo_bills_router(body: QboBillSync, current_user: dict = Depends(get_cu
 
 
 @router.get("/get/qbo-bills/realm/{realm_id}")
-def get_qbo_bills_by_realm_id_router(realm_id: str, current_user: dict = Depends(get_current_qbo_bill_api)):
+def get_qbo_bills_by_realm_id_router(realm_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO bills by realm ID.
     """
@@ -44,7 +45,7 @@ def get_qbo_bills_by_realm_id_router(realm_id: str, current_user: dict = Depends
 
 
 @router.get("/get/qbo-bill/qbo-id/{qbo_id}")
-def get_qbo_bill_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(get_current_qbo_bill_api)):
+def get_qbo_bill_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO bill by QBO ID.
     """
@@ -53,7 +54,7 @@ def get_qbo_bill_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(get_
 
 
 @router.get("/get/qbo-bills")
-def get_qbo_bills_router(current_user: dict = Depends(get_current_qbo_bill_api)):
+def get_qbo_bills_router(current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO bills.
     """
@@ -62,7 +63,7 @@ def get_qbo_bills_router(current_user: dict = Depends(get_current_qbo_bill_api))
 
 
 @router.get("/get/qbo-bill/{id}")
-def get_qbo_bill_by_id_router(id: int, current_user: dict = Depends(get_current_qbo_bill_api)):
+def get_qbo_bill_by_id_router(id: int, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO bill by ID.
     """
@@ -71,7 +72,7 @@ def get_qbo_bill_by_id_router(id: int, current_user: dict = Depends(get_current_
 
 
 @router.get("/get/qbo-bill/{id}/lines")
-def get_qbo_bill_lines_router(id: int, current_user: dict = Depends(get_current_qbo_bill_api)):
+def get_qbo_bill_lines_router(id: int, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO bill lines for a bill.
     """
@@ -83,7 +84,7 @@ def get_qbo_bill_lines_router(id: int, current_user: dict = Depends(get_current_
 def sync_bill_to_qbo_router(
     bill_public_id: str,
     body: QboBillPush,
-    current_user: dict = Depends(get_current_qbo_bill_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Push a single local Bill to QuickBooks Online.

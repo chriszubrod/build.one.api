@@ -6,7 +6,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.workflow.api.process_engine import EventType, Channel, ProcessEngine, get_process_engine
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from entities.email_thread.api.schemas import (
     EmailThreadCorrectClassification,
     EmailThreadResponse,
@@ -24,7 +25,7 @@ router   = APIRouter(prefix="/api/v1", tags=["api", "email-thread"])
 @router.get("/get/email-thread/{public_id}")
 async def get_email_thread(
     public_id:    str,
-    current_user=Depends(get_current_user_api),
+    current_user=Depends(require_module_api(Modules.EMAIL_THREADS)),
 ):
     """Read a single EmailThread by public ID."""
     service = EmailThreadService()
@@ -37,7 +38,7 @@ async def get_email_thread(
 @router.get("/get/email-threads/requiring-action")
 async def get_email_threads_requiring_action(
     owner_user_id: Optional[int] = None,
-    current_user=Depends(get_current_user_api),
+    current_user=Depends(require_module_api(Modules.EMAIL_THREADS)),
 ):
     """
     Return all open EmailThreads requiring owner action.
@@ -57,7 +58,7 @@ async def get_email_threads_requiring_action(
 async def correct_email_thread_classification(
     public_id: str,
     body:      EmailThreadCorrectClassification,
-    current_user=Depends(get_current_user_api),
+    current_user=Depends(require_module_api(Modules.EMAIL_THREADS, "can_update")),
 ):
     """
     Correct the classification of a misclassified EmailThread.
@@ -78,6 +79,7 @@ async def correct_email_thread_classification(
             new_classification_type= body.new_classification_type,
             notes=                   body.notes,
             user_id=                 getattr(current_user, "id", None),
+            row_version=             body.row_version,
         )
         return thread.to_dict()
 

@@ -6,7 +6,8 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from entities.organization.business.service import OrganizationService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/organization", tags=["web", "organization"])
 templates = Jinja2Templates(directory="templates")
@@ -15,7 +16,7 @@ templates = Jinja2Templates(directory="templates")
 @router.get("/list")
 async def list_organizations(
     request: Request,
-    current_user: dict = Depends(get_current_user_web)
+    current_user: dict = Depends(require_module_web(Modules.ORGANIZATIONS))
     ):
     """
     List all organizations.
@@ -35,7 +36,7 @@ async def list_organizations(
 @router.get("/create")
 async def create_organization(
     request: Request,
-    current_user: dict = Depends(get_current_user_web)
+    current_user: dict = Depends(require_module_web(Modules.ORGANIZATIONS, "can_create"))
     ):
     """
     Render create organization form.
@@ -54,7 +55,7 @@ async def create_organization(
 async def view_organization(
     request: Request,
     public_id: str,
-    current_user: dict = Depends(get_current_user_web)
+    current_user: dict = Depends(require_module_web(Modules.ORGANIZATIONS))
     ):
     """
     View a organization.
@@ -75,7 +76,7 @@ async def view_organization(
 async def edit_organization(
     request: Request,
     public_id: str,
-    current_user: dict = Depends(get_current_user_web)
+    current_user: dict = Depends(require_module_web(Modules.ORGANIZATIONS, "can_update"))
     ):
     """
     Edit a organization.

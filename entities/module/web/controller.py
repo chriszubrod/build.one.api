@@ -6,14 +6,15 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from entities.module.business.service import ModuleService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/module", tags=["web", "module"])
 templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
-async def list_modules(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def list_modules(request: Request, current_user: dict = Depends(require_module_web(Modules.ROLES))):
     """
     List all modules.
     """
@@ -30,7 +31,7 @@ async def list_modules(request: Request, current_user: dict = Depends(get_curren
 
 
 @router.get("/create")
-async def create_module(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_module(request: Request, current_user: dict = Depends(require_module_web(Modules.ROLES, "can_create"))):
     """
     Render create module form.
     """
@@ -45,7 +46,7 @@ async def create_module(request: Request, current_user: dict = Depends(get_curre
 
 
 @router.get("/{public_id}")
-async def view_module(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_module(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.ROLES))):
     """
     View a module.
     """
@@ -62,7 +63,7 @@ async def view_module(request: Request, public_id: str, current_user: dict = Dep
 
 
 @router.get("/{public_id}/edit")
-async def edit_module(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_module(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.ROLES, "can_update"))):
     """
     Edit a module.
     """

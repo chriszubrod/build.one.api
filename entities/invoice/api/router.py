@@ -11,7 +11,8 @@ from decimal import Decimal
 # Local Imports
 from entities.invoice.api.schemas import InvoiceCreate, InvoiceUpdate
 from entities.invoice.business.service import InvoiceService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +302,7 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
 
 
 @router.post("/create/invoice")
-def create_invoice_router(body: InvoiceCreate, current_user: dict = Depends(get_current_user_api)):
+def create_invoice_router(body: InvoiceCreate, current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_create"))):
     try:
         invoice = InvoiceService().create(
             tenant_id=current_user.get("tenant_id", 1),
@@ -320,7 +321,7 @@ def create_invoice_router(body: InvoiceCreate, current_user: dict = Depends(get_
 
 
 @router.get("/get/invoices")
-def get_invoices_router(current_user: dict = Depends(get_current_user_api)):
+def get_invoices_router(current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     invoices = InvoiceService().read_all()
     return [inv.to_dict() for inv in invoices]
 
@@ -329,7 +330,7 @@ def get_invoices_router(current_user: dict = Depends(get_current_user_api)):
 def get_billable_items_router(
     project_public_id: str,
     invoice_public_id: str = None,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.INVOICES)),
 ):
     try:
         items = InvoiceService().get_billable_items_for_project(
@@ -342,7 +343,7 @@ def get_billable_items_router(
 
 
 @router.get("/get/invoice/next-number/{project_public_id}")
-def get_next_invoice_number_router(project_public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_next_invoice_number_router(project_public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     try:
         next_number = InvoiceService().get_next_invoice_number(project_public_id=project_public_id)
         return {"next_invoice_number": next_number}
@@ -351,7 +352,7 @@ def get_next_invoice_number_router(project_public_id: str, current_user: dict = 
 
 
 @router.post("/generate/invoice/{public_id}/packet")
-def generate_invoice_packet_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def generate_invoice_packet_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     """
     Merge all line-item PDF attachments into a single PDF packet,
     store it as an Attachment, and link it via InvoiceAttachment.
@@ -584,7 +585,7 @@ def _generate_invoice_packet(public_id: str):
 
 
 @router.get("/get/invoice/{public_id}/reconcile")
-def reconcile_invoice_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def reconcile_invoice_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     """
     Compare invoice line items against the project's Budget Tracker worksheet.
 
@@ -847,7 +848,7 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(get_cu
 
 
 @router.get("/get/invoice/{public_id}")
-def get_invoice_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_invoice_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     invoice = InvoiceService().read_by_public_id(public_id=public_id)
     if not invoice:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
@@ -855,7 +856,7 @@ def get_invoice_by_public_id_router(public_id: str, current_user: dict = Depends
 
 
 @router.put("/update/invoice/{public_id}")
-def update_invoice_by_public_id_router(public_id: str, body: InvoiceUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_invoice_by_public_id_router(public_id: str, body: InvoiceUpdate, current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_update"))):
     try:
         invoice = InvoiceService().update_by_public_id(
             public_id=public_id,
@@ -877,7 +878,7 @@ def update_invoice_by_public_id_router(public_id: str, body: InvoiceUpdate, curr
 
 
 @router.delete("/delete/invoice/{public_id}")
-def delete_invoice_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_invoice_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_delete"))):
     try:
         invoice = InvoiceService().delete_by_public_id(public_id=public_id)
         if not invoice:
@@ -891,7 +892,7 @@ def delete_invoice_by_public_id_router(public_id: str, current_user: dict = Depe
 
 
 @router.post("/complete/invoice/{public_id}")
-def complete_invoice_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def complete_invoice_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_complete"))):
     service = InvoiceService()
     invoice = service.read_by_public_id(public_id=public_id)
     if not invoice:
@@ -901,7 +902,7 @@ def complete_invoice_router(public_id: str, current_user: dict = Depends(get_cur
 
 
 @router.post("/sync/invoice/{public_id}/sharepoint")
-def sync_invoice_sharepoint_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def sync_invoice_sharepoint_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_complete"))):
     """
     Re-run the SharePoint upload step for a completed invoice.
     Useful when the Invoices module folder was not configured at completion time.
@@ -924,7 +925,7 @@ def sync_invoice_sharepoint_router(public_id: str, current_user: dict = Depends(
 
 
 @router.post("/sync/invoice/{public_id}/qbo")
-def sync_invoice_to_qbo_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def sync_invoice_to_qbo_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_complete"))):
     """
     Invoice QBO sync is disabled. Invoices are created manually in QBO.
     """

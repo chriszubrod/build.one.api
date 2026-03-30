@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends
 # Local Imports
 from integrations.intuit.qbo.item.api.schemas import QboItemSync
 from integrations.intuit.qbo.item.business.service import QboItemService
-from entities.auth.business.service import get_current_user_api as get_current_qbo_item_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-item"])
 service = QboItemService()
 
 
 @router.post("/sync/qbo-items")
-def sync_qbo_items_router(body: QboItemSync, current_user: dict = Depends(get_current_qbo_item_api)):
+def sync_qbo_items_router(body: QboItemSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync Items from QBO.
     """
@@ -26,7 +27,7 @@ def sync_qbo_items_router(body: QboItemSync, current_user: dict = Depends(get_cu
 
 
 @router.get("/get/qbo-items")
-def get_qbo_items_router(current_user: dict = Depends(get_current_qbo_item_api)):
+def get_qbo_items_router(current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO items.
     """
@@ -35,7 +36,7 @@ def get_qbo_items_router(current_user: dict = Depends(get_current_qbo_item_api))
 
 
 @router.get("/get/qbo-items/realm/{realm_id}")
-def get_qbo_items_by_realm_id_router(realm_id: str, current_user: dict = Depends(get_current_qbo_item_api)):
+def get_qbo_items_by_realm_id_router(realm_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO items by realm ID.
     """
@@ -44,7 +45,7 @@ def get_qbo_items_by_realm_id_router(realm_id: str, current_user: dict = Depends
 
 
 @router.get("/get/qbo-item/{qbo_id}")
-def get_qbo_item_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(get_current_qbo_item_api)):
+def get_qbo_item_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO item by QBO ID.
     """

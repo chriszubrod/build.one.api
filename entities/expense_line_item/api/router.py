@@ -7,14 +7,15 @@ from decimal import Decimal
 # Local Imports
 from entities.expense_line_item.api.schemas import ExpenseLineItemCreate, ExpenseLineItemUpdate
 from entities.expense_line_item.business.service import ExpenseLineItemService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "expense_line_item"])
 
 
 @router.post("/create/expense_line_item")
-def create_expense_line_item_router(body: ExpenseLineItemCreate, current_user: dict = Depends(get_current_user_api)):
+def create_expense_line_item_router(body: ExpenseLineItemCreate, current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_create"))):
     """
     Create a new expense line item.
     
@@ -54,7 +55,7 @@ def create_expense_line_item_router(body: ExpenseLineItemCreate, current_user: d
 
 
 @router.get("/get/expense_line_items")
-def get_expense_line_items_router(current_user: dict = Depends(get_current_user_api)):
+def get_expense_line_items_router(current_user: dict = Depends(require_module_api(Modules.EXPENSES))):
     """
     Read all expense line items.
     """
@@ -63,7 +64,7 @@ def get_expense_line_items_router(current_user: dict = Depends(get_current_user_
 
 
 @router.get("/get/expense_line_item/{public_id}")
-def get_expense_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_expense_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES))):
     """
     Read an expense line item by public ID.
     """
@@ -72,7 +73,7 @@ def get_expense_line_item_by_public_id_router(public_id: str, current_user: dict
 
 
 @router.get("/get/expense_line_items/expense/{expense_id}")
-def get_expense_line_items_by_expense_id_router(expense_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_expense_line_items_by_expense_id_router(expense_id: int, current_user: dict = Depends(require_module_api(Modules.EXPENSES))):
     """
     Read all expense line items for a specific expense.
     """
@@ -81,7 +82,7 @@ def get_expense_line_items_by_expense_id_router(expense_id: int, current_user: d
 
 
 @router.put("/update/expense_line_item/{public_id}")
-def update_expense_line_item_by_public_id_router(public_id: str, body: ExpenseLineItemUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_expense_line_item_by_public_id_router(public_id: str, body: ExpenseLineItemUpdate, current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_update"))):
     """
     Update an expense line item by public ID.
     
@@ -123,7 +124,7 @@ def update_expense_line_item_by_public_id_router(public_id: str, body: ExpenseLi
 
 
 @router.delete("/delete/expense_line_item/{public_id}")
-def delete_expense_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_expense_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_delete"))):
     """
     Delete an expense line item by public ID.
     

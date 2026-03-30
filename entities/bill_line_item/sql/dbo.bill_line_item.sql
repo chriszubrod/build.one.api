@@ -343,6 +343,41 @@ GO
 
 
 
+CREATE OR ALTER PROCEDURE ReadBillLineItemsByProjectId
+(
+    @ProjectId BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [BillId],
+        [SubCostCodeId],
+        [ProjectId],
+        [Description],
+        [Quantity],
+        [Rate],
+        [Amount],
+        [IsBillable],
+        [IsBilled],
+        [Markup],
+        [Price],
+        [IsDraft]
+    FROM dbo.[BillLineItem]
+    WHERE [ProjectId] = @ProjectId
+    ORDER BY [CreatedDatetime] DESC;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
 SELECT *
 FROM dbo.Bill
 WHERE PublicId = 'E2C0D6E2-3776-4933-B62D-723558F03BDF';

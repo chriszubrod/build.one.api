@@ -6,7 +6,8 @@ from fastapi.templating import Jinja2Templates
 # Third-party Imports
 
 # Local Imports
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 from workflows.workflow.business.admin import WorkflowAdmin
 
 
@@ -18,7 +19,7 @@ templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/admin")
-async def admin(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def admin(request: Request, current_user: dict = Depends(require_module_web(Modules.ROLES))):
     """
     Admin dashboard - workflow monitoring.
     """
@@ -42,7 +43,7 @@ async def admin(request: Request, current_user: dict = Depends(get_current_user_
 async def workflow_detail(
     public_id: str,
     request: Request,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.ROLES)),
 ):
     """
     Workflow detail view showing audit trail.

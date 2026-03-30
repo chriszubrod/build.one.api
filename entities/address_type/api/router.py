@@ -6,13 +6,14 @@ from fastapi import APIRouter, Depends
 # Local Imports
 from entities.address_type.api.schemas import AddressTypeCreate, AddressTypeUpdate
 from entities.address_type.business.service import AddressTypeService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/api/v1", tags=["api", "address_type"])
 
 
 @router.post("/create/address_type")
-def create_address_type_router(body: AddressTypeCreate, current_user: dict = Depends(get_current_user_api)):
+def create_address_type_router(body: AddressTypeCreate, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_create"))):
     """
     Create a new address type.
     """
@@ -25,7 +26,7 @@ def create_address_type_router(body: AddressTypeCreate, current_user: dict = Dep
 
 
 @router.get("/get/address_types")
-def get_address_types_router(current_user: dict = Depends(get_current_user_api)):
+def get_address_types_router(current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read all address types.
     """
@@ -34,7 +35,7 @@ def get_address_types_router(current_user: dict = Depends(get_current_user_api))
 
 
 @router.get("/get/address_type/{public_id}")
-def get_address_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_address_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read an address type by public ID.
     """
@@ -43,7 +44,7 @@ def get_address_by_public_id_router(public_id: str, current_user: dict = Depends
 
 
 @router.put("/update/address_type/{public_id}")
-def update_address_type_by_public_id_router(public_id: str, body: AddressTypeUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_address_type_by_public_id_router(public_id: str, body: AddressTypeUpdate, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_update"))):
     """
     Update an address type by public ID.
     """
@@ -52,7 +53,7 @@ def update_address_type_by_public_id_router(public_id: str, body: AddressTypeUpd
 
 
 @router.delete("/delete/address_type/{public_id}")
-def delete_address_type_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_address_type_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_delete"))):
     """
     Delete an address type by public ID.
     """

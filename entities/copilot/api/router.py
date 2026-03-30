@@ -8,7 +8,8 @@ from pydantic import BaseModel
 
 # Local Imports
 from entities.copilot.business.service import get_copilot_service
-from entities.auth.business.service import get_current_user_api as get_current_copilot_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ class ConversationResponse(BaseModel):
 @router.post("/copilot/chat", response_model=ChatResponse)
 def chat_router(
     body: ChatRequest,
-    current_user: dict = Depends(get_current_copilot_api),
+    current_user: dict = Depends(require_module_api(Modules.COPILOT)),
 ):
     """
     Send a message to the AI Copilot.
@@ -102,7 +103,7 @@ def chat_router(
 @router.get("/copilot/conversations/{conversation_id}", response_model=ConversationResponse)
 def get_conversation_router(
     conversation_id: str,
-    current_user: dict = Depends(get_current_copilot_api),
+    current_user: dict = Depends(require_module_api(Modules.COPILOT)),
 ):
     """
     Get a conversation by ID.
@@ -134,7 +135,7 @@ def get_conversation_router(
 @router.delete("/copilot/conversations/{conversation_id}")
 def delete_conversation_router(
     conversation_id: str,
-    current_user: dict = Depends(get_current_copilot_api),
+    current_user: dict = Depends(require_module_api(Modules.COPILOT, "can_delete")),
 ):
     """
     Delete a conversation.
@@ -159,7 +160,7 @@ def delete_conversation_router(
 
 @router.get("/copilot/quick-actions")
 def get_quick_actions_router(
-    current_user: dict = Depends(get_current_copilot_api),
+    current_user: dict = Depends(require_module_api(Modules.COPILOT)),
 ):
     """
     Get available quick actions for the copilot.

@@ -8,14 +8,15 @@ from fastapi.templating import Jinja2Templates
 from entities.user_role.business.service import UserRoleService
 from entities.user.business.service import UserService
 from entities.role.business.service import RoleService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/user_role", tags=["web", "user_role"])
 templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
-async def list_user_roles(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def list_user_roles(request: Request, current_user: dict = Depends(require_module_web(Modules.ROLES))):
     """
     List all user roles.
     """
@@ -38,7 +39,7 @@ async def list_user_roles(request: Request, current_user: dict = Depends(get_cur
 
 
 @router.get("/create")
-async def create_user_role(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_user_role(request: Request, current_user: dict = Depends(require_module_web(Modules.ROLES, "can_create"))):
     """
     Render create user role form.
     """
@@ -57,7 +58,7 @@ async def create_user_role(request: Request, current_user: dict = Depends(get_cu
 
 
 @router.get("/{public_id}")
-async def view_user_role(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_user_role(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.ROLES))):
     """
     View a user role.
     """
@@ -80,7 +81,7 @@ async def view_user_role(request: Request, public_id: str, current_user: dict = 
 
 
 @router.get("/{public_id}/edit")
-async def edit_user_role(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_user_role(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.ROLES, "can_update"))):
     """
     Edit a user role.
     """

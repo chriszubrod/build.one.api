@@ -141,7 +141,8 @@ CREATE OR ALTER PROCEDURE dbo.UpsertEmailThread
     @OwnerUserId                BIGINT          = NULL,
     @ClassificationConfidence   DECIMAL(5,4)    = NULL,
     @IsResolved                 BIT             = NULL,
-    @RequiresAction             BIT             = NULL
+    @RequiresAction             BIT             = NULL,
+    @RowVersion                 BINARY(8)       = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -150,8 +151,10 @@ BEGIN
     USING (SELECT @PublicId AS PublicId) AS source
         ON target.PublicId = source.PublicId
 
-    WHEN MATCHED THEN
+    WHEN MATCHED AND (@RowVersion IS NULL OR target.RowVersion = @RowVersion) THEN
         UPDATE SET
+            Category                    = @Category,
+            ProcessType                 = @ProcessType,
             CurrentStage                = @CurrentStage,
             OwnerUserId                 = COALESCE(@OwnerUserId,               target.OwnerUserId),
             ClassificationConfidence    = COALESCE(@ClassificationConfidence,  target.ClassificationConfidence),
@@ -192,6 +195,13 @@ BEGIN
             COALESCE(@IsResolved, 0),
             COALESCE(@RequiresAction, 1)
         );
+
+    -- Concurrency check: if a row exists but was not updated, RowVersion did not match
+    IF @@ROWCOUNT = 0 AND EXISTS (SELECT 1 FROM dbo.EmailThread WHERE PublicId = @PublicId)
+    BEGIN
+        RAISERROR('Concurrency conflict: EmailThread has been modified by another user.', 16, 1);
+        RETURN;
+    END
 
     SELECT *
     FROM dbo.EmailThread

@@ -6,7 +6,8 @@ from fastapi import APIRouter, Request, Depends
 from fastapi.templating import Jinja2Templates
 
 # Local Imports
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ templates = Jinja2Templates(directory="templates")
 @router.get("/admin/overrides")
 async def admin_overrides(
     request: Request,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.CLASSIFICATION_OVERRIDES)),
 ):
     """Admin page for managing classification overrides."""
     return templates.TemplateResponse(

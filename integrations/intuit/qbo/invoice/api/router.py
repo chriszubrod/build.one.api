@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException
 # Local Imports
 from integrations.intuit.qbo.invoice.api.schemas import QboInvoiceSync
 from integrations.intuit.qbo.invoice.business.service import QboInvoiceService
-from entities.auth.business.service import get_current_user_api as get_current_qbo_invoice_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ service = QboInvoiceService()
 
 
 @router.post("/sync/qbo-invoices")
-def sync_qbo_invoices_router(body: QboInvoiceSync, current_user: dict = Depends(get_current_qbo_invoice_api)):
+def sync_qbo_invoices_router(body: QboInvoiceSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Invoice QBO sync is disabled. Invoices are managed manually in QBO.
     """
@@ -26,7 +27,7 @@ def sync_qbo_invoices_router(body: QboInvoiceSync, current_user: dict = Depends(
 
 
 @router.get("/get/qbo-invoices/realm/{realm_id}")
-def get_qbo_invoices_by_realm_id_router(realm_id: str, current_user: dict = Depends(get_current_qbo_invoice_api)):
+def get_qbo_invoices_by_realm_id_router(realm_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO invoices by realm ID.
     """
@@ -35,7 +36,7 @@ def get_qbo_invoices_by_realm_id_router(realm_id: str, current_user: dict = Depe
 
 
 @router.get("/get/qbo-invoice/qbo-id/{qbo_id}")
-def get_qbo_invoice_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(get_current_qbo_invoice_api)):
+def get_qbo_invoice_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO invoice by QBO ID.
     """
@@ -44,7 +45,7 @@ def get_qbo_invoice_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(g
 
 
 @router.get("/get/qbo-invoices")
-def get_qbo_invoices_router(current_user: dict = Depends(get_current_qbo_invoice_api)):
+def get_qbo_invoices_router(current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO invoices.
     """
@@ -53,7 +54,7 @@ def get_qbo_invoices_router(current_user: dict = Depends(get_current_qbo_invoice
 
 
 @router.get("/get/qbo-invoice/{id}")
-def get_qbo_invoice_by_id_router(id: int, current_user: dict = Depends(get_current_qbo_invoice_api)):
+def get_qbo_invoice_by_id_router(id: int, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO invoice by ID.
     """
@@ -62,7 +63,7 @@ def get_qbo_invoice_by_id_router(id: int, current_user: dict = Depends(get_curre
 
 
 @router.get("/get/qbo-invoice/{id}/lines")
-def get_qbo_invoice_lines_router(id: int, current_user: dict = Depends(get_current_qbo_invoice_api)):
+def get_qbo_invoice_lines_router(id: int, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO invoice lines for an invoice.
     """

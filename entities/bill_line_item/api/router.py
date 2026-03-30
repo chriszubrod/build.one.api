@@ -7,14 +7,15 @@ from decimal import Decimal
 # Local Imports
 from entities.bill_line_item.api.schemas import BillLineItemCreate, BillLineItemUpdate
 from entities.bill_line_item.business.service import BillLineItemService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_line_item"])
 
 
 @router.post("/create/bill_line_item")
-def create_bill_line_item_router(body: BillLineItemCreate, current_user: dict = Depends(get_current_user_api)):
+def create_bill_line_item_router(body: BillLineItemCreate, current_user: dict = Depends(require_module_api(Modules.BILLS, "can_create"))):
     """
     Create a new bill line item.
     
@@ -54,7 +55,7 @@ def create_bill_line_item_router(body: BillLineItemCreate, current_user: dict = 
 
 
 @router.get("/get/bill_line_items")
-def get_bill_line_items_router(current_user: dict = Depends(get_current_user_api)):
+def get_bill_line_items_router(current_user: dict = Depends(require_module_api(Modules.BILLS))):
     """
     Read all bill line items.
     """
@@ -63,7 +64,7 @@ def get_bill_line_items_router(current_user: dict = Depends(get_current_user_api
 
 
 @router.get("/get/bill_line_item/{public_id}")
-def get_bill_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_bill_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS))):
     """
     Read a bill line item by public ID.
     """
@@ -72,7 +73,7 @@ def get_bill_line_item_by_public_id_router(public_id: str, current_user: dict = 
 
 
 @router.get("/get/bill_line_items/bill/{bill_id}")
-def get_bill_line_items_by_bill_id_router(bill_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_bill_line_items_by_bill_id_router(bill_id: int, current_user: dict = Depends(require_module_api(Modules.BILLS))):
     """
     Read all bill line items for a specific bill.
     """
@@ -80,8 +81,17 @@ def get_bill_line_items_by_bill_id_router(bill_id: int, current_user: dict = Dep
     return [bill_line_item.to_dict() for bill_line_item in bill_line_items]
 
 
+@router.get("/get/bill_line_items/project/{project_id}")
+def get_bill_line_items_by_project_id_router(project_id: int, current_user: dict = Depends(require_module_api(Modules.BILLS))):
+    """
+    Read all bill line items for a specific project.
+    """
+    bill_line_items = BillLineItemService().read_by_project_id(project_id=project_id)
+    return [bill_line_item.to_dict() for bill_line_item in bill_line_items]
+
+
 @router.put("/update/bill_line_item/{public_id}")
-def update_bill_line_item_by_public_id_router(public_id: str, body: BillLineItemUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_bill_line_item_by_public_id_router(public_id: str, body: BillLineItemUpdate, current_user: dict = Depends(require_module_api(Modules.BILLS, "can_update"))):
     """
     Update a bill line item by public ID.
     
@@ -123,7 +133,7 @@ def update_bill_line_item_by_public_id_router(public_id: str, body: BillLineItem
 
 
 @router.delete("/delete/bill_line_item/{public_id}")
-def delete_bill_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_bill_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS, "can_delete"))):
     """
     Delete a bill line item by public ID.
     

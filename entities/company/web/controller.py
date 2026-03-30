@@ -8,7 +8,8 @@ from fastapi.templating import Jinja2Templates
 # Local Imports
 from entities.company.business.service import CompanyService
 from entities.contact.business.service import ContactService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 from integrations.ms.sharepoint.drive.connector.company.business.service import DriveCompanyConnector
 from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
 from integrations.ms.sharepoint.driveitem.connector.expense_folder.business.service import DriveItemExpenseFolderConnector
@@ -20,7 +21,7 @@ templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
-async def list_companies(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def list_companies(request: Request, current_user: dict = Depends(require_module_web(Modules.COMPANIES))):
     """
     List all companies.
     """
@@ -37,7 +38,7 @@ async def list_companies(request: Request, current_user: dict = Depends(get_curr
 
 
 @router.get("/create")
-async def create_company(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_company(request: Request, current_user: dict = Depends(require_module_web(Modules.COMPANIES, "can_create"))):
     """
     Render create company form.
     """
@@ -52,7 +53,7 @@ async def create_company(request: Request, current_user: dict = Depends(get_curr
 
 
 @router.get("/{public_id}")
-async def view_company(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_company(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.COMPANIES))):
     """
     View a company.
     """
@@ -105,7 +106,7 @@ async def view_company(request: Request, public_id: str, current_user: dict = De
 
 
 @router.get("/{public_id}/edit")
-async def edit_company(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_company(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.COMPANIES, "can_update"))):
     """
     Edit a company.
     """

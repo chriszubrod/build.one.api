@@ -11,7 +11,8 @@ from core.ai.agents.expense_agent.api.schemas import (
     ExpenseAgentFolderStatusResponse,
 )
 from core.ai.agents.expense_agent.business.service import ExpenseAgentService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from integrations.ms.sharepoint.driveitem.connector.expense_folder.business.service import DriveItemExpenseFolderConnector
 from integrations.ms.sharepoint.external import client as sp_client
 
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/api/v1/expense-agent", tags=["api", "expense-agent"]
 def trigger_run(
     request: ExpenseAgentRunRequest,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_create")),
 ):
     """Trigger an expense folder processing run (runs in background)."""
     service = ExpenseAgentService()
@@ -75,7 +76,7 @@ def _run_processing_background(
 @router.get("/run/{public_id}", response_model=ExpenseAgentRunResponse)
 def get_run(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.EXPENSES)),
 ):
     """Check the status/results of a processing run."""
     service = ExpenseAgentService()
@@ -101,7 +102,7 @@ def get_run(
 
 @router.get("/runs")
 def list_runs(
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.EXPENSES)),
 ):
     """List recent processing runs."""
     service = ExpenseAgentService()
@@ -116,7 +117,7 @@ def list_runs(
 @router.get("/folder-status/{company_id}", response_model=ExpenseAgentFolderStatusResponse)
 def get_folder_status(
     company_id: int,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.EXPENSES)),
 ):
     """Get the source folder file count and status for the UI summary."""
     connector = DriveItemExpenseFolderConnector()

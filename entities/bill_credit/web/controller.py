@@ -15,7 +15,8 @@ from entities.bill_credit_line_item_attachment.business.service import BillCredi
 from entities.attachment.business.service import AttachmentService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ templates = Jinja2Templates(directory="templates")
 @router.get("/list")
 async def list_bill_credits(
     request: Request,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.BILL_CREDITS)),
     page: int = 1,
     page_size: int = 50,
     search: Optional[str] = None,
@@ -140,7 +141,7 @@ async def list_bill_credits(
 
 
 @router.get("/create")
-async def create_bill_credit(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_bill_credit(request: Request, current_user: dict = Depends(require_module_web(Modules.BILL_CREDITS, "can_create"))):
     """
     Render create bill credit form.
     """
@@ -161,7 +162,7 @@ async def create_bill_credit(request: Request, current_user: dict = Depends(get_
 
 
 @router.get("/{public_id}")
-async def view_bill_credit(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_bill_credit(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.BILL_CREDITS))):
     """
     View a bill credit.
     """
@@ -252,7 +253,7 @@ async def view_bill_credit(request: Request, public_id: str, current_user: dict 
 
 
 @router.get("/{public_id}/edit")
-async def edit_bill_credit(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_bill_credit(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.BILL_CREDITS, "can_update"))):
     """
     Edit a bill credit.
     """

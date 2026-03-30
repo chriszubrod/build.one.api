@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.bill_credit_line_item_attachment.api.schemas import BillCreditLineItemAttachmentCreate
 from entities.bill_credit_line_item_attachment.business.service import BillCreditLineItemAttachmentService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_credit_line_item_attachment"])
 
 
 @router.post("/create/bill-credit-line-item-attachment")
-def create_bill_credit_line_item_attachment_router(body: BillCreditLineItemAttachmentCreate, current_user: dict = Depends(get_current_user_api)):
+def create_bill_credit_line_item_attachment_router(body: BillCreditLineItemAttachmentCreate, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_create"))):
     """
     Create a new bill credit line item attachment link.
     
@@ -43,7 +44,7 @@ def create_bill_credit_line_item_attachment_router(body: BillCreditLineItemAttac
 
 
 @router.get("/get/bill-credit-line-item-attachments")
-def get_bill_credit_line_item_attachments_router(current_user: dict = Depends(get_current_user_api)):
+def get_bill_credit_line_item_attachments_router(current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     """
     Read all bill credit line item attachments.
     """
@@ -52,7 +53,7 @@ def get_bill_credit_line_item_attachments_router(current_user: dict = Depends(ge
 
 
 @router.get("/get/bill-credit-line-item-attachment/{public_id}")
-def get_bill_credit_line_item_attachment_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_bill_credit_line_item_attachment_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     """
     Read a bill credit line item attachment by public ID.
     """
@@ -63,7 +64,7 @@ def get_bill_credit_line_item_attachment_by_public_id_router(public_id: str, cur
 
 
 @router.get("/get/bill-credit-line-item-attachment/by-line-item/{bill_credit_line_item_public_id}")
-def get_bill_credit_line_item_attachment_by_line_item_router(bill_credit_line_item_public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_bill_credit_line_item_attachment_by_line_item_router(bill_credit_line_item_public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     """
     Read a bill credit line item attachment by bill credit line item public ID.
     Returns the single attachment for the bill credit line item (1-1 relationship).
@@ -77,7 +78,7 @@ def get_bill_credit_line_item_attachment_by_line_item_router(bill_credit_line_it
 
 
 @router.delete("/delete/bill-credit-line-item-attachment/{public_id}")
-def delete_bill_credit_line_item_attachment_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_bill_credit_line_item_attachment_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_delete"))):
     """
     Delete a bill credit line item attachment by public ID.
     

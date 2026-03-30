@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field
 
 # Local Imports
 from entities.invoice_attachment.business.service import InvoiceAttachmentService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ class InvoiceAttachmentCreate(BaseModel):
 
 
 @router.post("/create/invoice_attachment")
-def create_invoice_attachment_router(body: InvoiceAttachmentCreate, current_user: dict = Depends(get_current_user_api)):
+def create_invoice_attachment_router(body: InvoiceAttachmentCreate, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_create"))):
     try:
         result = InvoiceAttachmentService().create(
             invoice_id=body.invoice_id,
@@ -32,13 +33,13 @@ def create_invoice_attachment_router(body: InvoiceAttachmentCreate, current_user
 
 
 @router.get("/get/invoice_attachments")
-def get_invoice_attachments_router(current_user: dict = Depends(get_current_user_api)):
+def get_invoice_attachments_router(current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     items = InvoiceAttachmentService().read_all()
     return [item.to_dict() for item in items]
 
 
 @router.get("/get/invoice_attachment/{public_id}")
-def get_invoice_attachment_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_invoice_attachment_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     item = InvoiceAttachmentService().read_by_public_id(public_id=public_id)
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice attachment not found")
@@ -46,13 +47,13 @@ def get_invoice_attachment_by_public_id_router(public_id: str, current_user: dic
 
 
 @router.get("/get/invoice_attachments/invoice/{invoice_id}")
-def get_invoice_attachments_by_invoice_id_router(invoice_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_invoice_attachments_by_invoice_id_router(invoice_id: int, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     items = InvoiceAttachmentService().read_by_invoice_id(invoice_id=invoice_id)
     return [item.to_dict() for item in items]
 
 
 @router.delete("/delete/invoice_attachment/{public_id}")
-def delete_invoice_attachment_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_invoice_attachment_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_delete"))):
     item = InvoiceAttachmentService().delete_by_public_id(public_id=public_id)
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice attachment not found")

@@ -10,7 +10,8 @@ from decimal import Decimal
 # Local Imports
 from entities.expense.api.schemas import ExpenseCreate, ExpenseUpdate
 from entities.expense.business.service import ExpenseService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ def _clean_expense_completion_cache():
 
 
 @router.post("/create/expense")
-def create_expense_router(body: ExpenseCreate, current_user: dict = Depends(get_current_user_api)):
+def create_expense_router(body: ExpenseCreate, current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_create"))):
     """
     Create a new expense.
     
@@ -64,7 +65,7 @@ def create_expense_router(body: ExpenseCreate, current_user: dict = Depends(get_
 
 
 @router.get("/get/expenses")
-def get_expenses_router(current_user: dict = Depends(get_current_user_api)):
+def get_expenses_router(current_user: dict = Depends(require_module_api(Modules.EXPENSES))):
     """
     Read all expenses.
     """
@@ -73,7 +74,7 @@ def get_expenses_router(current_user: dict = Depends(get_current_user_api)):
 
 
 @router.get("/get/expense/by-reference-number-and-vendor")
-def get_expense_by_reference_number_and_vendor_router(reference_number: str, vendor_public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_expense_by_reference_number_and_vendor_router(reference_number: str, vendor_public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES))):
     """
     Read an expense by reference number and vendor public ID.
     """
@@ -84,7 +85,7 @@ def get_expense_by_reference_number_and_vendor_router(reference_number: str, ven
 
 
 @router.get("/get/expense/{public_id}/completion-result")
-def get_expense_completion_result_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_expense_completion_result_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES))):
     """
     Return the last completion result for an expense (Build One, SharePoint).
     Used by the list page to show step status after an expense completes in the background.
@@ -98,7 +99,7 @@ def get_expense_completion_result_router(public_id: str, current_user: dict = De
 
 
 @router.get("/get/expense/{public_id}")
-def get_expense_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_expense_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES))):
     """
     Read an expense by public ID.
     """
@@ -109,7 +110,7 @@ def get_expense_by_public_id_router(public_id: str, current_user: dict = Depends
 
 
 @router.put("/update/expense/{public_id}")
-def update_expense_by_public_id_router(public_id: str, body: ExpenseUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_expense_by_public_id_router(public_id: str, body: ExpenseUpdate, current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_update"))):
     """
     Update an expense by public ID.
     
@@ -145,7 +146,7 @@ def update_expense_by_public_id_router(public_id: str, body: ExpenseUpdate, curr
 
 
 @router.delete("/delete/expense/{public_id}")
-def delete_expense_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_expense_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_delete"))):
     """
     Delete an expense by public ID.
     
@@ -207,7 +208,7 @@ def _run_complete_expense(public_id: str) -> None:
 def complete_expense_router(
     public_id: str,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_complete")),
 ):
     """
     Queue expense completion (finalize, SharePoint). Returns 202 immediately;

@@ -8,7 +8,8 @@ from pydantic import BaseModel
 
 # Local Imports
 from entities.anomaly.business.service import get_anomaly_service
-from entities.auth.business.service import get_current_user_api as get_current_anomaly_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class PreUploadCheckRequest(BaseModel):
 def check_attachment_anomaly_router(
     public_id: str,
     check_category_only: bool = Query(True, description="Only compare against same category"),
-    current_user: dict = Depends(get_current_anomaly_api),
+    current_user: dict = Depends(require_module_api(Modules.ANOMALY_DETECTION)),
 ):
     """
     Check an attachment for anomalies.
@@ -76,7 +77,7 @@ def check_attachment_anomaly_router(
 @router.post("/anomaly/pre-upload-check", response_model=AnomalyCheckResponse)
 def pre_upload_check_router(
     body: PreUploadCheckRequest,
-    current_user: dict = Depends(get_current_anomaly_api),
+    current_user: dict = Depends(require_module_api(Modules.ANOMALY_DETECTION)),
 ):
     """
     Check for duplicates before uploading a file.
@@ -108,7 +109,7 @@ def pre_upload_check_router(
 def scan_all_attachments_router(
     category: Optional[str] = Query(None, description="Filter by category"),
     limit: int = Query(50, ge=1, le=200, description="Maximum attachments to scan"),
-    current_user: dict = Depends(get_current_anomaly_api),
+    current_user: dict = Depends(require_module_api(Modules.ANOMALY_DETECTION)),
 ):
     """
     Scan multiple attachments for anomalies.

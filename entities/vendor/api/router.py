@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.vendor.api.schemas import VendorCreate, VendorUpdate
 from entities.vendor.business.service import VendorService
-from entities.auth.business.service import get_current_user_api as get_current_vendor_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "vendor"])
@@ -23,7 +24,7 @@ def _raise_from_workflow_error(err: str, default_message: str):
 
 
 @router.post("/create/vendor")
-def create_vendor_router(body: VendorCreate, current_user: dict = Depends(get_current_vendor_api)):
+def create_vendor_router(body: VendorCreate, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_create"))):
     """
     Create a new vendor.
 
@@ -54,7 +55,7 @@ def create_vendor_router(body: VendorCreate, current_user: dict = Depends(get_cu
 
 
 @router.get("/get/vendors")
-def get_vendors_router(current_user: dict = Depends(get_current_vendor_api)):
+def get_vendors_router(current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read all vendors.
     """
@@ -66,7 +67,7 @@ def get_vendors_router(current_user: dict = Depends(get_current_vendor_api)):
 
 
 @router.get("/get/vendor/{public_id}")
-def get_vendor_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_vendor_api)):
+def get_vendor_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read a vendor by public ID.
     """
@@ -77,7 +78,7 @@ def get_vendor_by_public_id_router(public_id: str, current_user: dict = Depends(
 
 
 @router.put("/update/vendor/{public_id}")
-def update_vendor_by_public_id_router(public_id: str, body: VendorUpdate, current_user: dict = Depends(get_current_vendor_api)):
+def update_vendor_by_public_id_router(public_id: str, body: VendorUpdate, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_update"))):
     """
     Update a vendor by public ID.
 
@@ -110,7 +111,7 @@ def update_vendor_by_public_id_router(public_id: str, body: VendorUpdate, curren
 
 
 @router.delete("/delete/vendor/{public_id}")
-def delete_vendor_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_vendor_api)):
+def delete_vendor_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_delete"))):
     """
     Soft delete a vendor by public ID.
 

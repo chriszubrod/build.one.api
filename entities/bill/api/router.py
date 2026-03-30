@@ -10,7 +10,8 @@ from decimal import Decimal
 from entities.bill.api.schemas import BillCreate, BillUpdate
 from entities.bill.business.service import BillService
 from entities.bill.persistence.repo import BillRepository
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ router = APIRouter(prefix="/api/v1", tags=["api", "bill"])
 def create_bill_router(
     body: BillCreate,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.BILLS, "can_create")),
 ):
     """
     Create a new bill.
@@ -74,7 +75,7 @@ def create_bill_router(
 
 
 @router.get("/get/bills")
-def get_bills_router(current_user: dict = Depends(get_current_user_api)):
+def get_bills_router(current_user: dict = Depends(require_module_api(Modules.BILLS))):
     """
     Read all bills.
     """
@@ -83,7 +84,7 @@ def get_bills_router(current_user: dict = Depends(get_current_user_api)):
 
 
 @router.get("/get/bill/by-bill-number-and-vendor")
-def get_bill_by_bill_number_and_vendor_router(bill_number: str, vendor_public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_bill_by_bill_number_and_vendor_router(bill_number: str, vendor_public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS))):
     """
     Read a bill by bill number and vendor public ID.
     """
@@ -94,7 +95,7 @@ def get_bill_by_bill_number_and_vendor_router(bill_number: str, vendor_public_id
 
 
 @router.get("/get/bill/{public_id}/completion-result")
-def get_bill_completion_result_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_bill_completion_result_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS))):
     """
     Return the completion result for a bill (Build One, SharePoint, Excel, QBO).
     """
@@ -105,11 +106,22 @@ def get_bill_completion_result_router(public_id: str, current_user: dict = Depen
 
 
 @router.get("/get/bill/{public_id}")
-def get_bill_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_bill_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS))):
     """
     Read a bill by public ID.
     """
     bill = BillService().read_by_public_id(public_id=public_id)
+    if not bill:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bill not found")
+    return bill.to_dict()
+
+
+@router.get("/get/bill/id/{id}")
+def get_bill_by_id_router(id: int, current_user: dict = Depends(require_module_api(Modules.BILLS))):
+    """
+    Read a bill by ID.
+    """
+    bill = BillService().read_by_id(id=id)
     if not bill:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bill not found")
     return bill.to_dict()
@@ -120,7 +132,7 @@ def update_bill_by_public_id_router(
     public_id: str,
     body: BillUpdate,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.BILLS, "can_update")),
 ):
     """
     Update a bill by public ID.
@@ -179,7 +191,7 @@ def update_bill_by_public_id_router(
 
 
 @router.delete("/delete/bill/{public_id}")
-def delete_bill_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_bill_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS, "can_delete"))):
     """
     Delete a bill by public ID.
     
@@ -227,7 +239,7 @@ def _run_complete_bill(public_id: str) -> None:
 def complete_bill_router(
     public_id: str,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.BILLS, "can_complete")),
 ):
     """
     Queue bill completion (finalize, SharePoint, Excel). Returns 202 immediately;

@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 # Local Imports
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from core.workflow.business.execute_pending_action import execute_pending_action
 
 router = APIRouter(prefix="/api/v1", tags=["api", "workflow", "pending_action"])
@@ -23,7 +24,7 @@ class PendingActionExecuteRequest(BaseModel):
 @router.post("/execute/pending-action")
 def execute_pending_action_router(
     body: PendingActionExecuteRequest,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.PENDING_ACTIONS, "can_create")),
 ):
     """
     Execute or reject a pending action (approval gate).

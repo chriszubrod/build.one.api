@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends
 # Local Imports
 from integrations.intuit.qbo.vendor.api.schemas import QboVendorCreate, QboVendorUpdate, QboVendorSync
 from integrations.intuit.qbo.vendor.business.service import QboVendorService
-from entities.auth.business.service import get_current_user_api as get_current_qbo_vendor_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-vendor"])
 service = QboVendorService()
 
 
 @router.post("/sync/qbo-vendors")
-def sync_qbo_vendors_router(body: QboVendorSync, current_user: dict = Depends(get_current_qbo_vendor_api)):
+def sync_qbo_vendors_router(body: QboVendorSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync Vendors from QBO.
     """
@@ -26,7 +27,7 @@ def sync_qbo_vendors_router(body: QboVendorSync, current_user: dict = Depends(ge
 
 
 @router.get("/get/qbo-vendors/realm/{realm_id}")
-def get_qbo_vendors_by_realm_id_router(realm_id: str, current_user: dict = Depends(get_current_qbo_vendor_api)):
+def get_qbo_vendors_by_realm_id_router(realm_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO vendors by realm ID.
     """
@@ -35,7 +36,7 @@ def get_qbo_vendors_by_realm_id_router(realm_id: str, current_user: dict = Depen
 
 
 @router.get("/get/qbo-vendor/qbo-id/{qbo_id}")
-def get_qbo_vendor_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(get_current_qbo_vendor_api)):
+def get_qbo_vendor_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO vendor by QBO ID.
     """
@@ -44,7 +45,7 @@ def get_qbo_vendor_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(ge
 
 
 @router.post("/create/qbo-vendor")
-def create_qbo_vendor_router(body: QboVendorCreate, current_user: dict = Depends(get_current_qbo_vendor_api)):
+def create_qbo_vendor_router(body: QboVendorCreate, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Create a new QBO vendor.
     """
@@ -62,7 +63,7 @@ def create_qbo_vendor_router(body: QboVendorCreate, current_user: dict = Depends
 
 
 @router.get("/get/qbo-vendors")
-def get_qbo_vendors_router(current_user: dict = Depends(get_current_qbo_vendor_api)):
+def get_qbo_vendors_router(current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO vendors.
     """
@@ -71,7 +72,7 @@ def get_qbo_vendors_router(current_user: dict = Depends(get_current_qbo_vendor_a
 
 
 @router.get("/get/qbo-vendor/{id}")
-def get_qbo_vendor_by_id_router(id: str, current_user: dict = Depends(get_current_qbo_vendor_api)):
+def get_qbo_vendor_by_id_router(id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO vendor by ID.
     """
@@ -80,7 +81,7 @@ def get_qbo_vendor_by_id_router(id: str, current_user: dict = Depends(get_curren
 
 
 @router.get("/get/qbo-vendor/sync-token/{sync_token}")
-def get_qbo_vendor_by_sync_token_router(sync_token: str, current_user: dict = Depends(get_current_qbo_vendor_api)):
+def get_qbo_vendor_by_sync_token_router(sync_token: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO vendor by sync token.
     """
@@ -89,7 +90,7 @@ def get_qbo_vendor_by_sync_token_router(sync_token: str, current_user: dict = De
 
 
 @router.get("/get/qbo-vendor/display-name/{display_name}")
-def get_qbo_vendor_by_display_name_router(display_name: str, current_user: dict = Depends(get_current_qbo_vendor_api)):
+def get_qbo_vendor_by_display_name_router(display_name: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO vendor by display name.
     """
@@ -98,7 +99,7 @@ def get_qbo_vendor_by_display_name_router(display_name: str, current_user: dict 
 
 
 @router.get("/get/qbo-vendor/company-name/{company_name}")
-def get_qbo_vendor_by_company_name_router(company_name: str, current_user: dict = Depends(get_current_qbo_vendor_api)):
+def get_qbo_vendor_by_company_name_router(company_name: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO vendor by company name.
     """
@@ -107,7 +108,7 @@ def get_qbo_vendor_by_company_name_router(company_name: str, current_user: dict 
 
 
 @router.get("/get/qbo-vendor/tax-identifier/{tax_identifier}")
-def get_qbo_vendor_by_tax_identifier_router(tax_identifier: str, current_user: dict = Depends(get_current_qbo_vendor_api)):
+def get_qbo_vendor_by_tax_identifier_router(tax_identifier: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO vendor by tax identifier.
     """
@@ -116,7 +117,7 @@ def get_qbo_vendor_by_tax_identifier_router(tax_identifier: str, current_user: d
 
 
 @router.put("/update/qbo-vendor/{id}")
-def update_qbo_vendor_by_id_router(id: str, body: QboVendorUpdate, current_user: dict = Depends(get_current_qbo_vendor_api)):
+def update_qbo_vendor_by_id_router(id: str, body: QboVendorUpdate, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_update"))):
     """
     Update a QBO vendor by ID.
     """
@@ -125,7 +126,7 @@ def update_qbo_vendor_by_id_router(id: str, body: QboVendorUpdate, current_user:
 
 
 @router.delete("/delete/qbo-vendor/{id}")
-def delete_qbo_vendor_by_id_router(id: str, current_user: dict = Depends(get_current_qbo_vendor_api)):
+def delete_qbo_vendor_by_id_router(id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))):
     """
     Delete a QBO vendor by ID.
     """

@@ -26,7 +26,8 @@ from integrations.ms.sharepoint.driveitem.connector.project_module.business.serv
 from integrations.ms.sharepoint.driveitem.connector.project_excel.business.service import DriveItemProjectExcelConnector
 from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
 from integrations.ms.sharepoint.driveitem.connector.expense_folder.business.service import DriveItemExpenseFolderConnector
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ router = APIRouter(prefix="/api/v1/ms/sharepoint/driveitem", tags=["api", "ms-sh
 @router.get("/drive/{drive_public_id}/browse")
 def browse_drive_root_router(
     drive_public_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Browse items at the root of a linked drive.
@@ -59,7 +60,7 @@ def browse_drive_root_router(
 def browse_folder_router(
     drive_public_id: str,
     item_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Browse items in a specific folder of a linked drive.
@@ -81,7 +82,7 @@ def browse_folder_router(
 def get_item_metadata_router(
     drive_public_id: str,
     item_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get metadata for a specific item from MS Graph.
@@ -102,7 +103,7 @@ def get_item_metadata_router(
 def download_item_router(
     drive_public_id: str,
     item_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Download content of a file from MS Graph.
@@ -134,7 +135,7 @@ async def upload_file_router(
     drive_public_id: str,
     parent_item_id: str,
     file: UploadFile = File(...),
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Upload a file to a folder in MS Graph.
@@ -169,7 +170,7 @@ def create_folder_router(
     drive_public_id: str,
     parent_item_id: str,
     body: FolderCreateRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Create a new folder in MS Graph.
@@ -193,7 +194,7 @@ def create_folder_router(
 @router.post("")
 def link_item_router(
     body: DriveItemLinkRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Link a DriveItem by fetching from MS Graph and storing locally.
@@ -215,7 +216,7 @@ def link_item_router(
 
 @router.get("")
 def list_linked_items_router(
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     List all linked DriveItems.
@@ -232,7 +233,7 @@ def list_linked_items_router(
 @router.get("/drive/{drive_public_id}")
 def list_linked_items_for_drive_router(
     drive_public_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     List linked DriveItems for a specific drive.
@@ -252,7 +253,7 @@ def list_linked_items_for_drive_router(
 @router.get("/{public_id}")
 def get_linked_item_router(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get a linked DriveItem by public ID.
@@ -276,7 +277,7 @@ def get_linked_item_router(
 @router.post("/{public_id}/refresh")
 def refresh_linked_item_router(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Refresh a linked DriveItem by fetching latest data from MS Graph.
@@ -296,7 +297,7 @@ def refresh_linked_item_router(
 @router.delete("/{public_id}")
 def unlink_item_router(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))
 ):
     """
     Unlink a DriveItem by removing it from the database.
@@ -321,7 +322,7 @@ def unlink_item_router(
 @router.post("/connector/project")
 def link_driveitem_to_project_router(
     body: DriveItemProjectLinkRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Link a DriveItem (folder) to a Project.
@@ -348,7 +349,7 @@ def link_driveitem_to_project_router(
 @router.get("/connector/project/{project_id}")
 def get_driveitem_for_project_router(
     project_id: int,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get the linked DriveItem (folder) for a Project.
@@ -373,7 +374,7 @@ def get_driveitem_for_project_router(
 @router.delete("/connector/project/{project_id}")
 def unlink_driveitem_from_project_router(
     project_id: int,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))
 ):
     """
     Unlink the DriveItem (folder) from a Project.
@@ -398,7 +399,7 @@ def unlink_driveitem_from_project_router(
 @router.post("/connector/vendor")
 def link_driveitem_to_vendor_router(
     body: DriveItemVendorLinkRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Link a DriveItem (folder) to a Vendor.
@@ -425,7 +426,7 @@ def link_driveitem_to_vendor_router(
 @router.get("/connector/vendor/{vendor_public_id}")
 def get_driveitem_for_vendor_router(
     vendor_public_id: str,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC)),
 ):
     """Get the linked DriveItem (folder) for a Vendor."""
     from entities.vendor.business.service import VendorService
@@ -442,7 +443,7 @@ def get_driveitem_for_vendor_router(
 @router.delete("/connector/vendor/{vendor_public_id}")
 def unlink_driveitem_from_vendor_router(
     vendor_public_id: str,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete")),
 ):
     """Unlink the DriveItem (folder) from a Vendor."""
     from entities.vendor.business.service import VendorService
@@ -467,7 +468,7 @@ def unlink_driveitem_from_vendor_router(
 @router.post("/connector/project-module")
 def link_module_folder_to_project_router(
     body: DriveItemProjectModuleLinkRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Link a DriveItem (folder) to a Project Module.
@@ -497,7 +498,7 @@ def link_module_folder_to_project_router(
 def get_module_folder_for_project_router(
     project_id: int,
     module_id: int,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get the linked DriveItem (folder) for a specific module in a Project.
@@ -522,7 +523,7 @@ def get_module_folder_for_project_router(
 @router.get("/connector/project-module/{project_id}")
 def get_all_module_folders_for_project_router(
     project_id: int,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get all linked module folders for a Project.
@@ -541,7 +542,7 @@ def get_all_module_folders_for_project_router(
 def unlink_module_folder_from_project_router(
     project_id: int,
     module_id: int,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))
 ):
     """
     Unlink the DriveItem (folder) from a Project Module.
@@ -566,7 +567,7 @@ def unlink_module_folder_from_project_router(
 @router.post("/connector/project-excel")
 def link_excel_to_project_router(
     body: DriveItemProjectExcelLinkRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Link an Excel workbook to a Project.
@@ -596,7 +597,7 @@ def link_excel_to_project_router(
 @router.get("/connector/project-excel/{project_id}")
 def get_excel_for_project_router(
     project_id: int,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get the linked Excel workbook for a Project.
@@ -621,7 +622,7 @@ def get_excel_for_project_router(
 @router.delete("/connector/project-excel/{project_id}")
 def unlink_excel_from_project_router(
     project_id: int,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))
 ):
     """
     Unlink the Excel workbook from a Project.
@@ -641,7 +642,7 @@ def unlink_excel_from_project_router(
 @router.get("/connector/project-excel/{project_id}/worksheets")
 def list_worksheets_router(
     project_id: int,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     List all worksheets in the linked Excel workbook.
@@ -662,7 +663,7 @@ def list_worksheets_router(
 def get_workbook_worksheets_router(
     drive_public_id: str,
     item_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get list of worksheets in an Excel workbook (does not require workbook to be linked).
@@ -694,7 +695,7 @@ def get_workbook_worksheets_router(
 def push_data_to_worksheet_router(
     project_id: int,
     body: DriveItemProjectExcelPushDataRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_update"))
 ):
     """
     Push data to the stored worksheet in the linked Excel workbook.
@@ -719,7 +720,7 @@ def push_data_to_worksheet_router(
 def append_rows_to_worksheet_router(
     project_id: int,
     body: DriveItemProjectExcelAppendRowsRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_update"))
 ):
     """
     Append rows to the stored worksheet in the linked Excel workbook.
@@ -743,7 +744,7 @@ def append_rows_to_worksheet_router(
 def clear_worksheet_range_router(
     project_id: int,
     body: DriveItemProjectExcelClearRangeRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))
 ):
     """
     Clear a range in the stored worksheet in the linked Excel workbook.
@@ -771,7 +772,7 @@ def clear_worksheet_range_router(
 @router.post("/connector/bill-folder")
 def link_bill_folder_router(
     body: DriveItemBillFolderLinkRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Link a DriveItem (folder) as a bill processing folder for a company.
@@ -796,7 +797,7 @@ def link_bill_folder_router(
 def get_bill_folder_router(
     company_id: int,
     folder_type: str,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC)),
 ):
     """Get the linked bill processing folder for a company by type."""
     connector = DriveItemBillFolderConnector()
@@ -818,7 +819,7 @@ def get_bill_folder_router(
 def unlink_bill_folder_router(
     company_id: int,
     folder_type: str,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete")),
 ):
     """Unlink a bill processing folder from a company."""
     connector = DriveItemBillFolderConnector()
@@ -839,7 +840,7 @@ def unlink_bill_folder_router(
 @router.post("/connector/expense-folder")
 def link_expense_folder_router(
     body: DriveItemExpenseFolderLinkRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Link a DriveItem (folder) as an expense processing folder for a company.
@@ -864,7 +865,7 @@ def link_expense_folder_router(
 def get_expense_folder_router(
     company_id: int,
     folder_type: str,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC)),
 ):
     """Get the linked expense processing folder for a company by type."""
     connector = DriveItemExpenseFolderConnector()
@@ -886,7 +887,7 @@ def get_expense_folder_router(
 def unlink_expense_folder_router(
     company_id: int,
     folder_type: str,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete")),
 ):
     """Unlink an expense processing folder from a company."""
     connector = DriveItemExpenseFolderConnector()

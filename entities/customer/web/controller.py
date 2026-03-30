@@ -7,14 +7,15 @@ from fastapi.templating import Jinja2Templates
 # Local Imports
 from entities.customer.business.service import CustomerService
 from entities.contact.business.service import ContactService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/customer", tags=["web", "customer"])
 templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
-async def list_customers(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def list_customers(request: Request, current_user: dict = Depends(require_module_web(Modules.CUSTOMERS))):
     """
     List all customers.
     """
@@ -31,7 +32,7 @@ async def list_customers(request: Request, current_user: dict = Depends(get_curr
 
 
 @router.get("/create")
-async def create_customer(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_customer(request: Request, current_user: dict = Depends(require_module_web(Modules.CUSTOMERS))):
     """
     Render create customer form.
     """
@@ -46,7 +47,7 @@ async def create_customer(request: Request, current_user: dict = Depends(get_cur
 
 
 @router.get("/{public_id}")
-async def view_customer(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_customer(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.CUSTOMERS))):
     """
     View a customer.
     """
@@ -65,7 +66,7 @@ async def view_customer(request: Request, public_id: str, current_user: dict = D
 
 
 @router.get("/{public_id}/edit")
-async def edit_customer(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_customer(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.CUSTOMERS))):
     """
     Edit a customer.
     """

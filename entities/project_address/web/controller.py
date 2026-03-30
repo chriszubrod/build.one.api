@@ -6,14 +6,15 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from entities.project_address.business.service import ProjectAddressService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/project_address", tags=["web", "project_address"])
 templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
-async def list_project_addresses(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def list_project_addresses(request: Request, current_user: dict = Depends(require_module_web(Modules.PROJECTS))):
     """
     List all project addresses.
     """
@@ -30,7 +31,7 @@ async def list_project_addresses(request: Request, current_user: dict = Depends(
 
 
 @router.get("/create")
-async def create_project_address(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_project_address(request: Request, current_user: dict = Depends(require_module_web(Modules.PROJECTS, "can_create"))):
     """
     Render create project address form.
     """
@@ -45,7 +46,7 @@ async def create_project_address(request: Request, current_user: dict = Depends(
 
 
 @router.get("/{public_id}")
-async def view_project_address(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_project_address(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.PROJECTS))):
     """
     View a project address.
     """
@@ -62,7 +63,7 @@ async def view_project_address(request: Request, public_id: str, current_user: d
 
 
 @router.get("/{public_id}/edit")
-async def edit_project_address(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_project_address(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.PROJECTS, "can_update"))):
     """
     Edit a project address.
     """

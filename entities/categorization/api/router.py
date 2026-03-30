@@ -11,7 +11,8 @@ from pydantic import BaseModel
 from entities.categorization.business.service import get_categorization_service
 from entities.categorization.business.model import DocumentCategory
 from entities.attachment.persistence.repo import AttachmentRepository
-from entities.auth.business.service import get_current_user_api as get_current_categorization_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class CategorizeTextRequest(BaseModel):
 
 
 @router.get("/categorization/categories")
-def list_categories_router(current_user: dict = Depends(get_current_categorization_api)):
+def list_categories_router(current_user: dict = Depends(require_module_api(Modules.CATEGORIZATION))):
     """
     List all available document categories.
     """
@@ -67,7 +68,7 @@ def list_categories_router(current_user: dict = Depends(get_current_categorizati
 def categorize_attachment_router(
     public_id: str,
     save: bool = Query(True, description="Save result to database"),
-    current_user: dict = Depends(get_current_categorization_api),
+    current_user: dict = Depends(require_module_api(Modules.CATEGORIZATION)),
 ):
     """
     Categorize an attachment using AI.
@@ -130,7 +131,7 @@ def categorize_attachment_router(
 @router.post("/categorization/categorize-text", response_model=CategorizationResponse)
 def categorize_text_router(
     body: CategorizeTextRequest,
-    current_user: dict = Depends(get_current_categorization_api),
+    current_user: dict = Depends(require_module_api(Modules.CATEGORIZATION)),
 ):
     """
     Categorize raw text (without an attachment).
@@ -168,7 +169,7 @@ def categorize_text_router(
 def confirm_categorization_router(
     public_id: str,
     body: ConfirmCategoryRequest,
-    current_user: dict = Depends(get_current_categorization_api),
+    current_user: dict = Depends(require_module_api(Modules.CATEGORIZATION, "can_update")),
 ):
     """
     Confirm or reject AI categorization.
@@ -223,7 +224,7 @@ def confirm_categorization_router(
 @router.get("/categorization/pending")
 def get_pending_categorization_router(
     limit: int = Query(50, ge=1, le=200),
-    current_user: dict = Depends(get_current_categorization_api),
+    current_user: dict = Depends(require_module_api(Modules.CATEGORIZATION)),
 ):
     """
     Get attachments pending categorization.
@@ -257,7 +258,7 @@ def get_pending_categorization_router(
 @router.post("/categorization/batch")
 def batch_categorize_router(
     limit: int = Query(10, ge=1, le=50),
-    current_user: dict = Depends(get_current_categorization_api),
+    current_user: dict = Depends(require_module_api(Modules.CATEGORIZATION, "can_update")),
 ):
     """
     Batch categorize pending attachments.

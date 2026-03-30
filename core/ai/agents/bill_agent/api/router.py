@@ -12,7 +12,8 @@ from core.ai.agents.bill_agent.api.schemas import (
 )
 from core.ai.agents.bill_agent.business.runner import run_bill_folder_processing
 from core.ai.agents.bill_agent.business.service import BillAgentService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
 from integrations.ms.sharepoint.external import client as sp_client
 
@@ -26,7 +27,7 @@ router = APIRouter(prefix="/api/v1/bill-agent", tags=["api", "bill-agent"])
 def trigger_run(
     request: BillAgentRunRequest,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.BILLS, "can_create")),
 ):
     """Trigger a bill folder processing run (runs in background)."""
     service = BillAgentService()
@@ -82,7 +83,7 @@ def _run_processing_background(
 @router.get("/run/{public_id}", response_model=BillAgentRunResponse)
 def get_run(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.BILLS)),
 ):
     """Check the status/results of a processing run."""
     service = BillAgentService()
@@ -108,7 +109,7 @@ def get_run(
 
 @router.get("/runs")
 def list_runs(
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.BILLS)),
 ):
     """List recent processing runs."""
     service = BillAgentService()
@@ -123,7 +124,7 @@ def list_runs(
 @router.get("/folder-status/{company_id}", response_model=BillAgentFolderStatusResponse)
 def get_folder_status(
     company_id: int,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.BILLS)),
 ):
     """Get the source folder file count and status for the UI summary."""
     connector = DriveItemBillFolderConnector()

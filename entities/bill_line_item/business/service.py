@@ -85,6 +85,12 @@ class BillLineItemService:
         """
         return self.repo.read_by_bill_id(bill_id=bill_id)
 
+    def read_by_project_id(self, project_id: int) -> list[BillLineItem]:
+        """
+        Read all bill line items for a specific project.
+        """
+        return self.repo.read_by_project_id(project_id=project_id)
+
     def update_by_public_id(
         self,
         public_id: str,

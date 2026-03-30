@@ -6,7 +6,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query, HTTPException
 
 # Local Imports
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from integrations.ms.mail.message.business.service import MsMessageService
 from integrations.ms.mail.message.api.schemas import (
     SendMessageRequest,
@@ -28,7 +29,7 @@ service = MsMessageService()
 # =============================================================================
 
 @router.get("/folders")
-async def list_mail_folders(current_user: dict = Depends(get_current_user_api)):
+async def list_mail_folders(current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     List all mail folders for the current user.
     """
@@ -42,7 +43,7 @@ async def list_mail_folders(current_user: dict = Depends(get_current_user_api)):
 
 
 @router.get("/folders/{folder_id}")
-async def get_mail_folder(folder_id: str, current_user: dict = Depends(get_current_user_api)):
+async def get_mail_folder(folder_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Get a specific mail folder.
     Use well-known names: inbox, drafts, sentitems, deleteditems, or folder ID.
@@ -68,7 +69,7 @@ async def list_messages(
     filter_query: Optional[str] = Query(default=None, alias="filter", description="OData filter"),
     search: Optional[str] = Query(default=None, description="Search query"),
     order_by: str = Query(default="receivedDateTime desc", description="Sort order"),
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC)),
 ):
     """
     List messages from a mail folder.
@@ -94,7 +95,7 @@ async def list_messages(
 async def get_message(
     message_id: str,
     include_body: bool = Query(default=True, description="Include full body content"),
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC)),
 ):
     """
     Get a specific message from Graph API.
@@ -113,7 +114,7 @@ async def get_message(
 async def mark_message_read(
     message_id: str,
     is_read: bool = Query(default=True, description="Mark as read or unread"),
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_update")),
 ):
     """
     Mark a message as read or unread.
@@ -128,7 +129,7 @@ async def mark_message_read(
 
 
 @router.get("/messages/{message_id}/attachments")
-async def list_message_attachments(message_id: str, current_user: dict = Depends(get_current_user_api)):
+async def list_message_attachments(message_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     List attachments for a message.
     """
@@ -143,7 +144,7 @@ async def list_message_attachments(message_id: str, current_user: dict = Depends
 
 @router.get("/messages/{message_id}/attachments/{attachment_id}")
 async def download_attachment(
-    message_id: str, attachment_id: str, current_user: dict = Depends(get_current_user_api)
+    message_id: str, attachment_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Download an attachment from a message.
@@ -169,7 +170,7 @@ async def download_attachment(
 # =============================================================================
 
 @router.post("/messages/send")
-async def send_message(request: SendMessageRequest, current_user: dict = Depends(get_current_user_api)):
+async def send_message(request: SendMessageRequest, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Send a new email message.
     """
@@ -192,7 +193,7 @@ async def send_message(request: SendMessageRequest, current_user: dict = Depends
 
 
 @router.post("/messages/drafts")
-async def create_draft(request: CreateDraftRequest, current_user: dict = Depends(get_current_user_api)):
+async def create_draft(request: CreateDraftRequest, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Create a new draft message.
     """
@@ -215,7 +216,7 @@ async def create_draft(request: CreateDraftRequest, current_user: dict = Depends
 
 @router.patch("/messages/drafts/{message_id}")
 async def update_draft(
-    message_id: str, request: UpdateDraftRequest, current_user: dict = Depends(get_current_user_api)
+    message_id: str, request: UpdateDraftRequest, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_update"))
 ):
     """
     Update an existing draft message.
@@ -239,7 +240,7 @@ async def update_draft(
 
 
 @router.post("/messages/drafts/{message_id}/send")
-async def send_draft(message_id: str, current_user: dict = Depends(get_current_user_api)):
+async def send_draft(message_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Send an existing draft message.
     """
@@ -258,7 +259,7 @@ async def send_draft(message_id: str, current_user: dict = Depends(get_current_u
 
 @router.post("/messages/{message_id}/reply")
 async def reply_to_message(
-    message_id: str, request: ReplyRequest, current_user: dict = Depends(get_current_user_api)
+    message_id: str, request: ReplyRequest, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Reply to a message.
@@ -281,7 +282,7 @@ async def reply_to_message(
 async def create_reply_draft(
     message_id: str,
     reply_all: bool = Query(default=False, description="Reply to all recipients"),
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create")),
 ):
     """
     Create a reply draft for more control before sending.
@@ -297,7 +298,7 @@ async def create_reply_draft(
 
 @router.post("/messages/{message_id}/forward")
 async def forward_message(
-    message_id: str, request: ForwardRequest, current_user: dict = Depends(get_current_user_api)
+    message_id: str, request: ForwardRequest, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Forward a message to recipients.
@@ -316,7 +317,7 @@ async def forward_message(
 
 
 @router.post("/messages/{message_id}/forward/draft")
-async def create_forward_draft(message_id: str, current_user: dict = Depends(get_current_user_api)):
+async def create_forward_draft(message_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Create a forward draft for more control before sending.
     """
@@ -335,7 +336,7 @@ async def create_forward_draft(message_id: str, current_user: dict = Depends(get
 
 @router.post("/messages/{message_id}/move")
 async def move_message(
-    message_id: str, request: MoveMessageRequest, current_user: dict = Depends(get_current_user_api)
+    message_id: str, request: MoveMessageRequest, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_update"))
 ):
     """
     Move a message to a different folder.
@@ -350,7 +351,7 @@ async def move_message(
 
 
 @router.delete("/messages/{message_id}")
-async def delete_message(message_id: str, current_user: dict = Depends(get_current_user_api)):
+async def delete_message(message_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))):
     """
     Delete a message from Graph API (moves to Deleted Items).
     """
@@ -368,7 +369,7 @@ async def delete_message(message_id: str, current_user: dict = Depends(get_curre
 # =============================================================================
 
 @router.post("/messages/{message_id}/link")
-async def link_message(message_id: str, current_user: dict = Depends(get_current_user_api)):
+async def link_message(message_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Link a message by storing it locally.
     Fetches from Graph API and stores in database.
@@ -383,7 +384,7 @@ async def link_message(message_id: str, current_user: dict = Depends(get_current
 
 
 @router.get("/linked")
-async def list_linked_messages(current_user: dict = Depends(get_current_user_api)):
+async def list_linked_messages(current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     List all linked messages from local storage.
     """
@@ -396,7 +397,7 @@ async def list_linked_messages(current_user: dict = Depends(get_current_user_api
 
 
 @router.get("/linked/{public_id}")
-async def get_linked_message(public_id: str, current_user: dict = Depends(get_current_user_api)):
+async def get_linked_message(public_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Get a linked message with full details.
     """
@@ -411,7 +412,7 @@ async def get_linked_message(public_id: str, current_user: dict = Depends(get_cu
 
 @router.get("/linked/by-conversation/{conversation_id}")
 async def get_linked_by_conversation(
-    conversation_id: str, current_user: dict = Depends(get_current_user_api)
+    conversation_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get all linked messages in a conversation thread.
@@ -425,7 +426,7 @@ async def get_linked_by_conversation(
 
 
 @router.get("/linked/by-sender/{from_email}")
-async def get_linked_by_sender(from_email: str, current_user: dict = Depends(get_current_user_api)):
+async def get_linked_by_sender(from_email: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Get all linked messages from a specific sender.
     """
@@ -438,7 +439,7 @@ async def get_linked_by_sender(from_email: str, current_user: dict = Depends(get
 
 
 @router.delete("/linked/{public_id}")
-async def unlink_message(public_id: str, current_user: dict = Depends(get_current_user_api)):
+async def unlink_message(public_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))):
     """
     Unlink a message by removing it from local storage.
     Does not delete from Graph API.
@@ -458,7 +459,7 @@ async def unlink_message(public_id: str, current_user: dict = Depends(get_curren
 
 @router.post("/linked/{public_id}/attachments")
 async def link_attachment(
-    public_id: str, request: LinkAttachmentRequest, current_user: dict = Depends(get_current_user_api)
+    public_id: str, request: LinkAttachmentRequest, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Link an attachment by downloading and optionally storing in Azure Blob.
@@ -478,7 +479,7 @@ async def link_attachment(
 
 @router.get("/linked/{public_id}/attachments")
 async def list_linked_attachments(
-    public_id: str, current_user: dict = Depends(get_current_user_api)
+    public_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     List attachments for a linked message.

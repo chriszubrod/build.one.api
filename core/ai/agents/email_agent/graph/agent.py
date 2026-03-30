@@ -191,7 +191,7 @@ def classify_email(
     from_email:          str,
     body:                str,
     attachments:         list[dict],
-    inbox_record_id:     int,
+    inbox_record_id:     Optional[int] = None,
     internet_message_id: Optional[str] = None,
     sender_role:         str           = "ORIGINATOR",
 ) -> ClassificationResult:

@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.payment_term.api.schemas import PaymentTermCreate, PaymentTermUpdate
 from entities.payment_term.business.service import PaymentTermService
-from entities.auth.business.service import get_current_user_api as get_current_payment_term_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "payment-term"])
@@ -14,7 +15,7 @@ service = PaymentTermService()
 
 
 @router.post("/create/payment-term")
-def create_payment_term_router(body: PaymentTermCreate, current_user: dict = Depends(get_current_payment_term_api)):
+def create_payment_term_router(body: PaymentTermCreate, current_user: dict = Depends(require_module_api(Modules.BILLS, "can_create"))):
     """
     Create a new payment term.
     
@@ -47,7 +48,7 @@ def create_payment_term_router(body: PaymentTermCreate, current_user: dict = Dep
 
 
 @router.get("/get/payment-terms")
-def get_payment_terms_router(current_user: dict = Depends(get_current_payment_term_api)):
+def get_payment_terms_router(current_user: dict = Depends(require_module_api(Modules.BILLS))):
     """
     Read all payment terms.
     """
@@ -59,7 +60,7 @@ def get_payment_terms_router(current_user: dict = Depends(get_current_payment_te
 
 
 @router.get("/get/payment-term/{public_id}")
-def get_payment_term_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_payment_term_api)):
+def get_payment_term_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS))):
     """
     Read a payment term by public ID.
     """
@@ -75,7 +76,7 @@ def get_payment_term_by_public_id_router(public_id: str, current_user: dict = De
 
 
 @router.put("/update/payment-term/{public_id}")
-def update_payment_term_by_public_id_router(public_id: str, body: PaymentTermUpdate, current_user: dict = Depends(get_current_payment_term_api)):
+def update_payment_term_by_public_id_router(public_id: str, body: PaymentTermUpdate, current_user: dict = Depends(require_module_api(Modules.BILLS, "can_update"))):
     """
     Update a payment term by public ID.
     
@@ -110,7 +111,7 @@ def update_payment_term_by_public_id_router(public_id: str, body: PaymentTermUpd
 
 
 @router.delete("/delete/payment-term/{public_id}")
-def delete_payment_term_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_payment_term_api)):
+def delete_payment_term_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS, "can_delete"))):
     """
     Delete a payment term by public ID.
     

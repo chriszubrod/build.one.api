@@ -6,14 +6,15 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from integrations.sync.business.service import SyncService
-from entities.auth.business.service import get_current_user_web as get_current_sync_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/sync", tags=["web", "sync"])
 templates = Jinja2Templates(directory="templates/sync")
 
 
 @router.get("/list")
-async def list_syncs(request: Request, current_user: dict = Depends(get_current_sync_web)):
+async def list_syncs(request: Request, current_user: dict = Depends(require_module_web(Modules.QBO_SYNC))):
     """
     List all sync records.
     """
@@ -29,7 +30,7 @@ async def list_syncs(request: Request, current_user: dict = Depends(get_current_
 
 
 @router.get("/create")
-async def create_sync(request: Request, current_user: dict = Depends(get_current_sync_web)):
+async def create_sync(request: Request, current_user: dict = Depends(require_module_web(Modules.QBO_SYNC, "can_create"))):
     """
     Render create sync form.
     """
@@ -43,7 +44,7 @@ async def create_sync(request: Request, current_user: dict = Depends(get_current
 
 
 @router.get("/{public_id}")
-async def view_sync(request: Request, public_id: str, current_user: dict = Depends(get_current_sync_web)):
+async def view_sync(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.QBO_SYNC))):
     """
     View a sync record.
     """
@@ -59,7 +60,7 @@ async def view_sync(request: Request, public_id: str, current_user: dict = Depen
 
 
 @router.get("/{public_id}/edit")
-async def edit_sync(request: Request, public_id: str, current_user: dict = Depends(get_current_sync_web)):
+async def edit_sync(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.QBO_SYNC, "can_update"))):
     """
     Edit a sync record.
     """

@@ -17,7 +17,8 @@ from entities.expense_line_item_attachment.business.service import ExpenseLineIt
 from entities.attachment.business.service import AttachmentService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 from entities.inbox.persistence.repo import InboxRecordRepository
 
 logger = logging.getLogger(__name__)
@@ -180,7 +181,7 @@ def _find_matching_qbo_purchase(expense, vendors) -> Optional[dict]:
 @router.get("/list")
 async def list_expenses(
     request: Request,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.EXPENSES)),
     page: int = 1,
     page_size: int = 50,
     search: Optional[str] = None,
@@ -314,13 +315,13 @@ async def list_expenses(
 
 
 @router.get("/edit/{public_id}")
-async def edit_expense_redirect(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_expense_redirect(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.EXPENSES))):
     """Redirect legacy /expense/edit/{id} to /expense/{id}/edit."""
     return RedirectResponse(url=f"/expense/{public_id}/edit", status_code=302)
 
 
 @router.get("/create")
-async def create_expense(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_expense(request: Request, current_user: dict = Depends(require_module_web(Modules.EXPENSES, "can_create"))):
     """
     Render create expense form.
     """
@@ -341,7 +342,7 @@ async def create_expense(request: Request, current_user: dict = Depends(get_curr
 
 
 @router.get("/{public_id}")
-async def view_expense(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_expense(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.EXPENSES))):
     """
     View an expense.
     """
@@ -436,7 +437,7 @@ async def view_expense(request: Request, public_id: str, current_user: dict = De
 
 
 @router.get("/{public_id}/edit")
-async def edit_expense(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_expense(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.EXPENSES, "can_update"))):
     """
     Edit an expense.
     """

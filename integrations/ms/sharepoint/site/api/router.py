@@ -14,7 +14,8 @@ from integrations.ms.sharepoint.site.api.schemas import (
 from integrations.ms.sharepoint.site.business.service import MsSiteService
 from integrations.ms.sharepoint.site.connector.company.business.service import SiteCompanyConnector
 from integrations.ms.sharepoint.external.client import list_site_drives
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/api/v1/ms/sharepoint/site", tags=["api", "ms-sharepo
 @router.get("/search")
 def search_sites_router(
     query: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Search for SharePoint sites via MS Graph API.
@@ -38,7 +39,7 @@ def search_sites_router(
 
 @router.get("/followed")
 def get_followed_sites_router(
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get SharePoint sites that the current user follows.
@@ -52,7 +53,7 @@ def get_followed_sites_router(
 @router.get("/{site_id}/drives")
 def get_drives_for_site_router(
     site_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get all drives (document libraries) for a SharePoint site.
@@ -65,7 +66,7 @@ def get_drives_for_site_router(
 @router.post("")
 def link_site_router(
     body: SiteLinkRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Link a SharePoint site by fetching from MS Graph and storing locally.
@@ -84,7 +85,7 @@ def link_site_router(
 
 @router.get("")
 def list_linked_sites_router(
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     List all linked SharePoint sites.
@@ -101,7 +102,7 @@ def list_linked_sites_router(
 @router.get("/{public_id}")
 def get_linked_site_router(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get a linked SharePoint site by public ID.
@@ -126,7 +127,7 @@ def get_linked_site_router(
 def update_linked_site_router(
     public_id: str,
     body: SiteUpdateRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_update"))
 ):
     """
     Update a linked SharePoint site's display name.
@@ -149,7 +150,7 @@ def update_linked_site_router(
 @router.delete("/{public_id}")
 def unlink_site_router(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))
 ):
     """
     Unlink a SharePoint site by removing it from the database.
@@ -169,7 +170,7 @@ def unlink_site_router(
 @router.post("/{public_id}/refresh")
 def refresh_linked_site_router(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Refresh a linked site by fetching latest data from MS Graph.
@@ -194,7 +195,7 @@ def refresh_linked_site_router(
 @router.post("/connector/company")
 def link_site_to_company_router(
     body: SiteCompanyLinkRequest,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))
 ):
     """
     Link a SharePoint site to a Company.
@@ -218,7 +219,7 @@ def link_site_to_company_router(
 @router.get("/connector/company/{company_id}")
 def get_site_for_company_router(
     company_id: int,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))
 ):
     """
     Get the linked SharePoint site for a Company.
@@ -243,7 +244,7 @@ def get_site_for_company_router(
 @router.delete("/connector/company/{company_id}")
 def unlink_site_from_company_router(
     company_id: int,
-    current_user: dict = Depends(get_current_user_api)
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))
 ):
     """
     Unlink the SharePoint site from a Company.

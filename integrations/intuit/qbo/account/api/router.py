@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends
 # Local Imports
 from integrations.intuit.qbo.account.api.schemas import QboAccountSync
 from integrations.intuit.qbo.account.business.service import QboAccountService
-from entities.auth.business.service import get_current_user_api as get_current_qbo_account_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-account"])
 service = QboAccountService()
 
 
 @router.post("/sync/qbo-accounts")
-def sync_qbo_accounts_router(body: QboAccountSync, current_user: dict = Depends(get_current_qbo_account_api)):
+def sync_qbo_accounts_router(body: QboAccountSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync Accounts from QBO.
     """
@@ -25,7 +26,7 @@ def sync_qbo_accounts_router(body: QboAccountSync, current_user: dict = Depends(
 
 
 @router.get("/get/qbo-accounts/realm/{realm_id}")
-def get_qbo_accounts_by_realm_id_router(realm_id: str, current_user: dict = Depends(get_current_qbo_account_api)):
+def get_qbo_accounts_by_realm_id_router(realm_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO accounts by realm ID.
     """
@@ -34,7 +35,7 @@ def get_qbo_accounts_by_realm_id_router(realm_id: str, current_user: dict = Depe
 
 
 @router.get("/get/qbo-account/qbo-id/{qbo_id}")
-def get_qbo_account_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(get_current_qbo_account_api)):
+def get_qbo_account_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO account by QBO ID.
     """
@@ -43,7 +44,7 @@ def get_qbo_account_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(g
 
 
 @router.get("/get/qbo-accounts")
-def get_qbo_accounts_router(current_user: dict = Depends(get_current_qbo_account_api)):
+def get_qbo_accounts_router(current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO accounts.
     """
@@ -52,7 +53,7 @@ def get_qbo_accounts_router(current_user: dict = Depends(get_current_qbo_account
 
 
 @router.get("/get/qbo-account/{id}")
-def get_qbo_account_by_id_router(id: int, current_user: dict = Depends(get_current_qbo_account_api)):
+def get_qbo_account_by_id_router(id: int, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO account by ID.
     """

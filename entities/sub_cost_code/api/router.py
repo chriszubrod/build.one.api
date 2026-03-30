@@ -12,7 +12,8 @@ from entities.sub_cost_code.api.schemas import (
     SubCostCodeAliasCreate,
     SubCostCodeAliasUpdate,
 )
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "sub-cost-code"])
@@ -21,7 +22,7 @@ alias_service = SubCostCodeAliasService()
 
 
 @router.post("/create/sub-cost-code")
-def create_sub_cost_code_router(body: SubCostCodeCreate, current_user: dict = Depends(get_current_user_api)):
+def create_sub_cost_code_router(body: SubCostCodeCreate, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_create"))):
     """
     Create a new sub cost code.
     
@@ -53,7 +54,7 @@ def create_sub_cost_code_router(body: SubCostCodeCreate, current_user: dict = De
 
 
 @router.get("/get/sub-cost-codes")
-def get_sub_cost_codes_router(current_user: dict = Depends(get_current_user_api)):
+def get_sub_cost_codes_router(current_user: dict = Depends(require_module_api(Modules.COST_CODES))):
     """
     Read all sub cost codes.
     """
@@ -64,7 +65,7 @@ def get_sub_cost_codes_router(current_user: dict = Depends(get_current_user_api)
 
 
 @router.get("/get/sub-cost-code/{public_id}")
-def get_sub_cost_code_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_sub_cost_code_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.COST_CODES))):
     """
     Read a sub cost code by public ID.
     """
@@ -75,7 +76,7 @@ def get_sub_cost_code_by_public_id_router(public_id: str, current_user: dict = D
 
 
 @router.put("/update/sub-cost-code/{public_id}")
-def update_sub_cost_code_by_id_router(public_id: str, body: SubCostCodeUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_sub_cost_code_by_id_router(public_id: str, body: SubCostCodeUpdate, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_update"))):
     """
     Update a sub cost code by ID.
     
@@ -109,7 +110,7 @@ def update_sub_cost_code_by_id_router(public_id: str, body: SubCostCodeUpdate, c
 
 
 @router.delete("/delete/sub-cost-code/{public_id}")
-def delete_sub_cost_code_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_sub_cost_code_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_delete"))):
     """
     Soft delete a sub cost code by ID.
     
@@ -141,7 +142,7 @@ def delete_sub_cost_code_by_public_id_router(public_id: str, current_user: dict 
 
 
 @router.post("/create/sub-cost-code-alias")
-def create_sub_cost_code_alias_router(body: SubCostCodeAliasCreate, current_user: dict = Depends(get_current_user_api)):
+def create_sub_cost_code_alias_router(body: SubCostCodeAliasCreate, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_create"))):
     """
     Create a new sub cost code alias.
     """
@@ -160,7 +161,7 @@ def create_sub_cost_code_alias_router(body: SubCostCodeAliasCreate, current_user
 
 
 @router.get("/get/sub-cost-code-aliases/{sub_cost_code_id}")
-def get_sub_cost_code_aliases_router(sub_cost_code_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_sub_cost_code_aliases_router(sub_cost_code_id: int, current_user: dict = Depends(require_module_api(Modules.COST_CODES))):
     """
     Read all aliases for a sub cost code.
     """
@@ -169,7 +170,7 @@ def get_sub_cost_code_aliases_router(sub_cost_code_id: int, current_user: dict =
 
 
 @router.delete("/delete/sub-cost-code-alias/{public_id}")
-def delete_sub_cost_code_alias_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_sub_cost_code_alias_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_delete"))):
     """
     Delete a sub cost code alias by public ID.
     """

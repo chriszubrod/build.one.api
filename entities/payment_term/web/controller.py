@@ -6,14 +6,15 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from entities.payment_term.business.service import PaymentTermService
-from entities.auth.business.service import get_current_user_web as get_current_payment_term_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/payment-term", tags=["web", "payment_term"])
 templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
-async def list_payment_terms(request: Request, current_user: dict = Depends(get_current_payment_term_web)):
+async def list_payment_terms(request: Request, current_user: dict = Depends(require_module_web(Modules.BILLS))):
     """
     List all payment terms.
     """
@@ -30,7 +31,7 @@ async def list_payment_terms(request: Request, current_user: dict = Depends(get_
 
 
 @router.get("/create")
-async def create_payment_term(request: Request, current_user: dict = Depends(get_current_payment_term_web)):
+async def create_payment_term(request: Request, current_user: dict = Depends(require_module_web(Modules.BILLS, "can_create"))):
     """
     Render create payment term form.
     """
@@ -45,7 +46,7 @@ async def create_payment_term(request: Request, current_user: dict = Depends(get
 
 
 @router.get("/{public_id}")
-async def view_payment_term(request: Request, public_id: str, current_user: dict = Depends(get_current_payment_term_web)):
+async def view_payment_term(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.BILLS))):
     """
     View a payment term.
     """
@@ -69,7 +70,7 @@ async def view_payment_term(request: Request, public_id: str, current_user: dict
 
 
 @router.get("/{public_id}/edit")
-async def edit_payment_term(request: Request, public_id: str, current_user: dict = Depends(get_current_payment_term_web)):
+async def edit_payment_term(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.BILLS, "can_update"))):
     """
     Edit a payment term.
     """

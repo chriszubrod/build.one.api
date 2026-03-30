@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.user.api.schemas import UserCreate, UserUpdate
 from entities.user.business.service import UserService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "user"])
 
 
 @router.post("/create/user")
-def create_user_router(body: UserCreate, current_user: dict = Depends(get_current_user_api)):
+def create_user_router(body: UserCreate, current_user: dict = Depends(require_module_api(Modules.USERS, "can_create"))):
     """
     Create a new user.
     
@@ -43,7 +44,7 @@ def create_user_router(body: UserCreate, current_user: dict = Depends(get_curren
 
 
 @router.get("/get/users")
-def get_users_router(current_user: dict = Depends(get_current_user_api)):
+def get_users_router(current_user: dict = Depends(require_module_api(Modules.USERS))):
     """
     Read all users.
     """
@@ -52,7 +53,7 @@ def get_users_router(current_user: dict = Depends(get_current_user_api)):
 
 
 @router.get("/get/user/{public_id}")
-def get_user_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_user_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.USERS))):
     """
     Read a user by public ID.
     """
@@ -61,7 +62,7 @@ def get_user_by_public_id_router(public_id: str, current_user: dict = Depends(ge
 
 
 @router.put("/update/user/{public_id}")
-def update_user_by_public_id_router(public_id: str, body: UserUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_user_by_public_id_router(public_id: str, body: UserUpdate, current_user: dict = Depends(require_module_api(Modules.USERS, "can_update"))):
     """
     Update a user by public ID.
     
@@ -93,7 +94,7 @@ def update_user_by_public_id_router(public_id: str, body: UserUpdate, current_us
 
 
 @router.delete("/delete/user/{public_id}")
-def delete_user_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_user_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.USERS, "can_delete"))):
     """
     Delete a user by public ID.
     

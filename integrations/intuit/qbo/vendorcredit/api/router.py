@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from integrations.intuit.qbo.vendorcredit.api.schemas import QboVendorCreditSyncRequest
 from integrations.intuit.qbo.vendorcredit.business.service import QboVendorCreditService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo", "vendorcredit"])
 
@@ -14,7 +15,7 @@ router = APIRouter(prefix="/api/v1", tags=["api", "qbo", "vendorcredit"])
 @router.post("/sync/qbo-vendorcredits")
 def sync_qbo_vendor_credits_router(
     body: QboVendorCreditSyncRequest,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create")),
 ):
     """
     Sync VendorCredits from QBO to local cache and optionally to BillCredit module.
@@ -42,7 +43,7 @@ def sync_qbo_vendor_credits_router(
 @router.get("/get/qbo-vendorcredits/realm/{realm_id}")
 def get_qbo_vendor_credits_by_realm_router(
     realm_id: str,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC)),
 ):
     """
     Get all cached VendorCredits for a realm.
@@ -55,7 +56,7 @@ def get_qbo_vendor_credits_by_realm_router(
 @router.get("/get/qbo-vendorcredit/{id}")
 def get_qbo_vendor_credit_by_id_router(
     id: int,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC)),
 ):
     """
     Get a cached VendorCredit by ID.
@@ -70,7 +71,7 @@ def get_qbo_vendor_credit_by_id_router(
 @router.get("/get/qbo-vendorcredit/{id}/lines")
 def get_qbo_vendor_credit_lines_router(
     id: int,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC)),
 ):
     """
     Get line items for a cached VendorCredit.
@@ -88,7 +89,7 @@ def get_qbo_vendor_credit_lines_router(
 def get_qbo_vendor_credit_by_qbo_id_router(
     qbo_id: str,
     realm_id: str,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC)),
 ):
     """
     Get a cached VendorCredit by QBO ID and realm.

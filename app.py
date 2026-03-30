@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import logging
 import config
 from urllib.parse import quote
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -129,6 +130,8 @@ from integrations.intuit.qbo.vendorcredit.api.router import router as qbo_vendor
 from integrations.intuit.qbo.bill.api.router import router as qbo_bill_api_router
 from integrations.intuit.qbo.invoice.api.router import router as qbo_invoice_api_router
 
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -286,11 +289,26 @@ async def startup_event():
     from core.ai.agents.bill_agent.scheduler import start_scheduler
     start_scheduler()
 
+    from core.notifications.sla_scheduler import start_scheduler as start_sla_scheduler
+    start_sla_scheduler()
+    logger.info("SLA breach scheduler started.")
+
+    # RBAC module validation
+    from shared.rbac import validate_module_constants
+    rbac_warnings = validate_module_constants()
+    for w in rbac_warnings:
+        logger.warning(w)
+    if not rbac_warnings:
+        logger.info("RBAC startup validation passed — all module constants match database records.")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     from core.ai.agents.bill_agent.scheduler import stop_scheduler
     stop_scheduler()
+
+    from core.notifications.sla_scheduler import stop_scheduler as stop_sla_scheduler
+    stop_sla_scheduler()
 
 
 def get_settings():

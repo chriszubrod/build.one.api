@@ -8,14 +8,15 @@ from fastapi.templating import Jinja2Templates
 from entities.role_module.business.service import RoleModuleService
 from entities.role.business.service import RoleService
 from entities.module.business.service import ModuleService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/role_module", tags=["web", "role_module"])
 templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
-async def list_role_modules(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def list_role_modules(request: Request, current_user: dict = Depends(require_module_web(Modules.ROLES))):
     """
     List all role modules.
     """
@@ -38,7 +39,7 @@ async def list_role_modules(request: Request, current_user: dict = Depends(get_c
 
 
 @router.get("/create")
-async def create_role_module(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_role_module(request: Request, current_user: dict = Depends(require_module_web(Modules.ROLES, "can_create"))):
     """
     Render create role module form.
     """
@@ -57,7 +58,7 @@ async def create_role_module(request: Request, current_user: dict = Depends(get_
 
 
 @router.get("/{public_id}")
-async def view_role_module(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_role_module(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.ROLES))):
     """
     View a role module.
     """
@@ -80,7 +81,7 @@ async def view_role_module(request: Request, public_id: str, current_user: dict 
 
 
 @router.get("/{public_id}/edit")
-async def edit_role_module(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_role_module(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.ROLES, "can_update"))):
     """
     Edit a role module.
     """

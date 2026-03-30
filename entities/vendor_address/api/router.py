@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.vendor_address.api.schemas import VendorAddressCreate, VendorAddressUpdate
 from entities.vendor_address.business.service import VendorAddressService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "vendor_address"])
 
 
 @router.post("/create/vendor_address")
-def create_vendor_address_router(body: VendorAddressCreate, current_user: dict = Depends(get_current_user_api)):
+def create_vendor_address_router(body: VendorAddressCreate, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_create"))):
     """
     Create a new vendor address.
     
@@ -44,7 +45,7 @@ def create_vendor_address_router(body: VendorAddressCreate, current_user: dict =
 
 
 @router.get("/get/vendor_addresses")
-def get_vendor_addresses_router(current_user: dict = Depends(get_current_user_api)):
+def get_vendor_addresses_router(current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read all vendor addresses.
     """
@@ -53,7 +54,7 @@ def get_vendor_addresses_router(current_user: dict = Depends(get_current_user_ap
 
 
 @router.get("/get/vendor_address/{public_id}")
-def get_vendor_address_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_vendor_address_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read a vendor address by public ID.
     """
@@ -62,7 +63,7 @@ def get_vendor_address_by_public_id_router(public_id: str, current_user: dict = 
 
 
 @router.get("/get/vendor_address/vendor/{vendor_id}")
-def get_vendor_address_by_vendor_id_router(vendor_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_vendor_address_by_vendor_id_router(vendor_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read a vendor address by vendor ID.
     """
@@ -71,7 +72,7 @@ def get_vendor_address_by_vendor_id_router(vendor_id: str, current_user: dict = 
 
 
 @router.get("/get/vendor_address/address/{address_id}")
-def get_vendor_address_by_address_id_router(address_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_vendor_address_by_address_id_router(address_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read a vendor address by address ID.
     """
@@ -80,7 +81,7 @@ def get_vendor_address_by_address_id_router(address_id: str, current_user: dict 
 
 
 @router.get("/get/vendor_address/address_type/{address_type_id}")
-def get_vendor_address_by_address_type_id_router(address_type_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_vendor_address_by_address_type_id_router(address_type_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read a vendor address by address type ID.
     """
@@ -89,7 +90,7 @@ def get_vendor_address_by_address_type_id_router(address_type_id: str, current_u
 
 
 @router.put("/update/vendor_address/{public_id}")
-def update_vendor_address_by_public_id_router(public_id: str, body: VendorAddressUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_vendor_address_by_public_id_router(public_id: str, body: VendorAddressUpdate, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_update"))):
     """
     Update a vendor address by public ID.
     
@@ -122,7 +123,7 @@ def update_vendor_address_by_public_id_router(public_id: str, body: VendorAddres
 
 
 @router.delete("/delete/vendor_address/{public_id}")
-def delete_vendor_address_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_vendor_address_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_delete"))):
     """
     Delete a vendor address by public ID.
     

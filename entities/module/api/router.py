@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.module.api.schemas import ModuleCreate, ModuleUpdate
 from entities.module.business.service import ModuleService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "module"])
 
 
 @router.post("/create/module")
-def create_module_router(body: ModuleCreate, current_user: dict = Depends(get_current_user_api)):
+def create_module_router(body: ModuleCreate, current_user: dict = Depends(require_module_api(Modules.ROLES, "can_create"))):
     """
     Create a new module.
     
@@ -43,7 +44,7 @@ def create_module_router(body: ModuleCreate, current_user: dict = Depends(get_cu
 
 
 @router.get("/get/modules")
-def get_modules_router(current_user: dict = Depends(get_current_user_api)):
+def get_modules_router(current_user: dict = Depends(require_module_api(Modules.ROLES))):
     """
     Read all modules.
     """
@@ -52,7 +53,7 @@ def get_modules_router(current_user: dict = Depends(get_current_user_api)):
 
 
 @router.get("/get/module/{public_id}")
-def get_module_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_module_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ROLES))):
     """
     Read a module by public ID.
     """
@@ -61,7 +62,7 @@ def get_module_by_public_id_router(public_id: str, current_user: dict = Depends(
 
 
 @router.put("/update/module/{public_id}")
-def update_module_by_public_id_router(public_id: str, body: ModuleUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_module_by_public_id_router(public_id: str, body: ModuleUpdate, current_user: dict = Depends(require_module_api(Modules.ROLES, "can_update"))):
     """
     Update a module by public ID.
     
@@ -93,7 +94,7 @@ def update_module_by_public_id_router(public_id: str, body: ModuleUpdate, curren
 
 
 @router.delete("/delete/module/{public_id}")
-def delete_module_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_module_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.ROLES, "can_delete"))):
     """
     Delete a module by public ID.
     

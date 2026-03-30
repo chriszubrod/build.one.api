@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.contact.api.schemas import ContactCreate, ContactUpdate
 from entities.contact.business.service import ContactService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "contact"])
 
 
 @router.post("/create/contact")
-def create_contact_router(body: ContactCreate, current_user: dict = Depends(get_current_user_api)):
+def create_contact_router(body: ContactCreate, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_create"))):
     """
     Create a new contact.
 
@@ -51,7 +52,7 @@ def create_contact_router(body: ContactCreate, current_user: dict = Depends(get_
 
 
 @router.get("/get/contacts")
-def get_contacts_router(current_user: dict = Depends(get_current_user_api)):
+def get_contacts_router(current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read all contacts.
     """
@@ -60,7 +61,7 @@ def get_contacts_router(current_user: dict = Depends(get_current_user_api)):
 
 
 @router.get("/get/contact/{public_id}")
-def get_contact_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_contact_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read a contact by public ID.
     """
@@ -69,7 +70,7 @@ def get_contact_by_public_id_router(public_id: str, current_user: dict = Depends
 
 
 @router.get("/get/contacts/user/{user_id}")
-def get_contacts_by_user_id_router(user_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_contacts_by_user_id_router(user_id: int, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read contacts by user ID.
     """
@@ -78,7 +79,7 @@ def get_contacts_by_user_id_router(user_id: int, current_user: dict = Depends(ge
 
 
 @router.get("/get/contacts/company/{company_id}")
-def get_contacts_by_company_id_router(company_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_contacts_by_company_id_router(company_id: int, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read contacts by company ID.
     """
@@ -87,7 +88,7 @@ def get_contacts_by_company_id_router(company_id: int, current_user: dict = Depe
 
 
 @router.get("/get/contacts/customer/{customer_id}")
-def get_contacts_by_customer_id_router(customer_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_contacts_by_customer_id_router(customer_id: int, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read contacts by customer ID.
     """
@@ -96,7 +97,7 @@ def get_contacts_by_customer_id_router(customer_id: int, current_user: dict = De
 
 
 @router.get("/get/contacts/project/{project_id}")
-def get_contacts_by_project_id_router(project_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_contacts_by_project_id_router(project_id: int, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read contacts by project ID.
     """
@@ -105,7 +106,7 @@ def get_contacts_by_project_id_router(project_id: int, current_user: dict = Depe
 
 
 @router.get("/get/contacts/vendor/{vendor_id}")
-def get_contacts_by_vendor_id_router(vendor_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_contacts_by_vendor_id_router(vendor_id: int, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read contacts by vendor ID.
     """
@@ -114,7 +115,7 @@ def get_contacts_by_vendor_id_router(vendor_id: int, current_user: dict = Depend
 
 
 @router.put("/update/contact/{public_id}")
-def update_contact_by_public_id_router(public_id: str, body: ContactUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_contact_by_public_id_router(public_id: str, body: ContactUpdate, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_update"))):
     """
     Update a contact by public ID.
 
@@ -149,7 +150,7 @@ def update_contact_by_public_id_router(public_id: str, body: ContactUpdate, curr
 
 
 @router.delete("/delete/contact/{public_id}")
-def delete_contact_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_contact_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_delete"))):
     """
     Delete a contact by public ID.
 

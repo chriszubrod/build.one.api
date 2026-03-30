@@ -11,7 +11,8 @@ from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import 
 from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import PurchaseLineExpenseLineItemRepository
 from entities.expense.business.service import ExpenseService
 from entities.expense_line_item.business.service import ExpenseLineItemService
-from entities.auth.business.service import get_current_user_api as get_current_qbo_purchase_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ service = QboPurchaseService()
 
 
 @router.post("/sync/qbo-purchases")
-def sync_qbo_purchases_router(body: QboPurchaseSync, current_user: dict = Depends(get_current_qbo_purchase_api)):
+def sync_qbo_purchases_router(body: QboPurchaseSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync Purchases from QBO.
     """
@@ -35,7 +36,7 @@ def sync_qbo_purchases_router(body: QboPurchaseSync, current_user: dict = Depend
 
 
 @router.get("/get/qbo-purchases/realm/{realm_id}")
-def get_qbo_purchases_by_realm_id_router(realm_id: str, current_user: dict = Depends(get_current_qbo_purchase_api)):
+def get_qbo_purchases_by_realm_id_router(realm_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO purchases by realm ID.
     """
@@ -44,7 +45,7 @@ def get_qbo_purchases_by_realm_id_router(realm_id: str, current_user: dict = Dep
 
 
 @router.get("/get/qbo-purchase/qbo-id/{qbo_id}")
-def get_qbo_purchase_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(get_current_qbo_purchase_api)):
+def get_qbo_purchase_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO purchase by QBO ID.
     """
@@ -53,7 +54,7 @@ def get_qbo_purchase_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(
 
 
 @router.get("/get/qbo-purchases")
-def get_qbo_purchases_router(current_user: dict = Depends(get_current_qbo_purchase_api)):
+def get_qbo_purchases_router(current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO purchases.
     """
@@ -62,7 +63,7 @@ def get_qbo_purchases_router(current_user: dict = Depends(get_current_qbo_purcha
 
 
 @router.get("/get/qbo-purchase/{id}")
-def get_qbo_purchase_by_id_router(id: int, current_user: dict = Depends(get_current_qbo_purchase_api)):
+def get_qbo_purchase_by_id_router(id: int, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO purchase by ID.
     """
@@ -71,7 +72,7 @@ def get_qbo_purchase_by_id_router(id: int, current_user: dict = Depends(get_curr
 
 
 @router.get("/get/qbo-purchase/{id}/lines")
-def get_qbo_purchase_lines_router(id: int, current_user: dict = Depends(get_current_qbo_purchase_api)):
+def get_qbo_purchase_lines_router(id: int, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO purchase lines for a purchase.
     """
@@ -82,7 +83,7 @@ def get_qbo_purchase_lines_router(id: int, current_user: dict = Depends(get_curr
 @router.post("/cancel-expense-from-qbo-purchase/{expense_public_id}")
 def cancel_expense_from_qbo_purchase_router(
     expense_public_id: str,
-    current_user: dict = Depends(get_current_qbo_purchase_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete")),
 ):
     """
     Unlink and delete an expense created from QBO purchase, so the purchase shows again in needing update list.
@@ -117,7 +118,7 @@ def cancel_expense_from_qbo_purchase_router(
 @router.post("/ensure-expense-from-qbo-purchase/{qbo_purchase_id}")
 def ensure_expense_from_qbo_purchase_router(
     qbo_purchase_id: int,
-    current_user: dict = Depends(get_current_qbo_purchase_api),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create")),
 ):
     """
     Ensure Expense and ExpenseLineItems exist for this QBO purchase, then return expense_public_id for redirect.

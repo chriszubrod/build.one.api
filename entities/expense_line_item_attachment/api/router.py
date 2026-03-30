@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.expense_line_item_attachment.api.schemas import ExpenseLineItemAttachmentCreate
 from entities.expense_line_item_attachment.business.service import ExpenseLineItemAttachmentService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "expense_line_item_attachment"])
@@ -15,7 +16,7 @@ service = ExpenseLineItemAttachmentService()
 
 @router.post("/create/expense-line-item-attachment")
 def create_expense_line_item_attachment_router(
-    body: ExpenseLineItemAttachmentCreate, current_user: dict = Depends(get_current_user_api)
+    body: ExpenseLineItemAttachmentCreate, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_create"))
 ):
     """
     Create a new expense line item attachment.
@@ -46,7 +47,7 @@ def create_expense_line_item_attachment_router(
 
 
 @router.get("/get/expense-line-item-attachments")
-def get_expense_line_item_attachments_router(current_user: dict = Depends(get_current_user_api)):
+def get_expense_line_item_attachments_router(current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     """
     Read all expense line item attachments.
     """
@@ -59,7 +60,7 @@ def get_expense_line_item_attachments_router(current_user: dict = Depends(get_cu
 
 @router.get("/get/expense-line-item-attachment/{public_id}")
 def get_expense_line_item_attachment_by_public_id_router(
-    public_id: str, current_user: dict = Depends(get_current_user_api)
+    public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))
 ):
     """
     Read an expense line item attachment by public ID.
@@ -77,7 +78,7 @@ def get_expense_line_item_attachment_by_public_id_router(
 
 @router.get("/get/expense-line-item-attachment/by-expense-line-item/{expense_line_item_id}")
 def get_expense_line_item_attachment_by_expense_line_item_id_router(
-    expense_line_item_id: str, current_user: dict = Depends(get_current_user_api)
+    expense_line_item_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))
 ):
     """
     Read expense line item attachment by expense line item public ID.
@@ -96,7 +97,7 @@ def get_expense_line_item_attachment_by_expense_line_item_id_router(
 
 @router.delete("/delete/expense-line-item-attachment/{public_id}")
 def delete_expense_line_item_attachment_by_public_id_router(
-    public_id: str, current_user: dict = Depends(get_current_user_api)
+    public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_delete"))
 ):
     """
     Delete an expense line item attachment by public ID.

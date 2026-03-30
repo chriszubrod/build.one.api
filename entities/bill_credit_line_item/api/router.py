@@ -7,14 +7,15 @@ from decimal import Decimal
 # Local Imports
 from entities.bill_credit_line_item.api.schemas import BillCreditLineItemCreate, BillCreditLineItemUpdate
 from entities.bill_credit_line_item.business.service import BillCreditLineItemService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_credit_line_item"])
 
 
 @router.post("/create/bill-credit-line-item")
-def create_bill_credit_line_item_router(body: BillCreditLineItemCreate, current_user: dict = Depends(get_current_user_api)):
+def create_bill_credit_line_item_router(body: BillCreditLineItemCreate, current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_create"))):
     """
     Create a new bill credit line item.
     
@@ -53,7 +54,7 @@ def create_bill_credit_line_item_router(body: BillCreditLineItemCreate, current_
 
 
 @router.get("/get/bill-credit-line-items")
-def get_bill_credit_line_items_router(current_user: dict = Depends(get_current_user_api)):
+def get_bill_credit_line_items_router(current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS))):
     """
     Read all bill credit line items.
     """
@@ -62,7 +63,7 @@ def get_bill_credit_line_items_router(current_user: dict = Depends(get_current_u
 
 
 @router.get("/get/bill-credit-line-item/{public_id}")
-def get_bill_credit_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_bill_credit_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS))):
     """
     Read a bill credit line item by public ID.
     """
@@ -73,7 +74,7 @@ def get_bill_credit_line_item_by_public_id_router(public_id: str, current_user: 
 
 
 @router.get("/get/bill-credit-line-items/by-bill-credit/{bill_credit_public_id}")
-def get_bill_credit_line_items_by_bill_credit_router(bill_credit_public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_bill_credit_line_items_by_bill_credit_router(bill_credit_public_id: str, current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS))):
     """
     Read all bill credit line items for a specific bill credit.
     """
@@ -88,7 +89,7 @@ def get_bill_credit_line_items_by_bill_credit_router(bill_credit_public_id: str,
 
 
 @router.put("/update/bill-credit-line-item/{public_id}")
-def update_bill_credit_line_item_by_public_id_router(public_id: str, body: BillCreditLineItemUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_bill_credit_line_item_by_public_id_router(public_id: str, body: BillCreditLineItemUpdate, current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_update"))):
     """
     Update a bill credit line item by public ID.
     
@@ -129,7 +130,7 @@ def update_bill_credit_line_item_by_public_id_router(public_id: str, body: BillC
 
 
 @router.delete("/delete/bill-credit-line-item/{public_id}")
-def delete_bill_credit_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_bill_credit_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_delete"))):
     """
     Delete a bill credit line item by public ID.
     

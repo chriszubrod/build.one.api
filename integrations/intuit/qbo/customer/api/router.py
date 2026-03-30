@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends
 # Local Imports
 from integrations.intuit.qbo.customer.api.schemas import QboCustomerSync
 from integrations.intuit.qbo.customer.business.service import QboCustomerService
-from entities.auth.business.service import get_current_user_api as get_current_qbo_customer_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-customer"])
 service = QboCustomerService()
 
 
 @router.post("/sync/qbo-customers")
-def sync_qbo_customers_router(body: QboCustomerSync, current_user: dict = Depends(get_current_qbo_customer_api)):
+def sync_qbo_customers_router(body: QboCustomerSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync Customers from QBO.
     """
@@ -26,7 +27,7 @@ def sync_qbo_customers_router(body: QboCustomerSync, current_user: dict = Depend
 
 
 @router.get("/get/qbo-customers")
-def get_qbo_customers_router(current_user: dict = Depends(get_current_qbo_customer_api)):
+def get_qbo_customers_router(current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO customers.
     """
@@ -35,7 +36,7 @@ def get_qbo_customers_router(current_user: dict = Depends(get_current_qbo_custom
 
 
 @router.get("/get/qbo-customers/realm/{realm_id}")
-def get_qbo_customers_by_realm_id_router(realm_id: str, current_user: dict = Depends(get_current_qbo_customer_api)):
+def get_qbo_customers_by_realm_id_router(realm_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO customers by realm ID.
     """
@@ -44,7 +45,7 @@ def get_qbo_customers_by_realm_id_router(realm_id: str, current_user: dict = Dep
 
 
 @router.get("/get/qbo-customer/{qbo_id}")
-def get_qbo_customer_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(get_current_qbo_customer_api)):
+def get_qbo_customer_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO customer by QBO ID.
     """

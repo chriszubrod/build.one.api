@@ -8,14 +8,15 @@ from decimal import Decimal
 from entities.bill_credit.api.schemas import BillCreditCreate, BillCreditUpdate
 from entities.bill_credit.business.service import BillCreditService
 from entities.bill_credit.business.complete_service import BillCreditCompleteService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_credit"])
 
 
 @router.post("/create/bill-credit")
-def create_bill_credit_router(body: BillCreditCreate, current_user: dict = Depends(get_current_user_api)):
+def create_bill_credit_router(body: BillCreditCreate, current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_create"))):
     """
     Create a new bill credit.
     
@@ -49,7 +50,7 @@ def create_bill_credit_router(body: BillCreditCreate, current_user: dict = Depen
 
 
 @router.get("/get/bill-credits")
-def get_bill_credits_router(current_user: dict = Depends(get_current_user_api)):
+def get_bill_credits_router(current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS))):
     """
     Read all bill credits.
     """
@@ -58,7 +59,7 @@ def get_bill_credits_router(current_user: dict = Depends(get_current_user_api)):
 
 
 @router.get("/get/bill-credit/by-credit-number-and-vendor")
-def get_bill_credit_by_credit_number_and_vendor_router(credit_number: str, vendor_public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_bill_credit_by_credit_number_and_vendor_router(credit_number: str, vendor_public_id: str, current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS))):
     """
     Read a bill credit by credit number and vendor public ID.
     """
@@ -69,7 +70,7 @@ def get_bill_credit_by_credit_number_and_vendor_router(credit_number: str, vendo
 
 
 @router.get("/get/bill-credit/{public_id}")
-def get_bill_credit_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_bill_credit_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS))):
     """
     Read a bill credit by public ID.
     """
@@ -80,7 +81,7 @@ def get_bill_credit_by_public_id_router(public_id: str, current_user: dict = Dep
 
 
 @router.put("/update/bill-credit/{public_id}")
-def update_bill_credit_by_public_id_router(public_id: str, body: BillCreditUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_bill_credit_by_public_id_router(public_id: str, body: BillCreditUpdate, current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_update"))):
     """
     Update a bill credit by public ID.
     
@@ -116,7 +117,7 @@ def update_bill_credit_by_public_id_router(public_id: str, body: BillCreditUpdat
 
 
 @router.delete("/delete/bill-credit/{public_id}")
-def delete_bill_credit_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_bill_credit_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_delete"))):
     """
     Delete a bill credit by public ID.
     
@@ -145,7 +146,7 @@ def delete_bill_credit_by_public_id_router(public_id: str, current_user: dict = 
 
 
 @router.post("/complete/bill-credit/{public_id}")
-def complete_bill_credit_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def complete_bill_credit_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_complete"))):
     """
     Complete a bill credit: finalize and upload attachments to module folders.
     """

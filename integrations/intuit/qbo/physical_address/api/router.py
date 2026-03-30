@@ -10,14 +10,15 @@ from integrations.intuit.qbo.physical_address.api.schemas import (
     QboPhysicalAddressSyncRequest,
 )
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
-from entities.auth.business.service import get_current_user_api as get_current_qbo_physical_address_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-physical-address"])
 service = QboPhysicalAddressService()
 
 
 @router.post("/intuit/qbo/physical-address/create")
-def create_qbo_physical_address_router(body: QboPhysicalAddressCreate, current_user: dict = Depends(get_current_qbo_physical_address_api)):
+def create_qbo_physical_address_router(body: QboPhysicalAddressCreate, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Create a new QBO physical address.
     """
@@ -34,7 +35,7 @@ def create_qbo_physical_address_router(body: QboPhysicalAddressCreate, current_u
 
 
 @router.get("/intuit/qbo/physical-address/list")
-def list_qbo_physical_addresses_router(current_user: dict = Depends(get_current_qbo_physical_address_api)):
+def list_qbo_physical_addresses_router(current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all QBO physical addresses.
     """
@@ -43,7 +44,7 @@ def list_qbo_physical_addresses_router(current_user: dict = Depends(get_current_
 
 
 @router.get("/intuit/qbo/physical-address/read/{id}")
-def read_qbo_physical_address_by_id_router(id: int, current_user: dict = Depends(get_current_qbo_physical_address_api)):
+def read_qbo_physical_address_by_id_router(id: int, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a QBO physical address by ID.
     """
@@ -54,7 +55,7 @@ def read_qbo_physical_address_by_id_router(id: int, current_user: dict = Depends
 
 
 @router.put("/intuit/qbo/physical-address/update/{id}")
-def update_qbo_physical_address_by_id_router(id: int, body: QboPhysicalAddressUpdate, current_user: dict = Depends(get_current_qbo_physical_address_api)):
+def update_qbo_physical_address_by_id_router(id: int, body: QboPhysicalAddressUpdate, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_update"))):
     """
     Update a QBO physical address by ID.
     """
@@ -75,7 +76,7 @@ def update_qbo_physical_address_by_id_router(id: int, body: QboPhysicalAddressUp
 
 
 @router.delete("/intuit/qbo/physical-address/delete/{id}")
-def delete_qbo_physical_address_by_id_router(id: int, current_user: dict = Depends(get_current_qbo_physical_address_api)):
+def delete_qbo_physical_address_by_id_router(id: int, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))):
     """
     Delete a QBO physical address by ID.
     """
@@ -86,7 +87,7 @@ def delete_qbo_physical_address_by_id_router(id: int, current_user: dict = Depen
 
 
 @router.post("/intuit/qbo/physical-address/sync")
-def sync_from_qbo_physical_address_router(body: QboPhysicalAddressSyncRequest, current_user: dict = Depends(get_current_qbo_physical_address_api)):
+def sync_from_qbo_physical_address_router(body: QboPhysicalAddressSyncRequest, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync a QBO physical address from QBO CompanyInfo API and store locally.
     """

@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.bill_line_item_attachment.api.schemas import BillLineItemAttachmentCreate
 from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
-from entities.auth.business.service import get_current_user_api as get_current_bill_line_item_attachment_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_line_item_attachment"])
@@ -15,7 +16,7 @@ service = BillLineItemAttachmentService()
 
 @router.post("/create/bill-line-item-attachment")
 def create_bill_line_item_attachment_router(
-    body: BillLineItemAttachmentCreate, current_user: dict = Depends(get_current_bill_line_item_attachment_api)
+    body: BillLineItemAttachmentCreate, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_create"))
 ):
     """
     Create a new bill line item attachment.
@@ -46,7 +47,7 @@ def create_bill_line_item_attachment_router(
 
 
 @router.get("/get/bill-line-item-attachments")
-def get_bill_line_item_attachments_router(current_user: dict = Depends(get_current_bill_line_item_attachment_api)):
+def get_bill_line_item_attachments_router(current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     """
     Read all bill line item attachments.
     """
@@ -59,7 +60,7 @@ def get_bill_line_item_attachments_router(current_user: dict = Depends(get_curre
 
 @router.get("/get/bill-line-item-attachment/{public_id}")
 def get_bill_line_item_attachment_by_public_id_router(
-    public_id: str, current_user: dict = Depends(get_current_bill_line_item_attachment_api)
+    public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))
 ):
     """
     Read a bill line item attachment by public ID.
@@ -77,7 +78,7 @@ def get_bill_line_item_attachment_by_public_id_router(
 
 @router.get("/get/bill-line-item-attachment/by-bill-line-item/{bill_line_item_id}")
 def get_bill_line_item_attachment_by_bill_line_item_id_router(
-    bill_line_item_id: str, current_user: dict = Depends(get_current_bill_line_item_attachment_api)
+    bill_line_item_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))
 ):
     """
     Read bill line item attachment by bill line item public ID.
@@ -96,7 +97,7 @@ def get_bill_line_item_attachment_by_bill_line_item_id_router(
 
 @router.delete("/delete/bill-line-item-attachment/{public_id}")
 def delete_bill_line_item_attachment_by_public_id_router(
-    public_id: str, current_user: dict = Depends(get_current_bill_line_item_attachment_api)
+    public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_delete"))
 ):
     """
     Delete a bill line item attachment by public ID.

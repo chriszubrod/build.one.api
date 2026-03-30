@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends
 # Local Imports
 from integrations.sync.api.schemas import SyncCreate, SyncUpdate
 from integrations.sync.business.service import SyncService
-from entities.auth.business.service import get_current_user_api as get_current_sync_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/api/v1", tags=["api", "sync"])
 service = SyncService()
 
 
 @router.post("/create/sync")
-def create_sync_router(body: SyncCreate, current_user: dict = Depends(get_current_sync_api)):
+def create_sync_router(body: SyncCreate, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Create a new sync record.
     """
@@ -27,7 +28,7 @@ def create_sync_router(body: SyncCreate, current_user: dict = Depends(get_curren
 
 
 @router.get("/get/syncs")
-def get_syncs_router(current_user: dict = Depends(get_current_sync_api)):
+def get_syncs_router(current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read all sync records.
     """
@@ -36,7 +37,7 @@ def get_syncs_router(current_user: dict = Depends(get_current_sync_api)):
 
 
 @router.get("/get/sync/{public_id}")
-def get_sync_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_sync_api)):
+def get_sync_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
     """
     Read a sync record by public ID.
     """
@@ -45,7 +46,7 @@ def get_sync_by_public_id_router(public_id: str, current_user: dict = Depends(ge
 
 
 @router.put("/update/sync/{public_id}")
-def update_sync_by_public_id_router(public_id: str, body: SyncUpdate, current_user: dict = Depends(get_current_sync_api)):
+def update_sync_by_public_id_router(public_id: str, body: SyncUpdate, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_update"))):
     """
     Update a sync record by public ID.
     """
@@ -54,7 +55,7 @@ def update_sync_by_public_id_router(public_id: str, body: SyncUpdate, current_us
 
 
 @router.delete("/delete/sync/{public_id}")
-def delete_sync_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_sync_api)):
+def delete_sync_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))):
     """
     Delete a sync record by public ID.
     """

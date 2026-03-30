@@ -23,7 +23,8 @@ from entities.contract_labor.api.schemas import (
     ContractLaborBillUpdateResponse,
 )
 from entities.contract_labor.persistence.line_item_repo import ContractLaborLineItemRepository
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ router = APIRouter(
 
 
 @router.post("", response_model=ContractLaborResponse, status_code=201)
-def create_contract_labor(contract_labor: ContractLaborCreate, current_user: dict = Depends(get_current_user_api)):
+def create_contract_labor(contract_labor: ContractLaborCreate, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_create"))):
     """
     Create a new contract labor entry.
     
@@ -93,6 +94,7 @@ def read_contract_labors(
     end_date: Optional[str] = Query(default=None),
     sort_by: str = Query(default="WorkDate"),
     sort_direction: str = Query(default="DESC"),
+    current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR)),
 ):
     """
     Read contract labor entries with pagination and filtering.
@@ -157,6 +159,7 @@ def count_contract_labors(
     billing_period_start: Optional[str] = Query(default=None),
     start_date: Optional[str] = Query(default=None),
     end_date: Optional[str] = Query(default=None),
+    current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR)),
 ):
     """
     Count contract labor entries matching the filter criteria.
@@ -179,7 +182,7 @@ def count_contract_labors(
 
 
 @router.get("/by-status/{status}", response_model=list[ContractLaborResponse])
-def read_contract_labors_by_status(status: str):
+def read_contract_labors_by_status(status: str, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR))):
     """
     Read all contract labor entries with a specific status.
     """
@@ -223,7 +226,7 @@ def read_contract_labors_by_status(status: str):
 
 
 @router.get("/by-billing-period/{billing_period_start}", response_model=list[ContractLaborResponse])
-def read_contract_labors_by_billing_period(billing_period_start: str):
+def read_contract_labors_by_billing_period(billing_period_start: str, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR))):
     """
     Read all contract labor entries for a specific billing period.
     """
@@ -267,7 +270,7 @@ def read_contract_labors_by_billing_period(billing_period_start: str):
 
 
 @router.get("/by-import-batch/{import_batch_id}", response_model=list[ContractLaborResponse])
-def read_contract_labors_by_import_batch(import_batch_id: str):
+def read_contract_labors_by_import_batch(import_batch_id: str, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR))):
     """
     Read all contract labor entries from a specific import batch.
     """
@@ -311,7 +314,7 @@ def read_contract_labors_by_import_batch(import_batch_id: str):
 
 
 @router.get("/last-rate/{vendor_public_id}", response_model=ContractLaborLastRateResponse)
-def get_last_rate_for_vendor(vendor_public_id: str):
+def get_last_rate_for_vendor(vendor_public_id: str, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR))):
     """
     Get the last used hourly rate and markup for a vendor (for carry-forward).
     """
@@ -329,7 +332,7 @@ def get_last_rate_for_vendor(vendor_public_id: str):
 
 
 @router.get("/{public_id}", response_model=ContractLaborResponse)
-def read_contract_labor_by_public_id(public_id: str):
+def read_contract_labor_by_public_id(public_id: str, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR))):
     """
     Read a contract labor entry by public ID.
     """
@@ -374,7 +377,7 @@ def read_contract_labor_by_public_id(public_id: str):
 
 
 @router.put("/{public_id}", response_model=ContractLaborResponse)
-def update_contract_labor(public_id: str, contract_labor: ContractLaborUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_contract_labor(public_id: str, contract_labor: ContractLaborUpdate, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_update"))):
     """
     Update a contract labor entry by public ID.
     
@@ -404,7 +407,7 @@ def update_contract_labor(public_id: str, contract_labor: ContractLaborUpdate, c
 
 
 @router.delete("/{public_id}", response_model=ContractLaborResponse)
-def delete_contract_labor(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_contract_labor(public_id: str, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_delete"))):
     """
     Delete a contract labor entry by public ID.
     
@@ -433,7 +436,7 @@ def delete_contract_labor(public_id: str, current_user: dict = Depends(get_curre
 
 
 @router.put("/{public_id}/bill", response_model=ContractLaborBillUpdateResponse)
-def update_contract_labor_bill(public_id: str, bill_update: ContractLaborBillUpdate):
+def update_contract_labor_bill(public_id: str, bill_update: ContractLaborBillUpdate, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_update"))):
     """
     Update bill info and line items for a contract labor entry.
     Creates, updates, or deletes line items as needed.
@@ -538,7 +541,7 @@ def update_contract_labor_bill(public_id: str, bill_update: ContractLaborBillUpd
 
 
 @router.post("/{public_id}/mark-ready", response_model=ContractLaborResponse)
-def mark_contract_labor_as_ready(public_id: str):
+def mark_contract_labor_as_ready(public_id: str, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_update"))):
     """
     Mark a contract labor entry as ready for billing.
     Validates that all required fields (vendor, project, subcostcode, rate, hours) are set.
@@ -586,7 +589,7 @@ def mark_contract_labor_as_ready(public_id: str):
 
 
 @router.post("/bulk-mark-ready", response_model=ContractLaborBulkMarkReadyResponse)
-def bulk_mark_contract_labors_as_ready(request: ContractLaborBulkMarkReady):
+def bulk_mark_contract_labors_as_ready(request: ContractLaborBulkMarkReady, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_update"))):
     """
     Mark multiple contract labor entries as ready for billing.
     """
@@ -604,7 +607,7 @@ def bulk_mark_contract_labors_as_ready(request: ContractLaborBulkMarkReady):
 
 
 @router.post("/bulk-delete", response_model=ContractLaborBulkDeleteResponse)
-def bulk_delete_contract_labors(request: ContractLaborBulkDelete):
+def bulk_delete_contract_labors(request: ContractLaborBulkDelete, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_delete"))):
     """
     Delete multiple contract labor entries.
     Only entries with status 'pending_review' can be deleted.
@@ -629,6 +632,7 @@ async def import_contract_labor_excel(
     default_hourly_rate: Optional[str] = Form(None),
     default_markup: Optional[str] = Form(None),
     carry_forward_rates: bool = Form(True),
+    current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_create")),
 ):
     """
     Import contract labor entries from an Excel file.
@@ -711,6 +715,7 @@ async def import_contract_labor_excel(
 async def preview_contract_labor_import(
     file: UploadFile = File(...),
     max_rows: int = Query(default=10, ge=1, le=50),
+    current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_create")),
 ):
     """
     Preview what would be imported from an Excel file without actually importing.
@@ -754,7 +759,7 @@ async def preview_contract_labor_import(
 # ============================================================================
 
 @router.post("/billing/regenerate-pdf")
-async def regenerate_pdf_for_entries(body: ContractLaborBulkDelete):
+async def regenerate_pdf_for_entries(body: ContractLaborBulkDelete, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_create"))):
     """
     Regenerate invoice PDF for selected billed ContractLabor entries.
     Returns the PDF directly for viewing in a new browser tab.
@@ -784,7 +789,7 @@ async def regenerate_pdf_for_entries(body: ContractLaborBulkDelete):
 
 
 @router.post("/billing/generate-pdfs/{bill_public_id}")
-async def generate_pdfs_for_bill(bill_public_id: str):
+async def generate_pdfs_for_bill(bill_public_id: str, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_create"))):
     """
     Generate PDF attachments for all line items in a specific bill.
     
@@ -808,6 +813,7 @@ async def generate_pdfs_for_bill(bill_public_id: str):
 async def generate_all_pdfs(
     vendor_id: Optional[int] = Query(default=None, description="Filter by vendor ID"),
     billing_period_start: Optional[str] = Query(default=None, description="Filter by billing period (YYYY-MM-DD)"),
+    current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_create")),
 ):
     """
     Generate PDF attachments for all billed contract labor entries.
@@ -828,7 +834,7 @@ async def generate_all_pdfs(
 
 
 @router.post("/generate-bills/{vendor_id}")
-def generate_bills_for_vendor(vendor_id: int, billing_period: Optional[str] = None):
+def generate_bills_for_vendor(vendor_id: int, billing_period: Optional[str] = None, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_create"))):
     """
     Generate bills for ready entries for a vendor within a billing period.
     Groups by project and creates one bill per project.
@@ -845,7 +851,7 @@ def generate_bills_for_vendor(vendor_id: int, billing_period: Optional[str] = No
 
 
 @router.get("/preview-pdf/{vendor_id}")
-def preview_pdf_for_vendor(vendor_id: int, project_id: Optional[int] = None, billing_period: Optional[str] = None):
+def preview_pdf_for_vendor(vendor_id: int, project_id: Optional[int] = None, billing_period: Optional[str] = None, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR))):
     """
     Preview PDF for a vendor (returns PDF directly for download).
     If project_id is provided, generates PDF for that specific project only.

@@ -6,14 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.project_address.api.schemas import ProjectAddressCreate, ProjectAddressUpdate
 from entities.project_address.business.service import ProjectAddressService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "project_address"])
 
 
 @router.post("/create/project_address")
-def create_project_address_router(body: ProjectAddressCreate, current_user: dict = Depends(get_current_user_api)):
+def create_project_address_router(body: ProjectAddressCreate, current_user: dict = Depends(require_module_api(Modules.PROJECTS, "can_create"))):
     """
     Create a new project address.
     
@@ -44,7 +45,7 @@ def create_project_address_router(body: ProjectAddressCreate, current_user: dict
 
 
 @router.get("/get/project_addresses")
-def get_project_addresses_router(current_user: dict = Depends(get_current_user_api)):
+def get_project_addresses_router(current_user: dict = Depends(require_module_api(Modules.PROJECTS))):
     """
     Read all project addresses.
     """
@@ -53,7 +54,7 @@ def get_project_addresses_router(current_user: dict = Depends(get_current_user_a
 
 
 @router.get("/get/project_address/{public_id}")
-def get_project_address_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_project_address_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.PROJECTS))):
     """
     Read a project address by public ID.
     """
@@ -62,7 +63,7 @@ def get_project_address_by_public_id_router(public_id: str, current_user: dict =
 
 
 @router.get("/get/project_address/project/{project_id}")
-def get_project_address_by_project_id_router(project_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_project_address_by_project_id_router(project_id: int, current_user: dict = Depends(require_module_api(Modules.PROJECTS))):
     """
     Read project addresses by project ID.
     """
@@ -71,7 +72,7 @@ def get_project_address_by_project_id_router(project_id: int, current_user: dict
 
 
 @router.get("/get/project_address/address/{address_id}")
-def get_project_address_by_address_id_router(address_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_project_address_by_address_id_router(address_id: int, current_user: dict = Depends(require_module_api(Modules.PROJECTS))):
     """
     Read project addresses by address ID.
     """
@@ -80,7 +81,7 @@ def get_project_address_by_address_id_router(address_id: int, current_user: dict
 
 
 @router.get("/get/project_address/address_type/{address_type_id}")
-def get_project_address_by_address_type_id_router(address_type_id: int, current_user: dict = Depends(get_current_user_api)):
+def get_project_address_by_address_type_id_router(address_type_id: int, current_user: dict = Depends(require_module_api(Modules.PROJECTS))):
     """
     Read project addresses by address type ID.
     """
@@ -89,7 +90,7 @@ def get_project_address_by_address_type_id_router(address_type_id: int, current_
 
 
 @router.put("/update/project_address/{public_id}")
-def update_project_address_by_public_id_router(public_id: str, body: ProjectAddressUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_project_address_by_public_id_router(public_id: str, body: ProjectAddressUpdate, current_user: dict = Depends(require_module_api(Modules.PROJECTS, "can_update"))):
     """
     Update a project address by public ID.
     
@@ -122,7 +123,7 @@ def update_project_address_by_public_id_router(public_id: str, body: ProjectAddr
 
 
 @router.delete("/delete/project_address/{public_id}")
-def delete_project_address_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_project_address_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.PROJECTS, "can_delete"))):
     """
     Delete a project address by public ID.
     

@@ -12,7 +12,8 @@ from fastapi.templating import Jinja2Templates
 from starlette.responses import StreamingResponse
 
 # Local Imports
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 from entities.inbox.business.service import InboxService
 from entities.vendor.business.service import VendorService
 from entities.project.business.service import ProjectService
@@ -42,7 +43,7 @@ templates = Jinja2Templates(directory="templates")
 @router.get("/")
 async def inbox_list(
     request: Request,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.INBOX)),
     folder: str = "inbox",
     top: int = 50,
     skip: int = 0,
@@ -94,7 +95,7 @@ async def inbox_list(
 async def view_message(
     request: Request,
     message_id: str,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.INBOX)),
 ):
     """
     View a single message with AI classification and extracted field suggestions.
@@ -168,7 +169,7 @@ async def view_message(
 async def get_message_detail_json(
     request: Request,
     message_id: str,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.INBOX)),
 ):
     """
     Return full message details as JSON for inline display on other pages
@@ -203,7 +204,7 @@ async def get_message_detail_json(
 async def extract_message(
     request: Request,
     message_id: str,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.INBOX)),
     attachment_id: Optional[str] = None,
 ):
     """
@@ -229,7 +230,7 @@ async def view_inbox_attachment(
     request: Request,
     message_id: str,
     attachment_id: str,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.INBOX)),
 ):
     """
     Stream an inbox message attachment for inline browser preview.
@@ -270,7 +271,7 @@ async def view_inbox_attachment(
 async def forward_to_pm(
     request: Request,
     message_id: str,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.INBOX, "can_update")),
 ):
     """
     Forward the inbox message to a PM's email address.
@@ -312,7 +313,7 @@ async def forward_to_pm(
 async def create_bill_from_inbox(
     request: Request,
     message_id: str,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.INBOX, "can_create")),
 ):
     """
     Create a draft Bill record from user-confirmed extracted fields.
@@ -449,7 +450,7 @@ async def create_bill_from_inbox(
 async def create_expense_from_inbox(
     request: Request,
     message_id: str,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.INBOX, "can_create")),
 ):
     """
     Create a draft Expense record from user-confirmed extracted fields.
@@ -537,7 +538,7 @@ async def create_expense_from_inbox(
 async def create_credit_from_inbox(
     request: Request,
     message_id: str,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.INBOX, "can_create")),
 ):
     """
     Create a draft BillCredit record from user-confirmed extracted fields.
@@ -626,7 +627,7 @@ async def create_credit_from_inbox(
 async def mark_message_read(
     request: Request,
     message_id: str,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.INBOX, "can_update")),
 ):
     """
     Toggle a message's read/unread status.
@@ -654,7 +655,7 @@ async def mark_message_read(
 async def flag_message(
     request: Request,
     message_id: str,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.INBOX, "can_update")),
 ):
     """
     Toggle a message's flagged status.
@@ -682,7 +683,7 @@ async def flag_message(
 async def classify_message(
     request: Request,
     message_id: str,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.INBOX, "can_update")),
 ):
     """
     Run full AI classification (heuristic + LangGraph agent) on a message.
@@ -704,7 +705,7 @@ async def classify_message(
 async def get_message_thread(
     request: Request,
     message_id: str,
-    current_user: dict = Depends(get_current_user_web),
+    current_user: dict = Depends(require_module_web(Modules.INBOX)),
 ):
     """
     Fetch all messages in the same conversation thread.

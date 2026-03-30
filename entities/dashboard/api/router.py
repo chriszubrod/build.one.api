@@ -5,13 +5,14 @@ from typing import List
 from fastapi import APIRouter, Depends
 
 # Local Imports
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/api/v1", tags=["api", "dashboard"])
 
 
 @router.get("/dashboard/summary")
-def get_user_summary(current_user: dict = Depends(get_current_user_api)):
+def get_user_summary(current_user: dict = Depends(require_module_api(Modules.DASHBOARD))):
     """
     Get personalized summary for the current user.
     

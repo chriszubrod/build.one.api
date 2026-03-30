@@ -185,6 +185,7 @@ def create_or_advance_thread(
     """
     try:
         is_new_thread = not existing_thread_id
+        anomaly_reason = None
 
         if is_new_thread:
             # --- New thread ---
@@ -199,7 +200,6 @@ def create_or_advance_thread(
             # Anomaly check — override stage to REVIEW_NEEDED
             # --------------------------------------------------
             LOW_CONFIDENCE_THRESHOLD = 0.6
-            anomaly_reason = None
 
             if (
                 classification_type != "UNKNOWN"
@@ -347,6 +347,7 @@ def create_or_advance_thread(
                                    registry_type="email"
                                ) if thread.process_type != "UNKNOWN" else True,
             "entity_handoff": get_entity_handoff(thread.process_type) or "",
+            "anomaly_reason": anomaly_reason or "",
         }
 
     except Exception as error:

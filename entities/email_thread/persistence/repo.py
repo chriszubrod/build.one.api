@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 from decimal import Decimal
 from typing import Optional
@@ -22,7 +23,7 @@ class EmailThreadRepository:
         return EmailThread(
             id=                         getattr(row, "Id",                      None),
             public_id=                  getattr(row, "PublicId",                None),
-            row_version=                getattr(row, "RowVersion",              None),
+            row_version=                base64.b64encode(row.RowVersion).decode("ascii") if getattr(row, "RowVersion", None) is not None else None,
             created_datetime=           getattr(row, "CreatedDatetime",         None),
             updated_datetime=           getattr(row, "UpdatedDatetime",         None),
             inbox_record_id=            getattr(row, "InboxRecordId",           None),
@@ -58,6 +59,7 @@ class EmailThreadRepository:
         classification_confidence:  Optional[Decimal] = None,
         is_resolved:                Optional[bool]  = None,
         requires_action:            Optional[bool]  = None,
+        row_version:                Optional[bytes] = None,
     ) -> EmailThread:
         """Create or update an EmailThread. Matches on PublicId."""
         try:
@@ -80,6 +82,7 @@ class EmailThreadRepository:
                         "ClassificationConfidence": float(classification_confidence) if classification_confidence is not None else None,
                         "IsResolved":               (1 if is_resolved else 0) if is_resolved is not None else None,
                         "RequiresAction":           (1 if requires_action else 0) if requires_action is not None else None,
+                        "RowVersion":               row_version,
                     },
                 )
                 row = cursor.fetchone()

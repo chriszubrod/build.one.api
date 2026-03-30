@@ -8,14 +8,15 @@ from fastapi.templating import Jinja2Templates
 from entities.user_module.business.service import UserModuleService
 from entities.user.business.service import UserService
 from entities.module.business.service import ModuleService
-from entities.auth.business.service import get_current_user_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/user_module", tags=["web", "user_module"])
 templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/list")
-async def list_user_modules(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def list_user_modules(request: Request, current_user: dict = Depends(require_module_web(Modules.ROLES))):
     """
     List all user modules.
     """
@@ -38,7 +39,7 @@ async def list_user_modules(request: Request, current_user: dict = Depends(get_c
 
 
 @router.get("/create")
-async def create_user_module(request: Request, current_user: dict = Depends(get_current_user_web)):
+async def create_user_module(request: Request, current_user: dict = Depends(require_module_web(Modules.ROLES, "can_create"))):
     """
     Render create user module form.
     """
@@ -57,7 +58,7 @@ async def create_user_module(request: Request, current_user: dict = Depends(get_
 
 
 @router.get("/{public_id}")
-async def view_user_module(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def view_user_module(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.ROLES))):
     """
     View a user module.
     """
@@ -80,7 +81,7 @@ async def view_user_module(request: Request, public_id: str, current_user: dict 
 
 
 @router.get("/{public_id}/edit")
-async def edit_user_module(request: Request, public_id: str, current_user: dict = Depends(get_current_user_web)):
+async def edit_user_module(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.ROLES, "can_update"))):
     """
     Edit a user module.
     """

@@ -6,13 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException
 # Local Imports
 from entities.address.api.schemas import AddressCreate, AddressUpdate
 from entities.address.business.service import AddressService
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/api/v1", tags=["api", "address"])
 
 
 @router.post("/create/address")
-def create_address_router(body: AddressCreate, current_user: dict = Depends(get_current_user_api)):
+def create_address_router(body: AddressCreate, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_create"))):
     """
     Create a new address.
     """
@@ -27,7 +28,7 @@ def create_address_router(body: AddressCreate, current_user: dict = Depends(get_
 
 
 @router.get("/get/addresses")
-def get_addresses_router(current_user: dict = Depends(get_current_user_api)):
+def get_addresses_router(current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read all addresses.
     """
@@ -36,7 +37,7 @@ def get_addresses_router(current_user: dict = Depends(get_current_user_api)):
 
 
 @router.get("/get/address/{public_id}")
-def get_address_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def get_address_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read an address by public ID.
     """
@@ -45,7 +46,7 @@ def get_address_by_public_id_router(public_id: str, current_user: dict = Depends
 
 
 @router.put("/update/address/{public_id}")
-def update_address_by_public_id_router(public_id: str, body: AddressUpdate, current_user: dict = Depends(get_current_user_api)):
+def update_address_by_public_id_router(public_id: str, body: AddressUpdate, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_update"))):
     """
     Update an address by public ID.
     """
@@ -61,7 +62,7 @@ def update_address_by_public_id_router(public_id: str, body: AddressUpdate, curr
 
 
 @router.delete("/delete/address/{public_id}")
-def delete_address_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_user_api)):
+def delete_address_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_delete"))):
     """
     Delete an address by public ID.
     """

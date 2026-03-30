@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.taxpayer_attachment.api.schemas import TaxpayerAttachmentCreate
 from entities.taxpayer_attachment.business.service import TaxpayerAttachmentService
-from entities.auth.business.service import get_current_user_api as get_current_taxpayer_attachment_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "taxpayer_attachment"])
@@ -15,7 +16,7 @@ service = TaxpayerAttachmentService()
 
 @router.post("/create/taxpayer-attachment")
 def create_taxpayer_attachment_router(
-    body: TaxpayerAttachmentCreate, current_user: dict = Depends(get_current_taxpayer_attachment_api)
+    body: TaxpayerAttachmentCreate, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_create"))
 ):
     """
     Create a new taxpayer attachment.
@@ -46,7 +47,7 @@ def create_taxpayer_attachment_router(
 
 
 @router.get("/get/taxpayer-attachments")
-def get_taxpayer_attachments_router(current_user: dict = Depends(get_current_taxpayer_attachment_api)):
+def get_taxpayer_attachments_router(current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     """
     Read all taxpayer attachments.
     """
@@ -59,7 +60,7 @@ def get_taxpayer_attachments_router(current_user: dict = Depends(get_current_tax
 
 @router.get("/get/taxpayer-attachment/{public_id}")
 def get_taxpayer_attachment_by_public_id_router(
-    public_id: str, current_user: dict = Depends(get_current_taxpayer_attachment_api)
+    public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))
 ):
     """
     Read a taxpayer attachment by public ID.
@@ -77,7 +78,7 @@ def get_taxpayer_attachment_by_public_id_router(
 
 @router.get("/get/taxpayer-attachments/{taxpayer_id}")
 def get_taxpayer_attachments_by_taxpayer_id_router(
-    taxpayer_id: str, current_user: dict = Depends(get_current_taxpayer_attachment_api)
+    taxpayer_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))
 ):
     """
     Read taxpayer attachments by taxpayer public ID.
@@ -91,7 +92,7 @@ def get_taxpayer_attachments_by_taxpayer_id_router(
 
 @router.delete("/delete/taxpayer-attachment/{public_id}")
 def delete_taxpayer_attachment_by_public_id_router(
-    public_id: str, current_user: dict = Depends(get_current_taxpayer_attachment_api)
+    public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_delete"))
 ):
     """
     Delete a taxpayer attachment by public ID.

@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.invoice_line_item_attachment.api.schemas import InvoiceLineItemAttachmentCreate
 from entities.invoice_line_item_attachment.business.service import InvoiceLineItemAttachmentService
-from entities.auth.business.service import get_current_user_api as get_current_invoice_line_item_attachment_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/api/v1", tags=["api", "invoice_line_item_attachment"])
 service = InvoiceLineItemAttachmentService()
@@ -14,7 +15,7 @@ service = InvoiceLineItemAttachmentService()
 
 @router.post("/create/invoice-line-item-attachment")
 def create_invoice_line_item_attachment_router(
-    body: InvoiceLineItemAttachmentCreate, current_user: dict = Depends(get_current_invoice_line_item_attachment_api)
+    body: InvoiceLineItemAttachmentCreate, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_create"))
 ):
     try:
         result = service.create(
@@ -30,7 +31,7 @@ def create_invoice_line_item_attachment_router(
 
 
 @router.get("/get/invoice-line-item-attachments")
-def get_invoice_line_item_attachments_router(current_user: dict = Depends(get_current_invoice_line_item_attachment_api)):
+def get_invoice_line_item_attachments_router(current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     try:
         attachments = service.read_all()
         return [a.to_dict() for a in attachments]
@@ -40,7 +41,7 @@ def get_invoice_line_item_attachments_router(current_user: dict = Depends(get_cu
 
 @router.get("/get/invoice-line-item-attachment/{public_id}")
 def get_invoice_line_item_attachment_by_public_id_router(
-    public_id: str, current_user: dict = Depends(get_current_invoice_line_item_attachment_api)
+    public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))
 ):
     try:
         attachment = service.read_by_public_id(public_id=public_id)
@@ -55,7 +56,7 @@ def get_invoice_line_item_attachment_by_public_id_router(
 
 @router.get("/get/invoice-line-item-attachment/by-invoice-line-item/{invoice_line_item_id}")
 def get_invoice_line_item_attachments_by_invoice_line_item_id_router(
-    invoice_line_item_id: str, current_user: dict = Depends(get_current_invoice_line_item_attachment_api)
+    invoice_line_item_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))
 ):
     try:
         attachments = service.read_by_invoice_line_item_id(invoice_line_item_public_id=invoice_line_item_id)
@@ -66,7 +67,7 @@ def get_invoice_line_item_attachments_by_invoice_line_item_id_router(
 
 @router.delete("/delete/invoice-line-item-attachment/{public_id}")
 def delete_invoice_line_item_attachment_by_public_id_router(
-    public_id: str, current_user: dict = Depends(get_current_invoice_line_item_attachment_api)
+    public_id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_delete"))
 ):
     try:
         result = service.delete_by_public_id(

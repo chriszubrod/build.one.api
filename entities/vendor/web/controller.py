@@ -14,7 +14,8 @@ from entities.address.business.service import AddressService
 from entities.vendor_address.business.service import VendorAddressService
 from entities.taxpayer_attachment.business.service import TaxpayerAttachmentService
 from entities.attachment.business.service import AttachmentService
-from entities.auth.business.service import get_current_user_web as get_current_vendor_web
+from shared.rbac import require_module_web
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/vendor", tags=["web", "vendor"])
 templates = Jinja2Templates(directory="templates")
@@ -52,7 +53,7 @@ def _build_addresses_by_type(vendor_id: int, address_types: list) -> tuple[dict,
 
 
 @router.get("/list")
-async def list_vendors(request: Request, current_user: dict = Depends(get_current_vendor_web)):
+async def list_vendors(request: Request, current_user: dict = Depends(require_module_web(Modules.VENDORS))):
     """
     List all vendors.
     """
@@ -69,7 +70,7 @@ async def list_vendors(request: Request, current_user: dict = Depends(get_curren
 
 
 @router.get("/create")
-async def create_vendor(request: Request, current_user: dict = Depends(get_current_vendor_web)):
+async def create_vendor(request: Request, current_user: dict = Depends(require_module_web(Modules.VENDORS))):
     """
     Render create vendor form.
     """
@@ -91,7 +92,7 @@ async def create_vendor(request: Request, current_user: dict = Depends(get_curre
 
 
 @router.get("/{public_id}")
-async def view_vendor(request: Request, public_id: str, current_user: dict = Depends(get_current_vendor_web)):
+async def view_vendor(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.VENDORS))):
     """
     View a vendor.
     """
@@ -185,7 +186,7 @@ async def view_vendor(request: Request, public_id: str, current_user: dict = Dep
 
 
 @router.get("/{public_id}/edit")
-async def edit_vendor(request: Request, public_id: str, current_user: dict = Depends(get_current_vendor_web)):
+async def edit_vendor(request: Request, public_id: str, current_user: dict = Depends(require_module_web(Modules.VENDORS))):
     """
     Edit a vendor.
     """

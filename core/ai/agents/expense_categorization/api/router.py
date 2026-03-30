@@ -17,7 +17,8 @@ from core.ai.agents.expense_categorization.api.schemas import (
     LinkPurchaseRequest,
     LinkPurchaseResponse,
 )
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ router = APIRouter(
 @router.post("/suggest-batch", response_model=SuggestBatchResponse)
 def suggest_batch(
     request: SuggestBatchRequest,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.CATEGORIZATION)),
 ):
     """
     Get AI-powered categorization suggestions for all uncategorized QBO purchase lines.
@@ -98,7 +99,7 @@ def suggest_batch(
 @router.post("/apply-batch", response_model=ApplyBatchResponse)
 def apply_batch(
     request: ApplyBatchRequest,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.CATEGORIZATION, "can_update")),
 ):
     """
     Apply categorization (SubCostCode + Project) to multiple uncategorized lines.
@@ -139,7 +140,7 @@ def apply_batch(
 @router.post("/match-receipts", response_model=MatchReceiptsResponse)
 def match_receipts(
     request: MatchReceiptsRequest,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.CATEGORIZATION)),
 ):
     """
     Match receipts (QBO Attachables + inbox emails) to uncategorized expense lines.
@@ -200,7 +201,7 @@ def match_receipts(
 @router.post("/link-purchase", response_model=LinkPurchaseResponse)
 def link_purchase(
     request: LinkPurchaseRequest,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.CATEGORIZATION, "can_update")),
 ):
     """
     Link an inbox-created draft expense to an uncategorized QBO purchase.

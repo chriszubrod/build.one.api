@@ -5,7 +5,8 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from entities.classification_override.api.schemas import (
     ClassificationOverrideCreate,
     ClassificationOverrideUpdate,
@@ -18,7 +19,7 @@ router = APIRouter(prefix="/api/v1", tags=["api", "admin"])
 
 
 @router.get("/classification-overrides")
-def list_overrides(current_user: dict = Depends(get_current_user_api)):
+def list_overrides(current_user: dict = Depends(require_module_api(Modules.CLASSIFICATION_OVERRIDES))):
     """List all classification overrides."""
     svc = ClassificationOverrideService()
     overrides = svc.read_all()
@@ -28,7 +29,7 @@ def list_overrides(current_user: dict = Depends(get_current_user_api)):
 @router.get("/classification-overrides/{public_id}")
 def get_override(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.CLASSIFICATION_OVERRIDES)),
 ):
     """Get a single classification override by public ID."""
     svc = ClassificationOverrideService()
@@ -44,7 +45,7 @@ def get_override(
 @router.post("/classification-overrides", status_code=status.HTTP_201_CREATED)
 def create_override(
     body: ClassificationOverrideCreate,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.CLASSIFICATION_OVERRIDES, "can_create")),
 ):
     """Create a new classification override."""
     svc = ClassificationOverrideService()
@@ -73,7 +74,7 @@ def create_override(
 def update_override(
     public_id: str,
     body: ClassificationOverrideUpdate,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.CLASSIFICATION_OVERRIDES, "can_update")),
 ):
     """Update a classification override."""
     svc = ClassificationOverrideService()
@@ -106,7 +107,7 @@ def update_override(
 @router.delete("/classification-overrides/{public_id}")
 def delete_override(
     public_id: str,
-    current_user: dict = Depends(get_current_user_api),
+    current_user: dict = Depends(require_module_api(Modules.CLASSIFICATION_OVERRIDES, "can_delete")),
 ):
     """Delete a classification override."""
     svc = ClassificationOverrideService()

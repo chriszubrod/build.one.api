@@ -6,7 +6,8 @@ from fastapi import APIRouter, HTTPException, Depends, status
 # Local Imports
 from entities.organization.business.service import OrganizationService
 from entities.organization.api.schemas import OrganizationCreate, OrganizationUpdate
-from entities.auth.business.service import get_current_user_api
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "organization"])
@@ -16,7 +17,7 @@ service = OrganizationService()
 @router.post("/create/organization")
 def create_organization_router(
         body: OrganizationCreate,
-        current_user: dict = Depends(get_current_user_api),
+        current_user: dict = Depends(require_module_api(Modules.ORGANIZATIONS, "can_create")),
     ):
     """
     Create a new organization.
@@ -48,7 +49,7 @@ def create_organization_router(
 
 @router.get("/get/organizations")
 def get_organizations_router(
-        current_user: dict = Depends(get_current_user_api),
+        current_user: dict = Depends(require_module_api(Modules.ORGANIZATIONS)),
     ):
     """
     Read all organizations.
@@ -60,7 +61,7 @@ def get_organizations_router(
 @router.get("/get/organization/{public_id}")
 def get_organization_by_public_id_router(
         public_id: str,
-        current_user: dict = Depends(get_current_user_api),
+        current_user: dict = Depends(require_module_api(Modules.ORGANIZATIONS)),
     ):
     """
     Read an organization by public ID.
@@ -73,7 +74,7 @@ def get_organization_by_public_id_router(
 def update_organization_by_id_router(
         public_id: str,
         body: OrganizationUpdate,
-        current_user: dict = Depends(get_current_user_api),
+        current_user: dict = Depends(require_module_api(Modules.ORGANIZATIONS, "can_update")),
     ):
     """
     Update an organization by ID.
@@ -108,7 +109,7 @@ def update_organization_by_id_router(
 @router.delete("/delete/organization/{public_id}")
 def delete_organization_by_public_id_router(
         public_id: str,
-        current_user: dict = Depends(get_current_user_api),
+        current_user: dict = Depends(require_module_api(Modules.ORGANIZATIONS, "can_delete")),
     ):
     """
     Soft delete an organization by ID.

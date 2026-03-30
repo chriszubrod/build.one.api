@@ -169,6 +169,25 @@ class BillLineItemRepository:
             logger.error(f"Error during read bill line items by bill ID: {error}")
             raise map_database_error(error)
 
+    @retry_on_transient()
+    def read_by_project_id(self, project_id: int) -> list[BillLineItem]:
+        """
+        Read all bill line items for a specific project.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadBillLineItemsByProjectId",
+                    params={"ProjectId": project_id},
+                )
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(f"Error during read bill line items by project ID: {error}")
+            raise map_database_error(error)
+
     def update_by_id(self, bill_line_item: BillLineItem) -> Optional[BillLineItem]:
         """
         Update a bill line item by ID.

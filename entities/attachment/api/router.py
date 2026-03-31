@@ -123,7 +123,7 @@ def get_attachment_by_public_id_router(public_id: str, current_user: dict = Depe
 
 
 @router.get("/get/attachment/id/{id}")
-def get_attachment_by_id_router(id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
+def get_attachment_by_id_router(id: int, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     """
     Read an attachment by ID.
     """

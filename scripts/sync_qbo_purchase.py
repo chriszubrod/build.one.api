@@ -181,6 +181,9 @@ def sync_qbo_to_local(
             "purchases_synced": 0,
             "expenses_module_synced": 0,
             "attachments_linked": 0,
+            "excel_rows_synced": 0,
+            "failed_count": 0,
+            "failed_purchase_ids": [],
             "purchases": [],
         }
     
@@ -189,8 +192,15 @@ def sync_qbo_to_local(
     # Sync purchases to Expense module
     expenses_module_synced = 0
     attachments_linked = 0
+    excel_rows_synced = 0
     failed_purchases = []
     attachable_service = QboAttachableService()
+
+    # ExpenseService + ExpenseLineItemService for Excel sync step
+    from entities.expense.business.service import ExpenseService
+    from entities.expense_line_item.business.service import ExpenseLineItemService
+    expense_service = ExpenseService()
+    expense_line_item_service = ExpenseLineItemService()
 
     for i, purchase in enumerate(purchases):
         try:
@@ -226,15 +236,37 @@ def sync_qbo_to_local(
                 except Exception as att_e:
                     logger.warning(f"Could not sync/link attachments for Purchase {purchase.qbo_id}: {att_e}")
 
+            # Sync to project Excel workbooks (idempotent — column Z check prevents duplicates)
+            try:
+                expense_id = int(expense.id) if isinstance(expense.id, str) else expense.id
+                eli_list = expense_line_item_service.read_by_expense_id(expense_id=expense_id)
+                # Group line items by project — only line items with a project can be synced to Excel
+                line_items_by_project = {}
+                for eli in eli_list:
+                    if eli.project_id:
+                        line_items_by_project.setdefault(eli.project_id, []).append(eli)
+                for proj_id, proj_line_items in line_items_by_project.items():
+                    excel_result = expense_service.sync_to_excel_workbook(
+                        expense=expense,
+                        line_items=proj_line_items,
+                        project_id=proj_id,
+                    )
+                    excel_rows_synced += excel_result.get("synced_count", 0)
+                    if excel_result.get("errors"):
+                        for err in excel_result["errors"]:
+                            logger.warning(f"Excel sync error for Expense {expense.id}, project {proj_id}: {err}")
+            except Exception as excel_e:
+                logger.warning(f"Could not sync Expense {expense.id} to Excel: {excel_e}")
+
         except Exception as e:
             logger.error(f"Failed to sync QboPurchase {purchase.id} to Expense: {e}")
             failed_purchases.append(purchase.id)
-        
+
         # Add delay between batches to keep connection alive
         if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(purchases):
             logger.debug(f"Processed {i + 1}/{len(purchases)} purchases, pausing...")
             time.sleep(BATCH_DELAY)
-    
+
     if failed_purchases:
         logger.warning(f"Failed to sync {len(failed_purchases)} purchases: {failed_purchases}")
 
@@ -242,6 +274,7 @@ def sync_qbo_to_local(
         "purchases_synced": len(purchases),
         "expenses_module_synced": expenses_module_synced,
         "attachments_linked": attachments_linked,
+        "excel_rows_synced": excel_rows_synced,
         "failed_count": len(failed_purchases),
         "failed_purchase_ids": failed_purchases,
         "purchases": [purchase.to_dict() for purchase in purchases],
@@ -382,7 +415,8 @@ def sync_qbo_purchase(
         
         logger.info(f"QBO Purchase sync completed. Purchases from QBO: {qbo_to_local_result['purchases_synced']}, "
                     f"Expenses synced: {qbo_to_local_result['expenses_module_synced']}, "
-                    f"Attachments linked: {qbo_to_local_result['attachments_linked']}")
+                    f"Attachments linked: {qbo_to_local_result['attachments_linked']}, "
+                    f"Excel rows synced: {qbo_to_local_result.get('excel_rows_synced', 0)}")
         
         return {
             "result": result,

@@ -541,73 +541,192 @@ class ExpenseService:
         }
 
     def sync_to_excel_workbook(self, expense, line_items: List, project_id: int) -> dict:
-        """Sync Expense and ExpenseLineItems to project Excel workbook. Mirrors Bill _sync_to_excel_workbook."""
+        """
+        Sync Expense and ExpenseLineItems to the project's Excel workbook.
+        Mirrors BillService.sync_to_excel_workbook: idempotent via column Z
+        public_id check, bottom-to-top insertion to avoid row-shift issues,
+        and failed-insert → append fallback.
+        """
         try:
             from entities.bill.business.service import find_insertion_row_for_subcostcode
+
+            # --- resolve workbook location ---
             excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
             if not excel_mapping:
                 return {"success": False, "message": f"Excel not linked for project {project_id}", "synced_count": 0, "errors": [{"error": f"Excel not linked for project {project_id}"}]}
+
             worksheet_name = excel_mapping.get("worksheet_name")
             if not worksheet_name:
                 return {"success": False, "message": "Worksheet name not found", "synced_count": 0, "errors": [{"error": "Worksheet name not found"}]}
+
             driveitem_repo = MsDriveItemRepository()
             items = driveitem_repo.read_all()
             driveitem = next((item for item in items if item.id == excel_mapping.get("id")), None)
             if not driveitem:
                 return {"success": False, "message": "DriveItem not found", "synced_count": 0, "errors": [{"error": "DriveItem not found"}]}
+
             drive = self.drive_repo.read_by_id(driveitem.ms_drive_id)
             if not drive:
                 return {"success": False, "message": "Drive not found", "synced_count": 0, "errors": [{"error": "Drive not found"}]}
+
             vendor = self.vendor_service.read_by_id(id=expense.vendor_id) if expense.vendor_id else None
             if not vendor:
                 return {"success": False, "message": "Vendor not found", "synced_count": 0, "errors": [{"error": "Vendor not found"}]}
-            worksheet_result = get_excel_used_range_values(drive_id=drive.drive_id, item_id=driveitem.item_id, worksheet_name=worksheet_name)
+
+            # --- read current worksheet ---
+            logger.info(f"Reading worksheet '{worksheet_name}' to determine insertion points")
+            worksheet_result = get_excel_used_range_values(
+                drive_id=drive.drive_id,
+                item_id=driveitem.item_id,
+                worksheet_name=worksheet_name,
+            )
             worksheet_values = []
             if worksheet_result.get("status_code") == 200:
-                worksheet_values = worksheet_result.get("range", {}).get("values", [])
+                range_data = worksheet_result.get("range", {})
+                worksheet_values = range_data.get("values", [])
+                logger.info(f"Worksheet has {len(worksheet_values)} rows")
+            else:
+                logger.warning(f"Could not read worksheet data: {worksheet_result.get('message')}. Will append at end.")
+
+            # --- idempotency: collect existing public_ids from column Z (index 25) ---
+            existing_public_ids = set()
+            short_rows = 0
+            for row in worksheet_values:
+                if len(row) > 25:
+                    val = row[25]
+                    if val is not None and str(val).strip():
+                        existing_public_ids.add(str(val).strip())
+                else:
+                    short_rows += 1
+            if short_rows > 1 and not existing_public_ids:
+                logger.warning(
+                    f"Worksheet has {short_rows} row(s) with fewer than 26 columns. "
+                    f"Column Z (reconciliation key) may not exist. Idempotency check may not prevent duplicates."
+                )
+
+            new_line_items = []
+            for line_item in line_items:
+                pid = str(line_item.public_id).strip() if line_item.public_id else ""
+                if pid and pid in existing_public_ids:
+                    logger.debug(f"ExpenseLineItem {pid} already in worksheet, skipping")
+                else:
+                    new_line_items.append(line_item)
+
+            if not new_line_items:
+                logger.info(f"All {len(line_items)} line item(s) already in worksheet, nothing to sync")
+                return {"success": True, "message": f"All {len(line_items)} row(s) already synced", "synced_count": 0, "errors": []}
+
+            if len(new_line_items) < len(line_items):
+                logger.info(f"{len(line_items) - len(new_line_items)} line item(s) already in worksheet, syncing {len(new_line_items)} new")
+
+            # --- group by SubCostCode, build rows, find insertion points ---
+            # Row: A(empty), B(CostCode), C(SubCostCode), D-H(empty), I(Date),
+            #      J(Vendor), K(RefNumber), L(Desc), M("Expense"), N(Price),
+            #      O-Y(empty), Z(public_id)
             line_items_by_subcostcode = defaultdict(list)
-            for li in line_items:
+            for li in new_line_items:
                 line_items_by_subcostcode[li.sub_cost_code_id].append(li)
+
             errors = []
             synced_count = 0
             rows_to_append = []
+            insert_groups = []  # (insertion_row, group_rows, sub_cost_code_number)
+
             for sub_cost_code_id, subcostcode_line_items in line_items_by_subcostcode.items():
                 sub_cost_code = self.sub_cost_code_service.read_by_id(id=str(sub_cost_code_id)) if sub_cost_code_id is not None else None
                 sub_cost_code_number = (sub_cost_code.number or "") if sub_cost_code else ""
                 cost_code_number = sub_cost_code_number.split(".")[0] if "." in sub_cost_code_number else sub_cost_code_number
+
                 group_rows = []
                 for line_item in subcostcode_line_items:
                     try:
-                        expense_date = expense.expense_date[:10] if expense.expense_date else ""
-                        vendor_name = vendor.name or ""
-                        ref_number = expense.reference_number or ""
-                        description = line_item.description or ""
-                        price = float(line_item.price) if line_item.price is not None else 0.0
-                        row = ["", cost_code_number, sub_cost_code_number, "", "", "", "", "", expense_date, vendor_name, ref_number, description, "Expense", price] + [""] * 11 + [str(line_item.public_id) if line_item.public_id else ""]  # Z: ExpenseLineItem public_id (reconciliation key)
+                        row = [
+                            "",                                                                     # A: Empty
+                            cost_code_number,                                                       # B: CostCode
+                            sub_cost_code_number,                                                   # C: SubCostCode
+                            "", "", "", "", "",                                                     # D-H: Empty
+                            expense.expense_date[:10] if expense.expense_date else "",              # I: Expense Date
+                            vendor.name or "",                                                      # J: Vendor
+                            expense.reference_number or "",                                         # K: Reference Number
+                            line_item.description or "",                                            # L: Description
+                            "Expense",                                                              # M: Type
+                            float(line_item.price) if line_item.price is not None else 0,           # N: Price (numeric)
+                            "", "", "", "", "", "", "", "", "", "", "",                              # O-Y: Empty
+                            str(line_item.public_id) if line_item.public_id else "",                # Z: Reconciliation key
+                        ]
                         group_rows.append(row)
                     except Exception as e:
-                        errors.append({"line_item_id": line_item.id, "error": str(e)})
+                        logger.error(f"Error building Excel row for line item {line_item.id}: {e}")
+                        errors.append({"line_item_id": line_item.id, "line_item_public_id": line_item.public_id, "error": str(e)})
+
                 if not group_rows:
                     continue
-                insertion_row = find_insertion_row_for_subcostcode(worksheet_values, sub_cost_code_number) if sub_cost_code_number and worksheet_values else None
+
+                insertion_row = None
+                if sub_cost_code_number and worksheet_values:
+                    insertion_row = find_insertion_row_for_subcostcode(
+                        worksheet_values=worksheet_values,
+                        target_subcostcode=sub_cost_code_number,
+                    )
+
                 if insertion_row:
-                    insert_result = insert_excel_rows(drive_id=drive.drive_id, item_id=driveitem.item_id, worksheet_name=worksheet_name, row_index=insertion_row, values=group_rows)
-                    if insert_result.get("status_code") in [200, 201]:
-                        synced_count += len(group_rows)
-                        for i, row in enumerate(group_rows):
-                            worksheet_values.insert(insertion_row - 1 + i, row)
-                    else:
-                        rows_to_append.extend(group_rows)
+                    insert_groups.append((insertion_row, group_rows, sub_cost_code_number))
                 else:
+                    logger.info(f"SubCostCode {sub_cost_code_number or 'None'}: no match found, will append at end")
                     rows_to_append.extend(group_rows)
+
+            # --- insert bottom-to-top so earlier inserts don't shift later positions ---
+            insert_groups.sort(key=lambda g: (g[0], g[2]), reverse=True)
+
+            for insertion_row, group_rows, sub_cost_code_number in insert_groups:
+                insert_result = insert_excel_rows(
+                    drive_id=drive.drive_id,
+                    item_id=driveitem.item_id,
+                    worksheet_name=worksheet_name,
+                    row_index=insertion_row,
+                    values=group_rows,
+                )
+                if insert_result.get("status_code") in [200, 201]:
+                    synced_count += len(group_rows)
+                    logger.info(f"Inserted {len(group_rows)} row(s) at row {insertion_row} for SubCostCode {sub_cost_code_number}")
+                else:
+                    error_msg = insert_result.get("message", "Unknown error")
+                    logger.error(f"Failed to insert rows for SubCostCode {sub_cost_code_number}: {error_msg}")
+                    errors.append({"sub_cost_code": sub_cost_code_number, "error": f"Failed to insert rows: {error_msg}"})
+                    rows_to_append.extend(group_rows)
+
+            # --- append remainder ---
             if rows_to_append:
-                append_result = append_excel_rows(drive_id=drive.drive_id, item_id=driveitem.item_id, worksheet_name=worksheet_name, values=rows_to_append)
+                logger.info(f"Appending {len(rows_to_append)} row(s) to end of worksheet")
+                append_result = append_excel_rows(
+                    drive_id=drive.drive_id,
+                    item_id=driveitem.item_id,
+                    worksheet_name=worksheet_name,
+                    values=rows_to_append,
+                )
                 if append_result.get("status_code") in [200, 201]:
                     synced_count += len(rows_to_append)
-            return {"success": not errors, "message": f"Synced {synced_count} row(s)", "synced_count": synced_count, "errors": errors}
+                    logger.info(f"Appended {len(rows_to_append)} row(s)")
+                else:
+                    error_msg = append_result.get("message", "Unknown error")
+                    logger.error(f"Failed to append rows: {error_msg}")
+                    errors.append({"error": f"Failed to append rows: {error_msg}"})
+
+            if synced_count == 0 and not errors:
+                return {"success": True, "message": "No rows to sync", "synced_count": 0, "errors": []}
+
+            logger.info(f"Successfully synced {synced_count} row(s) to Excel workbook")
+            has_errors = len(errors) > 0
+            return {
+                "success": synced_count > 0 or not has_errors,
+                "message": f"Synced {synced_count} row(s) to Excel workbook",
+                "synced_count": synced_count,
+                "errors": errors,
+            }
+
         except Exception as e:
-            logger.exception(f"Error syncing to Excel for project {project_id}")
-            return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
+            logger.exception(f"Error syncing to Excel workbook for project {project_id}")
+            return {"success": False, "message": f"Error syncing to Excel: {str(e)}", "synced_count": 0, "errors": [{"error": str(e)}]}
 
     def _upload_attachments_to_module_folder(
         self, expense, line_items: List, project_id: int, expense_line_items_count: int = 1

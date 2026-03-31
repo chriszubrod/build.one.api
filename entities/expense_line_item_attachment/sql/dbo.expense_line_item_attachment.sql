@@ -191,6 +191,7 @@ CREATE OR ALTER PROCEDURE ReadExpenseLineItemAttachmentsByExpenseLineItemPublicI
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     BEGIN TRANSACTION;
 
     -- Parse comma-separated GUIDs into a temp table

@@ -122,6 +122,22 @@ def get_attachment_by_public_id_router(public_id: str, current_user: dict = Depe
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/get/attachment/id/{id}")
+def get_attachment_by_id_router(id: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
+    """
+    Read an attachment by ID.
+    """
+    try:
+        attachment = service.read_by_id(id=id)
+        if not attachment:
+            raise HTTPException(status_code=404, detail="Attachment not found")
+        return attachment.to_dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/get/attachments/by-category/{category}")
 def get_attachments_by_category_router(category: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
     """

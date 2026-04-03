@@ -98,16 +98,11 @@ from entities.search.api.router import router as search_api_router
 from entities.qa.api.router import router as qa_api_router
 from entities.anomaly.api.router import router as anomaly_api_router
 from entities.categorization.api.router import router as categorization_api_router
-from entities.copilot.api.router import router as copilot_api_router
 from entities.inbox.web.controller import router as inbox_web_router
 from entities.classification_override.api.router import router as classification_override_api_router
 from entities.classification_override.web.controller import router as classification_override_web_router
 from entities.email_thread.api.router import router as email_thread_api_router
 from core.workflow.api.pending_action_router import router as pending_action_api_router
-from core.ai.agents.vendor_agent.api.router import router as vendor_agent_api_router
-from core.ai.agents.bill_agent.api.router import router as bill_agent_api_router
-from core.ai.agents.expense_agent.api.router import router as expense_agent_api_router
-from core.ai.agents.expense_categorization.api.router import router as expense_categorization_api_router
 
 from integrations.intuit.qbo.auth.api.router import router as intuit_qbo_auth_api_router
 from integrations.intuit.qbo.company_info.api.router import router as intuit_qbo_company_info_api_router
@@ -276,23 +271,11 @@ app.include_router(search_api_router)
 app.include_router(qa_api_router)
 app.include_router(anomaly_api_router)
 app.include_router(categorization_api_router)
-app.include_router(copilot_api_router)
 app.include_router(pending_action_api_router)
-app.include_router(vendor_agent_api_router)
-app.include_router(bill_agent_api_router)
-app.include_router(expense_agent_api_router)
-app.include_router(expense_categorization_api_router)
 
 
 @app.on_event("startup")
 async def startup_event():
-    from core.ai.agents.bill_agent.scheduler import start_scheduler
-    start_scheduler()
-
-    from core.notifications.sla_scheduler import start_scheduler as start_sla_scheduler
-    start_sla_scheduler()
-    logger.info("SLA breach scheduler started.")
-
     # RBAC module validation
     from shared.rbac import validate_module_constants
     rbac_warnings = validate_module_constants()
@@ -300,15 +283,6 @@ async def startup_event():
         logger.warning(w)
     if not rbac_warnings:
         logger.info("RBAC startup validation passed — all module constants match database records.")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    from core.ai.agents.bill_agent.scheduler import stop_scheduler
-    stop_scheduler()
-
-    from core.notifications.sla_scheduler import stop_scheduler as stop_sla_scheduler
-    stop_sla_scheduler()
 
 
 def get_settings():

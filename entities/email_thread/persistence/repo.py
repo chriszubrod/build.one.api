@@ -82,7 +82,6 @@ class EmailThreadRepository:
                         "ClassificationConfidence": float(classification_confidence) if classification_confidence is not None else None,
                         "IsResolved":               (1 if is_resolved else 0) if is_resolved is not None else None,
                         "RequiresAction":           (1 if requires_action else 0) if requires_action is not None else None,
-                        "RowVersion":               row_version,
                     },
                 )
                 row = cursor.fetchone()

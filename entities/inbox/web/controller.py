@@ -39,6 +39,8 @@ templates = Jinja2Templates(directory="templates")
 # Inbox list — main landing page
 # =============================================================================
 
+PROCESS_CATEGORY = "Blue category"
+
 @router.get("")
 @router.get("/")
 async def inbox_list(
@@ -48,14 +50,19 @@ async def inbox_list(
     top: int = 50,
     skip: int = 0,
     unread_only: bool = False,
-    flagged_only: bool = True,
+    flagged_only: bool = False,
+    category: str = PROCESS_CATEGORY,
 ):
     """
     Main inbox view.  Lists emails from the invoice inbox with AI classifications.
-    Defaults to showing only flagged (red flag) emails.
+    Defaults to showing messages with the Blue category (process queue).
     """
     svc = InboxService()
-    result = svc.list_inbox(folder=folder, top=top, skip=skip, unread_only=unread_only, flagged_only=flagged_only)
+    result = svc.list_inbox(
+        folder=folder, top=top, skip=skip,
+        unread_only=unread_only, flagged_only=flagged_only,
+        category=category if category else None,
+    )
 
     messages = result.get("messages", [])
     error = None
@@ -81,6 +88,7 @@ async def inbox_list(
             "top": top,
             "unread_only": unread_only,
             "flagged_only": flagged_only,
+            "category": category,
             "mailbox": result.get("mailbox", ""),
             "error": error,
         },
@@ -252,12 +260,17 @@ async def view_inbox_attachment(
     content_type = result.get("content_type", "application/octet-stream")
     filename = (result.get("filename") or "attachment").replace('"', "'")
 
+    # Infer content type from extension if Graph returned generic type
+    if content_type in ("application/octet-stream", ""):
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        ext_map = {"pdf": "application/pdf", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "tiff": "image/tiff"}
+        content_type = ext_map.get(ext, content_type)
+
     return StreamingResponse(
         io.BytesIO(result["content"]),
         media_type=content_type,
         headers={
             "Content-Disposition": f'inline; filename="{filename}"',
-            "X-Frame-Options": "SAMEORIGIN",
             "Content-Security-Policy": "frame-ancestors 'self'",
         },
     )

@@ -266,6 +266,9 @@ def get_current_user_web(request: Request):
             except Exception:
                 return []
 
+        if _auth and _auth.user_id:
+            auth_payload["user_id"] = _auth.user_id
+
         with ThreadPoolExecutor(max_workers=4) as executor:
             orgs_future = executor.submit(_fetch_organizations)
             companies_future = executor.submit(_fetch_companies)

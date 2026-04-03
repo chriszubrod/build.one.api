@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /Users/chris/Applications/build.one/core/ai -name \"config.py\" -exec head -20 {} +)",
+      "Bash(find /Users/chris/Applications/build.one/core/ai/agents -name \"__init__.py\" -exec grep -l \"import\\\\|from\" {} \\\\;)",
+      "Bash(xargs cat:*)"
+    ]
+  }
+}

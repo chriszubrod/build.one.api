@@ -174,9 +174,9 @@ class BillRepository:
             logger.error(f"Error during read bill by bill number: {error}")
             raise map_database_error(error)
 
-    def read_by_bill_number_and_vendor_id(self, bill_number: str, vendor_id: int) -> Optional[Bill]:
+    def read_by_bill_number_and_vendor_id(self, bill_number: str, vendor_id: int, bill_date: str = None) -> Optional[Bill]:
         """
-        Read a bill by bill number and vendor ID.
+        Read a bill by bill number, vendor ID, and optionally bill date.
         """
         try:
             with get_connection() as conn:
@@ -187,6 +187,7 @@ class BillRepository:
                     params={
                         "BillNumber": bill_number,
                         "VendorId": vendor_id,
+                        "BillDate": bill_date,
                     },
                 )
                 row = cursor.fetchone()

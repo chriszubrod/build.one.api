@@ -23,8 +23,6 @@ from entities.auth.business.service import (
     UNSAFE_METHODS,
     _require_csrf,
 )
-from entities.device_token.persistence.repo import DeviceTokenRepository
-
 router = APIRouter(prefix="/api/v1", tags=["auth"])
 service = AuthService()
 
@@ -272,53 +270,3 @@ def mobile_logout_router(body: MobileRefreshRequest, current_user: dict = Depend
     return {"message": "Logged out."}
 
 
-@router.post("/mobile/device-token/register")
-async def mobile_register_device_token(
-    request: Request,
-    current_user=Depends(get_current_user_api),
-):
-    """
-    Register an iOS device token for push notifications.
-    Called by the iOS app immediately after login and when
-    APNs issues a new token (application(_:didRegisterForRemoteNotificationsWithDeviceToken:)).
-    """
-    body = await request.json()
-    device_token  = body.get("device_token", "").strip()
-    app_bundle_id = body.get("app_bundle_id", "one.build.app").strip()
-
-    if not device_token:
-        raise HTTPException(status_code=422, detail="device_token is required.")
-
-    from entities.auth.business.service import AuthService
-    auth_service = AuthService()
-    user = auth_service.read_by_public_id(current_user["sub"])
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
-
-    repo   = DeviceTokenRepository()
-    result = repo.upsert(
-        user_id=      user.id,
-        device_token= device_token,
-        app_bundle_id=app_bundle_id,
-    )
-    return {"registered": True, "public_id": str(result.public_id)}
-
-
-@router.post("/mobile/device-token/deactivate")
-async def mobile_deactivate_device_token(
-    request: Request,
-    current_user=Depends(get_current_user_api),
-):
-    """
-    Deactivate a device token on logout.
-    Prevents push notifications being sent to a logged-out device.
-    """
-    body = await request.json()
-    device_token = body.get("device_token", "").strip()
-
-    if not device_token:
-        raise HTTPException(status_code=422, detail="device_token is required.")
-
-    repo = DeviceTokenRepository()
-    repo.deactivate(device_token)
-    return {"deactivated": True}

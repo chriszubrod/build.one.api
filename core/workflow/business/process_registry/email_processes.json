@@ -5,33 +5,36 @@
   "processes": {
 
     "BILL_DOCUMENT": {
-      "description": "An inbound email containing a vendor invoice or bill. Extraction creates a Bill entity with BillLineItems.",
+      "description": "An inbound email containing a vendor invoice or bill. Agent extracts, classifies, creates draft, and forwards to PM for approval.",
       "initial_stage": "RECEIVED",
       "entity_handoff": "BILL",
       "stages": [
         "RECEIVED",
         "EXTRACTING",
-        "REVIEW_NEEDED",
-        "APPROVED",
         "ENTITY_CREATED",
-        "DISPUTED",
-        "REJECTED",
-        "CLOSED"
+        "PENDING_APPROVAL",
+        "APPROVAL_RECEIVED",
+        "DISPUTED_RECEIVED",
+        "REJECTED_RECEIVED",
+        "ENTITY_UPDATED",
+        "ENTITY_COMPLETED"
       ],
       "transitions": {
-        "RECEIVED":       ["EXTRACTING"],
-        "EXTRACTING":     ["REVIEW_NEEDED"],
-        "REVIEW_NEEDED":  ["APPROVED", "DISPUTED", "REJECTED"],
-        "APPROVED":       ["ENTITY_CREATED"],
-        "ENTITY_CREATED": ["CLOSED"],
-        "DISPUTED":       ["REVIEW_NEEDED", "REJECTED"],
-        "REJECTED":       ["CLOSED"]
+        "RECEIVED":           ["EXTRACTING"],
+        "EXTRACTING":         ["ENTITY_CREATED"],
+        "ENTITY_CREATED":     ["PENDING_APPROVAL"],
+        "PENDING_APPROVAL":   ["APPROVAL_RECEIVED", "DISPUTED_RECEIVED", "REJECTED_RECEIVED"],
+        "APPROVAL_RECEIVED":  ["ENTITY_UPDATED"],
+        "DISPUTED_RECEIVED":  ["PENDING_APPROVAL"],
+        "REJECTED_RECEIVED":  ["PENDING_APPROVAL"],
+        "ENTITY_UPDATED":     ["ENTITY_COMPLETED"]
       },
-      "requires_action_at": ["REVIEW_NEEDED", "DISPUTED", "REJECTED"],
-      "auto_advance_at":    ["RECEIVED", "ENTITY_CREATED"],
+      "requires_action_at": ["DISPUTED_RECEIVED", "REJECTED_RECEIVED"],
+      "auto_advance_at":    ["RECEIVED", "EXTRACTING", "ENTITY_CREATED", "APPROVAL_RECEIVED"],
       "sla": {
-        "REVIEW_NEEDED": { "max_hours": 48, "on_breach": "SLA_BREACH" },
-        "DISPUTED":      { "max_hours": 72, "on_breach": "SLA_BREACH" }
+        "PENDING_APPROVAL":  { "max_hours": 48, "on_breach": "SLA_BREACH" },
+        "DISPUTED_RECEIVED": { "max_hours": 72, "on_breach": "SLA_BREACH" },
+        "REJECTED_RECEIVED": { "max_hours": 72, "on_breach": "SLA_BREACH" }
       }
     },
 

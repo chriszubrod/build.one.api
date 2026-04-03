@@ -247,6 +247,7 @@ def _format_message(msg: dict, include_body: bool = False) -> dict:
         "body_preview": msg.get("bodyPreview", "")[:200] if msg.get("bodyPreview") else "",
         "web_link": msg.get("webLink"),
         "flag": msg.get("flag"),  # Include flag for flagged status
+        "categories": msg.get("categories", []),
     }
     
     if include_body:
@@ -315,7 +316,7 @@ def list_messages(
         
         params = {
             "$top": page_size,
-            "$select": "id,conversationId,internetMessageId,subject,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,isDraft,hasAttachments,importance,bodyPreview,webLink,flag",
+            "$select": "id,conversationId,internetMessageId,subject,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,isDraft,hasAttachments,importance,bodyPreview,webLink,flag,categories",
             "$orderby": order_by,
             "$count": "true"
         }
@@ -434,7 +435,7 @@ def search_all_messages(
         
         base = f"{GRAPH_API_BASE}/users/{mailbox}" if mailbox else f"{GRAPH_API_BASE}/me"
         endpoint = f"{base}/messages"
-        select_fields = "id,conversationId,internetMessageId,subject,body,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,isDraft,hasAttachments,importance,bodyPreview,webLink,flag"
+        select_fields = "id,conversationId,internetMessageId,subject,body,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,isDraft,hasAttachments,importance,bodyPreview,webLink,flag,categories"
 
         # Phase 1: Try direct $filter (fast path for recent conversations)
         # Note: This may fail with InefficientFilter for some queries
@@ -768,6 +769,46 @@ def unflag_message(message_id: str) -> dict:
         Dict with status_code and message
     """
     return flag_message(message_id, flagged=False)
+
+
+def set_categories(message_id: str, categories: list[str], mailbox: Optional[str] = None) -> dict:
+    """
+    Set the categories (color labels) on a message.  Replaces existing categories.
+
+    Args:
+        message_id: The message ID
+        categories: List of category names (e.g., ["Blue Category", "Processed"])
+        mailbox: Optional shared mailbox email address
+
+    Returns:
+        Dict with status_code and message
+    """
+    try:
+        headers = _get_auth_headers()
+        if not headers:
+            return {
+                "message": "No valid MS access token available. Please authenticate first.",
+                "status_code": 401,
+            }
+
+        base = f"{GRAPH_API_BASE}/users/{mailbox}" if mailbox else f"{GRAPH_API_BASE}/me"
+        endpoint = f"{base}/messages/{message_id}"
+
+        logger.info("Setting categories %s on message %s", categories, message_id)
+        resp = requests.patch(url=endpoint, headers=headers, json={"categories": categories})
+
+        if resp.status_code == 200:
+            return {"message": "Categories updated", "status_code": 200}
+        elif resp.status_code == 401:
+            return {"message": "Access token expired or invalid.", "status_code": 401}
+        elif resp.status_code == 404:
+            return {"message": f"Message not found: {message_id}", "status_code": 404}
+        else:
+            logger.error("Graph API set categories failed: %s", resp.text)
+            return {"message": f"Graph API call failed: {resp.text}", "status_code": resp.status_code}
+    except Exception as e:
+        logger.exception("Error setting categories")
+        return {"message": f"An error occurred: {str(e)}", "status_code": 500}
 
 
 # =============================================================================

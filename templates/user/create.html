@@ -112,6 +112,10 @@
                         }
                     }
 
+                    // Only link auth → user if this is first-time self-registration
+                    // (current user has no user profile yet). Skip when an admin
+                    // is creating a user for someone else.
+                    {% if not current_user.get("user_id") %}
                     try {
                         const update_resp = await fetch(`/api/v1/update/auth/{{ current_user.sub }}/user-public-id/${result.public_id}`, {
                             method: 'PUT',
@@ -121,12 +125,15 @@
                         });
                         if (update_resp.ok) {
                             const update_result = await update_resp.json();
-                            console.log('Auth update resposne:', update_result);
-                            window.location.href = '/dashboard'; // maybe update this at another time with a user flow.
+                            console.log('Auth update response:', update_result);
+                            window.location.href = '/dashboard';
+                            return;
                         }
                     } catch (error) {
                         console.log('Error updating auth:', error);
                     }
+                    {% endif %}
+                    window.location.href = `/user/${result.public_id}`;
                 } else {
                     const error = await response.json();
                     alert('Error creating user: ' + (error.detail || 'Unknown error'));

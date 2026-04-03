@@ -32,7 +32,7 @@ class InboxRecordRepository:
             return InboxRecord(
                 id=row.Id,
                 public_id=row.PublicId,
-                row_version=base64.b64encode(row.RowVersion).decode("ascii"),
+                row_version=row.RowVersion if isinstance(row.RowVersion, str) else base64.b64encode(row.RowVersion).decode("ascii"),
                 created_datetime=row.CreatedDatetime,
                 modified_datetime=getattr(row, "ModifiedDatetime", None),
                 message_id=row.MessageId,

@@ -36,10 +36,3 @@ def get_scheduler():
         return None
 
 
-def get_summary_generator():
-    """Get the DailySummaryGenerator class, or None if not available."""
-    try:
-        from workflows.workflow.business.notifications.summary import DailySummaryGenerator
-        return DailySummaryGenerator
-    except ImportError:
-        return None

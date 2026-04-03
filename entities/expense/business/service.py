@@ -728,6 +728,186 @@ class ExpenseService:
             logger.exception(f"Error syncing to Excel workbook for project {project_id}")
             return {"success": False, "message": f"Error syncing to Excel: {str(e)}", "synced_count": 0, "errors": [{"error": str(e)}]}
 
+    def sync_expenses_batch_to_excel(self, expense_line_pairs: List[tuple], project_id: int) -> dict:
+        """
+        Batch sync line items from multiple expenses to one project's Excel workbook.
+        Single worksheet read + single batch insert per project, regardless of how
+        many expenses contribute line items.  Used by the QBO pull sync script.
+
+        The single-expense ``sync_to_excel_workbook`` remains for ``complete_expense``.
+
+        Args:
+            expense_line_pairs: list of (expense, [line_items]) tuples
+            project_id: target project ID
+
+        Returns:
+            dict with success, synced_count, errors
+        """
+        try:
+            from entities.bill.business.service import find_insertion_row_for_subcostcode
+
+            if not expense_line_pairs:
+                return {"success": True, "message": "No expenses to sync", "synced_count": 0, "errors": []}
+
+            # --- resolve workbook location (once) ---
+            excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
+            if not excel_mapping:
+                return {"success": False, "message": f"Excel not linked for project {project_id}", "synced_count": 0, "errors": [{"error": f"Excel not linked for project {project_id}"}]}
+
+            worksheet_name = excel_mapping.get("worksheet_name")
+            if not worksheet_name:
+                return {"success": False, "message": "Worksheet name not found", "synced_count": 0, "errors": [{"error": "Worksheet name not found"}]}
+
+            driveitem_repo = MsDriveItemRepository()
+            items = driveitem_repo.read_all()
+            driveitem = next((item for item in items if item.id == excel_mapping.get("id")), None)
+            if not driveitem:
+                return {"success": False, "message": "DriveItem not found", "synced_count": 0, "errors": [{"error": "DriveItem not found"}]}
+
+            drive = self.drive_repo.read_by_id(driveitem.ms_drive_id)
+            if not drive:
+                return {"success": False, "message": "Drive not found", "synced_count": 0, "errors": [{"error": "Drive not found"}]}
+
+            # --- resolve vendors for all expenses (cached) ---
+            vendor_cache = {}
+            for expense, _ in expense_line_pairs:
+                if expense.vendor_id and expense.vendor_id not in vendor_cache:
+                    vendor_cache[expense.vendor_id] = self.vendor_service.read_by_id(id=expense.vendor_id)
+
+            # --- read worksheet once ---
+            logger.info(f"Reading worksheet '{worksheet_name}' for project {project_id} (batch: {len(expense_line_pairs)} expense(s))")
+            worksheet_result = get_excel_used_range_values(
+                drive_id=drive.drive_id,
+                item_id=driveitem.item_id,
+                worksheet_name=worksheet_name,
+            )
+            worksheet_values = []
+            if worksheet_result.get("status_code") == 200:
+                range_data = worksheet_result.get("range", {})
+                worksheet_values = range_data.get("values", [])
+                logger.info(f"Worksheet has {len(worksheet_values)} rows")
+            else:
+                logger.warning(f"Could not read worksheet data: {worksheet_result.get('message')}. Will append at end.")
+
+            # --- idempotency: column Z across ALL line items ---
+            existing_public_ids = set()
+            for row in worksheet_values:
+                if len(row) > 25:
+                    val = row[25]
+                    if val is not None and str(val).strip():
+                        existing_public_ids.add(str(val).strip())
+
+            # --- build rows for every (expense, line_item) pair ---
+            errors = []
+            all_new_rows = []  # (sub_cost_code_id, row)
+            for expense, line_items in expense_line_pairs:
+                vendor = vendor_cache.get(expense.vendor_id)
+                vendor_name = (vendor.name or "") if vendor else ""
+                for li in line_items:
+                    pid = str(li.public_id).strip() if li.public_id else ""
+                    if pid and pid in existing_public_ids:
+                        continue
+                    try:
+                        scc = self.sub_cost_code_service.read_by_id(id=str(li.sub_cost_code_id)) if li.sub_cost_code_id is not None else None
+                        scc_number = (scc.number or "") if scc else ""
+                        cc_number = scc_number.split(".")[0] if "." in scc_number else scc_number
+                        row = [
+                            "",                                                                 # A
+                            cc_number,                                                          # B: CostCode
+                            scc_number,                                                         # C: SubCostCode
+                            "", "", "", "", "",                                                 # D-H
+                            expense.expense_date[:10] if expense.expense_date else "",          # I: Date
+                            vendor_name,                                                        # J: Vendor
+                            expense.reference_number or "",                                     # K: Ref#
+                            li.description or "",                                               # L: Description
+                            "Expense",                                                          # M: Type
+                            float(li.price) if li.price is not None else 0,                     # N: Price
+                            "", "", "", "", "", "", "", "", "", "", "",                          # O-Y
+                            pid,                                                                # Z: Reconciliation key
+                        ]
+                        all_new_rows.append((li.sub_cost_code_id, scc_number, cc_number, row))
+                    except Exception as e:
+                        logger.error(f"Error building Excel row for ExpenseLineItem {li.id}: {e}")
+                        errors.append({"line_item_id": li.id, "error": str(e)})
+
+            if not all_new_rows:
+                logger.info(f"Project {project_id}: all line items already in worksheet, nothing to sync")
+                return {"success": True, "message": "All rows already synced", "synced_count": 0, "errors": []}
+
+            logger.info(f"Project {project_id}: {len(all_new_rows)} new row(s) to sync")
+
+            # --- group by subcostcode, find insertion points ---
+            from collections import defaultdict as _defaultdict
+            groups_by_scc = _defaultdict(list)
+            for sub_cost_code_id, scc_number, cc_number, row in all_new_rows:
+                groups_by_scc[scc_number].append(row)
+
+            synced_count = 0
+            rows_to_append = []
+            insert_groups = []
+
+            for scc_number, group_rows in groups_by_scc.items():
+                insertion_row = None
+                if scc_number and worksheet_values:
+                    insertion_row = find_insertion_row_for_subcostcode(
+                        worksheet_values=worksheet_values,
+                        target_subcostcode=scc_number,
+                    )
+                if insertion_row:
+                    insert_groups.append((insertion_row, group_rows, scc_number))
+                else:
+                    rows_to_append.extend(group_rows)
+
+            # --- insert bottom-to-top ---
+            insert_groups.sort(key=lambda g: (g[0], g[2]), reverse=True)
+
+            for insertion_row, group_rows, scc_number in insert_groups:
+                insert_result = insert_excel_rows(
+                    drive_id=drive.drive_id,
+                    item_id=driveitem.item_id,
+                    worksheet_name=worksheet_name,
+                    row_index=insertion_row,
+                    values=group_rows,
+                )
+                if insert_result.get("status_code") in [200, 201]:
+                    synced_count += len(group_rows)
+                    logger.info(f"Inserted {len(group_rows)} row(s) at row {insertion_row} for SubCostCode {scc_number}")
+                else:
+                    error_msg = insert_result.get("message", "Unknown error")
+                    logger.error(f"Failed to insert rows for SubCostCode {scc_number}: {error_msg}")
+                    errors.append({"sub_cost_code": scc_number, "error": f"Failed to insert rows: {error_msg}"})
+                    rows_to_append.extend(group_rows)
+
+            # --- append remainder ---
+            if rows_to_append:
+                logger.info(f"Appending {len(rows_to_append)} row(s) to end of worksheet")
+                append_result = append_excel_rows(
+                    drive_id=drive.drive_id,
+                    item_id=driveitem.item_id,
+                    worksheet_name=worksheet_name,
+                    values=rows_to_append,
+                )
+                if append_result.get("status_code") in [200, 201]:
+                    synced_count += len(rows_to_append)
+                    logger.info(f"Appended {len(rows_to_append)} row(s)")
+                else:
+                    error_msg = append_result.get("message", "Unknown error")
+                    logger.error(f"Failed to append rows: {error_msg}")
+                    errors.append({"error": f"Failed to append rows: {error_msg}"})
+
+            logger.info(f"Project {project_id}: synced {synced_count} row(s) to Excel workbook")
+            has_errors = len(errors) > 0
+            return {
+                "success": synced_count > 0 or not has_errors,
+                "message": f"Synced {synced_count} row(s) to Excel workbook",
+                "synced_count": synced_count,
+                "errors": errors,
+            }
+
+        except Exception as e:
+            logger.exception(f"Error batch-syncing to Excel workbook for project {project_id}")
+            return {"success": False, "message": f"Error syncing to Excel: {str(e)}", "synced_count": 0, "errors": [{"error": str(e)}]}
+
     def _upload_attachments_to_module_folder(
         self, expense, line_items: List, project_id: int, expense_line_items_count: int = 1
     ) -> dict:

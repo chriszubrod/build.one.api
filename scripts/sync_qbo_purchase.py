@@ -182,6 +182,8 @@ def sync_qbo_to_local(
             "expenses_module_synced": 0,
             "attachments_linked": 0,
             "excel_rows_synced": 0,
+            "skipped_count": 0,
+            "skipped_purchase_ids": [],
             "failed_count": 0,
             "failed_purchase_ids": [],
             "purchases": [],
@@ -193,10 +195,11 @@ def sync_qbo_to_local(
     expenses_module_synced = 0
     attachments_linked = 0
     excel_rows_synced = 0
-    failed_purchases = []
+    skipped_purchases = []   # permanent data issues (missing vendor, etc.) — don't block timestamp
+    failed_purchases = []    # transient errors (DB, connection) — block timestamp for retry
+    synced_expenses = []     # (expense, expense_id) — collected for batched Excel sync
     attachable_service = QboAttachableService()
 
-    # ExpenseService + ExpenseLineItemService for Excel sync step
     from entities.expense.business.service import ExpenseService
     from entities.expense_line_item.business.service import ExpenseLineItemService
     expense_service = ExpenseService()
@@ -216,6 +219,8 @@ def sync_qbo_to_local(
                 initial_delay=INITIAL_RETRY_DELAY,
             )
             expenses_module_synced += 1
+            expense_id = int(expense.id) if isinstance(expense.id, str) else expense.id
+            synced_expenses.append((expense, expense_id))
             logger.info(f"Synced QboPurchase {purchase.id} to Expense {expense.id}")
 
             # Sync attachables (download to Attachment module) and link to ExpenseLineItems
@@ -227,7 +232,6 @@ def sync_qbo_to_local(
                         sync_to_modules=True,
                     )
                     if qbo_attachables:
-                        expense_id = int(expense.id) if isinstance(expense.id, str) else expense.id
                         linked = sync_purchase_attachments_to_expense_line_items(
                             expense_id=expense_id,
                             qbo_attachables=qbo_attachables,
@@ -236,29 +240,16 @@ def sync_qbo_to_local(
                 except Exception as att_e:
                     logger.warning(f"Could not sync/link attachments for Purchase {purchase.qbo_id}: {att_e}")
 
-            # Sync to project Excel workbooks (idempotent — column Z check prevents duplicates)
-            try:
-                expense_id = int(expense.id) if isinstance(expense.id, str) else expense.id
-                eli_list = expense_line_item_service.read_by_expense_id(expense_id=expense_id)
-                # Group line items by project — only line items with a project can be synced to Excel
-                line_items_by_project = {}
-                for eli in eli_list:
-                    if eli.project_id:
-                        line_items_by_project.setdefault(eli.project_id, []).append(eli)
-                for proj_id, proj_line_items in line_items_by_project.items():
-                    excel_result = expense_service.sync_to_excel_workbook(
-                        expense=expense,
-                        line_items=proj_line_items,
-                        project_id=proj_id,
-                    )
-                    excel_rows_synced += excel_result.get("synced_count", 0)
-                    if excel_result.get("errors"):
-                        for err in excel_result["errors"]:
-                            logger.warning(f"Excel sync error for Expense {expense.id}, project {proj_id}: {err}")
-            except Exception as excel_e:
-                logger.warning(f"Could not sync Expense {expense.id} to Excel: {excel_e}")
-
+        except ValueError as e:
+            # Permanent data issue: missing vendor mapping, missing expense date, etc.
+            # Will never self-resolve on retry — skip without blocking the sync timestamp.
+            logger.info(
+                f"Skipped QboPurchase {purchase.id} (entity_ref={purchase.entity_ref_value}, "
+                f"name={purchase.entity_ref_name}): {e}"
+            )
+            skipped_purchases.append(purchase.id)
         except Exception as e:
+            # Transient error (DB, connection, etc.) — must block timestamp for retry.
             logger.error(f"Failed to sync QboPurchase {purchase.id} to Expense: {e}")
             failed_purchases.append(purchase.id)
 
@@ -267,14 +258,54 @@ def sync_qbo_to_local(
             logger.debug(f"Processed {i + 1}/{len(purchases)} purchases, pausing...")
             time.sleep(BATCH_DELAY)
 
+    if skipped_purchases:
+        logger.info(
+            f"Skipped {len(skipped_purchases)} purchase(s) due to permanent data issues "
+            f"(missing vendor mapping, etc.). These will not block the sync timestamp."
+        )
     if failed_purchases:
         logger.warning(f"Failed to sync {len(failed_purchases)} purchases: {failed_purchases}")
+
+    # --- Batch Excel sync: one worksheet read + one insert per project ---
+    # Collect all line items across all synced expenses, group by project,
+    # then call sync_expenses_batch_to_excel once per project.
+    if synced_expenses:
+        # Build project_id -> [(expense, [line_items]), ...] mapping
+        project_expense_map = {}  # project_id -> [(expense, [line_items_for_this_project])]
+        for expense, expense_id in synced_expenses:
+            try:
+                eli_list = expense_line_item_service.read_by_expense_id(expense_id=expense_id)
+                by_project = {}
+                for eli in eli_list:
+                    if eli.project_id:
+                        by_project.setdefault(eli.project_id, []).append(eli)
+                for proj_id, proj_items in by_project.items():
+                    project_expense_map.setdefault(proj_id, []).append((expense, proj_items))
+            except Exception as e:
+                logger.warning(f"Could not read line items for Expense {expense_id} for Excel sync: {e}")
+
+        if project_expense_map:
+            logger.info(f"Excel sync: {len(project_expense_map)} project(s) to sync across {len(synced_expenses)} expense(s)")
+        for proj_id, expense_line_pairs in project_expense_map.items():
+            try:
+                excel_result = expense_service.sync_expenses_batch_to_excel(
+                    expense_line_pairs=expense_line_pairs,
+                    project_id=proj_id,
+                )
+                excel_rows_synced += excel_result.get("synced_count", 0)
+                if excel_result.get("errors"):
+                    for err in excel_result["errors"]:
+                        logger.warning(f"Excel sync error for project {proj_id}: {err}")
+            except Exception as excel_e:
+                logger.warning(f"Could not sync expenses to Excel for project {proj_id}: {excel_e}")
 
     return {
         "purchases_synced": len(purchases),
         "expenses_module_synced": expenses_module_synced,
         "attachments_linked": attachments_linked,
         "excel_rows_synced": excel_rows_synced,
+        "skipped_count": len(skipped_purchases),
+        "skipped_purchase_ids": skipped_purchases,
         "failed_count": len(failed_purchases),
         "failed_purchase_ids": failed_purchases,
         "purchases": [purchase.to_dict() for purchase in purchases],
@@ -415,6 +446,8 @@ def sync_qbo_purchase(
         
         logger.info(f"QBO Purchase sync completed. Purchases from QBO: {qbo_to_local_result['purchases_synced']}, "
                     f"Expenses synced: {qbo_to_local_result['expenses_module_synced']}, "
+                    f"Skipped: {qbo_to_local_result.get('skipped_count', 0)}, "
+                    f"Failed: {qbo_to_local_result.get('failed_count', 0)}, "
                     f"Attachments linked: {qbo_to_local_result['attachments_linked']}, "
                     f"Excel rows synced: {qbo_to_local_result.get('excel_rows_synced', 0)}")
         

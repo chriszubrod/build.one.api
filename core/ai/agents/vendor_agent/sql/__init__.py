@@ -1,1 +1,0 @@
-# VendorAgent SQL definitions

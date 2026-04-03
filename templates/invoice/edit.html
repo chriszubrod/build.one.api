@@ -1054,9 +1054,6 @@
         const publicId = document.getElementById('invoice_public_id').value;
         if (!publicId) { showToast('Save the invoice first', 'error'); return; }
 
-        // Open the PDF tab immediately (direct click response) so browsers don't block the popup.
-        const pdfTab = window.open('about:blank', '_blank');
-
         // Pre-flight: warn if any included source items are missing a PDF attachment.
         const missingPDF = getIncludedRowsMissingPDF();
         if (missingPDF.length > 0) {
@@ -1069,11 +1066,11 @@
             const proceed = confirm(
                 `${missingPDF.length} line item${missingPDF.length > 1 ? 's are' : ' is'} missing a PDF attachment and will be excluded from the packet:\n\n${lines}\n\nProceed anyway?`
             );
-            if (!proceed) {
-                if (pdfTab) pdfTab.close();
-                return;
-            }
+            if (!proceed) return;
         }
+
+        // Open the PDF tab after confirm (must be in direct click handler to avoid popup blocker).
+        const pdfTab = window.open('about:blank', '_blank');
 
         btnBusy('generatePacketBtn', 'Generating…');
         try {

@@ -958,6 +958,17 @@ async function confirmProcess() {
     const sccId = document.getElementById('preview-scc')?.value || null;
     const isBillable = document.getElementById('preview-billable')?.checked ?? true;
 
+    // Client-side validation
+    const errors = [];
+    if (!billDate) errors.push('Date is required.');
+    if (!vendorPublicId) errors.push('Vendor is required.');
+    if (errors.length) {
+        status.innerHTML = `<span style="color:#dc2626">⚠ ${errors.join(' ')}</span>`;
+        createBtn.disabled = false;
+        createBtn.textContent = `✓ ${DRAFT_BTN_LABELS[currentType] || 'Create Draft'}`;
+        return;
+    }
+
     let url, payload;
 
     if (currentType === 'bill') {
@@ -982,8 +993,8 @@ async function confirmProcess() {
             vendor_public_id: vendorPublicId,
             credit_number: billNumber,
             credit_date: billDate,
-            total_amount: ex?.total_amount || null,
-            memo: ex?.memo || null,
+            total_amount: amount,
+            memo: memo,
             line_items: (ex?.line_items || []).map(li => ({
                 description: li.description,
                 amount: li.amount,
@@ -995,8 +1006,8 @@ async function confirmProcess() {
             vendor_public_id: vendorPublicId,
             reference_number: billNumber,
             expense_date: billDate,
-            total_amount: ex?.total_amount || null,
-            memo: ex?.memo || null,
+            total_amount: amount,
+            memo: memo,
             line_items: (ex?.line_items || []).map(li => ({
                 description: li.description,
                 amount: li.amount,

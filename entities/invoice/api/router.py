@@ -83,10 +83,10 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
 
     BLUE = colors.HexColor("#1F3864")
 
-    wrap_style = ParagraphStyle("toc_wrap", fontName="Helvetica", fontSize=9, leading=11)
-    wrap_hdr = ParagraphStyle("toc_wrap_hdr", fontName="Helvetica-Bold", fontSize=9, leading=11, textColor=BLUE)
-    bold_right = ParagraphStyle("toc_bold_right", fontName="Helvetica-Bold", fontSize=9, leading=11, alignment=TA_RIGHT)
-    hdr_right = ParagraphStyle("toc_hdr_right", fontName="Helvetica-Bold", fontSize=9, leading=11, textColor=BLUE, alignment=TA_RIGHT)
+    wrap_style = ParagraphStyle("toc_wrap", fontName="Helvetica", fontSize=8, leading=10)
+    wrap_hdr = ParagraphStyle("toc_wrap_hdr", fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=BLUE)
+    bold_right = ParagraphStyle("toc_bold_right", fontName="Helvetica-Bold", fontSize=8, leading=10, alignment=TA_RIGHT)
+    hdr_right = ParagraphStyle("toc_hdr_right", fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=BLUE, alignment=TA_RIGHT)
 
     def W(text):
         """Wrapping Paragraph for Vendor / Description columns. HTML-escape so & < > are safe in ReportLab XML."""
@@ -133,20 +133,20 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
     table.setStyle(TableStyle([
         # Header row
         ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE",     (0, 0), (-1, 0), 9),
+        ("FONTSIZE",     (0, 0), (-1, 0), 8),
         ("TEXTCOLOR",    (0, 0), (-1, 0), BLUE),
         ("TOPPADDING",   (0, 0), (-1, 0), 4),
         ("BOTTOMPADDING",(0, 0), (-1, 0), 5),
         ("LINEBELOW",    (0, 0), (-1, 0), 0.75, BLUE),
         # Data rows
         ("FONTNAME",     (0, 1), (-1, n - 2), "Helvetica"),
-        ("FONTSIZE",     (0, 1), (-1, n - 2), 9),
+        ("FONTSIZE",     (0, 1), (-1, n - 2), 8),
         ("TOPPADDING",   (0, 1), (-1, n - 2), 3),
         ("BOTTOMPADDING",(0, 1), (-1, n - 2), 3),
         ("LINEBELOW",    (0, 1), (-1, n - 2), 0.25, colors.HexColor("#CCCCCC")),
         # Total row
         ("FONTNAME",     (0, n - 1), (-1, n - 1), "Helvetica-Bold"),
-        ("FONTSIZE",     (0, n - 1), (-1, n - 1), 9),
+        ("FONTSIZE",     (0, n - 1), (-1, n - 1), 8),
         ("TOPPADDING",   (0, n - 1), (-1, n - 1), 5),
         ("BOTTOMPADDING",(0, n - 1), (-1, n - 1), 4),
         ("LINEABOVE",    (0, n - 1), (-1, n - 1), 0.75, colors.black),
@@ -161,7 +161,7 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
 
     doc.build([
         Paragraph("Table Of Contents", ParagraphStyle(
-            "TOCTitle", fontName="Helvetica-Bold", fontSize=13,
+            "TOCTitle", fontName="Helvetica-Bold", fontSize=12,
             textColor=BLUE, alignment=TA_CENTER, spaceAfter=8,
         )),
         table,
@@ -185,10 +185,10 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
 
     BLUE = colors.HexColor("#1F3864")
 
-    wrap_style = ParagraphStyle("toc_ewrap", fontName="Helvetica", fontSize=9, leading=11)
-    wrap_hdr = ParagraphStyle("toc_ewrap_hdr", fontName="Helvetica-Bold", fontSize=9, leading=11, textColor=BLUE)
-    bold_right = ParagraphStyle("toc_ebold_right", fontName="Helvetica-Bold", fontSize=9, leading=11, alignment=TA_RIGHT)
-    hdr_right = ParagraphStyle("toc_ehdr_right", fontName="Helvetica-Bold", fontSize=9, leading=11, textColor=BLUE, alignment=TA_RIGHT)
+    wrap_style = ParagraphStyle("toc_ewrap", fontName="Helvetica", fontSize=8, leading=10)
+    wrap_hdr = ParagraphStyle("toc_ewrap_hdr", fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=BLUE)
+    bold_right = ParagraphStyle("toc_ebold_right", fontName="Helvetica-Bold", fontSize=8, leading=10, alignment=TA_RIGHT)
+    hdr_right = ParagraphStyle("toc_ehdr_right", fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=BLUE, alignment=TA_RIGHT)
 
     def W(text):
         """Wrapping Paragraph for Vendor / Description columns. HTML-escape so & < > are safe in ReportLab XML."""
@@ -251,14 +251,14 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
     style_cmds = [
         # Header
         ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE",     (0, 0), (-1, 0), 9),
+        ("FONTSIZE",     (0, 0), (-1, 0), 8),
         ("TEXTCOLOR",    (0, 0), (-1, 0), BLUE),
         ("TOPPADDING",   (0, 0), (-1, 0), 4),
         ("BOTTOMPADDING",(0, 0), (-1, 0), 5),
         ("LINEBELOW",    (0, 0), (-1, 0), 0.75, BLUE),
         # All non-header rows default
         ("FONTNAME",     (0, 1), (-1, n - 1), "Helvetica"),
-        ("FONTSIZE",     (0, 1), (-1, n - 1), 9),
+        ("FONTSIZE",     (0, 1), (-1, n - 1), 8),
         ("TOPPADDING",   (0, 1), (-1, n - 1), 3),
         ("BOTTOMPADDING",(0, 1), (-1, n - 1), 3),
         ("LINEBELOW",    (0, 1), (-1, n - 1), 0.25, colors.HexColor("#CCCCCC")),
@@ -293,7 +293,7 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
 
     doc.build([
         Paragraph("Table Of Contents", ParagraphStyle(
-            "TOCTitle", fontName="Helvetica-Bold", fontSize=13,
+            "TOCTitle", fontName="Helvetica-Bold", fontSize=12,
             textColor=BLUE, alignment=TA_CENTER, spaceAfter=8,
         )),
         table,

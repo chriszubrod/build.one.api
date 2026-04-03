@@ -7,11 +7,11 @@ CREATE TABLE [dbo].[Bill]
     [RowVersion] ROWVERSION NOT NULL,
     [CreatedDatetime] DATETIME2(3) NOT NULL,
     [ModifiedDatetime] DATETIME2(3) NULL,
-    [VendorId] BIGINT NOT NULL,
+    [VendorId] BIGINT NULL,
     [PaymentTermId] BIGINT NULL,
     [BillDate] DATETIME2(3) NOT NULL,
     [DueDate] DATETIME2(3) NOT NULL,
-    [BillNumber] NVARCHAR(50) NOT NULL,
+    [BillNumber] NVARCHAR(50) NULL,
     [TotalAmount] DECIMAL(18,2) NULL,
     [Memo] NVARCHAR(MAX) NULL,
     [IsDraft] BIT NOT NULL DEFAULT 1,
@@ -45,11 +45,11 @@ CREATE INDEX IX_Bill_PaymentTermId ON [dbo].[Bill] ([PaymentTermId]);
 END
 GO
 
--- Unique constraint to prevent duplicate BillNumber for the same VendorId
-IF NOT EXISTS (SELECT 1 FROM sys.objects WHERE name = 'UQ_Bill_VendorId_BillNumber' AND parent_object_id = OBJECT_ID('dbo.Bill'))
+-- Composite index on Vendor + Date + BillNumber for duplicate-check lookups
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Bill_VendorId_BillDate_BillNumber' AND object_id = OBJECT_ID('dbo.Bill'))
 BEGIN
-ALTER TABLE [dbo].[Bill]
-ADD CONSTRAINT UQ_Bill_VendorId_BillNumber UNIQUE ([VendorId], [BillNumber]);
+CREATE INDEX [IX_Bill_VendorId_BillDate_BillNumber]
+    ON [dbo].[Bill] ([VendorId], [BillDate], [BillNumber]);
 END
 GO
 
@@ -57,13 +57,13 @@ GO
 -- Create Bill Stored Procedures
 CREATE OR ALTER PROCEDURE CreateBill
 (
-    @VendorId BIGINT,
-    @PaymentTermId BIGINT NULL,
+    @VendorId BIGINT = NULL,
+    @PaymentTermId BIGINT = NULL,
     @BillDate DATETIME2(3),
     @DueDate DATETIME2(3),
-    @BillNumber NVARCHAR(50),
-    @TotalAmount DECIMAL(18,2) NULL,
-    @Memo NVARCHAR(MAX) NULL,
+    @BillNumber NVARCHAR(50) = NULL,
+    @TotalAmount DECIMAL(18,2) = NULL,
+    @Memo NVARCHAR(MAX) = NULL,
     @IsDraft BIT = 1
 )
 AS
@@ -236,13 +236,14 @@ GO
 CREATE OR ALTER PROCEDURE ReadBillByBillNumberAndVendorId
 (
     @BillNumber NVARCHAR(50),
-    @VendorId BIGINT
+    @VendorId BIGINT,
+    @BillDate DATETIME2(3) = NULL
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
 
-    SELECT
+    SELECT TOP 1
         [Id],
         [PublicId],
         [RowVersion],
@@ -257,7 +258,9 @@ BEGIN
         [Memo],
         [IsDraft]
     FROM dbo.[Bill]
-    WHERE [BillNumber] = @BillNumber AND [VendorId] = @VendorId;
+    WHERE [BillNumber] = @BillNumber
+      AND [VendorId] = @VendorId
+      AND (@BillDate IS NULL OR [BillDate] = @BillDate);
 
     COMMIT TRANSACTION;
 END;

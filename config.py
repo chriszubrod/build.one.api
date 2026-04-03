@@ -82,16 +82,6 @@ class Settings(BaseSettings):
     azure_search_api_key: Optional[str] = None
     azure_search_index_name: str = "documents-index"
 
-    # Apple Push Notification service (APNs)
-    apns_key_id: Optional[str] = None
-    apns_team_id: Optional[str] = None
-    apns_bundle_id: Optional[str] = None
-    apns_private_key: Optional[str] = None
-    apns_environment: str = "sandbox"
-
-    # Local AI Configuration
-    local_embedding_model: str = "all-MiniLM-L6-v2"
-
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"  # This allows extra fields to be ignored

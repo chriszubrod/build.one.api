@@ -1,5 +1,97 @@
 # Session Notes
 
+## Session: Codebase Strip and Clean — LangGraph, ML Stack, Push Notifications Removal (April 2-3, 2026)
+
+### What Was Removed
+
+#### Entire directory trees deleted
+- `core/ai/` — all 7 LangGraph agents (email, extraction, copilot, vendor, invoice, contract_labor, bill_validation), 3 traditional processors (bill_agent, expense_agent, expense_categorization), LLM wrappers (claude.py, azure.py, ollama.py), email_classifier.py, base agent framework
+- `core/notifications/` — push_service.py, apns_service.py, sla_scheduler.py
+- `entities/copilot/` — API router, service, model, tools, persistence, SQL
+- `entities/device_token/` — model, repo, SQL schema
+- `samples/` — langchain_hello_world.py
+- `templates/shared/partials/copilot.html` — sidebar chat panel
+
+#### Dependencies removed from requirements.txt and requirements-prod.txt (38 packages)
+- **LangGraph/LangChain stack (13):** langchain, langchain-core, langchain-anthropic, langchain-openai, langchain-ollama, langchain-text-splitters, langgraph, langgraph-checkpoint, langgraph-prebuilt, langgraph-sdk, langsmith, ollama, tiktoken
+- **ML stack (7 primary):** torch, sentence-transformers, transformers, scikit-learn, scipy, numpy, pandas
+- **ML transitive (13):** joblib, safetensors, tokenizers, threadpoolctl, huggingface-hub, hf-xet, fsspec, filelock, sympy, mpmath, networkx, tqdm, patsy
+- **Dead deps (5):** deepagents, google-genai, google-auth, langchain-google-genai, statsmodels
+
+#### Dead files deleted (14)
+- app.py.bak, sync_feb.log, 2x .DS_Store, 5x .bak/.bak2 in email_agent, 2x .bak in classification_override, templates/admin/overrides.html.bak
+
+#### Template cleanup
+- Removed copilot sidebar include from vendor/view, company/view, project/view
+- Removed ~340 lines of vendor agent chat UI from vendor/view.html
+- Removed copilot toggle button from header partial
+- Removed notification bell icon, dropdown HTML, notifications.css link from header
+- Removed notifications.js script tag from base.html
+- Removed copilot no-op guards from company/view, project/view, bill/list, expense/list, inbox/message
+- Deleted static/js/notifications.js and static/css/notifications.css
+
+#### Config and entity cleanup
+- Removed APNs config fields and local_embedding_model from config.py
+- Removed device token endpoints from auth router (register + deactivate)
+- Removed dead get_summary_generator() from core/__init__.py
+- Deleted 4 empty admin entity stubs (model, service, repo, SQL)
+
+### What Was Modified
+
+- **app.py** — removed 4 agent router imports/registrations (vendor_agent, bill_agent, expense_agent, expense_categorization), removed all 3 scheduler start/stop blocks, removed shutdown event entirely. Startup event retained with RBAC validation only.
+- **entities/inbox/business/service.py** — removed EmailClassifier, classify_email, classify_email_heuristic, extract_from_ocr imports. Extraction pipeline simplified from 3-tier (agent → Claude → heuristic) to 2-tier (Claude single-call → heuristic). `_classify_message()` and `_classify_message_heuristic()` stubbed to return None. `process_category_queue()` classification stubbed to None (scheduler that called it was also removed).
+- **shared/ai/embeddings.py** — rewrote: removed LocalEmbeddingService, get_embedding_service() now returns Azure-only with RuntimeError if not configured. Kept compute_similarity (pure Python).
+- **shared/ai/__init__.py** — removed LocalEmbeddingService and EmbeddingService exports
+
+### Current State
+
+- **App starts clean** — `import app` and startup event both succeed with zero errors
+- **RBAC warnings** at startup are pre-existing (module constants vs DB rows) and informational
+- **Estimated install size reduction:** ~3GB+ (torch alone was ~2GB)
+- **requirements.txt:** 138 → 99 packages
+- **Kept intact:** transitions (workflow orchestrator), anthropic SDK (raw, used by claude_extraction_service), openai SDK (Azure OpenAI client), all QBO/MS/Azure integrations, all entity CRUD, all templates (except copilot/notification cleanup)
+
+### What Is Broken
+
+1. **Inbox email classification** — `_classify_message()` and `_classify_message_heuristic()` return None. The email scheduler that called `process_category_queue()` was removed. Emails in the inbox list will show no classification type. Extraction still works via ClaudeExtractionService (raw Anthropic SDK).
+2. **Bill/Expense folder processing** — "Process Folder" buttons on bill/list and expense/list call `/api/v1/bill-agent/run` and `/api/v1/expense-agent/run` which no longer exist (404). Button handlers will catch the error gracefully.
+3. **Expense categorization** — `/api/v1/expense-categorization/suggest-batch` endpoint removed.
+4. **Vendor agent** — sidebar chat and batch classification removed. Vendors can still be typed manually.
+5. **Embeddings** — require Azure OpenAI configuration (`AZURE_OPENAI_ENDPOINT` + `AZURE_OPENAI_API_KEY`). No local fallback.
+
+### Architecture Decisions Made
+
+- **Claude Agent SDK only** — no LangGraph, no LangChain. All future AI features will use the Anthropic SDK directly or Claude Agent SDK.
+- **API/web split deferred** — web controllers currently import business services directly (same process). A true split requires rewriting 39 web controllers to call the API via HTTP. Deferred until React frontend rebuild.
+- **Azure Static Web Apps for React frontend** — future web layer will be a React SPA deployed via Azure Static Web Apps, calling the FastAPI API.
+- **Azure embeddings only** — no local sentence-transformers/torch. Production requires Azure OpenAI configuration.
+
+### Next Session Focus
+
+- Rebuild email classification using Claude Agent SDK (replace stubbed `_classify_message` methods)
+- Rebuild document extraction pipeline using Claude Agent SDK (complement existing ClaudeExtractionService)
+- Consider rebuilding bill/expense folder processing as simple services (no agent framework)
+
+### Files Deleted (summary)
+- `core/ai/` (entire tree, ~86 files)
+- `core/notifications/` (3 files)
+- `entities/copilot/` (22 files)
+- `entities/device_token/` (6 files)
+- `samples/` (1 file + directory)
+- `templates/shared/partials/copilot.html`
+- `static/js/notifications.js`, `static/css/notifications.css`
+- 14 dead files (.bak, .log, .DS_Store)
+- 4 empty admin stubs
+
+### Files Modified (summary)
+- `app.py`, `config.py`, `core/__init__.py`
+- `entities/inbox/business/service.py`, `entities/auth/api/router.py`
+- `shared/ai/embeddings.py`, `shared/ai/__init__.py`
+- `requirements.txt`, `requirements-prod.txt`
+- 8 templates (base.html, header.html, vendor/view, company/view, project/view, bill/list, expense/list, inbox/message)
+
+---
+
 ## Session: Invoice SharePoint Upload, Manual Attachment UI & Module Folder Picker (March 17, 2026)
 
 ### What Was Done

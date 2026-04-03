@@ -312,8 +312,6 @@
         let selectedSiteId = null;
 
         function openSitePicker() {
-            // Close copilot if open
-            if (typeof closeCopilotPanel === 'function') closeCopilotPanel();
             
             const panel = document.getElementById('storage-picker-panel');
             const sidebar = document.querySelector('.sidebar-right');
@@ -558,8 +556,6 @@
         function openBillFolderPicker(folderType) {
             billFolderType = folderType;
 
-            // Close copilot if open
-            if (typeof closeCopilotPanel === 'function') closeCopilotPanel();
 
             const panel = document.getElementById('bill-folder-picker-panel');
             const sidebar = document.querySelector('.sidebar-right');
@@ -729,8 +725,6 @@
 
         function openExpenseFolderPicker(folderType) {
             expenseFolderType = folderType;
-
-            if (typeof closeCopilotPanel === 'function') closeCopilotPanel();
 
             const panel = document.getElementById('expense-folder-picker-panel');
             const sidebar = document.querySelector('.sidebar-right');

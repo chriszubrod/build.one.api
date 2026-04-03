@@ -1,6 +1,5 @@
 {% block head %}
     <link rel="stylesheet" href="{{ url_for('static', path='css/header.css') }}?v={{ range(1000, 9999) | random }}">
-    <link rel="stylesheet" href="{{ url_for('static', path='css/notifications.css') }}?v={{ range(1000, 9999) | random }}">
 {% endblock %}
 
 
@@ -32,25 +31,6 @@
         <!-- User section -->
         <div class="header-user">
             {% if current_user %}
-                <!-- Notification Bell -->
-                <div class="notification-wrapper">
-                    <button id="notification-bell" class="notification-bell" aria-label="Notifications">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-                            <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-                        </svg>
-                        <span id="notification-badge" class="notification-badge notification-badge--hidden">0</span>
-                    </button>
-                    <div id="notification-dropdown" class="notification-dropdown">
-                        <div class="notification-dropdown-header">
-                            <span class="notification-dropdown-title">Notifications</span>
-                        </div>
-                        <div id="notification-list" class="notification-list">
-                            <div class="notification-empty">No new notifications</div>
-                        </div>
-                    </div>
-                </div>
-                
                 <div class="user-info">
                     <span class="user-name">{{ current_user.username }}</span>
                     <a href="/auth/logout" class="logout-link">Log out</a>

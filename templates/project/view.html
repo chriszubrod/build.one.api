@@ -311,8 +311,6 @@
         let availableWorksheets = [];
 
         function openFolderPicker() {
-            // Close copilot if open
-            if (typeof closeCopilotPanel === 'function') closeCopilotPanel();
             
             pickerMode = 'project';
             const panel = document.getElementById('folder-picker-panel');
@@ -718,8 +716,6 @@
                 return;
             }
 
-            // Close copilot if open
-            if (typeof closeCopilotPanel === 'function') closeCopilotPanel();
             
             pickerMode = 'module';
             currentModuleType = moduleId;
@@ -849,8 +845,6 @@
 
         // Excel Workbook Picker
         function openExcelPicker() {
-            // Close copilot if open
-            if (typeof closeCopilotPanel === 'function') closeCopilotPanel();
             
             pickerMode = 'excel';
             const panel = document.getElementById('folder-picker-panel');

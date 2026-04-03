@@ -329,11 +329,6 @@
 
 {% block content %}
 
-<!-- Thread data for copilot sidebar -->
-<div id="thread-context"
-     data-message-id="{{ email.message_id }}"
-     data-conversation-id="{{ email.conversation_id or '' }}"
-     style="display:none;"></div>
 
 <!-- Back link -->
 <div style="margin-bottom:1rem;">
@@ -708,11 +703,6 @@ async function startProcess() {
     showPanel('panel-preview');
     document.getElementById('create-status').textContent = '';
 
-    // Show extraction results in copilot chat
-    if (ex && typeof addCopilotMessage === 'function') {
-        showExtractionInChat(ex);
-    }
-
     // Show attachment preview in left column
     if (lastAttachmentInfo) {
         showAttachmentPreview();
@@ -743,47 +733,6 @@ function togglePreviewCollapse() {
         container.style.display = 'none';
         label.textContent = 'Expand';
     }
-}
-
-function showExtractionInChat(ex) {
-    const confPct = ex.overall_confidence ? Math.round(ex.overall_confidence * 100) : null;
-    const isAI = (ex.extraction_notes || []).some(n => n.toLowerCase().includes('claude'));
-
-    let lines = [];
-    lines.push(`**Document Extraction ${isAI ? '(AI)' : ''}**`);
-    lines.push('');
-
-    if (ex.vendor_name) {
-        const vPct = ex.vendor_match?.confidence ?? ex.vendor_confidence;
-        const vLabel = ex.vendor_match ? ex.vendor_match.name : ex.vendor_name;
-        lines.push(`**Vendor:** ${vLabel}${vPct ? ' (' + Math.round(vPct * 100) + '%)' : ''}`);
-    }
-    if (ex.bill_number) {
-        const bPct = ex.bill_number_confidence;
-        lines.push(`**Invoice #:** ${ex.bill_number}${bPct ? ' (' + Math.round(bPct * 100) + '%)' : ''}`);
-    }
-    if (ex.bill_date) {
-        const dPct = ex.date_confidence;
-        lines.push(`**Date:** ${ex.bill_date}${dPct ? ' (' + Math.round(dPct * 100) + '%)' : ''}`);
-    }
-    if (ex.total_amount) {
-        const aPct = ex.amount_confidence;
-        const amt = parseFloat(ex.total_amount).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
-        lines.push(`**Amount:** ${amt}${aPct ? ' (' + Math.round(aPct * 100) + '%)' : ''}`);
-    }
-    if (ex.line_items?.length) {
-        lines.push(`**Line Items:** ${ex.line_items.length}`);
-    }
-    if (ex.memo) {
-        lines.push(`**Memo:** ${ex.memo}`);
-    }
-
-    if (confPct) {
-        lines.push('');
-        lines.push(`Overall confidence: **${confPct}%**`);
-    }
-
-    addCopilotMessage(lines.join('\n'), 'assistant');
 }
 
 function renderPreview(ex, errorMessage) {

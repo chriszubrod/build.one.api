@@ -1110,20 +1110,6 @@
         btn.disabled = true;
         btn.textContent = 'Processing...';
 
-        // Open copilot panel and show user message
-        if (typeof toggleCopilot === 'function' && !copilotOpen) {
-            toggleCopilot();
-        }
-        if (typeof addCopilotMessage === 'function') {
-            addCopilotMessage('Process bill folder', 'user');
-        }
-
-        // Show typing indicator
-        let typingId = null;
-        if (typeof addCopilotTypingIndicator === 'function') {
-            typingId = addCopilotTypingIndicator('Starting folder processing...');
-        }
-
         try {
             const response = await fetch('/api/v1/bill-agent/run', {
                 method: 'POST',
@@ -1146,22 +1132,15 @@
                 throw new Error('No run ID returned');
             }
 
-            // Poll for completion with copilot progress
-            await pollBillAgentRun(runPublicId, btn, typingId);
+            await pollBillAgentRun(runPublicId, btn);
         } catch (error) {
             console.error('Bill folder processing error:', error);
             btn.disabled = false;
             btn.textContent = 'Process Folder';
-            if (typingId && typeof removeCopilotTypingIndicator === 'function') {
-                removeCopilotTypingIndicator(typingId);
-            }
-            if (typeof addCopilotMessage === 'function') {
-                addCopilotMessage('Failed to start folder processing: ' + error.message, 'assistant');
-            }
         }
     }
 
-    async function pollBillAgentRun(runPublicId, btn, typingId) {
+    async function pollBillAgentRun(runPublicId, btn) {
         const maxAttempts = 120;
         let attempts = 0;
 
@@ -1181,53 +1160,14 @@
                 const data = await response.json();
 
                 if (data.status === 'completed') {
-                    // Remove typing indicator
-                    if (typingId && typeof removeCopilotTypingIndicator === 'function') {
-                        removeCopilotTypingIndicator(typingId);
-                    }
-
-                    // Build summary message
-                    let msg = `**Folder processing complete.**\n\n`;
-                    msg += `Files found: ${data.files_found || 0}\n`;
-                    msg += `Files processed: ${data.files_processed || 0}\n`;
-                    msg += `Bills created: ${data.bills_created || 0}`;
-                    if (data.files_skipped > 0) {
-                        msg += `\nFiles skipped: ${data.files_skipped}`;
-                    }
-                    if (data.error_count > 0) {
-                        msg += `\nErrors: ${data.error_count}`;
-                    }
-
-                    if (typeof addCopilotMessage === 'function') {
-                        addCopilotMessage(msg, 'assistant');
-                    }
-
-                    // Reload page after a brief delay so user sees the message
-                    setTimeout(() => window.location.reload(), 2000);
+                    setTimeout(() => window.location.reload(), 1000);
                     return;
                 }
 
                 if (data.status === 'failed') {
-                    if (typingId && typeof removeCopilotTypingIndicator === 'function') {
-                        removeCopilotTypingIndicator(typingId);
-                    }
-                    if (typeof addCopilotMessage === 'function') {
-                        addCopilotMessage('Processing failed. Check logs for details.', 'assistant');
-                    }
                     btn.disabled = false;
                     btn.textContent = 'Process Folder';
                     return;
-                }
-
-                // Still running — update progress in typing indicator
-                if (typingId && typeof updateCopilotTypingStatus === 'function') {
-                    const found = data.files_found || 0;
-                    const done = (data.files_processed || 0) + (data.files_skipped || 0);
-                    if (found > 0) {
-                        updateCopilotTypingStatus(typingId, `Processing file ${done + 1} of ${found}...`);
-                    } else {
-                        updateCopilotTypingStatus(typingId, 'Scanning folder...');
-                    }
                 }
 
                 btn.textContent = `Processing...`;
@@ -1237,12 +1177,6 @@
         }
 
         // Timeout
-        if (typingId && typeof removeCopilotTypingIndicator === 'function') {
-            removeCopilotTypingIndicator(typingId);
-        }
-        if (typeof addCopilotMessage === 'function') {
-            addCopilotMessage('Processing is taking longer than expected. Check the run status manually.', 'assistant');
-        }
         btn.disabled = false;
         btn.textContent = 'Process Folder';
     }

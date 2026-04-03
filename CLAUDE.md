@@ -1,5 +1,19 @@
 At the start of each session, read SESSION_NOTES.md for historical context.
 
+## Working Style
+
+- **Plan before coding.** Propose a step-by-step plan and wait for approval before writing any code. Do not start implementing until the plan is confirmed.
+
+## Architecture Decisions (April 2026)
+
+- **Claude Agent SDK is the only agent framework.** Never use LangGraph, LangChain, or any LangChain ecosystem package. All AI features use the `anthropic` SDK directly or Claude Agent SDK.
+- **`core/ai/` no longer exists.** The entire agent layer was removed during the April 2026 strip-and-clean. It is being rebuilt from scratch. Do not reference or attempt to import from `core.ai`.
+- **`core/notifications/` no longer exists.** Push notifications (APNs), device tokens, and SLA scheduler were removed. Do not reference `core.notifications`, `device_token`, or push_service.
+- **Inbox classification is stubbed.** `_classify_message()` and `_classify_message_heuristic()` in `entities/inbox/business/service.py` return None. The email scheduler was removed. These need to be rebuilt.
+- **Extraction pipeline is 2-tier.** `ClaudeExtractionService` (raw anthropic SDK, single Haiku call) → heuristic `BillExtractionMapper` fallback. The LangGraph extraction agent was removed.
+- **Azure OpenAI embeddings only.** `shared/ai/embeddings.py` requires `AZURE_OPENAI_ENDPOINT` configured. No local sentence-transformers/torch fallback.
+- **Bill/expense folder processing removed.** The bill_agent and expense_agent (folder scanners) were deleted. "Process Folder" buttons on list pages will 404 until rebuilt.
+
 ## Project Conventions
 
 - **Entity pattern**: `entities/{name}/` with `api/`, `business/`, `persistence/`, `sql/`, `web/` sub-packages

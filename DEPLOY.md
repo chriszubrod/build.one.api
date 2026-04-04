@@ -69,6 +69,6 @@ az webapp restart --name <webapp-name> --resource-group <resource-group>
 ## Notes
 
 - **Mac ARM (M1/M2/M3):** The Dockerfile targets `linux/amd64` for Azure (and for Microsoft ODBC driver). Builds will run under emulation; first build may take longer.
-- First build: ~10–15 min (pip installs torch, etc.)
+- First build: ~3–5 min (pip installs, ODBC driver setup)
 - Subsequent builds (code-only changes): ~1–2 min (Docker layer cache)
 - Ensure all env vars (DB_*, AZURE_*, etc.) are set in Web App configuration

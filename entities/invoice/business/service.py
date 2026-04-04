@@ -358,24 +358,8 @@ class InvoiceService:
         # Excel workbook sync disabled
         excel_result = {"success": True, "message": "Disabled", "synced_count": 0, "errors": []}
 
-        # QBO push sync — push completed invoice to QBO
-        qbo_result = {"success": False, "message": "Not attempted"}
-        try:
-            from integrations.intuit.qbo.auth.business.service import QboAuthService
-            from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
-            qbo_auth = QboAuthService().ensure_valid_token()
-            if qbo_auth:
-                connector = InvoiceInvoiceConnector()
-                connector.sync_to_qbo_invoice(finalized, qbo_auth.realm_id)
-                qbo_result = {"success": True, "message": "Invoice synced to QBO successfully"}
-                logger.info(f"QBO push sync complete for invoice {public_id}")
-            else:
-                qbo_result = {"success": False, "message": "No QBO auth configured"}
-                logger.warning(f"QBO push sync skipped for invoice {public_id}: no auth")
-        except Exception as e:
-            qbo_result = {"success": False, "message": str(e)}
-            errors.append({"error": f"QBO sync failed: {str(e)}"})
-            logger.error(f"QBO push sync failed for invoice {public_id}: {e}")
+        # QBO push sync disabled
+        qbo_result = {"success": True, "message": "Disabled", "errors": []}
 
         status_code = 200 if not errors else 207
         return {

@@ -260,6 +260,24 @@ class InboxRecordRepository:
             logger.error(f"Error reading inbox records by sender: {error}")
             return []  # Non-fatal — agent can still classify without history
 
+    def read_by_conversation_id(self, conversation_id: str, limit: int = 10) -> List[InboxRecord]:
+        """Read recent classified InboxRecords for a conversation thread."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT TOP (?) * FROM dbo.InboxRecord "
+                    "WHERE ConversationId = ? AND ClassificationType IS NOT NULL "
+                    "ORDER BY CreatedDatetime DESC",
+                    limit,
+                    conversation_id,
+                )
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(f"Error reading inbox records by conversation ID: {error}")
+            return []  # Non-fatal — Claude can still classify without thread history
+
     def read_by_message_ids(self, message_ids: List[str]) -> List[InboxRecord]:
         """Batch lookup of InboxRecords by a list of MS Graph message IDs."""
         if not message_ids:

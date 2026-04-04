@@ -18,6 +18,8 @@ from typing import Optional
 from config import Settings
 from entities.bill.business.claude_extraction_service import ClaudeExtractionService
 from entities.bill.business.extraction_mapper import BillExtractionMapper, BillExtractionResult
+from shared.classification.models import ClassificationResult, ClassificationType, LABEL_MAP
+from entities.inbox.business.model import classify_email_heuristic
 from entities.inbox.persistence.repo import InboxRecordRepository
 from integrations.azure.ai.document_intelligence import AzureDocumentIntelligence
 from integrations.ms.mail.external import client as mail_client
@@ -690,7 +692,8 @@ class InboxService:
                 )
                 inbox_record_id = record.id if record else None
 
-                # Classification removed — email agent deleted during rebuild
+                # TODO: wire up when process_category_queue
+                # scheduler is rebuilt in Phase 2
                 classification = None
 
                 cls_type = getattr(classification, "classification", "UNKNOWN")
@@ -1312,13 +1315,68 @@ class InboxService:
         except Exception:
             return dt_str
 
-    def _classify_message(self, email: dict, inbox_record_id: int = None, internet_message_id: str = None) -> object:
-        """Classification removed — email agent deleted during rebuild."""
-        return None
+    def _classify_message(self, email: dict, inbox_record_id: int = None, internet_message_id: str = None) -> ClassificationResult:
+        """Full classification: heuristic first, then Claude Haiku refinement."""
+        # Step 1: heuristic baseline
+        heuristic = self._classify_message_heuristic(email)
 
-    def _classify_message_heuristic(self, email: dict) -> object:
-        """Classification removed — email agent deleted during rebuild."""
-        return None
+        # Step 2: Claude Haiku call with heuristic as fallback
+        from shared.ai.claude import classify_email
+
+        attachments = email.get("attachments") or []
+        filenames = [
+            a.get("name", "")
+            for a in attachments
+            if not a.get("is_inline", False)
+        ]
+
+        thread_history = self._get_thread_history(email.get("conversation_id"))
+
+        return classify_email(
+            subject=email.get("subject", ""),
+            sender=email.get("from_email", ""),
+            body_preview=email.get("body_preview") or email.get("body_content", ""),
+            attachment_filenames=filenames,
+            heuristic_result=heuristic,
+            thread_history=thread_history,
+        )
+
+    def _classify_message_heuristic(self, email: dict) -> ClassificationResult:
+        """Fast, rule-based classification for list views."""
+        attachments = email.get("attachments") or []
+        filenames = [
+            a.get("name", "")
+            for a in attachments
+            if not a.get("is_inline", False)
+        ]
+        return classify_email_heuristic(
+            subject=email.get("subject", ""),
+            sender=email.get("from_email", ""),
+            body_preview=email.get("body_preview", ""),
+            attachment_filenames=filenames,
+        )
+
+    def _get_thread_history(self, conversation_id: Optional[str]) -> list[str]:
+        """
+        Pull prior classification records for this conversation thread
+        from InboxRecord. Returns a list of summary strings for Claude context.
+        """
+        if not conversation_id:
+            return []
+
+        try:
+            records = self._record_repo.read_by_conversation_id(conversation_id)
+            history = []
+            for r in records:
+                if r.classification_type:
+                    label = r.classification_type
+                    subj = (r.subject or "")[:80]
+                    sender = r.from_email or ""
+                    history.append(f"{label}: \"{subj}\" from {sender}")
+            return history[:5]  # Cap at 5 entries
+        except Exception as exc:
+            logger.debug("Thread history lookup failed (non-fatal): %s", exc)
+            return []
 
     def _is_extractable(self, attachment: dict) -> bool:
         """Return True if Document Intelligence can process this attachment type."""

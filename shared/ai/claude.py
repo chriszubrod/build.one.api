@@ -10,6 +10,7 @@ from typing import List, Optional
 
 import anthropic
 
+from config import Settings
 from shared.classification.models import ClassificationResult, ClassificationType, LABEL_MAP
 
 logger = logging.getLogger(__name__)
@@ -81,7 +82,8 @@ def classify_email(
     user_message = "\n".join(parts)
 
     try:
-        client = anthropic.Anthropic()
+        settings = Settings()
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=256,
@@ -89,7 +91,13 @@ def classify_email(
             messages=[{"role": "user", "content": user_message}],
         )
 
-        raw_text = response.content[0].text.strip()
+        logger.debug("Claude classification stop_reason=%s, content_blocks=%d",
+                     response.stop_reason, len(response.content))
+        raw_text = response.content[0].text.strip() if response.content else ""
+        # Strip markdown code fences if present
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("\n", 1)[1] if "\n" in raw_text else raw_text[3:]
+            raw_text = raw_text.rsplit("```", 1)[0].strip()
         parsed = json.loads(raw_text)
 
         cls_type = ClassificationType(parsed["type"])

@@ -99,6 +99,9 @@ from entities.qa.api.router import router as qa_api_router
 from entities.anomaly.api.router import router as anomaly_api_router
 from entities.categorization.api.router import router as categorization_api_router
 from entities.inbox.web.controller import router as inbox_web_router
+from entities.review_status.api.router import router as review_status_api_router
+from entities.review_status.web.controller import router as review_status_web_router
+from entities.review_entry.api.router import router as review_entry_api_router
 from entities.classification_override.api.router import router as classification_override_api_router
 from entities.classification_override.web.controller import router as classification_override_web_router
 from entities.email_thread.api.router import router as email_thread_api_router
@@ -271,6 +274,9 @@ app.include_router(search_api_router)
 app.include_router(qa_api_router)
 app.include_router(anomaly_api_router)
 app.include_router(categorization_api_router)
+app.include_router(review_status_api_router)
+app.include_router(review_status_web_router)
+app.include_router(review_entry_api_router)
 app.include_router(pending_action_api_router)
 
 

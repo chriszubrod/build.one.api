@@ -61,5 +61,8 @@ class Modules:
     # Classification overrides
     CLASSIFICATION_OVERRIDES = "Classification Overrides"
 
+    # Review workflow
+    REVIEW_STATUSES = "Review Statuses"
+
     # Pending actions
     PENDING_ACTIONS = "Pending Actions"

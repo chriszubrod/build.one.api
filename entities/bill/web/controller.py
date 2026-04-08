@@ -730,6 +730,17 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
     except Exception as exc:
         logger.debug("Completion result lookup for bill %s failed (non-fatal): %s", public_id, exc)
 
+    # Fetch review timeline
+    review_entries = []
+    review_current_status = None
+    if bill and bill.id:
+        from entities.review_entry.business.service import ReviewEntryService
+        review_service = ReviewEntryService()
+        entries = review_service.read_by_bill_id(bill_id=bill.id)
+        review_entries = [e.to_dict() for e in entries]
+        if entries:
+            review_current_status = entries[0].to_dict()  # first = latest (DESC order)
+
     return templates.TemplateResponse(
         "bill/view.html",
         {
@@ -740,6 +751,8 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
             "workflow_data": workflow_data,
             "source_email": source_email,
             "completion_result": completion_result,
+            "review_entries": review_entries,
+            "review_current_status": review_current_status,
             "current_user": current_user,
             "current_path": request.url.path,
         },
@@ -860,6 +873,20 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
     for key in ("bill_date", "due_date"):
         bill_dict[key] = _date_to_mm_dd_yyyy(bill_dict.get(key))
 
+    # Fetch review timeline and declined statuses for edit page
+    review_entries = []
+    review_current_status = None
+    review_declined_statuses = []
+    if bill and bill.id:
+        from entities.review_entry.business.service import ReviewEntryService
+        from entities.review_status.business.service import ReviewStatusService
+        review_service = ReviewEntryService()
+        entries = review_service.read_by_bill_id(bill_id=bill.id)
+        review_entries = [e.to_dict() for e in entries]
+        if entries:
+            review_current_status = entries[0].to_dict()
+        review_declined_statuses = [s.to_dict() for s in ReviewStatusService().get_declined_statuses()]
+
     return templates.TemplateResponse(
         "bill/edit.html",
         {
@@ -873,6 +900,9 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
             "workflow_conversation": workflow_conversation,
             "workflow_data": workflow_data,
             "source_email": source_email,
+            "review_entries": review_entries,
+            "review_current_status": review_current_status,
+            "review_declined_statuses": review_declined_statuses,
             "current_user": current_user,
             "current_path": request.url.path,
         },

@@ -724,10 +724,23 @@ class BillService:
             existing.memo = memo
         if is_draft is not None:
             existing.is_draft = is_draft
-        
+
+        # Duplicate check when completing (transitioning from draft to non-draft)
+        if is_draft is False and existing.vendor_id and existing.bill_number:
+            duplicate = self.repo.read_by_bill_number_and_vendor_id(
+                bill_number=existing.bill_number,
+                vendor_id=existing.vendor_id,
+                bill_date=existing.bill_date,
+            )
+            if duplicate and str(duplicate.public_id).upper() != str(public_id).upper():
+                raise ValueError(
+                    f"A bill with BillNumber '{existing.bill_number}' already exists for this vendor. "
+                    f"Please update the existing bill instead of creating a new one."
+                )
+
         # Note: SharePoint sync is performed in complete_bill when "Complete Bill" is clicked.
         # This avoids duplicate uploads when the bill is finalized.
-        
+
         updated_bill = self.repo.update_by_id(existing)
         
         return updated_bill
@@ -808,6 +821,14 @@ class BillService:
             except Exception as e:
                 logger.error(f"Failed to delete bill line item {line_item.id}: {e}")
                 raise ValueError(f"Cannot delete bill: failed to delete line item {line_item.id}") from e
+
+        # Step 3.5: Delete ReviewEntry records for this bill (cascade cleanup)
+        try:
+            from entities.review_entry.business.service import ReviewEntryService
+            ReviewEntryService().delete_by_bill_id(bill_id=bill_id)
+            logger.info(f"Deleted review entries for bill {bill_id}")
+        except Exception as e:
+            logger.warning(f"Error deleting review entries for bill {bill_id}: {e}")
 
         # Step 4: Delete the Bill record
         return self.repo.delete_by_id(existing.id)

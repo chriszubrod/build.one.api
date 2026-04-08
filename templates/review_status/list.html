@@ -1,0 +1,79 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}Review Statuses - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/review_status.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="rs-page-header">
+        <h1>Review Statuses</h1>
+        <a href="/review-status/create" class="btn btn-primary">Add Status</a>
+    </div>
+
+    {% if review_statuses %}
+        <div class="rs-table-container">
+            <table class="rs-table">
+                <thead>
+                    <tr>
+                        <th>Order</th>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Final</th>
+                        <th>Declined</th>
+                        <th>Active</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for status in review_statuses %}
+                    <tr>
+                        <td>{{ status.sort_order }}</td>
+                        <td>
+                            {% if status.color %}
+                                <span class="rs-color-badge" style="background-color: {{ status.color }};"></span>
+                            {% endif %}
+                            {{ status.name or '' }}
+                        </td>
+                        <td>{{ status.description or '' }}</td>
+                        <td>
+                            <span class="rs-flag {{ 'rs-flag-yes' if status.is_final else 'rs-flag-no' }}">
+                                {{ 'Yes' if status.is_final else 'No' }}
+                            </span>
+                        </td>
+                        <td>
+                            <span class="rs-flag {{ 'rs-flag-yes' if status.is_declined else 'rs-flag-no' }}">
+                                {{ 'Yes' if status.is_declined else 'No' }}
+                            </span>
+                        </td>
+                        <td>
+                            <span class="rs-flag {{ 'rs-flag-yes' if status.is_active else 'rs-flag-no' }}">
+                                {{ 'Yes' if status.is_active else 'No' }}
+                            </span>
+                        </td>
+                        <td>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <a href="/review-status/{{ status.public_id }}" class="btn btn-outline-primary btn-sm">View</a>
+                                <a href="/review-status/{{ status.public_id }}/edit" class="btn btn-outline-secondary btn-sm">Edit</a>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% else %}
+        <div class="rs-empty-state">
+            <h3>No Review Statuses Found</h3>
+            <p>Create your first review status to get started.</p>
+            <a href="/review-status/create" class="btn btn-primary">Create Status</a>
+        </div>
+    {% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/auth.js"></script>
+{% endblock %}

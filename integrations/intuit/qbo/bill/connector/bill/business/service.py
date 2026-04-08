@@ -461,8 +461,8 @@ class BillBillConnector:
             )
 
         # Use the first match
-        from integrations.intuit.qbo.bill.external.schemas import QboBillResponse
-        existing_qbo_bill = QboBillResponse.from_qbo_response(qbo_bills[0])
+        from integrations.intuit.qbo.bill.external.schemas import QboBill as QboBillSchema
+        existing_qbo_bill = QboBillSchema.model_validate(qbo_bills[0])
 
         logger.info(f"Found existing QBO Bill {existing_qbo_bill.id} for DocNumber '{bill.bill_number}'")
 

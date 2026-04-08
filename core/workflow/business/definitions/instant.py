@@ -88,6 +88,10 @@ SYNCHRONOUS_TASKS = [
     # Contact
     "contact",
 
+    # Review workflow
+    "review_status",
+    "review_entry",
+
     # Other
     "integration",
     "contract_labor",

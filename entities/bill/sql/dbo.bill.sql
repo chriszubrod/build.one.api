@@ -45,11 +45,19 @@ CREATE INDEX IX_Bill_PaymentTermId ON [dbo].[Bill] ([PaymentTermId]);
 END
 GO
 
--- Composite index on Vendor + Date + BillNumber for duplicate-check lookups
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Bill_VendorId_BillDate_BillNumber' AND object_id = OBJECT_ID('dbo.Bill'))
+-- Unique filtered index on Vendor + BillNumber + BillDate — prevents duplicates
+-- Filtered to non-NULL VendorId and BillNumber so drafts without these fields are not constrained
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Bill_VendorId_BillDate_BillNumber' AND object_id = OBJECT_ID('dbo.Bill'))
 BEGIN
-CREATE INDEX [IX_Bill_VendorId_BillDate_BillNumber]
-    ON [dbo].[Bill] ([VendorId], [BillDate], [BillNumber]);
+    DROP INDEX [IX_Bill_VendorId_BillDate_BillNumber] ON [dbo].[Bill];
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_Bill_VendorId_BillNumber_BillDate' AND object_id = OBJECT_ID('dbo.Bill'))
+BEGIN
+CREATE UNIQUE INDEX [UQ_Bill_VendorId_BillNumber_BillDate]
+    ON [dbo].[Bill] ([VendorId], [BillNumber], [BillDate])
+    WHERE [VendorId] IS NOT NULL AND [BillNumber] IS NOT NULL;
 END
 GO
 

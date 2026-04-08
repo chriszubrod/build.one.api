@@ -77,6 +77,10 @@ PROCESS_REGISTRY: Dict[str, str] = {
     # Contact
     "contact": "entities.contact.business.service.ContactService",
 
+    # Review workflow
+    "review_status": "entities.review_status.business.service.ReviewStatusService",
+    "review_entry": "entities.review_entry.business.service.ReviewEntryService",
+
     # Other
     "integration": "entities.integration.business.service.IntegrationService",
     "contract_labor": "entities.contract_labor.business.service.ContractLaborService",

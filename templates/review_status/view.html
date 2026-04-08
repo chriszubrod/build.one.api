@@ -1,0 +1,137 @@
+{% extends 'shared/layout/base.html' %}
+
+{% block title %}{{ review_status.name or 'Review Status' }} - Build.One{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/review_status.css') }}?v={{ range(1000, 9999) | random }}">
+{% endblock %}
+
+{% block content %}
+
+    <div class="rs-page-header">
+        <h1>{{ review_status.name or 'Review Status Details' }}</h1>
+        <div style="display: flex; gap: 0.5rem;">
+            <a href="/review-status/{{ review_status.public_id }}/edit" class="btn btn-primary">Edit</a>
+            <a href="/review-status/list" class="btn btn-secondary">Back to List</a>
+        </div>
+    </div>
+
+    <div class="rs-detail-container">
+        <div class="rs-detail-card">
+            <div class="rs-detail-card-header">
+                <h5>Status Information</h5>
+            </div>
+            <div class="rs-detail-card-body">
+                <div class="rs-detail-row">
+                    <div class="rs-detail-label">Name:</div>
+                    <div class="rs-detail-value">
+                        {% if review_status.color %}
+                            <span class="rs-color-badge" style="background-color: {{ review_status.color }};"></span>
+                        {% endif %}
+                        {{ review_status.name or 'Not specified' }}
+                    </div>
+                </div>
+
+                <div class="rs-detail-row">
+                    <div class="rs-detail-label">Description:</div>
+                    <div class="rs-detail-value">{{ review_status.description or 'Not specified' }}</div>
+                </div>
+
+                <div class="rs-detail-row">
+                    <div class="rs-detail-label">Sort Order:</div>
+                    <div class="rs-detail-value">{{ review_status.sort_order }}</div>
+                </div>
+
+                <div class="rs-detail-row">
+                    <div class="rs-detail-label">Final:</div>
+                    <div class="rs-detail-value">
+                        <span class="rs-flag {{ 'rs-flag-yes' if review_status.is_final else 'rs-flag-no' }}">
+                            {{ 'Yes' if review_status.is_final else 'No' }}
+                        </span>
+                    </div>
+                </div>
+
+                <div class="rs-detail-row">
+                    <div class="rs-detail-label">Declined:</div>
+                    <div class="rs-detail-value">
+                        <span class="rs-flag {{ 'rs-flag-yes' if review_status.is_declined else 'rs-flag-no' }}">
+                            {{ 'Yes' if review_status.is_declined else 'No' }}
+                        </span>
+                    </div>
+                </div>
+
+                <div class="rs-detail-row">
+                    <div class="rs-detail-label">Active:</div>
+                    <div class="rs-detail-value">
+                        <span class="rs-flag {{ 'rs-flag-yes' if review_status.is_active else 'rs-flag-no' }}">
+                            {{ 'Yes' if review_status.is_active else 'No' }}
+                        </span>
+                    </div>
+                </div>
+
+                <div class="rs-detail-row">
+                    <div class="rs-detail-label">Color:</div>
+                    <div class="rs-detail-value">
+                        {% if review_status.color %}
+                            <span class="rs-color-badge" style="background-color: {{ review_status.color }};"></span>
+                            <code>{{ review_status.color }}</code>
+                        {% else %}
+                            Not specified
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div class="rs-detail-row">
+                    <div class="rs-detail-label">Created:</div>
+                    <div class="rs-detail-value">{{ review_status.created_datetime or 'Unknown' }}</div>
+                </div>
+
+                <div class="rs-detail-row">
+                    <div class="rs-detail-label">Last Modified:</div>
+                    <div class="rs-detail-value">{{ review_status.modified_datetime or 'Unknown' }}</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="rs-actions-card">
+            <h6>Actions</h6>
+            <div class="rs-actions-list">
+                <a href="/review-status/{{ review_status.public_id }}/edit" class="btn btn-primary">Edit Status</a>
+                <a href="/review-status/list" class="btn btn-secondary">View All Statuses</a>
+                <button type="button" class="btn btn-danger" onclick="deleteReviewStatus()">Delete Status</button>
+            </div>
+        </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        async function deleteReviewStatus() {
+            if (confirm('Are you sure you want to delete this review status? This action cannot be undone.')) {
+                try {
+                    const response = await fetch('/api/v1/delete/review-status/{{ review_status.public_id }}', {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+
+                    if (response.ok) {
+                        window.location.href = '/review-status/list';
+                    } else {
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const error = await response.json();
+                            let message = error.detail || error.message || JSON.stringify(error);
+                            if (Array.isArray(message)) message = message.join(', ');
+                            alert('Error deleting review status: ' + message);
+                        } else {
+                            alert('Error deleting review status: ' + await response.text());
+                        }
+                    }
+                } catch (error) {
+                    alert('Error deleting review status: ' + error.message);
+                }
+            }
+        }
+    </script>
+{% endblock %}

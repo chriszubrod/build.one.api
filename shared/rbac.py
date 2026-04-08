@@ -246,6 +246,22 @@ def require_module_web(module_name: str, permission: str = "can_read"):
 
 
 # ---------------------------------------------------------------------------
+# Admin check helper
+# ---------------------------------------------------------------------------
+
+def is_admin_user(current_user: dict) -> bool:
+    """
+    Check if the current user has the admin role.
+    Uses the cached permission map — no extra DB call.
+    """
+    user_sub = current_user.get("sub")
+    if not user_sub:
+        return False
+    perms = _get_user_permissions(user_sub)
+    return perms is not None and _ADMIN_SENTINEL in perms
+
+
+# ---------------------------------------------------------------------------
 # Startup validation
 # ---------------------------------------------------------------------------
 

@@ -1,0 +1,279 @@
+/* Review Status module styles - matches app design system */
+
+/* Page header */
+.rs-page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 0;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.rs-page-header h1 {
+    font-size: var(--font-size-action);
+    font-weight: var(--font-weight-regular);
+    color: var(--color-text);
+    margin: 0;
+}
+
+/* Table */
+.rs-table-container {
+    overflow-x: auto;
+}
+
+.rs-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.rs-table th,
+.rs-table td {
+    padding: 0.75rem 1rem;
+    text-align: left;
+    border-bottom: 1px solid #e0e0e0;
+    font-size: var(--font-size-action);
+}
+
+.rs-table th {
+    font-weight: var(--font-weight-medium);
+    color: var(--color-text-secondary);
+    background-color: var(--color-background-secondary, #fafafa);
+}
+
+.rs-table tr:hover {
+    background-color: var(--color-background-hover, #f5f5f5);
+}
+
+/* Status badge */
+.rs-color-badge {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: 0.5rem;
+    vertical-align: middle;
+}
+
+.rs-status-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: var(--font-weight-medium);
+    color: #fff;
+}
+
+/* Flag indicators */
+.rs-flag {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: var(--font-weight-medium);
+}
+
+.rs-flag-yes {
+    background-color: #e8f5e9;
+    color: #2e7d32;
+}
+
+.rs-flag-no {
+    background-color: #f5f5f5;
+    color: #9e9e9e;
+}
+
+/* Form container */
+.rs-form-container {
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.rs-form-card {
+    background-color: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+}
+
+.rs-form-card-header {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.rs-form-card-header h5 {
+    margin: 0;
+    font-size: var(--font-size-action);
+    font-weight: var(--font-weight-medium);
+}
+
+.rs-form-card-body {
+    padding: 1.5rem;
+}
+
+.rs-form-group {
+    margin-bottom: 1.25rem;
+}
+
+.rs-form-label {
+    display: block;
+    font-size: var(--font-size-action);
+    font-weight: var(--font-weight-medium);
+    color: var(--color-text);
+    margin-bottom: 0.375rem;
+}
+
+.rs-form-label .required {
+    color: #dc3545;
+}
+
+.rs-form-control {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    font-size: var(--font-size-action);
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+
+.rs-form-control:focus {
+    border-color: var(--color-primary);
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(var(--color-primary-rgb, 66, 133, 244), 0.2);
+}
+
+.rs-form-text {
+    font-size: 0.8rem;
+    color: var(--color-text-secondary);
+    margin-top: 0.25rem;
+}
+
+.rs-form-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: 1rem;
+    border-top: 1px solid #e0e0e0;
+    margin-top: 1.5rem;
+}
+
+.rs-form-actions-left,
+.rs-form-actions-right {
+    display: flex;
+    gap: 0.5rem;
+}
+
+/* Checkbox group */
+.rs-checkbox-group {
+    display: flex;
+    gap: 2rem;
+    flex-wrap: wrap;
+}
+
+.rs-checkbox-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.rs-checkbox-item input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+}
+
+/* Color preview */
+.rs-color-preview {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.rs-color-preview input[type="color"] {
+    width: 40px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+/* Detail view */
+.rs-detail-container {
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.rs-detail-card {
+    background-color: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    margin-bottom: 1.5rem;
+}
+
+.rs-detail-card-header {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.rs-detail-card-header h5 {
+    margin: 0;
+    font-size: var(--font-size-action);
+    font-weight: var(--font-weight-medium);
+}
+
+.rs-detail-card-body {
+    padding: 1.5rem;
+}
+
+.rs-detail-row {
+    display: flex;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.rs-detail-row:last-child {
+    border-bottom: none;
+}
+
+.rs-detail-label {
+    flex: 0 0 160px;
+    font-weight: var(--font-weight-medium);
+    color: var(--color-text-secondary);
+}
+
+.rs-detail-value {
+    flex: 1;
+    color: var(--color-text);
+}
+
+/* Empty state */
+.rs-empty-state {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--color-text-secondary);
+}
+
+.rs-empty-state h3 {
+    margin: 1rem 0 0.5rem;
+    font-weight: var(--font-weight-regular);
+}
+
+/* Actions card */
+.rs-actions-card {
+    background-color: var(--color-background);
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.rs-actions-card h6 {
+    margin: 0 0 1rem 0;
+    font-weight: var(--font-weight-medium);
+}
+
+.rs-actions-list {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}

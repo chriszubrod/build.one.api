@@ -40,6 +40,33 @@ templates = Jinja2Templates(directory="templates")
 # =============================================================================
 
 PROCESS_CATEGORY = "Blue category"
+SUCCESS_CATEGORY = "Green category"
+
+
+# =============================================================================
+# Process queue — manual trigger
+# =============================================================================
+
+@router.post("/process-queue")
+async def process_queue(
+    request: Request,
+    current_user: dict = Depends(require_module_web(Modules.INBOX)),
+):
+    """
+    Manually trigger processing of all Blue-categorized emails.
+    Classifies, extracts, creates drafts, and routes to PMs.
+    """
+    svc = InboxService()
+    try:
+        processed = svc.process_category_queue(
+            category=PROCESS_CATEGORY,
+            success_category=SUCCESS_CATEGORY,
+        )
+        return JSONResponse({"status_code": 200, "processed": processed})
+    except Exception as exc:
+        logger.error("Process queue failed: %s", exc)
+        return JSONResponse({"status_code": 500, "message": str(exc)}, status_code=500)
+
 
 @router.get("")
 @router.get("/")

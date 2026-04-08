@@ -692,25 +692,21 @@ class InboxService:
                 )
                 inbox_record_id = record.id if record else None
 
-                # TODO: wire up when process_category_queue
-                # scheduler is rebuilt in Phase 2
-                classification = None
+                classification = self._classify_message(msg)
 
-                cls_type = getattr(classification, "classification", "UNKNOWN")
-                cls_confidence = getattr(classification, "confidence", 0.0)
-                cls_signals = getattr(classification, "signals", [])
-                thread_id = getattr(classification, "thread_id", None)
+                cls_type = classification.classification
+                cls_confidence = classification.confidence
+                cls_signals = classification.signals
 
                 logger.info(
-                    "RECEIVED: %s → %s (%.0f%%) thread=%s",
-                    msg_id[:20], cls_type, cls_confidence * 100, thread_id,
+                    "RECEIVED: %s → %s (%.0f%%)",
+                    msg_id[:20], cls_type, cls_confidence * 100,
                 )
 
                 # ── EXTRACTING: OCR + field extraction + entity resolution ──
                 extraction_data = None
-                if msg.get("has_attachments") and thread_id:
+                if msg.get("has_attachments"):
                     try:
-                        self._advance_thread(thread_id, "RECEIVED", "EXTRACTING", "Starting extraction")
                         extraction_data = self.extract_from_message(message_id=msg_id)
                         if extraction_data.get("status_code") == 200:
                             cls_type, cls_confidence, cls_signals = self._refine_classification(
@@ -725,32 +721,72 @@ class InboxService:
                     except Exception as exc:
                         logger.warning("EXTRACTING: failed for %s (non-fatal): %s", msg_id[:20], exc)
 
+                # ── DEDUP: check for duplicate bill ──
+                duplicate_warning = None
+                if extraction_data and extraction_data.get("status_code") == 200 and cls_type == "BILL_DOCUMENT":
+                    duplicate_warning = self._check_duplicate(extraction_data)
+                    if duplicate_warning:
+                        cls_signals.append(f"duplicate: {duplicate_warning}")
+                        logger.info("DEDUP: %s — %s", msg_id[:20], duplicate_warning)
+
                 # ── ENTITY_CREATED: create bill draft ──
                 bill_public_id = None
                 if extraction_data and extraction_data.get("status_code") == 200 and cls_type == "BILL_DOCUMENT":
                     try:
                         bill_public_id = self._create_bill_from_extraction(
-                            msg_id, extraction_data, thread_id,
+                            msg_id, extraction_data, None,
                         )
                     except Exception as exc:
                         logger.warning("ENTITY_CREATED: failed for %s: %s", msg_id[:20], exc)
 
-                # ── PENDING_APPROVAL: forward email to PM(s) ──
+                # ── ROUTING: confidence check before forwarding to PM ──
                 if bill_public_id and extraction_data:
-                    try:
-                        forwarded = self._forward_to_project_pms(
-                            msg_id, extraction_data, thread_id,
-                        )
+                    ext = extraction_data.get("extraction", {})
+                    has_vendor = bool(ext.get("vendor_match"))
+                    has_bill_number = bool(ext.get("bill_number"))
+                    has_project = bool(ext.get("project_match"))
+
+                    if has_vendor and has_bill_number and has_project:
+                        # All high-importance fields resolved — auto-submit to PM
+                        forwarded = False
+                        try:
+                            forwarded = self._forward_to_project_pms(
+                                msg_id, extraction_data, None,
+                            )
+                        except Exception as exc:
+                            logger.warning("PENDING_APPROVAL: failed for %s: %s", msg_id[:20], exc)
+
                         if not forwarded:
-                            logger.info("PENDING_APPROVAL: no project PMs found for %s — stopping at ENTITY_CREATED", msg_id[:20])
-                    except Exception as exc:
-                        logger.warning("PENDING_APPROVAL: failed for %s: %s", msg_id[:20], exc)
+                            # No PMs found or forward failed — create draft for user
+                            logger.info(
+                                "PENDING_APPROVAL: no PMs for %s — creating draft for user",
+                                msg_id[:20],
+                            )
+                            try:
+                                self._create_review_draft(msg_id, extraction_data, ["no PM/Owner assigned to project"])
+                            except Exception as exc:
+                                logger.warning("Review draft failed for %s: %s", msg_id[:20], exc)
+                    else:
+                        missing = []
+                        if not has_vendor: missing.append("vendor")
+                        if not has_bill_number: missing.append("bill_number")
+                        if not has_project: missing.append("project")
+                        logger.info(
+                            "NEEDS_REVIEW: %s — missing %s, creating draft for user",
+                            msg_id[:20], ", ".join(missing),
+                        )
+                        cls_signals.append(f"needs_review: missing {', '.join(missing)}")
+                        try:
+                            self._create_review_draft(msg_id, extraction_data, missing)
+                        except Exception as exc:
+                            logger.warning("NEEDS_REVIEW: draft creation failed for %s: %s", msg_id[:20], exc)
 
                 # Persist classification to InboxRecord
+                status = "pending_review" if bill_public_id else "new"
                 try:
                     self._record_repo.upsert(
                         message_id=msg_id,
-                        status="pending_review",
+                        status=status,
                         classification_type=cls_type,
                         classification_confidence=cls_confidence,
                         classification_signals=json.dumps(cls_signals),
@@ -768,6 +804,63 @@ class InboxService:
                 logger.error("Failed to process message %s: %s", msg_id, exc)
 
         return processed
+
+    def _create_review_draft(
+        self,
+        message_id: str,
+        extraction_data: dict,
+        missing_fields: list[str],
+    ) -> bool:
+        """
+        Create a forward draft in Outlook with bill details but no recipients.
+        Used when extraction is incomplete and the user needs to review before
+        adding a PM and sending.
+
+        Returns True if draft created, False on failure.
+        """
+        ext = extraction_data.get("extraction", {})
+
+        vendor_name = (ext.get("vendor_match") or {}).get("name") or ext.get("vendor_name") or "Unknown"
+        bill_number = ext.get("bill_number") or "N/A"
+        raw_amount = ext.get("total_amount")
+        try:
+            formatted_amount = f"${float(raw_amount):,.2f}" if raw_amount else "N/A"
+        except (ValueError, TypeError):
+            formatted_amount = f"${raw_amount}" if raw_amount else "N/A"
+
+        missing_str = ", ".join(missing_fields)
+        comment = (
+            f"⚠ NEEDS REVIEW — missing: {missing_str}\n\n"
+            "Please review the draft bill, fill in missing fields, "
+            "add the appropriate PM to the To line, and send.\n\n"
+            f"Bill Vendor: {vendor_name}\n"
+            f"Bill Number: {bill_number}\n"
+            f"Bill Amount: {formatted_amount}\n"
+        )
+
+        try:
+            draft_result = mail_client.create_forward_draft(message_id=message_id)
+            if draft_result.get("status_code") != 201:
+                logger.warning("Failed to create review draft: %s", draft_result.get("message"))
+                return False
+
+            draft_id = draft_result["draft"]["message_id"]
+
+            update_result = mail_client.update_draft(
+                message_id=draft_id,
+                body=comment,
+                body_type="Text",
+            )
+            if update_result.get("status_code") != 200:
+                logger.warning("Failed to update review draft: %s", update_result.get("message"))
+                return False
+
+            logger.info("NEEDS_REVIEW: created draft for %s (missing: %s)", message_id[:20], missing_str)
+            return True
+
+        except Exception as exc:
+            logger.warning("Review draft creation failed: %s", exc)
+            return False
 
     def _forward_to_project_pms(
         self,
@@ -817,37 +910,59 @@ class InboxService:
         user_role_svc = UserRoleService()
         contact_svc = ContactService()
 
-        def _get_email(user_id: int) -> str | None:
+        from shared.database import get_connection
+
+        def _get_user_info(user_id: int) -> tuple[str | None, str | None]:
+            """Return (email, first_name) for a user."""
+            email = None
             contacts = contact_svc.read_by_user_id(user_id=user_id)
             for c in contacts:
                 if c.email:
-                    return c.email
-            return None
+                    email = c.email
+                    break
+            first_name = None
+            try:
+                with get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT FirstName FROM dbo.[User] WHERE Id = ?", user_id)
+                    row = cursor.fetchone()
+                    if row:
+                        first_name = row.FirstName
+            except Exception:
+                pass
+            return email, first_name
 
-        to_emails = []  # Project Managers
-        cc_emails = []  # Owners
+        to_recipients = []  # Project Managers — list of (email, first_name)
+        cc_recipients = []  # Owners
 
         for user_id in project_user_ids:
-            user_roles = user_role_svc.read_by_user_id(user_id=user_id)
-            user_role_ids = {ur.role_id for ur in user_roles}
+            user_role = user_role_svc.read_by_user_id(user_id=user_id)
+            user_role_ids = {user_role.role_id} if user_role else set()
 
-            email = _get_email(user_id)
+            email, first_name = _get_user_info(user_id)
             if not email:
                 continue
 
             if pm_role_id and pm_role_id in user_role_ids:
-                to_emails.append(email)
+                to_recipients.append((email, first_name))
             elif owner_role_id and owner_role_id in user_role_ids:
-                cc_emails.append(email)
+                cc_recipients.append((email, first_name))
 
         # If no PMs found but owners exist, put owners in To instead
-        if not to_emails and cc_emails:
-            to_emails = cc_emails
-            cc_emails = []
+        if not to_recipients and cc_recipients:
+            to_recipients = cc_recipients
+            cc_recipients = []
 
-        if not to_emails:
+        if not to_recipients:
             logger.info("No PM/Owner emails found for project %s", project_match.get("name"))
             return False
+
+        to_emails = [r[0] for r in to_recipients]
+        cc_emails = [r[0] for r in cc_recipients]
+
+        # Build greeting from To recipient first names
+        to_names = [r[1] for r in to_recipients if r[1]]
+        greeting = "/".join(to_names) + "," if to_names else ""
 
         # Build comment with bill details
         vendor_name = (ext.get("vendor_match") or {}).get("name") or ext.get("vendor_name") or "Unknown"
@@ -857,11 +972,18 @@ class InboxService:
             formatted_amount = f"${float(raw_amount):,.2f}" if raw_amount else "N/A"
         except (ValueError, TypeError):
             formatted_amount = f"${raw_amount}" if raw_amount else "N/A"
+        project_name = (ext.get("project_match") or {}).get("name") or "N/A"
         comment = (
+            f"{greeting}\n\n"
+            "The attached bill has been submitted for payment. "
             "When you have a moment, will you please review for approval?\n\n"
             f"Bill Vendor: {vendor_name}\n"
             f"Bill Number: {bill_number}\n"
             f"Bill Amount: {formatted_amount}\n"
+            f"Project: {project_name}\n\n"
+            "If approved, please reply with a Sub Cost Code and Description. "
+            "If not approved, please reply with a brief note for follow-up.\n\n"
+            "Build.One"
         )
 
         # Create forward draft → set recipients → send
@@ -884,12 +1006,7 @@ class InboxService:
                 logger.warning("Failed to update forward draft: %s", update_result.get("message"))
                 return False
 
-            send_result = mail_client.send_draft(message_id=draft_id)
-            if send_result.get("status_code") not in (200, 202):
-                logger.warning("Failed to send forward draft: %s", send_result.get("message"))
-                return False
-
-            logger.info("PENDING_APPROVAL: forwarded to To:%s CC:%s", to_emails, cc_emails)
+            logger.info("PENDING_APPROVAL: draft created for To:%s CC:%s", to_emails, cc_emails)
 
         except Exception as exc:
             logger.warning("Forward draft flow failed: %s", exc)
@@ -934,7 +1051,7 @@ class InboxService:
         from entities.bill_line_item.business.service import BillLineItemService
         from entities.attachment.business.service import AttachmentService
         from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
-        from integrations.azure.blob.service import AzureBlobStorage
+        from shared.storage import AzureBlobStorage
 
         ext = extraction_data.get("extraction", {})
         att_info = extraction_data.get("attachment", {})
@@ -997,6 +1114,15 @@ class InboxService:
                     dl_filename = download.get("filename", "attachment.pdf")
                     dl_content_type = download.get("content_type", "application/pdf")
                     file_ext = dl_filename.rsplit(".", 1)[-1] if "." in dl_filename else "pdf"
+
+                    # Dedup: check if this exact PDF is already in the system
+                    file_hash = AttachmentService.calculate_hash(file_bytes)
+                    existing_attachment = AttachmentService().read_by_hash(file_hash)
+                    if existing_attachment:
+                        logger.info(
+                            "DEDUP: attachment hash %s already exists as %s — continuing with warning",
+                            file_hash[:12], existing_attachment.public_id,
+                        )
 
                     storage = AzureBlobStorage()
                     blob_name = f"inbox/{bill.public_id}/{dl_filename}"
@@ -1075,8 +1201,14 @@ class InboxService:
         # Count how many key fields were extracted
         field_count = sum([has_vendor, has_bill_number, has_amount, has_date])
 
+        # --- Override weak classification when extraction is strong ---
+        # If extraction found 3+ bill fields but classifier said something
+        # other than a bill type, the extraction is a stronger signal.
+        if field_count >= 3 and cls_type not in ("BILL_DOCUMENT", "BILL_CREDIT_DOCUMENT"):
+            signals.append(f"extraction override: {cls_type} → BILL_DOCUMENT ({field_count}/4 bill fields found)")
+            cls_type = "BILL_DOCUMENT"
+
         if field_count >= 3:
-            # Strong extraction — boost confidence significantly
             cls_confidence = max(cls_confidence, 0.90)
             signals.append(f"extraction matched {field_count}/4 key fields")
         elif field_count >= 2:
@@ -1090,6 +1222,50 @@ class InboxService:
             signals.append(f"vendor matched: {extraction['vendor_match']['name']}")
 
         return cls_type, cls_confidence, signals
+
+    def _check_duplicate(self, extraction_data: dict) -> Optional[str]:
+        """
+        Check for duplicate bills using extraction data.
+        Returns a warning string if a duplicate is found, None otherwise.
+
+        Checks:
+          1. File hash — same PDF already in Attachment table
+          2. Vendor + bill number + bill date — same bill already in Bill table
+        """
+        from entities.attachment.business.service import AttachmentService
+        from entities.bill.business.service import BillService
+        from entities.vendor.business.service import VendorService
+
+        ext = extraction_data.get("extraction", {})
+        att = extraction_data.get("attachment", {})
+
+        # Check 1: File hash (requires downloading the attachment bytes, which
+        # extract_from_message already did — but we don't have them here.
+        # We'll check by vendor+number+date which covers most cases.)
+
+        # Check 2: Vendor + bill number + bill date
+        vendor_match = ext.get("vendor_match")
+        bill_number = ext.get("bill_number")
+        bill_date = ext.get("bill_date")
+
+        if vendor_match and bill_number:
+            try:
+                vendor = VendorService().read_by_public_id(vendor_match["public_id"])
+                if vendor:
+                    existing = BillService().repo.read_by_bill_number_and_vendor_id(
+                        bill_number=bill_number,
+                        vendor_id=vendor.id,
+                        bill_date=bill_date,
+                    )
+                    if existing:
+                        return (
+                            f"Bill #{bill_number} from {vendor_match['name']} "
+                            f"on {bill_date} already exists (bill {existing.public_id})"
+                        )
+            except Exception as exc:
+                logger.warning("Dedup check failed (non-fatal): %s", exc)
+
+        return None
 
     def _advance_thread(self, thread_public_id: str, from_stage: str, to_stage: str, notes: str = ""):
         """Advance an EmailThread from one stage to the next."""

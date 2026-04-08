@@ -206,8 +206,15 @@
         <input type="hidden" name="folder" value="{{ folder }}">
         <input type="hidden" name="top" value="{{ top }}">
     </form>
-    <div style="margin-left:auto; font-size:0.8rem; color:var(--text-muted,#6b7280);">
-        Colors = AI classification &nbsp;·&nbsp; Click a row to process
+    <div style="margin-left:auto; display:flex; align-items:center; gap:1rem;">
+        <button type="button" id="process-queue-btn" class="btn-sm"
+                onclick="processQueue()"
+                style="background:#2563eb; color:#fff; border:none; border-radius:4px; cursor:pointer;">
+            Process Queue
+        </button>
+        <span style="font-size:0.8rem; color:var(--text-muted,#6b7280);">
+            Colors = AI classification &nbsp;·&nbsp; Click a row to process
+        </span>
     </div>
 </div>
 
@@ -567,6 +574,35 @@ async function inlineToggleFlag(btn) {
     const newUrl = window.location.pathname + (clean ? '?' + clean : '');
     history.replaceState(null, '', newUrl);
 })();
+
+// ── Process Queue button ──────────────────────────────────────────
+async function processQueue() {
+    const btn = document.getElementById('process-queue-btn');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Processing\u2026';
+
+    try {
+        const resp = await fetch('/inbox/process-queue', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getCsrfHeaders() },
+            credentials: 'same-origin',
+        });
+        const data = await resp.json();
+        if (data.status_code === 200) {
+            btn.textContent = data.processed + ' processed';
+            setTimeout(function() { window.location.reload(); }, 1500);
+        } else {
+            btn.textContent = 'Error';
+            console.error('Process queue error:', data.message);
+            setTimeout(function() { btn.textContent = originalText; btn.disabled = false; }, 3000);
+        }
+    } catch (err) {
+        console.error('Process queue failed:', err);
+        btn.textContent = 'Error';
+        setTimeout(function() { btn.textContent = originalText; btn.disabled = false; }, 3000);
+    }
+}
 </script>
 
 {% endblock %}

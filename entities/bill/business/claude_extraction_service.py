@@ -43,6 +43,7 @@ Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
   "ship_to_address": "Ship-to, job site, or delivery address, or null",
   "memo": "Brief summary of what was purchased/provided (one sentence)",
   "memo_confidence": 0.0,
+  "project_reference_raw": "The raw project/job reference exactly as it appears in the document (e.g. 'Moran Rd', 'Job #1234', 'Hillsboro Pike'), or null",
   "project_name": "Best matching project name from the AVAILABLE PROJECTS list, or null",
   "project_confidence": 0.0,
   "sub_cost_code_name": "Best matching sub cost code name from the AVAILABLE SUB COST CODES list, or null",
@@ -317,6 +318,10 @@ class ClaudeExtractionService:
                 result.memo_confidence = 0.0
 
         # --- Project hint ---
+        project_ref_raw = data.get("project_reference_raw")
+        if project_ref_raw and isinstance(project_ref_raw, str) and project_ref_raw.strip():
+            result.project_reference_raw = project_ref_raw.strip()
+
         project_name = data.get("project_name")
         if project_name and isinstance(project_name, str) and project_name.strip():
             result.project_hint = project_name.strip()

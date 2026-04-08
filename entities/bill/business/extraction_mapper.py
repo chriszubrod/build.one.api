@@ -74,6 +74,7 @@ class BillExtractionResult:
     line_items: list[LineItemExtraction] = field(default_factory=list)
 
     # --- AI hints (pre-resolution) ---
+    project_reference_raw: Optional[str] = None
     project_hint: Optional[str] = None
     sub_cost_code_hint: Optional[str] = None
     is_billable: Optional[bool] = None
@@ -371,22 +372,74 @@ class BillExtractionMapper:
                 logger.warning("Vendor resolution failed: %s", e)
                 result.note(f"Vendor resolution error: {e}")
 
-        # --- Project matching (from AI hint, then ship-to address fallback) ---
-        project_query = result.project_hint or result.ship_to_address
+        # --- Project matching (fuzzy match → ProjectAgent disambiguation) ---
+        # Use the raw document reference for fuzzy matching when available,
+        # not Claude's pre-matched guess from the AVAILABLE PROJECTS list
+        project_query_raw = result.project_reference_raw or result.ship_to_address
+        project_query = project_query_raw or result.project_hint
         if project_query:
             try:
                 project_svc = ProjectService()
                 all_projects = project_svc.read_all()
                 project_pairs = [(p.public_id, p.name) for p in all_projects]
 
-                match, score = self._fuzzy_match(project_query, project_pairs)
-                if match and score >= 0.4:
+                # Score all projects against the raw query to detect ambiguity
+                all_scored = []
+                for p in all_projects:
+                    _, score = self._fuzzy_match(project_query, [(p.public_id, p.name)])
+                    if score >= 0.2:
+                        all_scored.append({"public_id": p.public_id, "name": p.name, "score": score})
+                all_scored.sort(key=lambda x: -x["score"])
+
+                top_match = all_scored[0] if all_scored else None
+                # Multiple candidates above threshold = ambiguous
+                close_candidates = [c for c in all_scored if c["score"] >= 0.2]
+                is_ambiguous = len(close_candidates) > 1
+
+                if top_match and top_match["score"] >= 0.4 and not is_ambiguous:
+                    # Single clear match — use it directly
                     result.project_match = ProjectMatch(
-                        public_id=match[0],
-                        name=match[1],
-                        confidence=round(score, 3),
+                        public_id=top_match["public_id"],
+                        name=top_match["name"],
+                        confidence=round(top_match["score"], 3),
                     )
-                    result.note(f"Project match: {match[1]} ({score:.0%}) from hint={result.project_hint!r}")
+                    result.note(f"Project match: {top_match['name']} ({top_match['score']:.0%}) from query={project_query!r}")
+
+                elif is_ambiguous:
+                    # Multiple candidates — call ProjectAgent for reasoning
+                    from shared.ai.agents.project_agent import resolve_project
+
+                    vendor_id = None
+                    if result.vendor_match:
+                        from entities.vendor.business.service import VendorService
+                        vendor = VendorService().read_by_public_id(result.vendor_match.public_id)
+                        vendor_id = vendor.id if vendor else None
+
+                    agent_result = resolve_project(
+                        vendor_name=result.vendor_name or "",
+                        vendor_id=vendor_id,
+                        project_hint=project_query,
+                        ship_to_address=result.ship_to_address,
+                        email_subject=None,
+                        candidates=close_candidates[:5],
+                    )
+
+                    if agent_result["decision"] == "match" and agent_result["project_public_id"]:
+                        result.project_match = ProjectMatch(
+                            public_id=agent_result["project_public_id"],
+                            name=agent_result["project_name"],
+                            confidence=round(agent_result["confidence"], 3),
+                        )
+                        result.note(
+                            f"Project match (ProjectAgent): {agent_result['project_name']} "
+                            f"({agent_result['confidence']:.0%}) — {agent_result['reasoning'][:100]}"
+                        )
+                    else:
+                        # Ambiguous or no match — leave project_match empty for user
+                        result.note(
+                            f"Project ambiguous (ProjectAgent): {agent_result['reasoning'][:150]}"
+                        )
+
                 elif result.ship_to_address and result.project_hint:
                     # AI hint didn't match — try ship-to address as fallback
                     match, score = self._fuzzy_match(result.ship_to_address, project_pairs)
@@ -397,6 +450,8 @@ class BillExtractionMapper:
                             confidence=round(score, 3),
                         )
                         result.note(f"Project match (ship-to fallback): {match[1]} ({score:.0%})")
+                    else:
+                        result.note(f"No project match for: {project_query!r}")
                 else:
                     result.note(f"No project match for: {project_query!r}")
             except Exception as e:

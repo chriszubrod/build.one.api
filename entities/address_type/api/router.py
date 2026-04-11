@@ -8,6 +8,7 @@ from entities.address_type.api.schemas import AddressTypeCreate, AddressTypeUpda
 from entities.address_type.business.service import AddressTypeService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
+from shared.api.responses import list_response, item_response
 
 router = APIRouter(prefix="/api/v1", tags=["api", "address_type"])
 
@@ -22,7 +23,7 @@ def create_address_type_router(body: AddressTypeCreate, current_user: dict = Dep
         description=body.description,
         display_order=body.display_order,
     )
-    return address_type.to_dict()
+    return item_response(address_type.to_dict())
 
 
 @router.get("/get/address_types")
@@ -31,7 +32,7 @@ def get_address_types_router(current_user: dict = Depends(require_module_api(Mod
     Read all address types.
     """
     address_types = AddressTypeService().read_all()
-    return [address_type.to_dict() for address_type in address_types]
+    return list_response([address_type.to_dict() for address_type in address_types])
 
 
 @router.get("/get/address_type/{public_id}")
@@ -40,7 +41,7 @@ def get_address_by_public_id_router(public_id: str, current_user: dict = Depends
     Read an address type by public ID.
     """
     address_type = AddressTypeService().read_by_public_id(public_id=public_id)
-    return address_type.to_dict()
+    return item_response(address_type.to_dict())
 
 
 @router.put("/update/address_type/{public_id}")
@@ -49,7 +50,7 @@ def update_address_type_by_public_id_router(public_id: str, body: AddressTypeUpd
     Update an address type by public ID.
     """
     address_type = AddressTypeService().update_by_public_id(public_id=public_id, address_type=body)
-    return address_type.to_dict()
+    return item_response(address_type.to_dict())
 
 
 @router.delete("/delete/address_type/{public_id}")
@@ -58,4 +59,4 @@ def delete_address_type_by_public_id_router(public_id: str, current_user: dict =
     Delete an address type by public ID.
     """
     address_type = AddressTypeService().delete_by_public_id(public_id=public_id)
-    return address_type.to_dict()
+    return item_response(address_type.to_dict())

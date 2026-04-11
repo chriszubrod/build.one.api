@@ -10,6 +10,7 @@ from entities.bill_line_item.business.service import BillLineItemService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_line_item"])
 
@@ -46,12 +47,9 @@ def create_bill_line_item_router(body: BillLineItemCreate, current_user: dict = 
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create bill line item")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create bill line item")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/bill_line_items")
@@ -60,7 +58,7 @@ def get_bill_line_items_router(current_user: dict = Depends(require_module_api(M
     Read all bill line items.
     """
     bill_line_items = BillLineItemService().read_all()
-    return [bill_line_item.to_dict() for bill_line_item in bill_line_items]
+    return list_response([bill_line_item.to_dict() for bill_line_item in bill_line_items])
 
 
 @router.get("/get/bill_line_item/{public_id}")
@@ -69,7 +67,7 @@ def get_bill_line_item_by_public_id_router(public_id: str, current_user: dict = 
     Read a bill line item by public ID.
     """
     bill_line_item = BillLineItemService().read_by_public_id(public_id=public_id)
-    return bill_line_item.to_dict()
+    return item_response(bill_line_item.to_dict())
 
 
 @router.get("/get/bill_line_items/bill/{bill_id}")
@@ -78,7 +76,7 @@ def get_bill_line_items_by_bill_id_router(bill_id: int, current_user: dict = Dep
     Read all bill line items for a specific bill.
     """
     bill_line_items = BillLineItemService().read_by_bill_id(bill_id=bill_id)
-    return [bill_line_item.to_dict() for bill_line_item in bill_line_items]
+    return list_response([bill_line_item.to_dict() for bill_line_item in bill_line_items])
 
 
 @router.get("/get/bill_line_items/project/{project_id}")
@@ -87,7 +85,7 @@ def get_bill_line_items_by_project_id_router(project_id: int, current_user: dict
     Read all bill line items for a specific project.
     """
     bill_line_items = BillLineItemService().read_by_project_id(project_id=project_id)
-    return [bill_line_item.to_dict() for bill_line_item in bill_line_items]
+    return list_response([bill_line_item.to_dict() for bill_line_item in bill_line_items])
 
 
 @router.put("/update/bill_line_item/{public_id}")
@@ -124,12 +122,9 @@ def update_bill_line_item_by_public_id_router(public_id: str, body: BillLineItem
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update bill line item")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to update bill line item")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/bill_line_item/{public_id}")
@@ -153,9 +148,6 @@ def delete_bill_line_item_by_public_id_router(public_id: str, current_user: dict
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete bill line item")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete bill line item")
     
-    return result.get("data")
+    return item_response(result.get("data"))

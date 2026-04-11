@@ -9,6 +9,7 @@ from entities.bill_line_item_attachment.business.service import BillLineItemAtta
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_line_item_attachment"])
 service = BillLineItemAttachmentService()
@@ -38,12 +39,9 @@ def create_bill_line_item_attachment_router(
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create bill line item attachment")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create bill line item attachment")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/bill-line-item-attachments")
@@ -53,7 +51,7 @@ def get_bill_line_item_attachments_router(current_user: dict = Depends(require_m
     """
     try:
         bill_line_item_attachments = service.read_all()
-        return [blia.to_dict() for blia in bill_line_item_attachments]
+        return list_response([blia.to_dict() for blia in bill_line_item_attachments])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -68,8 +66,8 @@ def get_bill_line_item_attachment_by_public_id_router(
     try:
         bill_line_item_attachment = service.read_by_public_id(public_id=public_id)
         if not bill_line_item_attachment:
-            raise HTTPException(status_code=404, detail="Bill line item attachment not found")
-        return bill_line_item_attachment.to_dict()
+            raise_not_found("Bill line item attachment")
+        return item_response(bill_line_item_attachment.to_dict())
     except HTTPException:
         raise
     except Exception as e:
@@ -87,8 +85,8 @@ def get_bill_line_item_attachment_by_bill_line_item_id_router(
     try:
         bill_line_item_attachment = service.read_by_bill_line_item_id(bill_line_item_public_id=bill_line_item_id)
         if not bill_line_item_attachment:
-            raise HTTPException(status_code=404, detail="Bill line item attachment not found")
-        return bill_line_item_attachment.to_dict()
+            raise_not_found("Bill line item attachment")
+        return item_response(bill_line_item_attachment.to_dict())
     except HTTPException:
         raise
     except Exception as e:
@@ -118,9 +116,6 @@ def delete_bill_line_item_attachment_by_public_id_router(
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete bill line item attachment")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete bill line item attachment")
     
-    return result.get("data")
+    return item_response(result.get("data"))

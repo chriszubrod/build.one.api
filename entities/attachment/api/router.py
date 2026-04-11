@@ -14,6 +14,7 @@ from fastapi.responses import Response, StreamingResponse
 from entities.attachment.api.schemas import AttachmentCreate, AttachmentUpdate
 from entities.attachment.business.service import AttachmentService
 from entities.attachment.business.extraction_service import ExtractionService
+from shared.api.responses import list_response, item_response, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
@@ -69,14 +70,14 @@ def create_attachment_router(body: AttachmentCreate, current_user: dict = Depend
     )
     
     result = ProcessEngine().execute_synchronous(context)
-    
+
     if not result.get("success"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=result.get("error", "Failed to create attachment")
         )
-    
-    return result.get("data")
+
+    return item_response(result.get("data"))
 
 
 @router.get("/get/attachments")
@@ -101,7 +102,7 @@ def get_attachments_router(
         if status:
             attachments = [a for a in attachments if a.status == status]
         
-        return [attachment.to_dict() for attachment in attachments]
+        return list_response([attachment.to_dict() for attachment in attachments])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -114,8 +115,8 @@ def get_attachment_by_public_id_router(public_id: str, current_user: dict = Depe
     try:
         attachment = service.read_by_public_id(public_id=public_id)
         if not attachment:
-            raise HTTPException(status_code=404, detail="Attachment not found")
-        return attachment.to_dict()
+            raise_not_found("Attachment")
+        return item_response(attachment.to_dict())
     except HTTPException:
         raise
     except Exception as e:
@@ -130,8 +131,8 @@ def get_attachment_by_id_router(id: int, current_user: dict = Depends(require_mo
     try:
         attachment = service.read_by_id(id=id)
         if not attachment:
-            raise HTTPException(status_code=404, detail="Attachment not found")
-        return attachment.to_dict()
+            raise_not_found("Attachment")
+        return item_response(attachment.to_dict())
     except HTTPException:
         raise
     except Exception as e:
@@ -145,7 +146,7 @@ def get_attachments_by_category_router(category: str, current_user: dict = Depen
     """
     try:
         attachments = service.read_by_category(category)
-        return [attachment.to_dict() for attachment in attachments]
+        return list_response([attachment.to_dict() for attachment in attachments])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -158,8 +159,8 @@ def get_attachment_by_hash_router(hash: str, current_user: dict = Depends(requir
     try:
         attachment = service.read_by_hash(hash)
         if not attachment:
-            raise HTTPException(status_code=404, detail="Attachment not found")
-        return attachment.to_dict()
+            raise_not_found("Attachment")
+        return item_response(attachment.to_dict())
     except HTTPException:
         raise
     except Exception as e:
@@ -202,14 +203,14 @@ def update_attachment_by_public_id_router(
     )
     
     result = ProcessEngine().execute_synchronous(context)
-    
+
     if not result.get("success"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=result.get("error", "Failed to update attachment")
         )
-    
-    return result.get("data")
+
+    return item_response(result.get("data"))
 
 
 @router.put("/archive/attachment/{public_id}")
@@ -220,8 +221,8 @@ def archive_attachment_router(public_id: str, current_user: dict = Depends(requi
     try:
         attachment = service.archive(public_id=public_id)
         if not attachment:
-            raise HTTPException(status_code=404, detail="Attachment not found")
-        return attachment.to_dict()
+            raise_not_found("Attachment")
+        return item_response(attachment.to_dict())
     except HTTPException:
         raise
     except Exception as e:
@@ -236,8 +237,8 @@ def unarchive_attachment_router(public_id: str, current_user: dict = Depends(req
     try:
         attachment = service.unarchive(public_id=public_id)
         if not attachment:
-            raise HTTPException(status_code=404, detail="Attachment not found")
-        return attachment.to_dict()
+            raise_not_found("Attachment")
+        return item_response(attachment.to_dict())
     except HTTPException:
         raise
     except Exception as e:
@@ -252,8 +253,8 @@ def delete_attachment_by_public_id_router(public_id: str, current_user: dict = D
     try:
         attachment = service.read_by_public_id(public_id=public_id)
         if not attachment:
-            raise HTTPException(status_code=404, detail="Attachment not found")
-        
+            raise_not_found("Attachment")
+
         # Delete blob from Azure Storage
         if attachment.blob_url:
             try:
@@ -262,10 +263,10 @@ def delete_attachment_by_public_id_router(public_id: str, current_user: dict = D
             except AzureBlobStorageError as e:
                 logger.warning(f"Failed to delete blob: {e}")
                 # Continue with database deletion even if blob deletion fails
-        
+
         # Delete from database
         deleted = service.delete_by_public_id(public_id=public_id)
-        return deleted.to_dict() if deleted else {}
+        return item_response(deleted.to_dict() if deleted else {})
     except HTTPException:
         raise
     except Exception as e:
@@ -349,8 +350,8 @@ async def upload_attachment_router(
         if attachment.id and extraction_service.is_extractable(attachment):
             background_tasks.add_task(trigger_extraction_background, attachment.id)
             logger.info(f"Queued background extraction for attachment {attachment.id}")
-        
-        return attachment.to_dict()
+
+        return item_response(attachment.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except AzureBlobStorageError as e:
@@ -427,9 +428,9 @@ async def upload_bill_line_item_attachment_router(
         if attachment.id and extraction_service.is_extractable(attachment):
             background_tasks.add_task(trigger_extraction_background, attachment.id)
             logger.info(f"Queued background extraction for attachment {attachment.id}")
-        
-        return attachment.to_dict()
-        
+
+        return item_response(attachment.to_dict())
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except AzureBlobStorageError as e:
@@ -541,23 +542,23 @@ def extract_attachment_router(
     try:
         attachment = service.read_by_public_id(public_id=public_id)
         if not attachment:
-            raise HTTPException(status_code=404, detail="Attachment not found")
-        
+            raise_not_found("Attachment")
+
         if not extraction_service.is_extractable(attachment):
             raise HTTPException(
                 status_code=400,
                 detail=f"Content type '{attachment.content_type}' is not supported for extraction"
             )
-        
+
         # Mark as pending and trigger background extraction
         extraction_service.mark_as_pending(attachment.id)
         background_tasks.add_task(trigger_extraction_background, attachment.id)
-        
-        return {
+
+        return item_response({
             "message": "Extraction queued",
             "attachment_id": attachment.id,
             "public_id": attachment.public_id,
-        }
+        })
     except HTTPException:
         raise
     except Exception as e:
@@ -576,16 +577,16 @@ def get_extraction_status_router(
     try:
         attachment = service.read_by_public_id(public_id=public_id)
         if not attachment:
-            raise HTTPException(status_code=404, detail="Attachment not found")
-        
-        return {
+            raise_not_found("Attachment")
+
+        return item_response({
             "public_id": attachment.public_id,
             "extraction_status": attachment.extraction_status,
             "extracted_datetime": attachment.extracted_datetime,
             "extraction_error": attachment.extraction_error,
             "has_extracted_text": bool(attachment.extracted_text_blob_url),
             "extracted_text_blob_url": attachment.extracted_text_blob_url,
-        }
+        })
     except HTTPException:
         raise
     except Exception as e:
@@ -605,20 +606,17 @@ def get_extracted_text_router(
     try:
         attachment = service.read_by_public_id(public_id=public_id)
         if not attachment:
-            raise HTTPException(status_code=404, detail="Attachment not found")
-        
+            raise_not_found("Attachment")
+
         if attachment.extraction_status != "completed":
             raise HTTPException(
                 status_code=400,
                 detail=f"Extraction not completed. Status: {attachment.extraction_status}"
             )
-        
+
         if not attachment.extracted_text_blob_url:
-            raise HTTPException(
-                status_code=404,
-                detail="Extraction result not found"
-            )
-        
+            raise_not_found("Extraction result")
+
         # Fetch extracted text from blob storage
         extracted_text = extraction_service.get_extracted_text(attachment)
         if extracted_text is None:
@@ -626,13 +624,13 @@ def get_extracted_text_router(
                 status_code=500,
                 detail="Failed to retrieve extraction result from storage"
             )
-        
-        return {
+
+        return item_response({
             "public_id": attachment.public_id,
             "filename": attachment.original_filename,
             "extracted_text": extracted_text,
             "extracted_datetime": attachment.extracted_datetime,
-        }
+        })
     except HTTPException:
         raise
     except Exception as e:
@@ -652,20 +650,17 @@ def get_extraction_result_router(
     try:
         attachment = service.read_by_public_id(public_id=public_id)
         if not attachment:
-            raise HTTPException(status_code=404, detail="Attachment not found")
-        
+            raise_not_found("Attachment")
+
         if attachment.extraction_status != "completed":
             raise HTTPException(
                 status_code=400,
                 detail=f"Extraction not completed. Status: {attachment.extraction_status}"
             )
-        
+
         if not attachment.extracted_text_blob_url:
-            raise HTTPException(
-                status_code=404,
-                detail="Extraction result not found"
-            )
-        
+            raise_not_found("Extraction result")
+
         # Fetch full extraction result from blob storage
         result = extraction_service.get_extraction_result(attachment)
         if result is None:
@@ -673,13 +668,13 @@ def get_extraction_result_router(
                 status_code=500,
                 detail="Failed to retrieve extraction result from storage"
             )
-        
-        return {
+
+        return item_response({
             "public_id": attachment.public_id,
             "filename": attachment.original_filename,
             "extracted_datetime": attachment.extracted_datetime,
             "extraction_result": result,
-        }
+        })
     except HTTPException:
         raise
     except Exception as e:
@@ -721,7 +716,7 @@ async def upload_temp_pending_bill_file(
             "bytes": content,
             "expires_at": time.time() + _PENDING_FILE_TTL_SEC,
         }
-        return {"token": token}
+        return item_response({"token": token})
     except Exception as e:
         logger.error(f"Temp pending file upload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -739,7 +734,7 @@ async def get_temp_pending_bill_file(
     _clean_expired_pending_files()
     entry = _PENDING_FILE_STORE.pop(token, None)
     if not entry:
-        raise HTTPException(status_code=404, detail="File not found or expired")
+        raise_not_found("File")
     return Response(
         content=entry["bytes"],
         media_type=entry["content_type"],
@@ -769,7 +764,7 @@ async def upload_temp_pending_expense_file(
             "bytes": content,
             "expires_at": time.time() + _PENDING_FILE_TTL_SEC,
         }
-        return {"token": token}
+        return item_response({"token": token})
     except Exception as e:
         logger.error(f"Temp pending expense file upload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -787,7 +782,7 @@ async def get_temp_pending_expense_file(
     _clean_expired_pending_files()
     entry = _PENDING_FILE_STORE.pop(token, None)
     if not entry:
-        raise HTTPException(status_code=404, detail="File not found or expired")
+        raise_not_found("File")
     return Response(
         content=entry["bytes"],
         media_type=entry["content_type"],

@@ -15,6 +15,7 @@ from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
+from shared.api.responses import raise_not_found
 
 router = APIRouter(prefix="/api/v1", tags=["api", "categorization"])
 
@@ -185,7 +186,7 @@ def confirm_categorization_router(
         
         attachment = attachment_service.read_by_public_id(public_id)
         if not attachment:
-            raise HTTPException(status_code=404, detail="Attachment not found")
+            raise_not_found("Attachment")
         
         # Validate manual category if provided
         if body.manual_category:

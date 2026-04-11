@@ -9,6 +9,7 @@ from entities.user_project.business.service import UserProjectService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error
 
 router = APIRouter(prefix="/api/v1", tags=["api", "user_project"])
 
@@ -35,12 +36,9 @@ def create_user_project_router(body: UserProjectCreate, current_user: dict = Dep
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create user project")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create user project")
 
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/user_projects")
@@ -49,7 +47,7 @@ def get_user_projects_router(current_user: dict = Depends(require_module_api(Mod
     Read all user projects.
     """
     user_projects = UserProjectService().read_all()
-    return [user_project.to_dict() for user_project in user_projects]
+    return list_response([user_project.to_dict() for user_project in user_projects])
 
 
 @router.get("/get/user_projects/user/{user_id}")
@@ -58,7 +56,7 @@ def get_user_projects_by_user_id_router(user_id: int, current_user: dict = Depen
     Read all user projects by user ID.
     """
     user_projects = UserProjectService().read_by_user_id(user_id=user_id)
-    return [user_project.to_dict() for user_project in user_projects]
+    return list_response([user_project.to_dict() for user_project in user_projects])
 
 
 @router.get("/get/user_project/{public_id}")
@@ -67,7 +65,7 @@ def get_user_project_by_public_id_router(public_id: str, current_user: dict = De
     Read a user project by public ID.
     """
     user_project = UserProjectService().read_by_public_id(public_id=public_id)
-    return user_project.to_dict()
+    return item_response(user_project.to_dict())
 
 
 @router.put("/update/user_project/{public_id}")
@@ -94,12 +92,9 @@ def update_user_project_by_public_id_router(public_id: str, body: UserProjectUpd
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update user project")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to update user project")
 
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/user_project/{public_id}")
@@ -123,9 +118,6 @@ def delete_user_project_by_public_id_router(public_id: str, current_user: dict =
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete user project")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete user project")
 
-    return result.get("data")
+    return item_response(result.get("data"))

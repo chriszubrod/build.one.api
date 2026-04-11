@@ -23,6 +23,7 @@ from entities.auth.business.service import (
     UNSAFE_METHODS,
     _require_csrf,
 )
+from shared.api.responses import item_response, raise_not_found
 router = APIRouter(prefix="/api/v1", tags=["auth"])
 service = AuthService()
 
@@ -84,7 +85,7 @@ def create_auth_router(body: AuthCreate, current_user: dict = Depends(get_curren
         username=body.username,
         password=body.password
     )
-    return auth.to_dict()
+    return item_response(auth.to_dict())
 
 
 @router.get("/get/auth/{public_id}")
@@ -96,8 +97,8 @@ def get_auth_by_public_id_router(public_id: str, current_user: dict = Depends(ge
         raise HTTPException(status_code=403, detail="Forbidden")
     auth = service.read_by_public_id(public_id=public_id)
     if not auth:
-        raise HTTPException(status_code=404, detail="Auth not found.")
-    return auth.to_dict()
+        raise_not_found("Auth")
+    return item_response(auth.to_dict())
 
 
 @router.put("/update/auth/{public_id}")
@@ -109,7 +110,7 @@ def update_auth_by_id_router(public_id: str, body: AuthUpdate, current_user: dic
         raise HTTPException(status_code=403, detail="Forbidden")
     try:
         auth = service.update_by_public_id(public_id=public_id, auth=body)
-        return auth.to_dict()
+        return item_response(auth.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -123,7 +124,7 @@ def update_auth_user_id_router(public_id: str, user_public_id: str, current_user
         raise HTTPException(status_code=403, detail="Forbidden")
     try:
         auth = service.update_user_id_by_public_id(public_id=public_id, user_public_id=user_public_id)
-        return auth.to_dict()
+        return item_response(auth.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -137,7 +138,7 @@ def delete_auth_by_public_id_router(public_id: str, current_user: dict = Depends
         raise HTTPException(status_code=403, detail="Forbidden")
     try:
         auth = service.delete_by_public_id(public_id=public_id)
-        return auth.to_dict()
+        return item_response(auth.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -153,10 +154,10 @@ def login_auth_router(body: AuthLogin, response: Response):
             password=body.password
         )
         _set_auth_cookies(response=response, access_token=access_token, refresh_token=refresh_token)
-        return {
+        return item_response({
             "auth": auth.to_dict(),
             "token": access_token.to_dict(),
-        }
+        })
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -176,10 +177,10 @@ def signup_auth_router(body: AuthSignup, response: Response):
             registration_code=body.registration_code
         )
         _set_auth_cookies(response=response, access_token=access_token, refresh_token=refresh_token)
-        return {
+        return item_response({
             "auth": auth.to_dict(),
             "token": access_token.to_dict(),
-        }
+        })
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -202,9 +203,9 @@ def refresh_token_router(request: Request, response: Response, body: Optional[Au
             refresh_token=refresh_token_value
         )
         _set_auth_cookies(response=response, access_token=access_token, refresh_token=refresh_token)
-        return {
+        return item_response({
             "token": access_token.to_dict(),
-        }
+        })
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
     except HTTPException:
@@ -229,11 +230,11 @@ def mobile_login_router(body: AuthLogin):
             username=body.username,
             password=body.password
         )
-        return {
+        return item_response({
             "auth": auth.to_dict(),
             "token": access_token.to_dict(),
             "refresh_token": refresh_token.to_dict(),
-        }
+        })
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -250,10 +251,10 @@ def mobile_refresh_router(body: MobileRefreshRequest):
         access_token, refresh_token = service.refresh_access_token(
             refresh_token=body.refresh_token
         )
-        return {
+        return item_response({
             "token": access_token.to_dict(),
             "refresh_token": refresh_token.to_dict(),
-        }
+        })
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:
@@ -267,6 +268,6 @@ def mobile_logout_router(body: MobileRefreshRequest, current_user: dict = Depend
     Client should discard both tokens from secure storage.
     """
     service.revoke_refresh_token(refresh_token=body.refresh_token)
-    return {"message": "Logged out."}
+    return item_response({"message": "Logged out."})
 
 

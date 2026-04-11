@@ -23,6 +23,7 @@ from entities.contract_labor.api.schemas import (
     ContractLaborBillUpdateResponse,
 )
 from entities.contract_labor.persistence.line_item_repo import ContractLaborLineItemRepository
+from shared.api.responses import item_response, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -175,7 +176,7 @@ def count_contract_labors(
             start_date=start_date,
             end_date=end_date,
         )
-        return {"count": count}
+        return item_response({"count": count})
     except Exception as e:
         logger.exception("Error counting contract labors")
         raise HTTPException(status_code=500, detail=str(e))
@@ -340,7 +341,7 @@ def read_contract_labor_by_public_id(public_id: str, current_user: dict = Depend
         service = ContractLaborService()
         result = service.read_by_public_id(public_id=public_id)
         if not result:
-            raise HTTPException(status_code=404, detail="Contract labor entry not found")
+            raise_not_found("Contract labor entry")
         return ContractLaborResponse(
             id=result.id,
             public_id=result.public_id,
@@ -448,8 +449,8 @@ def update_contract_labor_bill(public_id: str, bill_update: ContractLaborBillUpd
         # Get the existing entry
         entry = service.read_by_public_id(public_id=public_id)
         if not entry:
-            raise HTTPException(status_code=404, detail="Contract labor entry not found")
-        
+            raise_not_found("Contract labor entry")
+
         # Update the entry's bill fields
         from decimal import Decimal
         import base64
@@ -550,7 +551,7 @@ def mark_contract_labor_as_ready(public_id: str, current_user: dict = Depends(re
         service = ContractLaborService()
         result = service.mark_as_ready(public_id=public_id)
         if not result:
-            raise HTTPException(status_code=404, detail="Contract labor entry not found")
+            raise_not_found("Contract labor entry")
         return ContractLaborResponse(
             id=result.id,
             public_id=result.public_id,
@@ -745,8 +746,8 @@ async def preview_contract_labor_import(
             max_rows=max_rows,
         )
         
-        return preview
-        
+        return item_response(preview)
+
     except HTTPException:
         raise
     except Exception as e:
@@ -803,7 +804,7 @@ async def generate_pdfs_for_bill(bill_public_id: str, current_user: dict = Depen
         from entities.contract_labor.business.pdf_service import ContractLaborPDFService
         pdf_service = ContractLaborPDFService()
         result = pdf_service.generate_pdfs_for_bill(bill_public_id=bill_public_id)
-        return result
+        return item_response(result)
     except Exception as e:
         logger.exception("Error generating PDFs for bill")
         raise HTTPException(status_code=500, detail=str(e))
@@ -827,7 +828,7 @@ async def generate_all_pdfs(
             vendor_id=vendor_id,
             billing_period_start=billing_period_start,
         )
-        return result
+        return item_response(result)
     except Exception as e:
         logger.exception("Error generating PDFs for billed entries")
         raise HTTPException(status_code=500, detail=str(e))
@@ -844,7 +845,7 @@ def generate_bills_for_vendor(vendor_id: int, billing_period: Optional[str] = No
         from entities.contract_labor.business.bill_service import ContractLaborBillService
         bill_service = ContractLaborBillService()
         result = bill_service.generate_bills_for_vendor(vendor_id=vendor_id, billing_period_start=billing_period)
-        return result
+        return item_response(result)
     except Exception as e:
         logger.exception("Error generating bills for vendor")
         raise HTTPException(status_code=500, detail=str(e))

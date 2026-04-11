@@ -12,6 +12,7 @@ from shared.rbac_constants import Modules
 from integrations.azure.ai.search_client import AzureSearchError
 
 logger = logging.getLogger(__name__)
+from shared.api.responses import raise_not_found
 
 router = APIRouter(prefix="/api/v1", tags=["api", "search"])
 
@@ -97,7 +98,7 @@ def index_document_router(
         # Get the attachment
         attachment = attachment_service.read_by_public_id(public_id)
         if not attachment:
-            raise HTTPException(status_code=404, detail="Attachment not found")
+            raise_not_found("Attachment")
         
         if attachment.extraction_status != "completed":
             raise HTTPException(

@@ -6,21 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.vendor.api.schemas import VendorCreate, VendorUpdate
 from entities.vendor.business.service import VendorService
+from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 router = APIRouter(prefix="/api/v1", tags=["api", "vendor"])
 service = VendorService()
-
-
-def _raise_from_workflow_error(err: str, default_message: str):
-    """Map workflow error strings to appropriate HTTP status codes."""
-    if "already exists" in err.lower():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err)
-    if "concurrency" in err.lower() or "row-version" in err.lower():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err)
-    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err or default_message)
 
 
 @router.post("/create/vendor")
@@ -49,9 +41,9 @@ def create_vendor_router(body: VendorCreate, current_user: dict = Depends(requir
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        _raise_from_workflow_error(result.get("error", ""), "Failed to create vendor")
+        raise_workflow_error(result.get("error", ""), "Failed to create vendor")
 
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/vendors")
@@ -59,11 +51,8 @@ def get_vendors_router(current_user: dict = Depends(require_module_api(Modules.V
     """
     Read all vendors.
     """
-    try:
-        vendors = service.read_all()
-        return [vendor.to_dict() for vendor in vendors]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    vendors = service.read_all()
+    return list_response([vendor.to_dict() for vendor in vendors])
 
 
 @router.get("/get/vendor/{public_id}")
@@ -73,8 +62,8 @@ def get_vendor_by_public_id_router(public_id: str, current_user: dict = Depends(
     """
     vendor = service.read_by_public_id(public_id=public_id)
     if not vendor:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vendor not found")
-    return vendor.to_dict()
+        raise_not_found("Vendor")
+    return item_response(vendor.to_dict())
 
 
 @router.put("/update/vendor/{public_id}")
@@ -105,9 +94,9 @@ def update_vendor_by_public_id_router(public_id: str, body: VendorUpdate, curren
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        _raise_from_workflow_error(result.get("error", ""), "Failed to update vendor")
+        raise_workflow_error(result.get("error", ""), "Failed to update vendor")
 
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/vendor/{public_id}")
@@ -131,6 +120,6 @@ def delete_vendor_by_public_id_router(public_id: str, current_user: dict = Depen
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        _raise_from_workflow_error(result.get("error", ""), "Failed to delete vendor")
+        raise_workflow_error(result.get("error", ""), "Failed to delete vendor")
 
-    return result.get("data")
+    return item_response(result.get("data"))

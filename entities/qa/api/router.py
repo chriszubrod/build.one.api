@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 # Local Imports
 from entities.qa.business.service import get_qa_service
+from shared.api.responses import item_response
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from integrations.azure.ai.openai_client import AzureOpenAIError
@@ -97,11 +98,11 @@ def ask_question_get_router(
             search_mode=search_mode,
         )
         
-        return {
+        return item_response({
             "question": result["question"],
             "answer": result["answer"],
             "sources": result["sources"],
-        }
+        })
     
     except AzureOpenAIError as e:
         logger.error(f"Q&A error: {e}")
@@ -132,10 +133,10 @@ def analyze_question_router(
         
         result = qa_service.analyze_question(body.question)
         
-        return {
+        return item_response({
             "question": body.question,
             "analysis": result,
-        }
+        })
     
     except AzureOpenAIError as e:
         logger.error(f"Analysis error: {e}")

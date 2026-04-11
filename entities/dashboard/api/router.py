@@ -5,6 +5,7 @@ from typing import List
 from fastapi import APIRouter, Depends
 
 # Local Imports
+from shared.api.responses import item_response
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -15,13 +16,13 @@ router = APIRouter(prefix="/api/v1", tags=["api", "dashboard"])
 def get_user_summary(current_user: dict = Depends(require_module_api(Modules.DASHBOARD))):
     """
     Get personalized summary for the current user.
-    
+
     TODO: Implement user-specific data:
     - Tasks assigned to user
     - Projects user is involved with
     - Recent activity
     """
-    return {
+    return item_response({
         "message": "User dashboard coming soon",
         "user_id": current_user.get("id"),
-    }
+    })

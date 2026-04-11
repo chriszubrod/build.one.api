@@ -12,6 +12,7 @@ from entities.cost_code.api.schemas import (
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
 
 router = APIRouter(prefix="/api/v1", tags=["api", "cost-code"])
 service = CostCodeService()
@@ -40,12 +41,9 @@ def create_cost_code_router(body: CostCodeCreate, current_user: dict = Depends(r
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create cost code")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create cost code")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/cost-codes")
@@ -54,7 +52,7 @@ def get_cost_codes_router(current_user: dict = Depends(require_module_api(Module
     Read all cost codes.
     """
     cost_codes = service.read_all()
-    return [cost_code.to_dict() for cost_code in cost_codes]
+    return list_response([cost_code.to_dict() for cost_code in cost_codes])
 
 
 @router.get("/get/cost-code/{public_id}")
@@ -64,8 +62,8 @@ def get_cost_code_by_public_id_router(public_id: str, current_user: dict = Depen
     """
     cost_code = service.read_by_public_id(public_id=public_id)
     if not cost_code:
-        raise HTTPException(status_code=404, detail="Cost code not found.")
-    return cost_code.to_dict()
+        raise_not_found("Cost code.")
+    return item_response(cost_code.to_dict())
 
 
 @router.put("/update/cost-code/{public_id}")
@@ -93,12 +91,9 @@ def update_cost_code_by_id_router(public_id: str, body: CostCodeUpdate, current_
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update cost code")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to update cost code")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/cost-code/{public_id}")
@@ -122,9 +117,6 @@ def delete_cost_code_by_public_id_router(public_id: str, current_user: dict = De
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete cost code")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete cost code")
     
-    return result.get("data")
+    return item_response(result.get("data"))

@@ -12,6 +12,7 @@ from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
+from shared.api.responses import item_response, raise_not_found
 
 router = APIRouter(prefix="/api/v1", tags=["api", "anomaly"])
 
@@ -63,7 +64,7 @@ def check_attachment_anomaly_router(
         )
         
         if result is None:
-            raise HTTPException(status_code=404, detail="Attachment not found")
+            raise_not_found("Attachment")
         
         return AnomalyCheckResponse(**result.to_dict())
     

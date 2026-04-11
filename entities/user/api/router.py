@@ -9,6 +9,7 @@ from entities.user.business.service import UserService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error
 
 router = APIRouter(prefix="/api/v1", tags=["api", "user"])
 
@@ -35,12 +36,9 @@ def create_user_router(body: UserCreate, current_user: dict = Depends(require_mo
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create user")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create user")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/users")
@@ -49,7 +47,7 @@ def get_users_router(current_user: dict = Depends(require_module_api(Modules.USE
     Read all users.
     """
     users = UserService().read_all()
-    return [user.to_dict() for user in users]
+    return list_response([user.to_dict() for user in users])
 
 
 @router.get("/get/user/{public_id}")
@@ -58,7 +56,7 @@ def get_user_by_public_id_router(public_id: str, current_user: dict = Depends(re
     Read a user by public ID.
     """
     user = UserService().read_by_public_id(public_id=public_id)
-    return user.to_dict()
+    return item_response(user.to_dict())
 
 
 @router.put("/update/user/{public_id}")
@@ -85,12 +83,9 @@ def update_user_by_public_id_router(public_id: str, body: UserUpdate, current_us
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update user")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to update user")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/user/{public_id}")
@@ -114,9 +109,6 @@ def delete_user_by_public_id_router(public_id: str, current_user: dict = Depends
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete user")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete user")
     
-    return result.get("data")
+    return item_response(result.get("data"))

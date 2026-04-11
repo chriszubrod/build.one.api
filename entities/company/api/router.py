@@ -9,6 +9,7 @@ from entities.company.business.service import CompanyService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error
 
 router = APIRouter(prefix="/api/v1", tags=["api", "company"])
 
@@ -35,12 +36,9 @@ def create_company_router(body: CompanyCreate, current_user: dict = Depends(requ
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create company")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create company")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/companies")
@@ -49,7 +47,7 @@ def get_companies_router(current_user: dict = Depends(require_module_api(Modules
     Read all companies.
     """
     companies = CompanyService().read_all()
-    return [company.to_dict() for company in companies]
+    return list_response([company.to_dict() for company in companies])
 
 
 @router.get("/get/company/{public_id}")
@@ -58,7 +56,7 @@ def get_company_by_public_id_router(public_id: str, current_user: dict = Depends
     Read a company by public ID.
     """
     company = CompanyService().read_by_public_id(public_id=public_id)
-    return company.to_dict()
+    return item_response(company.to_dict())
 
 
 @router.put("/update/company/{public_id}")
@@ -85,12 +83,9 @@ def update_company_by_public_id_router(public_id: str, body: CompanyUpdate, curr
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update company")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to update company")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/company/{public_id}")
@@ -114,9 +109,6 @@ def delete_company_by_public_id_router(public_id: str, current_user: dict = Depe
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete company")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete company")
     
-    return result.get("data")
+    return item_response(result.get("data"))

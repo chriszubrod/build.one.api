@@ -6,6 +6,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 # Local Imports
+from shared.api.responses import list_response, item_response, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from entities.admin.api.schemas import ApproveRequest, CancelRequest, RejectRequest
@@ -21,7 +22,7 @@ def get_inbox_classification_stats(current_user: dict = Depends(require_module_a
     """
     from entities.inbox.persistence.repo import InboxRecordRepository
     repo = InboxRecordRepository()
-    return repo.get_classification_stats()
+    return item_response(repo.get_classification_stats())
 
 
 @router.get("/admin/stats")
@@ -34,7 +35,7 @@ def get_dashboard_stats(current_user: dict = Depends(require_module_api(Modules.
     """
     tenant_id = current_user.get("tenant_id", 1)
     admin = WorkflowAdmin()
-    return admin.get_dashboard_stats(tenant_id)
+    return item_response(admin.get_dashboard_stats(tenant_id))
 
 
 @router.get("/admin/recent-workflows")
@@ -49,7 +50,7 @@ def get_recent_workflows(
     """
     tenant_id = current_user.get("tenant_id", 1)
     admin = WorkflowAdmin()
-    return admin.get_recent_workflows(tenant_id, limit=limit)
+    return list_response(admin.get_recent_workflows(tenant_id, limit=limit))
 
 
 @router.get("/admin/workflows-by-state")
@@ -62,7 +63,7 @@ def get_workflows_by_state(
     """
     tenant_id = current_user.get("tenant_id", 1)
     admin = WorkflowAdmin()
-    return admin.get_workflows_by_state(tenant_id, state=state)
+    return list_response(admin.get_workflows_by_state(tenant_id, state=state))
 
 
 @router.get("/admin/failed-workflows")
@@ -77,7 +78,7 @@ def get_failed_workflows(
     """
     tenant_id = current_user.get("tenant_id", 1)
     admin = WorkflowAdmin()
-    return admin.get_failed_workflows(tenant_id, limit=limit)
+    return list_response(admin.get_failed_workflows(tenant_id, limit=limit))
 
 
 @router.get("/workflows/search")
@@ -94,7 +95,7 @@ def search_workflows(
     """
     tenant_id = current_user.get("tenant_id", 1)
     admin = WorkflowAdmin()
-    return admin.search_workflows(tenant_id, q=q, state=state, limit=limit)
+    return list_response(admin.search_workflows(tenant_id, q=q, state=state, limit=limit))
 
 
 @router.get("/workflow/{public_id}")
@@ -109,14 +110,11 @@ def get_workflow_detail(
     """
     admin = WorkflowAdmin()
     result = admin.get_workflow_with_events(public_id)
-    
+
     if not result:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow not found: {public_id}"
-        )
-    
-    return result
+        raise_not_found("Workflow")
+
+    return item_response(result)
 
 
 # -----------------------------------------------------------------------------
@@ -153,7 +151,7 @@ def poll_notifications(
         )
     
     admin = WorkflowAdmin()
-    return admin.get_recent_notifications(tenant_id, since=since_dt)
+    return list_response(admin.get_recent_notifications(tenant_id, since=since_dt))
 
 
 # -----------------------------------------------------------------------------
@@ -180,7 +178,7 @@ def retry_workflow(
     
     admin = WorkflowAdmin()
     try:
-        return admin.retry_workflow(public_id, user_id=user_id)
+        return item_response(admin.retry_workflow(public_id, user_id=user_id))
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -208,11 +206,11 @@ def cancel_workflow(
     
     admin = WorkflowAdmin()
     try:
-        return admin.cancel_workflow(
+        return item_response(admin.cancel_workflow(
             public_id,
             user_id=user_id,
             reason=body.reason,
-        )
+        ))
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -241,12 +239,12 @@ def approve_workflow(
     
     admin = WorkflowAdmin()
     try:
-        return admin.approve_workflow(
+        return item_response(admin.approve_workflow(
             public_id,
             user_id=user_id,
             project_id=body.project_id,
             cost_code=body.cost_code,
-        )
+        ))
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -274,11 +272,11 @@ def reject_workflow(
     
     admin = WorkflowAdmin()
     try:
-        return admin.reject_workflow(
+        return item_response(admin.reject_workflow(
             public_id,
             user_id=user_id,
             reason=body.reason,
-        )
+        ))
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

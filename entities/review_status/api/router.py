@@ -9,6 +9,7 @@ from entities.review_status.business.service import ReviewStatusService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
 
 router = APIRouter(prefix="/api/v1", tags=["api", "review-status"])
 
@@ -41,12 +42,9 @@ def create_review_status_router(
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create review status")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create review status")
 
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/review-statuses")
@@ -57,7 +55,7 @@ def get_review_statuses_router(
     Read all review statuses.
     """
     review_statuses = ReviewStatusService().read_all()
-    return [rs.to_dict() for rs in review_statuses]
+    return list_response([rs.to_dict() for rs in review_statuses])
 
 
 @router.get("/get/review-status/{public_id}")
@@ -70,8 +68,8 @@ def get_review_status_by_public_id_router(
     """
     review_status = ReviewStatusService().read_by_public_id(public_id=public_id)
     if not review_status:
-        raise HTTPException(status_code=404, detail="Review status not found")
-    return review_status.to_dict()
+        raise_not_found("Review status")
+    return item_response(review_status.to_dict())
 
 
 @router.put("/update/review-status/{public_id}")
@@ -105,12 +103,9 @@ def update_review_status_by_public_id_router(
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update review status")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to update review status")
 
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/review-status/{public_id}")
@@ -135,9 +130,6 @@ def delete_review_status_by_public_id_router(
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete review status")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete review status")
 
-    return result.get("data")
+    return item_response(result.get("data"))

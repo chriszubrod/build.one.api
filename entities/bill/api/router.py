@@ -10,6 +10,7 @@ from decimal import Decimal
 from entities.bill.api.schemas import BillCreate, BillUpdate
 from entities.bill.business.service import BillService
 from entities.bill.persistence.repo import BillRepository
+from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -54,10 +55,7 @@ def create_bill_router(
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create bill")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create bill")
 
     data = result.get("data")
 
@@ -76,10 +74,10 @@ def create_bill_router(
         serializable = json.loads(json.dumps(data, default=str))
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
-            content=serializable,
+            content={"data": serializable, "status": "accepted"},
         )
 
-    return data
+    return item_response(data)
 
 
 @router.get("/get/bills")
@@ -88,7 +86,7 @@ def get_bills_router(current_user: dict = Depends(require_module_api(Modules.BIL
     Read all bills.
     """
     bills = BillService().read_all()
-    return [bill.to_dict() for bill in bills]
+    return list_response([bill.to_dict() for bill in bills])
 
 
 @router.get("/get/bill/by-bill-number-and-vendor")
@@ -97,9 +95,9 @@ def get_bill_by_bill_number_and_vendor_router(bill_number: str, vendor_public_id
     Read a bill by bill number and vendor public ID.
     """
     bill = BillService().read_by_bill_number_and_vendor_public_id(bill_number=bill_number, vendor_public_id=vendor_public_id)
-    if bill:
-        return bill.to_dict()
-    return None
+    if not bill:
+        raise_not_found("Bill")
+    return item_response(bill.to_dict())
 
 
 @router.get("/get/bill/{public_id}/completion-result")
@@ -108,9 +106,9 @@ def get_bill_completion_result_router(public_id: str, current_user: dict = Depen
     Return the completion result for a bill (Build One, SharePoint, Excel, QBO).
     """
     result = BillRepository().get_completion_result(public_id)
-    if result is not None:
-        return result
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No completion result found")
+    if result is None:
+        raise_not_found("Completion result")
+    return item_response(result)
 
 
 @router.get("/get/bill/{public_id}")
@@ -120,8 +118,8 @@ def get_bill_by_public_id_router(public_id: str, current_user: dict = Depends(re
     """
     bill = BillService().read_by_public_id(public_id=public_id)
     if not bill:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bill not found")
-    return bill.to_dict()
+        raise_not_found("Bill")
+    return item_response(bill.to_dict())
 
 
 @router.get("/get/bill/id/{id}")
@@ -131,8 +129,8 @@ def get_bill_by_id_router(id: int, current_user: dict = Depends(require_module_a
     """
     bill = BillService().read_by_id(id=id)
     if not bill:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bill not found")
-    return bill.to_dict()
+        raise_not_found("Bill")
+    return item_response(bill.to_dict())
 
 
 @router.put("/update/bill/{public_id}")
@@ -177,32 +175,28 @@ def update_bill_by_public_id_router(
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        err = result.get("error", "Failed to update bill")
-        if "concurrency" in err.lower() or "row-version" in err.lower():
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
+        raise_workflow_error(result.get("error", ""), "Failed to update bill")
 
     data = result.get("data")
 
     # If completing, queue background pipeline
     if is_completing:
         background_tasks.add_task(_run_complete_bill, public_id)
-        # Convert Decimals to strings for JSON serialization
         import json
         serializable = json.loads(json.dumps(data, default=str))
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
-            content=serializable,
+            content={"data": serializable, "status": "accepted"},
         )
 
-    return data
+    return item_response(data)
 
 
 @router.delete("/delete/bill/{public_id}")
 def delete_bill_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS, "can_delete"))):
     """
     Delete a bill by public ID.
-    
+
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
@@ -215,16 +209,13 @@ def delete_bill_by_public_id_router(public_id: str, current_user: dict = Depends
         },
         workflow_type="bill_delete",
     )
-    
+
     result = ProcessEngine().execute_synchronous(context)
-    
+
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete bill")
-        )
-    
-    return result.get("data")
+        raise_workflow_error(result.get("error", ""), "Failed to delete bill")
+
+    return item_response(result.get("data"))
 
 
 def _run_complete_bill(public_id: str) -> None:
@@ -257,7 +248,7 @@ def complete_bill_router(
     bill_service = BillService()
     bill = bill_service.read_by_public_id(public_id=public_id)
     if not bill:
-        raise HTTPException(status_code=404, detail="Bill not found")
+        raise_not_found("Bill")
     if not getattr(bill, "is_draft", True):
         raise HTTPException(status_code=400, detail="Bill is already completed")
 
@@ -273,7 +264,7 @@ def complete_bill_router(
     background_tasks.add_task(_run_complete_bill, public_id)
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
-        content={"status": "accepted", "bill_public_id": public_id},
+        content=accepted_response(public_id, "bill_public_id"),
     )
 
 

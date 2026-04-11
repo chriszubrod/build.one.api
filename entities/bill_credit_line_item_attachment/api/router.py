@@ -9,6 +9,7 @@ from entities.bill_credit_line_item_attachment.business.service import BillCredi
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_credit_line_item_attachment"])
 
@@ -35,12 +36,9 @@ def create_bill_credit_line_item_attachment_router(body: BillCreditLineItemAttac
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create bill credit line item attachment")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create bill credit line item attachment")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/bill-credit-line-item-attachments")
@@ -49,7 +47,7 @@ def get_bill_credit_line_item_attachments_router(current_user: dict = Depends(re
     Read all bill credit line item attachments.
     """
     attachments = BillCreditLineItemAttachmentService().read_all()
-    return [attachment.to_dict() for attachment in attachments]
+    return list_response([attachment.to_dict() for attachment in attachments])
 
 
 @router.get("/get/bill-credit-line-item-attachment/{public_id}")
@@ -59,8 +57,8 @@ def get_bill_credit_line_item_attachment_by_public_id_router(public_id: str, cur
     """
     attachment = BillCreditLineItemAttachmentService().read_by_public_id(public_id=public_id)
     if not attachment:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bill credit line item attachment not found")
-    return attachment.to_dict()
+        raise_not_found("Bill credit line item attachment")
+    return item_response(attachment.to_dict())
 
 
 @router.get("/get/bill-credit-line-item-attachment/by-line-item/{bill_credit_line_item_public_id}")
@@ -74,7 +72,7 @@ def get_bill_credit_line_item_attachment_by_line_item_router(bill_credit_line_it
     )
     if not attachment:
         return None
-    return attachment.to_dict()
+    return item_response(attachment.to_dict())
 
 
 @router.delete("/delete/bill-credit-line-item-attachment/{public_id}")
@@ -98,9 +96,6 @@ def delete_bill_credit_line_item_attachment_by_public_id_router(public_id: str, 
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete bill credit line item attachment")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete bill credit line item attachment")
     
-    return result.get("data")
+    return item_response(result.get("data"))

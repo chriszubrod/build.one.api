@@ -8,6 +8,7 @@ from entities.address.api.schemas import AddressCreate, AddressUpdate
 from entities.address.business.service import AddressService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
+from shared.api.responses import list_response, item_response, raise_not_found
 
 router = APIRouter(prefix="/api/v1", tags=["api", "address"])
 
@@ -24,7 +25,7 @@ def create_address_router(body: AddressCreate, current_user: dict = Depends(requ
         state=body.state,
         zip=body.zip,
     )
-    return address.to_dict()
+    return item_response(address.to_dict())
 
 
 @router.get("/get/addresses")
@@ -33,7 +34,7 @@ def get_addresses_router(current_user: dict = Depends(require_module_api(Modules
     Read all addresses.
     """
     addresses = AddressService().read_all()
-    return [address.to_dict() for address in addresses]
+    return list_response([address.to_dict() for address in addresses])
 
 
 @router.get("/get/address/{public_id}")
@@ -42,7 +43,7 @@ def get_address_by_public_id_router(public_id: str, current_user: dict = Depends
     Read an address by public ID.
     """
     address = AddressService().read_by_public_id(public_id=public_id)
-    return address.to_dict()
+    return item_response(address.to_dict())
 
 
 @router.put("/update/address/{public_id}")
@@ -53,8 +54,8 @@ def update_address_by_public_id_router(public_id: str, body: AddressUpdate, curr
     try:
         address = AddressService().update_by_public_id(public_id=public_id, address=body)
         if not address:
-            raise HTTPException(status_code=404, detail="Address not found")
-        return address.to_dict()
+            raise_not_found("Address")
+        return item_response(address.to_dict())
     except HTTPException:
         raise
     except Exception as e:
@@ -67,4 +68,4 @@ def delete_address_by_public_id_router(public_id: str, current_user: dict = Depe
     Delete an address by public ID.
     """
     address = AddressService().delete_by_public_id(public_id=public_id)
-    return address.to_dict()
+    return item_response(address.to_dict())

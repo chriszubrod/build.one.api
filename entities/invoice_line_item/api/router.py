@@ -12,6 +12,7 @@ from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
+from shared.api.responses import list_response, item_response, raise_not_found
 
 router = APIRouter(prefix="/api/v1", tags=["api", "invoice_line_item"])
 
@@ -35,7 +36,7 @@ def create_invoice_line_item_router(body: InvoiceLineItemCreate, current_user: d
             price=Decimal(str(body.price)) if body.price is not None else None,
             is_draft=body.is_draft if body.is_draft is not None else True,
         )
-        return line_item.to_dict()
+        return item_response(line_item.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -43,21 +44,21 @@ def create_invoice_line_item_router(body: InvoiceLineItemCreate, current_user: d
 @router.get("/get/invoice_line_items")
 def get_invoice_line_items_router(current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     items = InvoiceLineItemService().read_all()
-    return [item.to_dict() for item in items]
+    return list_response([item.to_dict() for item in items])
 
 
 @router.get("/get/invoice_line_item/{public_id}")
 def get_invoice_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     item = InvoiceLineItemService().read_by_public_id(public_id=public_id)
     if not item:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice line item not found")
-    return item.to_dict()
+        raise_not_found("Invoice line item")
+    return item_response(item.to_dict())
 
 
 @router.get("/get/invoice_line_items/invoice/{invoice_id}")
 def get_invoice_line_items_by_invoice_id_router(invoice_id: int, current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     items = InvoiceLineItemService().read_by_invoice_id(invoice_id=invoice_id)
-    return [item.to_dict() for item in items]
+    return list_response([item.to_dict() for item in items])
 
 
 @router.put("/update/invoice_line_item/{public_id}")
@@ -81,8 +82,8 @@ def update_invoice_line_item_by_public_id_router(public_id: str, body: InvoiceLi
             is_draft=body.is_draft,
         )
         if not item:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice line item not found")
-        return item.to_dict()
+            raise_not_found("Invoice line item")
+        return item_response(item.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -91,5 +92,5 @@ def update_invoice_line_item_by_public_id_router(public_id: str, body: InvoiceLi
 def delete_invoice_line_item_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_delete"))):
     item = InvoiceLineItemService().delete_by_public_id(public_id=public_id)
     if not item:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice line item not found")
-    return item.to_dict()
+        raise_not_found("Invoice line item")
+    return item_response(item.to_dict())

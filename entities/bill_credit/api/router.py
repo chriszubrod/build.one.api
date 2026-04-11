@@ -11,6 +11,7 @@ from entities.bill_credit.business.complete_service import BillCreditCompleteSer
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_credit"])
 
@@ -41,12 +42,9 @@ def create_bill_credit_router(body: BillCreditCreate, current_user: dict = Depen
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create bill credit")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create bill credit")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/bill-credits")
@@ -55,7 +53,7 @@ def get_bill_credits_router(current_user: dict = Depends(require_module_api(Modu
     Read all bill credits.
     """
     bill_credits = BillCreditService().read_all()
-    return [bill_credit.to_dict() for bill_credit in bill_credits]
+    return list_response([bill_credit.to_dict() for bill_credit in bill_credits])
 
 
 @router.get("/get/bill-credit/by-credit-number-and-vendor")
@@ -65,7 +63,7 @@ def get_bill_credit_by_credit_number_and_vendor_router(credit_number: str, vendo
     """
     bill_credit = BillCreditService().read_by_credit_number_and_vendor_public_id(credit_number=credit_number, vendor_public_id=vendor_public_id)
     if bill_credit:
-        return bill_credit.to_dict()
+        return item_response(bill_credit.to_dict())
     return None
 
 
@@ -76,8 +74,8 @@ def get_bill_credit_by_public_id_router(public_id: str, current_user: dict = Dep
     """
     bill_credit = BillCreditService().read_by_public_id(public_id=public_id)
     if not bill_credit:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bill credit not found")
-    return bill_credit.to_dict()
+        raise_not_found("Bill credit")
+    return item_response(bill_credit.to_dict())
 
 
 @router.put("/update/bill-credit/{public_id}")
@@ -108,12 +106,9 @@ def update_bill_credit_by_public_id_router(public_id: str, body: BillCreditUpdat
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update bill credit")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to update bill credit")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/bill-credit/{public_id}")
@@ -137,12 +132,9 @@ def delete_bill_credit_by_public_id_router(public_id: str, current_user: dict = 
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete bill credit")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete bill credit")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.post("/complete/bill-credit/{public_id}")

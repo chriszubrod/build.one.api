@@ -10,6 +10,7 @@ from decimal import Decimal
 # Local Imports
 from entities.expense.api.schemas import ExpenseCreate, ExpenseUpdate
 from entities.expense.business.service import ExpenseService
+from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -56,12 +57,9 @@ def create_expense_router(body: ExpenseCreate, current_user: dict = Depends(requ
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create expense")
-        )
-    
-    return result.get("data")
+        raise_workflow_error(result.get("error", ""), "Failed to create expense")
+
+    return item_response(result.get("data"))
 
 
 @router.get("/get/expenses")
@@ -70,7 +68,7 @@ def get_expenses_router(current_user: dict = Depends(require_module_api(Modules.
     Read all expenses.
     """
     expenses = ExpenseService().read_all()
-    return [expense.to_dict() for expense in expenses]
+    return list_response([expense.to_dict() for expense in expenses])
 
 
 @router.get("/get/expense/by-reference-number-and-vendor")
@@ -79,9 +77,9 @@ def get_expense_by_reference_number_and_vendor_router(reference_number: str, ven
     Read an expense by reference number and vendor public ID.
     """
     expense = ExpenseService().read_by_reference_number_and_vendor_public_id(reference_number=reference_number, vendor_public_id=vendor_public_id)
-    if expense:
-        return expense.to_dict()
-    return None
+    if not expense:
+        raise_not_found("Expense")
+    return item_response(expense.to_dict())
 
 
 @router.get("/get/expense/{public_id}/completion-result")
@@ -94,8 +92,8 @@ def get_expense_completion_result_router(public_id: str, current_user: dict = De
     _clean_expense_completion_cache()
     entry = _EXPENSE_COMPLETION_RESULT_CACHE.get(public_id)
     if not entry or entry.get("expires_at", 0) < time.time():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No completion result found or expired")
-    return entry["result"]
+        raise_not_found("Completion result")
+    return item_response(entry["result"])
 
 
 @router.get("/get/expense/{public_id}")
@@ -105,8 +103,8 @@ def get_expense_by_public_id_router(public_id: str, current_user: dict = Depends
     """
     expense = ExpenseService().read_by_public_id(public_id=public_id)
     if not expense:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found")
-    return expense.to_dict()
+        raise_not_found("Expense")
+    return item_response(expense.to_dict())
 
 
 @router.put("/update/expense/{public_id}")
@@ -137,19 +135,16 @@ def update_expense_by_public_id_router(public_id: str, body: ExpenseUpdate, curr
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        err = result.get("error", "Failed to update expense")
-        if "concurrency" in err.lower() or "row-version" in err.lower():
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
-    
-    return result.get("data")
+        raise_workflow_error(result.get("error", ""), "Failed to update expense")
+
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/expense/{public_id}")
 def delete_expense_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_delete"))):
     """
     Delete an expense by public ID.
-    
+
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
@@ -162,16 +157,13 @@ def delete_expense_by_public_id_router(public_id: str, current_user: dict = Depe
         },
         workflow_type="expense_delete",
     )
-    
+
     result = ProcessEngine().execute_synchronous(context)
-    
+
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete expense")
-        )
-    
-    return result.get("data")
+        raise_workflow_error(result.get("error", ""), "Failed to delete expense")
+
+    return item_response(result.get("data"))
 
 
 def _run_complete_expense(public_id: str) -> None:
@@ -217,11 +209,11 @@ def complete_expense_router(
     logger.info("Complete expense API called: public_id=%s (queuing background task)", public_id)
     expense = ExpenseService().read_by_public_id(public_id=public_id)
     if not expense:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found")
+        raise_not_found("Expense")
     if not getattr(expense, "is_draft", True):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Expense is already completed")
     background_tasks.add_task(_run_complete_expense, public_id)
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
-        content={"status": "accepted", "expense_public_id": public_id},
+        content=accepted_response(public_id, "expense_public_id"),
     )

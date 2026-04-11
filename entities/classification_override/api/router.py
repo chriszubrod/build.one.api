@@ -14,6 +14,7 @@ from entities.classification_override.api.schemas import (
 from entities.classification_override.business.service import ClassificationOverrideService
 
 logger = logging.getLogger(__name__)
+from shared.api.responses import list_response, item_response, raise_not_found
 
 router = APIRouter(prefix="/api/v1", tags=["api", "admin"])
 
@@ -23,7 +24,7 @@ def list_overrides(current_user: dict = Depends(require_module_api(Modules.CLASS
     """List all classification overrides."""
     svc = ClassificationOverrideService()
     overrides = svc.read_all()
-    return [o.to_dict() for o in overrides]
+    return list_response([o.to_dict() for o in overrides])
 
 
 @router.get("/classification-overrides/{public_id}")
@@ -39,7 +40,7 @@ def get_override(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Override not found: {public_id}",
         )
-    return override.to_dict()
+    return item_response(override.to_dict())
 
 
 @router.post("/classification-overrides", status_code=status.HTTP_201_CREATED)
@@ -67,7 +68,7 @@ def create_override(
                 detail=f"An override for {body.match_type} '{body.match_value}' already exists.",
             )
         raise
-    return override.to_dict()
+    return item_response(override.to_dict())
 
 
 @router.put("/classification-overrides/{public_id}")
@@ -101,7 +102,7 @@ def update_override(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Override not found: {public_id}",
         )
-    return override.to_dict()
+    return item_response(override.to_dict())
 
 
 @router.delete("/classification-overrides/{public_id}")

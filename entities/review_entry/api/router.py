@@ -15,6 +15,7 @@ from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
+from shared.api.responses import list_response, item_response, raise_not_found
 
 router = APIRouter(prefix="/api/v1", tags=["api", "review"])
 
@@ -38,7 +39,7 @@ def submit_for_review_router(
             user_id=current_user.get("id"),
             comments=body.comments,
         )
-        return entry.to_dict()
+        return item_response(entry.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -58,7 +59,7 @@ def advance_review_router(
             user_id=current_user.get("id"),
             comments=body.comments,
         )
-        return entry.to_dict()
+        return item_response(entry.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -79,7 +80,7 @@ def decline_review_router(
             user_id=current_user.get("id"),
             comments=body.comments,
         )
-        return entry.to_dict()
+        return item_response(entry.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -100,7 +101,7 @@ def get_bill_review_status_router(
     entry = service.get_current_status(bill_public_id=bill_public_id)
     if not entry:
         return {"status": None, "message": "No review entries found for this bill."}
-    return entry.to_dict()
+    return item_response(entry.to_dict())
 
 
 @router.get("/review/bill/{bill_public_id}/timeline")
@@ -113,7 +114,7 @@ def get_bill_review_timeline_router(
     """
     service = ReviewEntryService()
     entries = service.get_timeline(bill_public_id=bill_public_id)
-    return [entry.to_dict() for entry in entries]
+    return list_response([entry.to_dict() for entry in entries])
 
 
 # =============================================================================
@@ -128,7 +129,7 @@ def get_review_entries_router(
     Read all review entries.
     """
     entries = ReviewEntryService().read_all()
-    return [entry.to_dict() for entry in entries]
+    return list_response([entry.to_dict() for entry in entries])
 
 
 @router.get("/get/review-entry/{public_id}")
@@ -141,5 +142,5 @@ def get_review_entry_by_public_id_router(
     """
     entry = ReviewEntryService().read_by_public_id(public_id=public_id)
     if not entry:
-        raise HTTPException(status_code=404, detail="Review entry not found")
-    return entry.to_dict()
+        raise_not_found("Review entry")
+    return item_response(entry.to_dict())

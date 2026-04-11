@@ -9,6 +9,7 @@ from entities.integration.business.service import IntegrationService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error
 
 router = APIRouter(prefix="/api/v1", tags=["api", "integration"])
 
@@ -35,12 +36,9 @@ def create_integration_router(body: IntegrationCreate, current_user: dict = Depe
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create integration")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create integration")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/integrations")
@@ -49,7 +47,7 @@ def get_integrations_router(current_user: dict = Depends(require_module_api(Modu
     Read all integrations.
     """
     integrations = IntegrationService().read_all()
-    return [integration.to_dict() for integration in integrations]
+    return list_response([integration.to_dict() for integration in integrations])
 
 
 @router.get("/get/integration/{public_id}")
@@ -58,7 +56,7 @@ def get_integration_by_public_id_router(public_id: str, current_user: dict = Dep
     Read a integration by public ID.
     """
     integration = IntegrationService().read_by_public_id(public_id=public_id)
-    return integration.to_dict()
+    return item_response(integration.to_dict())
 
 
 @router.put("/update/integration/{public_id}")
@@ -85,12 +83,9 @@ def update_integration_by_public_id_router(public_id: str, body: IntegrationUpda
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update integration")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to update integration")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/integration/{public_id}")
@@ -114,12 +109,9 @@ def delete_integration_by_public_id_router(public_id: str, current_user: dict = 
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete integration")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete integration")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/connect/integration/{public_id}")

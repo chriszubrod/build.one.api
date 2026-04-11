@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.workflow.api.process_engine import EventType, Channel, ProcessEngine, get_process_engine
+from shared.api.responses import list_response, item_response, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from entities.email_thread.api.schemas import (
@@ -31,8 +32,8 @@ async def get_email_thread(
     service = EmailThreadService()
     thread  = service.read_by_public_id(public_id)
     if not thread:
-        raise HTTPException(status_code=404, detail="Email thread not found.")
-    return thread.to_dict()
+        raise_not_found("Email thread.")
+    return item_response(thread.to_dict())
 
 
 @router.get("/get/email-threads/requiring-action")
@@ -47,7 +48,7 @@ async def get_email_threads_requiring_action(
     """
     service = EmailThreadService()
     threads = service.read_requiring_action(owner_user_id=owner_user_id)
-    return [t.to_dict() for t in threads]
+    return list_response([t.to_dict() for t in threads])
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +82,7 @@ async def correct_email_thread_classification(
             user_id=                 getattr(current_user, "id", None),
             row_version=             body.row_version,
         )
-        return thread.to_dict()
+        return item_response(thread.to_dict())
 
     except ValueError as error:
         status = 404 if "not found" in str(error).lower() else 422

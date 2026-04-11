@@ -10,6 +10,7 @@ from entities.bill_credit_line_item.business.service import BillCreditLineItemSe
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_credit_line_item"])
 
@@ -45,12 +46,9 @@ def create_bill_credit_line_item_router(body: BillCreditLineItemCreate, current_
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create bill credit line item")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create bill credit line item")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/bill-credit-line-items")
@@ -59,7 +57,7 @@ def get_bill_credit_line_items_router(current_user: dict = Depends(require_modul
     Read all bill credit line items.
     """
     line_items = BillCreditLineItemService().read_all()
-    return [item.to_dict() for item in line_items]
+    return list_response([item.to_dict() for item in line_items])
 
 
 @router.get("/get/bill-credit-line-item/{public_id}")
@@ -69,8 +67,8 @@ def get_bill_credit_line_item_by_public_id_router(public_id: str, current_user: 
     """
     line_item = BillCreditLineItemService().read_by_public_id(public_id=public_id)
     if not line_item:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bill credit line item not found")
-    return line_item.to_dict()
+        raise_not_found("Bill credit line item")
+    return item_response(line_item.to_dict())
 
 
 @router.get("/get/bill-credit-line-items/by-bill-credit/{bill_credit_public_id}")
@@ -82,10 +80,10 @@ def get_bill_credit_line_items_by_bill_credit_router(bill_credit_public_id: str,
     
     bill_credit = BillCreditService().read_by_public_id(public_id=bill_credit_public_id)
     if not bill_credit:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bill credit not found")
+        raise_not_found("Bill credit")
     
     line_items = BillCreditLineItemService().read_by_bill_credit_id(bill_credit_id=bill_credit.id)
-    return [item.to_dict() for item in line_items]
+    return list_response([item.to_dict() for item in line_items])
 
 
 @router.put("/update/bill-credit-line-item/{public_id}")
@@ -121,12 +119,9 @@ def update_bill_credit_line_item_by_public_id_router(public_id: str, body: BillC
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update bill credit line item")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to update bill credit line item")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/bill-credit-line-item/{public_id}")
@@ -150,9 +145,6 @@ def delete_bill_credit_line_item_by_public_id_router(public_id: str, current_use
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete bill credit line item")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete bill credit line item")
     
-    return result.get("data")
+    return item_response(result.get("data"))

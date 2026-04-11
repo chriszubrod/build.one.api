@@ -9,6 +9,7 @@ from entities.organization.api.schemas import OrganizationCreate, OrganizationUp
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error
 
 router = APIRouter(prefix="/api/v1", tags=["api", "organization"])
 service = OrganizationService()
@@ -39,12 +40,9 @@ def create_organization_router(
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create organization")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create organization")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/organizations")
@@ -55,7 +53,7 @@ def get_organizations_router(
     Read all organizations.
     """
     _orgs = service.read_all()
-    return [org.to_dict() for org in _orgs]
+    return list_response([org.to_dict() for org in _orgs])
 
 
 @router.get("/get/organization/{public_id}")
@@ -67,7 +65,7 @@ def get_organization_by_public_id_router(
     Read an organization by public ID.
     """
     _org = service.read_by_public_id(public_id=public_id)
-    return _org.to_dict()
+    return item_response(_org.to_dict())
 
 
 @router.put("/update/organization/{public_id}")
@@ -98,12 +96,9 @@ def update_organization_by_id_router(
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update organization")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to update organization")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/organization/{public_id}")
@@ -130,9 +125,6 @@ def delete_organization_by_public_id_router(
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete organization")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete organization")
     
-    return result.get("data")
+    return item_response(result.get("data"))

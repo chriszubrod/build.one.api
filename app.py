@@ -106,6 +106,7 @@ from entities.classification_override.api.router import router as classification
 from entities.classification_override.web.controller import router as classification_override_web_router
 from entities.email_thread.api.router import router as email_thread_api_router
 from core.workflow.api.pending_action_router import router as pending_action_api_router
+from shared.api.lookups import router as lookups_api_router
 
 from integrations.intuit.qbo.auth.api.router import router as intuit_qbo_auth_api_router
 from integrations.intuit.qbo.company_info.api.router import router as intuit_qbo_company_info_api_router
@@ -278,6 +279,7 @@ app.include_router(review_status_api_router)
 app.include_router(review_status_web_router)
 app.include_router(review_entry_api_router)
 app.include_router(pending_action_api_router)
+app.include_router(lookups_api_router)
 
 
 @app.on_event("startup")

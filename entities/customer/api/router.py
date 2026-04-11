@@ -9,6 +9,7 @@ from entities.customer.business.service import CustomerService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error
 
 router = APIRouter(prefix="/api/v1", tags=["api", "customer"])
 
@@ -36,12 +37,9 @@ def create_customer_router(body: CustomerCreate, current_user: dict = Depends(re
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create customer")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create customer")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/customers")
@@ -50,7 +48,7 @@ def get_customers_router(current_user: dict = Depends(require_module_api(Modules
     Read all customers.
     """
     customers = CustomerService().read_all()
-    return [customer.to_dict() for customer in customers]
+    return list_response([customer.to_dict() for customer in customers])
 
 
 @router.get("/get/customer/{public_id}")
@@ -59,7 +57,7 @@ def get_customer_by_public_id_router(public_id: str, current_user: dict = Depend
     Read a customer by public ID.
     """
     customer = CustomerService().read_by_public_id(public_id=public_id)
-    return customer.to_dict()
+    return item_response(customer.to_dict())
 
 
 @router.put("/update/customer/{public_id}")
@@ -87,12 +85,9 @@ def update_customer_by_public_id_router(public_id: str, body: CustomerUpdate, cu
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update customer")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to update customer")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/customer/{public_id}")
@@ -116,9 +111,6 @@ def delete_customer_by_public_id_router(public_id: str, current_user: dict = Dep
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete customer")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete customer")
     
-    return result.get("data")
+    return item_response(result.get("data"))

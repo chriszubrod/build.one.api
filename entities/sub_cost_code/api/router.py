@@ -15,6 +15,7 @@ from entities.sub_cost_code.api.schemas import (
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
 
 router = APIRouter(prefix="/api/v1", tags=["api", "sub-cost-code"])
 service = SubCostCodeService()
@@ -45,12 +46,9 @@ def create_sub_cost_code_router(body: SubCostCodeCreate, current_user: dict = De
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create sub cost code")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create sub cost code")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/sub-cost-codes")
@@ -60,8 +58,8 @@ def get_sub_cost_codes_router(current_user: dict = Depends(require_module_api(Mo
     """
     sub_cost_codes = service.read_all()
     if not sub_cost_codes:
-        raise HTTPException(status_code=404, detail="Sub cost codes not found.")
-    return [sub_cost_code.to_dict() for sub_cost_code in sub_cost_codes]
+        raise_not_found("Sub cost codes.")
+    return list_response([sub_cost_code.to_dict() for sub_cost_code in sub_cost_codes])
 
 
 @router.get("/get/sub-cost-code/{public_id}")
@@ -71,8 +69,8 @@ def get_sub_cost_code_by_public_id_router(public_id: str, current_user: dict = D
     """
     sub_cost_code = service.read_by_public_id(public_id=public_id)
     if not sub_cost_code:
-        raise HTTPException(status_code=404, detail="Sub cost code not found.")
-    return sub_cost_code.to_dict()
+        raise_not_found("Sub cost code.")
+    return item_response(sub_cost_code.to_dict())
 
 
 @router.put("/update/sub-cost-code/{public_id}")
@@ -101,12 +99,9 @@ def update_sub_cost_code_by_id_router(public_id: str, body: SubCostCodeUpdate, c
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update sub cost code")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to update sub cost code")
     
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/sub-cost-code/{public_id}")
@@ -130,12 +125,9 @@ def delete_sub_cost_code_by_public_id_router(public_id: str, current_user: dict 
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete sub cost code")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete sub cost code")
 
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 # --- Sub Cost Code Alias Endpoints ---
@@ -152,7 +144,7 @@ def create_sub_cost_code_alias_router(body: SubCostCodeAliasCreate, current_user
             alias=body.alias,
             source=body.source,
         )
-        return alias.to_dict()
+        return item_response(alias.to_dict())
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -166,7 +158,7 @@ def get_sub_cost_code_aliases_router(sub_cost_code_id: int, current_user: dict =
     Read all aliases for a sub cost code.
     """
     aliases = alias_service.read_by_sub_cost_code_id(sub_cost_code_id=sub_cost_code_id)
-    return [alias.to_dict() for alias in aliases]
+    return list_response([alias.to_dict() for alias in aliases])
 
 
 @router.delete("/delete/sub-cost-code-alias/{public_id}")
@@ -176,5 +168,5 @@ def delete_sub_cost_code_alias_router(public_id: str, current_user: dict = Depen
     """
     alias = alias_service.delete_by_public_id(public_id=public_id)
     if not alias:
-        raise HTTPException(status_code=404, detail="Sub cost code alias not found.")
-    return alias.to_dict()
+        raise_not_found("Sub cost code alias.")
+    return item_response(alias.to_dict())

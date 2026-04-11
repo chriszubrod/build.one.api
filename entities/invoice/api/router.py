@@ -11,6 +11,7 @@ from decimal import Decimal
 # Local Imports
 from entities.invoice.api.schemas import InvoiceCreate, InvoiceUpdate
 from entities.invoice.business.service import InvoiceService
+from shared.api.responses import list_response, item_response, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -315,7 +316,7 @@ def create_invoice_router(body: InvoiceCreate, current_user: dict = Depends(requ
             memo=body.memo,
             is_draft=body.is_draft if body.is_draft is not None else True,
         )
-        return invoice.to_dict()
+        return item_response(invoice.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -323,7 +324,7 @@ def create_invoice_router(body: InvoiceCreate, current_user: dict = Depends(requ
 @router.get("/get/invoices")
 def get_invoices_router(current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     invoices = InvoiceService().read_all()
-    return [inv.to_dict() for inv in invoices]
+    return list_response([inv.to_dict() for inv in invoices])
 
 
 @router.get("/get/invoice/billable-items/{project_public_id}")
@@ -337,7 +338,7 @@ def get_billable_items_router(
             project_public_id=project_public_id,
             invoice_public_id=invoice_public_id,
         )
-        return items
+        return list_response(items)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -346,7 +347,7 @@ def get_billable_items_router(
 def get_next_invoice_number_router(project_public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     try:
         next_number = InvoiceService().get_next_invoice_number(project_public_id=project_public_id)
-        return {"next_invoice_number": next_number}
+        return item_response({"next_invoice_number": next_number})
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -576,12 +577,12 @@ def _generate_invoice_packet(public_id: str):
 
     inv_att_service.create(invoice_id=invoice.id, attachment_id=attachment.id)
 
-    return {
+    return item_response({
         "attachment_public_id": attachment.public_id,
         "filename": filename,
         "page_count": len(writer.pages),
         "skipped": skipped,
-    }
+    })
 
 
 @router.get("/get/invoice/{public_id}/reconcile")
@@ -837,22 +838,22 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
             "difference": round(-ws_row["billable"], 2),
         })
 
-    return {
+    return item_response({
         "db_total": round(sum(e["db_total"] for e in matched + mismatched + db_only), 2),
         "ws_total": round(sum(e["ws_total"] for e in matched + mismatched + ws_only), 2),
         "matched": matched,
         "mismatched": mismatched,
         "db_only": db_only,
         "ws_only": ws_only,
-    }
+    })
 
 
 @router.get("/get/invoice/{public_id}")
 def get_invoice_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     invoice = InvoiceService().read_by_public_id(public_id=public_id)
     if not invoice:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
-    return invoice.to_dict()
+        raise_not_found("Invoice")
+    return item_response(invoice.to_dict())
 
 
 @router.put("/update/invoice/{public_id}")
@@ -871,8 +872,8 @@ def update_invoice_by_public_id_router(public_id: str, body: InvoiceUpdate, curr
             is_draft=body.is_draft,
         )
         if not invoice:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
-        return invoice.to_dict()
+            raise_not_found("Invoice")
+        return item_response(invoice.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -882,8 +883,8 @@ def delete_invoice_by_public_id_router(public_id: str, current_user: dict = Depe
     try:
         invoice = InvoiceService().delete_by_public_id(public_id=public_id)
         if not invoice:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
-        return invoice.to_dict()
+            raise_not_found("Invoice")
+        return item_response(invoice.to_dict())
     except HTTPException:
         raise
     except Exception as e:
@@ -896,9 +897,9 @@ def complete_invoice_router(public_id: str, current_user: dict = Depends(require
     service = InvoiceService()
     invoice = service.read_by_public_id(public_id=public_id)
     if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+        raise_not_found("Invoice")
     result = service.complete_invoice(public_id=public_id)
-    return result
+    return item_response(result)
 
 
 @router.post("/sync/invoice/{public_id}/sharepoint")
@@ -912,7 +913,7 @@ def sync_invoice_sharepoint_router(public_id: str, current_user: dict = Depends(
     service = InvoiceService()
     invoice = service.read_by_public_id(public_id=public_id)
     if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+        raise_not_found("Invoice")
 
     line_items = InvoiceLineItemService().read_by_invoice_id(invoice_id=invoice.id)
     result = service._upload_to_sharepoint(invoice=invoice, line_items=line_items)
@@ -921,7 +922,7 @@ def sync_invoice_sharepoint_router(public_id: str, current_user: dict = Depends(
         raise HTTPException(status_code=500, detail=result.get("message", "SharePoint upload failed"))
 
     logger.info(f"SharePoint re-sync complete for invoice {public_id}: {result.get('message')}")
-    return result
+    return item_response(result)
 
 
 @router.post("/sync/invoice/{public_id}/qbo")
@@ -929,6 +930,5 @@ def sync_invoice_to_qbo_router(public_id: str, current_user: dict = Depends(requ
     """
     Invoice QBO sync is disabled. Invoices are created manually in QBO.
     """
-    # QBO invoice sync disabled — invoices are managed manually in QBO
     logger.info(f"Invoice QBO push sync disabled; skipping for invoice {public_id}")
-    return {"status_code": 200, "message": "Invoice QBO sync is disabled. Manage invoices manually in QBO."}
+    return item_response({"status_code": 200, "message": "Invoice QBO sync is disabled. Manage invoices manually in QBO."})

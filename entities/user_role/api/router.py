@@ -9,6 +9,7 @@ from entities.user_role.business.service import UserRoleService
 from shared.rbac import invalidate_all_caches, require_module_api
 from shared.rbac_constants import Modules
 from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from shared.api.responses import list_response, item_response, raise_workflow_error
 
 router = APIRouter(prefix="/api/v1", tags=["api", "user_role"])
 
@@ -35,13 +36,10 @@ def create_user_role_router(body: UserRoleCreate, current_user: dict = Depends(r
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create user role")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to create user role")
 
     invalidate_all_caches()
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.get("/get/user_roles")
@@ -50,7 +48,7 @@ def get_user_roles_router(current_user: dict = Depends(require_module_api(Module
     Read all user roles.
     """
     user_roles = UserRoleService().read_all()
-    return [user_role.to_dict() for user_role in user_roles]
+    return list_response([user_role.to_dict() for user_role in user_roles])
 
 
 @router.get("/get/user_role/{public_id}")
@@ -59,7 +57,7 @@ def get_user_role_by_public_id_router(public_id: str, current_user: dict = Depen
     Read a user role by public ID.
     """
     user_role = UserRoleService().read_by_public_id(public_id=public_id)
-    return user_role.to_dict()
+    return item_response(user_role.to_dict())
 
 
 @router.put("/update/user_role/{public_id}")
@@ -86,13 +84,10 @@ def update_user_role_by_public_id_router(public_id: str, body: UserRoleUpdate, c
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update user role")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to update user role")
 
     invalidate_all_caches()
-    return result.get("data")
+    return item_response(result.get("data"))
 
 
 @router.delete("/delete/user_role/{public_id}")
@@ -116,10 +111,7 @@ def delete_user_role_by_public_id_router(public_id: str, current_user: dict = De
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to delete user role")
-        )
+        raise_workflow_error(result.get("error", ""), "Failed to delete user role")
 
     invalidate_all_caches()
-    return result.get("data")
+    return item_response(result.get("data"))

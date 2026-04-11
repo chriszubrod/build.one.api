@@ -299,9 +299,35 @@ def sync_qbo_to_local(
             except Exception as excel_e:
                 logger.warning(f"Could not sync expenses to Excel for project {proj_id}: {excel_e}")
 
+    # --- Auto-complete: Expenses are intake-only from QBO, finalize immediately ---
+    expenses_completed = 0
+    for expense, expense_id in synced_expenses:
+        try:
+            expense_public_id = str(expense.public_id) if hasattr(expense, 'public_id') and expense.public_id else None
+            if not expense_public_id:
+                continue
+            # Skip if already finalized (idempotent — avoids redundant SharePoint uploads)
+            exp = expense_service.read_by_public_id(expense_public_id)
+            if exp and not exp.is_draft:
+                logger.debug(f"Expense {expense_public_id} already complete, skipping auto-complete")
+                continue
+            completion_result = expense_service.complete_expense(public_id=expense_public_id)
+            status = completion_result.get("status_code")
+            if status in [200, 207]:
+                expenses_completed += 1
+                logger.info(f"Auto-completed Expense {expense_public_id}")
+            else:
+                logger.warning(f"Auto-complete Expense {expense_public_id} returned {status}: {completion_result.get('message')}")
+        except Exception as complete_e:
+            logger.error(f"Failed to auto-complete Expense {expense_id}: {complete_e}")
+
+    if expenses_completed:
+        logger.info(f"Auto-completed {expenses_completed} expense(s)")
+
     return {
         "purchases_synced": len(purchases),
         "expenses_module_synced": expenses_module_synced,
+        "expenses_completed": expenses_completed,
         "attachments_linked": attachments_linked,
         "excel_rows_synced": excel_rows_synced,
         "skipped_count": len(skipped_purchases),

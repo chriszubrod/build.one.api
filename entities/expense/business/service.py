@@ -26,7 +26,10 @@ from integrations.ms.sharepoint.external.client import (
     get_excel_used_range_values,
     insert_excel_rows,
     append_excel_rows,
+    list_drive_root_children,
+    list_drive_item_children,
 )
+from integrations.ms.sharepoint.drive.business.service import MsDriveService
 
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
 
@@ -108,7 +111,7 @@ class ExpenseService:
             self._qbo_auth_service = QboAuthService()
         return self._qbo_auth_service
 
-    def create(self, *, tenant_id: int = 1, vendor_public_id: str, expense_date: str, reference_number: str, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True) -> Expense:
+    def create(self, *, tenant_id: int = 1, vendor_public_id: str, expense_date: str, reference_number: str, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, is_credit: bool = False) -> Expense:
         """
         Create a new expense.
         
@@ -146,6 +149,7 @@ class ExpenseService:
             total_amount=total_amount,
             memo=memo,
             is_draft=is_draft,
+            is_credit=is_credit,
         )
 
     def read_all(self) -> list[Expense]:
@@ -235,6 +239,7 @@ class ExpenseService:
         total_amount: float = None,
         memo: str = None,
         is_draft: bool = None,
+        is_credit: bool = None,
     ) -> Optional[Expense]:
         """
         Update an expense by public ID.
@@ -243,16 +248,16 @@ class ExpenseService:
         existing = self.read_by_public_id(public_id=public_id)
         if not existing:
             return None
-        
+
         existing.row_version = row_version
-        
+
         # Convert vendor_public_id to vendor_id if provided
         if vendor_public_id is not None:
             vendor = VendorService().read_by_public_id(public_id=vendor_public_id)
             if not vendor:
                 raise ValueError(f"Vendor with public_id '{vendor_public_id}' not found.")
             existing.vendor_id = vendor.id
-        
+
         if expense_date is not None:
             existing.expense_date = expense_date
         if reference_number is not None:
@@ -263,7 +268,9 @@ class ExpenseService:
             existing.memo = memo
         if is_draft is not None:
             existing.is_draft = is_draft
-        
+        if is_credit is not None:
+            existing.is_credit = is_credit
+
         updated_expense = self.repo.update_by_id(existing)
         
         return updated_expense
@@ -520,11 +527,18 @@ class ExpenseService:
             file_upload_results[project_id] = upload_result
             if upload_result.get("errors"):
                 all_errors.extend(upload_result["errors"])
-            # Excel workbook sync disabled
-            excel_result = {"success": True, "message": "Disabled", "synced_count": 0, "errors": []}
+            excel_result = self.sync_to_excel_workbook(expense=expense, line_items=project_line_items, project_id=project_id)
             excel_sync_results[project_id] = excel_result
             if excel_result.get("errors"):
                 all_errors.extend(excel_result["errors"])
+
+        # Step 3b: Upload to general receipts folder (520 - Current Receipts / yyyy / mm)
+        receipts_upload_result = self._upload_to_general_receipts_folder(
+            expense=expense,
+            line_items=line_items,
+        )
+        if receipts_upload_result.get("errors"):
+            all_errors.extend(receipts_upload_result["errors"])
 
         # Step 4: QBO push disabled (no reverse sync at this time)
         qbo_sync_result = {"success": True, "message": "Skipped (reverse sync disabled)", "qbo_purchase_id": None, "errors": []}
@@ -535,6 +549,7 @@ class ExpenseService:
             "message": "Expense completed successfully" + (f" with {len(all_errors)} error(s)" if has_errors else ""),
             "expense_finalized": True,
             "file_uploads": file_upload_results,
+            "receipts_upload": receipts_upload_result,
             "excel_syncs": excel_sync_results,
             "qbo_sync": qbo_sync_result,
             "errors": all_errors,
@@ -649,7 +664,7 @@ class ExpenseService:
                             vendor.name or "",                                                      # J: Vendor
                             expense.reference_number or "",                                         # K: Reference Number
                             line_item.description or "",                                            # L: Description
-                            "Expense",                                                              # M: Type
+                            "Expense Credit" if expense.is_credit else "Expense",                   # M: Type
                             float(line_item.price) if line_item.price is not None else 0,           # N: Price (numeric)
                             "", "", "", "", "", "", "", "", "", "", "",                              # O-Y: Empty
                             str(line_item.public_id) if line_item.public_id else "",                # Z: Reconciliation key
@@ -820,7 +835,7 @@ class ExpenseService:
                             vendor_name,                                                        # J: Vendor
                             expense.reference_number or "",                                     # K: Ref#
                             li.description or "",                                               # L: Description
-                            "Expense",                                                          # M: Type
+                            "Expense Credit" if expense.is_credit else "Expense",               # M: Type
                             float(li.price) if li.price is not None else 0,                     # N: Price
                             "", "", "", "", "", "", "", "", "", "", "",                          # O-Y
                             pid,                                                                # Z: Reconciliation key
@@ -967,11 +982,12 @@ class ExpenseService:
                     if expense.expense_date:
                         parts = expense.expense_date[:10].split("-")
                         expense_date = f"{parts[1]}-{parts[2]}-{parts[0]}" if len(parts) == 3 else expense.expense_date[:10]
+                    exp_prefix = "EXP-CR" if expense.is_credit else "EXP"
                     if expense_line_items_count > 1:
                         amount_str = f"${float(expense.total_amount):,.2f}" if expense.total_amount is not None else ""
-                        filename_parts = [project_identifier, vendor_abbreviation, ref_number, "Multiple See Image", amount_str, expense_date]
+                        filename_parts = [exp_prefix, project_identifier, vendor_abbreviation, ref_number, "Multiple See Image", amount_str, expense_date]
                     else:
-                        filename_parts = [project_identifier, vendor_abbreviation, ref_number, description, sub_cost_code_number, price, expense_date]
+                        filename_parts = [exp_prefix, project_identifier, vendor_abbreviation, ref_number, description, sub_cost_code_number, price, expense_date]
                     base_filename = re.sub(r'[<>:"/\\|?*]', '_', " - ".join(p for p in filename_parts if p))
                     file_extension = attachment.file_extension or ""
                     if not file_extension and attachment.original_filename and "." in attachment.original_filename:
@@ -998,4 +1014,216 @@ class ExpenseService:
             return {"success": not errors, "message": f"Uploaded {synced_count} file(s)", "synced_count": synced_count, "errors": errors}
         except Exception as e:
             logger.exception(f"Error uploading attachments for project {project_id}")
+            return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
+
+    # -------------------------------------------------------------------------
+    # General Receipts Folder — 520 - Current Receipts / yyyy / mm
+    # -------------------------------------------------------------------------
+
+    # Path segments from the SharePoint "Shared Documents" library root
+    _RECEIPTS_FOLDER_PATH = [
+        "General",
+        "999 - Accounting",
+        "01 - Banking & Credit Cards",
+        "520 - Current Receipts",
+    ]
+
+    def _navigate_to_folder(self, drive_id: str, folder_path: list[str]) -> Optional[str]:
+        """
+        Navigate from the drive root through a list of folder names, returning
+        the item_id of the final folder. Returns None if any segment is missing.
+        """
+        result = list_drive_root_children(drive_id)
+        if result.get("status_code") != 200:
+            logger.error(f"Could not list drive root: {result.get('message')}")
+            return None
+
+        current_items = result.get("items", [])
+        current_item_id = None
+
+        for segment in folder_path:
+            match = next(
+                (item for item in current_items if item.get("name") == segment and item.get("item_type") == "folder"),
+                None,
+            )
+            if not match:
+                logger.error(f"Folder segment '{segment}' not found in SharePoint")
+                return None
+            current_item_id = match["item_id"]
+            child_result = list_drive_item_children(drive_id, current_item_id)
+            if child_result.get("status_code") != 200:
+                logger.error(f"Could not list children of '{segment}': {child_result.get('message')}")
+                return None
+            current_items = child_result.get("items", [])
+
+        return current_item_id
+
+    def _get_or_create_subfolder(self, drive_id: str, drive_public_id: str, parent_item_id: str, folder_name: str) -> Optional[str]:
+        """
+        Find a subfolder by name under parent_item_id. Create it if missing.
+        Returns the item_id of the subfolder, or None on failure.
+        """
+        children = list_drive_item_children(drive_id, parent_item_id)
+        if children.get("status_code") == 200:
+            for child in children.get("items", []):
+                if child.get("name") == folder_name and child.get("item_type") == "folder":
+                    return child["item_id"]
+
+        create_result = self.driveitem_service.create_folder(
+            drive_public_id=drive_public_id,
+            parent_item_id=parent_item_id,
+            folder_name=folder_name,
+        )
+        if create_result.get("status_code") in [200, 201]:
+            logger.info(f"Created subfolder '{folder_name}'")
+            return create_result["item"]["id"]
+        else:
+            logger.error(f"Could not create subfolder '{folder_name}': {create_result.get('message')}")
+            return None
+
+    def _upload_to_general_receipts_folder(self, expense, line_items: List) -> dict:
+        """
+        Upload expense attachments to the general receipts folder:
+        520 - Current Receipts / {yyyy} / {mm} / filename.ext
+
+        Uses the same EXP filename convention as the project module folder upload.
+        """
+        try:
+            if not expense.expense_date:
+                return {"success": False, "message": "No expense date — cannot determine receipts folder", "synced_count": 0, "errors": []}
+
+            date_parts = expense.expense_date[:10].split("-")
+            if len(date_parts) != 3:
+                return {"success": False, "message": f"Invalid expense date format: {expense.expense_date}", "synced_count": 0, "errors": []}
+
+            year_folder = date_parts[0]   # "2026"
+            month_folder = date_parts[1]  # "03"
+
+            # Find the drive for "Shared Documents" on the RogersBuildLLC site
+            drive_service = MsDriveService()
+            all_drives = drive_service.read_all()
+            shared_docs_drive = next(
+                (d for d in all_drives if d.web_url and "RogersBuildLLC" in d.web_url and "Documents" in (d.name or "")),
+                None,
+            )
+            if not shared_docs_drive:
+                return {"success": False, "message": "Could not find 'Shared Documents' drive for RogersBuildLLC site", "synced_count": 0, "errors": []}
+
+            graph_drive_id = shared_docs_drive.drive_id
+
+            # Navigate to 520 - Current Receipts
+            receipts_folder_id = self._navigate_to_folder(graph_drive_id, self._RECEIPTS_FOLDER_PATH)
+            if not receipts_folder_id:
+                return {"success": False, "message": "Could not navigate to '520 - Current Receipts' folder", "synced_count": 0, "errors": []}
+
+            # Get-or-create yyyy folder
+            year_item_id = self._get_or_create_subfolder(graph_drive_id, shared_docs_drive.public_id, receipts_folder_id, year_folder)
+            if not year_item_id:
+                return {"success": False, "message": f"Could not get/create year folder '{year_folder}'", "synced_count": 0, "errors": []}
+
+            # Get-or-create mm folder
+            month_item_id = self._get_or_create_subfolder(graph_drive_id, shared_docs_drive.public_id, year_item_id, month_folder)
+            if not month_item_id:
+                return {"success": False, "message": f"Could not get/create month folder '{month_folder}'", "synced_count": 0, "errors": []}
+
+            # Upload attachments
+            try:
+                storage = AzureBlobStorage()
+            except Exception as e:
+                return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
+
+            vendor = self.vendor_service.read_by_id(id=expense.vendor_id) if expense.vendor_id else None
+            vendor_abbreviation = (vendor.abbreviation or vendor.name or "Unknown") if vendor else "Unknown"
+
+            synced_count = 0
+            errors = []
+            uploaded_attachments = {}
+
+            # Resolve project names for line items (for filename)
+            project_cache = {}
+            for li in line_items:
+                if li.project_id and li.project_id not in project_cache:
+                    proj = self.project_service.read_by_id(id=str(li.project_id))
+                    project_cache[li.project_id] = (proj.abbreviation or proj.name or "") if proj else ""
+
+            for line_item in line_items:
+                try:
+                    if not line_item.public_id:
+                        continue
+                    attachment_link = self.expense_line_item_attachment_service.read_by_expense_line_item_id(
+                        expense_line_item_public_id=line_item.public_id
+                    )
+                    if not attachment_link or not attachment_link.attachment_id:
+                        continue
+                    if attachment_link.attachment_id in uploaded_attachments:
+                        synced_count += 1
+                        continue
+                    attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
+                    if not attachment or not attachment.blob_url:
+                        continue
+
+                    # Build filename with EXP prefix
+                    project_identifier = project_cache.get(line_item.project_id, "")
+                    sub_cost_code_number = ""
+                    if line_item.sub_cost_code_id:
+                        scc = self.sub_cost_code_service.read_by_id(id=str(line_item.sub_cost_code_id))
+                        if scc:
+                            sub_cost_code_number = scc.number or ""
+                    ref_number = expense.reference_number or ""
+                    description = line_item.description or ""
+                    price = f"${float(line_item.price):,.2f}" if line_item.price is not None else ""
+                    expense_date_str = f"{date_parts[1]}-{date_parts[2]}-{date_parts[0]}"
+
+                    exp_prefix = "EXP-CR" if expense.is_credit else "EXP"
+                    if len(line_items) > 1:
+                        amount_str = f"${float(expense.total_amount):,.2f}" if expense.total_amount is not None else ""
+                        filename_parts = [exp_prefix, project_identifier, vendor_abbreviation, ref_number, "Multiple See Image", amount_str, expense_date_str]
+                    else:
+                        filename_parts = [exp_prefix, project_identifier, vendor_abbreviation, ref_number, description, sub_cost_code_number, price, expense_date_str]
+
+                    base_filename = re.sub(r'[<>:"/\\|?*]', '_', " - ".join(p for p in filename_parts if p))
+
+                    file_extension = attachment.file_extension or ""
+                    if not file_extension and attachment.original_filename and "." in attachment.original_filename:
+                        file_extension = attachment.original_filename.rsplit(".", 1)[-1]
+                    if not file_extension and attachment.content_type:
+                        file_extension = {"application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif"}.get(attachment.content_type, "")
+                    if file_extension and not file_extension.startswith("."):
+                        file_extension = "." + file_extension
+
+                    sharepoint_filename = base_filename + file_extension
+
+                    try:
+                        file_content, metadata = storage.download_file(attachment.blob_url)
+                    except Exception as e:
+                        errors.append({"line_item_id": line_item.id, "error": f"Blob download failed: {str(e)}"})
+                        continue
+
+                    content_type = attachment.content_type or metadata.get("content_type", "application/octet-stream")
+                    upload_result = self.driveitem_service.upload_file(
+                        drive_public_id=shared_docs_drive.public_id,
+                        parent_item_id=month_item_id,
+                        filename=sharepoint_filename,
+                        content=file_content,
+                        content_type=content_type,
+                    )
+                    if upload_result.get("status_code") not in [200, 201]:
+                        errors.append({"line_item_id": line_item.id, "error": upload_result.get("message", "Unknown error")})
+                        continue
+
+                    uploaded_attachments[attachment_link.attachment_id] = sharepoint_filename
+                    synced_count += 1
+                    logger.info(f"Uploaded to receipts folder: {sharepoint_filename}")
+                except Exception as e:
+                    errors.append({"line_item_id": line_item.id, "error": str(e)})
+
+            return {
+                "success": not errors,
+                "message": f"Uploaded {synced_count} file(s) to receipts folder ({year_folder}/{month_folder})",
+                "synced_count": synced_count,
+                "errors": errors,
+            }
+
+        except Exception as e:
+            logger.exception("Error uploading to general receipts folder")
             return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}

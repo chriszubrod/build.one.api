@@ -22,6 +22,7 @@ class Expense:
     total_amount: Optional[Decimal]
     memo: Optional[str]
     is_draft: Optional[bool]
+    is_credit: Optional[bool]
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

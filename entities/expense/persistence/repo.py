@@ -47,6 +47,7 @@ class ExpenseRepository:
                 total_amount=Decimal(str(getattr(row, "TotalAmount", None))) if getattr(row, "TotalAmount", None) is not None else None,
                 memo=getattr(row, "Memo", None),
                 is_draft=bool(getattr(row, "IsDraft", False)) if getattr(row, "IsDraft", None) is not None else None,
+                is_credit=bool(getattr(row, "IsCredit", False)) if getattr(row, "IsCredit", None) is not None else None,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during expense mapping: {error}")
@@ -55,7 +56,7 @@ class ExpenseRepository:
             logger.error(f"Unexpected error during expense mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, vendor_id: Optional[int] = None, expense_date: Optional[str] = None, reference_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True) -> Expense:
+    def create(self, *, tenant_id: int = 1, vendor_id: Optional[int] = None, expense_date: Optional[str] = None, reference_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, is_credit: bool = False) -> Expense:
         """
         Create a new expense.
         
@@ -81,6 +82,7 @@ class ExpenseRepository:
                         "TotalAmount": float(total_amount) if total_amount is not None else None,
                         "Memo": memo,
                         "IsDraft": 1 if is_draft else 0,
+                        "IsCredit": 1 if is_credit else 0,
                     },
                 )
                 row = cursor.fetchone()
@@ -183,9 +185,11 @@ class ExpenseRepository:
                     "TotalAmount": float(expense.total_amount) if expense.total_amount is not None else None,
                     "Memo": expense.memo,
                 }
-                # Only include IsDraft if it's explicitly set (not None)
+                # Only include IsDraft/IsCredit if explicitly set (not None) — sproc uses CASE WHEN guard
                 if expense.is_draft is not None:
                     params["IsDraft"] = 1 if expense.is_draft else 0
+                if expense.is_credit is not None:
+                    params["IsCredit"] = 1 if expense.is_credit else 0
                 
                 call_procedure(
                     cursor=cursor,

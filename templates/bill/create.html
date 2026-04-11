@@ -20,6 +20,7 @@
                 <!-- Hidden fields for tracking bill state -->
                 <input type="hidden" id="bill_public_id" name="bill_public_id" value="">
                 <input type="hidden" id="row_version" name="row_version" value="">
+                <input type="hidden" id="source_folder_item_id" value="">
                 
                 <!-- Bill Details Section -->
                 <section id="bill-details" class="bill-section">
@@ -580,6 +581,21 @@
                 forms.filter(f => canSaveLineItem(f))
                      .map(f => saveLineItem(f))
             );
+
+            // Move source file to processed folder if this came from pending files
+            const sourceItemIdDraft = document.getElementById('source_folder_item_id').value;
+            if (sourceItemIdDraft) {
+                try {
+                    await fetch('/api/v1/process/bill-folder-move', {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ item_id: sourceItemIdDraft })
+                    });
+                } catch (e) {
+                    // non-fatal
+                }
+            }
 
             window.location.href = '/bill/list';
         }
@@ -1476,6 +1492,22 @@
                 );
 
                 const billNumber = document.getElementById('bill_number').value;
+
+                // Move source file to processed folder if this came from pending files
+                const sourceItemId = document.getElementById('source_folder_item_id').value;
+                if (sourceItemId) {
+                    try {
+                        await fetch('/api/v1/process/bill-folder-move', {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ item_id: sourceItemId })
+                        });
+                    } catch (e) {
+                        // non-fatal — file stays in source folder
+                    }
+                }
+
                 showToast(`"${billNumber}" is completing in the background.`, 'info', 3000);
                 window.location.href = '/bill/list';
 
@@ -1579,6 +1611,35 @@
                 }
                 checkForPendingFile(initialForm);
                 checkForPendingFileToken(initialForm);
+
+                // Check for attachment prepared from pending files list
+                const pendingAttachmentJson = sessionStorage.getItem('pendingBillAttachment');
+                if (pendingAttachmentJson) {
+                    sessionStorage.removeItem('pendingBillAttachment');
+                    try {
+                        const pa = JSON.parse(pendingAttachmentJson);
+                        if (pa.attachment_public_id) {
+                            // Set the attachment on the first line item form
+                            const attachInput = initialForm.querySelector('.line-item-attachment-public-id');
+                            if (attachInput) attachInput.value = pa.attachment_public_id;
+                            // Store source folder item_id for post-completion move
+                            if (pa.item_id) {
+                                document.getElementById('source_folder_item_id').value = pa.item_id;
+                            }
+                            // Show attachment in preview
+                            showAttachmentPreview(pa.attachment_public_id, 'application/pdf', 'pdf', pa.original_filename || 'Attachment');
+                            // Update the attachment display on the form
+                            updateAttachmentDisplay(initialForm, {
+                                public_id: pa.attachment_public_id,
+                                original_filename: pa.original_filename || 'Attachment',
+                                content_type: 'application/pdf',
+                                file_extension: 'pdf',
+                            });
+                        }
+                    } catch (e) {
+                        // ignore parse errors
+                    }
+                }
             }
 
             // Wire form submit handler

@@ -40,7 +40,7 @@ Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
   "due_date": "Due date in YYYY-MM-DD format, or null",
   "total_amount": 0.00,
   "payment_terms": "Payment terms string like 'Net 30', or null",
-  "ship_to_address": "Ship-to, job site, or delivery address, or null",
+  "ship_to_address": "Full ship-to or delivery address including street, city, state, zip (e.g. '1577 Moran Rd, Franklin TN 37024'). Look for 'Ship To', 'Deliver To', or 'Job Site' sections. Always include the street address, not just city/state/zip. Null if not found.",
   "memo": "Brief summary of what was purchased/provided (one sentence)",
   "memo_confidence": 0.0,
   "project_reference_raw": "The raw project/job reference exactly as it appears in the document (e.g. 'Moran Rd', 'Job #1234', 'Hillsboro Pike'), or null",

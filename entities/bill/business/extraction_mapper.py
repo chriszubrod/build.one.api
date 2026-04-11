@@ -440,18 +440,62 @@ class BillExtractionMapper:
                             f"Project ambiguous (ProjectAgent): {agent_result['reasoning'][:150]}"
                         )
 
-                elif result.ship_to_address and result.project_hint:
-                    # AI hint didn't match — try ship-to address as fallback
-                    match, score = self._fuzzy_match(result.ship_to_address, project_pairs)
-                    if match and score >= 0.5:
+                elif result.ship_to_address:
+                    # Primary query failed — try ship-to address as fallback
+                    ship_scored = []
+                    for p in all_projects:
+                        _, score = self._fuzzy_match(result.ship_to_address, [(p.public_id, p.name)])
+                        if score >= 0.2:
+                            ship_scored.append({"public_id": p.public_id, "name": p.name, "score": score})
+                    ship_scored.sort(key=lambda x: -x["score"])
+
+                    ship_top = ship_scored[0] if ship_scored else None
+                    ship_candidates = [c for c in ship_scored if c["score"] >= 0.2]
+                    ship_ambiguous = len(ship_candidates) > 1
+
+                    if ship_top and ship_top["score"] >= 0.4 and not ship_ambiguous:
                         result.project_match = ProjectMatch(
-                            public_id=match[0],
-                            name=match[1],
-                            confidence=round(score, 3),
+                            public_id=ship_top["public_id"],
+                            name=ship_top["name"],
+                            confidence=round(ship_top["score"], 3),
                         )
-                        result.note(f"Project match (ship-to fallback): {match[1]} ({score:.0%})")
+                        result.note(f"Project match (ship-to): {ship_top['name']} ({ship_top['score']:.0%})")
+
+                    elif ship_ambiguous:
+                        # Multiple ship-to candidates — call ProjectAgent
+                        from shared.ai.agents.project_agent import resolve_project
+
+                        vendor_id = None
+                        if result.vendor_match:
+                            from entities.vendor.business.service import VendorService
+                            vendor = VendorService().read_by_public_id(result.vendor_match.public_id)
+                            vendor_id = vendor.id if vendor else None
+
+                        agent_result = resolve_project(
+                            vendor_name=result.vendor_name or "",
+                            vendor_id=vendor_id,
+                            project_hint=result.ship_to_address,
+                            ship_to_address=result.ship_to_address,
+                            email_subject=None,
+                            candidates=ship_candidates[:5],
+                        )
+
+                        if agent_result["decision"] == "match" and agent_result["project_public_id"]:
+                            result.project_match = ProjectMatch(
+                                public_id=agent_result["project_public_id"],
+                                name=agent_result["project_name"],
+                                confidence=round(agent_result["confidence"], 3),
+                            )
+                            result.note(
+                                f"Project match (ProjectAgent via ship-to): {agent_result['project_name']} "
+                                f"({agent_result['confidence']:.0%}) — {agent_result['reasoning'][:100]}"
+                            )
+                        else:
+                            result.note(
+                                f"Project ambiguous (ProjectAgent via ship-to): {agent_result['reasoning'][:150]}"
+                            )
                     else:
-                        result.note(f"No project match for: {project_query!r}")
+                        result.note(f"No project match for: {project_query!r} or ship-to: {result.ship_to_address!r}")
                 else:
                     result.note(f"No project match for: {project_query!r}")
             except Exception as e:

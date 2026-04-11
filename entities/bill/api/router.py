@@ -275,3 +275,267 @@ def complete_bill_router(
         status_code=status.HTTP_202_ACCEPTED,
         content={"status": "accepted", "bill_public_id": public_id},
     )
+
+
+# ---------------------------------------------------------------------------
+# Bill Folder Processing
+# ---------------------------------------------------------------------------
+
+_folder_processing_results = {}
+
+
+def _run_folder_processing(run_id: str, company_id: int, tenant_id: int):
+    """Background task for bill folder processing."""
+    try:
+        from entities.bill.business.folder_processor import BillFolderProcessor
+        processor = BillFolderProcessor()
+        result = processor.process(company_id=company_id, tenant_id=tenant_id)
+        _folder_processing_results[run_id] = {
+            "status": "completed",
+            **result.to_dict(),
+        }
+        logger.info(
+            "Folder processing %s completed: %d/%d files, %d bills created",
+            run_id, result.files_processed, result.files_found, result.bills_created,
+        )
+    except Exception as e:
+        logger.exception("Folder processing %s failed", run_id)
+        _folder_processing_results[run_id] = {
+            "status": "failed",
+            "errors": [str(e)],
+        }
+
+
+@router.post("/process/bill-folder")
+def process_bill_folder_router(
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(require_module_api(Modules.BILLS)),
+):
+    """
+    Trigger bill folder processing. Returns 202 immediately;
+    processing runs in background. Poll GET /api/v1/process/bill-folder/{run_id} for status.
+    """
+    import uuid
+    run_id = str(uuid.uuid4())
+    _folder_processing_results[run_id] = {"status": "processing"}
+
+    background_tasks.add_task(_run_folder_processing, run_id, company_id=1, tenant_id=1)
+
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={"status": "accepted", "run_id": run_id},
+    )
+
+
+@router.get("/process/bill-folder/{run_id}")
+def get_bill_folder_status_router(
+    run_id: str,
+    current_user: dict = Depends(require_module_api(Modules.BILLS)),
+):
+    """Get the status of a bill folder processing run."""
+    result = _folder_processing_results.get(run_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return result
+
+
+@router.get("/process/bill-folder-pending")
+def list_pending_files_router(
+    current_user: dict = Depends(require_module_api(Modules.BILLS)),
+):
+    """List files in the source folder with parsed data and resolve status."""
+    from entities.bill.business.folder_processor import BillFolderProcessor
+    try:
+        pending = BillFolderProcessor().list_pending(company_id=1)
+        return {"files": pending, "count": len(pending)}
+    except Exception as e:
+        logger.exception("Failed to list pending files")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/process/bill-folder-single")
+def process_single_file_router(
+    body: dict,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(require_module_api(Modules.BILLS)),
+):
+    """Process a single file from the source folder by item_id."""
+    item_id = body.get("item_id")
+    filename = body.get("filename")
+    if not item_id:
+        raise HTTPException(status_code=400, detail="item_id is required")
+
+    import uuid
+    run_id = str(uuid.uuid4())
+    _folder_processing_results[run_id] = {"status": "processing"}
+
+    background_tasks.add_task(_run_single_file_processing, run_id, item_id, filename)
+
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={"status": "accepted", "run_id": run_id},
+    )
+
+
+@router.post("/process/bill-folder-prepare")
+def prepare_file_for_create_router(
+    body: dict,
+    current_user: dict = Depends(require_module_api(Modules.BILLS)),
+):
+    """
+    Download a file from the source folder, upload to blob, create Attachment,
+    and return the attachment public_id so the create page can link it.
+    """
+    item_id = body.get("item_id")
+    filename = body.get("filename")
+    if not item_id or not filename:
+        raise HTTPException(status_code=400, detail="item_id and filename are required")
+
+    import hashlib
+    import uuid as _uuid
+    from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
+    from integrations.ms.sharepoint.external import client as sp_client
+    from entities.attachment.business.service import AttachmentService
+    from shared.storage import AzureBlobStorage
+
+    connector = DriveItemBillFolderConnector()
+    source_folder = connector.get_folder(1, "source")
+    if not source_folder:
+        raise HTTPException(status_code=400, detail="Source folder not configured")
+
+    drive_id = source_folder.get("drive_id")
+
+    # Download from SharePoint
+    content_result = sp_client.get_drive_item_content(drive_id, item_id)
+    if content_result.get("status_code") != 200:
+        raise HTTPException(status_code=502, detail=f"Failed to download: {content_result.get('message')}")
+
+    file_bytes = content_result.get("content")
+    if not file_bytes:
+        raise HTTPException(status_code=502, detail="Downloaded file has no content")
+
+    # Upload to blob
+    blob_name = f"bills/{_uuid.uuid4()}.pdf"
+    storage = AzureBlobStorage()
+    blob_url = storage.upload_file(blob_name=blob_name, file_content=file_bytes, content_type="application/pdf")
+
+    # Create Attachment
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+    attachment_service = AttachmentService()
+    attachment = attachment_service.create(
+        tenant_id=current_user.get("tenant_id", 1),
+        filename=blob_name,
+        original_filename=filename,
+        file_extension="pdf",
+        content_type="application/pdf",
+        file_size=len(file_bytes),
+        file_hash=file_hash,
+        blob_url=blob_url,
+        category="bill",
+    )
+
+    return {
+        "attachment_public_id": attachment.public_id,
+        "original_filename": filename,
+        "item_id": item_id,
+    }
+
+
+@router.post("/process/bill-folder-move")
+def move_file_to_processed_router(
+    body: dict,
+    current_user: dict = Depends(require_module_api(Modules.BILLS)),
+):
+    """Move a file from source folder to processed folder."""
+    item_id = body.get("item_id")
+    if not item_id:
+        raise HTTPException(status_code=400, detail="item_id is required")
+
+    from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
+    from integrations.ms.sharepoint.external import client as sp_client
+
+    connector = DriveItemBillFolderConnector()
+    source_folder = connector.get_folder(1, "source")
+    processed_folder = connector.get_folder(1, "processed")
+
+    if not source_folder or not processed_folder:
+        raise HTTPException(status_code=400, detail="Folders not configured")
+
+    drive_id = source_folder.get("drive_id")
+    processed_item_id = processed_folder.get("item_id")
+
+    move_result = sp_client.move_item(drive_id, item_id, processed_item_id)
+    if move_result.get("status_code") == 200:
+        return {"status": "moved"}
+
+    # Handle name conflict — delete existing then retry
+    if "nameAlreadyExists" in str(move_result.get("message", "")):
+        children = sp_client.list_drive_item_children(drive_id, processed_item_id)
+        if children.get("status_code") == 200:
+            # Get the source file name to find the conflict
+            source_meta = sp_client.get_drive_item(drive_id, item_id)
+            source_name = source_meta.get("item", {}).get("name", "") if source_meta.get("status_code") == 200 else ""
+            for child in children.get("items", []):
+                if child.get("name") == source_name:
+                    sp_client.delete_item(drive_id, child.get("item_id"))
+                    break
+        retry = sp_client.move_item(drive_id, item_id, processed_item_id)
+        if retry.get("status_code") == 200:
+            return {"status": "moved"}
+
+    return {"status": "move_failed", "message": move_result.get("message", "")}
+
+
+def _run_single_file_processing(run_id: str, item_id: str, filename: str):
+    """Background task for single file processing."""
+    try:
+        from entities.bill.business.folder_processor import BillFolderProcessor, ProcessingResult
+        from entities.project.business.service import ProjectService
+        from entities.vendor.business.service import VendorService
+        from entities.sub_cost_code.business.service import SubCostCodeService
+        from entities.sub_cost_code.business.alias_service import SubCostCodeAliasService
+        from entities.payment_term.business.service import PaymentTermService
+        from integrations.ms.sharepoint.external import client as sp_client
+
+        processor = BillFolderProcessor()
+        source_folder = processor.folder_connector.get_folder(1, "source")
+        processed_folder = processor.folder_connector.get_folder(1, "processed")
+
+        if not source_folder or not processed_folder:
+            raise ValueError("Source or processed folder not configured")
+
+        drive_id = source_folder.get("drive_id")
+        processed_item_id = processed_folder.get("item_id")
+
+        projects = ProjectService().read_all()
+        vendors = VendorService().read_all()
+        sccs = SubCostCodeService().read_all()
+        aliases = SubCostCodeAliasService().read_all()
+        pt = PaymentTermService().read_by_name("Due on receipt")
+
+        result = ProcessingResult()
+        file_item = {"name": filename, "item_id": item_id}
+
+        processor._process_single_file(
+            file_item=file_item,
+            drive_id=drive_id,
+            processed_item_id=processed_item_id,
+            projects=projects,
+            vendors=vendors,
+            sub_cost_codes=sccs,
+            sub_cost_code_aliases=aliases,
+            tenant_id=1,
+            payment_term_public_id=pt.public_id if pt else None,
+            result=result,
+        )
+
+        _folder_processing_results[run_id] = {
+            "status": "completed",
+            **result.to_dict(),
+        }
+    except Exception as e:
+        logger.exception("Single file processing %s failed", run_id)
+        _folder_processing_results[run_id] = {
+            "status": "failed",
+            "errors": [str(e)],
+        }

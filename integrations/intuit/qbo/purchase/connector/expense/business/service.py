@@ -96,6 +96,7 @@ class PurchaseExpenseConnector:
                     total_amount=total_amount,
                     memo=memo,
                     is_draft=False,
+                    is_credit=qbo_purchase.credit or False,
                 )
                 
                 # Sync line items for existing expense
@@ -117,6 +118,7 @@ class PurchaseExpenseConnector:
             total_amount=total_amount,
             memo=memo,
             is_draft=False,
+            is_credit=qbo_purchase.credit or False,
         )
         
         # Create mapping — if this fails we must roll back the expense we just created,

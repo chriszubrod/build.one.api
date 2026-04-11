@@ -68,6 +68,24 @@ async def process_queue(
         return JSONResponse({"status_code": 500, "message": str(exc)}, status_code=500)
 
 
+@router.post("/check-replies")
+async def check_replies(
+    request: Request,
+    current_user: dict = Depends(require_module_web(Modules.INBOX)),
+):
+    """
+    Check for PM replies on bills that are In Review.
+    Parses replies, updates bill line items, advances review status.
+    """
+    svc = InboxService()
+    try:
+        processed = svc.process_reply_queue()
+        return JSONResponse({"status_code": 200, "processed": processed})
+    except Exception as exc:
+        logger.error("Check replies failed: %s", exc)
+        return JSONResponse({"status_code": 500, "message": str(exc)}, status_code=500)
+
+
 @router.get("")
 @router.get("/")
 async def inbox_list(

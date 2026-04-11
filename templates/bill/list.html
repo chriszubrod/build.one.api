@@ -107,6 +107,33 @@
     </div>
     {% endif %}
 
+    <!-- Pending Source Folder Files -->
+    <div id="pending-files-section" style="display: none; margin-bottom: 1.5rem;">
+        <div style="background: var(--color-surface); border: 1px solid #e0e0e0; border-radius: 6px; padding: 1rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+                <h3 style="margin: 0; font-size: 0.95rem; font-weight: 600;">Pending Files</h3>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="loadPendingFiles()">Refresh</button>
+            </div>
+            <div id="pending-files-table-container">
+                <table class="bill-list-table" style="font-size: 0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>Filename</th>
+                            <th>Vendor</th>
+                            <th>Project</th>
+                            <th>Bill #</th>
+                            <th>Amount</th>
+                            <th>Date</th>
+                            <th>Status</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="pending-files-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
     <!-- Pending Bill Imports from Workflow -->
     {% if pending_workflows %}
     <div class="bill-pending-imports-section">
@@ -1111,14 +1138,10 @@
         btn.textContent = 'Processing...';
 
         try {
-            const response = await fetch('/api/v1/bill-agent/run', {
+            const response = await fetch('/api/v1/process/bill-folder', {
                 method: 'POST',
                 credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    company_id: 1,
-                    trigger_source: 'manual'
-                })
+                headers: { 'Content-Type': 'application/json' }
             });
 
             if (!response.ok) {
@@ -1126,13 +1149,13 @@
             }
 
             const data = await response.json();
-            const runPublicId = data.run_public_id;
+            const runId = data.run_id;
 
-            if (!runPublicId) {
+            if (!runId) {
                 throw new Error('No run ID returned');
             }
 
-            await pollBillAgentRun(runPublicId, btn);
+            await pollFolderProcessing(runId, btn);
         } catch (error) {
             console.error('Bill folder processing error:', error);
             btn.disabled = false;
@@ -1140,7 +1163,7 @@
         }
     }
 
-    async function pollBillAgentRun(runPublicId, btn) {
+    async function pollFolderProcessing(runId, btn) {
         const maxAttempts = 120;
         let attempts = 0;
 
@@ -1149,10 +1172,8 @@
             attempts++;
 
             try {
-                const response = await fetch(`/api/v1/bill-agent/run/${runPublicId}`, {
-                    method: 'GET',
-                    credentials: 'same-origin',
-                    headers: { 'Content-Type': 'application/json' }
+                const response = await fetch(`/api/v1/process/bill-folder/${runId}`, {
+                    credentials: 'same-origin'
                 });
 
                 if (!response.ok) continue;
@@ -1160,19 +1181,22 @@
                 const data = await response.json();
 
                 if (data.status === 'completed') {
-                    setTimeout(() => window.location.reload(), 1000);
+                    const msg = `Processed ${data.files_processed || 0} of ${data.files_found || 0} files, ${data.bills_created || 0} bills created.`;
+                    showToast(msg, 'success', 5000);
+                    setTimeout(() => window.location.reload(), 1500);
                     return;
                 }
 
                 if (data.status === 'failed') {
+                    showToast('Folder processing failed. Check logs.', 'error', 5000);
                     btn.disabled = false;
                     btn.textContent = 'Process Folder';
                     return;
                 }
 
-                btn.textContent = `Processing...`;
+                btn.textContent = 'Processing...';
             } catch (e) {
-                console.warn('Poll error:', e);
+                // continue polling
             }
         }
 
@@ -1180,6 +1204,128 @@
         btn.disabled = false;
         btn.textContent = 'Process Folder';
     }
+
+    // =====================
+    // Pending Files
+    // =====================
+
+    async function loadPendingFiles() {
+        try {
+            const response = await fetch('/api/v1/process/bill-folder-pending', { credentials: 'same-origin' });
+            if (!response.ok) return;
+            const data = await response.json();
+            const files = data.files || [];
+            const section = document.getElementById('pending-files-section');
+            const tbody = document.getElementById('pending-files-tbody');
+
+            if (files.length === 0) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+            tbody.innerHTML = '';
+
+            for (const file of files) {
+                const tr = document.createElement('tr');
+                const statusClass = file.is_ready ? 'color: var(--color-success, green)' : 'color: var(--color-danger, #dc3545)';
+                const amount = file.amount ? '$' + parseFloat(file.amount).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '';
+
+                const safeFilename = file.filename.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                tr.innerHTML = `
+                    <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;" title="${file.filename}"
+                        onclick="prepareAndCreate('${file.item_id}', '${safeFilename}')">${file.filename}</td>
+                    <td>${file.vendor_resolved || '<span style="color:#dc3545">' + (file.vendor_parsed || '—') + '</span>'}</td>
+                    <td>${file.project_resolved || file.project_parsed || '—'}</td>
+                    <td>${file.bill_number || '—'}</td>
+                    <td>${amount}</td>
+                    <td>${file.date || '—'}</td>
+                    <td style="${statusClass}; font-size: 0.8rem;">${file.status}</td>
+                    <td>${file.is_ready ? '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); processSingleFile(this, \'' + file.item_id + '\', \'' + safeFilename + '\')">Process</button>' : ''}</td>
+                `;
+                tbody.appendChild(tr);
+            }
+        } catch (e) {
+            // silent
+        }
+    }
+
+    async function processSingleFile(btn, itemId, filename) {
+        btn.disabled = true;
+        btn.textContent = 'Processing...';
+
+        try {
+            const response = await fetch('/api/v1/process/bill-folder-single', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ item_id: itemId, filename: filename })
+            });
+
+            if (!response.ok) throw new Error('Failed');
+
+            const data = await response.json();
+            const runId = data.run_id;
+
+            // Poll for completion
+            let attempts = 0;
+            while (attempts < 40) {
+                await new Promise(r => setTimeout(r, 2000));
+                attempts++;
+                const pollResp = await fetch(`/api/v1/process/bill-folder/${runId}`, { credentials: 'same-origin' });
+                if (!pollResp.ok) continue;
+                const pollData = await pollResp.json();
+                if (pollData.status === 'completed') {
+                    showToast(`"${filename}" processed successfully.`, 'success', 3000);
+                    loadPendingFiles();
+                    return;
+                }
+                if (pollData.status === 'failed') {
+                    showToast(`Failed to process "${filename}": ${(pollData.errors || []).join(', ')}`, 'error', 5000);
+                    btn.disabled = false;
+                    btn.textContent = 'Process';
+                    return;
+                }
+            }
+            btn.disabled = false;
+            btn.textContent = 'Process';
+        } catch (e) {
+            btn.disabled = false;
+            btn.textContent = 'Process';
+        }
+    }
+
+    async function prepareAndCreate(itemId, filename) {
+        showToast('Preparing file...', 'info', 2000);
+        try {
+            const response = await fetch('/api/v1/process/bill-folder-prepare', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ item_id: itemId, filename: filename })
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                showToast(err.detail || 'Failed to prepare file', 'error', 5000);
+                return;
+            }
+
+            const data = await response.json();
+            // Store attachment info for the create page to pick up
+            sessionStorage.setItem('pendingBillAttachment', JSON.stringify({
+                attachment_public_id: data.attachment_public_id,
+                original_filename: data.original_filename,
+                item_id: data.item_id,
+            }));
+            window.location.href = '/bill/create';
+        } catch (e) {
+            showToast('Failed to prepare file', 'error', 5000);
+        }
+    }
+
+    // Load pending files on page load
+    document.addEventListener('DOMContentLoaded', loadPendingFiles);
 
     // =====================
     // List State Persistence (filters + scroll)

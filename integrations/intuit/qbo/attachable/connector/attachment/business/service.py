@@ -16,7 +16,7 @@ from integrations.intuit.qbo.auth.business.service import QboAuthService
 from entities.attachment.business.service import AttachmentService
 from entities.attachment.business.model import Attachment
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
-from shared.pdf_utils import ensure_pdf
+from shared.pdf_utils import ensure_pdf, compact_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +62,57 @@ class AttachableAttachmentConnector:
         mapping = self.mapping_repo.read_by_qbo_attachable_id(qbo_attachable.id)
         
         if mapping:
-            # Found existing mapping - return the existing Attachment
+            # Found existing mapping - verify the Attachment and its blob still exist
             attachment = self.attachment_service.read_by_id(mapping.attachment_id)
             if attachment:
-                logger.info(f"Found existing Attachment {attachment.id} for QboAttachable {qbo_attachable.id}")
-                # Optionally update metadata here if needed
-                return attachment
+                # Verify the blob still exists in Azure storage
+                blob_ok = True
+                if attachment.blob_url:
+                    try:
+                        storage = AzureBlobStorage()
+                        storage.download_file(attachment.blob_url)
+                    except Exception:
+                        blob_ok = False
+                        logger.warning(
+                            f"Attachment {attachment.id} blob missing at {attachment.blob_url} — "
+                            f"re-downloading from QBO for QboAttachable {qbo_attachable.id}"
+                        )
+                else:
+                    blob_ok = False
+
+                if blob_ok:
+                    logger.info(f"Found existing Attachment {attachment.id} for QboAttachable {qbo_attachable.id}")
+                    return attachment
+
+                # Blob is missing — re-download from QBO and re-upload
+                file_content = self._download_from_qbo(qbo_attachable, realm_id)
+                if file_content:
+                    content_type = qbo_attachable.content_type or "application/octet-stream"
+                    file_name = qbo_attachable.file_name or f"attachment_{qbo_attachable.qbo_id}"
+                    file_content, content_type, file_extension = ensure_pdf(file_content, content_type, file_name)
+                    if file_extension == ".pdf":
+                        file_name = self._ensure_pdf_filename(file_name)
+                        file_content = compact_pdf(file_content)
+                    blob_url = self._upload_to_blob(
+                        file_content=file_content,
+                        file_name=file_name,
+                        content_type=content_type,
+                    )
+                    # Update the existing Attachment record with the new blob URL
+                    self.attachment_service.update_by_public_id(
+                        public_id=attachment.public_id,
+                        row_version=attachment.row_version,
+                        blob_url=blob_url,
+                        file_size=len(file_content),
+                        content_type=content_type,
+                        file_extension=file_extension,
+                    )
+                    logger.info(f"Re-uploaded blob for Attachment {attachment.id} → {blob_url}")
+                    # Re-read to get updated record
+                    return self.attachment_service.read_by_id(attachment.id)
+                else:
+                    logger.error(f"Could not re-download file from QBO for Attachment {attachment.id}")
+                    return attachment  # Return existing record even though blob is missing
             else:
                 # Mapping exists but Attachment not found - recreate
                 logger.warning(f"Mapping exists but Attachment {mapping.attachment_id} not found. Creating new.")
@@ -86,7 +131,8 @@ class AttachableAttachmentConnector:
         file_content, content_type, file_extension = ensure_pdf(file_content, content_type, file_name)
         if file_extension == ".pdf":
             file_name = self._ensure_pdf_filename(file_name)
-        
+            file_content = compact_pdf(file_content)
+
         # Calculate file hash
         file_hash = self.attachment_service.calculate_hash(file_content)
         

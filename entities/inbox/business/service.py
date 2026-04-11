@@ -739,6 +739,19 @@ class InboxService:
                     except Exception as exc:
                         logger.warning("ENTITY_CREATED: failed for %s: %s", msg_id[:20], exc)
 
+                # ── REVIEW: Submitted — bill draft created ──
+                if bill_public_id:
+                    try:
+                        from entities.review_entry.business.service import ReviewEntryService
+                        ReviewEntryService().submit_for_review(
+                            bill_public_id=bill_public_id,
+                            user_id=None,
+                            comments="Draft bill created by EmailAgent",
+                        )
+                        logger.info("REVIEW: Submitted for bill %s", bill_public_id[:8])
+                    except Exception as exc:
+                        logger.warning("REVIEW: submit failed for %s: %s", bill_public_id[:8], exc)
+
                 # ── ROUTING: confidence check before forwarding to PM ──
                 if bill_public_id and extraction_data:
                     ext = extraction_data.get("extraction", {})
@@ -747,7 +760,7 @@ class InboxService:
                     has_project = bool(ext.get("project_match"))
 
                     if has_vendor and has_bill_number and has_project:
-                        # All high-importance fields resolved — auto-submit to PM
+                        # All high-importance fields resolved — create forward draft to PM
                         forwarded = False
                         try:
                             forwarded = self._forward_to_project_pms(
@@ -756,7 +769,19 @@ class InboxService:
                         except Exception as exc:
                             logger.warning("PENDING_APPROVAL: failed for %s: %s", msg_id[:20], exc)
 
-                        if not forwarded:
+                        if forwarded:
+                            # ── REVIEW: In Review — forward draft created ──
+                            try:
+                                from entities.review_entry.business.service import ReviewEntryService
+                                ReviewEntryService().advance_status(
+                                    bill_public_id=bill_public_id,
+                                    user_id=None,
+                                    comments="Forward draft created for PM review",
+                                )
+                                logger.info("REVIEW: In Review for bill %s", bill_public_id[:8])
+                            except Exception as exc:
+                                logger.warning("REVIEW: advance failed for %s: %s", bill_public_id[:8], exc)
+                        else:
                             # No PMs found or forward failed — create draft for user
                             logger.info(
                                 "PENDING_APPROVAL: no PMs for %s — creating draft for user",
@@ -791,6 +816,8 @@ class InboxService:
                         classification_confidence=cls_confidence,
                         classification_signals=json.dumps(cls_signals),
                         classified_at=now_str,
+                        record_type="bill" if bill_public_id else None,
+                        record_public_id=bill_public_id,
                     )
                 except Exception as exc:
                     logger.warning("Failed to update InboxRecord for %s: %s", msg_id, exc)
@@ -802,6 +829,214 @@ class InboxService:
             except Exception as exc:
                 # Leave Blue category so next poll retries
                 logger.error("Failed to process message %s: %s", msg_id, exc)
+
+        return processed
+
+    # ------------------------------------------------------------------
+    # Reply queue processing (PM approval replies)
+    # ------------------------------------------------------------------
+
+    def process_reply_queue(self) -> int:
+        """
+        Check for PM replies on bills that are "In Review".
+
+        For each InboxRecord awaiting a reply:
+          1. Fetch the conversation thread from Graph API
+          2. Find replies newer than the forward draft
+          3. Parse the reply (approved/declined)
+          4. If approved: resolve sub cost code, update BillLineItem, advance ReviewEntry
+          5. If declined: advance ReviewEntry with PM's note
+
+        Returns the number of replies processed.
+        """
+        from entities.bill.business.service import BillService
+        from entities.bill_line_item.business.service import BillLineItemService
+        from entities.review_entry.business.service import ReviewEntryService
+        from entities.sub_cost_code.business.service import SubCostCodeService
+        from entities.bill.business.extraction_mapper import BillExtractionMapper
+        from shared.ai.claude import parse_pm_reply
+
+        awaiting = self._record_repo.read_awaiting_reply()
+        if not awaiting:
+            logger.info("Reply queue: no bills awaiting PM reply")
+            return 0
+
+        logger.info("Reply queue: %d bill(s) awaiting PM reply", len(awaiting))
+
+        processed = 0
+        bill_svc = BillService()
+        line_item_svc = BillLineItemService()
+        review_svc = ReviewEntryService()
+
+        for record in awaiting:
+            conversation_id = record.conversation_id
+            bill_public_id = record.record_public_id
+            if not conversation_id or not bill_public_id:
+                continue
+
+            try:
+                # Fetch conversation thread
+                thread_result = mail_client.search_all_messages(
+                    conversation_id=conversation_id,
+                    mailbox=self._mailbox,
+                )
+                if thread_result.get("status_code") != 200:
+                    continue
+
+                thread_messages = thread_result.get("messages") or []
+
+                # Find the newest reply from an internal user
+                # Thread is oldest-first — reverse to check newest first
+                original_sender = (record.from_email or "").lower()
+                reply = None
+                for msg in reversed(thread_messages):
+                    sender = (msg.get("from_email") or "").lower()
+                    # Skip messages sent by our inbox (the forwards)
+                    if self._mailbox and sender == self._mailbox.lower():
+                        continue
+                    # Skip emails from the original vendor
+                    if sender == original_sender:
+                        continue
+                    # This is a reply from an internal user (likely the PM)
+                    reply = msg
+                    break
+
+                if not reply:
+                    logger.debug("No reply yet for conversation %s", conversation_id[:30])
+                    continue
+
+                # Get full reply body
+                reply_detail = mail_client.get_message(
+                    message_id=reply["message_id"],
+                    include_body=True,
+                    mailbox=self._mailbox,
+                )
+                if reply_detail.get("status_code") not in (200, 201):
+                    continue
+
+                reply_email = reply_detail.get("email", {})
+                reply_body = reply_email.get("body_content") or reply_email.get("body_preview") or ""
+
+                # Get bill details for context
+                bill = bill_svc.read_by_public_id(bill_public_id)
+                if not bill:
+                    logger.warning("Bill %s not found for reply processing", bill_public_id)
+                    continue
+
+                from entities.vendor.business.service import VendorService
+                vendor = VendorService().read_by_id(bill.vendor_id) if bill.vendor_id else None
+                vendor_name = vendor.name if vendor else "Unknown"
+
+                # Parse the reply with Claude
+                parse_result = parse_pm_reply(
+                    reply_body=reply_body,
+                    original_subject=reply_email.get("subject", ""),
+                    vendor_name=vendor_name,
+                    bill_number=bill.bill_number or "N/A",
+                    bill_amount=str(bill.total_amount) if bill.total_amount else "N/A",
+                )
+
+                if not parse_result:
+                    logger.warning("Could not parse reply for conversation %s", conversation_id[:30])
+                    continue
+
+                if parse_result["approved"]:
+                    # ── APPROVED: update line item and advance review ──
+                    logger.info(
+                        "APPROVED: bill %s — scc=%s desc=%s",
+                        bill_public_id[:8],
+                        parse_result.get("sub_cost_code"),
+                        (parse_result.get("description") or "")[:50],
+                    )
+
+                    # Resolve sub cost code if provided
+                    scc_id = None
+                    if parse_result.get("sub_cost_code"):
+                        try:
+                            all_sccs = SubCostCodeService().read_all()
+                            mapper = BillExtractionMapper()
+                            scc_pairs = [(str(scc.id), scc.name) for scc in all_sccs]
+                            match, score = mapper._fuzzy_match(parse_result["sub_cost_code"], scc_pairs)
+                            if match and score >= 0.4:
+                                scc_id = int(match[0])
+                                logger.info("Sub cost code resolved: %s (%.0f%%)", match[1], score * 100)
+                        except Exception as exc:
+                            logger.warning("Sub cost code resolution failed: %s", exc)
+
+                    # Resolve project if provided
+                    project_public_id = None
+                    if parse_result.get("project"):
+                        try:
+                            from entities.project.business.service import ProjectService
+                            all_projects = ProjectService().read_all()
+                            mapper = BillExtractionMapper()
+                            project_pairs = [(p.public_id, p.name) for p in all_projects]
+                            match, score = mapper._fuzzy_match(parse_result["project"], project_pairs)
+                            if match and score >= 0.4:
+                                project_public_id = match[0]
+                                logger.info("Project resolved: %s (%.0f%%)", match[1], score * 100)
+                        except Exception as exc:
+                            logger.warning("Project resolution failed: %s", exc)
+
+                    # Update the bill line item
+                    try:
+                        line_items = line_item_svc.read_by_bill_id(bill_id=bill.id)
+                        if line_items:
+                            li = line_items[0]  # First line item
+                            updates = {}
+                            if parse_result.get("description"):
+                                updates["description"] = parse_result["description"]
+                            if scc_id:
+                                updates["sub_cost_code_id"] = scc_id
+                            if project_public_id:
+                                updates["project_public_id"] = project_public_id
+                            if updates:
+                                line_item_svc.update_by_public_id(
+                                    public_id=li.public_id,
+                                    row_version=li.row_version,
+                                    **updates,
+                                )
+                                logger.info("Updated line item %s", li.public_id[:8])
+                    except Exception as exc:
+                        logger.warning("Line item update failed for bill %s: %s", bill_public_id[:8], exc)
+
+                    # Advance ReviewEntry to Approved
+                    try:
+                        review_svc.advance_status(
+                            bill_public_id=bill_public_id,
+                            user_id=None,
+                            comments=f"Approved by {reply_email.get('from_name', 'PM')}",
+                        )
+                        logger.info("REVIEW: Approved for bill %s", bill_public_id[:8])
+                    except Exception as exc:
+                        logger.warning("REVIEW: advance to Approved failed for %s: %s", bill_public_id[:8], exc)
+
+                else:
+                    # ── DECLINED: log note and advance review ──
+                    note = parse_result.get("note") or "Not approved (no reason given)"
+                    logger.info("DECLINED: bill %s — %s", bill_public_id[:8], note[:100])
+
+                    try:
+                        review_svc.decline(
+                            bill_public_id=bill_public_id,
+                            review_status_public_id="A28E9AD8-2665-4814-B9BF-05ADE9B6E6F6",  # Declined
+                            user_id=None,
+                            comments=f"Declined by {reply_email.get('from_name', 'PM')}: {note}",
+                        )
+                        logger.info("REVIEW: Declined for bill %s", bill_public_id[:8])
+                    except Exception as exc:
+                        logger.warning("REVIEW: decline failed for %s: %s", bill_public_id[:8], exc)
+
+                # Mark the reply as read
+                try:
+                    self._mail_svc.mark_message_read(message_id=reply["message_id"], is_read=True)
+                except Exception:
+                    pass
+
+                processed += 1
+
+            except Exception as exc:
+                logger.error("Failed to process reply for %s: %s", bill_public_id, exc)
 
         return processed
 

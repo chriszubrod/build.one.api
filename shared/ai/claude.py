@@ -123,3 +123,99 @@ def classify_email(
     except Exception as exc:
         logger.warning("Claude classification failed, falling back to heuristic: %s", exc)
         return heuristic_result
+
+
+# ── Reply parsing ────────────────────────────────────────────────────
+
+REPLY_PARSE_SYSTEM = """\
+You are parsing a PM's email reply to an invoice approval request.
+
+The PM was asked to review a bill and reply with one of:
+- Approved: with a Project, Sub Cost Code, and Description
+- Not approved: with a brief note explaining why
+
+Parse the reply and return JSON only:
+{
+  "approved": true or false,
+  "project": "the project name or abbreviation if provided, or null",
+  "sub_cost_code": "the sub cost code name if approved, or null",
+  "description": "the line item description if approved, or null",
+  "note": "the PM's note if not approved, or null"
+}
+
+Rules:
+- If the reply contains words like "approved", "looks good", "go ahead", "ok", "yes" → approved: true
+- If the reply contains words like "not approved", "decline", "hold", "no", "reject" → approved: false
+- The project is a construction project name or abbreviation (e.g., "MR2-MAIN", "HP", "SHT")
+- The sub cost code is a construction cost category (e.g., "Framing Labor", "Hardwood Flooring Material", "21.0 Siding Material")
+- The description is what the line item should say on the bill
+- If approved but project, sub cost code, or description are not provided, set them to null
+- If ambiguous, set approved to false with note explaining the ambiguity"""
+
+
+def parse_pm_reply(
+    reply_body: str,
+    original_subject: str,
+    vendor_name: str,
+    bill_number: str,
+    bill_amount: str,
+) -> Optional[dict]:
+    """
+    Parse a PM's email reply to determine approval status.
+
+    Returns:
+        {
+            "approved": bool,
+            "sub_cost_code": str | None,
+            "description": str | None,
+            "note": str | None,
+        }
+        or None on failure.
+    """
+    parts = [
+        f"Original subject: {original_subject or '(none)'}",
+        f"Bill from: {vendor_name or '(unknown)'}",
+        f"Bill number: {bill_number or 'N/A'}",
+        f"Bill amount: {bill_amount or 'N/A'}",
+        f"\nPM's reply:\n{reply_body[:3000]}",
+    ]
+    user_message = "\n".join(parts)
+
+    try:
+        settings = Settings()
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=256,
+            system=REPLY_PARSE_SYSTEM,
+            messages=[{"role": "user", "content": user_message}],
+        )
+
+        raw_text = response.content[0].text.strip()
+        # Strip markdown code fences if present
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("\n", 1)[1] if "\n" in raw_text else raw_text[3:]
+            raw_text = raw_text.rsplit("```", 1)[0].strip()
+
+        parsed = json.loads(raw_text)
+
+        logger.info(
+            "Reply parsed: approved=%s project=%s sub_cost_code=%s description=%s note=%s",
+            parsed.get("approved"),
+            parsed.get("project"),
+            parsed.get("sub_cost_code"),
+            (parsed.get("description") or "")[:50],
+            (parsed.get("note") or "")[:50],
+        )
+
+        return {
+            "approved": bool(parsed.get("approved", False)),
+            "project": parsed.get("project"),
+            "sub_cost_code": parsed.get("sub_cost_code"),
+            "description": parsed.get("description"),
+            "note": parsed.get("note"),
+        }
+
+    except Exception as exc:
+        logger.warning("Reply parsing failed: %s", exc)
+        return None

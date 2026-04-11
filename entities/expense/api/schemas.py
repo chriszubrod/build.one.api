@@ -31,6 +31,10 @@ class ExpenseCreate(BaseModel):
         default=True,
         description="Whether the expense is a draft."
     )
+    is_credit: Optional[bool] = Field(
+        default=False,
+        description="Whether the expense is a credit card credit (refund)."
+    )
 
 
 class ExpenseUpdate(BaseModel):
@@ -58,4 +62,8 @@ class ExpenseUpdate(BaseModel):
     is_draft: Optional[bool] = Field(
         default=None,
         description="Whether the expense is a draft."
+    )
+    is_credit: Optional[bool] = Field(
+        default=None,
+        description="Whether the expense is a credit card credit (refund)."
     )

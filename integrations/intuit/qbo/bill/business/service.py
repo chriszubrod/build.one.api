@@ -62,8 +62,9 @@ class QboBillService:
             List[QboBill]: The synced bill records
         """
         # Get valid access token
-        auth_service = QboAuthService()
-        qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
+        self._auth_service = QboAuthService()
+        self._realm_id = realm_id
+        qbo_auth = self._auth_service.ensure_valid_token(realm_id=realm_id)
         
         if not qbo_auth or not qbo_auth.access_token:
             raise ValueError(f"No valid access token found for realm_id: {realm_id}")
@@ -109,6 +110,8 @@ class QboBillService:
             if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(qbo_bills):
                 logger.debug(f"Processed {i + 1}/{len(qbo_bills)} bills, pausing...")
                 time.sleep(BATCH_DELAY)
+                # Refresh access token to prevent expiration during long syncs
+                self._auth_service.ensure_valid_token(realm_id=self._realm_id)
         
         if failed_bills:
             logger.warning(f"Failed to upsert {len(failed_bills)} bills: {failed_bills}")
@@ -328,17 +331,22 @@ class QboBillService:
                     f"Deleting stale QboBillLine id={stored_line.id} "
                     f"qbo_line_id={stored_line.qbo_line_id} (no longer in QBO response)"
                 )
+                # Delete mapping FIRST — only delete line if mapping cleanup succeeds
+                mapping_cleaned = True
                 try:
                     stale_mapping = mapping_repo.read_by_qbo_bill_line_id(stored_line.id)
                     if stale_mapping:
                         mapping_repo.delete_by_id(stale_mapping.id)
                         logger.info(f"Deleted stale BillLineItemBillLine mapping id={stale_mapping.id}")
                 except Exception as e:
-                    logger.warning(f"Could not delete stale mapping for QboBillLine {stored_line.id}: {e}")
-                try:
-                    self.line_repo.delete_by_id(stored_line.id)
-                except Exception as e:
-                    logger.warning(f"Could not delete stale QboBillLine {stored_line.id}: {e}")
+                    mapping_cleaned = False
+                    logger.error(f"Could not delete stale mapping for QboBillLine {stored_line.id}: {e} — skipping line deletion to prevent orphan")
+
+                if mapping_cleaned:
+                    try:
+                        self.line_repo.delete_by_id(stored_line.id)
+                    except Exception as e:
+                        logger.warning(f"Could not delete stale QboBillLine {stored_line.id}: {e}")
 
     def _sync_to_bills(self, bills: List[QboBill]) -> None:
         """

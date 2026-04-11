@@ -212,6 +212,11 @@
                 style="background:#2563eb; color:#fff; border:none; border-radius:4px; cursor:pointer;">
             Process Queue
         </button>
+        <button type="button" id="check-replies-btn" class="btn-sm"
+                onclick="checkReplies()"
+                style="background:#059669; color:#fff; border:none; border-radius:4px; cursor:pointer;">
+            Check Replies
+        </button>
         <span style="font-size:0.8rem; color:var(--text-muted,#6b7280);">
             Colors = AI classification &nbsp;·&nbsp; Click a row to process
         </span>
@@ -599,6 +604,35 @@ async function processQueue() {
         }
     } catch (err) {
         console.error('Process queue failed:', err);
+        btn.textContent = 'Error';
+        setTimeout(function() { btn.textContent = originalText; btn.disabled = false; }, 3000);
+    }
+}
+
+// ── Check Replies button ──────────────────────────────────────────
+async function checkReplies() {
+    const btn = document.getElementById('check-replies-btn');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Checking\u2026';
+
+    try {
+        const resp = await fetch('/inbox/check-replies', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getCsrfHeaders() },
+            credentials: 'same-origin',
+        });
+        const data = await resp.json();
+        if (data.status_code === 200) {
+            btn.textContent = data.processed + ' processed';
+            setTimeout(function() { btn.textContent = originalText; btn.disabled = false; }, 3000);
+        } else {
+            btn.textContent = 'Error';
+            console.error('Check replies error:', data.message);
+            setTimeout(function() { btn.textContent = originalText; btn.disabled = false; }, 3000);
+        }
+    } catch (err) {
+        console.error('Check replies failed:', err);
         btn.textContent = 'Error';
         setTimeout(function() { btn.textContent = originalText; btn.disabled = false; }, 3000);
     }

@@ -87,6 +87,13 @@ BEGIN
 END
 GO
 
+-- ── Migration: Change RecordPublicId from NVARCHAR(100) to UNIQUEIDENTIFIER ─
+IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'InboxRecord' AND COLUMN_NAME = 'RecordPublicId' AND DATA_TYPE = 'nvarchar')
+BEGIN
+    ALTER TABLE [dbo].[InboxRecord] ALTER COLUMN [RecordPublicId] UNIQUEIDENTIFIER NULL;
+END
+GO
+
 -- ── UpsertInboxRecord ────────────────────────────────────────────────────────
 -- INSERT a new record or UPDATE the existing one for a given MessageId.
 -- Fields with NULL input keep their current DB values on UPDATE.
@@ -167,19 +174,19 @@ BEGIN
         [Id],
         CAST([PublicId]  AS NVARCHAR(36))  AS PublicId,
         [RowVersion],
-        CONVERT(NVARCHAR(23), [CreatedDatetime],  126) AS CreatedDatetime,
-        CONVERT(NVARCHAR(23), [ModifiedDatetime], 126) AS ModifiedDatetime,
+        CONVERT(VARCHAR(19), [CreatedDatetime],  126) AS CreatedDatetime,
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS ModifiedDatetime,
         [MessageId],
         [Status],
         [SubmittedToEmail],
-        CONVERT(NVARCHAR(23), [SubmittedAt],  126) AS SubmittedAt,
-        CONVERT(NVARCHAR(23), [ProcessedAt],  126) AS ProcessedAt,
+        CONVERT(VARCHAR(19), [SubmittedAt],  126) AS SubmittedAt,
+        CONVERT(VARCHAR(19), [ProcessedAt],  126) AS ProcessedAt,
         [RecordType],
         [RecordPublicId],
         [ClassificationType],
         [ClassificationConfidence],
         [ClassificationSignals],
-        CONVERT(NVARCHAR(23), [ClassifiedAt], 126) AS ClassifiedAt,
+        CONVERT(VARCHAR(19), [ClassifiedAt], 120) AS ClassifiedAt,
         [UserOverrideType],
         [Subject],
         [FromEmail],
@@ -202,19 +209,19 @@ BEGIN
         [Id],
         CAST([PublicId]  AS NVARCHAR(36))  AS PublicId,
         [RowVersion],
-        CONVERT(NVARCHAR(23), [CreatedDatetime],  126) AS CreatedDatetime,
-        CONVERT(NVARCHAR(23), [ModifiedDatetime], 126) AS ModifiedDatetime,
+        CONVERT(VARCHAR(19), [CreatedDatetime],  126) AS CreatedDatetime,
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS ModifiedDatetime,
         [MessageId],
         [Status],
         [SubmittedToEmail],
-        CONVERT(NVARCHAR(23), [SubmittedAt],  126) AS SubmittedAt,
-        CONVERT(NVARCHAR(23), [ProcessedAt],  126) AS ProcessedAt,
+        CONVERT(VARCHAR(19), [SubmittedAt],  126) AS SubmittedAt,
+        CONVERT(VARCHAR(19), [ProcessedAt],  126) AS ProcessedAt,
         [RecordType],
         [RecordPublicId],
         [ClassificationType],
         [ClassificationConfidence],
         [ClassificationSignals],
-        CONVERT(NVARCHAR(23), [ClassifiedAt], 126) AS ClassifiedAt,
+        CONVERT(VARCHAR(19), [ClassifiedAt], 120) AS ClassifiedAt,
         [UserOverrideType],
         [Subject],
         [FromEmail],
@@ -238,19 +245,19 @@ BEGIN
         [Id],
         CAST([PublicId]  AS NVARCHAR(36))  AS PublicId,
         [RowVersion],
-        CONVERT(NVARCHAR(23), [CreatedDatetime],  126) AS CreatedDatetime,
-        CONVERT(NVARCHAR(23), [ModifiedDatetime], 126) AS ModifiedDatetime,
+        CONVERT(VARCHAR(19), [CreatedDatetime],  126) AS CreatedDatetime,
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS ModifiedDatetime,
         [MessageId],
         [Status],
         [SubmittedToEmail],
-        CONVERT(NVARCHAR(23), [SubmittedAt],  126) AS SubmittedAt,
-        CONVERT(NVARCHAR(23), [ProcessedAt],  126) AS ProcessedAt,
+        CONVERT(VARCHAR(19), [SubmittedAt],  126) AS SubmittedAt,
+        CONVERT(VARCHAR(19), [ProcessedAt],  126) AS ProcessedAt,
         [RecordType],
         [RecordPublicId],
         [ClassificationType],
         [ClassificationConfidence],
         [ClassificationSignals],
-        CONVERT(NVARCHAR(23), [ClassifiedAt], 126) AS ClassifiedAt,
+        CONVERT(VARCHAR(19), [ClassifiedAt], 120) AS ClassifiedAt,
         [UserOverrideType],
         [Subject],
         [FromEmail],
@@ -283,19 +290,19 @@ BEGIN
         ir.[Id],
         CAST(ir.[PublicId]  AS NVARCHAR(36))  AS PublicId,
         ir.[RowVersion],
-        CONVERT(NVARCHAR(23), ir.[CreatedDatetime],  126) AS CreatedDatetime,
-        CONVERT(NVARCHAR(23), ir.[ModifiedDatetime], 126) AS ModifiedDatetime,
+        CONVERT(VARCHAR(19), ir.[CreatedDatetime],  126) AS CreatedDatetime,
+        CONVERT(VARCHAR(19), ir.[ModifiedDatetime], 120) AS ModifiedDatetime,
         ir.[MessageId],
         ir.[Status],
         ir.[SubmittedToEmail],
-        CONVERT(NVARCHAR(23), ir.[SubmittedAt],  126) AS SubmittedAt,
-        CONVERT(NVARCHAR(23), ir.[ProcessedAt],  126) AS ProcessedAt,
+        CONVERT(VARCHAR(19), ir.[SubmittedAt],  126) AS SubmittedAt,
+        CONVERT(VARCHAR(19), ir.[ProcessedAt],  126) AS ProcessedAt,
         ir.[RecordType],
         ir.[RecordPublicId],
         ir.[ClassificationType],
         ir.[ClassificationConfidence],
         ir.[ClassificationSignals],
-        CONVERT(NVARCHAR(23), ir.[ClassifiedAt], 126) AS ClassifiedAt,
+        CONVERT(VARCHAR(19), ir.[ClassifiedAt], 120) AS ClassifiedAt,
         ir.[UserOverrideType],
         ir.[Subject],
         ir.[FromEmail],
@@ -306,5 +313,131 @@ BEGIN
     INNER JOIN #Ids t ON ir.[MessageId] = t.[MessageId];
 
     DROP TABLE #Ids;
+END
+GO
+
+-- ── ReadInboxRecordsBySender ────────────────────────────────────────────────
+
+CREATE OR ALTER PROCEDURE [dbo].[ReadInboxRecordsBySender]
+    @FromEmail NVARCHAR(320),
+    @Limit INT = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT TOP (@Limit)
+        [Id],
+        CAST([PublicId]  AS NVARCHAR(36))  AS PublicId,
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime],  126) AS CreatedDatetime,
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS ModifiedDatetime,
+        [MessageId],
+        [Status],
+        [SubmittedToEmail],
+        CONVERT(VARCHAR(19), [SubmittedAt],  126) AS SubmittedAt,
+        CONVERT(VARCHAR(19), [ProcessedAt],  126) AS ProcessedAt,
+        [RecordType],
+        [RecordPublicId],
+        [ClassificationType],
+        [ClassificationConfidence],
+        [ClassificationSignals],
+        CONVERT(VARCHAR(19), [ClassifiedAt], 120) AS ClassifiedAt,
+        [UserOverrideType],
+        [Subject],
+        [FromEmail],
+        [FromName],
+        [HasAttachments],
+        [ProcessedVia],
+        [InternetMessageId],
+        [ConversationId]
+    FROM [dbo].[InboxRecord]
+    WHERE [FromEmail] = @FromEmail
+      AND [ClassificationType] IS NOT NULL
+    ORDER BY [CreatedDatetime] DESC;
+END
+GO
+
+-- ── ReadInboxRecordsByConversationId ────────────────────────────────────────
+
+CREATE OR ALTER PROCEDURE [dbo].[ReadInboxRecordsByConversationId]
+    @ConversationId NVARCHAR(500),
+    @Limit INT = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT TOP (@Limit)
+        [Id],
+        CAST([PublicId]  AS NVARCHAR(36))  AS PublicId,
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime],  126) AS CreatedDatetime,
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS ModifiedDatetime,
+        [MessageId],
+        [Status],
+        [SubmittedToEmail],
+        CONVERT(VARCHAR(19), [SubmittedAt],  126) AS SubmittedAt,
+        CONVERT(VARCHAR(19), [ProcessedAt],  126) AS ProcessedAt,
+        [RecordType],
+        [RecordPublicId],
+        [ClassificationType],
+        [ClassificationConfidence],
+        [ClassificationSignals],
+        CONVERT(VARCHAR(19), [ClassifiedAt], 120) AS ClassifiedAt,
+        [UserOverrideType],
+        [Subject],
+        [FromEmail],
+        [FromName],
+        [HasAttachments],
+        [ProcessedVia],
+        [InternetMessageId],
+        [ConversationId]
+    FROM [dbo].[InboxRecord]
+    WHERE [ConversationId] = @ConversationId
+      AND [ClassificationType] IS NOT NULL
+    ORDER BY [CreatedDatetime] DESC;
+END
+GO
+
+-- ── ReadInboxRecordsAwaitingReply ───────────────────────────────────────────
+
+CREATE OR ALTER PROCEDURE [dbo].[ReadInboxRecordsAwaitingReply]
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT
+        ir.[Id],
+        CAST(ir.[PublicId]  AS NVARCHAR(36))  AS PublicId,
+        ir.[RowVersion],
+        CONVERT(VARCHAR(19), ir.[CreatedDatetime],  126) AS CreatedDatetime,
+        CONVERT(VARCHAR(19), ir.[ModifiedDatetime], 120) AS ModifiedDatetime,
+        ir.[MessageId],
+        ir.[Status],
+        ir.[SubmittedToEmail],
+        CONVERT(VARCHAR(19), ir.[SubmittedAt],  126) AS SubmittedAt,
+        CONVERT(VARCHAR(19), ir.[ProcessedAt],  126) AS ProcessedAt,
+        ir.[RecordType],
+        ir.[RecordPublicId],
+        ir.[ClassificationType],
+        ir.[ClassificationConfidence],
+        ir.[ClassificationSignals],
+        CONVERT(VARCHAR(19), ir.[ClassifiedAt], 120) AS ClassifiedAt,
+        ir.[UserOverrideType],
+        ir.[Subject],
+        ir.[FromEmail],
+        ir.[FromName],
+        ir.[HasAttachments],
+        ir.[ProcessedVia],
+        ir.[InternetMessageId],
+        ir.[ConversationId]
+    FROM [dbo].[InboxRecord] ir
+    JOIN [dbo].[Bill] b ON b.[PublicId] = ir.[RecordPublicId]
+    JOIN [dbo].[ReviewEntry] re ON re.[BillId] = b.[Id]
+    JOIN [dbo].[ReviewStatus] rs ON rs.[Id] = re.[ReviewStatusId]
+    WHERE rs.[Name] = 'In Review'
+      AND ir.[ConversationId] IS NOT NULL
+      AND re.[Id] = (
+          SELECT TOP 1 re2.[Id]
+          FROM [dbo].[ReviewEntry] re2
+          WHERE re2.[BillId] = b.[Id]
+          ORDER BY re2.[CreatedDatetime] DESC
+      );
 END
 GO

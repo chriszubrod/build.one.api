@@ -78,7 +78,7 @@ class BillCreditRepository:
                         "VendorId": vendor_id,
                         "CreditDate": credit_date,
                         "CreditNumber": credit_number,
-                        "TotalAmount": float(total_amount) if total_amount is not None else None,
+                        "TotalAmount": Decimal(str(total_amount)) if total_amount is not None else None,
                         "Memo": memo,
                         "IsDraft": 1 if is_draft else 0,
                     },
@@ -180,7 +180,7 @@ class BillCreditRepository:
                     "VendorId": bill_credit.vendor_id,
                     "CreditDate": bill_credit.credit_date,
                     "CreditNumber": bill_credit.credit_number,
-                    "TotalAmount": float(bill_credit.total_amount) if bill_credit.total_amount is not None else None,
+                    "TotalAmount": Decimal(str(bill_credit.total_amount)) if bill_credit.total_amount is not None else None,
                     "Memo": bill_credit.memo,
                 }
                 # Only include IsDraft if it's explicitly set (not None)
@@ -193,6 +193,16 @@ class BillCreditRepository:
                     params=params,
                 )
                 row = cursor.fetchone()
+                if not row:
+                    logger.warning(
+                        "UpdateBillCreditById returned no row (id=%s); possible row-version conflict or record not found.",
+                        bill_credit.id,
+                    )
+                    raise map_database_error(
+                        Exception(
+                            "Update did not match any row; the bill credit may have been modified by another process (row-version conflict) or no longer exists."
+                        )
+                    )
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during update bill credit by ID: {error}")

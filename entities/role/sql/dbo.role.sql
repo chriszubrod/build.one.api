@@ -193,5 +193,10 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
-
+-- PublicId index
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Role_PublicId' AND object_id = OBJECT_ID('dbo.Role'))
+BEGIN
+    CREATE INDEX [IX_Role_PublicId] ON [dbo].[Role] ([PublicId]);
+END
+GO
 

@@ -208,3 +208,9 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
+-- PublicId index
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Module_PublicId' AND object_id = OBJECT_ID('dbo.Module'))
+BEGIN
+    CREATE INDEX [IX_Module_PublicId] ON [dbo].[Module] ([PublicId]);
+END
+GO

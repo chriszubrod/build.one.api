@@ -130,7 +130,7 @@ class SubCostCodeRepository:
             logger.error(f"Error during read all sub cost codes: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[SubCostCode]:
+    def read_by_id(self, id: int) -> Optional[SubCostCode]:
         """
         Read sub cost code by ID.
         """
@@ -248,7 +248,7 @@ class SubCostCodeRepository:
             logger.error(f"Error during update sub cost code by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[SubCostCode]:
+    def delete_by_id(self, id: int) -> Optional[SubCostCode]:
         """
         Delete sub cost code by ID.
         """

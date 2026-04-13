@@ -265,3 +265,11 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+
+-- FK constraint
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_SubCostCodeAlias_SubCostCode')
+BEGIN
+    ALTER TABLE [dbo].[SubCostCodeAlias] ADD CONSTRAINT [FK_SubCostCodeAlias_SubCostCode] FOREIGN KEY ([SubCostCodeId]) REFERENCES [dbo].[SubCostCode]([Id]);
+END
+GO

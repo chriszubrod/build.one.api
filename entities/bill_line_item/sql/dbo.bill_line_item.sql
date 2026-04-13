@@ -269,8 +269,8 @@ BEGIN
     SET
         [ModifiedDatetime] = @Now,
         [BillId] = @BillId,
-        [SubCostCodeId] = @SubCostCodeId,
-        [ProjectId] = @ProjectId,
+        [SubCostCodeId] = CASE WHEN @SubCostCodeId IS NULL THEN [SubCostCodeId] ELSE @SubCostCodeId END,
+        [ProjectId] = CASE WHEN @ProjectId IS NULL THEN [ProjectId] ELSE @ProjectId END,
         [Description] = @Description,
         [Quantity] = @Quantity,
         [Rate] = @Rate,
@@ -375,16 +375,4 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-GO
-
-
-SELECT *
-FROM dbo.Bill
-WHERE PublicId = 'E2C0D6E2-3776-4933-B62D-723558F03BDF';
-GO
-
-
-SELECT *
-FROM dbo.BillLineItem
-WHERE BillId = 16968;
 GO

@@ -146,16 +146,12 @@ class InvoiceLineItemAttachmentRepository:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 try:
-                    placeholders = ",".join(["?" for _ in public_ids])
-                    query = f"""
-                        SELECT ilia.Id, ilia.PublicId, ilia.RowVersion, ilia.CreatedDatetime,
-                               ilia.ModifiedDatetime, ilia.InvoiceLineItemId, ilia.AttachmentId,
-                               ili.PublicId AS InvoiceLineItemPublicId
-                        FROM dbo.InvoiceLineItemAttachment ilia
-                        JOIN dbo.InvoiceLineItem ili ON ili.Id = ilia.InvoiceLineItemId
-                        WHERE ili.PublicId IN ({placeholders})
-                    """
-                    cursor.execute(query, public_ids)
+                    ids_csv = ",".join(str(pid) for pid in public_ids)
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadInvoiceLineItemAttachmentsByInvoiceLineItemPublicIds",
+                        params={"PublicIds": ids_csv},
+                    )
                     rows = cursor.fetchall()
                     results = []
                     for row in rows:

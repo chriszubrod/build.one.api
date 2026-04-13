@@ -246,3 +246,10 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+-- PublicId index
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_CostCode_PublicId' AND object_id = OBJECT_ID('dbo.CostCode'))
+BEGIN
+    CREATE INDEX [IX_CostCode_PublicId] ON [dbo].[CostCode] ([PublicId]);
+END
+GO

@@ -77,7 +77,7 @@ BEGIN
         [ClassificationConfidence],
         [RecordType],
         [UserOverrideType],
-        CONVERT(NVARCHAR(23), [ProcessedAt], 126) AS ProcessedAt
+        CONVERT(VARCHAR(19), [ProcessedAt], 120) AS ProcessedAt
     FROM [dbo].[InboxRecord]
     WHERE [UserOverrideType] IS NOT NULL
     ORDER BY [ProcessedAt] DESC;

@@ -121,7 +121,7 @@ class ContactRepository:
             logger.error(f"Error during read all contacts: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[Contact]:
+    def read_by_id(self, id: int) -> Optional[Contact]:
         """
         Read a contact by ID.
         """
@@ -273,7 +273,7 @@ class ContactRepository:
             logger.error(f"Error during update contact by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[Contact]:
+    def delete_by_id(self, id: int) -> Optional[Contact]:
         """
         Delete a contact by ID.
         """

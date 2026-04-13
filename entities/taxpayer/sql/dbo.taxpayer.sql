@@ -318,3 +318,10 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+-- PublicId index
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Taxpayer_PublicId' AND object_id = OBJECT_ID('dbo.Taxpayer'))
+BEGIN
+    CREATE INDEX [IX_Taxpayer_PublicId] ON [dbo].[Taxpayer] ([PublicId]);
+END
+GO

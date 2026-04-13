@@ -499,18 +499,21 @@ CREATE OR ALTER PROCEDURE UpsertBillCompletionResult
 (
     @BillPublicId UNIQUEIDENTIFIER,
     @ResultJson NVARCHAR(MAX),
-    @ExpiresAt DATETIME2(3)
+    @ExpiresAt DATETIME2(3) = NULL
 )
 AS
 BEGIN
     SET NOCOUNT ON;
+
+    DECLARE @Expiry DATETIME2(3) = COALESCE(@ExpiresAt, DATEADD(HOUR, 1, SYSUTCDATETIME()));
+
     MERGE dbo.[BillCompletionResult] AS t
     USING (SELECT @BillPublicId AS BillPublicId) AS s ON t.[BillPublicId] = s.BillPublicId
     WHEN MATCHED THEN
-        UPDATE SET [ResultJson] = @ResultJson, [ExpiresAt] = @ExpiresAt
+        UPDATE SET [ResultJson] = @ResultJson, [ExpiresAt] = @Expiry
     WHEN NOT MATCHED THEN
         INSERT ([BillPublicId], [ResultJson], [ExpiresAt])
-        VALUES (@BillPublicId, @ResultJson, @ExpiresAt);
+        VALUES (@BillPublicId, @ResultJson, @Expiry);
 END;
 GO
 

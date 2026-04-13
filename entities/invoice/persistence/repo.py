@@ -66,7 +66,7 @@ class InvoiceRepository:
                         "InvoiceDate": invoice_date,
                         "DueDate": due_date,
                         "InvoiceNumber": invoice_number,
-                        "TotalAmount": float(total_amount) if total_amount is not None else None,
+                        "TotalAmount": Decimal(str(total_amount)) if total_amount is not None else None,
                         "Memo": memo,
                         "IsDraft": 1 if is_draft else 0,
                     },
@@ -151,7 +151,7 @@ class InvoiceRepository:
                     "InvoiceDate": invoice.invoice_date,
                     "DueDate": invoice.due_date,
                     "InvoiceNumber": invoice.invoice_number,
-                    "TotalAmount": float(invoice.total_amount) if invoice.total_amount is not None else None,
+                    "TotalAmount": Decimal(str(invoice.total_amount)) if invoice.total_amount is not None else None,
                     "Memo": invoice.memo,
                 }
                 if invoice.is_draft is not None:

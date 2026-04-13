@@ -268,8 +268,8 @@ BEGIN
     SET
         [ModifiedDatetime] = @Now,
         [ExpenseId] = @ExpenseId,
-        [SubCostCodeId] = @SubCostCodeId,
-        [ProjectId] = @ProjectId,
+        [SubCostCodeId] = CASE WHEN @SubCostCodeId IS NULL THEN [SubCostCodeId] ELSE @SubCostCodeId END,
+        [ProjectId] = CASE WHEN @ProjectId IS NULL THEN [ProjectId] ELSE @ProjectId END,
         [Description] = @Description,
         [Quantity] = @Quantity,
         [Rate] = @Rate,

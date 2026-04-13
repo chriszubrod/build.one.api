@@ -118,7 +118,7 @@ class RoleModuleRepository:
             logger.error(f"Error during read all role modules: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[RoleModule]:
+    def read_by_id(self, id: int) -> Optional[RoleModule]:
         """
         Read a role module by ID.
         """
@@ -238,7 +238,7 @@ class RoleModuleRepository:
             logger.error(f"Error during update role module by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[RoleModule]:
+    def delete_by_id(self, id: int) -> Optional[RoleModule]:
         """
         Delete a role module by ID.
         """

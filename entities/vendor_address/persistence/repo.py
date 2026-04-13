@@ -94,7 +94,7 @@ class VendorAddressRepository:
             logger.error(f"Error during read all vendor addresses: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[VendorAddress]:
+    def read_by_id(self, id: int) -> Optional[VendorAddress]:
         """
         Read a vendor address by ID.
         """
@@ -226,7 +226,7 @@ class VendorAddressRepository:
             logger.error(f"Error during update vendor address by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[VendorAddress]:
+    def delete_by_id(self, id: int) -> Optional[VendorAddress]:
         """
         Delete a vendor address by ID.
         """

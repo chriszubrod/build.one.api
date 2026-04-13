@@ -246,65 +246,48 @@ class InboxRecordRepository:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                # Direct query since no stored procedure exists yet for this
-                cursor.execute(
-                    "SELECT TOP (?) * FROM dbo.InboxRecord "
-                    "WHERE FromEmail = ? AND ClassificationType IS NOT NULL "
-                    "ORDER BY CreatedDatetime DESC",
-                    limit,
-                    from_email,
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadInboxRecordsBySender",
+                    params={"FromEmail": from_email, "Limit": limit},
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
         except Exception as error:
             logger.error(f"Error reading inbox records by sender: {error}")
-            return []  # Non-fatal — agent can still classify without history
+            raise map_database_error(error)
 
     def read_by_conversation_id(self, conversation_id: str, limit: int = 10) -> List[InboxRecord]:
         """Read recent classified InboxRecords for a conversation thread."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT TOP (?) * FROM dbo.InboxRecord "
-                    "WHERE ConversationId = ? AND ClassificationType IS NOT NULL "
-                    "ORDER BY CreatedDatetime DESC",
-                    limit,
-                    conversation_id,
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadInboxRecordsByConversationId",
+                    params={"ConversationId": conversation_id, "Limit": limit},
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
         except Exception as error:
             logger.error(f"Error reading inbox records by conversation ID: {error}")
-            return []  # Non-fatal — Claude can still classify without thread history
+            raise map_database_error(error)
 
     def read_awaiting_reply(self) -> List[InboxRecord]:
         """Read InboxRecords where the latest ReviewEntry is 'In Review'."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    SELECT ir.*
-                    FROM dbo.InboxRecord ir
-                    JOIN dbo.Bill b ON CAST(b.PublicId AS NVARCHAR(36)) = ir.RecordPublicId
-                    JOIN dbo.ReviewEntry re ON re.BillId = b.Id
-                    JOIN dbo.ReviewStatus rs ON rs.Id = re.ReviewStatusId
-                    WHERE rs.Name = 'In Review'
-                      AND ir.ConversationId IS NOT NULL
-                      AND re.Id = (
-                          SELECT TOP 1 re2.Id
-                          FROM dbo.ReviewEntry re2
-                          WHERE re2.BillId = b.Id
-                          ORDER BY re2.CreatedDatetime DESC
-                      )
-                    """,
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadInboxRecordsAwaitingReply",
+                    params={},
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
         except Exception as error:
             logger.error(f"Error reading inbox records awaiting reply: {error}")
-            return []
+            raise map_database_error(error)
 
     def read_by_message_ids(self, message_ids: List[str]) -> List[InboxRecord]:
         """Batch lookup of InboxRecords by a list of MS Graph message IDs."""

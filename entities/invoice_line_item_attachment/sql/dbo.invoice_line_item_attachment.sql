@@ -167,5 +167,53 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
+GO
 
 
+CREATE OR ALTER PROCEDURE ReadInvoiceLineItemAttachmentsByInvoiceLineItemPublicIds
+(
+    @PublicIds NVARCHAR(MAX)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRANSACTION;
+
+    CREATE TABLE #Ids (PublicId UNIQUEIDENTIFIER);
+    INSERT INTO #Ids (PublicId)
+    SELECT TRY_CAST(LTRIM(RTRIM(value)) AS UNIQUEIDENTIFIER)
+    FROM STRING_SPLIT(@PublicIds, ',')
+    WHERE TRY_CAST(LTRIM(RTRIM(value)) AS UNIQUEIDENTIFIER) IS NOT NULL;
+
+    SELECT
+        ilia.[Id],
+        ilia.[PublicId],
+        ilia.[RowVersion],
+        CONVERT(VARCHAR(19), ilia.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), ilia.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        ilia.[InvoiceLineItemId],
+        ilia.[AttachmentId],
+        ili.[PublicId] AS [InvoiceLineItemPublicId]
+    FROM dbo.[InvoiceLineItemAttachment] ilia
+    JOIN dbo.[InvoiceLineItem] ili ON ili.[Id] = ilia.[InvoiceLineItemId]
+    WHERE ili.[PublicId] IN (SELECT PublicId FROM #Ids);
+
+    DROP TABLE #Ids;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+-- FK constraints
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_InvoiceLineItemAttachment_InvoiceLineItem')
+BEGIN
+    ALTER TABLE [dbo].[InvoiceLineItemAttachment] ADD CONSTRAINT [FK_InvoiceLineItemAttachment_InvoiceLineItem] FOREIGN KEY ([InvoiceLineItemId]) REFERENCES [dbo].[InvoiceLineItem]([Id]);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_InvoiceLineItemAttachment_Attachment')
+BEGIN
+    ALTER TABLE [dbo].[InvoiceLineItemAttachment] ADD CONSTRAINT [FK_InvoiceLineItemAttachment_Attachment] FOREIGN KEY ([AttachmentId]) REFERENCES [dbo].[Attachment]([Id]);
+END
+GO

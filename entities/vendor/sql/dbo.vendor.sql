@@ -252,8 +252,8 @@ BEGIN
         [ModifiedDatetime] = @Now,
         [Name] = @Name,
         [Abbreviation] = @Abbreviation,
-        [VendorTypeId] = @VendorTypeId,
-        [TaxpayerId] = @TaxpayerId,
+        [VendorTypeId] = CASE WHEN @VendorTypeId IS NULL THEN [VendorTypeId] ELSE @VendorTypeId END,
+        [TaxpayerId] = CASE WHEN @TaxpayerId IS NULL THEN [TaxpayerId] ELSE @TaxpayerId END,
         [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END,
         [IsContractLabor] = CASE WHEN @IsContractLabor IS NULL THEN [IsContractLabor] ELSE @IsContractLabor END
     OUTPUT

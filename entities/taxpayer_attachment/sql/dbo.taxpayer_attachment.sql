@@ -170,5 +170,18 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
+GO
 
 
+-- FK constraints
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_TaxpayerAttachment_Taxpayer')
+BEGIN
+    ALTER TABLE [dbo].[TaxpayerAttachment] ADD CONSTRAINT [FK_TaxpayerAttachment_Taxpayer] FOREIGN KEY ([TaxpayerId]) REFERENCES [dbo].[Taxpayer]([Id]);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_TaxpayerAttachment_Attachment')
+BEGIN
+    ALTER TABLE [dbo].[TaxpayerAttachment] ADD CONSTRAINT [FK_TaxpayerAttachment_Attachment] FOREIGN KEY ([AttachmentId]) REFERENCES [dbo].[Attachment]([Id]);
+END
+GO

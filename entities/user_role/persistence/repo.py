@@ -92,7 +92,7 @@ class UserRoleRepository:
             logger.error(f"Error during read all user roles: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[UserRole]:
+    def read_by_id(self, id: int) -> Optional[UserRole]:
         """
         Read a user role by ID.
         """
@@ -187,7 +187,7 @@ class UserRoleRepository:
             logger.error(f"Error during update user role by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[UserRole]:
+    def delete_by_id(self, id: int) -> Optional[UserRole]:
         """
         Delete a user role by ID.
         """

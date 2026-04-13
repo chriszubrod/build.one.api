@@ -206,3 +206,9 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
+-- PublicId index
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_VendorType_PublicId' AND object_id = OBJECT_ID('dbo.VendorType'))
+BEGIN
+    CREATE INDEX [IX_VendorType_PublicId] ON [dbo].[VendorType] ([PublicId]);
+END
+GO

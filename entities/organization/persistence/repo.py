@@ -1,6 +1,5 @@
 # Python Standard Library Imports
 from typing import Optional, List
-from uuid import UUID
 import logging
 import base64
 
@@ -32,7 +31,7 @@ class OrganizationRepository:
         pass
 
 
-    def _from_db(self, row: dict) -> Optional[Organization]: # Organization or None
+    def _from_db(self, row: pyodbc.Row) -> Optional[Organization]:
         """
         Convert database row to Organization model.
         
@@ -135,7 +134,7 @@ class OrganizationRepository:
             raise map_database_error(e)
 
 
-    def read_by_id(self, id: str) -> Optional[Organization]:
+    def read_by_id(self, id: int) -> Optional[Organization]:
         """
         Read organization by ID.
         
@@ -245,7 +244,6 @@ class OrganizationRepository:
             DatabaseError: If database operation fails
         """
         try:
-            print('data type of row_version', type(org.row_version))
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
@@ -264,7 +262,7 @@ class OrganizationRepository:
             logger.error(f"Error during update organization by ID: {e}")
             raise map_database_error(e)
 
-    def delete_by_id(self, id: str) -> Optional[Organization]:
+    def delete_by_id(self, id: int) -> Optional[Organization]:
         """
         Delete organization by ID with optimistic concurrency control.
         

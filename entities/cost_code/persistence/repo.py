@@ -136,7 +136,7 @@ class CostCodeRepository:
             logger.error(f"Error during read all cost codes: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[CostCode]:
+    def read_by_id(self, id: int) -> Optional[CostCode]:
         """
         Read cost code by ID.
 
@@ -262,7 +262,7 @@ class CostCodeRepository:
             logger.error(f"Error during update cost code by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[CostCode]:
+    def delete_by_id(self, id: int) -> Optional[CostCode]:
         """
         Delete cost code by ID with optimistic concurrency control.
 

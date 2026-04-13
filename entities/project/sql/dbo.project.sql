@@ -195,7 +195,7 @@ BEGIN
         [Name] = @Name,
         [Description] = @Description,
         [Status] = @Status,
-        [CustomerId] = @CustomerId,
+        [CustomerId] = CASE WHEN @CustomerId IS NULL THEN [CustomerId] ELSE @CustomerId END,
         [Abbreviation] = @Abbreviation
     OUTPUT
         INSERTED.[Id],

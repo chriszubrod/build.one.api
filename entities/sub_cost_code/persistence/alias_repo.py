@@ -120,7 +120,7 @@ class SubCostCodeAliasRepository:
             logger.error(f"Error during read all sub cost code aliases: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[SubCostCodeAlias]:
+    def read_by_id(self, id: int) -> Optional[SubCostCodeAlias]:
         """
         Read sub cost code alias by ID.
         """
@@ -234,7 +234,7 @@ class SubCostCodeAliasRepository:
             logger.error(f"Error during update sub cost code alias by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[SubCostCodeAlias]:
+    def delete_by_id(self, id: int) -> Optional[SubCostCodeAlias]:
         """
         Delete sub cost code alias by ID.
         """

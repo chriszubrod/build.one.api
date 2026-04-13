@@ -55,7 +55,8 @@ CREATE OR ALTER PROCEDURE CreateExpense
     @ReferenceNumber NVARCHAR(50),
     @TotalAmount DECIMAL(18,2) NULL,
     @Memo NVARCHAR(MAX) NULL,
-    @IsDraft BIT = 1
+    @IsDraft BIT = 1,
+    @IsCredit BIT = 0
 )
 AS
 BEGIN
@@ -63,7 +64,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Expense] ([CreatedDatetime], [ModifiedDatetime], [VendorId], [ExpenseDate], [ReferenceNumber], [TotalAmount], [Memo], [IsDraft])
+    INSERT INTO dbo.[Expense] ([CreatedDatetime], [ModifiedDatetime], [VendorId], [ExpenseDate], [ReferenceNumber], [TotalAmount], [Memo], [IsDraft], [IsCredit])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -75,8 +76,9 @@ BEGIN
         INSERTED.[ReferenceNumber],
         INSERTED.[TotalAmount],
         INSERTED.[Memo],
-        INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @VendorId, @ExpenseDate, @ReferenceNumber, @TotalAmount, @Memo, @IsDraft);
+        INSERTED.[IsDraft],
+        INSERTED.[IsCredit]
+    VALUES (@Now, @Now, @VendorId, @ExpenseDate, @ReferenceNumber, @TotalAmount, @Memo, @IsDraft, @IsCredit);
 
     COMMIT TRANSACTION;
 END;
@@ -100,7 +102,8 @@ BEGIN
         [ReferenceNumber],
         [TotalAmount],
         [Memo],
-        [IsDraft]
+        [IsDraft],
+        [IsCredit]
     FROM dbo.[Expense]
     ORDER BY [ExpenseDate] DESC, [ReferenceNumber] ASC;
 
@@ -129,7 +132,8 @@ BEGIN
         [ReferenceNumber],
         [TotalAmount],
         [Memo],
-        [IsDraft]
+        [IsDraft],
+        [IsCredit]
     FROM dbo.[Expense]
     WHERE [Id] = @Id;
 
@@ -158,7 +162,8 @@ BEGIN
         [ReferenceNumber],
         [TotalAmount],
         [Memo],
-        [IsDraft]
+        [IsDraft],
+        [IsCredit]
     FROM dbo.[Expense]
     WHERE [PublicId] = @PublicId;
 
@@ -188,7 +193,8 @@ BEGIN
         [ReferenceNumber],
         [TotalAmount],
         [Memo],
-        [IsDraft]
+        [IsDraft],
+        [IsCredit]
     FROM dbo.[Expense]
     WHERE [ReferenceNumber] = @ReferenceNumber AND [VendorId] = @VendorId;
 
@@ -207,7 +213,8 @@ CREATE OR ALTER PROCEDURE UpdateExpenseById
     @ReferenceNumber NVARCHAR(50),
     @TotalAmount DECIMAL(18,2) NULL,
     @Memo NVARCHAR(MAX) NULL,
-    @IsDraft BIT = NULL
+    @IsDraft BIT = NULL,
+    @IsCredit BIT = NULL
 )
 AS
 BEGIN
@@ -223,7 +230,8 @@ BEGIN
         [ReferenceNumber] = @ReferenceNumber,
         [TotalAmount] = @TotalAmount,
         [Memo] = @Memo,
-        [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END
+        [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END,
+        [IsCredit] = CASE WHEN @IsCredit IS NULL THEN [IsCredit] ELSE @IsCredit END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -235,7 +243,8 @@ BEGIN
         INSERTED.[ReferenceNumber],
         INSERTED.[TotalAmount],
         INSERTED.[Memo],
-        INSERTED.[IsDraft]
+        INSERTED.[IsDraft],
+        INSERTED.[IsCredit]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -264,7 +273,8 @@ BEGIN
         DELETED.[ReferenceNumber],
         DELETED.[TotalAmount],
         DELETED.[Memo],
-        DELETED.[IsDraft]
+        DELETED.[IsDraft],
+        DELETED.[IsCredit]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
@@ -283,6 +293,7 @@ CREATE OR ALTER PROCEDURE ReadExpensesPaginated
     @StartDate DATETIME2(3) = NULL,
     @EndDate DATETIME2(3) = NULL,
     @IsDraft BIT = NULL,
+    @IsCredit BIT = NULL,
     @SortBy NVARCHAR(50) = 'ExpenseDate',
     @SortDirection NVARCHAR(4) = 'DESC'
 )
@@ -317,11 +328,12 @@ BEGIN
         e.[ReferenceNumber],
         e.[TotalAmount],
         e.[Memo],
-        e.[IsDraft]
+        e.[IsDraft],
+        e.[IsCredit]
     FROM dbo.[Expense] e
     LEFT JOIN dbo.[Vendor] v ON e.[VendorId] = v.[Id]
     WHERE
-        (@SearchTerm IS NULL OR 
+        (@SearchTerm IS NULL OR
          e.[ReferenceNumber] LIKE '%' + @SearchTerm + '%' OR
          e.[Memo] LIKE '%' + @SearchTerm + '%' OR
          v.[Name] LIKE '%' + @SearchTerm + '%' OR
@@ -331,6 +343,7 @@ BEGIN
         AND (@StartDate IS NULL OR e.[ExpenseDate] >= @StartDate)
         AND (@EndDate IS NULL OR e.[ExpenseDate] <= @EndDate)
         AND (@IsDraft IS NULL OR e.[IsDraft] = @IsDraft)
+        AND (@IsCredit IS NULL OR e.[IsCredit] = @IsCredit)
     ORDER BY 
         CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'ReferenceNumber' THEN e.[ReferenceNumber] END ASC,
         CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'ReferenceNumber' THEN e.[ReferenceNumber] END DESC,
@@ -355,7 +368,8 @@ CREATE OR ALTER PROCEDURE CountExpenses
     @VendorId BIGINT = NULL,
     @StartDate DATETIME2(3) = NULL,
     @EndDate DATETIME2(3) = NULL,
-    @IsDraft BIT = NULL
+    @IsDraft BIT = NULL,
+    @IsCredit BIT = NULL
 )
 AS
 BEGIN
@@ -374,8 +388,9 @@ BEGIN
         AND (@VendorId IS NULL OR e.[VendorId] = @VendorId)
         AND (@StartDate IS NULL OR e.[ExpenseDate] >= @StartDate)
         AND (@EndDate IS NULL OR e.[ExpenseDate] <= @EndDate)
-        AND (@IsDraft IS NULL OR e.[IsDraft] = @IsDraft);
-    
+        AND (@IsDraft IS NULL OR e.[IsDraft] = @IsDraft)
+        AND (@IsCredit IS NULL OR e.[IsCredit] = @IsCredit);
+
     COMMIT TRANSACTION;
 END;
 GO

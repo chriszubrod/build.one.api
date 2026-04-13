@@ -92,7 +92,7 @@ class VendorTypeRepository:
             logger.error(f"Error during read all vendor types: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[VendorType]:
+    def read_by_id(self, id: int) -> Optional[VendorType]:
         """
         Read a vendor type by ID.
         """
@@ -169,7 +169,7 @@ class VendorTypeRepository:
             logger.error(f"Error during update vendor type by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[VendorType]:
+    def delete_by_id(self, id: int) -> Optional[VendorType]:
         """
         Delete a vendor type by ID.
         """

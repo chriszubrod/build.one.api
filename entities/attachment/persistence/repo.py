@@ -196,20 +196,12 @@ class AttachmentRepository:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 try:
-                    # Build IN clause with placeholders
-                    placeholders = ",".join(["?" for _ in ids])
-                    query = f"""
-                        SELECT Id, PublicId, RowVersion, CreatedDatetime, ModifiedDatetime,
-                               Filename, OriginalFilename, FileExtension, ContentType,
-                               FileSize, FileHash, BlobUrl, Description, Category, Tags,
-                               IsArchived, Status, DownloadCount, LastDownloadedDatetime,
-                               ExpirationDate, StorageTier, ExtractionStatus, ExtractedTextBlobUrl,
-                               ExtractionError, ExtractedDatetime, AICategory, AICategoryConfidence,
-                               AICategoryStatus, AICategoryReasoning, AIExtractedFields, CategorizedDatetime
-                        FROM dbo.Attachment
-                        WHERE Id IN ({placeholders})
-                    """
-                    cursor.execute(query, ids)
+                    ids_csv = ",".join(str(i) for i in ids)
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadAttachmentsByIds",
+                        params={"Ids": ids_csv},
+                    )
                     rows = cursor.fetchall()
                     return [self._from_db(row) for row in rows if row]
                 finally:

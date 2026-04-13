@@ -1442,6 +1442,114 @@ END;
 GO
 
 
+GO
+
+CREATE OR ALTER PROCEDURE ReadContractLaborsByBillLineItemId
+(
+    @BillLineItemId BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [VendorId],
+        [ProjectId],
+        [EmployeeName],
+        [JobName],
+        CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
+        [TimeIn],
+        [TimeOut],
+        [BreakTime],
+        [RegularHours],
+        [OvertimeHours],
+        [TotalHours],
+        [HourlyRate],
+        [Markup],
+        [TotalAmount],
+        [SubCostCodeId],
+        [Description],
+        CONVERT(VARCHAR(10), [BillingPeriodStart], 120) AS [BillingPeriodStart],
+        [Status],
+        [BillLineItemId],
+        [BillVendorId],
+        CONVERT(VARCHAR(10), [BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), [DueDate], 120) AS [DueDate],
+        [BillNumber],
+        [ImportBatchId],
+        [SourceFile],
+        [SourceRow]
+    FROM dbo.[ContractLabor]
+    WHERE [BillLineItemId] = @BillLineItemId
+    ORDER BY [WorkDate], [EmployeeName];
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+GO
+
+CREATE OR ALTER PROCEDURE UpdateContractLaborStatusAndLink
+(
+    @Id BIGINT,
+    @RowVersion BINARY(8),
+    @Status NVARCHAR(20),
+    @BillLineItemId BIGINT NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    UPDATE dbo.[ContractLabor]
+    SET
+        [Status] = @Status,
+        [BillLineItemId] = @BillLineItemId,
+        [ModifiedDatetime] = @Now
+    OUTPUT
+        INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[RowVersion],
+        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        INSERTED.[VendorId],
+        INSERTED.[ProjectId],
+        INSERTED.[EmployeeName],
+        INSERTED.[JobName],
+        CONVERT(VARCHAR(10), INSERTED.[WorkDate], 120) AS [WorkDate],
+        INSERTED.[TimeIn],
+        INSERTED.[TimeOut],
+        INSERTED.[BreakTime],
+        INSERTED.[RegularHours],
+        INSERTED.[OvertimeHours],
+        INSERTED.[TotalHours],
+        INSERTED.[HourlyRate],
+        INSERTED.[Markup],
+        INSERTED.[TotalAmount],
+        INSERTED.[SubCostCodeId],
+        INSERTED.[Description],
+        CONVERT(VARCHAR(10), INSERTED.[BillingPeriodStart], 120) AS [BillingPeriodStart],
+        INSERTED.[Status],
+        INSERTED.[BillLineItemId],
+        INSERTED.[BillVendorId],
+        CONVERT(VARCHAR(10), INSERTED.[BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), INSERTED.[DueDate], 120) AS [DueDate],
+        INSERTED.[BillNumber],
+        INSERTED.[ImportBatchId],
+        INSERTED.[SourceFile],
+        INSERTED.[SourceRow]
+    WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
+
+    COMMIT TRANSACTION;
+END;
+GO
 
 
 

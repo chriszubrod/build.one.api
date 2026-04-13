@@ -23,9 +23,9 @@ class ProjectCreate(BaseModel):
         max_length=50,
         description="The status of the project."
     )
-    customer_id: Optional[int] = Field(
+    customer_public_id: Optional[str] = Field(
         default=None,
-        description="The ID of the customer associated with the project."
+        description="The public ID of the customer associated with the project."
     )
     abbreviation: Optional[str] = Field(
         default=None,
@@ -53,9 +53,9 @@ class ProjectUpdate(BaseModel):
         max_length=50,
         description="The status of the project."
     )
-    customer_id: Optional[int] = Field(
+    customer_public_id: Optional[str] = Field(
         default=None,
-        description="The ID of the customer associated with the project."
+        description="The public ID of the customer associated with the project."
     )
     abbreviation: Optional[str] = Field(
         default=None,

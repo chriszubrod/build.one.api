@@ -79,7 +79,7 @@ class EmailThreadRepository:
                         "InternetMessageId":        internet_message_id,
                         "Subject":                  subject,
                         "OwnerUserId":              owner_user_id,
-                        "ClassificationConfidence": float(classification_confidence) if classification_confidence is not None else None,
+                        "ClassificationConfidence": Decimal(str(classification_confidence)) if classification_confidence is not None else None,
                         "IsResolved":               (1 if is_resolved else 0) if is_resolved is not None else None,
                         "RequiresAction":           (1 if requires_action else 0) if requires_action is not None else None,
                     },

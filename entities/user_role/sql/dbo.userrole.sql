@@ -131,7 +131,7 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
-    SELECT
+    SELECT TOP 1
         [Id],
         [PublicId],
         [RowVersion],
@@ -157,7 +157,7 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
-    SELECT
+    SELECT TOP 1
         [Id],
         [PublicId],
         [RowVersion],
@@ -231,3 +231,24 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
+
+
+-- FK constraints
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_UserRole_User')
+BEGIN
+    ALTER TABLE [dbo].[UserRole] ADD CONSTRAINT [FK_UserRole_User] FOREIGN KEY ([UserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_UserRole_Role')
+BEGIN
+    ALTER TABLE [dbo].[UserRole] ADD CONSTRAINT [FK_UserRole_Role] FOREIGN KEY ([RoleId]) REFERENCES [dbo].[Role]([Id]);
+END
+GO
+
+-- Prevent duplicate user-role assignments
+IF NOT EXISTS (SELECT 1 FROM sys.objects WHERE name = 'UQ_UserRole_UserId_RoleId' AND parent_object_id = OBJECT_ID('dbo.UserRole'))
+BEGIN
+    ALTER TABLE [dbo].[UserRole] ADD CONSTRAINT [UQ_UserRole_UserId_RoleId] UNIQUE ([UserId], [RoleId]);
+END
+GO

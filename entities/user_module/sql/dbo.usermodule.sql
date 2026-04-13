@@ -131,7 +131,7 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
-    SELECT
+    SELECT TOP 1
         [Id],
         [PublicId],
         [RowVersion],
@@ -184,7 +184,7 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
-    SELECT
+    SELECT TOP 1
         [Id],
         [PublicId],
         [RowVersion],
@@ -258,3 +258,24 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
+
+
+-- FK constraints
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_UserModule_User')
+BEGIN
+    ALTER TABLE [dbo].[UserModule] ADD CONSTRAINT [FK_UserModule_User] FOREIGN KEY ([UserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_UserModule_Module')
+BEGIN
+    ALTER TABLE [dbo].[UserModule] ADD CONSTRAINT [FK_UserModule_Module] FOREIGN KEY ([ModuleId]) REFERENCES [dbo].[Module]([Id]);
+END
+GO
+
+-- Prevent duplicate user-module assignments
+IF NOT EXISTS (SELECT 1 FROM sys.objects WHERE name = 'UQ_UserModule_UserId_ModuleId' AND parent_object_id = OBJECT_ID('dbo.UserModule'))
+BEGIN
+    ALTER TABLE [dbo].[UserModule] ADD CONSTRAINT [UQ_UserModule_UserId_ModuleId] UNIQUE ([UserId], [ModuleId]);
+END
+GO

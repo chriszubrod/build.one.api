@@ -92,7 +92,7 @@ class UserRepository:
             logger.error(f"Error during read all users: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[User]:
+    def read_by_id(self, id: int) -> Optional[User]:
         """
         Read a user by ID.
         """
@@ -187,7 +187,7 @@ class UserRepository:
             logger.error(f"Error during update user by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[User]:
+    def delete_by_id(self, id: int) -> Optional[User]:
         """
         Delete a user by ID.
         """

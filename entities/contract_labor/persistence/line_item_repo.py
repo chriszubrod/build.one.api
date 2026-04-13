@@ -91,10 +91,10 @@ class ContractLaborLineItemRepository:
                         "ProjectId": project_id,
                         "SubCostCodeId": sub_cost_code_id,
                         "Description": description,
-                        "Hours": float(hours) if hours is not None else None,
-                        "Rate": float(rate) if rate is not None else None,
-                        "Markup": float(markup) if markup is not None else None,
-                        "Price": float(price) if price is not None else None,
+                        "Hours": Decimal(str(hours)) if hours is not None else None,
+                        "Rate": Decimal(str(rate)) if rate is not None else None,
+                        "Markup": Decimal(str(markup)) if markup is not None else None,
+                        "Price": Decimal(str(price)) if price is not None else None,
                         "IsBillable": is_billable,
                         "IsOverhead": is_overhead,
                     },
@@ -195,17 +195,27 @@ class ContractLaborLineItemRepository:
                         "ProjectId": project_id,
                         "SubCostCodeId": sub_cost_code_id,
                         "Description": description,
-                        "Hours": float(hours) if hours is not None else None,
-                        "Rate": float(rate) if rate is not None else None,
-                        "Markup": float(markup) if markup is not None else None,
-                        "Price": float(price) if price is not None else None,
+                        "Hours": Decimal(str(hours)) if hours is not None else None,
+                        "Rate": Decimal(str(rate)) if rate is not None else None,
+                        "Markup": Decimal(str(markup)) if markup is not None else None,
+                        "Price": Decimal(str(price)) if price is not None else None,
                         "IsBillable": is_billable,
                         "IsOverhead": is_overhead,
                         "BillLineItemId": bill_line_item_id,
                     },
                 )
                 row = cursor.fetchone()
-                return self._from_db(row) if row else None
+                if not row:
+                    logger.warning(
+                        "UpdateContractLaborLineItemById returned no row (id=%s); possible row-version conflict or record not found.",
+                        id,
+                    )
+                    raise map_database_error(
+                        Exception(
+                            "Update did not match any row; the contract labor line item may have been modified by another process (row-version conflict) or no longer exists."
+                        )
+                    )
+                return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during update line item by id: {error}")
             raise map_database_error(error)

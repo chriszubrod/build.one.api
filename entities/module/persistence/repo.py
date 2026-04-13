@@ -92,7 +92,7 @@ class ModuleRepository:
             logger.error(f"Error during read all modules: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[Module]:
+    def read_by_id(self, id: int) -> Optional[Module]:
         """
         Read a module by ID.
         """
@@ -169,7 +169,7 @@ class ModuleRepository:
             logger.error(f"Error during update module by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[Module]:
+    def delete_by_id(self, id: int) -> Optional[Module]:
         """
         Delete a module by ID.
         """

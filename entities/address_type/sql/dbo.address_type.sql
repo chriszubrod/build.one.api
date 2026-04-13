@@ -219,3 +219,9 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
+-- PublicId index
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_AddressType_PublicId' AND object_id = OBJECT_ID('dbo.AddressType'))
+BEGIN
+    CREATE INDEX [IX_AddressType_PublicId] ON [dbo].[AddressType] ([PublicId]);
+END
+GO

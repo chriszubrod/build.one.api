@@ -105,7 +105,7 @@ class AddressRepository:
             logger.error(f"Error during read all addresses: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[Address]:
+    def read_by_id(self, id: int) -> Optional[Address]:
         """
         Read an address by ID.
         """
@@ -188,7 +188,7 @@ class AddressRepository:
             logger.error(f"Error during update address by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[Address]:
+    def delete_by_id(self, id: int) -> Optional[Address]:
         """
         Delete an address by ID.
         """

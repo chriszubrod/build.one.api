@@ -92,7 +92,7 @@ class UserProjectRepository:
             logger.error(f"Error during read all user projects: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[UserProject]:
+    def read_by_id(self, id: int) -> Optional[UserProject]:
         """
         Read a user project by ID.
         """
@@ -187,7 +187,7 @@ class UserProjectRepository:
             logger.error(f"Error during update user project by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[UserProject]:
+    def delete_by_id(self, id: int) -> Optional[UserProject]:
         """
         Delete a user project by ID.
         """

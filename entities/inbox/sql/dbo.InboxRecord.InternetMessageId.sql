@@ -155,14 +155,14 @@ BEGIN
         MessageId,
         Status,
         SubmittedToEmail,
-        CONVERT(VARCHAR(23), SubmittedAt, 126)  AS SubmittedAt,
-        CONVERT(VARCHAR(23), ProcessedAt, 126)  AS ProcessedAt,
+        CONVERT(VARCHAR(19), SubmittedAt, 120)  AS SubmittedAt,
+        CONVERT(VARCHAR(19), ProcessedAt, 120)  AS ProcessedAt,
         RecordType,
         RecordPublicId,
         ClassificationType,
         ClassificationConfidence,
         ClassificationSignals,
-        CONVERT(VARCHAR(23), ClassifiedAt, 126) AS ClassifiedAt,
+        CONVERT(VARCHAR(19), ClassifiedAt, 120) AS ClassifiedAt,
         UserOverrideType,
         Subject,
         FromEmail,
@@ -171,8 +171,8 @@ BEGIN
         ProcessedVia,
         InternetMessageId,
         ConversationId,
-        CONVERT(VARCHAR(23), CreatedDatetime, 126)  AS CreatedDatetime,
-        CONVERT(VARCHAR(23), ModifiedDatetime, 126) AS ModifiedDatetime
+        CONVERT(VARCHAR(19), CreatedDatetime, 120)  AS CreatedDatetime,
+        CONVERT(VARCHAR(19), ModifiedDatetime, 120) AS ModifiedDatetime
     FROM dbo.InboxRecord
     WHERE MessageId = @MessageId;
 END

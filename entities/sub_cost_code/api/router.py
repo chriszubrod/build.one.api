@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends, status
 # Local Imports
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.sub_cost_code.business.alias_service import SubCostCodeAliasService
+from entities.cost_code.business.service import CostCodeService
 from entities.sub_cost_code.api.schemas import (
     SubCostCodeCreate,
     SubCostCodeUpdate,
@@ -20,6 +21,18 @@ from shared.api.responses import list_response, item_response, raise_workflow_er
 router = APIRouter(prefix="/api/v1", tags=["api", "sub-cost-code"])
 service = SubCostCodeService()
 alias_service = SubCostCodeAliasService()
+cost_code_service = CostCodeService()
+
+
+def _resolve_cost_code_id(cost_code_public_id: str) -> int:
+    """Resolve a cost code public_id to its internal id."""
+    cost_code = cost_code_service.read_by_public_id(cost_code_public_id)
+    if not cost_code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cost code not found: {cost_code_public_id}",
+        )
+    return cost_code.id
 
 
 @router.post("/create/sub-cost-code")
@@ -29,6 +42,8 @@ def create_sub_cost_code_router(body: SubCostCodeCreate, current_user: dict = De
     
     Routes through the workflow engine for audit logging and state tracking.
     """
+    cost_code_id = _resolve_cost_code_id(body.cost_code_public_id)
+
     context = TriggerContext(
         trigger_type=EventType.API_CALL,
         trigger_source=Channel.API,
@@ -38,7 +53,7 @@ def create_sub_cost_code_router(body: SubCostCodeCreate, current_user: dict = De
             "number": body.number,
             "name": body.name,
             "description": body.description,
-            "cost_code_id": body.cost_code_id,
+            "cost_code_id": cost_code_id,
         },
         workflow_type="sub_cost_code_create",
     )
@@ -80,6 +95,8 @@ def update_sub_cost_code_by_id_router(public_id: str, body: SubCostCodeUpdate, c
     
     Routes through the workflow engine for audit logging and state tracking.
     """
+    cost_code_id = _resolve_cost_code_id(body.cost_code_public_id)
+
     context = TriggerContext(
         trigger_type=EventType.API_CALL,
         trigger_source=Channel.API,
@@ -91,7 +108,7 @@ def update_sub_cost_code_by_id_router(public_id: str, body: SubCostCodeUpdate, c
             "number": body.number,
             "name": body.name,
             "description": body.description,
-            "cost_code_id": body.cost_code_id,
+            "cost_code_id": cost_code_id,
         },
         workflow_type="sub_cost_code_update",
     )

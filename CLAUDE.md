@@ -6,6 +6,11 @@ At the start of each session, read SESSION_NOTES.md for historical context.
 
 ## Architecture Decisions (April 2026)
 
+- **Multi-repo structure.** The project is split into three repos under `/Users/chris/Applications/build.one/`: `build.one.api` (this repo), `build.one.web` (React frontend), `build.one.ios` (iOS app). Each is an independent GitHub repo.
+- **API response envelope.** All API endpoints return standardized envelopes: `{"data": [...], "count": N}` for lists, `{"data": {...}}` for single entities, `{"status": "accepted", ...}` for 202. Use helpers from `shared/api/responses.py`.
+- **Lookup endpoint.** `GET /api/v1/lookups?include=vendors,projects,...` returns slim dropdown data. Used by React frontend. See `shared/api/lookups.py`.
+- **Jinja2 templates are broken.** The response envelope change broke 81 templates that make AJAX calls. The templates are being replaced by the React app and should not be fixed.
+- **React frontend.** `build.one.web` uses React + Vite + TypeScript. Dev server proxies `/api` to `localhost:8000`. Entity pages are being migrated incrementally from Jinja2.
 - **Claude Agent SDK is the only agent framework.** Never use LangGraph, LangChain, or any LangChain ecosystem package. All AI features use the `anthropic` SDK directly or Claude Agent SDK.
 - **`core/ai/` no longer exists.** The entire agent layer was removed during the April 2026 strip-and-clean. It is being rebuilt from scratch. Do not reference or attempt to import from `core.ai`.
 - **`core/notifications/` no longer exists.** Push notifications (APNs), device tokens, and SLA scheduler were removed. Do not reference `core.notifications`, `device_token`, or push_service.

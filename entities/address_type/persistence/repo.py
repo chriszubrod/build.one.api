@@ -94,7 +94,7 @@ class AddressTypeRepository:
             logger.error(f"Error during read all address types: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[AddressType]:
+    def read_by_id(self, id: int) -> Optional[AddressType]:
         """
         Read an address type by ID.
         """
@@ -139,7 +139,7 @@ class AddressTypeRepository:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="ReadAddressTypeName",
+                    name="ReadAddressTypeByName",
                     params={"Name": name},
                 )
                 row = cursor.fetchone()
@@ -172,7 +172,7 @@ class AddressTypeRepository:
             logger.error(f"Error during update address type by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[AddressType]:
+    def delete_by_id(self, id: int) -> Optional[AddressType]:
         """
         Delete an address type by ID.
         """

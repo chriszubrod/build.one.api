@@ -92,7 +92,7 @@ class CompanyRepository:
             logger.error(f"Error during read all companies: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[Company]:
+    def read_by_id(self, id: int) -> Optional[Company]:
         """
         Read a company by ID.
         """
@@ -169,7 +169,7 @@ class CompanyRepository:
             logger.error(f"Error during update company by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[Company]:
+    def delete_by_id(self, id: int) -> Optional[Company]:
         """
         Delete a company by ID.
         """

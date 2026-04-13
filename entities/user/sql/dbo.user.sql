@@ -129,7 +129,7 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
-    SELECT
+    SELECT TOP 1
         [Id],
         [PublicId],
         [RowVersion],
@@ -155,7 +155,7 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
-    SELECT
+    SELECT TOP 1
         [Id],
         [PublicId],
         [RowVersion],
@@ -230,5 +230,10 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
-
+-- PublicId index
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_User_PublicId' AND object_id = OBJECT_ID('dbo.User'))
+BEGIN
+    CREATE INDEX [IX_User_PublicId] ON [dbo].[User] ([PublicId]);
+END
+GO
 

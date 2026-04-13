@@ -113,7 +113,17 @@ BEGIN
         [DownloadCount],
         CONVERT(VARCHAR(19), [LastDownloadedDatetime], 120) AS [LastDownloadedDatetime],
         CONVERT(VARCHAR(19), [ExpirationDate], 120) AS [ExpirationDate],
-        [StorageTier]
+        [StorageTier],
+        [ExtractionStatus],
+        [ExtractedTextBlobUrl],
+        [ExtractionError],
+        CONVERT(VARCHAR(19), [ExtractedDatetime], 120) AS [ExtractedDatetime],
+        [AICategory],
+        [AICategoryConfidence],
+        [AICategoryStatus],
+        [AICategoryReasoning],
+        [AIExtractedFields],
+        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime]
     FROM dbo.[Attachment]
     ORDER BY [CreatedDatetime] DESC;
 
@@ -153,7 +163,17 @@ BEGIN
         [DownloadCount],
         CONVERT(VARCHAR(19), [LastDownloadedDatetime], 120) AS [LastDownloadedDatetime],
         CONVERT(VARCHAR(19), [ExpirationDate], 120) AS [ExpirationDate],
-        [StorageTier]
+        [StorageTier],
+        [ExtractionStatus],
+        [ExtractedTextBlobUrl],
+        [ExtractionError],
+        CONVERT(VARCHAR(19), [ExtractedDatetime], 120) AS [ExtractedDatetime],
+        [AICategory],
+        [AICategoryConfidence],
+        [AICategoryStatus],
+        [AICategoryReasoning],
+        [AIExtractedFields],
+        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime]
     FROM dbo.[Attachment]
     WHERE [Id] = @Id;
 
@@ -193,7 +213,17 @@ BEGIN
         [DownloadCount],
         CONVERT(VARCHAR(19), [LastDownloadedDatetime], 120) AS [LastDownloadedDatetime],
         CONVERT(VARCHAR(19), [ExpirationDate], 120) AS [ExpirationDate],
-        [StorageTier]
+        [StorageTier],
+        [ExtractionStatus],
+        [ExtractedTextBlobUrl],
+        [ExtractionError],
+        CONVERT(VARCHAR(19), [ExtractedDatetime], 120) AS [ExtractedDatetime],
+        [AICategory],
+        [AICategoryConfidence],
+        [AICategoryStatus],
+        [AICategoryReasoning],
+        [AIExtractedFields],
+        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime]
     FROM dbo.[Attachment]
     WHERE [PublicId] = @PublicId;
 
@@ -233,7 +263,17 @@ BEGIN
         [DownloadCount],
         CONVERT(VARCHAR(19), [LastDownloadedDatetime], 120) AS [LastDownloadedDatetime],
         CONVERT(VARCHAR(19), [ExpirationDate], 120) AS [ExpirationDate],
-        [StorageTier]
+        [StorageTier],
+        [ExtractionStatus],
+        [ExtractedTextBlobUrl],
+        [ExtractionError],
+        CONVERT(VARCHAR(19), [ExtractedDatetime], 120) AS [ExtractedDatetime],
+        [AICategory],
+        [AICategoryConfidence],
+        [AICategoryStatus],
+        [AICategoryReasoning],
+        [AIExtractedFields],
+        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime]
     FROM dbo.[Attachment]
     WHERE [Category] = @Category
     ORDER BY [CreatedDatetime] DESC;
@@ -274,7 +314,17 @@ BEGIN
         [DownloadCount],
         CONVERT(VARCHAR(19), [LastDownloadedDatetime], 120) AS [LastDownloadedDatetime],
         CONVERT(VARCHAR(19), [ExpirationDate], 120) AS [ExpirationDate],
-        [StorageTier]
+        [StorageTier],
+        [ExtractionStatus],
+        [ExtractedTextBlobUrl],
+        [ExtractionError],
+        CONVERT(VARCHAR(19), [ExtractedDatetime], 120) AS [ExtractedDatetime],
+        [AICategory],
+        [AICategoryConfidence],
+        [AICategoryStatus],
+        [AICategoryReasoning],
+        [AIExtractedFields],
+        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime]
     FROM dbo.[Attachment]
     WHERE [FileHash] = @FileHash;
 
@@ -398,6 +448,60 @@ END;
 
 GO
 
+CREATE OR ALTER PROCEDURE ReadAttachmentsByIds
+(
+    @Ids NVARCHAR(MAX)   -- comma-separated BIGINT IDs
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [Filename],
+        [OriginalFilename],
+        [FileExtension],
+        [ContentType],
+        [FileSize],
+        [FileHash],
+        [BlobUrl],
+        [Description],
+        [Category],
+        [Tags],
+        [IsArchived],
+        [Status],
+        [DownloadCount],
+        CONVERT(VARCHAR(19), [LastDownloadedDatetime], 120) AS [LastDownloadedDatetime],
+        CONVERT(VARCHAR(19), [ExpirationDate], 120) AS [ExpirationDate],
+        [StorageTier],
+        [ExtractionStatus],
+        [ExtractedTextBlobUrl],
+        [ExtractionError],
+        CONVERT(VARCHAR(19), [ExtractedDatetime], 120) AS [ExtractedDatetime],
+        [AICategory],
+        [AICategoryConfidence],
+        [AICategoryStatus],
+        [AICategoryReasoning],
+        [AIExtractedFields],
+        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime]
+    FROM dbo.[Attachment]
+    WHERE [Id] IN (
+        SELECT CAST(LTRIM(RTRIM(value)) AS BIGINT)
+        FROM STRING_SPLIT(@Ids, ',')
+        WHERE LTRIM(RTRIM(value)) <> ''
+    );
+
+    COMMIT TRANSACTION;
+END;
+
+
+
+GO
+
 CREATE OR ALTER PROCEDURE IncrementDownloadCount
 (
     @Id BIGINT
@@ -439,7 +543,3 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
-
-
-SELECT COUNT(Id) AS TotalCount
-FROM dbo.Attachment;

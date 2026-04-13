@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 from decimal import Decimal
 from typing import Optional
@@ -68,7 +69,7 @@ class EmailThreadMessageRepository:
                         "IsReply":                  1 if is_reply else 0,
                         "IsForward":                1 if is_forward else 0,
                         "Classification":           classification,
-                        "ClassificationConfidence": float(classification_confidence) if classification_confidence is not None else None,
+                        "ClassificationConfidence": Decimal(str(classification_confidence)) if classification_confidence is not None else None,
                         "ReceivedDatetime":         received_datetime,
                     },
                 )
@@ -94,7 +95,7 @@ class EmailThreadMessageRepository:
                     params={
                         "PublicId":                 public_id,
                         "Classification":           classification,
-                        "ClassificationConfidence": float(classification_confidence),
+                        "ClassificationConfidence": Decimal(str(classification_confidence)),
                     },
                 )
                 row = cursor.fetchone()

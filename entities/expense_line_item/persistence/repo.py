@@ -77,12 +77,12 @@ class ExpenseLineItemRepository:
                         "ProjectId": project_id,
                         "Description": description,
                         "Quantity": quantity,
-                        "Rate": float(rate) if rate is not None else None,
-                        "Amount": float(amount) if amount is not None else None,
+                        "Rate": Decimal(str(rate)) if rate is not None else None,
+                        "Amount": Decimal(str(amount)) if amount is not None else None,
                         "IsBillable": 1 if is_billable else 0 if is_billable is not None else None,
                         "IsBilled": 1 if is_billed else 0 if is_billed is not None else None,
-                        "Markup": float(markup) if markup is not None else None,
-                        "Price": float(price) if price is not None else None,
+                        "Markup": Decimal(str(markup)) if markup is not None else None,
+                        "Price": Decimal(str(price)) if price is not None else None,
                         "IsDraft": 1 if is_draft else 0,
                     },
                 )
@@ -182,12 +182,12 @@ class ExpenseLineItemRepository:
                     "ProjectId": expense_line_item.project_id,
                     "Description": expense_line_item.description,
                     "Quantity": expense_line_item.quantity,
-                    "Rate": float(expense_line_item.rate) if expense_line_item.rate is not None else None,
-                    "Amount": float(expense_line_item.amount) if expense_line_item.amount is not None else None,
+                    "Rate": Decimal(str(expense_line_item.rate)) if expense_line_item.rate is not None else None,
+                    "Amount": Decimal(str(expense_line_item.amount)) if expense_line_item.amount is not None else None,
                     "IsBillable": 1 if expense_line_item.is_billable else 0 if expense_line_item.is_billable is not None else None,
                     "IsBilled": 1 if expense_line_item.is_billed else 0 if expense_line_item.is_billed is not None else None,
-                    "Markup": float(expense_line_item.markup) if expense_line_item.markup is not None else None,
-                    "Price": float(expense_line_item.price) if expense_line_item.price is not None else None,
+                    "Markup": Decimal(str(expense_line_item.markup)) if expense_line_item.markup is not None else None,
+                    "Price": Decimal(str(expense_line_item.price)) if expense_line_item.price is not None else None,
                 }
                 # Only include IsDraft if it's explicitly set (not None)
                 if expense_line_item.is_draft is not None:
@@ -198,6 +198,16 @@ class ExpenseLineItemRepository:
                     params=params,
                 )
                 row = cursor.fetchone()
+                if not row:
+                    logger.warning(
+                        "UpdateExpenseLineItemById returned no row (id=%s); possible row-version conflict or record not found.",
+                        expense_line_item.id,
+                    )
+                    raise map_database_error(
+                        Exception(
+                            "Update did not match any row; the expense line item may have been modified by another process (row-version conflict) or no longer exists."
+                        )
+                    )
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during update expense line item by ID: {error}")

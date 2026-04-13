@@ -13,14 +13,6 @@ CREATE TABLE [dbo].[Organization]
 END
 GO
 
-GO
-
-
-ALTER TABLE [dbo].[Organization]
-ALTER COLUMN [RowVersion] BINARY(8) NOT NULL;
-GO
-
-
 
 GO
 
@@ -218,3 +210,9 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
+-- PublicId index
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Organization_PublicId' AND object_id = OBJECT_ID('dbo.Organization'))
+BEGIN
+    CREATE INDEX [IX_Organization_PublicId] ON [dbo].[Organization] ([PublicId]);
+END
+GO

@@ -119,12 +119,12 @@ class ContractLaborRepository:
                         "TimeIn": time_in,
                         "TimeOut": time_out,
                         "BreakTime": break_time,
-                        "RegularHours": float(regular_hours) if regular_hours is not None else None,
-                        "OvertimeHours": float(overtime_hours) if overtime_hours is not None else None,
-                        "TotalHours": float(total_hours),
-                        "HourlyRate": float(hourly_rate) if hourly_rate is not None else None,
-                        "Markup": float(markup) if markup is not None else None,
-                        "TotalAmount": float(total_amount) if total_amount is not None else None,
+                        "RegularHours": Decimal(str(regular_hours)) if regular_hours is not None else None,
+                        "OvertimeHours": Decimal(str(overtime_hours)) if overtime_hours is not None else None,
+                        "TotalHours": Decimal(str(total_hours)),
+                        "HourlyRate": Decimal(str(hourly_rate)) if hourly_rate is not None else None,
+                        "Markup": Decimal(str(markup)) if markup is not None else None,
+                        "TotalAmount": Decimal(str(total_amount)) if total_amount is not None else None,
                         "SubCostCodeId": sub_cost_code_id,
                         "Description": description,
                         "BillingPeriodStart": billing_period_start,
@@ -403,12 +403,12 @@ class ContractLaborRepository:
                     "TimeIn": contract_labor.time_in,
                     "TimeOut": contract_labor.time_out,
                     "BreakTime": contract_labor.break_time,
-                    "RegularHours": float(contract_labor.regular_hours) if contract_labor.regular_hours is not None else None,
-                    "OvertimeHours": float(contract_labor.overtime_hours) if contract_labor.overtime_hours is not None else None,
-                    "TotalHours": float(contract_labor.total_hours) if contract_labor.total_hours is not None else None,
-                    "HourlyRate": float(contract_labor.hourly_rate) if contract_labor.hourly_rate is not None else None,
-                    "Markup": float(contract_labor.markup) if contract_labor.markup is not None else None,
-                    "TotalAmount": float(contract_labor.total_amount) if contract_labor.total_amount is not None else None,
+                    "RegularHours": Decimal(str(contract_labor.regular_hours)) if contract_labor.regular_hours is not None else None,
+                    "OvertimeHours": Decimal(str(contract_labor.overtime_hours)) if contract_labor.overtime_hours is not None else None,
+                    "TotalHours": Decimal(str(contract_labor.total_hours)) if contract_labor.total_hours is not None else None,
+                    "HourlyRate": Decimal(str(contract_labor.hourly_rate)) if contract_labor.hourly_rate is not None else None,
+                    "Markup": Decimal(str(contract_labor.markup)) if contract_labor.markup is not None else None,
+                    "TotalAmount": Decimal(str(contract_labor.total_amount)) if contract_labor.total_amount is not None else None,
                     "SubCostCodeId": contract_labor.sub_cost_code_id,
                     "Description": contract_labor.description,
                     "BillingPeriodStart": contract_labor.billing_period_start,
@@ -424,6 +424,16 @@ class ContractLaborRepository:
                     params=params,
                 )
                 row = cursor.fetchone()
+                if not row:
+                    logger.warning(
+                        "UpdateContractLaborById returned no row (id=%s); possible row-version conflict or record not found.",
+                        contract_labor.id,
+                    )
+                    raise map_database_error(
+                        Exception(
+                            "Update did not match any row; the contract labor entry may have been modified by another process (row-version conflict) or no longer exists."
+                        )
+                    )
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during update contract labor by ID: {error}")
@@ -558,27 +568,38 @@ class ContractLaborRepository:
         id: int,
         status: str,
         bill_line_item_id: Optional[int] = None,
+        row_version: Optional[bytes] = None,
     ) -> Optional[ContractLabor]:
         """
         Update status and bill_line_item_id for a single entry.
         Used when linking contract labor entries to bill line items.
+        Requires row_version for optimistic concurrency.
         """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                # Use direct SQL update for this simple operation
-                cursor.execute(
-                    """
-                    UPDATE [dbo].[ContractLabor]
-                    SET [Status] = ?,
-                        [BillLineItemId] = ?,
-                        [ModifiedDatetime] = GETUTCDATE()
-                    WHERE [Id] = ?
-                    """,
-                    (status, bill_line_item_id, id),
+                call_procedure(
+                    cursor=cursor,
+                    name="UpdateContractLaborStatusAndLink",
+                    params={
+                        "Id": id,
+                        "RowVersion": row_version,
+                        "Status": status,
+                        "BillLineItemId": bill_line_item_id,
+                    },
                 )
-                conn.commit()
-                return self.read_by_id(id)
+                row = cursor.fetchone()
+                if not row:
+                    logger.warning(
+                        "UpdateContractLaborStatusAndLink returned no row (id=%s); possible row-version conflict or record not found.",
+                        id,
+                    )
+                    raise map_database_error(
+                        Exception(
+                            "Update did not match any row; the contract labor entry may have been modified by another process (row-version conflict) or no longer exists."
+                        )
+                    )
+                return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during update status and link: {error}")
             raise map_database_error(error)
@@ -590,13 +611,10 @@ class ContractLaborRepository:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    SELECT * FROM [dbo].[ContractLabor]
-                    WHERE [BillLineItemId] = ?
-                    ORDER BY [WorkDate], [EmployeeName]
-                    """,
-                    (bill_line_item_id,),
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadContractLaborsByBillLineItemId",
+                    params={"BillLineItemId": bill_line_item_id},
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]

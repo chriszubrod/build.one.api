@@ -169,6 +169,76 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
+GO
 
 
+CREATE OR ALTER PROCEDURE ReadBillLineItemAttachmentsByBillLineItemPublicIds
+(
+    @PublicIds NVARCHAR(MAX)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRANSACTION;
 
+    CREATE TABLE #Ids (PublicId UNIQUEIDENTIFIER);
+    INSERT INTO #Ids (PublicId)
+    SELECT TRY_CAST(LTRIM(RTRIM(value)) AS UNIQUEIDENTIFIER)
+    FROM STRING_SPLIT(@PublicIds, ',')
+    WHERE TRY_CAST(LTRIM(RTRIM(value)) AS UNIQUEIDENTIFIER) IS NOT NULL;
+
+    SELECT
+        blia.[Id],
+        blia.[PublicId],
+        blia.[RowVersion],
+        CONVERT(VARCHAR(19), blia.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), blia.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        blia.[BillLineItemId],
+        blia.[AttachmentId],
+        bli.[PublicId] AS [BillLineItemPublicId]
+    FROM dbo.[BillLineItemAttachment] blia
+    JOIN dbo.[BillLineItem] bli ON bli.[Id] = blia.[BillLineItemId]
+    WHERE bli.[PublicId] IN (SELECT PublicId FROM #Ids);
+
+    DROP TABLE #Ids;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+-- Count BillLineItemAttachment records for a given AttachmentId
+CREATE OR ALTER PROCEDURE CountBillLineItemAttachmentsByAttachmentId
+(
+    @AttachmentId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT COUNT(*) AS [Count]
+    FROM dbo.[BillLineItemAttachment]
+    WHERE [AttachmentId] = @AttachmentId;
+END;
+GO
+
+
+-- FK constraints
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_BillLineItemAttachment_BillLineItem')
+BEGIN
+    ALTER TABLE [dbo].[BillLineItemAttachment] ADD CONSTRAINT [FK_BillLineItemAttachment_BillLineItem] FOREIGN KEY ([BillLineItemId]) REFERENCES [dbo].[BillLineItem]([Id]);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_BillLineItemAttachment_Attachment')
+BEGIN
+    ALTER TABLE [dbo].[BillLineItemAttachment] ADD CONSTRAINT [FK_BillLineItemAttachment_Attachment] FOREIGN KEY ([AttachmentId]) REFERENCES [dbo].[Attachment]([Id]);
+END
+GO
+
+-- 1-to-1: each BillLineItem has at most one attachment
+IF NOT EXISTS (SELECT 1 FROM sys.objects WHERE name = 'UQ_BillLineItemAttachment_BillLineItemId' AND parent_object_id = OBJECT_ID('dbo.BillLineItemAttachment'))
+BEGIN
+    ALTER TABLE [dbo].[BillLineItemAttachment] ADD CONSTRAINT [UQ_BillLineItemAttachment_BillLineItemId] UNIQUE ([BillLineItemId]);
+END
+GO

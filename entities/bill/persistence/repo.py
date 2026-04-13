@@ -88,7 +88,7 @@ class BillRepository:
                         "BillDate": bill_date,
                         "DueDate": due_date,
                         "BillNumber": bill_number,
-                        "TotalAmount": float(total_amount) if total_amount is not None else None,
+                        "TotalAmount": Decimal(str(total_amount)) if total_amount is not None else None,
                         "Memo": memo,
                         "IsDraft": 1 if is_draft else 0,
                     },
@@ -211,7 +211,7 @@ class BillRepository:
                     "BillDate": bill.bill_date,
                     "DueDate": bill.due_date,
                     "BillNumber": bill.bill_number,
-                    "TotalAmount": float(bill.total_amount) if bill.total_amount is not None else None,
+                    "TotalAmount": Decimal(str(bill.total_amount)) if bill.total_amount is not None else None,
                     "Memo": bill.memo,
                 }
                 # Only include IsDraft if it's explicitly set (not None)

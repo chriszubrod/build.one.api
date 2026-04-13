@@ -173,24 +173,18 @@ class BillCreditLineItemAttachmentRepository:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 try:
-                    # Build IN clause with placeholders
-                    placeholders = ",".join(["?" for _ in public_ids])
-                    query = f"""
-                        SELECT bclia.Id, bclia.PublicId, bclia.RowVersion, bclia.CreatedDatetime,
-                               bclia.ModifiedDatetime, bclia.BillCreditLineItemId, bclia.AttachmentId,
-                               bcli.PublicId AS BillCreditLineItemPublicId
-                        FROM dbo.BillCreditLineItemAttachment bclia
-                        JOIN dbo.BillCreditLineItem bcli ON bcli.Id = bclia.BillCreditLineItemId
-                        WHERE bcli.PublicId IN ({placeholders})
-                    """
-                    cursor.execute(query, public_ids)
+                    ids_csv = ",".join(str(pid) for pid in public_ids)
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadBillCreditLineItemAttachmentsByBillCreditLineItemPublicIds",
+                        params={"PublicIds": ids_csv},
+                    )
                     rows = cursor.fetchall()
                     results = []
                     for row in rows:
                         if row:
                             attachment = self._from_db(row)
                             if attachment:
-                                # Add the bill_credit_line_item_public_id for mapping
                                 attachment.bill_credit_line_item_public_id = getattr(row, 'BillCreditLineItemPublicId', None)
                                 results.append(attachment)
                     return results

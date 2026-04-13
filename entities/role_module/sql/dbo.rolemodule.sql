@@ -315,3 +315,24 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
+
+
+-- FK constraints
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_RoleModule_Role')
+BEGIN
+    ALTER TABLE [dbo].[RoleModule] ADD CONSTRAINT [FK_RoleModule_Role] FOREIGN KEY ([RoleId]) REFERENCES [dbo].[Role]([Id]);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_RoleModule_Module')
+BEGIN
+    ALTER TABLE [dbo].[RoleModule] ADD CONSTRAINT [FK_RoleModule_Module] FOREIGN KEY ([ModuleId]) REFERENCES [dbo].[Module]([Id]);
+END
+GO
+
+-- Prevent duplicate role-module assignments
+IF NOT EXISTS (SELECT 1 FROM sys.objects WHERE name = 'UQ_RoleModule_RoleId_ModuleId' AND parent_object_id = OBJECT_ID('dbo.RoleModule'))
+BEGIN
+    ALTER TABLE [dbo].[RoleModule] ADD CONSTRAINT [UQ_RoleModule_RoleId_ModuleId] UNIQUE ([RoleId], [ModuleId]);
+END
+GO

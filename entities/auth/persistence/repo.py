@@ -1,7 +1,6 @@
 """Persistence operations for the Auth module."""
 
 # Python Standard Library Imports
-from datetime import datetime, timezone
 from typing import List, Optional
 import base64
 import logging

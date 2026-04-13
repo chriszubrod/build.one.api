@@ -79,7 +79,7 @@ class ExpenseRepository:
                         "VendorId": vendor_id,
                         "ExpenseDate": expense_date,
                         "ReferenceNumber": reference_number,
-                        "TotalAmount": float(total_amount) if total_amount is not None else None,
+                        "TotalAmount": Decimal(str(total_amount)) if total_amount is not None else None,
                         "Memo": memo,
                         "IsDraft": 1 if is_draft else 0,
                         "IsCredit": 1 if is_credit else 0,
@@ -182,7 +182,7 @@ class ExpenseRepository:
                     "VendorId": expense.vendor_id,
                     "ExpenseDate": expense.expense_date,
                     "ReferenceNumber": expense.reference_number,
-                    "TotalAmount": float(expense.total_amount) if expense.total_amount is not None else None,
+                    "TotalAmount": Decimal(str(expense.total_amount)) if expense.total_amount is not None else None,
                     "Memo": expense.memo,
                 }
                 # Only include IsDraft/IsCredit if explicitly set (not None) — sproc uses CASE WHEN guard

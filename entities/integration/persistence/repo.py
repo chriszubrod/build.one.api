@@ -102,7 +102,7 @@ class IntegrationRepository:
             logger.error(f"Error during read all integrations: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: str) -> Optional[Integration]:
+    def read_by_id(self, id: int) -> Optional[Integration]:
         """
         Read a integration by ID.
         """
@@ -183,7 +183,7 @@ class IntegrationRepository:
             logger.error(f"Error during update integration by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: str) -> Optional[Integration]:
+    def delete_by_id(self, id: int) -> Optional[Integration]:
         """
         Delete a integration by ID.
         """

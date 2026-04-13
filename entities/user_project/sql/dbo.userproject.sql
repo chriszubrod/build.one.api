@@ -231,3 +231,24 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
+
+
+-- FK constraints
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_UserProject_User')
+BEGIN
+    ALTER TABLE [dbo].[UserProject] ADD CONSTRAINT [FK_UserProject_User] FOREIGN KEY ([UserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_UserProject_Project')
+BEGIN
+    ALTER TABLE [dbo].[UserProject] ADD CONSTRAINT [FK_UserProject_Project] FOREIGN KEY ([ProjectId]) REFERENCES [dbo].[Project]([Id]);
+END
+GO
+
+-- Prevent duplicate user-project assignments
+IF NOT EXISTS (SELECT 1 FROM sys.objects WHERE name = 'UQ_UserProject_UserId_ProjectId' AND parent_object_id = OBJECT_ID('dbo.UserProject'))
+BEGIN
+    ALTER TABLE [dbo].[UserProject] ADD CONSTRAINT [UQ_UserProject_UserId_ProjectId] UNIQUE ([UserId], [ProjectId]);
+END
+GO

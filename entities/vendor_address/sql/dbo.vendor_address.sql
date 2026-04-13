@@ -302,3 +302,23 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 
+
+-- FK constraints
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_VendorAddress_Vendor')
+BEGIN
+    ALTER TABLE [dbo].[VendorAddress] ADD CONSTRAINT [FK_VendorAddress_Vendor] FOREIGN KEY ([VendorId]) REFERENCES [dbo].[Vendor]([Id]);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_VendorAddress_Address')
+BEGIN
+    ALTER TABLE [dbo].[VendorAddress] ADD CONSTRAINT [FK_VendorAddress_Address] FOREIGN KEY ([AddressId]) REFERENCES [dbo].[Address]([Id]);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_VendorAddress_AddressType')
+BEGIN
+    ALTER TABLE [dbo].[VendorAddress] ADD CONSTRAINT [FK_VendorAddress_AddressType] FOREIGN KEY ([AddressTypeId]) REFERENCES [dbo].[AddressType]([Id]);
+END
+GO
+

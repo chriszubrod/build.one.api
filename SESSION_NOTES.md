@@ -1,5 +1,200 @@
 # Session Notes
 
+## Session: Persistence Layer Review & Fix — Full 8-Tier Audit (April 12, 2026)
+
+### Overview
+Systematic review of all 45 active repositories and ~90 SQL files across the entire entity persistence layer. Reviewed in 8 tiers (Reference Data → Core/Standalone → Join Tables → Attachments → Financial Parents → Financial Children → Inbox/Email → Specialized). Identified 88 issues and implemented fixes for all priorities except P4-D (tenant_id removal, deferred due to ~50+ file scope).
+
+### Findings Summary
+
+| Priority | Description | Count | Status |
+|----------|-------------|-------|--------|
+| P1 | Data corruption / runtime failures | 6 | All fixed |
+| P2 | Silent data loss / missing guards | 3 | All fixed |
+| P3 | Schema integrity (FKs, UNIQUE, indexes) | 3 | All fixed |
+| P4 | Consistency & cleanup | 7 | 6 fixed, 1 deferred |
+
+### P1 Fixes — Critical
+
+**P1-A: `float()` → `Decimal(str())` on financial fields (27 locations, 11 files)**
+- Replaced all `float()` conversions on Decimal financial fields in `create()` and `update_by_id()` across: Bill, Expense, Invoice, BillCredit, ContractLabor, BillLineItem, ExpenseLineItem, BillCreditLineItem, ContractLaborLineItem repos, plus EmailThread and EmailThreadMessage `classification_confidence`
+- InvoiceLineItem was already correct — used as the pattern template
+
+**P1-B: Expense `IsCredit` proc gap (9 procs updated)**
+- `dbo.expense.sql` — added `@IsCredit` to CreateExpense, UpdateExpenseById (with CASE WHEN guard), all SELECT procs, DeleteExpenseById OUTPUT, ReadExpensesPaginated, CountExpenses
+- Migration file `add_is_credit_column.sql` already had correct procs; main SQL file was stale
+
+**P1-C: Bill `set_completion_result()` missing `@ExpiresAt`**
+- `UpsertBillCompletionResult` — made `@ExpiresAt` optional with default `DATEADD(HOUR, 1, SYSUTCDATETIME())`
+
+**P1-D: AddressType proc name mismatch**
+- `repo.py` called `ReadAddressTypeName`, SQL defined `ReadAddressTypeByName` — fixed repo
+
+**P1-E: Organization RowVersion ALTER**
+- Removed `ALTER TABLE [dbo].[Organization] ALTER COLUMN [RowVersion] BINARY(8) NOT NULL` from `dbo.organization.sql`
+- If already executed against live DB, column needs manual restoration
+
+**P1-F: EmailThreadMessage missing RowVersion base64 encoding**
+- Added `base64` import and encoding in `message_repo.py` `_from_db()`
+- Left StageHistory as-is (append-only, never needs concurrency control)
+
+### P2 Fixes — Data Loss Prevention
+
+**P2-A: CASE WHEN guards on nullable FK UPDATE columns (5 SQL files, 10 columns)**
+- Vendor: `VendorTypeId`, `TaxpayerId`
+- Project: `CustomerId`
+- BillLineItem: `SubCostCodeId`, `ProjectId`
+- ExpenseLineItem: `SubCostCodeId`, `ProjectId`
+- InvoiceLineItem: `BillLineItemId`, `ExpenseLineItemId`, `BillCreditLineItemId`
+
+**P2-B: Attachment SELECT procs missing extraction/categorization columns**
+- Updated 5 procs (ReadAttachments, ReadAttachmentById, ReadAttachmentByPublicId, ReadAttachmentByCategory, ReadAttachmentByHash) to include 10 columns: ExtractionStatus, ExtractedTextBlobUrl, ExtractionError, ExtractedDatetime, AICategory, AICategoryConfidence, AICategoryStatus, AICategoryReasoning, AIExtractedFields, CategorizedDatetime
+
+**P2-C: Stray debug queries removed**
+- `dbo.bill_line_item.sql` — removed 2 `SELECT *` with hardcoded IDs
+- `dbo.attachment.sql` — removed `SELECT COUNT(Id)`
+
+### P3 Fixes — Schema Integrity
+
+**P3-A: FK constraints added (10 tables, 21 FKs)**
+- UserRole → User, Role
+- UserModule → User, Module
+- UserProject → User, Project
+- RoleModule → Role, Module
+- VendorAddress → Vendor, Address, AddressType
+- BillLineItemAttachment → BillLineItem, Attachment
+- InvoiceLineItemAttachment → InvoiceLineItem, Attachment
+- BillCreditLineItemAttachment → BillCreditLineItem, Attachment
+- TaxpayerAttachment → Taxpayer, Attachment
+- SubCostCode → CostCode
+- SubCostCodeAlias → SubCostCode
+
+**P3-B: UNIQUE constraints added (6 tables)**
+- UserRole (UserId, RoleId), UserModule (UserId, ModuleId), UserProject (UserId, ProjectId), RoleModule (RoleId, ModuleId), BillLineItemAttachment (BillLineItemId), BillCreditLineItemAttachment (BillCreditLineItemId)
+
+**P3-C: PublicId indexes added (12 tables)**
+- AddressType, VendorType, PaymentTerm, CostCode, Address, Taxpayer, Organization, Company, Module, Role, User, Customer
+
+### P4 Fixes — Consistency & Cleanup
+
+**P4-A: `read_by_id` type hints `str` → `int` (18 repos, 36 methods)**
+
+**P4-B: TOP 1 added to fetchone-on-non-unique procs (6 procs)**
+- UserRole ByUserId/ByRoleId, UserModule ByUserId/ByModuleId, User ByFirstname/ByLastname
+- Skipped RoleModule/VendorAddress — procs shared with list-returning methods
+
+**P4-C: Concurrency conflict handling standardized (6 repos)**
+- Added raise-on-no-row to: BillCredit, BillLineItem, ExpenseLineItem, BillCreditLineItem, ContractLabor, ContractLaborLineItem `update_by_id()`
+
+**P4-D: `tenant_id` removal — DEFERRED**
+- Spans ~50+ files across repo/service/API layers (118 API router references). Needs dedicated session.
+
+**P4-E: Raw SQL → stored procedures (10 methods, 10 new procs)**
+- BillLineItemAttachment: `ReadBillLineItemAttachmentsByBillLineItemPublicIds`, `CountBillLineItemAttachmentsByAttachmentId`
+- InvoiceLineItemAttachment: `ReadInvoiceLineItemAttachmentsByInvoiceLineItemPublicIds`
+- BillCreditLineItemAttachment: `ReadBillCreditLineItemAttachmentsByBillCreditLineItemPublicIds`
+- Attachment: `ReadAttachmentsByIds`
+- InboxRecord: `ReadInboxRecordsBySender`, `ReadInboxRecordsByConversationId`, `ReadInboxRecordsAwaitingReply`
+- ContractLabor: `ReadContractLaborsByBillLineItemId`, `UpdateContractLaborStatusAndLink`
+- Schema fix: InboxRecord `RecordPublicId` migrated from NVARCHAR(100) to UNIQUEIDENTIFIER
+
+**P4-F: Debug artifacts removed (3 files)**
+- Organization: removed `print()`, unused `UUID` import, fixed `_from_db` type hint `dict` → `pyodbc.Row`
+- Auth: removed unused `datetime`/`timezone` import
+
+**P4-G: Datetime format standardized (4 SQL files)**
+- InboxRecord, InboxRecord.InternetMessageId, InboxRecordStats, ClassificationOverride procs changed from CONVERT style 126 to 120
+
+### Pending SQL Migrations
+All schema changes (FK constraints, UNIQUE constraints, indexes, proc updates) need to be executed against the live DB. Run each entity's SQL file via `python scripts/run_sql.py path/to/file.sql`.
+
+### Files Modified (~60+ files)
+- 18 repo `.py` files (type hint fixes)
+- 11 repo `.py` files (Decimal precision fixes)
+- 6 repo `.py` files (concurrency handling)
+- 5 repo `.py` files (raw SQL → stored proc)
+- 3 repo `.py` files (debug artifact cleanup)
+- 2 repo `.py` files (EmailThread RowVersion/import fixes)
+- ~25 SQL files (proc updates, schema additions, constraint additions)
+
+---
+
+## Session: Codebase Restructure — Multi-Repo, API Standardization, React Scaffold (April 10-11, 2026)
+
+### Overview
+Major restructure separating the monolithic build.one codebase into three independent repos under a parent directory, standardizing the API response format, and scaffolding a React + Vite + TypeScript frontend.
+
+### Phase 1 — Multi-Repo Structure
+- Renamed `build.one/` → `build.one.api/`
+- Created parent `build.one/` directory
+- Moved `build.one.api/` and `build.one.ios/` under it
+- Initialized `build.one.web/` with `git init`
+- Created GitHub repos: `chriszubrod/build.one.api`, `chriszubrod/build.one.web`
+- Updated git remotes, pushed all repos
+
+**Directory layout:**
+```
+/Users/chris/Applications/build.one/
+├── build.one.api/   → github.com/chriszubrod/build.one.api
+├── build.one.web/   → github.com/chriszubrod/build.one.web
+└── build.one.ios/   → github.com/chriszubrod/build.one.ios
+```
+
+### Phase 2 — API Standardization
+**New files:**
+- `shared/api/__init__.py`
+- `shared/api/responses.py` — `list_response()`, `item_response()`, `accepted_response()`, `raise_workflow_error()`, `raise_not_found()`
+- `shared/api/lookups.py` — `GET /api/v1/lookups?include=` endpoint (vendors, projects, sub_cost_codes, cost_codes, payment_terms, customers, vendor_types, address_types, roles, modules)
+
+**Modified files (50 entity API routers):**
+All routers updated to use standard response envelope:
+- List endpoints: `{"data": [...], "count": N}`
+- Single entity: `{"data": {...}}`
+- Async (202): `{"status": "accepted", ...}`
+- Errors: shared `raise_workflow_error()` and `raise_not_found()`
+
+**Breaking change:** Jinja2 templates (81 files making AJAX calls) expect old raw response format and are broken. Accepted — web UI is being replaced by React.
+
+### Phase 3 — React + Vite + TypeScript Scaffold
+**New repo:** `build.one.web/`
+
+**Structure:**
+```
+src/
+├── api/client.ts           — Typed fetch, envelope unwrapping, auth token, 401 redirect
+├── auth/AuthContext.tsx     — Auth state provider (login, logout, token storage)
+├── auth/LoginPage.tsx       — Login form
+├── auth/ProtectedRoute.tsx  — Redirect to /login if no token
+├── layout/AppLayout.tsx     — Sidebar + header + content area
+├── layout/Sidebar.tsx       — Module nav from /api/v1/lookups
+├── layout/Header.tsx        — Username + sign out
+├── pages/Dashboard.tsx      — Placeholder
+├── pages/vendors/VendorList.tsx — Proof-of-concept list page
+├── hooks/useLookups.ts      — Reusable dropdown data hook
+├── types/api.ts             — TypeScript types for all API shapes
+├── App.tsx                  — React Router wiring
+├── main.tsx                 — Entry point
+└── index.css                — Full app stylesheet
+```
+
+**Key decisions:**
+- React + Vite + TypeScript (no Next.js — FastAPI is the server)
+- Vite dev server proxies `/api` to `localhost:8000`
+- API client uses empty base URL (relative paths through proxy)
+- Auth via localStorage token + cookie fallback
+- Framework recommendation: React over Vue/Svelte for ecosystem size
+
+### Remaining Work (Phase 4 & 5)
+- **Phase 4**: Migrate entity pages incrementally from Jinja2 to React (40+ entities)
+- **Phase 5**: Retire Jinja2 templates and web controllers from API repo
+- **Skipped (deferred)**: Inbox API routes (Step 1), Dashboard API (Step 3)
+
+### Environment Notes
+- Node.js installed via `brew install node` (v25.9.0)
+- Python 3.9 system → upgraded to Python 3.11 via `brew install python@3.11`
+- venv recreated after directory rename (old paths broke activation)
+- GitHub push protection required unblocking secrets in commit history
+
 ## Session: Codebase Strip and Clean — LangGraph, ML Stack, Push Notifications Removal (April 2-3, 2026)
 
 ### What Was Removed

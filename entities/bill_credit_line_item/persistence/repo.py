@@ -89,12 +89,12 @@ class BillCreditLineItemRepository:
                         "SubCostCodeId": sub_cost_code_id,
                         "ProjectId": project_id,
                         "Description": description,
-                        "Quantity": float(quantity) if quantity is not None else None,
-                        "UnitPrice": float(unit_price) if unit_price is not None else None,
-                        "Amount": float(amount) if amount is not None else None,
+                        "Quantity": Decimal(str(quantity)) if quantity is not None else None,
+                        "UnitPrice": Decimal(str(unit_price)) if unit_price is not None else None,
+                        "Amount": Decimal(str(amount)) if amount is not None else None,
                         "IsBillable": 1 if is_billable else (0 if is_billable is False else None),
                         "IsBilled": 1 if is_billed else (0 if is_billed is False else None),
-                        "BillableAmount": float(billable_amount) if billable_amount is not None else None,
+                        "BillableAmount": Decimal(str(billable_amount)) if billable_amount is not None else None,
                         "IsDraft": 1 if is_draft else 0,
                     },
                 )
@@ -193,12 +193,12 @@ class BillCreditLineItemRepository:
                     "SubCostCodeId": line_item.sub_cost_code_id,
                     "ProjectId": line_item.project_id,
                     "Description": line_item.description,
-                    "Quantity": float(line_item.quantity) if line_item.quantity is not None else None,
-                    "UnitPrice": float(line_item.unit_price) if line_item.unit_price is not None else None,
-                    "Amount": float(line_item.amount) if line_item.amount is not None else None,
+                    "Quantity": Decimal(str(line_item.quantity)) if line_item.quantity is not None else None,
+                    "UnitPrice": Decimal(str(line_item.unit_price)) if line_item.unit_price is not None else None,
+                    "Amount": Decimal(str(line_item.amount)) if line_item.amount is not None else None,
                     "IsBillable": 1 if line_item.is_billable else (0 if line_item.is_billable is False else None),
                     "IsBilled": 1 if line_item.is_billed else (0 if line_item.is_billed is False else None),
-                    "BillableAmount": float(line_item.billable_amount) if line_item.billable_amount is not None else None,
+                    "BillableAmount": Decimal(str(line_item.billable_amount)) if line_item.billable_amount is not None else None,
                 }
                 # Only include IsDraft if it's explicitly set (not None)
                 if line_item.is_draft is not None:
@@ -210,6 +210,16 @@ class BillCreditLineItemRepository:
                     params=params,
                 )
                 row = cursor.fetchone()
+                if not row:
+                    logger.warning(
+                        "UpdateBillCreditLineItemById returned no row (id=%s); possible row-version conflict or record not found.",
+                        line_item.id,
+                    )
+                    raise map_database_error(
+                        Exception(
+                            "Update did not match any row; the bill credit line item may have been modified by another process (row-version conflict) or no longer exists."
+                        )
+                    )
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during update bill credit line item by ID: {error}")

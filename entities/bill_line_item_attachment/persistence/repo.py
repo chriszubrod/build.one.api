@@ -173,24 +173,18 @@ class BillLineItemAttachmentRepository:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 try:
-                    # Build IN clause with placeholders
-                    placeholders = ",".join(["?" for _ in public_ids])
-                    query = f"""
-                        SELECT blia.Id, blia.PublicId, blia.RowVersion, blia.CreatedDatetime,
-                               blia.ModifiedDatetime, blia.BillLineItemId, blia.AttachmentId,
-                               bli.PublicId AS BillLineItemPublicId
-                        FROM dbo.BillLineItemAttachment blia
-                        JOIN dbo.BillLineItem bli ON bli.Id = blia.BillLineItemId
-                        WHERE bli.PublicId IN ({placeholders})
-                    """
-                    cursor.execute(query, public_ids)
+                    ids_csv = ",".join(str(pid) for pid in public_ids)
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadBillLineItemAttachmentsByBillLineItemPublicIds",
+                        params={"PublicIds": ids_csv},
+                    )
                     rows = cursor.fetchall()
                     results = []
                     for row in rows:
                         if row:
                             attachment = self._from_db(row)
                             if attachment:
-                                # Add the bill_line_item_public_id for mapping
                                 attachment.bill_line_item_public_id = getattr(row, 'BillLineItemPublicId', None)
                                 results.append(attachment)
                     return results
@@ -209,17 +203,18 @@ class BillLineItemAttachmentRepository:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 try:
-                    cursor.execute(
-                        "SELECT COUNT(*) FROM dbo.BillLineItemAttachment WHERE AttachmentId = ?",
-                        [attachment_id],
+                    call_procedure(
+                        cursor=cursor,
+                        name="CountBillLineItemAttachmentsByAttachmentId",
+                        params={"AttachmentId": attachment_id},
                     )
                     row = cursor.fetchone()
-                    return row[0] if row else 0
+                    return row.Count if row else 0
                 finally:
                     cursor.close()
         except Exception as error:
             logger.error(f"Error counting bill line item attachments by attachment ID: {error}")
-            return 0
+            raise map_database_error(error)
 
     def delete_by_id(self, id: int) -> Optional[BillLineItemAttachment]:
         """

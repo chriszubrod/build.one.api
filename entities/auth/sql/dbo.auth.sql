@@ -45,7 +45,6 @@ GO
 
 
 
-
 CREATE OR ALTER PROCEDURE dbo.ReadAuths
 AS
 BEGIN
@@ -326,7 +325,13 @@ BEGIN
 END;
 GO
 
-
+EXEC dbo.UpdateAuthById
+    @Id = 8,
+    @RowVersion = 0x000000000009F0CA,
+    @Username = 'agent_one',
+    @PasswordHash = '$2b$12$IRcJsXLn6Zpe3rbiqEdI5.tiTr/7qw62NbPBJaHNuxSBKOVtnoezO',
+    @UserId = 21;
+GO
 
 
 

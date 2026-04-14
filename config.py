@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     iterations: int
     signup_registration_code: Optional[str] = None
 
+    # Agent Credentials
+    agent_one_username: Optional[str] = None
+    agent_one_password: Optional[str] = None
+
     # Encryption
     encryption_key: Optional[str] = None
 

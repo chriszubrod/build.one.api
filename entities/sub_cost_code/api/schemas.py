@@ -12,6 +12,7 @@ class SubCostCodeCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255, description="The name of the sub cost code.")
     description: Optional[str] = Field(default=None, max_length=255, description="The description of the sub cost code.")
     cost_code_public_id: str = Field(min_length=1, description="The public ID of the parent cost code.")
+    aliases: Optional[str] = Field(default=None, max_length=500, description="Pipe-delimited alias values for matching (e.g. '01.1|1.1').")
 
 class SubCostCodeUpdate(BaseModel):
     row_version: str = Field(description="The row version of the sub cost code (base64 encoded).")
@@ -19,17 +20,4 @@ class SubCostCodeUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=255, description="The name of the sub cost code.")
     description: Optional[str] = Field(default=None, max_length=255, description="The description of the sub cost code.")
     cost_code_public_id: str = Field(min_length=1, description="The public ID of the parent cost code.")
-
-
-class SubCostCodeAliasCreate(BaseModel):
-    sub_cost_code_id: int = Field(gt=0, description="The ID of the parent sub cost code.")
-    alias: str = Field(min_length=1, max_length=255, description="The alias value for matching.")
-    source: Optional[str] = Field(default=None, max_length=50, description="Origin of the alias (e.g. 'manual', 'bill_agent').")
-
-
-class SubCostCodeAliasUpdate(BaseModel):
-    row_version: str = Field(description="The row version of the alias (base64 encoded).")
-    sub_cost_code_id: int = Field(gt=0, description="The ID of the parent sub cost code.")
-    alias: str = Field(min_length=1, max_length=255, description="The alias value for matching.")
-    source: Optional[str] = Field(default=None, max_length=50, description="Origin of the alias (e.g. 'manual', 'bill_agent').")
-
+    aliases: Optional[str] = Field(default=None, max_length=500, description="Pipe-delimited alias values for matching (e.g. '01.1|1.1').")

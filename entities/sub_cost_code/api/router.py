@@ -5,13 +5,10 @@ from fastapi import APIRouter, HTTPException, Depends, status
 
 # Local Imports
 from entities.sub_cost_code.business.service import SubCostCodeService
-from entities.sub_cost_code.business.alias_service import SubCostCodeAliasService
 from entities.cost_code.business.service import CostCodeService
 from entities.sub_cost_code.api.schemas import (
     SubCostCodeCreate,
     SubCostCodeUpdate,
-    SubCostCodeAliasCreate,
-    SubCostCodeAliasUpdate,
 )
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
@@ -20,7 +17,6 @@ from shared.api.responses import list_response, item_response, raise_workflow_er
 
 router = APIRouter(prefix="/api/v1", tags=["api", "sub-cost-code"])
 service = SubCostCodeService()
-alias_service = SubCostCodeAliasService()
 cost_code_service = CostCodeService()
 
 
@@ -39,7 +35,7 @@ def _resolve_cost_code_id(cost_code_public_id: str) -> int:
 def create_sub_cost_code_router(body: SubCostCodeCreate, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_create"))):
     """
     Create a new sub cost code.
-    
+
     Routes through the workflow engine for audit logging and state tracking.
     """
     cost_code_id = _resolve_cost_code_id(body.cost_code_public_id)
@@ -54,15 +50,16 @@ def create_sub_cost_code_router(body: SubCostCodeCreate, current_user: dict = De
             "name": body.name,
             "description": body.description,
             "cost_code_id": cost_code_id,
+            "aliases": body.aliases,
         },
         workflow_type="sub_cost_code_create",
     )
-    
+
     result = ProcessEngine().execute_synchronous(context)
-    
+
     if not result.get("success"):
         raise_workflow_error(result.get("error", ""), "Failed to create sub cost code")
-    
+
     return item_response(result.get("data"))
 
 
@@ -92,7 +89,7 @@ def get_sub_cost_code_by_public_id_router(public_id: str, current_user: dict = D
 def update_sub_cost_code_by_id_router(public_id: str, body: SubCostCodeUpdate, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_update"))):
     """
     Update a sub cost code by ID.
-    
+
     Routes through the workflow engine for audit logging and state tracking.
     """
     cost_code_id = _resolve_cost_code_id(body.cost_code_public_id)
@@ -109,15 +106,16 @@ def update_sub_cost_code_by_id_router(public_id: str, body: SubCostCodeUpdate, c
             "name": body.name,
             "description": body.description,
             "cost_code_id": cost_code_id,
+            "aliases": body.aliases,
         },
         workflow_type="sub_cost_code_update",
     )
-    
+
     result = ProcessEngine().execute_synchronous(context)
-    
+
     if not result.get("success"):
         raise_workflow_error(result.get("error", ""), "Failed to update sub cost code")
-    
+
     return item_response(result.get("data"))
 
 
@@ -125,7 +123,7 @@ def update_sub_cost_code_by_id_router(public_id: str, body: SubCostCodeUpdate, c
 def delete_sub_cost_code_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_delete"))):
     """
     Soft delete a sub cost code by ID.
-    
+
     Routes through the workflow engine for audit logging and state tracking.
     """
     context = TriggerContext(
@@ -145,45 +143,3 @@ def delete_sub_cost_code_by_public_id_router(public_id: str, current_user: dict 
         raise_workflow_error(result.get("error", ""), "Failed to delete sub cost code")
 
     return item_response(result.get("data"))
-
-
-# --- Sub Cost Code Alias Endpoints ---
-
-
-@router.post("/create/sub-cost-code-alias")
-def create_sub_cost_code_alias_router(body: SubCostCodeAliasCreate, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_create"))):
-    """
-    Create a new sub cost code alias.
-    """
-    try:
-        alias = alias_service.create(
-            sub_cost_code_id=body.sub_cost_code_id,
-            alias=body.alias,
-            source=body.source,
-        )
-        return item_response(alias.to_dict())
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-
-
-@router.get("/get/sub-cost-code-aliases/{sub_cost_code_id}")
-def get_sub_cost_code_aliases_router(sub_cost_code_id: int, current_user: dict = Depends(require_module_api(Modules.COST_CODES))):
-    """
-    Read all aliases for a sub cost code.
-    """
-    aliases = alias_service.read_by_sub_cost_code_id(sub_cost_code_id=sub_cost_code_id)
-    return list_response([alias.to_dict() for alias in aliases])
-
-
-@router.delete("/delete/sub-cost-code-alias/{public_id}")
-def delete_sub_cost_code_alias_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_delete"))):
-    """
-    Delete a sub cost code alias by public ID.
-    """
-    alias = alias_service.delete_by_public_id(public_id=public_id)
-    if not alias:
-        raise_not_found("Sub cost code alias.")
-    return item_response(alias.to_dict())

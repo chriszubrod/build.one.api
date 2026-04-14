@@ -6,7 +6,6 @@ from fastapi.templating import Jinja2Templates
 
 # Local Imports
 from entities.sub_cost_code.business.service import SubCostCodeService
-from entities.sub_cost_code.business.alias_service import SubCostCodeAliasService
 from entities.cost_code.business.service import CostCodeService
 from shared.rbac import require_module_web
 from shared.rbac_constants import Modules
@@ -58,7 +57,6 @@ async def view_sub_cost_code(request: Request, public_id: str, current_user: dic
     """
     sub_cost_code = SubCostCodeService().read_by_public_id(public_id=public_id)
     cost_code = CostCodeService().read_by_id(id=sub_cost_code.cost_code_id)
-    aliases = SubCostCodeAliasService().read_by_sub_cost_code_id(sub_cost_code_id=sub_cost_code.id)
 
     # Load linked QBO Item if mapping exists
     qbo_item = None
@@ -72,7 +70,6 @@ async def view_sub_cost_code(request: Request, public_id: str, current_user: dic
             "request": request,
             "sub_cost_code": sub_cost_code.to_dict(),
             "cost_code": cost_code.to_dict(),
-            "aliases": [a.to_dict() for a in aliases],
             "qbo_item": qbo_item.to_dict() if qbo_item else None,
             "current_user": current_user,
             "current_path": request.url.path,
@@ -87,14 +84,12 @@ async def edit_sub_cost_code(request: Request, public_id: str, current_user: dic
     """
     cost_codes = CostCodeService().read_all()
     sub_cost_code = SubCostCodeService().read_by_public_id(public_id=public_id)
-    aliases = SubCostCodeAliasService().read_by_sub_cost_code_id(sub_cost_code_id=sub_cost_code.id)
     return templates.TemplateResponse(
         "sub_cost_code/edit.html",
         {
             "request": request,
             "sub_cost_code": sub_cost_code.to_dict(),
             "cost_codes": cost_codes,
-            "aliases": [a.to_dict() for a in aliases],
             "current_user": current_user,
             "current_path": request.url.path,
         }

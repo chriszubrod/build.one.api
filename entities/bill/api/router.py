@@ -484,7 +484,6 @@ def _run_single_file_processing(run_id: str, item_id: str, filename: str):
         from entities.project.business.service import ProjectService
         from entities.vendor.business.service import VendorService
         from entities.sub_cost_code.business.service import SubCostCodeService
-        from entities.sub_cost_code.business.alias_service import SubCostCodeAliasService
         from entities.payment_term.business.service import PaymentTermService
         from integrations.ms.sharepoint.external import client as sp_client
 
@@ -501,7 +500,6 @@ def _run_single_file_processing(run_id: str, item_id: str, filename: str):
         projects = ProjectService().read_all()
         vendors = VendorService().read_all()
         sccs = SubCostCodeService().read_all()
-        aliases = SubCostCodeAliasService().read_all()
         pt = PaymentTermService().read_by_name("Due on receipt")
 
         result = ProcessingResult()
@@ -514,7 +512,6 @@ def _run_single_file_processing(run_id: str, item_id: str, filename: str):
             projects=projects,
             vendors=vendors,
             sub_cost_codes=sccs,
-            sub_cost_code_aliases=aliases,
             tenant_id=1,
             payment_term_public_id=pt.public_id if pt else None,
             result=result,

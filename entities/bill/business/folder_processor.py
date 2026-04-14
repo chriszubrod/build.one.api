@@ -17,7 +17,6 @@ from entities.bill_line_item_attachment.business.service import BillLineItemAtta
 from entities.payment_term.business.service import PaymentTermService
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
-from entities.sub_cost_code.business.alias_service import SubCostCodeAliasService
 from entities.vendor.business.service import VendorService
 from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
 from integrations.ms.sharepoint.external import client as sp_client
@@ -185,27 +184,30 @@ def _resolve_vendor(vendor_name: str, vendors: list) -> Optional[str]:
     return best_public_id
 
 
-def _resolve_sub_cost_code(raw: str, sub_cost_codes: list, aliases: list = None) -> Optional[int]:
-    """Match sub cost code number to sub_cost_code.id."""
+def _resolve_sub_cost_code(raw: str, sub_cost_codes: list) -> Optional[int]:
+    """Match sub cost code number or alias to sub_cost_code.id."""
     if not raw:
         return None
     normalized = _normalize_sub_cost_code(raw)
     if not normalized:
         return None
 
+    raw_stripped = raw.strip()
+
     for scc in sub_cost_codes:
         scc_number = getattr(scc, 'number', None)
         if scc_number and str(scc_number).strip() == normalized:
             return scc.id
 
-    if aliases:
-        raw_stripped = raw.strip()
-        for alias_entry in aliases:
-            alias_value = getattr(alias_entry, 'alias', None)
-            if alias_value and alias_value.strip() == normalized:
-                return alias_entry.sub_cost_code_id
-            if alias_value and alias_value.strip() == raw_stripped:
-                return alias_entry.sub_cost_code_id
+    # Check aliases (pipe-delimited field on SubCostCode)
+    for scc in sub_cost_codes:
+        aliases_str = getattr(scc, 'aliases', None)
+        if not aliases_str:
+            continue
+        for alias_value in aliases_str.split('|'):
+            alias_stripped = alias_value.strip()
+            if alias_stripped == normalized or alias_stripped == raw_stripped:
+                return scc.id
 
     return None
 
@@ -254,7 +256,6 @@ class BillFolderProcessor:
         projects = ProjectService().read_all()
         vendors = VendorService().read_all()
         sub_cost_codes = SubCostCodeService().read_all()
-        sub_cost_code_aliases = SubCostCodeAliasService().read_all()
 
         pending = []
         for file_item in pdf_files:
@@ -284,7 +285,7 @@ class BillFolderProcessor:
 
             if parsed.sub_cost_code_raw:
                 parsed.sub_cost_code_id = _resolve_sub_cost_code(
-                    parsed.sub_cost_code_raw, sub_cost_codes, sub_cost_code_aliases
+                    parsed.sub_cost_code_raw, sub_cost_codes
                 )
                 sub_cost_code_id = parsed.sub_cost_code_id
 
@@ -371,7 +372,6 @@ class BillFolderProcessor:
         projects = ProjectService().read_all()
         vendors = VendorService().read_all()
         sub_cost_codes = SubCostCodeService().read_all()
-        sub_cost_code_aliases = SubCostCodeAliasService().read_all()
 
         payment_term = PaymentTermService().read_by_name("Due on receipt")
         payment_term_public_id = payment_term.public_id if payment_term else None
@@ -386,7 +386,6 @@ class BillFolderProcessor:
                     projects=projects,
                     vendors=vendors,
                     sub_cost_codes=sub_cost_codes,
-                    sub_cost_code_aliases=sub_cost_code_aliases,
                     tenant_id=tenant_id,
                     payment_term_public_id=payment_term_public_id,
                     result=result,
@@ -408,7 +407,6 @@ class BillFolderProcessor:
         projects: list,
         vendors: list,
         sub_cost_codes: list,
-        sub_cost_code_aliases: list,
         tenant_id: int,
         payment_term_public_id: Optional[str],
         result: ProcessingResult,
@@ -426,7 +424,7 @@ class BillFolderProcessor:
             parsed.vendor_public_id = _resolve_vendor(parsed.vendor_name, vendors)
         if parsed.sub_cost_code_raw:
             parsed.sub_cost_code_id = _resolve_sub_cost_code(
-                parsed.sub_cost_code_raw, sub_cost_codes, sub_cost_code_aliases
+                parsed.sub_cost_code_raw, sub_cost_codes
             )
 
         # Validate required fields

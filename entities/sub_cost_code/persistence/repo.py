@@ -20,11 +20,6 @@ logger = logging.getLogger(__name__)
 class SubCostCodeRepository:
     """
     Repository for SubCostCode entity persistence operations.
-
-    Handles all database operations for SubCostCode entities using
-    Azure SQL Server stored procedures. Provides a consistent
-    interface for CRUD operations while isolating database-specific
-    behavior.
     """
 
     def __init__(self):
@@ -34,12 +29,6 @@ class SubCostCodeRepository:
     def _from_db(self, row: pyodbc.Row) -> Optional[SubCostCode]:
         """
         Convert database row to SubCostCode model.
-
-        Args:
-            row: Database row from pyodbc cursor
-
-        Returns:
-            SubCostCode model instance or None if row is empty
         """
         if not row:
             return None
@@ -54,7 +43,8 @@ class SubCostCodeRepository:
                 number=row.Number,
                 name=row.Name,
                 description=row.Description,
-                cost_code_id=row.CostCodeId
+                cost_code_id=row.CostCodeId,
+                aliases=getattr(row, "Aliases", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during from db: {error}")
@@ -66,27 +56,18 @@ class SubCostCodeRepository:
     def create(
         self,
         *,
-        tenant_id: int = 1,
         number: str,
         name: str,
         description: Optional[str] = None,
         cost_code_id: int,
+        aliases: Optional[str] = None,
     ) -> SubCostCode:
         """
         Create a new sub cost code.
-        
-        Args:
-            tenant_id: Tenant ID for multi-tenant isolation (logged for audit, not yet used for filtering)
-            number: Sub cost code number
-            name: Sub cost code name
-            description: Sub cost code description (optional)
-            cost_code_id: Parent cost code ID
         """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                # Note: tenant_id is accepted for audit trail purposes
-                # Future: Add TenantId param when stored procedure supports it
                 call_procedure(
                     cursor=cursor,
                     name="CreateSubCostCode",
@@ -95,6 +76,7 @@ class SubCostCodeRepository:
                         "Name": name,
                         "Description": description,
                         "CostCodeId": cost_code_id,
+                        "Aliases": aliases,
                     },
                 )
                 row = cursor.fetchone()
@@ -102,9 +84,6 @@ class SubCostCodeRepository:
                     logger.error("Create SubCostCode failed.")
                     raise map_database_error(Exception("Create SubCostCode failed."))
                 return self._from_db(row)
-        except AttributeError as error:
-            logger.error(f"Attribute error during create sub cost code: {error}")
-            raise map_database_error(error)
         except Exception as error:
             logger.error(f"Error during create sub cost code: {error}")
             raise map_database_error(error)
@@ -123,9 +102,6 @@ class SubCostCodeRepository:
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
-        except AttributeError as error:
-            logger.error(f"Attribute error during read all sub cost codes: {error}")
-            raise map_database_error(error)
         except Exception as error:
             logger.error(f"Error during read all sub cost codes: {error}")
             raise map_database_error(error)
@@ -144,9 +120,6 @@ class SubCostCodeRepository:
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
-        except AttributeError as error:
-            logger.error(f"Attribute error during read sub cost code by ID: {error}")
-            raise map_database_error(error)
         except Exception as error:
             logger.error(f"Error during read sub cost code by ID: {error}")
             raise map_database_error(error)
@@ -165,16 +138,13 @@ class SubCostCodeRepository:
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
-        except AttributeError as error:
-            logger.error(f"Attribute error during read sub cost code by public ID: {error}")
-            raise map_database_error(error)
         except Exception as error:
             logger.error(f"Error during read sub cost code by public ID: {error}")
             raise map_database_error(error)
 
     def read_by_number(self, number: str) -> Optional[SubCostCode]:
         """
-        Read sub cost code by number within a parent cost code.
+        Read sub cost code by number.
         """
         try:
             with get_connection() as conn:
@@ -182,20 +152,15 @@ class SubCostCodeRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadSubCostCodeByNumber",
-                    params={
-                        "Number": number,
-                    },
+                    params={"Number": number},
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
-        except AttributeError as error:
-            logger.error(f"Attribute error during read sub cost code by number: {error}")
-            raise map_database_error(error)
         except Exception as error:
             logger.error(f"Error during read sub cost code by number: {error}")
             raise map_database_error(error)
 
-    def read_by_cost_code_id(self, cost_code_id: str) -> List[SubCostCode]:
+    def read_by_cost_code_id(self, cost_code_id: int) -> List[SubCostCode]:
         """
         Read sub cost codes by parent cost code ID.
         """
@@ -209,13 +174,27 @@ class SubCostCodeRepository:
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
-        except AttributeError as error:
-            logger.error(f"Attribute error during read sub cost codes by parent: {error}")
-            raise map_database_error(error)
         except Exception as error:
             logger.error(f"Error during read sub cost codes by parent: {error}")
             raise map_database_error(error)
 
+    def read_by_alias(self, alias: str) -> Optional[SubCostCode]:
+        """
+        Read sub cost code by alias value (searches pipe-delimited Aliases field).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadSubCostCodeByAlias",
+                    params={"Alias": alias},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read sub cost code by alias: {error}")
+            raise map_database_error(error)
 
     def update_by_id(self, sub_cost_code: SubCostCode) -> Optional[SubCostCode]:
         """
@@ -234,18 +213,58 @@ class SubCostCodeRepository:
                         "Name": sub_cost_code.name,
                         "Description": sub_cost_code.description,
                         "CostCodeId": sub_cost_code.cost_code_id,
+                        "Aliases": sub_cost_code.aliases,
                     },
                 )
                 row = cursor.fetchone()
                 if not row:
-                    logger.error("Update SubCostCode failed due to concurrency mismatch.")
-                    raise map_database_error(Exception("RowVersion conflict"))
+                    logger.warning(
+                        "UpdateSubCostCodeById returned no row (id=%s); possible row-version conflict or record not found.",
+                        sub_cost_code.id,
+                    )
+                    raise map_database_error(
+                        Exception(
+                            "Update did not match any row; the sub cost code may have been modified by another process (row-version conflict) or no longer exists."
+                        )
+                    )
                 return self._from_db(row)
-        except AttributeError as error:
-            logger.error(f"Attribute error during update sub cost code by ID: {error}")
-            raise map_database_error(error)
         except Exception as error:
             logger.error(f"Error during update sub cost code by ID: {error}")
+            raise map_database_error(error)
+
+    def upsert(
+        self,
+        *,
+        number: str,
+        name: str,
+        description: Optional[str] = None,
+        cost_code_id: int,
+        aliases: Optional[str] = None,
+    ) -> SubCostCode:
+        """
+        Create or update a sub cost code by Number + CostCodeId.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="UpsertSubCostCode",
+                    params={
+                        "Number": number,
+                        "Name": name,
+                        "Description": description,
+                        "CostCodeId": cost_code_id,
+                        "Aliases": aliases,
+                    },
+                )
+                row = cursor.fetchone()
+                if not row:
+                    logger.error("UpsertSubCostCode did not return a row.")
+                    raise map_database_error(Exception("UpsertSubCostCode failed."))
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during upsert sub cost code: {error}")
             raise map_database_error(error)
 
     def delete_by_id(self, id: int) -> Optional[SubCostCode]:
@@ -262,9 +281,6 @@ class SubCostCodeRepository:
                 )
                 row = cursor.fetchone()
                 return self._from_db(row) if row else None
-        except AttributeError as error:
-            logger.error(f"Attribute error during delete sub cost code by ID: {error}")
-            raise map_database_error(error)
         except Exception as error:
             logger.error(f"Error during delete sub cost code by ID: {error}")
             raise map_database_error(error)

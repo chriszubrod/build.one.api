@@ -17,18 +17,11 @@ class SubCostCodeService:
         """Initialize the SubCostCodeService."""
         self.repo = repo or SubCostCodeRepository()
 
-    def create(self, *, tenant_id: int = 1, number: str, name: str, description: Optional[str] = None, cost_code_id: int) -> SubCostCode:
+    def create(self, *, tenant_id: int = 1, number: str, name: str, description: Optional[str] = None, cost_code_id: int, aliases: Optional[str] = None) -> SubCostCode:
         """
         Create a new sub cost code.
-        
-        Args:
-            tenant_id: Tenant ID for multi-tenant isolation (default: 1)
-            number: Sub cost code number
-            name: Sub cost code name
-            description: Sub cost code description (optional)
-            cost_code_id: Parent cost code ID
         """
-        return self.repo.create(tenant_id=tenant_id, number=number, name=name, description=description, cost_code_id=cost_code_id)
+        return self.repo.create(number=number, name=name, description=description, cost_code_id=cost_code_id, aliases=aliases)
 
     def read_all(self) -> List[SubCostCode]:
         """
@@ -36,7 +29,7 @@ class SubCostCodeService:
         """
         return self.repo.read_all()
 
-    def read_by_id(self, id: str) -> Optional[SubCostCode]:
+    def read_by_id(self, id: int) -> Optional[SubCostCode]:
         """
         Read a sub cost code by ID.
         """
@@ -50,9 +43,21 @@ class SubCostCodeService:
 
     def read_by_number(self, number: str) -> Optional[SubCostCode]:
         """
-        Read a sub cost code by number within a parent cost code.
+        Read a sub cost code by number.
         """
         return self.repo.read_by_number(number=number)
+
+    def read_by_alias(self, alias: str) -> Optional[SubCostCode]:
+        """
+        Read a sub cost code by alias value.
+        """
+        return self.repo.read_by_alias(alias=alias)
+
+    def upsert(self, *, number: str, name: str, description: Optional[str] = None, cost_code_id: int, aliases: Optional[str] = None) -> SubCostCode:
+        """
+        Create or update a sub cost code by Number + CostCodeId.
+        """
+        return self.repo.upsert(number=number, name=name, description=description, cost_code_id=cost_code_id, aliases=aliases)
 
     def update_by_public_id(
         self,
@@ -64,11 +69,11 @@ class SubCostCodeService:
         name: str = None,
         description: str = None,
         cost_code_id: int = None,
+        aliases: str = None,
     ) -> Optional[SubCostCode]:
         """
         Update a sub cost code by public ID.
         """
-        # TODO: In Phase 10, validate tenant_id matches record's tenant
         _sub_cost_code = self.read_by_public_id(public_id=public_id)
         if _sub_cost_code:
             _sub_cost_code.row_version = row_version
@@ -80,13 +85,14 @@ class SubCostCodeService:
                 _sub_cost_code.description = description
             if cost_code_id is not None:
                 _sub_cost_code.cost_code_id = cost_code_id
+            if aliases is not None:
+                _sub_cost_code.aliases = aliases
         return self.repo.update_by_id(_sub_cost_code)
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[SubCostCode]:
         """
-        Soft delete a sub cost code by public ID.
+        Delete a sub cost code by public ID.
         """
-        # TODO: In Phase 10, validate tenant_id matches record's tenant
         _sub_cost_code = self.read_by_public_id(public_id=public_id)
         if not _sub_cost_code:
             return None

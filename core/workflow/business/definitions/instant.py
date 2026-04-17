@@ -95,6 +95,9 @@ SYNCHRONOUS_TASKS = [
     # Other
     "integration",
     "contract_labor",
+
+    # Time tracking
+    "time_entry",
 ]
 
 

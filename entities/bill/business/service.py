@@ -29,7 +29,9 @@ from integrations.ms.sharepoint.driveitem.persistence.repo import MsDriveItemRep
 from integrations.ms.sharepoint.external.client import (
     get_excel_used_range_values,
     insert_excel_rows,
-    append_excel_rows
+    append_excel_rows,
+    create_workbook_session,
+    close_workbook_session,
 )
 
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
@@ -1340,10 +1342,11 @@ class BillService:
         """
         Sync Bill and BillLineItem data to the project's Excel workbook.
         Inserts rows after the last matching SubCostCode entry, or appends at end if not found.
-        
+
         Returns:
             Dict with success, synced_count, and errors
         """
+        session_id = None
         try:
 
             excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
@@ -1406,14 +1409,17 @@ class BillService:
                     "synced_count": 0,
                     "errors": [{"error": "Vendor not found"}]
                 }
-            
+
+            session_id = create_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id)
+
             # Read current worksheet data to find insertion points
             logger.info(f"Reading worksheet '{worksheet_name}' to determine insertion points")
-            
+
             worksheet_result = get_excel_used_range_values(
                 drive_id=drive.drive_id,
                 item_id=driveitem.item_id,
-                worksheet_name=worksheet_name
+                worksheet_name=worksheet_name,
+                session_id=session_id,
             )
             
             worksheet_values = []
@@ -1541,7 +1547,8 @@ class BillService:
                     item_id=driveitem.item_id,
                     worksheet_name=worksheet_name,
                     row_index=insertion_row,
-                    values=group_rows
+                    values=group_rows,
+                    session_id=session_id,
                 )
 
                 if insert_result.get("status_code") in [200, 201]:
@@ -1563,7 +1570,8 @@ class BillService:
                     drive_id=drive.drive_id,
                     item_id=driveitem.item_id,
                     worksheet_name=worksheet_name,
-                    values=rows_to_append
+                    values=rows_to_append,
+                    session_id=session_id,
                 )
                 
                 if append_result.get("status_code") in [200, 201]:
@@ -1591,7 +1599,7 @@ class BillService:
                 "synced_count": synced_count,
                 "errors": errors
             }
-            
+
         except Exception as e:
             logger.exception(f"Error syncing to Excel workbook for project {project_id}")
             return {
@@ -1600,6 +1608,9 @@ class BillService:
                 "synced_count": 0,
                 "errors": [{"error": str(e)}]
             }
+        finally:
+            if session_id:
+                close_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id, session_id=session_id)
 
 
     def _upload_attachments_to_module_folder(

@@ -112,7 +112,7 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
 
     table_data = [headers]
     for r in consolidated:
-        price = r.get("price")
+        price = r.get("price") if r.get("price") is not None else r.get("amount")
         try:
             amt_str = f"${float(price):,.2f}" if price is not None else "\u2014"
         except (TypeError, ValueError):
@@ -126,7 +126,7 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
             amt_str,
         ])
 
-    grand_total = sum(float(r.get("price") or 0) for r in consolidated)
+    grand_total = sum(float(r.get("price") if r.get("price") is not None else r.get("amount") or 0) for r in consolidated)
     table_data.append(["", "", "", "", Paragraph("Total", bold_right), Paragraph(f"${grand_total:,.2f}", bold_right)])
     n = len(table_data)
 
@@ -218,7 +218,7 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
     for cc, group_iter in groupby(rows, key=lambda r: r.get("cost_code_number") or ""):
         group_items = list(group_iter)
         for r in group_items:
-            price = r.get("price")
+            price = r.get("price") if r.get("price") is not None else r.get("amount")
             try:
                 amt_str = f"${float(price):,.2f}" if price is not None else "\u2014"
             except (TypeError, ValueError):
@@ -232,7 +232,7 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
                 _toc_source_label(r.get("source_type", "")),
                 amt_str,
             ])
-        subtotal = sum(float(r.get("price") or 0) for r in group_items)
+        subtotal = sum(float(r.get("price") if r.get("price") is not None else r.get("amount") or 0) for r in group_items)
         table_data.append(["", "", "", "", "", Paragraph("Subtotal", bold_right), Paragraph(f"${subtotal:,.2f}", bold_right)])
         subtotal_indices.append(len(table_data) - 1)
         # Blank spacer row between groups
@@ -244,7 +244,7 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
         table_data.pop()
         spacer_indices.pop()
 
-    grand_total = sum(float(r.get("price") or 0) for r in rows)
+    grand_total = sum(float(r.get("price") if r.get("price") is not None else r.get("amount") or 0) for r in rows)
     table_data.append(["", "", "", "", "", Paragraph("Total", bold_right), Paragraph(f"${grand_total:,.2f}", bold_right)])
     total_idx = len(table_data) - 1
     n = len(table_data)

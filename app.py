@@ -86,6 +86,8 @@ from entities.payment_term.api.router import router as payment_term_api_router
 from entities.payment_term.web.controller import router as payment_term_web_router
 from entities.contract_labor.api.router import router as contract_labor_api_router
 from entities.contract_labor.web.controller import router as contract_labor_web_router
+from entities.time_entry.api.router import router as time_entry_api_router
+from entities.time_entry.api.router import time_log_router as time_log_api_router
 from entities.invoice.api.router import router as invoice_api_router
 from entities.invoice.web.controller import router as invoice_web_router
 from entities.invoice_line_item.api.router import router as invoice_line_item_api_router
@@ -263,6 +265,8 @@ app.include_router(payment_term_api_router)
 app.include_router(payment_term_web_router)
 app.include_router(contract_labor_api_router)
 app.include_router(contract_labor_web_router)
+app.include_router(time_entry_api_router)
+app.include_router(time_log_api_router)
 app.include_router(invoice_api_router)
 app.include_router(invoice_web_router)
 app.include_router(invoice_line_item_api_router)

@@ -84,6 +84,9 @@ PROCESS_REGISTRY: Dict[str, str] = {
     # Other
     "integration": "entities.integration.business.service.IntegrationService",
     "contract_labor": "entities.contract_labor.business.service.ContractLaborService",
+
+    # Time tracking
+    "time_entry": "entities.time_entry.business.service.TimeEntryService",
 }
 
 

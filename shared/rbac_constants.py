@@ -66,3 +66,6 @@ class Modules:
 
     # Pending actions
     PENDING_ACTIONS = "Pending Actions"
+
+    # Time tracking
+    TIME_TRACKING   = "Time Tracking"

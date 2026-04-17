@@ -24,6 +24,8 @@ from integrations.ms.sharepoint.external.client import (
     get_excel_used_range_values,
     insert_excel_rows,
     append_excel_rows,
+    create_workbook_session,
+    close_workbook_session,
 )
 from entities.bill.business.service import find_insertion_row_for_subcostcode
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
@@ -586,6 +588,7 @@ class BillCreditCompleteService:
         Returns:
             Dict with success, synced_count, and errors
         """
+        session_id = None
         try:
             excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
 
@@ -641,13 +644,16 @@ class BillCreditCompleteService:
                     "errors": [{"error": "Vendor not found"}]
                 }
 
+            session_id = create_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id)
+
             # Read current worksheet data to find insertion points
             logger.info(f"Reading worksheet '{worksheet_name}' to determine insertion points")
 
             worksheet_result = get_excel_used_range_values(
                 drive_id=drive.drive_id,
                 item_id=driveitem.item_id,
-                worksheet_name=worksheet_name
+                worksheet_name=worksheet_name,
+                session_id=session_id,
             )
 
             worksheet_values = []
@@ -749,7 +755,8 @@ class BillCreditCompleteService:
                         item_id=driveitem.item_id,
                         worksheet_name=worksheet_name,
                         row_index=insertion_row,
-                        values=group_rows
+                        values=group_rows,
+                        session_id=session_id,
                     )
 
                     if insert_result.get("status_code") in [200, 201]:
@@ -777,7 +784,8 @@ class BillCreditCompleteService:
                     drive_id=drive.drive_id,
                     item_id=driveitem.item_id,
                     worksheet_name=worksheet_name,
-                    values=rows_to_append
+                    values=rows_to_append,
+                    session_id=session_id,
                 )
 
                 if append_result.get("status_code") in [200, 201]:
@@ -814,3 +822,6 @@ class BillCreditCompleteService:
                 "synced_count": 0,
                 "errors": [{"error": str(e)}]
             }
+        finally:
+            if session_id:
+                close_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id, session_id=session_id)

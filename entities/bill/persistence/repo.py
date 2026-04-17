@@ -120,6 +120,92 @@ class BillRepository:
             logger.error(f"Error during read all bills: {error}")
             raise map_database_error(error)
 
+    def read_paginated(
+        self,
+        *,
+        page_number: int = 1,
+        page_size: int = 50,
+        search_term: Optional[str] = None,
+        vendor_id: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        is_draft: Optional[bool] = None,
+        sort_by: str = "BillDate",
+        sort_direction: str = "DESC",
+    ) -> list[Bill]:
+        """Read bills with pagination and optional filtering."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadBillsPaginated",
+                    params={
+                        "PageNumber": page_number,
+                        "PageSize": page_size,
+                        "SearchTerm": search_term,
+                        "VendorId": vendor_id,
+                        "StartDate": start_date,
+                        "EndDate": end_date,
+                        "IsDraft": (1 if is_draft else 0) if is_draft is not None else None,
+                        "SortBy": sort_by,
+                        "SortDirection": sort_direction,
+                    },
+                )
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(f"Error during read paginated bills: {error}")
+            raise map_database_error(error)
+
+    def count(
+        self,
+        *,
+        search_term: Optional[str] = None,
+        vendor_id: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        is_draft: Optional[bool] = None,
+    ) -> int:
+        """Count bills matching filter criteria."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="CountBills",
+                    params={
+                        "SearchTerm": search_term,
+                        "VendorId": vendor_id,
+                        "StartDate": start_date,
+                        "EndDate": end_date,
+                        "IsDraft": (1 if is_draft else 0) if is_draft is not None else None,
+                    },
+                )
+                row = cursor.fetchone()
+                return row.TotalCount if row else 0
+        except Exception as error:
+            logger.error(f"Error during count bills: {error}")
+            raise map_database_error(error)
+
+    def read_first_line_item_projects(self, bill_ids: list[int]) -> dict[int, int | None]:
+        """Return a mapping of BillId → ProjectId from the first line item of each bill."""
+        if not bill_ids:
+            return {}
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadBillFirstLineItemProjects",
+                    params={"BillIds": ",".join(str(bid) for bid in bill_ids)},
+                )
+                rows = cursor.fetchall()
+                return {row.BillId: row.ProjectId for row in rows}
+        except Exception as error:
+            logger.error(f"Error reading first line item projects: {error}")
+            return {}
+
     def read_by_id(self, id: int) -> Optional[Bill]:
         """
         Read a bill by ID.

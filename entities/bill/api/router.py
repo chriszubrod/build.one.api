@@ -2,7 +2,8 @@
 import logging
 
 # Third-party Imports
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from typing import Optional
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from decimal import Decimal
 
@@ -81,12 +82,45 @@ def create_bill_router(
 
 
 @router.get("/get/bills")
-def get_bills_router(current_user: dict = Depends(require_module_api(Modules.BILLS))):
+def get_bills_router(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    search: Optional[str] = Query(default=None),
+    vendor_id: Optional[int] = Query(default=None),
+    is_draft: Optional[bool] = Query(default=None),
+    current_user: dict = Depends(require_module_api(Modules.BILLS)),
+):
     """
-    Read all bills.
+    Read bills with pagination.
     """
-    bills = BillService().read_all()
-    return list_response([bill.to_dict() for bill in bills])
+    service = BillService()
+    bills = service.read_paginated(
+        page_number=page,
+        page_size=page_size,
+        search_term=search,
+        vendor_id=vendor_id,
+        is_draft=is_draft,
+    )
+    total = service.count(
+        search_term=search,
+        vendor_id=vendor_id,
+        is_draft=is_draft,
+    )
+    bill_dicts = [bill.to_dict() for bill in bills]
+
+    # Enrich with first line item's project_id
+    bill_ids = [b.id for b in bills if b.id]
+    if bill_ids:
+        project_map = BillRepository().read_first_line_item_projects(bill_ids)
+        for bd in bill_dicts:
+            bd["project_id"] = project_map.get(bd["id"])
+
+    return {
+        "data": bill_dicts,
+        "count": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.get("/get/bill/by-bill-number-and-vendor")
@@ -328,6 +362,60 @@ def get_bill_folder_status_router(
     if not result:
         raise HTTPException(status_code=404, detail="Run not found")
     return result
+
+
+@router.get("/get/bill-folder-summary")
+def get_bill_folder_summary_router(
+    current_user: dict = Depends(require_module_api(Modules.BILLS)),
+):
+    """Get summary of the linked SharePoint bill source folder."""
+    try:
+        from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
+        from integrations.ms.sharepoint.external import client as sp_client
+
+        connector = DriveItemBillFolderConnector()
+        source_folder = connector.get_folder(1, "source")
+
+        if not source_folder:
+            return item_response({"is_linked": False})
+
+        drive_id = source_folder.get("drive_id")
+        item_id = source_folder.get("item_id")
+
+        file_count = 0
+        folder_name = source_folder.get("name")
+        folder_web_url = source_folder.get("web_url")
+
+        if drive_id and item_id:
+            # Get fresh metadata from Graph API (stored web_url may be stale)
+            try:
+                item_meta = sp_client.get_drive_item(drive_id, item_id)
+                if item_meta.get("status_code") == 200:
+                    live_item = item_meta.get("item", {})
+                    folder_name = live_item.get("name") or folder_name
+                    folder_web_url = live_item.get("web_url") or folder_web_url
+            except Exception as e:
+                logger.warning("Failed to get folder metadata: %s", e)
+
+            try:
+                children = sp_client.list_drive_item_children(drive_id, item_id)
+                if children.get("status_code") == 200:
+                    for child in children.get("items", []):
+                        name = child.get("name", "")
+                        if child.get("item_type") == "file" and (name.lower().endswith(".pdf") or "." not in name):
+                            file_count += 1
+            except Exception as e:
+                logger.warning("Failed to count files in source folder: %s", e)
+
+        return item_response({
+            "is_linked": True,
+            "folder_name": folder_name,
+            "folder_web_url": folder_web_url,
+            "file_count": file_count,
+        })
+    except Exception as e:
+        logger.exception("Error getting bill folder summary")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/process/bill-folder-pending")

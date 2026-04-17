@@ -33,6 +33,71 @@ def _get_auth_headers() -> Optional[dict]:
     }
 
 
+def create_workbook_session(drive_id: str, item_id: str) -> Optional[str]:
+    """
+    Create a persistent workbook session for batch Excel operations.
+    Returns the session ID string on success, or None if session creation fails.
+    Callers should fall back to sessionless behavior when None is returned.
+    """
+    try:
+        headers = _get_auth_headers()
+        if not headers:
+            logger.warning("Cannot create workbook session: no valid auth token")
+            return None
+
+        headers["Prefer"] = "respond-async"
+
+        endpoint = f"{GRAPH_API_BASE}/drives/{drive_id}/items/{item_id}/workbook/createSession"
+        payload = {"persistChanges": True}
+
+        logger.info(f"Creating workbook session for item {item_id}")
+        resp = requests.post(url=endpoint, headers=headers, json=payload, timeout=30)
+
+        if resp.status_code in (200, 201):
+            session_id = resp.json().get("id")
+            if session_id:
+                logger.info(f"Created workbook session: {session_id[:20]}...")
+                return session_id
+            else:
+                logger.warning("createSession succeeded but returned no session ID")
+                return None
+        else:
+            logger.warning(f"createSession failed (status {resp.status_code}): {resp.text[:200]}")
+            return None
+
+    except requests.exceptions.Timeout:
+        logger.warning("createSession timed out -- falling back to sessionless")
+        return None
+    except Exception as e:
+        logger.warning(f"createSession error -- falling back to sessionless: {e}")
+        return None
+
+
+def close_workbook_session(drive_id: str, item_id: str, session_id: str) -> None:
+    """
+    Close a workbook session. Best-effort -- failures are logged but not raised.
+    """
+    try:
+        headers = _get_auth_headers()
+        if not headers:
+            return
+
+        headers["workbook-session-id"] = session_id
+
+        endpoint = f"{GRAPH_API_BASE}/drives/{drive_id}/items/{item_id}/workbook/closeSession"
+
+        logger.info(f"Closing workbook session: {session_id[:20]}...")
+        resp = requests.post(url=endpoint, headers=headers, timeout=15)
+
+        if resp.status_code in (200, 204):
+            logger.info("Workbook session closed successfully")
+        else:
+            logger.warning(f"closeSession returned status {resp.status_code}: {resp.text[:200]}")
+
+    except Exception as e:
+        logger.warning(f"Error closing workbook session (non-fatal): {e}")
+
+
 def search_sites(query: str) -> dict:
     """
     Search for SharePoint sites using MS Graph API.
@@ -1258,7 +1323,7 @@ def get_excel_worksheet(drive_id: str, item_id: str, worksheet_name: str) -> dic
         }
 
 
-def update_excel_range(drive_id: str, item_id: str, worksheet_name: str, range_address: str, values: list, max_retries: int = 3) -> dict:
+def update_excel_range(drive_id: str, item_id: str, worksheet_name: str, range_address: str, values: list, session_id: Optional[str] = None, max_retries: int = 3) -> dict:
     """
     Update a range of cells in an Excel worksheet.
     Includes retry logic with exponential backoff for transient Graph API errors.
@@ -1285,7 +1350,10 @@ def update_excel_range(drive_id: str, item_id: str, worksheet_name: str, range_a
                 "status_code": 401,
                 "range": None
             }
-        
+
+        if session_id:
+            headers["workbook-session-id"] = session_id
+
         # URL encode worksheet name and range address
         encoded_name = urllib.parse.quote(worksheet_name)
         encoded_range = urllib.parse.quote(range_address)
@@ -1368,7 +1436,7 @@ def update_excel_range(drive_id: str, item_id: str, worksheet_name: str, range_a
         }
 
 
-def append_excel_rows(drive_id: str, item_id: str, worksheet_name: str, values: list) -> dict:
+def append_excel_rows(drive_id: str, item_id: str, worksheet_name: str, values: list, session_id: Optional[str] = None) -> dict:
     """
     Append rows to an Excel worksheet. Appends to the first empty row after existing data.
     
@@ -1389,7 +1457,10 @@ def append_excel_rows(drive_id: str, item_id: str, worksheet_name: str, values: 
                 "status_code": 401,
                 "range": None
             }
-        
+
+        if session_id:
+            headers["workbook-session-id"] = session_id
+
         # URL encode worksheet name
         import urllib.parse
         encoded_name = urllib.parse.quote(worksheet_name)
@@ -1441,7 +1512,7 @@ def append_excel_rows(drive_id: str, item_id: str, worksheet_name: str, values: 
         range_address = f"A{start_row}:Z{start_row + num_rows - 1}"
         
         # Use update_excel_range to append
-        return update_excel_range(drive_id, item_id, worksheet_name, range_address, padded_values)
+        return update_excel_range(drive_id, item_id, worksheet_name, range_address, padded_values, session_id=session_id)
         
     except Exception as e:
         logger.exception("Error appending excel rows")
@@ -1452,7 +1523,7 @@ def append_excel_rows(drive_id: str, item_id: str, worksheet_name: str, values: 
         }
 
 
-def get_excel_used_range_values(drive_id: str, item_id: str, worksheet_name: str) -> dict:
+def get_excel_used_range_values(drive_id: str, item_id: str, worksheet_name: str, session_id: Optional[str] = None) -> dict:
     """
     Get the used range of a worksheet with all cell values.
     
@@ -1476,7 +1547,10 @@ def get_excel_used_range_values(drive_id: str, item_id: str, worksheet_name: str
                 "status_code": 401,
                 "range": None
             }
-        
+
+        if session_id:
+            headers["workbook-session-id"] = session_id
+
         # URL encode worksheet name
         import urllib.parse, re
         encoded_name = urllib.parse.quote(worksheet_name)
@@ -1547,7 +1621,7 @@ def get_excel_used_range_values(drive_id: str, item_id: str, worksheet_name: str
         }
 
 
-def insert_excel_rows(drive_id: str, item_id: str, worksheet_name: str, row_index: int, values: list, max_retries: int = 3) -> dict:
+def insert_excel_rows(drive_id: str, item_id: str, worksheet_name: str, row_index: int, values: list, session_id: Optional[str] = None, max_retries: int = 3) -> dict:
     """
     Insert rows at a specific position in a worksheet, shifting existing rows down.
     Includes retry logic with exponential backoff for transient Graph API errors.
@@ -1574,9 +1648,12 @@ def insert_excel_rows(drive_id: str, item_id: str, worksheet_name: str, row_inde
                 "status_code": 401,
                 "range": None
             }
-        
+
+        if session_id:
+            headers["workbook-session-id"] = session_id
+
         encoded_name = urllib.parse.quote(worksheet_name)
-        
+
         num_rows = len(values)
         num_cols = len(values[0]) if values else 1
         
@@ -1657,7 +1734,7 @@ def insert_excel_rows(drive_id: str, item_id: str, worksheet_name: str, row_inde
             }
         
         # Step 2: Update the inserted rows with values
-        return update_excel_range(drive_id, item_id, worksheet_name, insert_range, values)
+        return update_excel_range(drive_id, item_id, worksheet_name, insert_range, values, session_id=session_id)
         
     except Exception as e:
         logger.exception("Error inserting excel rows")
@@ -1668,7 +1745,7 @@ def insert_excel_rows(drive_id: str, item_id: str, worksheet_name: str, row_inde
         }
 
 
-def clear_excel_range(drive_id: str, item_id: str, worksheet_name: str, range_address: str) -> dict:
+def clear_excel_range(drive_id: str, item_id: str, worksheet_name: str, range_address: str, session_id: Optional[str] = None) -> dict:
     """
     Clear a range of cells in an Excel worksheet.
     
@@ -1689,7 +1766,10 @@ def clear_excel_range(drive_id: str, item_id: str, worksheet_name: str, range_ad
                 "status_code": 401,
                 "range": None
             }
-        
+
+        if session_id:
+            headers["workbook-session-id"] = session_id
+
         # URL encode worksheet name and range address
         import urllib.parse
         encoded_name = urllib.parse.quote(worksheet_name)

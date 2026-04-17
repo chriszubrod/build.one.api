@@ -28,6 +28,8 @@ from integrations.ms.sharepoint.external.client import (
     append_excel_rows,
     list_drive_root_children,
     list_drive_item_children,
+    create_workbook_session,
+    close_workbook_session,
 )
 from integrations.ms.sharepoint.drive.business.service import MsDriveService
 
@@ -562,6 +564,7 @@ class ExpenseService:
         public_id check, bottom-to-top insertion to avoid row-shift issues,
         and failed-insert → append fallback.
         """
+        session_id = None
         try:
             from entities.bill.business.service import find_insertion_row_for_subcostcode
 
@@ -588,12 +591,15 @@ class ExpenseService:
             if not vendor:
                 return {"success": False, "message": "Vendor not found", "synced_count": 0, "errors": [{"error": "Vendor not found"}]}
 
+            session_id = create_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id)
+
             # --- read current worksheet ---
             logger.info(f"Reading worksheet '{worksheet_name}' to determine insertion points")
             worksheet_result = get_excel_used_range_values(
                 drive_id=drive.drive_id,
                 item_id=driveitem.item_id,
                 worksheet_name=worksheet_name,
+                session_id=session_id,
             )
             worksheet_values = []
             if worksheet_result.get("status_code") == 200:
@@ -700,6 +706,7 @@ class ExpenseService:
                     worksheet_name=worksheet_name,
                     row_index=insertion_row,
                     values=group_rows,
+                    session_id=session_id,
                 )
                 if insert_result.get("status_code") in [200, 201]:
                     synced_count += len(group_rows)
@@ -718,6 +725,7 @@ class ExpenseService:
                     item_id=driveitem.item_id,
                     worksheet_name=worksheet_name,
                     values=rows_to_append,
+                    session_id=session_id,
                 )
                 if append_result.get("status_code") in [200, 201]:
                     synced_count += len(rows_to_append)
@@ -742,6 +750,9 @@ class ExpenseService:
         except Exception as e:
             logger.exception(f"Error syncing to Excel workbook for project {project_id}")
             return {"success": False, "message": f"Error syncing to Excel: {str(e)}", "synced_count": 0, "errors": [{"error": str(e)}]}
+        finally:
+            if session_id:
+                close_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id, session_id=session_id)
 
     def sync_expenses_batch_to_excel(self, expense_line_pairs: List[tuple], project_id: int) -> dict:
         """
@@ -758,6 +769,7 @@ class ExpenseService:
         Returns:
             dict with success, synced_count, errors
         """
+        session_id = None
         try:
             from entities.bill.business.service import find_insertion_row_for_subcostcode
 
@@ -789,13 +801,16 @@ class ExpenseService:
                 if expense.vendor_id and expense.vendor_id not in vendor_cache:
                     vendor_cache[expense.vendor_id] = self.vendor_service.read_by_id(id=expense.vendor_id)
 
+            session_id = create_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id)
+
             # --- read worksheet once ---
             logger.info(f"Reading worksheet '{worksheet_name}' for project {project_id} (batch: {len(expense_line_pairs)} expense(s))")
             worksheet_result = get_excel_used_range_values(
                 drive_id=drive.drive_id,
                 item_id=driveitem.item_id,
                 worksheet_name=worksheet_name,
-            )
+                    session_id=session_id,
+                )
             worksheet_values = []
             if worksheet_result.get("status_code") == 200:
                 range_data = worksheet_result.get("range", {})
@@ -883,6 +898,7 @@ class ExpenseService:
                     worksheet_name=worksheet_name,
                     row_index=insertion_row,
                     values=group_rows,
+                    session_id=session_id,
                 )
                 if insert_result.get("status_code") in [200, 201]:
                     synced_count += len(group_rows)
@@ -901,6 +917,7 @@ class ExpenseService:
                     item_id=driveitem.item_id,
                     worksheet_name=worksheet_name,
                     values=rows_to_append,
+                    session_id=session_id,
                 )
                 if append_result.get("status_code") in [200, 201]:
                     synced_count += len(rows_to_append)
@@ -922,6 +939,9 @@ class ExpenseService:
         except Exception as e:
             logger.exception(f"Error batch-syncing to Excel workbook for project {project_id}")
             return {"success": False, "message": f"Error syncing to Excel: {str(e)}", "synced_count": 0, "errors": [{"error": str(e)}]}
+        finally:
+            if session_id:
+                close_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id, session_id=session_id)
 
     def _upload_attachments_to_module_folder(
         self, expense, line_items: List, project_id: int, expense_line_items_count: int = 1

@@ -386,9 +386,12 @@ class InvoiceService:
         from integrations.ms.sharepoint.external.client import (
             get_excel_used_range_values,
             update_excel_range,
+            create_workbook_session,
+            close_workbook_session,
         )
         from integrations.ms.sharepoint.driveitem.persistence.repo import MsDriveItemRepository
 
+        session_id = None
         try:
             excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
             if not excel_mapping:
@@ -409,11 +412,14 @@ class InvoiceService:
             if not drive:
                 return {"success": False, "message": "Drive not found for Excel workbook", "synced_count": 0, "errors": []}
 
+            session_id = create_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id)
+
             # Read current worksheet data
             worksheet_result = get_excel_used_range_values(
                 drive_id=drive.drive_id,
                 item_id=driveitem.item_id,
                 worksheet_name=worksheet_name,
+                session_id=session_id,
             )
             if worksheet_result.get("status_code") != 200:
                 return {"success": False, "message": f"Could not read worksheet: {worksheet_result.get('message')}", "synced_count": 0, "errors": []}
@@ -496,6 +502,7 @@ class InvoiceService:
                         worksheet_name=worksheet_name,
                         range_address=cell_address,
                         values=[[invoice_number]],
+                        session_id=session_id,
                     )
                     if update_result.get("status_code") == 200:
                         synced_count += 1
@@ -519,6 +526,9 @@ class InvoiceService:
         except Exception as e:
             logger.exception(f"Error syncing invoice to Excel workbook for project {project_id}")
             return {"success": False, "message": f"Error syncing to Excel: {str(e)}", "synced_count": 0, "errors": [{"error": str(e)}]}
+        finally:
+            if session_id:
+                close_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id, session_id=session_id)
 
     def get_billable_items_for_project(self, project_public_id: str, invoice_public_id: str = None) -> dict:
         """

@@ -8,6 +8,7 @@ from integrations.intuit.qbo.customer.api.schemas import QboCustomerSync
 from integrations.intuit.qbo.customer.business.service import QboCustomerService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
+from shared.api.responses import list_response, item_response
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-customer"])
 service = QboCustomerService()
@@ -23,7 +24,7 @@ def sync_qbo_customers_router(body: QboCustomerSync, current_user: dict = Depend
         last_updated_time=body.last_updated_time,
         sync_to_modules=body.sync_to_modules
     )
-    return [customer.to_dict() for customer in customers]
+    return list_response([customer.to_dict() for customer in customers])
 
 
 @router.get("/get/qbo-customers")
@@ -32,7 +33,7 @@ def get_qbo_customers_router(current_user: dict = Depends(require_module_api(Mod
     Read all QBO customers.
     """
     customers = service.read_all()
-    return [customer.to_dict() for customer in customers]
+    return list_response([customer.to_dict() for customer in customers])
 
 
 @router.get("/get/qbo-customers/realm/{realm_id}")
@@ -41,7 +42,7 @@ def get_qbo_customers_by_realm_id_router(realm_id: str, current_user: dict = Dep
     Read all QBO customers by realm ID.
     """
     customers = service.read_by_realm_id(realm_id=realm_id)
-    return [customer.to_dict() for customer in customers]
+    return list_response([customer.to_dict() for customer in customers])
 
 
 @router.get("/get/qbo-customer/{qbo_id}")

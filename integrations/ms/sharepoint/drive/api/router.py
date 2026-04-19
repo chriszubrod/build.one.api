@@ -13,6 +13,7 @@ from integrations.ms.sharepoint.drive.api.schemas import (
 from integrations.ms.sharepoint.drive.business.service import MsDriveService
 from integrations.ms.sharepoint.drive.connector.company.business.service import DriveCompanyConnector
 from integrations.ms.sharepoint.external.client import get_my_drive
+from shared.api.responses import item_response, list_response, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -87,11 +88,7 @@ def list_linked_drives_router(
     """
     service = MsDriveService()
     drives = service.read_all()
-    return {
-        "message": f"Found {len(drives)} linked drives",
-        "status_code": 200,
-        "drives": [drive.to_dict() for drive in drives]
-    }
+    return list_response([drive.to_dict() for drive in drives])
 
 
 @router.get("/site/{site_public_id}")
@@ -126,16 +123,9 @@ def get_linked_drive_router(
     drive = service.read_by_public_id(public_id=public_id)
     
     if not drive:
-        raise HTTPException(
-            status_code=404,
-            detail="Linked drive not found"
-        )
-    
-    return {
-        "message": "Drive retrieved successfully",
-        "status_code": 200,
-        "drive": drive.to_dict()
-    }
+        raise_not_found("Drive")
+
+    return item_response(drive.to_dict())
 
 
 @router.put("/{public_id}")
@@ -247,17 +237,9 @@ def get_drive_for_company_router(
     mapping = connector.get_drive_for_company(company_id=company_id)
     
     if not mapping:
-        return {
-            "message": "No linked drive found for this company",
-            "status_code": 404,
-            "mapping": None
-        }
-    
-    return {
-        "message": "Drive mapping retrieved successfully",
-        "status_code": 200,
-        "mapping": mapping.to_dict()
-    }
+        raise_not_found("Drive mapping")
+
+    return item_response(mapping.to_dict())
 
 
 @router.delete("/connector/company/{company_id}")

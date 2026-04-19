@@ -8,6 +8,7 @@ from integrations.intuit.qbo.client.api.schemas import QboClientCreate, QboClien
 from integrations.intuit.qbo.client.business.service import QboClientService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
+from shared.api.responses import list_response, item_response
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-client"])
 service = QboClientService()
@@ -23,7 +24,7 @@ def create_qbo_client_router(body: QboClientCreate, current_user: dict = Depends
         client_id=body.client_id,
         client_secret=body.client_secret,
     )
-    return qbo_client.to_dict()
+    return item_response(qbo_client.to_dict())
 
 
 @router.get("/get/qbo-clients")
@@ -32,7 +33,7 @@ def get_qbo_clients_router(current_user: dict = Depends(require_module_api(Modul
     Read all QBO clients.
     """
     qbo_clients = service.read_all()
-    return [qbo_client.to_dict() for qbo_client in qbo_clients]
+    return list_response([qbo_client.to_dict() for qbo_client in qbo_clients])
 
 
 @router.get("/get/qbo-client/{app}")
@@ -41,7 +42,7 @@ def get_qbo_client_by_app_router(app: str, current_user: dict = Depends(require_
     Read a QBO client by app.
     """
     qbo_client = service.read_by_app(app)
-    return qbo_client.to_dict()
+    return item_response(qbo_client.to_dict())
 
 
 @router.put("/update/qbo-client/{app}")
@@ -50,7 +51,7 @@ def update_qbo_client_by_app_router(app: str, body: QboClientUpdate, current_use
     Update a QBO client by app.
     """
     qbo_client = service.update_by_app(app, body.client_id, body.client_secret)
-    return qbo_client.to_dict()
+    return item_response(qbo_client.to_dict())
 
 
 @router.delete("/delete/qbo-client/{app}")
@@ -59,4 +60,4 @@ def delete_qbo_client_by_app_router(app: str, current_user: dict = Depends(requi
     Delete a QBO client by app.
     """
     qbo_client = service.delete_by_app(app)
-    return qbo_client.to_dict()
+    return item_response(qbo_client.to_dict())

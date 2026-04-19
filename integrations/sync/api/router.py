@@ -8,6 +8,7 @@ from integrations.sync.api.schemas import SyncCreate, SyncUpdate
 from integrations.sync.business.service import SyncService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
+from shared.api.responses import list_response, item_response
 
 router = APIRouter(prefix="/api/v1", tags=["api", "sync"])
 service = SyncService()
@@ -24,7 +25,7 @@ def create_sync_router(body: SyncCreate, current_user: dict = Depends(require_mo
         entity=body.entity,
         last_sync_datetime=body.last_sync_datetime,
     )
-    return sync.to_dict()
+    return item_response(sync.to_dict())
 
 
 @router.get("/get/syncs")
@@ -33,7 +34,7 @@ def get_syncs_router(current_user: dict = Depends(require_module_api(Modules.QBO
     Read all sync records.
     """
     syncs = service.read_all()
-    return [sync.to_dict() for sync in syncs]
+    return list_response([sync.to_dict() for sync in syncs])
 
 
 @router.get("/get/sync/{public_id}")
@@ -42,7 +43,7 @@ def get_sync_by_public_id_router(public_id: str, current_user: dict = Depends(re
     Read a sync record by public ID.
     """
     sync = service.read_by_public_id(public_id=public_id)
-    return sync.to_dict()
+    return item_response(sync.to_dict())
 
 
 @router.put("/update/sync/{public_id}")
@@ -51,7 +52,7 @@ def update_sync_by_public_id_router(public_id: str, body: SyncUpdate, current_us
     Update a sync record by public ID.
     """
     sync = service.update_by_public_id(public_id=public_id, sync=body)
-    return sync.to_dict()
+    return item_response(sync.to_dict())
 
 
 @router.delete("/delete/sync/{public_id}")
@@ -60,4 +61,4 @@ def delete_sync_by_public_id_router(public_id: str, current_user: dict = Depends
     Delete a sync record by public ID.
     """
     sync = service.delete_by_public_id(public_id=public_id)
-    return sync.to_dict()
+    return item_response(sync.to_dict())

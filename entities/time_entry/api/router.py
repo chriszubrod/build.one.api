@@ -58,7 +58,6 @@ def create_time_entry(
         user_id=_resolve_user_id(current_user),
         payload={
             "user_public_id": time_entry.user_public_id,
-            "project_public_id": time_entry.project_public_id,
             "work_date": time_entry.work_date,
             "note": time_entry.note,
             "created_by_user_id": _resolve_user_id(current_user),
@@ -186,7 +185,6 @@ def update_time_entry(
             "public_id": public_id,
             "row_version": time_entry.row_version,
             "user_public_id": time_entry.user_public_id,
-            "project_public_id": time_entry.project_public_id,
             "work_date": time_entry.work_date,
             "note": time_entry.note,
         },
@@ -337,6 +335,8 @@ def create_time_log(
             log_type=time_log.log_type,
             latitude=time_log.latitude,
             longitude=time_log.longitude,
+            project_id=time_log.project_id,
+            note=time_log.note,
         )
         return item_response(log.to_dict())
     except ValueError as e:
@@ -388,6 +388,8 @@ def update_time_log(
             log_type=time_log.log_type,
             latitude=time_log.latitude,
             longitude=time_log.longitude,
+            project_id=time_log.project_id,
+            note=time_log.note,
         )
         return item_response(log.to_dict())
     except ValueError as e:

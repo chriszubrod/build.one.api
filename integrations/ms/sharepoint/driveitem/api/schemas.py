@@ -218,8 +218,8 @@ class DriveItemProjectModuleLinkRequest(BaseModel):
     project_id: int = Field(
         description="The database ID of the project to link"
     )
-    module_id: int = Field(
-        description="The database ID of the module to link"
+    module_public_id: str = Field(
+        description="The public ID of the module to link"
     )
     graph_item_id: str = Field(
         min_length=1,

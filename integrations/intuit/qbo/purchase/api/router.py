@@ -15,6 +15,7 @@ from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
+from shared.api.responses import list_response, item_response
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-purchase"])
 service = QboPurchaseService()
@@ -32,7 +33,7 @@ def sync_qbo_purchases_router(body: QboPurchaseSync, current_user: dict = Depend
         end_date=body.end_date,
         sync_to_modules=body.sync_to_modules
     )
-    return [purchase.to_dict() for purchase in purchases]
+    return list_response([purchase.to_dict() for purchase in purchases])
 
 
 @router.get("/get/qbo-purchases/realm/{realm_id}")
@@ -41,7 +42,7 @@ def get_qbo_purchases_by_realm_id_router(realm_id: str, current_user: dict = Dep
     Read all QBO purchases by realm ID.
     """
     purchases = service.read_by_realm_id(realm_id=realm_id)
-    return [purchase.to_dict() for purchase in purchases]
+    return list_response([purchase.to_dict() for purchase in purchases])
 
 
 @router.get("/get/qbo-purchase/qbo-id/{qbo_id}")
@@ -59,7 +60,7 @@ def get_qbo_purchases_router(current_user: dict = Depends(require_module_api(Mod
     Read all QBO purchases.
     """
     purchases = service.read_all()
-    return [purchase.to_dict() for purchase in purchases]
+    return list_response([purchase.to_dict() for purchase in purchases])
 
 
 @router.get("/get/qbo-purchase/{id}")
@@ -77,7 +78,7 @@ def get_qbo_purchase_lines_router(id: int, current_user: dict = Depends(require_
     Read all QBO purchase lines for a purchase.
     """
     lines = service.read_lines_by_qbo_purchase_id(qbo_purchase_id=id)
-    return [line.to_dict() for line in lines]
+    return list_response([line.to_dict() for line in lines])
 
 
 @router.post("/cancel-expense-from-qbo-purchase/{expense_public_id}")

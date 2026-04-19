@@ -13,15 +13,12 @@ class TimeEntryCreate(BaseModel):
     user_public_id: str = Field(
         description="The public ID of the user (worker)."
     )
-    project_public_id: str = Field(
-        description="The public ID of the project."
-    )
     work_date: str = Field(
         description="The date of work (YYYY-MM-DD format)."
     )
     note: Optional[str] = Field(
         default=None,
-        description="Worker's note for the reviewer."
+        description="Worker's note for the day."
     )
 
 
@@ -34,17 +31,13 @@ class TimeEntryUpdate(BaseModel):
         default=None,
         description="The public ID of the user (worker)."
     )
-    project_public_id: Optional[str] = Field(
-        default=None,
-        description="The public ID of the project."
-    )
     work_date: Optional[str] = Field(
         default=None,
         description="The date of work (YYYY-MM-DD format)."
     )
     note: Optional[str] = Field(
         default=None,
-        description="Worker's note for the reviewer."
+        description="Worker's note for the day."
     )
 
 
@@ -68,6 +61,14 @@ class TimeLogCreate(BaseModel):
     longitude: Optional[Decimal] = Field(
         default=None,
         description="GPS longitude at clock in/out."
+    )
+    project_id: Optional[int] = Field(
+        default=None,
+        description="FK to Project. Required for submission."
+    )
+    note: Optional[str] = Field(
+        default=None,
+        description="Worker's note for this session."
     )
 
 
@@ -95,6 +96,14 @@ class TimeLogUpdate(BaseModel):
     longitude: Optional[Decimal] = Field(
         default=None,
         description="GPS longitude at clock in/out."
+    )
+    project_id: Optional[int] = Field(
+        default=None,
+        description="FK to Project."
+    )
+    note: Optional[str] = Field(
+        default=None,
+        description="Worker's note for this session."
     )
 
 

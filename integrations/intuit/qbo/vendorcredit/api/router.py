@@ -8,6 +8,7 @@ from integrations.intuit.qbo.vendorcredit.api.schemas import QboVendorCreditSync
 from integrations.intuit.qbo.vendorcredit.business.service import QboVendorCreditService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
+from shared.api.responses import list_response, item_response
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo", "vendorcredit"])
 
@@ -50,7 +51,7 @@ def get_qbo_vendor_credits_by_realm_router(
     """
     service = QboVendorCreditService()
     vendor_credits = service.read_by_realm_id(realm_id)
-    return [vc.to_dict() for vc in vendor_credits]
+    return list_response([vc.to_dict() for vc in vendor_credits])
 
 
 @router.get("/get/qbo-vendorcredit/{id}")
@@ -65,7 +66,7 @@ def get_qbo_vendor_credit_by_id_router(
     vendor_credit = service.read_by_id(id)
     if not vendor_credit:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="VendorCredit not found")
-    return vendor_credit.to_dict()
+    return item_response(vendor_credit.to_dict())
 
 
 @router.get("/get/qbo-vendorcredit/{id}/lines")
@@ -82,7 +83,7 @@ def get_qbo_vendor_credit_lines_router(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="VendorCredit not found")
     
     lines = service.read_lines_by_vendor_credit_id(id)
-    return [line.to_dict() for line in lines]
+    return list_response([line.to_dict() for line in lines])
 
 
 @router.get("/get/qbo-vendorcredit/qbo-id/{qbo_id}")
@@ -98,4 +99,4 @@ def get_qbo_vendor_credit_by_qbo_id_router(
     vendor_credit = service.read_by_qbo_id(qbo_id, realm_id)
     if not vendor_credit:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="VendorCredit not found")
-    return vendor_credit.to_dict()
+    return item_response(vendor_credit.to_dict())

@@ -26,6 +26,7 @@ from integrations.ms.sharepoint.driveitem.connector.project_module.business.serv
 from integrations.ms.sharepoint.driveitem.connector.project_excel.business.service import DriveItemProjectExcelConnector
 from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
 from integrations.ms.sharepoint.driveitem.connector.expense_folder.business.service import DriveItemExpenseFolderConnector
+from shared.api.responses import item_response, list_response, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -356,19 +357,11 @@ def get_driveitem_for_project_router(
     """
     connector = DriveItemProjectConnector()
     driveitem = connector.get_driveitem_for_project(project_id=project_id)
-    
+
     if not driveitem:
-        return {
-            "message": "No linked folder found for this project",
-            "status_code": 404,
-            "driveitem": None
-        }
-    
-    return {
-        "message": "Folder mapping retrieved successfully",
-        "status_code": 200,
-        "driveitem": driveitem
-    }
+        raise_not_found("Project folder")
+
+    return item_response(driveitem)
 
 
 @router.delete("/connector/project/{project_id}")
@@ -436,8 +429,8 @@ def get_driveitem_for_vendor_router(
     connector = DriveItemVendorConnector()
     driveitem = connector.get_driveitem_for_vendor(vendor_id=int(vendor.id))
     if not driveitem:
-        return {"message": "No linked folder found for this vendor", "status_code": 404, "driveitem": None}
-    return {"message": "Folder mapping retrieved successfully", "status_code": 200, "driveitem": driveitem}
+        raise_not_found("Vendor folder")
+    return item_response(driveitem)
 
 
 @router.delete("/connector/vendor/{vendor_public_id}")
@@ -478,10 +471,14 @@ def link_module_folder_to_project_router(
     3. Store the DriveItem in ms.DriveItem (if not already stored)
     4. Create the mapping in ms.DriveItemProjectModule
     """
+    from entities.module.business.service import ModuleService
+    module = ModuleService().read_by_public_id(body.module_public_id)
+    if not module:
+        raise_not_found("Module")
     connector = DriveItemProjectModuleConnector()
     result = connector.link_module_folder(
         project_id=body.project_id,
-        module_id=body.module_id,
+        module_id=module.id,
         graph_item_id=body.graph_item_id
     )
     
@@ -507,17 +504,9 @@ def get_module_folder_for_project_router(
     driveitem = connector.get_folder_for_module(project_id=project_id, module_id=module_id)
     
     if not driveitem:
-        return {
-            "message": f"No linked folder found for module ID {module_id} in this project",
-            "status_code": 404,
-            "driveitem": None
-        }
-    
-    return {
-        "message": "Folder mapping retrieved successfully",
-        "status_code": 200,
-        "driveitem": driveitem
-    }
+        raise_not_found("Module folder")
+
+    return item_response(driveitem)
 
 
 @router.get("/connector/project-module/{project_id}")
@@ -530,25 +519,35 @@ def get_all_module_folders_for_project_router(
     """
     connector = DriveItemProjectModuleConnector()
     folders = connector.get_all_module_folders(project_id=project_id)
-    
-    return {
-        "message": f"Found {len(folders)} linked module folders",
-        "status_code": 200,
-        "folders": folders
-    }
+
+    # Re-key by module public_id instead of internal id
+    from entities.module.business.service import ModuleService
+    all_modules = ModuleService().read_all()
+    module_id_to_public_id = {m.id: m.public_id for m in all_modules}
+    rekeyed = {}
+    for module_id, folder_data in folders.items():
+        pub_id = module_id_to_public_id.get(module_id)
+        if pub_id:
+            rekeyed[pub_id] = folder_data
+
+    return item_response(rekeyed)
 
 
-@router.delete("/connector/project-module/{project_id}/{module_id}")
+@router.delete("/connector/project-module/{project_id}/{module_public_id}")
 def unlink_module_folder_from_project_router(
     project_id: int,
-    module_id: int,
+    module_public_id: str,
     current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))
 ):
     """
     Unlink the DriveItem (folder) from a Project Module.
     """
+    from entities.module.business.service import ModuleService
+    module = ModuleService().read_by_public_id(module_public_id)
+    if not module:
+        raise_not_found("Module")
     connector = DriveItemProjectModuleConnector()
-    result = connector.unlink_module_folder(project_id=project_id, module_id=module_id)
+    result = connector.unlink_module_folder(project_id=project_id, module_id=module.id)
     
     if result.get("status_code") >= 400:
         raise HTTPException(
@@ -604,19 +603,11 @@ def get_excel_for_project_router(
     """
     connector = DriveItemProjectExcelConnector()
     excel = connector.get_excel_for_project(project_id=project_id)
-    
+
     if not excel:
-        return {
-            "message": "No linked Excel workbook found for this project",
-            "status_code": 404,
-            "excel": None
-        }
-    
-    return {
-        "message": "Excel workbook mapping retrieved successfully",
-        "status_code": 200,
-        "excel": excel
-    }
+        raise_not_found("Excel workbook")
+
+    return item_response(excel)
 
 
 @router.delete("/connector/project-excel/{project_id}")
@@ -803,16 +794,8 @@ def get_bill_folder_router(
     connector = DriveItemBillFolderConnector()
     driveitem = connector.get_folder(company_id=company_id, folder_type=folder_type)
     if not driveitem:
-        return {
-            "message": f"No linked '{folder_type}' folder found for this company",
-            "status_code": 404,
-            "driveitem": None,
-        }
-    return {
-        "message": "Bill folder mapping retrieved successfully",
-        "status_code": 200,
-        "driveitem": driveitem,
-    }
+        raise_not_found("Bill folder")
+    return item_response(driveitem)
 
 
 @router.delete("/connector/bill-folder/{company_id}/{folder_type}")
@@ -871,16 +854,8 @@ def get_expense_folder_router(
     connector = DriveItemExpenseFolderConnector()
     driveitem = connector.get_folder(company_id=company_id, folder_type=folder_type)
     if not driveitem:
-        return {
-            "message": f"No linked '{folder_type}' folder found for this company",
-            "status_code": 404,
-            "driveitem": None,
-        }
-    return {
-        "message": "Expense folder mapping retrieved successfully",
-        "status_code": 200,
-        "driveitem": driveitem,
-    }
+        raise_not_found("Expense folder")
+    return item_response(driveitem)
 
 
 @router.delete("/connector/expense-folder/{company_id}/{folder_type}")

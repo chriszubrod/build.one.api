@@ -41,7 +41,6 @@ class TimeEntryRepository:
                 created_datetime=row.CreatedDatetime,
                 modified_datetime=row.ModifiedDatetime,
                 user_id=getattr(row, "UserId", None),
-                project_id=getattr(row, "ProjectId", None),
                 work_date=getattr(row, "WorkDate", None),
                 note=getattr(row, "Note", None),
             )
@@ -56,7 +55,6 @@ class TimeEntryRepository:
         self,
         *,
         user_id: int,
-        project_id: int,
         work_date: str,
         note: Optional[str] = None,
     ) -> TimeEntry:
@@ -71,7 +69,6 @@ class TimeEntryRepository:
                     name="CreateTimeEntry",
                     params={
                         "UserId": user_id,
-                        "ProjectId": project_id,
                         "WorkDate": work_date,
                         "Note": note,
                     },
@@ -265,7 +262,6 @@ class TimeEntryRepository:
                         "Id": time_entry.id,
                         "RowVersion": time_entry.row_version_bytes,
                         "UserId": time_entry.user_id,
-                        "ProjectId": time_entry.project_id,
                         "WorkDate": time_entry.work_date,
                         "Note": time_entry.note,
                     },

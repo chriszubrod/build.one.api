@@ -11,6 +11,7 @@ from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
+from shared.api.responses import list_response, item_response
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-invoice"])
 service = QboInvoiceService()
@@ -32,7 +33,7 @@ def get_qbo_invoices_by_realm_id_router(realm_id: str, current_user: dict = Depe
     Read all QBO invoices by realm ID.
     """
     invoices = service.read_by_realm_id(realm_id=realm_id)
-    return [invoice.to_dict() for invoice in invoices]
+    return list_response([invoice.to_dict() for invoice in invoices])
 
 
 @router.get("/get/qbo-invoice/qbo-id/{qbo_id}")
@@ -50,7 +51,7 @@ def get_qbo_invoices_router(current_user: dict = Depends(require_module_api(Modu
     Read all QBO invoices.
     """
     invoices = service.read_all()
-    return [invoice.to_dict() for invoice in invoices]
+    return list_response([invoice.to_dict() for invoice in invoices])
 
 
 @router.get("/get/qbo-invoice/{id}")
@@ -68,4 +69,4 @@ def get_qbo_invoice_lines_router(id: int, current_user: dict = Depends(require_m
     Read all QBO invoice lines for an invoice.
     """
     lines = service.read_lines_by_qbo_invoice_id(qbo_invoice_id=id)
-    return [line.to_dict() for line in lines]
+    return list_response([line.to_dict() for line in lines])

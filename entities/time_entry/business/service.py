@@ -10,7 +10,6 @@ from entities.time_entry.persistence.repo import TimeEntryRepository
 from entities.time_entry.persistence.time_entry_status_repo import TimeEntryStatusRepository
 from entities.time_entry.persistence.time_log_repo import TimeLogRepository
 from entities.user.business.service import UserService
-from entities.project.business.service import ProjectService
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +37,6 @@ class TimeEntryService:
         *,
         tenant_id: int = None,
         user_public_id: str,
-        project_public_id: str,
         work_date: str,
         note: Optional[str] = None,
         created_by_user_id: Optional[int] = None,
@@ -52,16 +50,9 @@ class TimeEntryService:
             raise ValueError(f"User with public_id '{user_public_id}' not found.")
         user_id = user.id
 
-        # Validate and resolve project
-        project = ProjectService().read_by_public_id(public_id=project_public_id)
-        if not project:
-            raise ValueError(f"Project with public_id '{project_public_id}' not found.")
-        project_id = project.id
-
         # Create the time entry
         time_entry = self.repo.create(
             user_id=user_id,
-            project_id=project_id,
             work_date=work_date,
             note=note,
         )
@@ -165,7 +156,6 @@ class TimeEntryService:
         tenant_id: int = None,
         row_version: str,
         user_public_id: Optional[str] = None,
-        project_public_id: Optional[str] = None,
         work_date: Optional[str] = None,
         note: Optional[str] = None,
     ) -> Optional[TimeEntry]:
@@ -188,13 +178,6 @@ class TimeEntryService:
             if not user:
                 raise ValueError(f"User with public_id '{user_public_id}' not found.")
             existing.user_id = user.id
-
-        # Resolve project if provided
-        if project_public_id is not None:
-            project = ProjectService().read_by_public_id(public_id=project_public_id)
-            if not project:
-                raise ValueError(f"Project with public_id '{project_public_id}' not found.")
-            existing.project_id = project.id
 
         # Apply updates
         if work_date is not None:

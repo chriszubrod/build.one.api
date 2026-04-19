@@ -34,6 +34,8 @@ class TimeLogService:
         log_type: str = "work",
         latitude: Optional[Decimal] = None,
         longitude: Optional[Decimal] = None,
+        project_id: Optional[int] = None,
+        note: Optional[str] = None,
     ) -> TimeLog:
         """
         Create a new time log for a time entry.
@@ -62,6 +64,8 @@ class TimeLogService:
             duration=duration,
             latitude=latitude,
             longitude=longitude,
+            project_id=project_id,
+            note=note,
         )
 
     def read_by_time_entry_public_id(self, time_entry_public_id: str) -> list[TimeLog]:
@@ -89,6 +93,8 @@ class TimeLogService:
         log_type: Optional[str] = None,
         latitude: Optional[Decimal] = None,
         longitude: Optional[Decimal] = None,
+        project_id: Optional[int] = None,
+        note: Optional[str] = None,
     ) -> Optional[TimeLog]:
         """
         Update a time log by public ID.
@@ -116,6 +122,10 @@ class TimeLogService:
             existing.latitude = latitude
         if longitude is not None:
             existing.longitude = longitude
+        if project_id is not None:
+            existing.project_id = project_id
+        if note is not None:
+            existing.note = note
 
         # Recalculate duration
         existing.duration = self._calculate_duration(existing.clock_in, existing.clock_out)

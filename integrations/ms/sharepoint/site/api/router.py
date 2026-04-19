@@ -14,6 +14,7 @@ from integrations.ms.sharepoint.site.api.schemas import (
 from integrations.ms.sharepoint.site.business.service import MsSiteService
 from integrations.ms.sharepoint.site.connector.company.business.service import SiteCompanyConnector
 from integrations.ms.sharepoint.external.client import list_site_drives
+from shared.api.responses import item_response, list_response, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -92,11 +93,7 @@ def list_linked_sites_router(
     """
     service = MsSiteService()
     sites = service.read_all()
-    return {
-        "message": f"Found {len(sites)} linked sites",
-        "status_code": 200,
-        "sites": [site.to_dict() for site in sites]
-    }
+    return list_response([site.to_dict() for site in sites])
 
 
 @router.get("/{public_id}")
@@ -116,11 +113,7 @@ def get_linked_site_router(
             detail="Linked site not found"
         )
     
-    return {
-        "message": "Site retrieved successfully",
-        "status_code": 200,
-        "site": site.to_dict()
-    }
+    return item_response(site.to_dict())
 
 
 @router.put("/{public_id}")
@@ -228,17 +221,9 @@ def get_site_for_company_router(
     site = connector.get_site_for_company(company_id=company_id)
     
     if not site:
-        return {
-            "message": "No linked site found for this company",
-            "status_code": 404,
-            "site": None
-        }
-    
-    return {
-        "message": "Site retrieved successfully",
-        "status_code": 200,
-        "site": site.to_dict()
-    }
+        raise_not_found("Site mapping")
+
+    return item_response(site.to_dict())
 
 
 @router.delete("/connector/company/{company_id}")

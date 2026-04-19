@@ -79,6 +79,32 @@ BEGIN
 END
 GO
 
+-- Move ProjectId from TimeEntry to TimeLog (idempotent migration)
+-- Make TimeEntry.ProjectId nullable (preserve existing data)
+IF OBJECT_ID('dbo.TimeEntry', 'U') IS NOT NULL AND EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TimeEntry') AND name = 'ProjectId' AND is_nullable = 0)
+BEGIN
+    -- Drop existing FK constraint first
+    IF EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_TimeEntry_Project')
+        ALTER TABLE [dbo].[TimeEntry] DROP CONSTRAINT [FK_TimeEntry_Project];
+    ALTER TABLE [dbo].[TimeEntry] ALTER COLUMN [ProjectId] BIGINT NULL;
+END
+GO
+
+-- Add ProjectId to TimeLog
+IF OBJECT_ID('dbo.TimeLog', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TimeLog') AND name = 'ProjectId')
+BEGIN
+    ALTER TABLE [dbo].[TimeLog] ADD [ProjectId] BIGINT NULL;
+    ALTER TABLE [dbo].[TimeLog] ADD CONSTRAINT [FK_TimeLog_Project] FOREIGN KEY ([ProjectId]) REFERENCES [dbo].[Project]([Id]);
+END
+GO
+
+-- Add Note to TimeLog
+IF OBJECT_ID('dbo.TimeLog', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TimeLog') AND name = 'Note')
+BEGIN
+    ALTER TABLE [dbo].[TimeLog] ADD [Note] NVARCHAR(MAX) NULL;
+END
+GO
+
 
 -- TimeEntryStatus Table
 -- Stores full history of status transitions with audit trail
@@ -143,6 +169,12 @@ CREATE INDEX IX_TimeLog_PublicId ON [dbo].[TimeLog] ([PublicId]);
 END
 GO
 
+IF OBJECT_ID('dbo.TimeLog', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_TimeLog_ProjectId' AND object_id = OBJECT_ID('dbo.TimeLog'))
+BEGIN
+CREATE INDEX IX_TimeLog_ProjectId ON [dbo].[TimeLog] ([ProjectId]);
+END
+GO
+
 IF OBJECT_ID('dbo.TimeEntryStatus', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_TimeEntryStatus_TimeEntryId' AND object_id = OBJECT_ID('dbo.TimeEntryStatus'))
 BEGIN
 CREATE INDEX IX_TimeEntryStatus_TimeEntryId ON [dbo].[TimeEntryStatus] ([TimeEntryId]);
@@ -165,7 +197,6 @@ GO
 CREATE OR ALTER PROCEDURE CreateTimeEntry
 (
     @UserId BIGINT,
-    @ProjectId BIGINT,
     @WorkDate DATE,
     @Note NVARCHAR(MAX) NULL
 )
@@ -176,7 +207,7 @@ BEGIN
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
     INSERT INTO dbo.[TimeEntry] (
-        [CreatedDatetime], [ModifiedDatetime], [UserId], [ProjectId], [WorkDate], [Note]
+        [CreatedDatetime], [ModifiedDatetime], [UserId], [WorkDate], [Note]
     )
     OUTPUT
         INSERTED.[Id],
@@ -185,11 +216,10 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[UserId],
-        INSERTED.[ProjectId],
         CONVERT(VARCHAR(10), INSERTED.[WorkDate], 120) AS [WorkDate],
         INSERTED.[Note]
     VALUES (
-        @Now, @Now, @UserId, @ProjectId, @WorkDate, @Note
+        @Now, @Now, @UserId, @WorkDate, @Note
     );
 
     COMMIT TRANSACTION;
@@ -211,7 +241,6 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [ProjectId],
         CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
         [Note]
     FROM dbo.[TimeEntry]
@@ -239,7 +268,6 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [ProjectId],
         CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
         [Note]
     FROM dbo.[TimeEntry]
@@ -267,7 +295,6 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [ProjectId],
         CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
         [Note]
     FROM dbo.[TimeEntry]
@@ -295,7 +322,6 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [ProjectId],
         CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
         [Note]
     FROM dbo.[TimeEntry]
@@ -324,11 +350,12 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [ProjectId],
         CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
         [Note]
     FROM dbo.[TimeEntry]
-    WHERE [ProjectId] = @ProjectId
+    WHERE EXISTS (
+        SELECT 1 FROM dbo.[TimeLog] tl WHERE tl.[TimeEntryId] = [TimeEntry].[Id] AND tl.[ProjectId] = @ProjectId
+    )
     ORDER BY [WorkDate] DESC, [UserId] ASC;
 
     COMMIT TRANSACTION;
@@ -364,12 +391,10 @@ BEGIN
         CONVERT(VARCHAR(19), te.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), te.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         te.[UserId],
-        te.[ProjectId],
         CONVERT(VARCHAR(10), te.[WorkDate], 120) AS [WorkDate],
         te.[Note]
     FROM dbo.[TimeEntry] te
     LEFT JOIN dbo.[User] u ON te.[UserId] = u.[Id]
-    LEFT JOIN dbo.[Project] p ON te.[ProjectId] = p.[Id]
     -- Get current status from most recent TimeEntryStatus row
     OUTER APPLY (
         SELECT TOP 1 s.[Status]
@@ -381,10 +406,11 @@ BEGIN
         (@SearchTerm IS NULL OR
          te.[Note] LIKE '%' + @SearchTerm + '%' OR
          u.[Firstname] LIKE '%' + @SearchTerm + '%' OR
-         u.[Lastname] LIKE '%' + @SearchTerm + '%' OR
-         p.[Name] LIKE '%' + @SearchTerm + '%')
+         u.[Lastname] LIKE '%' + @SearchTerm + '%')
         AND (@UserId IS NULL OR te.[UserId] = @UserId)
-        AND (@ProjectId IS NULL OR te.[ProjectId] = @ProjectId)
+        AND (@ProjectId IS NULL OR EXISTS (
+            SELECT 1 FROM dbo.[TimeLog] tl WHERE tl.[TimeEntryId] = te.[Id] AND tl.[ProjectId] = @ProjectId
+        ))
         AND (@Status IS NULL OR cs.[Status] = @Status)
         AND (@StartDate IS NULL OR te.[WorkDate] >= @StartDate)
         AND (@EndDate IS NULL OR te.[WorkDate] <= @EndDate)
@@ -421,7 +447,6 @@ BEGIN
     SELECT COUNT(*) AS [TotalCount]
     FROM dbo.[TimeEntry] te
     LEFT JOIN dbo.[User] u ON te.[UserId] = u.[Id]
-    LEFT JOIN dbo.[Project] p ON te.[ProjectId] = p.[Id]
     OUTER APPLY (
         SELECT TOP 1 s.[Status]
         FROM dbo.[TimeEntryStatus] s
@@ -432,10 +457,11 @@ BEGIN
         (@SearchTerm IS NULL OR
          te.[Note] LIKE '%' + @SearchTerm + '%' OR
          u.[Firstname] LIKE '%' + @SearchTerm + '%' OR
-         u.[Lastname] LIKE '%' + @SearchTerm + '%' OR
-         p.[Name] LIKE '%' + @SearchTerm + '%')
+         u.[Lastname] LIKE '%' + @SearchTerm + '%')
         AND (@UserId IS NULL OR te.[UserId] = @UserId)
-        AND (@ProjectId IS NULL OR te.[ProjectId] = @ProjectId)
+        AND (@ProjectId IS NULL OR EXISTS (
+            SELECT 1 FROM dbo.[TimeLog] tl WHERE tl.[TimeEntryId] = te.[Id] AND tl.[ProjectId] = @ProjectId
+        ))
         AND (@Status IS NULL OR cs.[Status] = @Status)
         AND (@StartDate IS NULL OR te.[WorkDate] >= @StartDate)
         AND (@EndDate IS NULL OR te.[WorkDate] <= @EndDate);
@@ -452,7 +478,6 @@ CREATE OR ALTER PROCEDURE UpdateTimeEntryById
     @Id BIGINT,
     @RowVersion BINARY(8),
     @UserId BIGINT,
-    @ProjectId BIGINT,
     @WorkDate DATE,
     @Note NVARCHAR(MAX) NULL
 )
@@ -466,7 +491,6 @@ BEGIN
     SET
         [ModifiedDatetime] = @Now,
         [UserId] = @UserId,
-        [ProjectId] = @ProjectId,
         [WorkDate] = @WorkDate,
         [Note] = @Note
     OUTPUT
@@ -476,7 +500,6 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[UserId],
-        INSERTED.[ProjectId],
         CONVERT(VARCHAR(10), INSERTED.[WorkDate], 120) AS [WorkDate],
         INSERTED.[Note]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
@@ -504,7 +527,6 @@ BEGIN
         CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.[UserId],
-        DELETED.[ProjectId],
         CONVERT(VARCHAR(10), DELETED.[WorkDate], 120) AS [WorkDate],
         DELETED.[Note]
     WHERE [Id] = @Id;
@@ -528,7 +550,9 @@ CREATE OR ALTER PROCEDURE CreateTimeLog
     @LogType NVARCHAR(10) = 'work',
     @Duration DECIMAL(6,2) NULL,
     @Latitude DECIMAL(9,6) NULL,
-    @Longitude DECIMAL(9,6) NULL
+    @Longitude DECIMAL(9,6) NULL,
+    @ProjectId BIGINT NULL,
+    @Note NVARCHAR(MAX) NULL
 )
 AS
 BEGIN
@@ -537,7 +561,7 @@ BEGIN
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
     INSERT INTO dbo.[TimeLog] (
-        [CreatedDatetime], [ModifiedDatetime], [TimeEntryId], [ClockIn], [ClockOut], [LogType], [Duration], [Latitude], [Longitude]
+        [CreatedDatetime], [ModifiedDatetime], [TimeEntryId], [ClockIn], [ClockOut], [LogType], [Duration], [Latitude], [Longitude], [ProjectId], [Note]
     )
     OUTPUT
         INSERTED.[Id],
@@ -551,9 +575,11 @@ BEGIN
         INSERTED.[LogType],
         INSERTED.[Duration],
         INSERTED.[Latitude],
-        INSERTED.[Longitude]
+        INSERTED.[Longitude],
+        INSERTED.[ProjectId],
+        INSERTED.[Note]
     VALUES (
-        @Now, @Now, @TimeEntryId, @ClockIn, @ClockOut, @LogType, @Duration, @Latitude, @Longitude
+        @Now, @Now, @TimeEntryId, @ClockIn, @ClockOut, @LogType, @Duration, @Latitude, @Longitude, @ProjectId, @Note
     );
 
     COMMIT TRANSACTION;
@@ -583,7 +609,9 @@ BEGIN
         [LogType],
         [Duration],
         [Latitude],
-        [Longitude]
+        [Longitude],
+        [ProjectId],
+        [Note]
     FROM dbo.[TimeLog]
     WHERE [TimeEntryId] = @TimeEntryId
     ORDER BY [ClockIn] ASC;
@@ -615,7 +643,9 @@ BEGIN
         [LogType],
         [Duration],
         [Latitude],
-        [Longitude]
+        [Longitude],
+        [ProjectId],
+        [Note]
     FROM dbo.[TimeLog]
     WHERE [Id] = @Id;
 
@@ -646,7 +676,9 @@ BEGIN
         [LogType],
         [Duration],
         [Latitude],
-        [Longitude]
+        [Longitude],
+        [ProjectId],
+        [Note]
     FROM dbo.[TimeLog]
     WHERE [PublicId] = @PublicId;
 
@@ -666,7 +698,9 @@ CREATE OR ALTER PROCEDURE UpdateTimeLogById
     @LogType NVARCHAR(10),
     @Duration DECIMAL(6,2) NULL,
     @Latitude DECIMAL(9,6) NULL,
-    @Longitude DECIMAL(9,6) NULL
+    @Longitude DECIMAL(9,6) NULL,
+    @ProjectId BIGINT NULL,
+    @Note NVARCHAR(MAX) NULL
 )
 AS
 BEGIN
@@ -682,7 +716,9 @@ BEGIN
         [LogType] = @LogType,
         [Duration] = @Duration,
         [Latitude] = @Latitude,
-        [Longitude] = @Longitude
+        [Longitude] = @Longitude,
+        [ProjectId] = @ProjectId,
+        [Note] = @Note
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -695,7 +731,9 @@ BEGIN
         INSERTED.[LogType],
         INSERTED.[Duration],
         INSERTED.[Latitude],
-        INSERTED.[Longitude]
+        INSERTED.[Longitude],
+        INSERTED.[ProjectId],
+        INSERTED.[Note]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -726,7 +764,9 @@ BEGIN
         DELETED.[LogType],
         DELETED.[Duration],
         DELETED.[Latitude],
-        DELETED.[Longitude]
+        DELETED.[Longitude],
+        DELETED.[ProjectId],
+        DELETED.[Note]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;

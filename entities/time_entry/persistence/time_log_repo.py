@@ -48,6 +48,8 @@ class TimeLogRepository:
                 duration=Decimal(str(getattr(row, "Duration", None))) if getattr(row, "Duration", None) is not None else None,
                 latitude=Decimal(str(getattr(row, "Latitude", None))) if getattr(row, "Latitude", None) is not None else None,
                 longitude=Decimal(str(getattr(row, "Longitude", None))) if getattr(row, "Longitude", None) is not None else None,
+                project_id=getattr(row, "ProjectId", None),
+                note=getattr(row, "Note", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during time log mapping: {error}")
@@ -66,6 +68,8 @@ class TimeLogRepository:
         duration: Optional[Decimal] = None,
         latitude: Optional[Decimal] = None,
         longitude: Optional[Decimal] = None,
+        project_id: Optional[int] = None,
+        note: Optional[str] = None,
     ) -> TimeLog:
         """
         Create a new time log.
@@ -84,6 +88,8 @@ class TimeLogRepository:
                         "Duration": Decimal(str(duration)) if duration is not None else None,
                         "Latitude": Decimal(str(latitude)) if latitude is not None else None,
                         "Longitude": Decimal(str(longitude)) if longitude is not None else None,
+                        "ProjectId": project_id,
+                        "Note": note,
                     },
                 )
                 row = cursor.fetchone()
@@ -168,6 +174,8 @@ class TimeLogRepository:
                         "Duration": Decimal(str(time_log.duration)) if time_log.duration is not None else None,
                         "Latitude": Decimal(str(time_log.latitude)) if time_log.latitude is not None else None,
                         "Longitude": Decimal(str(time_log.longitude)) if time_log.longitude is not None else None,
+                        "ProjectId": time_log.project_id,
+                        "Note": time_log.note,
                     },
                 )
                 row = cursor.fetchone()

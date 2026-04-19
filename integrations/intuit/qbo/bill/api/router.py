@@ -17,6 +17,7 @@ from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
+from shared.api.responses import list_response, item_response
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-bill"])
 service = QboBillService()
@@ -32,7 +33,7 @@ def sync_qbo_bills_router(body: QboBillSync, current_user: dict = Depends(requir
         last_updated_time=body.last_updated_time,
         sync_to_modules=body.sync_to_modules
     )
-    return [bill.to_dict() for bill in bills]
+    return list_response([bill.to_dict() for bill in bills])
 
 
 @router.get("/get/qbo-bills/realm/{realm_id}")
@@ -41,7 +42,7 @@ def get_qbo_bills_by_realm_id_router(realm_id: str, current_user: dict = Depends
     Read all QBO bills by realm ID.
     """
     bills = service.read_by_realm_id(realm_id=realm_id)
-    return [bill.to_dict() for bill in bills]
+    return list_response([bill.to_dict() for bill in bills])
 
 
 @router.get("/get/qbo-bill/qbo-id/{qbo_id}")
@@ -59,7 +60,7 @@ def get_qbo_bills_router(current_user: dict = Depends(require_module_api(Modules
     Read all QBO bills.
     """
     bills = service.read_all()
-    return [bill.to_dict() for bill in bills]
+    return list_response([bill.to_dict() for bill in bills])
 
 
 @router.get("/get/qbo-bill/{id}")
@@ -77,7 +78,7 @@ def get_qbo_bill_lines_router(id: int, current_user: dict = Depends(require_modu
     Read all QBO bill lines for a bill.
     """
     lines = service.read_lines_by_qbo_bill_id(qbo_bill_id=id)
-    return [line.to_dict() for line in lines]
+    return list_response([line.to_dict() for line in lines])
 
 
 @router.post("/sync/bill-to-qbo/{bill_public_id}")

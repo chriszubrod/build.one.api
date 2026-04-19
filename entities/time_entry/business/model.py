@@ -23,9 +23,8 @@ class TimeEntry:
 
     # Worker and assignment
     user_id: Optional[int]             # FK to User (the worker)
-    project_id: Optional[int]          # FK to Project
     work_date: Optional[str]           # Date worked (YYYY-MM-DD)
-    note: Optional[str]                # Worker's note, important for reviewer
+    note: Optional[str]                # Worker's note for the day
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:
@@ -70,6 +69,10 @@ class TimeLog:
     # Location
     latitude: Optional[Decimal]        # GPS latitude at clock in/out
     longitude: Optional[Decimal]       # GPS longitude at clock in/out
+
+    # Assignment and context
+    project_id: Optional[int]          # FK to Project
+    note: Optional[str]                # Worker's note for this session
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

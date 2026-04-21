@@ -147,8 +147,8 @@ BEGIN
     UPDATE [qbo].[CustomerProject]
     SET
         [ModifiedDatetime] = @Now,
-        [ProjectId] = @ProjectId,
-        [QboCustomerId] = @QboCustomerId
+        [ProjectId] = CASE WHEN @ProjectId IS NULL THEN [ProjectId] ELSE @ProjectId END,
+        [QboCustomerId] = CASE WHEN @QboCustomerId IS NULL THEN [QboCustomerId] ELSE @QboCustomerId END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],

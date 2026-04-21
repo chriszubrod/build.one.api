@@ -1,132 +1,80 @@
 # Python Standard Library Imports
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-# Third-party Imports
-import httpx
+from typing import List, Optional
 
 # Local Imports
+from integrations.intuit.qbo.base.client import QboHttpClient
 from integrations.intuit.qbo.item.external.schemas import (
     QboItem,
     QboItemResponse,
-)
-from integrations.intuit.qbo.base.errors import (
-    QboError,
-    QboAuthError,
-    QboValidationError,
-    QboRateLimitError,
-    QboConflictError,
-    QboNotFoundError,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _format_datetime_for_qbo_query(datetime_input) -> str:
-    """
-    Format datetime string or datetime object for QBO query WHERE clause.
-    QBO expects ISO 8601 format with timezone offset: 'YYYY-MM-DDTHH:MM:SS-HH:MM'
-    
-    Args:
-        datetime_input: ISO format datetime string (may end with Z or +00:00) or datetime.datetime object
-    
-    Returns:
-        str: Formatted datetime string for QBO query
-    """
+def _format_datetime_for_qbo_query(datetime_input) -> Optional[str]:
+    """Format a datetime for a QBO query WHERE clause (ISO 8601 with +HH:MM offset)."""
     if not datetime_input:
         return None if datetime_input is None else str(datetime_input)
-    
-    # Convert datetime object to ISO string if needed
+
     if isinstance(datetime_input, datetime):
         datetime_str = datetime_input.isoformat()
     else:
         datetime_str = str(datetime_input)
-    
-    # Remove Z suffix if present
-    dt_str = datetime_str.rstrip('Z')
-    
-    # If ends with +00:00, remove it (we'll add timezone later if needed)
-    if dt_str.endswith('+00:00'):
+
+    dt_str = datetime_str.rstrip("Z")
+    if dt_str.endswith("+00:00"):
         dt_str = dt_str[:-6]
-    
-    # Try to parse and format
+
     try:
-        # Parse the datetime
-        if 'T' in dt_str:
-            # Has time component
-            if '.' in dt_str:
-                # Has milliseconds, remove them
-                dt_str = dt_str.split('.')[0]
-            # Ensure we have seconds
-            if dt_str.count(':') == 1:
-                dt_str += ':00'
+        if "T" in dt_str:
+            if "." in dt_str:
+                dt_str = dt_str.split(".")[0]
+            if dt_str.count(":") == 1:
+                dt_str += ":00"
         else:
-            # Date only, add time
-            dt_str += 'T00:00:00'
-        
-        # QBO queries work best with timezone offset format
-        # Use UTC offset format: +00:00 (standard UTC representation)
+            dt_str += "T00:00:00"
         return f"{dt_str}+00:00"
-    except Exception as e:
-        logger.warning(f"Failed to format datetime '{datetime_str}' for QBO query: {e}. Using as-is.")
+    except Exception as error:
+        logger.warning(
+            f"Failed to format datetime '{datetime_str}' for QBO query: {error}. Using as-is."
+        )
         return datetime_str
 
 
 class QboItemClient:
     """
-    Lightweight client for interacting with QBO Item endpoints.
+    Client for QBO Item endpoints. Composes `QboHttpClient` for transport.
     """
 
     def __init__(
         self,
         *,
-        access_token: str,
         realm_id: str,
-        base_url: str = "https://quickbooks.api.intuit.com",
-        minor_version: Optional[int] = 65,
-        timeout: float = 30.0,
-        session: Optional[httpx.Client] = None,
+        http_client: Optional[QboHttpClient] = None,
+        minor_version: int = 65,
     ):
-        self.access_token = access_token
         self.realm_id = realm_id
-        self.minor_version = minor_version
-        self._owns_client = session is None
-        self._client = session or httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout)
-        self._client.headers.update(
-            {
-                "Authorization": f"Bearer {self.access_token}",
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "User-Agent": "build.one-qbo-item-client/1.0",
-            }
+        self._owns_http_client = http_client is None
+        self._http_client = http_client or QboHttpClient(
+            realm_id=realm_id,
+            minor_version=minor_version,
         )
 
-    def close(self):
-        """
-        Close the underlying HTTP client if owned by this instance.
-        """
-        if self._owns_client and self._client:
-            self._client.close()
+    def close(self) -> None:
+        if self._owns_http_client:
+            self._http_client.close()
 
-    def __enter__(self):
+    def __enter__(self) -> "QboItemClient":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
 
     def get_item(self, item_id: str) -> QboItem:
-        """
-        Retrieve a single item by ID from QuickBooks.
-        
-        Args:
-            item_id: QBO Item ID
-        
-        Returns:
-            QboItem: The item information
-        """
-        path = f"/item/{item_id}"
-        data = self._request("GET", path)
+        """Retrieve a single item by ID from QuickBooks."""
+        data = self._http_client.get(f"item/{item_id}", operation_name="qbo.item.get")
         return QboItemResponse(**data).item
 
     def query_items(
@@ -135,176 +83,56 @@ class QboItemClient:
         start_position: int = 1,
         max_results: int = 1000,
     ) -> List[QboItem]:
-        """
-        Query items from QuickBooks using the query endpoint.
-        
-        Args:
-            last_updated_time: Optional ISO format datetime string. If provided, only fetches
-                Items where Metadata.LastUpdatedTime > last_updated_time.
-            start_position: Starting position for pagination (1-based)
-            max_results: Maximum number of results to return (max 1000)
-        
-        Returns:
-            List[QboItem]: List of items matching the query
-        """
-        path = "/query"
-        
-        # Build query string
+        """Query items from QuickBooks using the query endpoint."""
         if last_updated_time:
-            formatted_time = _format_datetime_for_qbo_query(last_updated_time)
-            query_string = f"SELECT * FROM Item WHERE Metadata.LastUpdatedTime > '{formatted_time}' STARTPOSITION {start_position} MAXRESULTS {max_results}"
-            logger.debug(f"Querying Items with WHERE clause: Metadata.LastUpdatedTime > '{formatted_time}'")
+            formatted = _format_datetime_for_qbo_query(last_updated_time)
+            query_string = (
+                f"SELECT * FROM Item WHERE Metadata.LastUpdatedTime > '{formatted}' "
+                f"STARTPOSITION {start_position} MAXRESULTS {max_results}"
+            )
+            logger.debug(
+                f"Querying Items with WHERE clause: Metadata.LastUpdatedTime > '{formatted}'"
+            )
         else:
-            query_string = f"SELECT * FROM Item STARTPOSITION {start_position} MAXRESULTS {max_results}"
-        
-        data = self._request("GET", path, params={"query": query_string})
-        
-        # Handle query response format
-        if "QueryResponse" in data:
-            query_response = data["QueryResponse"]
-            items_data = query_response.get("Item", [])
-            return [QboItem(**item) for item in items_data]
-        
-        return []
+            query_string = (
+                f"SELECT * FROM Item STARTPOSITION {start_position} MAXRESULTS {max_results}"
+            )
+
+        data = self._http_client.get(
+            "query",
+            params={"query": query_string},
+            operation_name="qbo.item.query",
+        )
+
+        query_response = data.get("QueryResponse") if isinstance(data, dict) else None
+        if not query_response:
+            return []
+
+        items_data = query_response.get("Item", [])
+        if not items_data:
+            return []
+        if isinstance(items_data, dict):
+            return [QboItem(**items_data)]
+        return [QboItem(**item) for item in items_data]
 
     def query_all_items(self, last_updated_time: Optional[str] = None) -> List[QboItem]:
-        """
-        Query all items from QuickBooks, handling pagination.
-        
-        Args:
-            last_updated_time: Optional ISO format datetime string. If provided, only fetches
-                Items where Metadata.LastUpdatedTime > last_updated_time.
-        
-        Returns:
-            List[QboItem]: List of all items matching the query
-        """
-        all_items = []
+        """Query all items from QuickBooks, handling pagination."""
+        all_items: List[QboItem] = []
         start_position = 1
         max_results = 1000
-        
+
         while True:
             items = self.query_items(
                 last_updated_time=last_updated_time,
                 start_position=start_position,
                 max_results=max_results,
             )
-            
             if not items:
                 break
-            
             all_items.extend(items)
-            
-            # If we got fewer items than requested, we're done
             if len(items) < max_results:
                 break
-            
             start_position += max_results
-        
+
         logger.info(f"Retrieved {len(all_items)} items from QBO")
         return all_items
-
-    def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: Optional[Dict[str, Any]] = None,
-        json: Optional[Dict[str, Any]] = None,
-        content: Optional[bytes] = None,
-        headers: Optional[Dict[str, str]] = None,
-    ) -> Dict[str, Any]:
-        """
-        Issue an HTTP request against the QuickBooks API.
-        """
-        url_path = self._build_path(path)
-        query_params = dict(params or {})
-        if self.minor_version is not None and "minorversion" not in query_params:
-            query_params["minorversion"] = self.minor_version
-
-        logger.debug(
-            "QuickBooks request",
-            extra={
-                "method": method,
-                "url": url_path,
-                "params": query_params,
-                "has_payload": bool(json or content),
-            },
-        )
-
-        response = self._client.request(
-            method=method,
-            url=url_path,
-            params=query_params or None,
-            json=json,
-            content=content,
-            headers=headers,
-        )
-
-        return self._handle_response(response)
-
-    def _build_path(self, path: str) -> str:
-        """
-        Construct the QuickBooks API path for the configured realm.
-        """
-        clean_path = path if path.startswith("/") else f"/{path}"
-        return f"/v3/company/{self.realm_id}{clean_path}"
-
-    def _handle_response(self, response: httpx.Response) -> Dict[str, Any]:
-        """
-        Validate a QuickBooks API response and translate errors.
-        """
-        if 200 <= response.status_code < 300:
-            if not response.content:
-                return {}
-            try:
-                return response.json()
-            except ValueError:
-                logger.error("QuickBooks response did not contain valid JSON")
-                raise QboError("Qbo response did not contain valid JSON")
-
-        self._raise_for_status(response)
-        return {}
-
-    def _raise_for_status(self, response: httpx.Response) -> None:
-        """
-        Raise an application-specific exception for an HTTP error response.
-        """
-        try:
-            payload = response.json()
-        except ValueError:
-            payload = {}
-
-        message, code, detail = self._extract_error_details(payload, response.text)
-        status = response.status_code
-
-        if status in (400, 422):
-            raise QboValidationError(message, code=code, detail=detail)
-        if status == 401:
-            raise QboAuthError(message, code=code, detail=detail)
-        if status == 404:
-            raise QboNotFoundError(message, code=code, detail=detail)
-        if status == 409:
-            raise QboConflictError(message, code=code, detail=detail)
-        if status == 429:
-            raise QboRateLimitError(message, code=code, detail=detail)
-
-        raise QboError(message, code=code, detail=detail)
-
-    @staticmethod
-    def _extract_error_details(payload: Dict[str, Any], fallback_text: str) -> tuple[str, Optional[str], Optional[str]]:
-        """
-        Extract the most relevant error messaging from a QuickBooks error response.
-        """
-        fault = payload.get("Fault", {})
-        errors = fault.get("Error")
-
-        if isinstance(errors, list) and errors:
-            error = errors[0]
-            message = error.get("Message") or error.get("Detail") or fallback_text
-            code = error.get("code")
-            detail = error.get("Detail")
-            return message or fallback_text or "QuickBooks request failed", code, detail
-
-        message = fault.get("type") if isinstance(fault, dict) else None
-        return message or fallback_text or "QuickBooks request failed", None, None
-

@@ -14,7 +14,7 @@ from entities.bill.persistence.repo import BillRepository
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
-from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 logger = logging.getLogger(__name__)
 
@@ -60,16 +60,7 @@ def create_bill_router(
 
     data = result.get("data")
 
-    # If completing (not draft), check review approval then queue background pipeline
     if not is_draft and data and data.get("public_id"):
-        from shared.rbac import is_admin_user
-        from entities.review_entry.business.service import ReviewEntryService
-        bill = BillService().read_by_public_id(data["public_id"])
-        if bill and not is_admin_user(current_user) and not ReviewEntryService().is_approved(bill_id=bill.id):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Bill requires approved review before completion"
-            )
         background_tasks.add_task(_run_complete_bill, data["public_id"])
         import json
         serializable = json.loads(json.dumps(data, default=str))
@@ -285,15 +276,6 @@ def complete_bill_router(
         raise_not_found("Bill")
     if not getattr(bill, "is_draft", True):
         raise HTTPException(status_code=400, detail="Bill is already completed")
-
-    # Review approval gate (admin users bypass)
-    from shared.rbac import is_admin_user
-    from entities.review_entry.business.service import ReviewEntryService
-    if not is_admin_user(current_user) and not ReviewEntryService().is_approved(bill_id=bill.id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Bill requires approved review before completion"
-        )
 
     background_tasks.add_task(_run_complete_bill, public_id)
     return JSONResponse(

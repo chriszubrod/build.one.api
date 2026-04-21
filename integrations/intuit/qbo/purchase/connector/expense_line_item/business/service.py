@@ -101,7 +101,33 @@ class PurchaseLineExpenseLineItemConnector:
 
         # Check for existing mapping
         mapping = self.mapping_repo.read_by_qbo_purchase_line_id(qbo_line.id)
-        
+
+        if not mapping:
+            # Shape B fallback (task #17): content-fingerprint match when QBO
+            # regenerates line IDs. Adopts an existing unmapped ExpenseLineItem
+            # whose fields match this QBO line rather than creating a duplicate.
+            orphan = self._find_and_match_by_fingerprint(
+                expense_id=expense_id,
+                description=qbo_line.description,
+                amount=qbo_line.amount,
+                qty=qbo_line.qty,
+                rate=qbo_line.unit_price,
+            )
+            if orphan is not None:
+                logger.info(
+                    f"Adopting orphaned ExpenseLineItem {orphan.id} for QboPurchaseLine {qbo_line.id} "
+                    f"via content fingerprint match"
+                )
+                try:
+                    mapping = self.mapping_repo.create(
+                        expense_line_item_id=int(orphan.id),
+                        qbo_purchase_line_id=qbo_line.id,
+                    )
+                except Exception as error:
+                    logger.warning(
+                        f"Could not adopt orphaned ExpenseLineItem {orphan.id}: {error}"
+                    )
+
         if mapping:
             # Found existing mapping - update the ExpenseLineItem
             line_item = self.expense_line_item_service.read_by_id(mapping.expense_line_item_id)
@@ -271,6 +297,70 @@ class PurchaseLineExpenseLineItemConnector:
         
         # Create mapping
         return self.mapping_repo.create(expense_line_item_id=expense_line_item_id, qbo_purchase_line_id=qbo_purchase_line_id)
+
+    # ------------------------------------------------------------------ #
+    # Shape B line-matching helpers (task #17)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _normalize_for_fingerprint(value) -> str:
+        """Canonicalize a value for content-fingerprint comparison."""
+        if value is None:
+            return ""
+        if isinstance(value, Decimal):
+            return format(value.normalize(), "f")
+        try:
+            return format(Decimal(str(value)).normalize(), "f")
+        except Exception:
+            pass
+        return str(value).strip()
+
+    def _find_and_match_by_fingerprint(
+        self,
+        *,
+        expense_id: int,
+        description,
+        amount,
+        qty,
+        rate,
+    ):
+        """
+        Find at most one unmapped ExpenseLineItem on this expense whose content
+        fingerprint matches. Returns None on zero or ambiguous matches (caller
+        falls through to creating a new line rather than guessing).
+        """
+        existing = self.expense_line_item_service.read_by_expense_id(expense_id=expense_id)
+        unmapped = [
+            li for li in existing
+            if not self.mapping_repo.read_by_expense_line_item_id(int(li.id))
+        ]
+
+        target = (
+            self._normalize_for_fingerprint(description),
+            self._normalize_for_fingerprint(amount),
+            self._normalize_for_fingerprint(qty),
+            self._normalize_for_fingerprint(rate),
+        )
+
+        matches = []
+        for candidate in unmapped:
+            candidate_fp = (
+                self._normalize_for_fingerprint(getattr(candidate, "description", None)),
+                self._normalize_for_fingerprint(getattr(candidate, "amount", None)),
+                self._normalize_for_fingerprint(getattr(candidate, "quantity", None)),
+                self._normalize_for_fingerprint(getattr(candidate, "rate", None)),
+            )
+            if candidate_fp == target:
+                matches.append(candidate)
+
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            logger.info(
+                f"Content-fingerprint match ambiguous: {len(matches)} unmapped "
+                f"ExpenseLineItems have identical fingerprint; creating new line"
+            )
+        return None
 
     def get_mapping_by_expense_line_item_id(self, expense_line_item_id: int) -> Optional[PurchaseLineExpenseLineItem]:
         """

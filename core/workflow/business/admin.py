@@ -4,10 +4,10 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 # Local Imports
-from workflows.workflow.business.models import Workflow, WorkflowEvent
-from workflows.workflow.persistence.repo import WorkflowRepository
-from workflows.workflow_event.persistence.repo import WorkflowEventRepository
-from workflows.workflow.business.orchestrator import WorkflowOrchestrator
+from core.workflow.business.models import Workflow, WorkflowEvent
+from core.workflow.persistence.repo import WorkflowRepository
+from core.workflow_event.persistence.repo import WorkflowEventRepository
+from core.workflow.business.orchestrator import WorkflowOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -389,10 +389,8 @@ class WorkflowAdmin:
     
     def _build_notification_summary(self, workflow_type: str, to_state: str) -> str:
         """Build a human-readable notification summary."""
-        # Map workflow types to friendly names
         type_names = {
             "bill_intake": "Bill extraction",
-            "email_intake": "Email processing",
             "payment_inquiry": "Payment inquiry",
         }
         
@@ -479,10 +477,7 @@ class WorkflowAdmin:
                 f"Allowed states: {', '.join(allowed_states)}"
             )
         
-        # Determine retry trigger based on workflow type
         retry_trigger = "retry_step"
-        if workflow.workflow_type == "email_intake":
-            retry_trigger = "retry_classification"
         
         # Log the manual action before transition
         self.event_repo.create(

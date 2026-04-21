@@ -14,8 +14,6 @@ from integrations.intuit.qbo.vendorcredit.external.schemas import (
     QboVendorCredit as QboVendorCreditSchema,
     QboVendorCreditLine as QboVendorCreditLineSchema,
 )
-from integrations.intuit.qbo.auth.business.service import QboAuthService
-
 logger = logging.getLogger(__name__)
 
 
@@ -24,7 +22,6 @@ class QboVendorCreditService:
 
     def __init__(self, repo: Optional[QboVendorCreditRepository] = None):
         self.repo = repo or QboVendorCreditRepository()
-        self.auth_service = QboAuthService()
 
     def sync_from_qbo(
         self,
@@ -47,17 +44,11 @@ class QboVendorCreditService:
         Returns:
             List of synced VendorCredits
         """
-        # Get valid auth token
-        qbo_auth = self.auth_service.ensure_valid_token()
-        if not qbo_auth:
-            raise ValueError("No valid QBO authentication found")
-        
         synced = []
-        
-        with QboVendorCreditClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id,
-        ) as client:
+
+        # QboHttpClient (via QboVendorCreditClient) resolves and refreshes the
+        # access token lazily, so no upfront auth call is needed.
+        with QboVendorCreditClient(realm_id=realm_id) as client:
             # Fetch all VendorCredits
             vendor_credits = client.query_all_vendor_credits(
                 last_updated_time=last_updated_time,

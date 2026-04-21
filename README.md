@@ -12,12 +12,11 @@ Repository for the build.one application.
 
 | Module | Path | Description |
 |--------|------|-------------|
-| Bill | `entities/bill/` | Invoice management with BillAgent automation, inline email display, QBO sync |
+| Bill | `entities/bill/` | Invoice management, inline email display, QBO sync |
 | Bill Line Item | `entities/bill_line_item/` | Bill line items with SubCostCode mapping and QBO Item sync |
-| Expense | `entities/expense/` | Expense management with ExpenseAgent automation, SharePoint upload, Excel sync, QBO sync |
+| Expense | `entities/expense/` | Expense management, SharePoint upload, Excel sync, QBO sync |
 | Expense Line Item | `entities/expense_line_item/` | Expense line items with SubCostCode mapping and attachment support |
 | Expense Line Item Attachment | `entities/expense_line_item_attachment/` | 1-1 attachment link for expense line items (Azure Blob + Attachment record) |
-| Inbox | `entities/inbox/` | Email inbox integration (MS Graph) with bill/expense extraction |
 | Company | `entities/company/` | Company/organization management |
 | Cost Code | `entities/cost_code/` | Cost code hierarchy |
 | Sub Cost Code | `entities/sub_cost_code/` | Sub cost codes with alias matching support |
@@ -40,16 +39,16 @@ Repository for the build.one application.
 |-------------|------|-------------|
 | Intuit QBO | `integrations/intuit/qbo/` | QuickBooks Online sync (bills, items, accounts, vendors) |
 | Microsoft SharePoint | `integrations/ms/sharepoint/` | File storage and drive item management |
-| Azure Document Intelligence | -- | OCR for PDF invoice processing |
 
-## AI Agents
+## AI / Inbox
 
-| Agent | Path | Description |
-|-------|------|-------------|
-| BillAgent | `core/ai/agents/bill_agent/` | Automated PDF invoice processing from SharePoint |
-| CopilotAgent | `core/ai/agents/copilot_agent/` | Conversational agent for inbox processing and bill creation |
-| ExtractionAgent | `core/ai/agents/extraction_agent/` | LangGraph agent for invoice data extraction |
-| ExpenseAgent | `core/ai/agents/expense_agent/` | Expense processing automation |
+The AI layer (Anthropic, Azure OpenAI, Document Intelligence, AI Search,
+embeddings, and the project-resolution agent) was removed, and the inbox
+surface (`entities/inbox`, `entities/email_thread`,
+`entities/classification_override`, `entities/review_entry`, the email-intake
+workflow, and all related templates) has now been removed as well. Bills and
+expenses are created manually through the web UI / API; there is no automated
+email-driven intake. `integrations/ms/mail` is left in place for future use.
 
 ## Running
 

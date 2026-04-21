@@ -10,7 +10,6 @@ from integrations.intuit.qbo.purchase.business.model import QboPurchase, QboPurc
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
 from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
 from integrations.intuit.qbo.purchase.external.schemas import QboPurchase as QboPurchaseExternalSchema
-from integrations.intuit.qbo.auth.business.service import QboAuthService
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
@@ -62,19 +61,11 @@ class QboPurchaseService:
         Returns:
             List[QboPurchase]: The synced purchase records
         """
-        # Get valid access token
-        self._auth_service = QboAuthService()
         self._realm_id = realm_id
-        qbo_auth = self._auth_service.ensure_valid_token(realm_id=realm_id)
-        
-        if not qbo_auth or not qbo_auth.access_token:
-            raise ValueError(f"No valid access token found for realm_id: {realm_id}")
-        
-        # Fetch Purchases from QBO API
-        with QboPurchaseClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+
+        # Fetch Purchases from QBO API. QboHttpClient (via QboPurchaseClient) resolves
+        # and refreshes the access token lazily, so no upfront auth call is needed.
+        with QboPurchaseClient(realm_id=realm_id) as client:
             qbo_purchases: List[QboPurchaseExternalSchema] = client.query_all_purchases(
                 last_updated_time=last_updated_time,
                 start_date=start_date,
@@ -107,12 +98,11 @@ class QboPurchaseService:
                 logger.error(f"Failed to upsert purchase {qbo_purchase.id}: {e}")
                 failed_purchases.append(qbo_purchase.id)
             
-            # Add delay between batches to prevent connection exhaustion
+            # Add delay between batches to prevent connection exhaustion.
+            # Token refresh is handled automatically by QboHttpClient on each request.
             if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(qbo_purchases):
                 logger.debug(f"Processed {i + 1}/{len(qbo_purchases)} purchases, pausing...")
                 time.sleep(BATCH_DELAY)
-                # Refresh access token to prevent expiration during long syncs
-                self._auth_service.ensure_valid_token(realm_id=self._realm_id)
         
         if failed_purchases:
             logger.warning(f"Failed to upsert {len(failed_purchases)} purchases: {failed_purchases}")

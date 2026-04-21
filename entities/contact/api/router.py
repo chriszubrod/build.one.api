@@ -8,7 +8,7 @@ from entities.contact.api.schemas import ContactCreate, ContactUpdate
 from entities.contact.business.service import ContactService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
-from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 from shared.api.responses import list_response, item_response, raise_workflow_error
 
 router = APIRouter(prefix="/api/v1", tags=["api", "contact"])

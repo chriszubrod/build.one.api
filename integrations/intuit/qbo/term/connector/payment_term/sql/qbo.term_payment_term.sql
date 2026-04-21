@@ -147,8 +147,8 @@ BEGIN
     UPDATE [qbo].[TermPaymentTerm]
     SET
         [ModifiedDatetime] = @Now,
-        [PaymentTermId] = @PaymentTermId,
-        [QboTermId] = @QboTermId
+        [PaymentTermId] = CASE WHEN @PaymentTermId IS NULL THEN [PaymentTermId] ELSE @PaymentTermId END,
+        [QboTermId] = CASE WHEN @QboTermId IS NULL THEN [QboTermId] ELSE @QboTermId END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],

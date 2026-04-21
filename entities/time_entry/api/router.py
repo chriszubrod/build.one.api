@@ -20,7 +20,7 @@ from entities.time_entry.api.schemas import (
 from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
-from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 logger = logging.getLogger(__name__)
 

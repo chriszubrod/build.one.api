@@ -10,7 +10,6 @@ from integrations.intuit.qbo.vendor.business.model import QboVendor
 from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
 from integrations.intuit.qbo.vendor.external.client import QboVendorClient
 from integrations.intuit.qbo.vendor.external.schemas import QboVendor as QboVendorExternalSchema
-from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
 from shared.database import with_retry, is_transient_error
 
@@ -52,18 +51,9 @@ class QboVendorService:
         Returns:
             List[QboVendor]: The synced vendor records
         """
-        # Get valid access token
-        auth_service = QboAuthService()
-        qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
-        
-        if not qbo_auth or not qbo_auth.access_token:
-            raise ValueError(f"No valid access token found for realm_id: {realm_id}")
-        
-        # Fetch Vendors from QBO API
-        with QboVendorClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+        # Fetch Vendors from QBO API. QboHttpClient (via QboVendorClient) resolves
+        # and refreshes the access token lazily, so no upfront auth call is needed.
+        with QboVendorClient(realm_id=realm_id) as client:
             qbo_vendors: List[QboVendorExternalSchema] = client.query_all_vendors(
                 last_updated_time=last_updated_time
             )

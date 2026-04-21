@@ -320,16 +320,16 @@ BEGIN
     UPDATE [qbo].[Attachable]
     SET
         [ModifiedDatetime] = @Now,
-        [SyncToken] = @SyncToken,
-        [FileName] = @FileName,
-        [Note] = @Note,
-        [Category] = @Category,
-        [ContentType] = @ContentType,
-        [Size] = @Size,
-        [FileAccessUri] = @FileAccessUri,
-        [TempDownloadUri] = @TempDownloadUri,
-        [EntityRefType] = @EntityRefType,
-        [EntityRefValue] = @EntityRefValue
+        [SyncToken] = CASE WHEN @SyncToken IS NULL THEN [SyncToken] ELSE @SyncToken END,
+        [FileName] = CASE WHEN @FileName IS NULL THEN [FileName] ELSE @FileName END,
+        [Note] = CASE WHEN @Note IS NULL THEN [Note] ELSE @Note END,
+        [Category] = CASE WHEN @Category IS NULL THEN [Category] ELSE @Category END,
+        [ContentType] = CASE WHEN @ContentType IS NULL THEN [ContentType] ELSE @ContentType END,
+        [Size] = CASE WHEN @Size IS NULL THEN [Size] ELSE @Size END,
+        [FileAccessUri] = CASE WHEN @FileAccessUri IS NULL THEN [FileAccessUri] ELSE @FileAccessUri END,
+        [TempDownloadUri] = CASE WHEN @TempDownloadUri IS NULL THEN [TempDownloadUri] ELSE @TempDownloadUri END,
+        [EntityRefType] = CASE WHEN @EntityRefType IS NULL THEN [EntityRefType] ELSE @EntityRefType END,
+        [EntityRefValue] = CASE WHEN @EntityRefValue IS NULL THEN [EntityRefValue] ELSE @EntityRefValue END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],

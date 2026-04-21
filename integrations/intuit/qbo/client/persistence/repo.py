@@ -13,6 +13,7 @@ from shared.database import (
     get_connection,
     map_database_error,
 )
+from shared.encryption import decrypt_if_encrypted, encrypt_sensitive_data
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +35,12 @@ class QboClientRepository:
             return None
 
         try:
+            # ClientSecret is encrypted at rest via Fernet. Legacy plaintext
+            # rows pass through decrypt_if_encrypted unchanged until rewritten.
             return QboClient(
                 app=getattr(row, "App", None),
                 client_id=getattr(row, "ClientId", None),
-                client_secret=getattr(row, "ClientSecret", None),
+                client_secret=decrypt_if_encrypted(getattr(row, "ClientSecret", None)),
             )
         except AttributeError as error:
             logger.error("Attribute error during qbo client mapping: %s", error)
@@ -48,7 +51,7 @@ class QboClientRepository:
 
     def create(self, *, app: str, client_id: str, client_secret: str) -> QboClient:
         """
-        Create a new QboClient.
+        Create a new QboClient. ClientSecret is encrypted at rest via Fernet.
         """
         try:
             with get_connection() as conn:
@@ -59,7 +62,7 @@ class QboClientRepository:
                     params={
                         "App": app,
                         "ClientId": client_id,
-                        "ClientSecret": client_secret,
+                        "ClientSecret": encrypt_sensitive_data(client_secret),
                     },
                 )
                 row = cursor.fetchone()
@@ -111,7 +114,7 @@ class QboClientRepository:
 
     def update_by_app(self, app: str, client_id: str, client_secret: str) -> Optional[QboClient]:
         """
-        Update a QboClient by app.
+        Update a QboClient by app. ClientSecret is encrypted at rest via Fernet.
         """
         try:
             with get_connection() as conn:
@@ -122,7 +125,7 @@ class QboClientRepository:
                     params={
                         "App": app,
                         "ClientId": client_id,
-                        "ClientSecret": client_secret,
+                        "ClientSecret": encrypt_sensitive_data(client_secret),
                     },
                 )
                 row = cursor.fetchone()

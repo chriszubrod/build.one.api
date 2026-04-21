@@ -60,7 +60,7 @@ class VendorCreditBillCreditConnector:
                         vendor_public_id=vendor_public_id,
                         credit_date=qbo_vc.txn_date,
                         credit_number=qbo_vc.doc_number or f"QBO-{qbo_vc.qbo_id}",
-                        total_amount=float(qbo_vc.total_amt) if qbo_vc.total_amt else None,
+                        total_amount=Decimal(str(qbo_vc.total_amt)) if qbo_vc.total_amt else None,
                         memo=qbo_vc.private_note,
                     )
                     if updated:
@@ -138,19 +138,35 @@ class VendorCreditBillCreditConnector:
         bill_credit_public_id: str,
         qbo_lines: List[QboVendorCreditLine],
     ) -> None:
-        """Sync line items from QBO VendorCredit to BillCreditLineItems."""
+        """
+        Sync line items from QBO VendorCredit to BillCreditLineItems.
+
+        NOTE: Current implementation is delete-then-recreate, which loses any
+        local-only state on the line items (attachments, etc.) on every sync.
+        Task #17 (Shape B line matching) could not be applied here because
+        fingerprint matching requires upsert-in-place semantics.
+
+        TODO: refactor to upsert-in-place like Bill's _sync_line_items in
+        `bill/connector/bill/business/service.py`. Steps:
+          1. For each qbo_line, look up existing BillCreditLineItem via the
+             VendorCreditLineItemBillCreditLineItem mapping table.
+          2. Update in place if found; create if not.
+          3. Delete only lines whose mapping is no longer referenced by any
+             current qbo_line (true stale-line cleanup).
+        Blocks full line-matching parity with Bill (task #17).
+        """
         from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import VendorCreditLineItemConnector
-        
+
         connector = VendorCreditLineItemConnector()
-        
-        # Delete existing line items and recreate
+
+        # Delete existing line items and recreate (see TODO above).
         existing_items = self.bill_credit_line_item_service.read_by_bill_credit_id(bill_credit_id)
         for item in existing_items:
             try:
                 self.bill_credit_line_item_service.delete_by_public_id(item.public_id)
             except Exception as e:
                 logger.warning(f"Error deleting line item {item.id}: {e}")
-        
+
         # Create new line items from QBO lines
         for line in qbo_lines:
             try:

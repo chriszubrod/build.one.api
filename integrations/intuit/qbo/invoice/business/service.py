@@ -10,7 +10,6 @@ from integrations.intuit.qbo.invoice.business.model import QboInvoice, QboInvoic
 from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceRepository, QboInvoiceLineRepository
 from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
 from integrations.intuit.qbo.invoice.external.schemas import QboInvoice as QboInvoiceExternalSchema
-from integrations.intuit.qbo.auth.business.service import QboAuthService
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
@@ -64,18 +63,9 @@ class QboInvoiceService:
         Returns:
             List[QboInvoice]: The synced invoice records
         """
-        # Get valid access token
-        auth_service = QboAuthService()
-        qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
-        
-        if not qbo_auth or not qbo_auth.access_token:
-            raise ValueError(f"No valid access token found for realm_id: {realm_id}")
-        
-        # Fetch Invoices from QBO API
-        with QboInvoiceClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+        # Fetch Invoices from QBO API. QboHttpClient (via QboInvoiceClient) resolves
+        # and refreshes the access token lazily, so no upfront auth call is needed.
+        with QboInvoiceClient(realm_id=realm_id) as client:
             qbo_invoices: List[QboInvoiceExternalSchema] = client.query_all_invoices(
                 last_updated_time=last_updated_time,
                 start_date=start_date,

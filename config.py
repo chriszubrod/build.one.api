@@ -35,10 +35,6 @@ class Settings(BaseSettings):
     iterations: int
     signup_registration_code: Optional[str] = None
 
-    # Agent Credentials
-    agent_one_username: Optional[str] = None
-    agent_one_password: Optional[str] = None
-
     # Encryption
     encryption_key: Optional[str] = None
 
@@ -59,21 +55,6 @@ class Settings(BaseSettings):
     azure_storage_container_name: str = "attachments"
     azure_storage_timeout: float = 120.0  # seconds for blob operations (download/upload)
 
-    # Azure OpenAI Configuration
-    azure_openai_endpoint: Optional[str] = None
-    azure_openai_api_key: Optional[str] = None
-    azure_openai_deployment_name: str = "gpt-4o-mini"
-    azure_embedding_deployment_name: str = "text-embedding-ada-002"
-    azure_openai_api_version: str = "2024-02-01"
-
-    # Anthropic Configuration
-    anthropic_api_key: Optional[str] = None
-    anthropic_model: str = "claude-3-haiku-20240307"
-
-    # Azure AI Document Intelligence Configuration
-    azure_document_intelligence_endpoint: Optional[str] = None
-    azure_document_intelligence_key: Optional[str] = None
-
     # Invoice Inbox Configuration
     # The email address of the dedicated invoice inbox account (separate licensed M365 user).
     # When set, the Inbox feature reads from this mailbox via the Graph API /users/{email}/ path.
@@ -81,10 +62,13 @@ class Settings(BaseSettings):
     # Leave blank to fall back to the primary authenticated user's own mailbox.
     invoice_inbox_email: Optional[str] = None
 
-    # Azure AI Search Configuration
-    azure_search_endpoint: Optional[str] = None
-    azure_search_api_key: Optional[str] = None
-    azure_search_index_name: str = "documents-index"
+    # Intelligence Layer — provider API keys
+    anthropic_api_key: Optional[str] = None
+
+    # Intelligence Layer — internal API base URL
+    # Agents call their own API surface as HTTP clients so they go through
+    # the same RBAC, ProcessEngine routing, and audit logs as human users.
+    internal_api_base_url: str = "http://localhost:8000"
 
     model_config = SettingsConfigDict(
         env_file=".env",

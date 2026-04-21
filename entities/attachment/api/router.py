@@ -13,29 +13,17 @@ from fastapi.responses import Response, StreamingResponse
 # Local Imports
 from entities.attachment.api.schemas import AttachmentCreate, AttachmentUpdate
 from entities.attachment.business.service import AttachmentService
-from entities.attachment.business.extraction_service import ExtractionService
 from shared.api.responses import list_response, item_response, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
 from shared.pdf_utils import compact_pdf
-from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["api", "attachment"])
 service = AttachmentService()
-extraction_service = ExtractionService()
-
-
-def trigger_extraction_background(attachment_id: int):
-    """Background task to extract text from an attachment."""
-    try:
-        logger.info(f"Starting background extraction for attachment {attachment_id}")
-        extraction_service.extract_attachment_by_id(attachment_id)
-        logger.info(f"Completed background extraction for attachment {attachment_id}")
-    except Exception as e:
-        logger.error(f"Background extraction failed for attachment {attachment_id}: {e}")
 
 
 @router.post("/create/attachment")
@@ -346,11 +334,6 @@ async def upload_attachment_router(
             storage_tier="Hot",
         )
 
-        # Trigger background extraction for supported file types
-        if attachment.id and extraction_service.is_extractable(attachment):
-            background_tasks.add_task(trigger_extraction_background, attachment.id)
-            logger.info(f"Queued background extraction for attachment {attachment.id}")
-
         return item_response(attachment.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -423,11 +406,6 @@ async def upload_bill_line_item_attachment_router(
             expiration_date=None,
             storage_tier="Hot",
         )
-        
-        # Trigger background extraction for supported file types
-        if attachment.id and extraction_service.is_extractable(attachment):
-            background_tasks.add_task(trigger_extraction_background, attachment.id)
-            logger.info(f"Queued background extraction for attachment {attachment.id}")
 
         return item_response(attachment.to_dict())
 
@@ -522,163 +500,6 @@ def download_attachment_router(public_id: str, current_user: dict = Depends(requ
         raise HTTPException(status_code=500, detail=f"Failed to download from blob storage: {str(e)}")
     except Exception as e:
         logger.error(f"Error downloading attachment: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ============================================================================
-# Extraction Endpoints
-# ============================================================================
-
-@router.post("/extract/attachment/{public_id}")
-def extract_attachment_router(
-    public_id: str,
-    background_tasks: BackgroundTasks,
-    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS)),
-):
-    """
-    Manually trigger text extraction for an attachment.
-    Useful for re-extracting or extracting attachments uploaded before extraction was enabled.
-    """
-    try:
-        attachment = service.read_by_public_id(public_id=public_id)
-        if not attachment:
-            raise_not_found("Attachment")
-
-        if not extraction_service.is_extractable(attachment):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Content type '{attachment.content_type}' is not supported for extraction"
-            )
-
-        # Mark as pending and trigger background extraction
-        extraction_service.mark_as_pending(attachment.id)
-        background_tasks.add_task(trigger_extraction_background, attachment.id)
-
-        return item_response({
-            "message": "Extraction queued",
-            "attachment_id": attachment.id,
-            "public_id": attachment.public_id,
-        })
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error triggering extraction: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/extraction-status/attachment/{public_id}")
-def get_extraction_status_router(
-    public_id: str,
-    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS)),
-):
-    """
-    Get the extraction status for an attachment.
-    """
-    try:
-        attachment = service.read_by_public_id(public_id=public_id)
-        if not attachment:
-            raise_not_found("Attachment")
-
-        return item_response({
-            "public_id": attachment.public_id,
-            "extraction_status": attachment.extraction_status,
-            "extracted_datetime": attachment.extracted_datetime,
-            "extraction_error": attachment.extraction_error,
-            "has_extracted_text": bool(attachment.extracted_text_blob_url),
-            "extracted_text_blob_url": attachment.extracted_text_blob_url,
-        })
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting extraction status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/extracted-text/attachment/{public_id}")
-def get_extracted_text_router(
-    public_id: str,
-    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS)),
-):
-    """
-    Get the extracted text content for an attachment.
-    Fetches from blob storage where extraction results are stored as JSON.
-    """
-    try:
-        attachment = service.read_by_public_id(public_id=public_id)
-        if not attachment:
-            raise_not_found("Attachment")
-
-        if attachment.extraction_status != "completed":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Extraction not completed. Status: {attachment.extraction_status}"
-            )
-
-        if not attachment.extracted_text_blob_url:
-            raise_not_found("Extraction result")
-
-        # Fetch extracted text from blob storage
-        extracted_text = extraction_service.get_extracted_text(attachment)
-        if extracted_text is None:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to retrieve extraction result from storage"
-            )
-
-        return item_response({
-            "public_id": attachment.public_id,
-            "filename": attachment.original_filename,
-            "extracted_text": extracted_text,
-            "extracted_datetime": attachment.extracted_datetime,
-        })
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting extracted text: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/extraction-result/attachment/{public_id}")
-def get_extraction_result_router(
-    public_id: str,
-    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS)),
-):
-    """
-    Get the full extraction result for an attachment.
-    Includes content, tables, paragraphs, and key-value pairs.
-    """
-    try:
-        attachment = service.read_by_public_id(public_id=public_id)
-        if not attachment:
-            raise_not_found("Attachment")
-
-        if attachment.extraction_status != "completed":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Extraction not completed. Status: {attachment.extraction_status}"
-            )
-
-        if not attachment.extracted_text_blob_url:
-            raise_not_found("Extraction result")
-
-        # Fetch full extraction result from blob storage
-        result = extraction_service.get_extraction_result(attachment)
-        if result is None:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to retrieve extraction result from storage"
-            )
-
-        return item_response({
-            "public_id": attachment.public_id,
-            "filename": attachment.original_filename,
-            "extracted_datetime": attachment.extracted_datetime,
-            "extraction_result": result,
-        })
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting extraction result: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

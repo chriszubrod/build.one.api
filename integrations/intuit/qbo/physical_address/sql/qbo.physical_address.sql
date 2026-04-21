@@ -210,13 +210,13 @@ BEGIN
 
     UPDATE [qbo].[PhysicalAddress]
     SET [ModifiedDatetime] = @Now,
-        [QboId] = @QboId,
-        [Line1] = @Line1,
-        [Line2] = @Line2,
-        [City] = @City,
-        [Country] = @Country,
-        [CountrySubDivisionCode] = @CountrySubDivisionCode,
-        [PostalCode] = @PostalCode
+        [QboId] = CASE WHEN @QboId IS NULL THEN [QboId] ELSE @QboId END,
+        [Line1] = CASE WHEN @Line1 IS NULL THEN [Line1] ELSE @Line1 END,
+        [Line2] = CASE WHEN @Line2 IS NULL THEN [Line2] ELSE @Line2 END,
+        [City] = CASE WHEN @City IS NULL THEN [City] ELSE @City END,
+        [Country] = CASE WHEN @Country IS NULL THEN [Country] ELSE @Country END,
+        [CountrySubDivisionCode] = CASE WHEN @CountrySubDivisionCode IS NULL THEN [CountrySubDivisionCode] ELSE @CountrySubDivisionCode END,
+        [PostalCode] = CASE WHEN @PostalCode IS NULL THEN [PostalCode] ELSE @PostalCode END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],

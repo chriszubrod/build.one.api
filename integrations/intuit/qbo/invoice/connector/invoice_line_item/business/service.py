@@ -76,7 +76,32 @@ class InvoiceLineItemConnector:
             mapping = self._line_mapping_cache.get(qbo_invoice_line.id)
         else:
             mapping = self.mapping_repo.read_by_qbo_invoice_line_id(qbo_invoice_line.id)
-        
+
+        if not mapping:
+            # Shape B fallback (task #17): content-fingerprint match when QBO
+            # regenerates line IDs. Only applies to Manual-sourced invoice lines;
+            # Bill/Expense-sourced lines are matched via their source FKs, not
+            # by fingerprint, so we skip them here to avoid double-adoption.
+            orphan = self._find_and_match_manual_by_fingerprint(
+                invoice_id=invoice_id,
+                description=description,
+                amount=amount,
+            )
+            if orphan is not None:
+                logger.info(
+                    f"Adopting orphaned InvoiceLineItem {orphan.id} for QboInvoiceLine "
+                    f"{qbo_invoice_line.id} via content fingerprint match"
+                )
+                try:
+                    mapping = self.create_mapping(
+                        invoice_line_item_id=int(orphan.id),
+                        qbo_invoice_line_id=qbo_invoice_line.id,
+                    )
+                except Exception as error:
+                    logger.warning(
+                        f"Could not adopt orphaned InvoiceLineItem {orphan.id}: {error}"
+                    )
+
         if mapping:
             # Found existing mapping - use cached record to avoid DB read
             line_item = self._line_item_cache.get(mapping.invoice_line_item_id) if self._line_item_cache else self.invoice_line_item_service.read_by_id(mapping.invoice_line_item_id)
@@ -127,6 +152,77 @@ class InvoiceLineItemConnector:
             logger.warning(f"Could not create mapping: {e}")
         
         return line_item
+
+    # ------------------------------------------------------------------ #
+    # Shape B line-matching helpers (task #17)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _normalize_for_fingerprint(value) -> str:
+        """Canonicalize a value for content-fingerprint comparison."""
+        if value is None:
+            return ""
+        if isinstance(value, Decimal):
+            return format(value.normalize(), "f")
+        try:
+            return format(Decimal(str(value)).normalize(), "f")
+        except Exception:
+            pass
+        return str(value).strip()
+
+    def _find_and_match_manual_by_fingerprint(
+        self,
+        *,
+        invoice_id: int,
+        description,
+        amount,
+    ):
+        """
+        Find at most one unmapped InvoiceLineItem on this invoice whose
+        content matches.
+
+        Only considers lines with `source_type='Manual'`. Bill- and
+        Expense-sourced invoice lines are matched via their source FKs
+        elsewhere; attempting to adopt them here would break the source
+        linkage.
+
+        Uses (description, amount) as the fingerprint — qty/rate are less
+        reliable for invoice lines because QBO can normalize them during
+        entry. Returns None on zero or ambiguous matches.
+        """
+        from entities.invoice_line_item.business.service import InvoiceLineItemService
+
+        existing = InvoiceLineItemService().read_by_invoice_id(invoice_id)
+        unmapped = []
+        for li in existing:
+            if getattr(li, "source_type", None) != "Manual":
+                continue
+            if self.mapping_repo.read_by_invoice_line_item_id(int(li.id)):
+                continue
+            unmapped.append(li)
+
+        target = (
+            self._normalize_for_fingerprint(description),
+            self._normalize_for_fingerprint(amount),
+        )
+
+        matches = []
+        for candidate in unmapped:
+            candidate_fp = (
+                self._normalize_for_fingerprint(getattr(candidate, "description", None)),
+                self._normalize_for_fingerprint(getattr(candidate, "amount", None)),
+            )
+            if candidate_fp == target:
+                matches.append(candidate)
+
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            logger.info(
+                f"Content-fingerprint match ambiguous: {len(matches)} unmapped "
+                f"Manual InvoiceLineItems have identical fingerprint; creating new"
+            )
+        return None
 
     def create_mapping(self, invoice_line_item_id: int, qbo_invoice_line_id: int) -> InvoiceLineItemInvoiceLine:
         """

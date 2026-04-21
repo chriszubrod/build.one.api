@@ -824,15 +824,6 @@ class BillService:
                 logger.error(f"Failed to delete bill line item {line_item.id}: {e}")
                 raise ValueError(f"Cannot delete bill: failed to delete line item {line_item.id}") from e
 
-        # Step 3.5: Delete ReviewEntry records for this bill (cascade cleanup)
-        try:
-            from entities.review_entry.business.service import ReviewEntryService
-            ReviewEntryService().delete_by_bill_id(bill_id=bill_id)
-            logger.info(f"Deleted review entries for bill {bill_id}")
-        except Exception as e:
-            logger.warning(f"Error deleting review entries for bill {bill_id}: {e}")
-
-        # Step 4: Delete the Bill record
         return self.repo.delete_by_id(existing.id)
 
 
@@ -1090,8 +1081,10 @@ class BillService:
             if excel_result.get("errors"):
                 all_errors.extend(excel_result["errors"])
         
-        # Step 5: Push Bill to Intuit QuickBooks Online
-        qbo_sync_result = self._sync_to_qbo(bill=finalized_bill)
+        # Step 5: Enqueue async push to QBO via the outbox. Completion returns
+        # immediately; the outbox worker picks up the row within ~5 seconds and
+        # actually calls QBO. Retries and dead-lettering happen at the worker.
+        qbo_sync_result = self._enqueue_qbo_sync(bill=finalized_bill)
         if qbo_sync_result.get("errors"):
             all_errors.extend(qbo_sync_result["errors"])
         
@@ -1112,106 +1105,119 @@ class BillService:
             "errors": all_errors
         }
 
-    def _sync_to_qbo(self, bill) -> dict:
+    def _enqueue_qbo_sync(self, bill) -> dict:
         """
-        Push a completed Bill to Intuit QuickBooks Online.
-        
-        Args:
-            bill: The finalized Bill record
-            
-        Returns:
-            Dict with success, message, qbo_bill_id, and errors
+        Enqueue an outbox row for async QBO push of the completed bill.
+
+        This replaces the old inline `_sync_to_qbo()` call. Completion
+        returns immediately; the outbox worker picks up the row and actually
+        calls QBO in the background. Retries, backoff, and dead-lettering
+        all happen at the worker.
         """
         try:
-
             qbo_auth = self.qbo_auth_service.ensure_valid_token()
-
-            if not qbo_auth:
-
-                logger.warning("No valid QBO auth found, skipping QBO sync")
-
+            if not qbo_auth or not qbo_auth.realm_id:
+                logger.warning(
+                    f"Skipping QBO enqueue for Bill {bill.public_id}: no valid QBO auth"
+                )
                 return {
                     "success": False,
-                    "message": "No valid QBO authentication found",
-                    "qbo_bill_id": None,
-                    "errors": [{"step": "qbo_sync", "error": "No valid QBO authentication"}]
+                    "message": "No valid QBO authentication",
+                    "qbo_sync_queued": False,
+                    "errors": [{"step": "qbo_enqueue", "error": "No valid QBO auth"}],
                 }
 
-            realm_id = qbo_auth.realm_id
+            from integrations.intuit.qbo.outbox.business.service import QboOutboxService
+            outbox_row = QboOutboxService().enqueue(
+                kind="sync_bill_to_qbo",
+                entity_type="Bill",
+                entity_public_id=str(bill.public_id),
+                realm_id=qbo_auth.realm_id,
+            )
+            logger.info(
+                f"Enqueued QBO sync for Bill {bill.public_id} "
+                f"(outbox {outbox_row.public_id})"
+            )
+            return {
+                "success": True,
+                "message": f"QBO push queued (outbox {outbox_row.public_id})",
+                "qbo_sync_queued": True,
+                "outbox_public_id": outbox_row.public_id,
+                "errors": [],
+            }
+        except Exception as error:
+            logger.exception(f"Failed to enqueue QBO sync for Bill {bill.public_id}")
+            return {
+                "success": False,
+                "message": f"Failed to enqueue QBO sync: {error}",
+                "qbo_sync_queued": False,
+                "errors": [{"step": "qbo_enqueue", "error": str(error)}],
+            }
 
-            if not realm_id:
+    def push_to_qbo(self, bill, realm_id: str):
+        """
+        Push a completed Bill to QBO including its attachments.
 
-                logger.warning("QBO auth has no realm_id, skipping QBO sync")
+        Called by the outbox worker during drain. Raises on failure — the
+        worker's retry / dead-letter logic handles outcomes. Attachment
+        sync failures are logged but do NOT raise (the bill itself landing
+        in QBO is the critical outcome; individual attachment issues can
+        be surfaced via reconciliation later).
 
-                return {
-                    "success": False,
-                    "message": "QBO auth missing realm_id",
-                    "qbo_bill_id": None,
-                    "errors": [{"step": "qbo_sync", "error": "QBO auth missing realm_id"}]
-                }
+        Args:
+            bill: The finalized Bill record.
+            realm_id: QBO realm ID.
 
-            logger.info(f"Syncing Bill {bill.public_id} to QBO realm {realm_id}")
-            
-            qbo_bill = self.qbo_bill_connector.sync_to_qbo_bill(bill=bill, realm_id=realm_id)
-            
-            if qbo_bill:
+        Returns:
+            QboBill: The pushed QBO bill record.
 
-                logger.info(f"Successfully synced Bill {bill.public_id} to QBO as QboBill {qbo_bill.id} (qbo_id: {qbo_bill.qbo_id})")
+        Raises:
+            QboError (or subclass): On any QBO API failure — the worker
+                retries retryable errors and dead-letters the rest.
+        """
+        logger.info(f"Pushing Bill {bill.public_id} to QBO realm {realm_id}")
+        qbo_bill = self.qbo_bill_connector.sync_to_qbo_bill(bill=bill, realm_id=realm_id)
 
-                # Sync attachments to QBO
-                attachment_errors = []
-                attachments_synced = 0
-                if qbo_bill.qbo_id:
-                    attachments_synced, attachment_errors = self._sync_attachments_to_qbo(
-                        bill=bill,
-                        qbo_bill_id=qbo_bill.qbo_id,
-                        realm_id=realm_id,
+        if not qbo_bill:
+            # Connector contract says this shouldn't happen (should raise), but
+            # be defensive — treat as a retryable server error so the worker
+            # tries again rather than immediately dead-lettering.
+            from integrations.intuit.qbo.base.errors import QboServerError
+            raise QboServerError(
+                f"QBO bill sync returned None for Bill {bill.public_id}",
+                request_path="/bill",
+                request_method="POST",
+            )
+
+        logger.info(
+            f"Pushed Bill {bill.public_id} to QBO as QboBill {qbo_bill.id} "
+            f"(qbo_id={qbo_bill.qbo_id})"
+        )
+
+        # Sync attachments. Best-effort: log errors but don't fail the push.
+        if qbo_bill.qbo_id:
+            try:
+                attachments_synced, attachment_errors = self._sync_attachments_to_qbo(
+                    bill=bill,
+                    qbo_bill_id=qbo_bill.qbo_id,
+                    realm_id=realm_id,
+                )
+                if attachment_errors:
+                    logger.warning(
+                        f"Bill {bill.public_id} attachment sync had "
+                        f"{len(attachment_errors)} errors: {attachment_errors}"
                     )
+                else:
+                    logger.info(
+                        f"Bill {bill.public_id} synced {attachments_synced} attachments to QBO"
+                    )
+            except Exception:
+                logger.exception(
+                    f"Attachment sync failed for Bill {bill.public_id} — "
+                    f"bill push succeeded; attachments can be reconciled later"
+                )
 
-                errors = [{"step": "qbo_attachment_sync", "error": e} for e in attachment_errors]
-
-                return {
-                    "success": True,
-                    "message": f"Synced to QBO Bill {qbo_bill.qbo_id}",
-                    "qbo_bill_id": qbo_bill.qbo_id,
-                    "attachments_synced": attachments_synced,
-                    "errors": errors
-                }
-
-            else:
-
-                logger.error(f"QBO sync returned None for Bill {bill.public_id}")
-
-                return {
-                    "success": False,
-                    "message": "QBO sync returned no result",
-                    "qbo_bill_id": None,
-                    "errors": [{"step": "qbo_sync", "error": "QBO sync returned no result"}]
-                }
-
-        except ValueError as e:
-
-            error_msg = str(e)
-            
-            logger.warning(f"QBO sync skipped for Bill {bill.public_id}: {error_msg}")
-            
-            return {
-                "success": False,
-                "message": f"QBO sync skipped: {error_msg}",
-                "qbo_bill_id": None,
-                "errors": [{"step": "qbo_sync", "error": error_msg}]
-            }
-
-        except Exception as e:
-
-            logger.exception(f"Error syncing Bill {bill.public_id} to QBO")
-
-            return {
-                "success": False,
-                "message": f"QBO sync error: {str(e)}",
-                "qbo_bill_id": None,
-                "errors": [{"step": "qbo_sync", "error": str(e)}]
-            }
+        return qbo_bill
 
     @staticmethod
     def _compress_file(file_content: bytes, content_type: str, file_extension: str) -> bytes:

@@ -36,7 +36,6 @@ class StepDefinition:
     """
     name: str
     capability: Optional[str] = None  # Capability to invoke (e.g., 'entity.create_bill')
-    agent: Optional[str] = None  # Agent to run (e.g., 'email_triage')
     required: bool = True  # If True, failure blocks workflow
     retry_count: int = 3  # Number of retries on failure
 

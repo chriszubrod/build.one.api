@@ -10,7 +10,7 @@ from typing import Any, List, Optional
 import pyodbc
 
 # Local Imports
-from workflows.workflow.business.models import Workflow
+from core.workflow.business.models import Workflow
 from shared.database import (
     call_procedure,
     get_connection,

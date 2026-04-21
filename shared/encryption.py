@@ -92,10 +92,10 @@ def encrypt_sensitive_data(data: str) -> Optional[str]:
 def decrypt_sensitive_data(encrypted_data: str) -> Optional[str]:
     """
     Decrypt sensitive data for display.
-    
+
     Args:
         encrypted_data: The encrypted data to decrypt
-        
+
     Returns:
         Decrypted plain text data
     Raises:
@@ -110,3 +110,23 @@ def decrypt_sensitive_data(encrypted_data: str) -> Optional[str]:
     except Exception as exc:
         logger.exception("Failed to decrypt sensitive data.")
         raise EncryptionError("Failed to decrypt sensitive data.") from exc
+
+
+def decrypt_if_encrypted(value: Optional[str]) -> Optional[str]:
+    """
+    Decrypt a value if it is a Fernet ciphertext; otherwise return it as-is.
+
+    Used by persistence layers transitioning from plaintext to encrypted
+    storage. Existing plaintext rows continue to read correctly; once any
+    row is rewritten (e.g., next token refresh), it becomes ciphertext and
+    future reads decrypt it. Over the natural rotation window, the entire
+    table self-heals to encrypted-at-rest without requiring a migration.
+    """
+    if not value:
+        return value
+    try:
+        return decrypt_sensitive_data(value)
+    except EncryptionError:
+        # Not a valid Fernet token — assume legacy plaintext and pass through.
+        # Next write for this row will encrypt it.
+        return value

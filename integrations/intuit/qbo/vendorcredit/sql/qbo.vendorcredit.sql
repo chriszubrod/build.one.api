@@ -233,17 +233,17 @@ BEGIN
     UPDATE [qbo].[VendorCredit]
     SET
         [ModifiedDatetime] = @Now,
-        [SyncToken] = @SyncToken,
-        [VendorRefValue] = @VendorRefValue,
-        [VendorRefName] = @VendorRefName,
-        [TxnDate] = @TxnDate,
-        [DocNumber] = @DocNumber,
-        [TotalAmt] = @TotalAmt,
-        [PrivateNote] = @PrivateNote,
-        [APAccountRefValue] = @APAccountRefValue,
-        [APAccountRefName] = @APAccountRefName,
-        [CurrencyRefValue] = @CurrencyRefValue,
-        [CurrencyRefName] = @CurrencyRefName
+        [SyncToken] = CASE WHEN @SyncToken IS NULL THEN [SyncToken] ELSE @SyncToken END,
+        [VendorRefValue] = CASE WHEN @VendorRefValue IS NULL THEN [VendorRefValue] ELSE @VendorRefValue END,
+        [VendorRefName] = CASE WHEN @VendorRefName IS NULL THEN [VendorRefName] ELSE @VendorRefName END,
+        [TxnDate] = CASE WHEN @TxnDate IS NULL THEN [TxnDate] ELSE @TxnDate END,
+        [DocNumber] = CASE WHEN @DocNumber IS NULL THEN [DocNumber] ELSE @DocNumber END,
+        [TotalAmt] = CASE WHEN @TotalAmt IS NULL THEN [TotalAmt] ELSE @TotalAmt END,
+        [PrivateNote] = CASE WHEN @PrivateNote IS NULL THEN [PrivateNote] ELSE @PrivateNote END,
+        [APAccountRefValue] = CASE WHEN @APAccountRefValue IS NULL THEN [APAccountRefValue] ELSE @APAccountRefValue END,
+        [APAccountRefName] = CASE WHEN @APAccountRefName IS NULL THEN [APAccountRefName] ELSE @APAccountRefName END,
+        [CurrencyRefValue] = CASE WHEN @CurrencyRefValue IS NULL THEN [CurrencyRefValue] ELSE @CurrencyRefValue END,
+        [CurrencyRefName] = CASE WHEN @CurrencyRefName IS NULL THEN [CurrencyRefName] ELSE @CurrencyRefName END
     OUTPUT
         INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],

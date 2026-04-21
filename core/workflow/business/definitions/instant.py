@@ -2,7 +2,7 @@
 from typing import List
 
 # Local Imports
-from workflows.workflow.business.definitions.base import WorkflowDefinition, StateDefinition, Transition
+from core.workflow.business.definitions.base import WorkflowDefinition, StateDefinition, Transition
 
 
 # =============================================================================
@@ -90,7 +90,6 @@ SYNCHRONOUS_TASKS = [
 
     # Review workflow
     "review_status",
-    "review_entry",
 
     # Other
     "integration",

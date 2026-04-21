@@ -6,15 +6,15 @@ from typing import Any, Optional, Type
 from transitions import Machine
 
 # Local Imports
-from workflows.workflow.business.definitions.base import WorkflowDefinition, StepDefinition
-from workflows.workflow.business.exceptions import (
+from core.workflow.business.definitions.base import WorkflowDefinition, StepDefinition
+from core.workflow.business.exceptions import (
     WorkflowNotFoundError,
     WorkflowStateError,
     WorkflowStepError,
 )
-from workflows.workflow.business.models import Workflow, WorkflowEvent
-from workflows.workflow.persistence.repo import WorkflowRepository
-from workflows.workflow_event.persistence.repo import WorkflowEventRepository
+from core.workflow.business.models import Workflow, WorkflowEvent
+from core.workflow.persistence.repo import WorkflowRepository
+from core.workflow_event.persistence.repo import WorkflowEventRepository
 
 logger = logging.getLogger(__name__)
 

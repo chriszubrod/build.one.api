@@ -1,7 +1,8 @@
 annotated-types==0.7.0
-anthropic==0.77.1
 anyio==4.11.0
+APScheduler==3.10.4
 async-timeout==4.0.3
+azure-monitor-opentelemetry==1.6.9
 bcrypt==4.1.2
 beautifulsoup4==4.14.3
 black==24.4.2
@@ -39,7 +40,6 @@ markdown-it-py==3.0.0
 MarkupSafe==3.0.3
 mdurl==0.1.2
 mypy_extensions==1.1.0
-openai==2.17.0
 openpyxl==3.1.2
 orjson==3.11.5
 ormsgpack==1.11.0

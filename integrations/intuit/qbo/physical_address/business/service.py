@@ -102,20 +102,30 @@ class QboPhysicalAddressService:
             return self.repo.delete_by_id(id=id)
         return None
 
-    def sync_from_qbo(self, *, access_token: str, realm_id: str, qbo_id: Optional[str] = None) -> QboPhysicalAddress:
+    def sync_from_qbo(
+        self,
+        *,
+        realm_id: str,
+        qbo_id: Optional[str] = None,
+        access_token: Optional[str] = None,
+    ) -> QboPhysicalAddress:
         """
         Fetch a QBO physical address from QBO CompanyInfo API and store locally.
         Uses upsert pattern: creates if not exists, updates if exists.
-        
+
         Args:
-            access_token: QBO OAuth access token
             realm_id: QBO company realm ID
-            qbo_id: Optional QBO ID to use for the address record (defaults to realm_id if not provided)
-        
+            qbo_id: Optional QBO ID to use for the address record
+                    (defaults to realm_id if not provided)
+            access_token: Deprecated — kept for backward compatibility with the
+                          public API route. QboHttpClient resolves and refreshes
+                          the token lazily via the auth service, so this value
+                          is ignored.
+
         Returns:
             QboPhysicalAddress: The synced address record
         """
-        with QboPhysicalAddressClient(access_token=access_token, realm_id=realm_id) as client:
+        with QboPhysicalAddressClient(realm_id=realm_id) as client:
             qbo_address = client.get_physical_address(qbo_id=qbo_id)
             
             if not qbo_address:

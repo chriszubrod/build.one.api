@@ -4,7 +4,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 # Local Imports
-from workflows.workflow.business.pending_actions import (
+from core.workflow.business.pending_actions import (
     ACTION_BACKFILL_W9,
     ACTION_UPDATE_TAXPAYER,
 )

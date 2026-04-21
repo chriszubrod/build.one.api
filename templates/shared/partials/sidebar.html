@@ -26,17 +26,6 @@
     </div>
 
     <div class="sidebar-nav-scroll">
-        <!-- Inbox (permanent — always shown) -->
-        {% if current_user %}
-        <ul class="sidebar-nav-list" style="margin-bottom:0; padding-bottom:0; border-bottom:1px solid var(--sidebar-border,rgba(255,255,255,.1)); margin-bottom:0.5rem;">
-            <li class="sidebar-nav-item">
-                <a href="/inbox" class="sidebar-nav-link {{ 'active' if request.url.path.startswith('/inbox') else '' }}">
-                    📬 Inbox
-                </a>
-            </li>
-        </ul>
-        {% endif %}
-
         <!-- Modules Section -->
         {% if current_user and current_user.modules and current_user.modules|length > 0 %}
             <ul class="sidebar-nav-list">

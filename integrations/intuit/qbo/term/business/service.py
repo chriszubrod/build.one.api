@@ -10,7 +10,6 @@ from integrations.intuit.qbo.term.business.model import QboTerm
 from integrations.intuit.qbo.term.persistence.repo import QboTermRepository
 from integrations.intuit.qbo.term.external.client import QboTermClient
 from integrations.intuit.qbo.term.external.schemas import QboTerm as QboTermExternalSchema
-from integrations.intuit.qbo.auth.business.service import QboAuthService
 from shared.database import with_retry, is_transient_error
 
 logger = logging.getLogger(__name__)
@@ -50,18 +49,9 @@ class QboTermService:
         Returns:
             List[QboTerm]: The synced term records
         """
-        # Get valid access token
-        auth_service = QboAuthService()
-        qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
-        
-        if not qbo_auth or not qbo_auth.access_token:
-            raise ValueError(f"No valid access token found for realm_id: {realm_id}")
-        
-        # Fetch Terms from QBO API
-        with QboTermClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+        # Fetch Terms from QBO API. QboHttpClient (via QboTermClient) resolves
+        # and refreshes the access token lazily, so no upfront auth call is needed.
+        with QboTermClient(realm_id=realm_id) as client:
             qbo_terms: List[QboTermExternalSchema] = client.query_all_terms(
                 last_updated_time=last_updated_time
             )

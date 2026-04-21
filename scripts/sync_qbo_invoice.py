@@ -140,7 +140,7 @@ def _dry_run_preview(
     """
     logger.info("[DRY RUN] Fetching invoices from QBO to preview sync (no writes will occur)...")
 
-    with QboInvoiceClient(access_token=qbo_auth.access_token, realm_id=realm_id) as client:
+    with QboInvoiceClient(realm_id=realm_id) as client:
         qbo_invoices = client.query_all_invoices(
             last_updated_time=last_sync_time,
             start_date=start_date,

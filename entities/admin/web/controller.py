@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 # Local Imports
 from shared.rbac import require_module_web
 from shared.rbac_constants import Modules
-from workflows.workflow.business.admin import WorkflowAdmin
+from core.workflow.business.admin import WorkflowAdmin
 
 
 # Initialize the logger

@@ -138,33 +138,39 @@ class BillLineItemConnector:
             else:
                 logger.debug(f"QboCustomer with QboId {qbo_bill_line.customer_ref_value} not found in local database")
         
-        # Check for existing mapping by current qbo_bill_line.id
+        # Check for existing mapping by current qbo_bill_line.id.
         mapping = self.mapping_repo.read_by_qbo_bill_line_id(qbo_bill_line.id)
 
         if not mapping:
-            # No direct mapping found. Before creating a new BillLineItem, check for
-            # an orphaned one on this bill — stale-line cleanup deletes QboBillLine
-            # mappings when QBO regenerates line IDs (e.g. after editing a bill),
-            # which leaves the existing BillLineItem without a QBO mapping.
-            # If exactly one BillLineItem on this bill has no QBO mapping, reuse it.
-            existing_line_items = self.bill_line_item_service.read_by_bill_id(bill_id)
-            unmapped = [
-                li for li in existing_line_items
-                if not self.mapping_repo.read_by_bill_line_item_id(li.id)
-            ]
-            if len(unmapped) == 1:
-                orphan = unmapped[0]
+            # Shape B fallback (task #17): when no direct mapping exists, look for
+            # an orphaned BillLineItem on this bill whose content matches this QBO
+            # line. This handles the case where QBO regenerates line IDs after a
+            # bill edit — the old QboBillLine row is deleted by stale-line cleanup,
+            # leaving the local BillLineItem unmapped. Matching by content
+            # (description, amount, qty, rate) re-adopts the correct local line
+            # rather than creating a duplicate.
+            unmapped = self._find_unmapped_line_items(bill_id)
+            orphan = self._match_by_fingerprint(
+                unmapped=unmapped,
+                description=description,
+                amount=amount,
+                qty=qty,
+                rate=rate,
+            )
+            if orphan is not None:
                 logger.info(
-                    f"Reusing orphaned BillLineItem {orphan.id} for QboBillLine {qbo_bill_line.id} "
-                    f"(QBO line ID regenerated — previous mapping was to a stale QboBillLine)"
+                    f"Adopting orphaned BillLineItem {orphan.id} for QboBillLine {qbo_bill_line.id} "
+                    f"via content fingerprint match (QBO line ID regenerated or re-ordered)"
                 )
                 try:
                     mapping = self.mapping_repo.create(
                         bill_line_item_id=orphan.id,
                         qbo_bill_line_id=qbo_bill_line.id,
                     )
-                except ValueError as e:
-                    logger.warning(f"Could not reuse orphaned BillLineItem {orphan.id}: {e}")
+                except ValueError as error:
+                    logger.warning(
+                        f"Could not adopt orphaned BillLineItem {orphan.id}: {error}"
+                    )
 
         if mapping:
             # Found existing mapping - update the BillLineItem
@@ -221,6 +227,78 @@ class BillLineItemConnector:
             logger.warning(f"Could not create mapping: {e}")
         
         return line_item
+
+    # ------------------------------------------------------------------ #
+    # Shape B line-matching helpers (task #17)
+    # ------------------------------------------------------------------ #
+
+    def _find_unmapped_line_items(self, bill_id: int):
+        """Return BillLineItems on this bill that have no QboBillLine mapping."""
+        existing = self.bill_line_item_service.read_by_bill_id(bill_id)
+        return [
+            li for li in existing
+            if not self.mapping_repo.read_by_bill_line_item_id(li.id)
+        ]
+
+    @staticmethod
+    def _normalize_for_fingerprint(value) -> str:
+        """Canonicalize a value for content-fingerprint comparison."""
+        if value is None:
+            return ""
+        # Decimals and floats: normalize to a fixed-precision string so 10 == 10.00.
+        if isinstance(value, Decimal):
+            return format(value.normalize(), "f")
+        try:
+            return format(Decimal(str(value)).normalize(), "f")
+        except Exception:
+            pass
+        return str(value).strip()
+
+    def _match_by_fingerprint(
+        self,
+        *,
+        unmapped,
+        description,
+        amount,
+        qty,
+        rate,
+    ):
+        """
+        Find at most one unmapped line item whose content fingerprint matches.
+
+        The fingerprint is `(description, amount, quantity, rate)` — the four
+        fields most likely to uniquely identify a line. Exact match on all four
+        is required. If zero or multiple candidates match, returns None — the
+        caller falls through to creating a new BillLineItem rather than risk
+        adopting the wrong one.
+        """
+        target = (
+            self._normalize_for_fingerprint(description),
+            self._normalize_for_fingerprint(amount),
+            self._normalize_for_fingerprint(qty),
+            self._normalize_for_fingerprint(rate),
+        )
+
+        matches = []
+        for candidate in unmapped:
+            candidate_fp = (
+                self._normalize_for_fingerprint(getattr(candidate, "description", None)),
+                self._normalize_for_fingerprint(getattr(candidate, "amount", None)),
+                self._normalize_for_fingerprint(getattr(candidate, "quantity", None)),
+                self._normalize_for_fingerprint(getattr(candidate, "rate", None)),
+            )
+            if candidate_fp == target:
+                matches.append(candidate)
+
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            logger.info(
+                f"Content-fingerprint match ambiguous: {len(matches)} unmapped "
+                f"BillLineItems have identical (description, amount, qty, rate); "
+                f"creating new line rather than guessing"
+            )
+        return None
 
     def create_mapping(self, bill_line_item_id: int, qbo_bill_line_id: int) -> BillLineItemBillLine:
         """

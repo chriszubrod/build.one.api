@@ -27,7 +27,6 @@ from integrations.intuit.qbo.customer.persistence.repo import QboCustomerReposit
 from integrations.intuit.qbo.account.persistence.repo import QboAccountRepository
 from integrations.intuit.qbo.term.connector.payment_term.persistence.repo import TermPaymentTermRepository
 from integrations.intuit.qbo.term.persistence.repo import QboTermRepository
-from integrations.intuit.qbo.auth.business.service import QboAuthService
 from entities.bill.business.service import BillService
 from entities.bill.business.model import Bill
 from entities.bill_line_item.business.service import BillLineItemService
@@ -58,7 +57,6 @@ class BillBillConnector:
         qbo_account_repo: Optional[QboAccountRepository] = None,
         term_payment_term_repo: Optional[TermPaymentTermRepository] = None,
         qbo_term_repo: Optional[QboTermRepository] = None,
-        auth_service: Optional[QboAuthService] = None,
     ):
         """Initialize the BillBillConnector."""
         self.mapping_repo = mapping_repo or BillBillRepository()
@@ -76,7 +74,6 @@ class BillBillConnector:
         self.qbo_account_repo = qbo_account_repo or QboAccountRepository()
         self.term_payment_term_repo = term_payment_term_repo or TermPaymentTermRepository()
         self.qbo_term_repo = qbo_term_repo or QboTermRepository()
-        self.auth_service = auth_service or QboAuthService()
 
     def sync_from_qbo_bill(self, qbo_bill: QboBill, qbo_bill_lines: List[QboBillLine]) -> Bill:
         """
@@ -335,23 +332,17 @@ class BillBillConnector:
             line=qbo_lines,
         )
         
-        # Get QBO auth and create bill
-        qbo_auth = self.auth_service.ensure_valid_token(realm_id=realm_id)
-        if not qbo_auth or not qbo_auth.access_token:
-            raise ValueError(f"No valid QBO auth found for realm {realm_id}")
-        
         logger.info(f"Creating Bill in QBO for local Bill {bill_id}: doc_number={bill.bill_number}")
-        
+
         # Log payload for debugging
         payload_dict = qbo_bill_create.model_dump(by_alias=True, exclude_none=True)
         logger.info(f"QBO Bill payload: {payload_dict}")
-        
+
         from integrations.intuit.qbo.base.errors import QboValidationError
 
-        with QboBillClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+        # QboHttpClient (via QboBillClient) resolves and refreshes the access token
+        # lazily, so no upfront auth call is needed here.
+        with QboBillClient(realm_id=realm_id) as client:
             try:
                 created_bill = client.create_bill(qbo_bill_create)
             except QboValidationError as e:
@@ -542,10 +533,7 @@ class BillBillConnector:
         if not local_qbo_bill or not local_qbo_bill.qbo_id:
             return
 
-        qbo_auth = self.auth_service.ensure_valid_token(realm_id=realm_id)
-        if not qbo_auth or not qbo_auth.access_token:
-            return
-
+        # Auth is resolved lazily inside QboHttpClient when the bill client makes a request.
         # Rebuild all bill lines — _build_qbo_line reads is_billed from local DB,
         # so billed items will now get BillableStatus = "HasBeenBilled".
         # Use sequential line_nums with no gaps to match QBO's numbering.
@@ -586,7 +574,7 @@ class BillBillConnector:
             if local_qbo_bill.department_ref_value else None
         )
 
-        with QboBillClient(access_token=qbo_auth.access_token, realm_id=realm_id) as client:
+        with QboBillClient(realm_id=realm_id) as client:
             fresh = client.get_bill(local_qbo_bill.qbo_id)
             qbo_bill_update = QboBillUpdate(
                 id=local_qbo_bill.qbo_id,

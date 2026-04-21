@@ -30,38 +30,18 @@ class Modules:
     PROJECTS        = "Projects"
     COST_CODES      = "Cost Codes"
 
-    # Inbox & email processing
-    INBOX           = "Inbox"
-    EMAIL_THREADS   = "Email Threads"
-
-    # AI & processing
-    ANOMALY_DETECTION       = "Anomaly Detection"
-    CATEGORIZATION          = "Categorization"
-    COPILOT                 = "Copilot"
-
-    # Attachments & documents
     ATTACHMENTS     = "Attachments"
 
-    # Search
-    SEARCH          = "Search"
-
-    # Administration
     USERS           = "Users"
     ROLES           = "Roles"
     ORGANIZATIONS   = "Organizations"
     COMPANIES       = "Companies"
 
-    # Integrations
     INTEGRATIONS    = "Integrations"
     QBO_SYNC        = "QBO Sync"
 
-    # Dashboard
     DASHBOARD       = "Dashboard"
 
-    # Classification overrides
-    CLASSIFICATION_OVERRIDES = "Classification Overrides"
-
-    # Review workflow
     REVIEW_STATUSES = "Review Statuses"
 
     # Pending actions

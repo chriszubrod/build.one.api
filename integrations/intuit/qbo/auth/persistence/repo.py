@@ -13,6 +13,7 @@ from shared.database import (
     get_connection,
     map_database_error,
 )
+from shared.encryption import decrypt_if_encrypted, encrypt_sensitive_data
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,8 @@ class QboAuthRepository:
             return None
 
         try:
+            # Tokens are encrypted at rest via Fernet. Legacy plaintext rows
+            # pass through decrypt_if_encrypted unchanged until their next write.
             return QboAuth(
                 id=getattr(row, "Id", None),
                 public_id=getattr(row, "PublicId", None),
@@ -43,10 +46,10 @@ class QboAuthRepository:
                 realm_id=getattr(row, "RealmId", None),
                 state=getattr(row, "State", None),
                 token_type=getattr(row, "TokenType", None),
-                id_token=getattr(row, "IdToken", None),
-                access_token=getattr(row, "AccessToken", None),
+                id_token=decrypt_if_encrypted(getattr(row, "IdToken", None)),
+                access_token=decrypt_if_encrypted(getattr(row, "AccessToken", None)),
                 expires_in=getattr(row, "ExpiresIn", None),
-                refresh_token=getattr(row, "RefreshToken", None),
+                refresh_token=decrypt_if_encrypted(getattr(row, "RefreshToken", None)),
                 x_refresh_token_expires_in=getattr(row, "XRefreshTokenExpiresIn", None)
             )
         except AttributeError as error:
@@ -58,7 +61,7 @@ class QboAuthRepository:
 
     def create(self, *, code: str, realm_id: str, state: str, token_type: str, id_token: str, access_token: str, expires_in: int, refresh_token: str, x_refresh_token_expires_in: int) -> QboAuth:
         """
-        Create a new QboAuth.
+        Create a new QboAuth. Token fields are encrypted at rest via Fernet.
         """
         try:
             with get_connection() as conn:
@@ -71,10 +74,10 @@ class QboAuthRepository:
                         "RealmId": realm_id,
                         "State": state,
                         "TokenType": token_type,
-                        "IdToken": id_token,
-                        "AccessToken": access_token,
+                        "IdToken": encrypt_sensitive_data(id_token),
+                        "AccessToken": encrypt_sensitive_data(access_token),
                         "ExpiresIn": expires_in,
-                        "RefreshToken": refresh_token,
+                        "RefreshToken": encrypt_sensitive_data(refresh_token),
                         "XRefreshTokenExpiresIn": x_refresh_token_expires_in,
                     },
                 )
@@ -167,7 +170,7 @@ class QboAuthRepository:
 
     def update_by_realm_id(self, code: str, realm_id: str, state: str, token_type: str, id_token: str, access_token: str, expires_in: int, refresh_token: str, x_refresh_token_expires_in: int) -> Optional[QboAuth]:
         """
-        Update a QboAuth by realm ID.
+        Update a QboAuth by realm ID. Token fields are encrypted at rest via Fernet.
         """
         cursor = None
         try:
@@ -182,10 +185,10 @@ class QboAuthRepository:
                             "RealmId": realm_id,
                             "State": state,
                             "TokenType": token_type,
-                            "IdToken": id_token,
-                            "AccessToken": access_token,
+                            "IdToken": encrypt_sensitive_data(id_token),
+                            "AccessToken": encrypt_sensitive_data(access_token),
                             "ExpiresIn": expires_in,
-                            "RefreshToken": refresh_token,
+                            "RefreshToken": encrypt_sensitive_data(refresh_token),
                             "XRefreshTokenExpiresIn": x_refresh_token_expires_in,
                         },
                     )

@@ -147,8 +147,8 @@ BEGIN
     UPDATE [qbo].[ItemSubCostCode]
     SET
         [ModifiedDatetime] = @Now,
-        [SubCostCodeId] = @SubCostCodeId,
-        [QboItemId] = @QboItemId
+        [SubCostCodeId] = CASE WHEN @SubCostCodeId IS NULL THEN [SubCostCodeId] ELSE @SubCostCodeId END,
+        [QboItemId] = CASE WHEN @QboItemId IS NULL THEN [QboItemId] ELSE @QboItemId END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],

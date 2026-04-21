@@ -1,12 +1,7 @@
-IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'buildone')
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'qbo')
     EXEC('CREATE SCHEMA qbo AUTHORIZATION dbo;');
 GO
 
-
-
-
-IF OBJECT_ID('qbo.Client', 'U') IS NOT NULL
-GO
 
 
 
@@ -118,9 +113,9 @@ BEGIN
     BEGIN TRANSACTION;
 
     UPDATE qbo.Client
-    SET App = @App,
-        ClientId = @ClientId,
-        ClientSecret = @ClientSecret
+    SET App = CASE WHEN @App IS NULL THEN App ELSE @App END,
+        ClientId = CASE WHEN @ClientId IS NULL THEN ClientId ELSE @ClientId END,
+        ClientSecret = CASE WHEN @ClientSecret IS NULL THEN ClientSecret ELSE @ClientSecret END
     OUTPUT
         INSERTED.App,
         INSERTED.ClientId,
@@ -145,9 +140,9 @@ BEGIN
     BEGIN TRANSACTION;
 
     UPDATE qbo.Client
-    SET App = @App,
-        ClientId = @ClientId,
-        ClientSecret = @ClientSecret
+    SET App = CASE WHEN @App IS NULL THEN App ELSE @App END,
+        ClientId = CASE WHEN @ClientId IS NULL THEN ClientId ELSE @ClientId END,
+        ClientSecret = CASE WHEN @ClientSecret IS NULL THEN ClientSecret ELSE @ClientSecret END
     OUTPUT
         INSERTED.App,
         INSERTED.ClientId,
@@ -179,5 +174,3 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
-
-    @App = 'build.one';

@@ -19,8 +19,6 @@ from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
 from shared.rbac import require_module_web
 from shared.rbac_constants import Modules
-from entities.inbox.persistence.repo import InboxRecordRepository
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/expense", tags=["web", "expense"])
@@ -66,116 +64,6 @@ def _get_expense_folder_summary(company_id: int) -> Optional[dict]:
     except Exception as e:
         logger.warning("Error getting expense folder summary: %s", e)
         return None
-
-
-def _find_matching_qbo_purchase(expense, vendors) -> Optional[dict]:
-    """
-    Find the best matching uncategorized QBO purchase transaction for a
-    draft expense.  Matches by vendor name, amount (±5%), date (±7 days).
-    Returns the best match dict or None.
-    """
-    import re
-    from datetime import datetime
-
-    try:
-        from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
-    except ImportError:
-        return None
-
-    # Resolve vendor name
-    vendor_name = None
-    if expense.vendor_id:
-        for v in vendors:
-            if v.id == expense.vendor_id:
-                vendor_name = v.name
-                break
-    if not vendor_name:
-        return None
-
-    uncategorized = QboPurchaseService().get_lines_needing_update()
-    if not uncategorized:
-        return None
-
-    def tokenize(text):
-        if not text:
-            return set()
-        tokens = set(re.split(r'\W+', text.lower()))
-        tokens.discard("")
-        return tokens - {"the", "inc", "llc", "ltd", "co", "corp"}
-
-    def similarity(a, b):
-        if not a or not b:
-            return 0.0
-        inter = a & b
-        union = a | b
-        jaccard = len(inter) / len(union) if union else 0.0
-        contain = len(inter) / len(a) if a else 0.0
-        return max(jaccard, contain * 0.85)
-
-    def parse_date(d):
-        if not d:
-            return None
-        if isinstance(d, datetime):
-            return d
-        for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%m/%d/%Y"):
-            try:
-                return datetime.strptime(str(d)[:len(fmt) + 5], fmt)
-            except (ValueError, IndexError):
-                continue
-        try:
-            return datetime.fromisoformat(str(d).replace("Z", "+00:00")).replace(tzinfo=None)
-        except Exception:
-            return None
-
-    vtokens = tokenize(vendor_name)
-    exp_amount = float(expense.total_amount) if expense.total_amount else None
-    exp_date = parse_date(expense.expense_date)
-
-    best, best_score = None, 0.0
-
-    for line in uncategorized:
-        lv = (line.get("entity_ref_name") or "").strip()
-        if not lv:
-            continue
-
-        vscore = similarity(vtokens, tokenize(lv))
-        if vscore < 0.3:
-            continue
-
-        score = vscore * 0.50
-
-        la = line.get("line_amount")
-        if exp_amount and la and exp_amount > 0:
-            diff = abs(la - exp_amount) / exp_amount
-            if diff <= 0.05:
-                score += (1.0 - diff) * 0.30
-            elif diff <= 0.15:
-                score += 0.15
-        else:
-            score += 0.05
-
-        ld = parse_date(line.get("txn_date"))
-        if exp_date and ld:
-            days = abs((exp_date - ld).days)
-            if days <= 1:
-                score += 0.20
-            elif days <= 7:
-                score += (1.0 - (days - 1) * (0.7 / 6)) * 0.20
-
-        if score > best_score and score >= 0.40:
-            best_score = score
-            best = {
-                "qbo_purchase_id": line.get("qbo_purchase_id"),
-                "qbo_purchase_line_id": line.get("qbo_purchase_line_id"),
-                "vendor_name": lv,
-                "amount": la,
-                "txn_date": str(line.get("txn_date")) if line.get("txn_date") else None,
-                "doc_number": line.get("doc_number"),
-                "confidence": round(best_score, 2),
-                "realm_id": line.get("realm_id"),
-            }
-
-    return best
 
 
 @router.get("/list")
@@ -520,25 +408,8 @@ async def edit_expense(request: Request, public_id: str, current_user: dict = De
         pe_mapping = PurchaseExpenseRepository().read_by_expense_id(expense_id=int(expense.id))
         has_qbo_purchase_mapping = pe_mapping is not None
 
-    # --- QBO Purchase matching for inbox-created draft expenses ---
     qbo_purchase_match = None
     source_email = None
-    if expense and expense.is_draft and not has_qbo_purchase_mapping:
-        try:
-            inbox_record = InboxRecordRepository().read_by_record_public_id(public_id)
-            if inbox_record and inbox_record.message_id:
-                source_email = {
-                    "message_id": inbox_record.message_id,
-                    "subject": inbox_record.subject,
-                    "from_email": inbox_record.from_email,
-                    "from_name": inbox_record.from_name,
-                }
-                qbo_purchase_match = _find_matching_qbo_purchase(expense, vendors)
-        except Exception as exc:
-            logger.debug(
-                "QBO purchase match lookup for expense %s failed (non-fatal): %s",
-                public_id, exc,
-            )
 
     _ALLOWED_RETURN_PREFIXES = ("/expense/list", "/invoice/")
     return_to = request.query_params.get("return_to") or ""

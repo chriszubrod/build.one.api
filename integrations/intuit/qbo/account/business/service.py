@@ -10,7 +10,6 @@ from integrations.intuit.qbo.account.business.model import QboAccount
 from integrations.intuit.qbo.account.persistence.repo import QboAccountRepository
 from integrations.intuit.qbo.account.external.client import QboAccountClient
 from integrations.intuit.qbo.account.external.schemas import QboAccount as QboAccountExternalSchema
-from integrations.intuit.qbo.auth.business.service import QboAuthService
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
@@ -51,19 +50,11 @@ class QboAccountService:
         Returns:
             List[QboAccount]: The synced account records
         """
-        # Get valid access token
-        self._auth_service = QboAuthService()
         self._realm_id = realm_id
-        qbo_auth = self._auth_service.ensure_valid_token(realm_id=realm_id)
 
-        if not qbo_auth or not qbo_auth.access_token:
-            raise ValueError(f"No valid access token found for realm_id: {realm_id}")
-
-        # Fetch Accounts from QBO API
-        with QboAccountClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+        # Fetch Accounts from QBO API. QboHttpClient (via QboAccountClient) resolves
+        # and refreshes the access token lazily, so no upfront auth call is needed.
+        with QboAccountClient(realm_id=realm_id) as client:
             qbo_accounts: List[QboAccountExternalSchema] = client.query_all_accounts(
                 last_updated_time=last_updated_time
             )
@@ -101,12 +92,11 @@ class QboAccountService:
                 logger.error(f"Failed to upsert account {qbo_account.id}: {e}")
                 failed_accounts.append(qbo_account.id)
 
-            # Add delay between batches to prevent connection exhaustion
+            # Add delay between batches to prevent connection exhaustion.
+            # Token refresh is handled automatically by QboHttpClient on each request.
             if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(qbo_accounts):
                 logger.debug(f"Processed {i + 1}/{len(qbo_accounts)} accounts, pausing...")
                 time.sleep(BATCH_DELAY)
-                # Refresh access token to prevent expiration during long syncs
-                self._auth_service.ensure_valid_token(realm_id=self._realm_id)
 
         if deactivated_count:
             logger.info(f"{deactivated_count} accounts are deactivated in QBO (Active=false synced locally)")

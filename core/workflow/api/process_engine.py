@@ -8,9 +8,6 @@ from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
-# Sentinel: executor module unavailable (dependencies removed)
-_EXECUTOR_UNAVAILABLE = object()
-
 
 # =============================================================================
 # Event Types and Channels
@@ -179,42 +176,29 @@ class ProcessEngine:
     def __init__(self):
         # Lazy import to avoid circular dependencies
         self._orchestrator = None
-        self._executor = None
         self._instant_handler = None
     
     @property
     def orchestrator(self):
         """Lazy-load the workflow orchestrator."""
         if self._orchestrator is None:
-            from workflows.workflow.business.orchestrator import WorkflowOrchestrator
+            from core.workflow.business.orchestrator import WorkflowOrchestrator
             self._orchestrator = WorkflowOrchestrator()
         return self._orchestrator
-    
+
     @property
     def executor(self):
-        """Lazy-load the bill intake executor."""
-        if self._executor is _EXECUTOR_UNAVAILABLE:
-            raise RuntimeError(
-                "Async workflow execution (email intake, bill intake, etc.) is not available; "
-                "required modules were removed. Use execute_synchronous() for CRUD."
-            )
-        if self._executor is None:
-            try:
-                from workflows.workflow.business.executor import BillIntakeExecutor
-                self._executor = BillIntakeExecutor()
-            except ImportError:
-                self._executor = _EXECUTOR_UNAVAILABLE
-                raise RuntimeError(
-                    "Async workflow execution (email intake, bill intake, etc.) is not available; "
-                    "required modules were removed. Use execute_synchronous() for CRUD."
-                )
-        return self._executor
-    
+        """Async workflow execution was removed with the AI layer."""
+        raise RuntimeError(
+            "Async workflow execution (email intake, bill intake, etc.) is not available; "
+            "required modules were removed. Use execute_synchronous() for CRUD."
+        )
+
     @property
     def instant_handler(self):
         """Lazy-load the instant workflow handler."""
         if self._instant_handler is None:
-            from workflows.workflow.business.instant import InstantWorkflowHandler
+            from core.workflow.business.instant import InstantWorkflowHandler
             self._instant_handler = InstantWorkflowHandler()
         return self._instant_handler
     
@@ -357,106 +341,6 @@ class ProcessEngine:
             expects_response=expects_response,
         )
     
-    def from_email_poll(
-        self,
-        tenant_id: int,
-        message_id: str,
-        conversation_id: Optional[str] = None,
-        message_data: Optional[Dict[str, Any]] = None,
-        attachments: Optional[List[TriggerAttachment]] = None,
-        access_token: Optional[str] = None,
-    ) -> TriggerContext:
-        """
-        Create TriggerContext from an email polling result.
-        
-        Args:
-            tenant_id: Tenant ID
-            message_id: Email message ID
-            conversation_id: Email thread/conversation ID
-            message_data: Email metadata (subject, from, body, etc.)
-            attachments: Email attachments
-            access_token: MS Graph access token
-        """
-        return TriggerContext(
-            trigger_type=EventType.EMAIL_RECEIVED,
-            trigger_source=Channel.SCHEDULER,
-            tenant_id=tenant_id,
-            user_id=None,  # System trigger
-            access_token=access_token,
-            payload={
-                "message_id": message_id,
-                **(message_data or {}),
-            },
-            attachments=attachments or [],
-            expects_response=False,  # Async processing
-            workflow_type="email_intake",
-            conversation_id=conversation_id,
-        )
-    
-    def from_reply_check(
-        self,
-        tenant_id: int,
-        workflow_public_id: str,
-        reply_message_id: str,
-        reply_body: str,
-        from_address: str,
-        access_token: Optional[str] = None,
-    ) -> TriggerContext:
-        """
-        Create TriggerContext from checking for an approval reply.
-        
-        Args:
-            tenant_id: Tenant ID
-            workflow_public_id: Workflow awaiting the reply
-            reply_message_id: ID of the reply message
-            reply_body: Body text of the reply
-            from_address: Sender of the reply
-            access_token: MS Graph access token
-        """
-        return TriggerContext(
-            trigger_type=EventType.EMAIL_RECEIVED,
-            trigger_source=Channel.SCHEDULER,
-            tenant_id=tenant_id,
-            user_id=None,
-            access_token=access_token,
-            payload={
-                "reply_message_id": reply_message_id,
-                "reply_body": reply_body,
-                "from_address": from_address,
-            },
-            expects_response=False,
-            parent_workflow_id=workflow_public_id,
-        )
-    
-    def from_timeout_check(
-        self,
-        tenant_id: int,
-        workflow_public_id: str,
-        timeout_type: str,
-        access_token: Optional[str] = None,
-    ) -> TriggerContext:
-        """
-        Create TriggerContext from a timeout check (e.g., send reminder).
-        
-        Args:
-            tenant_id: Tenant ID
-            workflow_public_id: Workflow that timed out
-            timeout_type: Type of timeout (e.g., "reminder", "escalation")
-            access_token: Optional access token
-        """
-        return TriggerContext(
-            trigger_type=EventType.SLA_BREACH,
-            trigger_source=Channel.SCHEDULER,
-            tenant_id=tenant_id,
-            user_id=None,
-            access_token=access_token,
-            payload={
-                "timeout_type": timeout_type,
-            },
-            expects_response=False,
-            parent_workflow_id=workflow_public_id,
-        )
-    
     def from_webhook(
         self,
         tenant_id: int,
@@ -578,7 +462,7 @@ class ProcessEngine:
         Instant workflows are synchronous CRUD operations that complete
         in < 1 second (e.g., 'project_create', 'vendor_update').
         """
-        from workflows.workflow.business.definitions.instant import is_instant_workflow_type
+        from core.workflow.business.definitions.instant import is_instant_workflow_type
         return is_instant_workflow_type(workflow_type)
     
     def _get_handler(self, workflow_type: str):
@@ -591,124 +475,11 @@ class ProcessEngine:
         1. Check if it's an instant workflow (CRUD operations)
         2. Check registered long-running workflow handlers
         """
-        # Check for instant workflows first
         if self._is_instant_workflow(workflow_type):
             return self._handle_instant_workflow
-        
-        # Long-running workflow handlers
-        handlers = {
-            "email_intake": self._handle_email_intake,
-            "expense_intake": self._handle_expense_intake,
-            "approval_response": self._handle_approval_response,
-            "timeout_handler": self._handle_timeout,
-        }
-        return handlers.get(workflow_type)
-    
-    # =========================================================================
-    # Handlers
-    # =========================================================================
-    
-    async def _handle_email_intake(self, context: TriggerContext) -> Dict[str, Any]:
-        """Handle email intake workflow (bill/invoice). When module=bill, spawns draft bill creation."""
-        message_id = context.payload.get("message_id")
-        conversation = context.payload.get("conversation", [])
-        total_attachments = context.payload.get("total_attachments", len(context.attachments))
-        module = (context.payload.get("module") or "bill").lower()
-        preferred_module = "bill" if module == "bill" else None
-        print(f"[ProcessEngine] _handle_email_intake message_id={message_id[:20] if message_id else None}... workflow_type=email_intake module={module}")
-        workflow, is_duplicate, task_created = await self.executor.start_from_email(
-            tenant_id=context.tenant_id,
-            access_token=context.access_token,
-            message_id=message_id,
-            conversation_id=context.conversation_id,
-            conversation=conversation,
-            total_attachments=total_attachments,
-            workflow_type="email_intake",
-            preferred_module=preferred_module,
-        )
-        print(f"[ProcessEngine] _handle_email_intake done workflow_id={workflow.public_id} state={workflow.state} duplicate={is_duplicate} task_created={task_created}")
-        return {
-            "workflow_id": workflow.public_id,
-            "workflow_type": workflow.workflow_type,
-            "state": workflow.state,
-            "duplicate": is_duplicate,
-            "task_created": task_created,
-        }
 
-    async def _handle_expense_intake(self, context: TriggerContext) -> Dict[str, Any]:
-        """Handle expense intake workflow (expense)."""
-        message_id = context.payload.get("message_id")
-        conversation = context.payload.get("conversation", [])
-        total_attachments = context.payload.get("total_attachments", len(context.attachments))
-        print(f"[ProcessEngine] _handle_expense_intake message_id={message_id[:20] if message_id else None}... workflow_type=expense_intake")
-        workflow, is_duplicate, task_created = await self.executor.start_from_email(
-            tenant_id=context.tenant_id,
-            access_token=context.access_token,
-            message_id=message_id,
-            conversation_id=context.conversation_id,
-            conversation=conversation,
-            total_attachments=total_attachments,
-            workflow_type="expense_intake",
-        )
-        print(f"[ProcessEngine] _handle_expense_intake done workflow_id={workflow.public_id} state={workflow.state} duplicate={is_duplicate} task_created={task_created}")
-        return {
-            "workflow_id": workflow.public_id,
-            "workflow_type": workflow.workflow_type,
-            "state": workflow.state,
-            "duplicate": is_duplicate,
-            "task_created": task_created,
-        }
-    
-    async def _handle_approval_response(self, context: TriggerContext) -> Dict[str, Any]:
-        """Handle approval reply processing."""
-        workflow_public_id = context.parent_workflow_id
-        
-        # Get the workflow
-        workflow = self.orchestrator.get_workflow(workflow_public_id)
-        if not workflow:
-            return {
-                "success": False,
-                "error": f"Workflow not found: {workflow_public_id}",
-            }
-        
-        # Process the reply
-        workflow = await self.executor.process_approval_reply(
-            workflow=workflow,
-            access_token=context.access_token,
-            reply_body=context.payload.get("reply_body", ""),
-            reply_subject=context.payload.get("reply_subject", ""),
-            from_address=context.payload.get("from_address", ""),
-        )
-        
-        return {
-            "workflow_id": workflow.public_id,
-            "state": workflow.state,
-        }
-    
-    async def _handle_timeout(self, context: TriggerContext) -> Dict[str, Any]:
-        """Handle timeout-based actions (reminders, escalations)."""
-        workflow_public_id = context.parent_workflow_id
-        timeout_type = context.payload.get("timeout_type", "reminder")
-        
-        workflow = self.orchestrator.get_workflow(workflow_public_id)
-        if not workflow:
-            return {
-                "success": False,
-                "error": f"Workflow not found: {workflow_public_id}",
-            }
-        
-        if timeout_type == "reminder":
-            workflow = await self.executor.send_reminder(
-                workflow=workflow,
-                access_token=context.access_token,
-            )
-        
-        return {
-            "workflow_id": workflow.public_id,
-            "state": workflow.state,
-            "action": timeout_type,
-        }
-    
+        return None
+
     async def _handle_instant_workflow(self, context: TriggerContext) -> Dict[str, Any]:
         """
         Handle instant workflow (synchronous CRUD operations).
@@ -722,7 +493,7 @@ class ProcessEngine:
         Returns:
             Result dict with success status and data/error
         """
-        from workflows.workflow.business.definitions.instant import parse_instant_workflow_type
+        from core.workflow.business.definitions.instant import parse_instant_workflow_type
         
         workflow_type = context.workflow_type
         
@@ -780,7 +551,7 @@ class ProcessEngine:
                 f"'{workflow_type}' is not an instant workflow. Use route() instead."
             )
         
-        from workflows.workflow.business.definitions.instant import parse_instant_workflow_type
+        from core.workflow.business.definitions.instant import parse_instant_workflow_type
         
         entity, operation = parse_instant_workflow_type(workflow_type)
         

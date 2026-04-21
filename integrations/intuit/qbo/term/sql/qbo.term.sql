@@ -311,17 +311,17 @@ BEGIN
     UPDATE [qbo].[Term]
     SET
         [ModifiedDatetime] = @Now,
-        [SyncToken] = @SyncToken,
-        [RealmId] = @RealmId,
-        [Name] = @Name,
-        [DiscountPercent] = @DiscountPercent,
-        [DiscountDays] = @DiscountDays,
-        [Active] = @Active,
-        [Type] = @Type,
-        [DayOfMonthDue] = @DayOfMonthDue,
-        [DiscountDayOfMonth] = @DiscountDayOfMonth,
-        [DueNextMonthDays] = @DueNextMonthDays,
-        [DueDays] = @DueDays
+        [SyncToken] = CASE WHEN @SyncToken IS NULL THEN [SyncToken] ELSE @SyncToken END,
+        [RealmId] = CASE WHEN @RealmId IS NULL THEN [RealmId] ELSE @RealmId END,
+        [Name] = CASE WHEN @Name IS NULL THEN [Name] ELSE @Name END,
+        [DiscountPercent] = CASE WHEN @DiscountPercent IS NULL THEN [DiscountPercent] ELSE @DiscountPercent END,
+        [DiscountDays] = CASE WHEN @DiscountDays IS NULL THEN [DiscountDays] ELSE @DiscountDays END,
+        [Active] = CASE WHEN @Active IS NULL THEN [Active] ELSE @Active END,
+        [Type] = CASE WHEN @Type IS NULL THEN [Type] ELSE @Type END,
+        [DayOfMonthDue] = CASE WHEN @DayOfMonthDue IS NULL THEN [DayOfMonthDue] ELSE @DayOfMonthDue END,
+        [DiscountDayOfMonth] = CASE WHEN @DiscountDayOfMonth IS NULL THEN [DiscountDayOfMonth] ELSE @DiscountDayOfMonth END,
+        [DueNextMonthDays] = CASE WHEN @DueNextMonthDays IS NULL THEN [DueNextMonthDays] ELSE @DueNextMonthDays END,
+        [DueDays] = CASE WHEN @DueDays IS NULL THEN [DueDays] ELSE @DueDays END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],

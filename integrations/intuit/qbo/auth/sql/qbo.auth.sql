@@ -1,6 +1,3 @@
-IF OBJECT_ID('qbo.Auth', 'U') IS NOT NULL
-GO
-
 IF OBJECT_ID('qbo.Auth', 'U') IS NULL
 BEGIN
 CREATE TABLE qbo.Auth
@@ -223,15 +220,15 @@ BEGIN
 
     UPDATE qbo.Auth
     SET [ModifiedDatetime] = @Now,
-        Code = @Code,
-        RealmId = @RealmId,
-        [State] = @State,
-        TokenType = @TokenType,
-        IdToken = @IdToken,
-        AccessToken = @AccessToken,
-        ExpiresIn = @ExpiresIn,
-        RefreshToken = @RefreshToken,
-        XRefreshTokenExpiresIn = @XRefreshTokenExpiresIn
+        Code = CASE WHEN @Code IS NULL THEN Code ELSE @Code END,
+        RealmId = CASE WHEN @RealmId IS NULL THEN RealmId ELSE @RealmId END,
+        [State] = CASE WHEN @State IS NULL THEN [State] ELSE @State END,
+        TokenType = CASE WHEN @TokenType IS NULL THEN TokenType ELSE @TokenType END,
+        IdToken = CASE WHEN @IdToken IS NULL THEN IdToken ELSE @IdToken END,
+        AccessToken = CASE WHEN @AccessToken IS NULL THEN AccessToken ELSE @AccessToken END,
+        ExpiresIn = CASE WHEN @ExpiresIn IS NULL THEN ExpiresIn ELSE @ExpiresIn END,
+        RefreshToken = CASE WHEN @RefreshToken IS NULL THEN RefreshToken ELSE @RefreshToken END,
+        XRefreshTokenExpiresIn = CASE WHEN @XRefreshTokenExpiresIn IS NULL THEN XRefreshTokenExpiresIn ELSE @XRefreshTokenExpiresIn END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -287,5 +284,3 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
-
-    @RealmId = '1234567890';

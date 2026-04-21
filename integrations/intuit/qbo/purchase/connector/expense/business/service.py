@@ -1,6 +1,6 @@
 # Python Standard Library Imports
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 # Third-party Imports
 
@@ -292,10 +292,12 @@ class PurchaseExpenseConnector:
         
         qbo_lines = []
         skipped_lines = []
+        line_num_to_expense_line_item_id: Dict[int, int] = {}
         for idx, line_item in enumerate(expense_line_items, start=1):
             qbo_line = self._build_qbo_line(line_item, idx)
             if qbo_line:
                 qbo_lines.append(qbo_line)
+                line_num_to_expense_line_item_id[idx] = int(line_item.id)
             else:
                 skipped_lines.append(line_item.id)
         
@@ -341,21 +343,13 @@ class PurchaseExpenseConnector:
             ) if local_qbo_purchase.department_ref_value else None,
         )
         
-        # 5. Get QBO auth and update purchase
-        from integrations.intuit.qbo.auth.business.service import QboAuthService
+        # 5. Update purchase in QBO. QboHttpClient (via QboPurchaseClient) resolves
+        # and refreshes the access token lazily, so no upfront auth call is needed.
         from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
-        
-        auth_service = QboAuthService()
-        qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
-        if not qbo_auth or not qbo_auth.access_token:
-            raise ValueError(f"No valid QBO auth found for realm {realm_id}")
-        
+
         logger.info(f"Updating Purchase in QBO for local Expense {expense_id}: qbo_id={local_qbo_purchase.qbo_id}")
-        
-        with QboPurchaseClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+
+        with QboPurchaseClient(realm_id=realm_id) as client:
             updated_purchase = client.update_purchase(qbo_purchase_update)
         
         logger.info(f"Updated QBO Purchase {updated_purchase.id} with new SyncToken {updated_purchase.sync_token}")
@@ -386,8 +380,12 @@ class PurchaseExpenseConnector:
         
         # 7. Update local QboPurchaseLine records
         if updated_purchase.line:
-            self._update_local_purchase_lines(updated_local.id, updated_purchase.line)
-        
+            self._update_local_purchase_lines(
+                updated_local.id,
+                updated_purchase.line,
+                line_num_to_expense_line_item_id=line_num_to_expense_line_item_id,
+            )
+
         return updated_local
 
     def _build_qbo_line(self, line_item, line_num: int):
@@ -527,13 +525,22 @@ class PurchaseExpenseConnector:
         
         return QboReferenceType(value=qbo_customer.qbo_id, name=qbo_customer.display_name)
 
-    def _update_local_purchase_lines(self, qbo_purchase_id: int, qbo_lines: list) -> None:
+    def _update_local_purchase_lines(
+        self,
+        qbo_purchase_id: int,
+        qbo_lines: list,
+        line_num_to_expense_line_item_id: Optional[Dict[int, int]] = None,
+    ) -> None:
         """
         Update local QboPurchaseLine records after QBO update.
-        
+
         Args:
             qbo_purchase_id: Local QboPurchase database ID
             qbo_lines: List of QboPurchaseLine from API response
+            line_num_to_expense_line_item_id: Optional map of line_num -> ExpenseLineItem.id.
+                When provided, a PurchaseLineExpenseLineItem mapping is created for each
+                stored QboPurchaseLine that does not already have one. Without this,
+                subsequent sync_from_qbo runs would duplicate the ExpenseLineItems.
         """
         for qbo_line in qbo_lines:
             try:
@@ -544,7 +551,7 @@ class PurchaseExpenseConnector:
                         qbo_purchase_id=qbo_purchase_id,
                         qbo_line_id=qbo_line.id
                     )
-                
+
                 # Extract references from line detail
                 item_ref_value = None
                 item_ref_name = None
@@ -553,7 +560,7 @@ class PurchaseExpenseConnector:
                 billable_status = None
                 qty = None
                 unit_price = None
-                
+
                 if qbo_line.item_based_expense_line_detail:
                     detail = qbo_line.item_based_expense_line_detail
                     if detail.item_ref:
@@ -565,9 +572,10 @@ class PurchaseExpenseConnector:
                     billable_status = detail.billable_status
                     qty = detail.qty
                     unit_price = detail.unit_price
-                
+
+                stored_line = None
                 if existing_line:
-                    self.qbo_purchase_line_repo.update_by_id(
+                    stored_line = self.qbo_purchase_line_repo.update_by_id(
                         id=existing_line.id,
                         row_version=existing_line.row_version_bytes,
                         line_num=qbo_line.line_num,
@@ -586,9 +594,9 @@ class PurchaseExpenseConnector:
                         qty=qty,
                         unit_price=unit_price,
                         markup_percent=None,
-                    )
+                    ) or existing_line
                 else:
-                    self.qbo_purchase_line_repo.create(
+                    stored_line = self.qbo_purchase_line_repo.create(
                         qbo_purchase_id=qbo_purchase_id,
                         qbo_line_id=qbo_line.id,
                         line_num=qbo_line.line_num,
@@ -608,6 +616,26 @@ class PurchaseExpenseConnector:
                         unit_price=unit_price,
                         markup_percent=None,
                     )
+
+                # Create PurchaseLineExpenseLineItem mapping when correlation is available.
+                # Without this, subsequent sync_from_qbo creates duplicate ExpenseLineItems
+                # because no mapping exists to point back to the local ExpenseLineItem.
+                if line_num_to_expense_line_item_id and stored_line and qbo_line.line_num:
+                    eli_id = line_num_to_expense_line_item_id.get(qbo_line.line_num)
+                    if eli_id is not None:
+                        stored_line_id = int(stored_line.id) if isinstance(stored_line.id, str) else stored_line.id
+                        existing_mapping = self._line_connector.get_mapping_by_qbo_purchase_line_id(stored_line_id)
+                        if existing_mapping is None:
+                            try:
+                                self._line_connector.create_mapping(
+                                    expense_line_item_id=eli_id,
+                                    qbo_purchase_line_id=stored_line_id,
+                                )
+                                logger.info(
+                                    f"Created line mapping: ExpenseLineItem {eli_id} <-> QboPurchaseLine {stored_line_id}"
+                                )
+                            except ValueError as e:
+                                logger.warning(f"Could not create line mapping: {e}")
             except Exception as e:
                 logger.error(f"Failed to update QboPurchaseLine: {e}")
 

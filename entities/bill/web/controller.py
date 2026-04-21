@@ -19,7 +19,6 @@ from entities.project.business.service import ProjectService
 from entities.payment_term.business.service import PaymentTermService
 from shared.rbac import require_module_web
 from shared.rbac_constants import Modules
-from entities.inbox.persistence.repo import InboxRecordRepository
 from entities.bill.persistence.repo import BillRepository
 
 logger = logging.getLogger(__name__)
@@ -151,8 +150,7 @@ async def list_bills(
                 bill_dict['vendor_name'] = vendor_map[bill.vendor_id]
             bills_with_vendors.append(bill_dict)
 
-        # Get pending bill workflows (confirmed as "bill" but not yet processed)
-        pending_workflows = _get_pending_bill_workflows(current_user.get("tenant_id", 1))
+        pending_workflows = []
 
         # Get bill folder summary for SharePoint folder processing section
         bill_folder_summary = _get_bill_folder_summary(company_id=1)
@@ -227,193 +225,6 @@ def _get_bill_folder_summary(company_id: int) -> Optional[dict]:
         }
     except Exception as e:
         logger.warning("Error getting bill folder summary: %s", e)
-        return None
-
-
-def _get_pending_bill_workflows(tenant_id: int) -> list:
-    """
-    Get bill_processing workflows that need attention.
-    
-    Returns workflows that:
-    - Are bill_processing workflows in non-completed states (needs_review, received, etc.)
-    - OR are email_intake workflows confirmed as 'bill' without a child workflow
-    """
-    try:
-        from workflows.workflow.persistence.repo import WorkflowRepository
-        
-        repo = WorkflowRepository()
-        
-        # Get bill_processing workflows that are NOT completed (need attention)
-        bill_processing_workflows = repo.read_by_tenant_and_type(
-            tenant_id=tenant_id,
-            workflow_type='bill_processing',
-            state=None,
-        )
-        
-        # Filter to those needing attention (not completed, not abandoned)
-        pending_bill_workflows = [
-            wf for wf in bill_processing_workflows 
-            if wf.state not in ['completed', 'abandoned', 'cancelled']
-        ]
-        
-        # Also get completed email_intake workflows to check for any without children
-        email_intake_workflows = repo.read_by_tenant_and_type(
-            tenant_id=tenant_id,
-            workflow_type='email_intake',
-            state='completed',
-        )
-        
-        # Pre-fetch all parent workflows to avoid N+1 queries
-        parent_ids = set()
-        for wf in pending_bill_workflows:
-            parent_id = (wf.context or {}).get("parent_workflow_id")
-            if parent_id:
-                parent_ids.add(parent_id.lower() if isinstance(parent_id, str) else parent_id)
-        
-        parent_workflows_map = {}
-        for parent_id in parent_ids:
-            parent = repo.read_by_public_id(parent_id)
-            if parent:
-                parent_workflows_map[parent_id] = parent
-        
-        pending = []
-        
-        # Add bill_processing workflows that need attention
-        for wf in pending_bill_workflows:
-            ctx = wf.context or {}
-            
-            # Get parent workflow info for email details from pre-fetched map
-            parent_id = ctx.get("parent_workflow_id")
-            parent_ctx = {}
-            if parent_id:
-                parent_id_lower = parent_id.lower() if isinstance(parent_id, str) else parent_id
-                parent = parent_workflows_map.get(parent_id_lower)
-                if parent:
-                    parent_ctx = parent.context or {}
-            
-            # Get email info from parent or current context
-            email = parent_ctx.get("email") or ctx.get("email", {})
-            classification = parent_ctx.get("classification") or ctx.get("classification", {})
-            extracted = ctx.get("extracted", {})
-            
-            pending.append({
-                "public_id": wf.public_id,
-                "subject": email.get("subject", "No subject"),
-                "from_address": email.get("from_address", "Unknown"),
-                "from_name": email.get("from_name"),
-                "received_at": email.get("received_at"),
-                "created_at": wf.created_at,
-                "confidence": classification.get("confidence", 0),
-                "child_workflow_id": wf.public_id,  # This IS the child workflow
-                "child_state": wf.state,
-                "has_error": wf.state == "needs_review",
-                "workflow_type": "bill_processing",
-                "extracted_vendor_name": extracted.get("vendor_name"),
-                "matched_vendor_id": ctx.get("matched_vendor_id"),
-            })
-        
-        # Also check for email_intake confirmed as bill but without a child workflow
-        for wf in email_intake_workflows:
-            ctx = wf.context or {}
-            confirmed_type = ctx.get("confirmed_entity_type") or ctx.get("entity_type")
-            
-            if confirmed_type != "bill":
-                continue
-            
-            # Skip if already has a child workflow (handled above)
-            child_id = ctx.get("child_workflow_id")
-            if child_id:
-                continue
-            
-            # Get email info for display
-            email = ctx.get("email", {})
-            classification = ctx.get("classification", {})
-            
-            pending.append({
-                "public_id": wf.public_id,
-                "subject": email.get("subject", "No subject"),
-                "from_address": email.get("from_address", "Unknown"),
-                "from_name": email.get("from_name"),
-                "received_at": email.get("received_at"),
-                "created_at": wf.created_at,
-                "confidence": classification.get("confidence", 0),
-                "child_workflow_id": None,
-                "child_state": None,
-                "has_error": False,
-                "workflow_type": "email_intake",
-            })
-        
-        # Sort by created_at descending
-        pending.sort(key=lambda x: x.get("created_at") or "", reverse=True)
-        
-        return pending
-        
-    except Exception as e:
-        logger.warning(f"Error getting pending bill workflows: {e}")
-        return []
-
-
-def _get_workflow_for_bill(bill_public_id: str) -> Optional[dict]:
-    """
-    Find the workflow that created this bill.
-    
-    Searches for bill_processing workflows with created_bill_public_id matching the bill.
-    Returns the workflow context including email conversation.
-    """
-    try:
-        from workflows.workflow.persistence.repo import WorkflowRepository
-        from shared.database import get_connection
-        
-        repo = WorkflowRepository()
-        
-        # Use direct SQL to find the workflow with this bill in context
-        # More efficient than loading all workflows
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT PublicId
-                FROM dbo.Workflow
-                WHERE WorkflowType = 'bill_processing'
-                  AND JSON_VALUE(Context, '$.created_bill_public_id') = ?
-            """, (bill_public_id,))
-            row = cursor.fetchone()
-            
-            if not row:
-                return None
-            
-            wf_public_id = row[0]
-        
-        # Now fetch the full workflow
-        wf = repo.read_by_public_id(str(wf_public_id).lower())
-        if not wf:
-            return None
-        
-        ctx = wf.context or {}
-        
-        # Get parent for full conversation
-        parent_id = ctx.get("parent_workflow_id")
-        parent_ctx = {}
-        
-        if parent_id:
-            parent = repo.read_by_public_id(parent_id.lower() if isinstance(parent_id, str) else parent_id)
-            if parent:
-                parent_ctx = parent.context or {}
-        
-        # Merge conversation from parent or child
-        conversation = parent_ctx.get("conversation") or ctx.get("conversation") or []
-        
-        return {
-            "workflow_id": wf.public_id,
-            "parent_workflow_id": parent_id,
-            "conversation": conversation,
-            "email": parent_ctx.get("email") or ctx.get("email", {}),
-            "classification": parent_ctx.get("classification") or ctx.get("classification", {}),
-            "extracted": ctx.get("extracted", {}),
-            "attachment_blob_urls": parent_ctx.get("attachment_blob_urls") or ctx.get("attachment_blob_urls", []),
-        }
-        
-    except Exception as e:
-        logger.warning(f"Error getting workflow for bill {bill_public_id}: {e}")
         return None
 
 
@@ -697,49 +508,21 @@ async def view_bill(request: Request, public_id: str, current_user: dict = Depen
     if payment_term_name:
         bill_dict['payment_term_name'] = payment_term_name
     
-    # Try to get workflow conversation if this bill was created from a workflow
     workflow_conversation = None
     workflow_data = None
-    if bill and bill.public_id:
-        workflow_data = _get_workflow_for_bill(bill.public_id)
-        if workflow_data:
-            workflow_conversation = workflow_data.get("conversation", [])
-
-    # Look up linked inbox email (if this bill was created from an inbox message)
     source_email = None
-    try:
-        inbox_record = InboxRecordRepository().read_by_record_public_id(public_id)
-        if inbox_record and inbox_record.message_id:
-            source_email = {
-                "message_id": inbox_record.message_id,
-                "subject": inbox_record.subject,
-                "from_email": inbox_record.from_email,
-                "from_name": inbox_record.from_name,
-            }
-    except Exception as exc:
-        logger.debug("Inbox record lookup for bill %s failed (non-fatal): %s", public_id, exc)
 
-    # Display dates as MM-DD-YYYY (and normalize 0002 → 2002)
     for key in ("bill_date", "due_date"):
         bill_dict[key] = _date_to_mm_dd_yyyy(bill_dict.get(key))
 
-    # Fetch completion result if available
     completion_result = None
     try:
         completion_result = BillRepository().get_completion_result(public_id)
     except Exception as exc:
         logger.debug("Completion result lookup for bill %s failed (non-fatal): %s", public_id, exc)
 
-    # Fetch review timeline
     review_entries = []
     review_current_status = None
-    if bill and bill.id:
-        from entities.review_entry.business.service import ReviewEntryService
-        review_service = ReviewEntryService()
-        entries = review_service.read_by_bill_id(bill_id=bill.id)
-        review_entries = [e.to_dict() for e in entries]
-        if entries:
-            review_current_status = entries[0].to_dict()  # first = latest (DESC order)
 
     return templates.TemplateResponse(
         "bill/view.html",
@@ -847,45 +630,16 @@ async def edit_bill(request: Request, public_id: str, current_user: dict = Depen
     if payment_term_public_id:
         bill_dict['payment_term_public_id'] = payment_term_public_id
     
-    # Look up linked inbox email (if this bill was created from an inbox message)
     source_email = None
-    try:
-        inbox_record = InboxRecordRepository().read_by_record_public_id(public_id)
-        if inbox_record and inbox_record.message_id:
-            source_email = {
-                "message_id": inbox_record.message_id,
-                "subject": inbox_record.subject,
-                "from_email": inbox_record.from_email,
-                "from_name": inbox_record.from_name,
-            }
-    except Exception as exc:
-        logger.debug("Inbox record lookup for bill %s failed (non-fatal): %s", public_id, exc)
-
-    # Fetch workflow data for email conversation display
     workflow_conversation = None
     workflow_data = None
-    if bill and bill.public_id:
-        workflow_data = _get_workflow_for_bill(bill.public_id)
-        if workflow_data:
-            workflow_conversation = workflow_data.get("conversation", [])
 
-    # Display dates as MM-DD-YYYY for key-in (and normalize 0002 → 2002)
     for key in ("bill_date", "due_date"):
         bill_dict[key] = _date_to_mm_dd_yyyy(bill_dict.get(key))
 
-    # Fetch review timeline and declined statuses for edit page
     review_entries = []
     review_current_status = None
     review_declined_statuses = []
-    if bill and bill.id:
-        from entities.review_entry.business.service import ReviewEntryService
-        from entities.review_status.business.service import ReviewStatusService
-        review_service = ReviewEntryService()
-        entries = review_service.read_by_bill_id(bill_id=bill.id)
-        review_entries = [e.to_dict() for e in entries]
-        if entries:
-            review_current_status = entries[0].to_dict()
-        review_declined_statuses = [s.to_dict() for s in ReviewStatusService().get_declined_statuses()]
 
     return templates.TemplateResponse(
         "bill/edit.html",

@@ -4,9 +4,7 @@ from urllib.parse import quote, urlencode, parse_qs, urlparse
 import base64
 import json
 import logging
-import random
 import requests
-import string
 
 logger = logging.getLogger(__name__)
 
@@ -17,14 +15,10 @@ from fastapi import Request
 from integrations.intuit.qbo.base.helper import get_intuit_discovery_document
 from integrations.intuit.qbo.client.persistence.repo import QboClientRepository
 from integrations.intuit.qbo.auth.persistence.repo import QboAuthRepository
+from integrations.intuit.qbo.auth.business.state import create_state, verify_state
 
 qbo_client_repo = QboClientRepository()
 qbo_auth_repo = QboAuthRepository()
-
-INTUIT_STATE = {
-    'sent-state': '',
-    'received-state': ''
-}
 
 
 def get_intuit_discovery_document():
@@ -49,7 +43,7 @@ def connect_intuit_oauth_2_endpoint():
     client = db_intuit_client_resp[0]
     client_id = client.client_id
 
-    INTUIT_STATE['sent-state'] = ''.join(random.choices(string.ascii_lowercase + string.digits, k=30))
+    state = create_state()
 
     auth_endpoint = get_intuit_discovery_document()
 
@@ -60,7 +54,7 @@ def connect_intuit_oauth_2_endpoint():
         "&scope=com.intuit.quickbooks.accounting%20openid%20email%20profile%20address%20phone" +
         "&redirect_uri=https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/api/v1/intuit/qbo/auth/request/callback" +
         "&response_type=code" +
-        "&state=" + INTUIT_STATE['sent-state'] +
+        "&state=" + state +
         "&claims=%7B%22id_token%22%3A%7B%22realmId%22%3Anull%7D%7D"
     )
 
@@ -74,7 +68,13 @@ def connect_intuit_oauth_2_endpoint():
 
 def connect_intuit_oauth_2_token_endpoint(request: Request):
 
-    INTUIT_STATE['received-state'] = request.query_params.get('state', '')
+    state = request.query_params.get('state', '')
+    if not verify_state(state):
+        logger.warning("OAuth callback rejected: invalid or expired state token")
+        return {
+            "message": "Invalid or expired OAuth state token",
+            "status_code": 401
+        }
 
     # Check for client configuration
     db_intuit_client_resp = qbo_client_repo.read_all()
@@ -144,7 +144,7 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
                 qbo_auth_repo.update_by_realm_id(
                     code=code,
                     realm_id=realmId,
-                    state=INTUIT_STATE['received-state'],
+                    state=state,
                     token_type=token_type,
                     id_token=id_token,
                     access_token=access_token,
@@ -156,7 +156,7 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
                 qbo_auth_repo.create(
                     code=code,
                     realm_id=realmId,
-                    state=INTUIT_STATE['received-state'],
+                    state=state,
                     token_type=token_type,
                     id_token=id_token,
                     access_token=access_token,

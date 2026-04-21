@@ -10,7 +10,6 @@ from integrations.intuit.qbo.company_info.business.model import QboCompanyInfo
 from integrations.intuit.qbo.company_info.persistence.repo import QboCompanyInfoRepository
 from integrations.intuit.qbo.company_info.external.client import QboCompanyInfoClient
 from integrations.intuit.qbo.company_info.external.schemas import QboCompanyInfo as QboCompanyInfoExternalSchema
-from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.physical_address.persistence.repo import QboPhysicalAddressRepository
 
 logger = logging.getLogger(__name__)
@@ -40,19 +39,9 @@ class QboCompanyInfoService:
         Returns:
             QboCompanyInfo: The synced company info record, or None if no updates found
         """
-        # Get valid access token
-        auth_service = QboAuthService()
-        qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
-        #print(f"QBO Auth: {qbo_auth}")
-        
-        if not qbo_auth or not qbo_auth.access_token:
-            raise ValueError(f"No valid access token found for realm_id: {realm_id}")
-        
-        # Fetch CompanyInfo from QBO API
-        with QboCompanyInfoClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+        # Fetch CompanyInfo from QBO API. QboHttpClient resolves and refreshes
+        # the access token lazily, so no upfront auth call is needed.
+        with QboCompanyInfoClient(realm_id=realm_id) as client:
             try:
                 qbo_company_info: QboCompanyInfoExternalSchema = client.get_company_info(
                     last_updated_time=last_updated_time

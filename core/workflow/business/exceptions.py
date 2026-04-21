@@ -43,32 +43,3 @@ class WorkflowStepError(WorkflowError):
 class WorkflowTimeoutError(WorkflowError):
     """Raised when a workflow times out waiting for an event."""
     pass
-
-
-class AgentError(Exception):
-    """Base exception for agent-related errors."""
-    pass
-
-
-class AgentExecutionError(AgentError):
-    """Raised when an agent fails to execute."""
-    
-    def __init__(
-        self,
-        message: str,
-        agent_name: Optional[str] = None,
-        retryable: bool = False
-    ):
-        super().__init__(message)
-        self.agent_name = agent_name
-        self.retryable = retryable
-
-
-class CapabilityError(Exception):
-    """Base exception for capability-related errors."""
-    pass
-
-
-class CapabilityUnavailableError(CapabilityError):
-    """Raised when a required capability is not available."""
-    pass

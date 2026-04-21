@@ -201,8 +201,8 @@ BEGIN
 
     UPDATE [qbo].[PhysicalAddressAddress]
     SET [ModifiedDatetime] = @Now,
-        [AddressId] = @AddressId,
-        [QboPhysicalAddressId] = @QboPhysicalAddressId
+        [AddressId] = CASE WHEN @AddressId IS NULL THEN [AddressId] ELSE @AddressId END,
+        [QboPhysicalAddressId] = CASE WHEN @QboPhysicalAddressId IS NULL THEN [QboPhysicalAddressId] ELSE @QboPhysicalAddressId END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],

@@ -178,8 +178,8 @@ BEGIN
     UPDATE [qbo].[CompanyInfoCompany]
     SET
         [ModifiedDatetime] = @Now,
-        [CompanyId] = @CompanyId,
-        [QboCompanyInfoId] = @QboCompanyInfoId
+        [CompanyId] = CASE WHEN @CompanyId IS NULL THEN [CompanyId] ELSE @CompanyId END,
+        [QboCompanyInfoId] = CASE WHEN @QboCompanyInfoId IS NULL THEN [QboCompanyInfoId] ELSE @QboCompanyInfoId END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],

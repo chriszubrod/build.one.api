@@ -11,7 +11,6 @@ from integrations.intuit.qbo.customer.external.client import QboCustomerClient
 from integrations.intuit.qbo.customer.external.schemas import QboCustomer as QboCustomerExternalSchema
 from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
-from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
 
 logger = logging.getLogger(__name__)
@@ -46,18 +45,9 @@ class QboCustomerService:
         Returns:
             List[QboCustomer]: The synced customer records
         """
-        # Get valid access token
-        auth_service = QboAuthService()
-        qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
-        
-        if not qbo_auth or not qbo_auth.access_token:
-            raise ValueError(f"No valid access token found for realm_id: {realm_id}")
-        
-        # Fetch Customers from QBO API
-        with QboCustomerClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+        # Fetch Customers from QBO API. QboHttpClient (via QboCustomerClient) resolves
+        # and refreshes the access token lazily, so no upfront auth call is needed.
+        with QboCustomerClient(realm_id=realm_id) as client:
             qbo_customers: List[QboCustomerExternalSchema] = client.query_all_customers(
                 last_updated_time=last_updated_time
             )

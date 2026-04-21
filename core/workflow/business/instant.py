@@ -5,16 +5,16 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 # Local Imports
-from workflows.workflow.business.definitions.instant import (
+from core.workflow.business.definitions.instant import (
     SYNCHRONOUS_TASKS,
     INSTANT_OPERATIONS,
     get_instant_workflow_definition,
     is_instant_workflow_type,
     parse_instant_workflow_type,
 )
-from workflows.workflow.business.models import Workflow
-from workflows.workflow.business.orchestrator import WorkflowOrchestrator
-from workflows.workflow.api.process_engine import TriggerContext
+from core.workflow.business.models import Workflow
+from core.workflow.business.orchestrator import WorkflowOrchestrator
+from core.workflow.api.process_engine import TriggerContext
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,6 @@ PROCESS_REGISTRY: Dict[str, str] = {
 
     # Review workflow
     "review_status": "entities.review_status.business.service.ReviewStatusService",
-    "review_entry": "entities.review_entry.business.service.ReviewEntryService",
 
     # Other
     "integration": "entities.integration.business.service.IntegrationService",

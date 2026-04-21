@@ -11,7 +11,6 @@ from integrations.intuit.qbo.item.external.client import QboItemClient
 from integrations.intuit.qbo.item.external.schemas import QboItem as QboItemExternalSchema
 from integrations.intuit.qbo.item.connector.cost_code.business.service import ItemCostCodeConnector
 from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
-from integrations.intuit.qbo.auth.business.service import QboAuthService
 
 logger = logging.getLogger(__name__)
 
@@ -44,18 +43,9 @@ class QboItemService:
         Returns:
             List[QboItem]: The synced item records
         """
-        # Get valid access token
-        auth_service = QboAuthService()
-        qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
-        
-        if not qbo_auth or not qbo_auth.access_token:
-            raise ValueError(f"No valid access token found for realm_id: {realm_id}")
-        
-        # Fetch Items from QBO API
-        with QboItemClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+        # Fetch Items from QBO API. QboHttpClient (via QboItemClient) resolves
+        # and refreshes the access token lazily, so no upfront auth call is needed.
+        with QboItemClient(realm_id=realm_id) as client:
             qbo_items: List[QboItemExternalSchema] = client.query_all_items(
                 last_updated_time=last_updated_time
             )

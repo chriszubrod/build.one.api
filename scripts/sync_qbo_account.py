@@ -80,7 +80,7 @@ def _dry_run_preview(
     """
     logger.info("[DRY RUN] Fetching accounts from QBO to preview sync (no writes will occur)...")
 
-    with QboAccountClient(access_token=qbo_auth.access_token, realm_id=realm_id) as client:
+    with QboAccountClient(realm_id=realm_id) as client:
         qbo_accounts = client.query_all_accounts(last_updated_time=last_sync_time)
 
     logger.info(f"[DRY RUN] QBO returned {len(qbo_accounts)} accounts")

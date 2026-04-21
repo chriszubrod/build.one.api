@@ -147,8 +147,8 @@ BEGIN
     UPDATE [qbo].[CustomerCustomer]
     SET
         [ModifiedDatetime] = @Now,
-        [CustomerId] = @CustomerId,
-        [QboCustomerId] = @QboCustomerId
+        [CustomerId] = CASE WHEN @CustomerId IS NULL THEN [CustomerId] ELSE @CustomerId END,
+        [QboCustomerId] = CASE WHEN @QboCustomerId IS NULL THEN [QboCustomerId] ELSE @QboCustomerId END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],

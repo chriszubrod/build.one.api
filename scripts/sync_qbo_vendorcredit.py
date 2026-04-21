@@ -157,7 +157,7 @@ def _dry_run_preview(
     """
     logger.info("[DRY RUN] Fetching vendor credits from QBO to preview sync (no writes will occur)...")
 
-    with QboVendorCreditClient(access_token=qbo_auth.access_token, realm_id=realm_id) as client:
+    with QboVendorCreditClient(realm_id=realm_id) as client:
         qbo_vcs = client.query_all_vendor_credits(
             last_updated_time=last_sync_time,
             start_date=start_date,

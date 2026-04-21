@@ -320,7 +320,6 @@ class InvoiceInvoiceConnector:
             QboInvoiceUpdate as QboInvoiceUpdateSchema,
             QboReferenceType,
         )
-        from integrations.intuit.qbo.auth.business.service import QboAuthService
         from entities.invoice_line_item.business.service import InvoiceLineItemService
 
         qbo_invoice_repo = QboInvoiceRepository()
@@ -333,10 +332,8 @@ class InvoiceInvoiceConnector:
         if not customer_ref:
             raise ValueError(f"No QBO customer mapping found for project_id: {invoice.project_id}")
 
-        # Get auth token (needed before QBO calls, including ReimburseCharge lookup)
-        qbo_auth = QboAuthService().ensure_valid_token(realm_id=realm_id)
-        if not qbo_auth or not qbo_auth.access_token:
-            raise ValueError(f"No valid QBO auth found for realm {realm_id}")
+        # QboHttpClient resolves and refreshes the access token lazily on every request,
+        # so we don't need an upfront auth check here.
 
         # Fetch ReimburseCharge lookup so we can link invoice lines to the QBO
         # intermediate records that QBO created when bills/purchases were marked Billable.
@@ -345,7 +342,6 @@ class InvoiceInvoiceConnector:
         try:
             reimburse_charge_lookup = self._build_reimburse_charge_lookup(
                 customer_ref_value=customer_ref.value,
-                access_token=qbo_auth.access_token,
                 realm_id=realm_id,
             )
             logger.info(f"ReimburseCharge lookup: {len(reimburse_charge_lookup)} entries for customer {customer_ref.value}")
@@ -404,7 +400,7 @@ class InvoiceInvoiceConnector:
             # Fetch fresh SyncToken. If the invoice was deleted in QBO, clear the stale mapping
             # and fall through to the CREATE path below.
             try:
-                with QboInvoiceClient(access_token=qbo_auth.access_token, realm_id=realm_id) as client:
+                with QboInvoiceClient(realm_id=realm_id) as client:
                     fresh = client.get_invoice(local_qbo_invoice.qbo_id)
                     qbo_invoice_update = QboInvoiceUpdateSchema(
                         id=local_qbo_invoice.qbo_id,
@@ -483,7 +479,7 @@ class InvoiceInvoiceConnector:
             linked_txn=invoice_linked_txns,
         )
 
-        with QboInvoiceClient(access_token=qbo_auth.access_token, realm_id=realm_id) as client:
+        with QboInvoiceClient(realm_id=realm_id) as client:
             created_invoice = client.create_invoice(qbo_invoice_create)
 
         logger.info(f"Created QBO Invoice {created_invoice.id} (SyncToken={created_invoice.sync_token})")
@@ -590,7 +586,7 @@ class InvoiceInvoiceConnector:
         from integrations.intuit.qbo.invoice.external.schemas import QboReferenceType
         return QboReferenceType(value=qbo_customer.qbo_id, name=qbo_customer.display_name)
 
-    def _build_reimburse_charge_lookup(self, customer_ref_value: str, access_token: str, realm_id: str) -> dict:
+    def _build_reimburse_charge_lookup(self, customer_ref_value: str, realm_id: str, access_token: Optional[str] = None) -> dict:
         """
         Query QBO for ReimburseCharge records for a customer and build a lookup dict.
 
@@ -606,7 +602,7 @@ class InvoiceInvoiceConnector:
         from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
 
         lookup = {}
-        with QboInvoiceClient(access_token=access_token, realm_id=realm_id) as client:
+        with QboInvoiceClient(realm_id=realm_id) as client:
             records = client.query_reimburse_charges(customer_ref_value)
             for rc in records:
                 rc_id = rc.get("Id")

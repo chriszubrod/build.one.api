@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from entities.vendor_type.api.schemas import VendorTypeCreate, VendorTypeUpdate
 from entities.vendor_type.business.service import VendorTypeService
 from entities.auth.business.service import get_current_user_api as get_current_vendor_type_api
-from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 from shared.api.responses import list_response, item_response, raise_workflow_error
 
 router = APIRouter(prefix="/api/v1", tags=["api", "vendor-type"])

@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-CACHE_TTL_SECONDS = 300          # 5 minutes — matches ClassificationOverrideService
+CACHE_TTL_SECONDS = 300          # 5 minutes
 _ADMIN_SENTINEL = "__admin__"
 
 # Valid permission attributes on RoleModule

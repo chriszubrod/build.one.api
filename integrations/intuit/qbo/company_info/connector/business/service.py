@@ -12,7 +12,6 @@ from integrations.intuit.qbo.company_info.business.service import QboCompanyInfo
 from integrations.intuit.qbo.company_info.business.model import QboCompanyInfo as QboCompanyInfoModel
 from integrations.intuit.qbo.company_info.external.client import QboCompanyInfoClient
 from integrations.intuit.qbo.company_info.external.schemas import QboCompanyInfo as QboCompanyInfoExternalSchema
-from integrations.intuit.qbo.auth.business.service import QboAuthService
 from entities.company.business.service import CompanyService
 from entities.company.business.model import Company
 
@@ -207,19 +206,9 @@ class CompanyInfoCompanyConnector:
                     f"Company is newer (Company: {company_modified}, QBO: {qbo_modified}). "
                     f"Updating QboCompanyInfo {qbo_company_info.id} with Company data."
                 )
-                
-                # Get valid access token
-                auth_service = QboAuthService()
-                qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
-                
-                if not qbo_auth or not qbo_auth.access_token:
-                    raise ValueError(f"No valid access token found for realm_id: {realm_id}")
-                
+
                 # Fetch current QBO CompanyInfo to get SyncToken
-                with QboCompanyInfoClient(
-                    access_token=qbo_auth.access_token,
-                    realm_id=realm_id
-                ) as client:
+                with QboCompanyInfoClient(realm_id=realm_id) as client:
                     qbo_external = client.get_company_info()
                     
                     # Update fields
@@ -272,58 +261,7 @@ class CompanyInfoCompanyConnector:
             else:
                 # Same timestamp - update QBO anyway to ensure consistency
                 logger.debug("ModifiedDatetime matches - updating QboCompanyInfo for consistency")
-                # Update QBO with Company data (same logic as above)
-                auth_service = QboAuthService()
-                qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
-                
-                if qbo_auth and qbo_auth.access_token:
-                    with QboCompanyInfoClient(
-                        access_token=qbo_auth.access_token,
-                        realm_id=realm_id
-                    ) as client:
-                        qbo_external = client.get_company_info()
-                        qbo_external.company_name = company.name
-                        if qbo_external.web_addr:
-                            qbo_external.web_addr.uri = company.website
-                        else:
-                            from integrations.intuit.qbo.company_info.external.schemas import QboWebAddr
-                            qbo_external.web_addr = QboWebAddr(uri=company.website)
-                        
-                        try:
-                            updated_external = client.update_company_info(qbo_external)
-                        except Exception:
-                            updated_external = qbo_external
-                        
-                        # Company.Name maps to CompanyInfo.LegalName
-                        qbo_company_info = qbo_company_info_repo.update_by_qbo_id(
-                            qbo_id=qbo_company_info.qbo_id,
-                            row_version=qbo_company_info.row_version_bytes,
-                            sync_token=updated_external.sync_token if hasattr(updated_external, 'sync_token') else qbo_company_info.sync_token,
-                            realm_id=realm_id,
-                            company_name=qbo_company_info.company_name,  # Keep existing
-                            legal_name=company.name,
-                            company_addr_id=qbo_company_info.company_addr_id,
-                            legal_addr_id=qbo_company_info.legal_addr_id,
-                            customer_communication_addr_id=qbo_company_info.customer_communication_addr_id,
-                            tax_payer_id=qbo_company_info.tax_payer_id,
-                            fiscal_year_start_month=qbo_company_info.fiscal_year_start_month,
-                            country=qbo_company_info.country,
-                            email=qbo_company_info.email,
-                            web_addr=company.website,
-                            currency_ref=qbo_company_info.currency_ref,
-                        )
-        else:
-            # One or both timestamps missing - update QBO
-            logger.debug("Missing ModifiedDatetime - updating QboCompanyInfo")
-            # Update QBO with Company data (same logic as above)
-            auth_service = QboAuthService()
-            qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
-            
-            if qbo_auth and qbo_auth.access_token:
-                with QboCompanyInfoClient(
-                    access_token=qbo_auth.access_token,
-                    realm_id=realm_id
-                ) as client:
+                with QboCompanyInfoClient(realm_id=realm_id) as client:
                     qbo_external = client.get_company_info()
                     qbo_external.company_name = company.name
                     if qbo_external.web_addr:
@@ -331,12 +269,12 @@ class CompanyInfoCompanyConnector:
                     else:
                         from integrations.intuit.qbo.company_info.external.schemas import QboWebAddr
                         qbo_external.web_addr = QboWebAddr(uri=company.website)
-                    
+
                     try:
                         updated_external = client.update_company_info(qbo_external)
                     except Exception:
                         updated_external = qbo_external
-                    
+
                     # Company.Name maps to CompanyInfo.LegalName
                     qbo_company_info = qbo_company_info_repo.update_by_qbo_id(
                         qbo_id=qbo_company_info.qbo_id,
@@ -355,6 +293,41 @@ class CompanyInfoCompanyConnector:
                         web_addr=company.website,
                         currency_ref=qbo_company_info.currency_ref,
                     )
+        else:
+            # One or both timestamps missing - update QBO
+            logger.debug("Missing ModifiedDatetime - updating QboCompanyInfo")
+            with QboCompanyInfoClient(realm_id=realm_id) as client:
+                qbo_external = client.get_company_info()
+                qbo_external.company_name = company.name
+                if qbo_external.web_addr:
+                    qbo_external.web_addr.uri = company.website
+                else:
+                    from integrations.intuit.qbo.company_info.external.schemas import QboWebAddr
+                    qbo_external.web_addr = QboWebAddr(uri=company.website)
+
+                try:
+                    updated_external = client.update_company_info(qbo_external)
+                except Exception:
+                    updated_external = qbo_external
+
+                # Company.Name maps to CompanyInfo.LegalName
+                qbo_company_info = qbo_company_info_repo.update_by_qbo_id(
+                    qbo_id=qbo_company_info.qbo_id,
+                    row_version=qbo_company_info.row_version_bytes,
+                    sync_token=updated_external.sync_token if hasattr(updated_external, 'sync_token') else qbo_company_info.sync_token,
+                    realm_id=realm_id,
+                    company_name=qbo_company_info.company_name,  # Keep existing
+                    legal_name=company.name,
+                    company_addr_id=qbo_company_info.company_addr_id,
+                    legal_addr_id=qbo_company_info.legal_addr_id,
+                    customer_communication_addr_id=qbo_company_info.customer_communication_addr_id,
+                    tax_payer_id=qbo_company_info.tax_payer_id,
+                    fiscal_year_start_month=qbo_company_info.fiscal_year_start_month,
+                    country=qbo_company_info.country,
+                    email=qbo_company_info.email,
+                    web_addr=company.website,
+                    currency_ref=qbo_company_info.currency_ref,
+                )
         
         return qbo_company_info
 

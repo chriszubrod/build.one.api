@@ -8,7 +8,7 @@ from entities.role_module.api.schemas import RoleModuleCreate, RoleModuleUpdate
 from entities.role_module.business.service import RoleModuleService
 from shared.rbac import invalidate_all_caches, require_module_api
 from shared.rbac_constants import Modules
-from workflows.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
+from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 from shared.api.responses import list_response, item_response, raise_workflow_error
 
 router = APIRouter(prefix="/api/v1", tags=["api", "role_module"])

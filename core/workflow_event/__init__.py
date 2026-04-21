@@ -1,1 +1,1 @@
-# Workflow event package (also exposed as workflows.workflow_event via shim).
+# Workflow event package. Public import path is `core.workflow_event`.

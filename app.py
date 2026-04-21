@@ -156,6 +156,24 @@ class ProxyHeadersMiddleware(BaseHTTPMiddleware):
 # Enable proxy headers middleware to handle HTTPS correctly in Azure
 app.add_middleware(ProxyHeadersMiddleware)
 
+# CORS — allow the React dev server and deployed web app to call this API
+from fastapi.middleware.cors import CORSMiddleware
+
+_cors_origins_env = os.getenv("CORS_ALLOW_ORIGINS", "")
+_default_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+_allowed_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()] or _default_origins
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.exception_handler(RefreshRequired)
 async def refresh_required_handler(request: Request, exc: RefreshRequired):

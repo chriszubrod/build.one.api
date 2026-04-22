@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
 
+# Enable ODBC driver-manager connection pooling. Must be set before the first
+# pyodbc.connect() call. On Azure App Service Linux, also verify
+# /etc/odbcinst.ini has `[ODBC] Pooling=Yes` for the driver to actually pool.
+pyodbc.pooling = True
+
 def _get_db_config():
     """Get database configuration from settings."""
     settings = config.Settings()

@@ -1,5 +1,8 @@
 # Python Standard Library Imports
+import asyncio
 import logging
+import threading
+import time
 
 # Third-party Imports
 from typing import Optional
@@ -12,6 +15,7 @@ from entities.bill.api.schemas import BillCreate, BillUpdate
 from entities.bill.business.service import BillService
 from entities.bill.persistence.repo import BillRepository
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
+from shared.database import get_connection
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -20,9 +24,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill"])
 
+_FOLDER_SUMMARY_TTL_SECONDS = 300.0
+_folder_summary_cache: dict[int, tuple[float, dict]] = {}
+_folder_summary_lock = threading.Lock()
+
 
 @router.post("/create/bill")
-def create_bill_router(
+async def create_bill_router(
     body: BillCreate,
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(require_module_api(Modules.BILLS, "can_create")),
@@ -53,7 +61,7 @@ def create_bill_router(
         workflow_type="bill_create",
     )
 
-    result = ProcessEngine().execute_synchronous(context)
+    result = await asyncio.to_thread(ProcessEngine().execute_synchronous, context)
 
     if not result.get("success"):
         raise_workflow_error(result.get("error", ""), "Failed to create bill")
@@ -73,7 +81,7 @@ def create_bill_router(
 
 
 @router.get("/get/bills")
-def get_bills_router(
+async def get_bills_router(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
     search: Optional[str] = Query(default=None),
@@ -84,27 +92,32 @@ def get_bills_router(
     """
     Read bills with pagination.
     """
-    service = BillService()
-    bills = service.read_paginated(
-        page_number=page,
-        page_size=page_size,
-        search_term=search,
-        vendor_id=vendor_id,
-        is_draft=is_draft,
-    )
-    total = service.count(
-        search_term=search,
-        vendor_id=vendor_id,
-        is_draft=is_draft,
-    )
-    bill_dicts = [bill.to_dict() for bill in bills]
+    def _fetch():
+        service = BillService()
+        repo = BillRepository()
+        with get_connection() as conn:
+            bills = service.read_paginated(
+                page_number=page,
+                page_size=page_size,
+                search_term=search,
+                vendor_id=vendor_id,
+                is_draft=is_draft,
+                conn=conn,
+            )
+            total = service.count(
+                search_term=search,
+                vendor_id=vendor_id,
+                is_draft=is_draft,
+                conn=conn,
+            )
+            bill_ids = [b.id for b in bills if b.id]
+            project_map = repo.read_first_line_item_projects(bill_ids, conn=conn) if bill_ids else {}
+        return bills, total, project_map
 
-    # Enrich with first line item's project_id
-    bill_ids = [b.id for b in bills if b.id]
-    if bill_ids:
-        project_map = BillRepository().read_first_line_item_projects(bill_ids)
-        for bd in bill_dicts:
-            bd["project_id"] = project_map.get(bd["id"])
+    bills, total, project_map = await asyncio.to_thread(_fetch)
+    bill_dicts = [bill.to_dict() for bill in bills]
+    for bd in bill_dicts:
+        bd["project_id"] = project_map.get(bd["id"])
 
     return {
         "data": bill_dicts,
@@ -115,11 +128,15 @@ def get_bills_router(
 
 
 @router.get("/get/bill/by-bill-number-and-vendor")
-def get_bill_by_bill_number_and_vendor_router(bill_number: str, vendor_public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS))):
+async def get_bill_by_bill_number_and_vendor_router(bill_number: str, vendor_public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS))):
     """
     Read a bill by bill number and vendor public ID.
     """
-    bill = BillService().read_by_bill_number_and_vendor_public_id(bill_number=bill_number, vendor_public_id=vendor_public_id)
+    bill = await asyncio.to_thread(
+        BillService().read_by_bill_number_and_vendor_public_id,
+        bill_number=bill_number,
+        vendor_public_id=vendor_public_id,
+    )
     if not bill:
         raise_not_found("Bill")
     return item_response(bill.to_dict())
@@ -137,11 +154,11 @@ def get_bill_completion_result_router(public_id: str, current_user: dict = Depen
 
 
 @router.get("/get/bill/{public_id}")
-def get_bill_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS))):
+async def get_bill_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS))):
     """
     Read a bill by public ID.
     """
-    bill = BillService().read_by_public_id(public_id=public_id)
+    bill = await asyncio.to_thread(BillService().read_by_public_id, public_id=public_id)
     if not bill:
         raise_not_found("Bill")
     return item_response(bill.to_dict())
@@ -159,7 +176,7 @@ def get_bill_by_id_router(id: int, current_user: dict = Depends(require_module_a
 
 
 @router.put("/update/bill/{public_id}")
-def update_bill_by_public_id_router(
+async def update_bill_by_public_id_router(
     public_id: str,
     body: BillUpdate,
     background_tasks: BackgroundTasks,
@@ -173,7 +190,7 @@ def update_bill_by_public_id_router(
     # Check if this is a draft-to-complete transition
     is_completing = body.is_draft is False
     if is_completing:
-        bill = BillService().read_by_public_id(public_id=public_id)
+        bill = await asyncio.to_thread(BillService().read_by_public_id, public_id=public_id)
         if bill and not getattr(bill, "is_draft", True):
             is_completing = False  # Already completed, don't re-trigger
 
@@ -197,7 +214,7 @@ def update_bill_by_public_id_router(
         workflow_type="bill_update",
     )
 
-    result = ProcessEngine().execute_synchronous(context)
+    result = await asyncio.to_thread(ProcessEngine().execute_synchronous, context)
 
     if not result.get("success"):
         raise_workflow_error(result.get("error", ""), "Failed to update bill")
@@ -218,7 +235,7 @@ def update_bill_by_public_id_router(
 
 
 @router.delete("/delete/bill/{public_id}")
-def delete_bill_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS, "can_delete"))):
+async def delete_bill_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS, "can_delete"))):
     """
     Delete a bill by public ID.
 
@@ -235,7 +252,7 @@ def delete_bill_by_public_id_router(public_id: str, current_user: dict = Depends
         workflow_type="bill_delete",
     )
 
-    result = ProcessEngine().execute_synchronous(context)
+    result = await asyncio.to_thread(ProcessEngine().execute_synchronous, context)
 
     if not result.get("success"):
         raise_workflow_error(result.get("error", ""), "Failed to delete bill")
@@ -351,50 +368,66 @@ def get_bill_folder_summary_router(
     current_user: dict = Depends(require_module_api(Modules.BILLS)),
 ):
     """Get summary of the linked SharePoint bill source folder."""
+    company_id = 1
+
+    with _folder_summary_lock:
+        cached = _folder_summary_cache.get(company_id)
+    if cached is not None:
+        expires_at, payload = cached
+        if time.monotonic() < expires_at:
+            return item_response(payload)
+
     try:
         from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
         from integrations.ms.sharepoint.external import client as sp_client
 
         connector = DriveItemBillFolderConnector()
-        source_folder = connector.get_folder(1, "source")
+        source_folder = connector.get_folder(company_id, "source")
 
         if not source_folder:
-            return item_response({"is_linked": False})
+            payload = {"is_linked": False}
+        else:
+            drive_id = source_folder.get("drive_id")
+            item_id = source_folder.get("item_id")
 
-        drive_id = source_folder.get("drive_id")
-        item_id = source_folder.get("item_id")
+            file_count = 0
+            folder_name = source_folder.get("name")
+            folder_web_url = source_folder.get("web_url")
 
-        file_count = 0
-        folder_name = source_folder.get("name")
-        folder_web_url = source_folder.get("web_url")
+            if drive_id and item_id:
+                # Get fresh metadata from Graph API (stored web_url may be stale)
+                try:
+                    item_meta = sp_client.get_drive_item(drive_id, item_id)
+                    if item_meta.get("status_code") == 200:
+                        live_item = item_meta.get("item", {})
+                        folder_name = live_item.get("name") or folder_name
+                        folder_web_url = live_item.get("web_url") or folder_web_url
+                except Exception as e:
+                    logger.warning("Failed to get folder metadata: %s", e)
 
-        if drive_id and item_id:
-            # Get fresh metadata from Graph API (stored web_url may be stale)
-            try:
-                item_meta = sp_client.get_drive_item(drive_id, item_id)
-                if item_meta.get("status_code") == 200:
-                    live_item = item_meta.get("item", {})
-                    folder_name = live_item.get("name") or folder_name
-                    folder_web_url = live_item.get("web_url") or folder_web_url
-            except Exception as e:
-                logger.warning("Failed to get folder metadata: %s", e)
+                try:
+                    children = sp_client.list_drive_item_children(drive_id, item_id)
+                    if children.get("status_code") == 200:
+                        for child in children.get("items", []):
+                            name = child.get("name", "")
+                            if child.get("item_type") == "file" and (name.lower().endswith(".pdf") or "." not in name):
+                                file_count += 1
+                except Exception as e:
+                    logger.warning("Failed to count files in source folder: %s", e)
 
-            try:
-                children = sp_client.list_drive_item_children(drive_id, item_id)
-                if children.get("status_code") == 200:
-                    for child in children.get("items", []):
-                        name = child.get("name", "")
-                        if child.get("item_type") == "file" and (name.lower().endswith(".pdf") or "." not in name):
-                            file_count += 1
-            except Exception as e:
-                logger.warning("Failed to count files in source folder: %s", e)
+            payload = {
+                "is_linked": True,
+                "folder_name": folder_name,
+                "folder_web_url": folder_web_url,
+                "file_count": file_count,
+            }
 
-        return item_response({
-            "is_linked": True,
-            "folder_name": folder_name,
-            "folder_web_url": folder_web_url,
-            "file_count": file_count,
-        })
+        with _folder_summary_lock:
+            _folder_summary_cache[company_id] = (
+                time.monotonic() + _FOLDER_SUMMARY_TTL_SECONDS,
+                payload,
+            )
+        return item_response(payload)
     except Exception as e:
         logger.exception("Error getting bill folder summary")
         raise HTTPException(status_code=500, detail=str(e))

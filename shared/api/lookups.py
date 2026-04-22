@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import asyncio
 import logging
 from typing import Optional
 
@@ -172,7 +173,7 @@ LOOKUP_FETCHERS = {
 
 
 @router.get("/lookups")
-def get_lookups(
+async def get_lookups(
     include: str = Query(..., description="Comma-separated lookup keys: vendors,projects,sub_cost_codes,cost_codes,payment_terms,customers,vendor_types,address_types,roles,modules"),
     current_user: dict = Depends(require_module_api(Modules.DASHBOARD)),
 ):
@@ -180,7 +181,7 @@ def get_lookups(
     Return slim lookup data for dropdown/select fields.
 
     Pass ?include=vendors,projects,sub_cost_codes to fetch multiple datasets
-    in a single request.
+    in a single request. Fetchers run in parallel on the threadpool.
     """
     requested = [key.strip() for key in include.split(",") if key.strip()]
     invalid = set(requested) - VALID_LOOKUPS
@@ -190,9 +191,5 @@ def get_lookups(
             detail=f"Invalid lookup keys: {', '.join(sorted(invalid))}. Valid keys: {', '.join(sorted(VALID_LOOKUPS))}",
         )
 
-    result = {}
-    for key in requested:
-        fetcher = LOOKUP_FETCHERS[key]
-        result[key] = fetcher()
-
-    return {"data": result}
+    results = await asyncio.gather(*[asyncio.to_thread(LOOKUP_FETCHERS[key]) for key in requested])
+    return {"data": dict(zip(requested, results))}

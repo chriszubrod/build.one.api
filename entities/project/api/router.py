@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import asyncio
 
 # Third-party Imports
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -61,11 +62,11 @@ def create_project_router(body: ProjectCreate, current_user: dict = Depends(requ
 
 
 @router.get("/get/projects")
-def get_projects_router(current_user: dict = Depends(require_module_api(Modules.PROJECTS))):
+async def get_projects_router(current_user: dict = Depends(require_module_api(Modules.PROJECTS))):
     """
     Read all projects.
     """
-    projects = ProjectService().read_all()
+    projects = await asyncio.to_thread(ProjectService().read_all)
     return list_response([project.to_dict() for project in projects])
 
 

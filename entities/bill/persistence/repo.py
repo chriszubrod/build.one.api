@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 from decimal import Decimal
@@ -18,6 +19,16 @@ from shared.database import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _conn_ctx(conn: Optional[pyodbc.Connection]):
+    """Yield `conn` if provided (no lifecycle management); else open a fresh one."""
+    if conn is not None:
+        yield conn
+    else:
+        with get_connection() as c:
+            yield c
 
 
 class BillRepository:
@@ -188,13 +199,13 @@ class BillRepository:
             logger.error(f"Error during count bills: {error}")
             raise map_database_error(error)
 
-    def read_first_line_item_projects(self, bill_ids: list[int]) -> dict[int, int | None]:
+    def read_first_line_item_projects(self, bill_ids: list[int], *, conn: Optional[pyodbc.Connection] = None) -> dict[int, int | None]:
         """Return a mapping of BillId → ProjectId from the first line item of each bill."""
         if not bill_ids:
             return {}
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            with _conn_ctx(conn) as c:
+                cursor = c.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="ReadBillFirstLineItemProjects",
@@ -337,13 +348,14 @@ class BillRepository:
         is_draft: Optional[bool] = None,
         sort_by: str = "BillDate",
         sort_direction: str = "DESC",
+        conn: Optional[pyodbc.Connection] = None,
     ) -> list[Bill]:
         """
         Read bills with pagination and filtering.
         """
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            with _conn_ctx(conn) as c:
+                cursor = c.cursor()
                 params = {
                     "PageNumber": page_number,
                     "PageSize": page_size,
@@ -374,13 +386,14 @@ class BillRepository:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         is_draft: Optional[bool] = None,
+        conn: Optional[pyodbc.Connection] = None,
     ) -> int:
         """
         Count bills matching the filter criteria.
         """
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            with _conn_ctx(conn) as c:
+                cursor = c.cursor()
                 params = {
                     "SearchTerm": search_term,
                     "VendorId": vendor_id,

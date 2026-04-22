@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import asyncio
 
 # Third-party Imports
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -47,11 +48,11 @@ def create_vendor_router(body: VendorCreate, current_user: dict = Depends(requir
 
 
 @router.get("/get/vendors")
-def get_vendors_router(current_user: dict = Depends(require_module_api(Modules.VENDORS))):
+async def get_vendors_router(current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """
     Read all vendors.
     """
-    vendors = service.read_all()
+    vendors = await asyncio.to_thread(service.read_all)
     return list_response([vendor.to_dict() for vendor in vendors])
 
 

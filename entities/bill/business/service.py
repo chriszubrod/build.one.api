@@ -268,6 +268,7 @@ class BillService:
         is_draft: Optional[bool] = None,
         sort_by: str = "BillDate",
         sort_direction: str = "DESC",
+        conn=None,
     ) -> list[Bill]:
         """
         Read bills with pagination and filtering.
@@ -282,6 +283,7 @@ class BillService:
             is_draft=is_draft,
             sort_by=sort_by,
             sort_direction=sort_direction,
+            conn=conn,
         )
 
     def count(
@@ -292,6 +294,7 @@ class BillService:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         is_draft: Optional[bool] = None,
+        conn=None,
     ) -> int:
         """
         Count bills matching the filter criteria.
@@ -302,6 +305,7 @@ class BillService:
             start_date=start_date,
             end_date=end_date,
             is_draft=is_draft,
+            conn=conn,
         )
 
     def read_by_id(self, id: int) -> Optional[Bill]:

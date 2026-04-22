@@ -1,5 +1,74 @@
 # Session Notes
 
+## Session: MS Integration Hardening — Phases 1-3 + 5 (April 22, 2026)
+
+### Overview
+Five-phase hardening of `integrations/ms/` (SharePoint, Mail, Excel, Auth) mirroring the QBO hardening pattern. Phases 1-3 + 5 complete and validated in prod via bill completions 5412 + 5403 (Ideal Millwork & Hardware). Phase 4 (email send) deferred pending a future larger inbox rebuild.
+
+### Phase 1 — Baseline fixes
+- **Token encryption at rest**: `MsAuthRepository` encrypts access/refresh tokens via Fernet (`shared/encryption.py`); `decrypt_if_encrypted` self-heals legacy plaintext on next write — no migration sproc needed.
+- **Concurrency locks via `sp_getapplock`**: token refresh keyed on `ms_auth_refresh:<tenant_id>` (re-read inside lock to absorb concurrent winners); Excel writes keyed on `ms_excel_write:<drive_item_id>` around `append_excel_rows` and `insert_excel_rows` (the read-then-write race points).
+- **Typed error hierarchy** in `integrations/ms/base/errors.py`: `MsGraphError` → transport/timeout/rate-limit/server (→ service-unavailable) / client → auth/not-found/validation/conflict/write-refused/unexpected. Each carries http_status, Graph error code, `is_retryable`, request path/method, correlation_id.
+- **Shared `MsGraphClient`** (`integrations/ms/base/client.py`) — auth injection, retry+backoff+jitter with `Retry-After` parsing (both seconds and HTTP-date forms), `x-ms-client-request-id` idempotency header for writes, tiered timeouts (A=5/30 for metadata, B=5/60 for workbook ops, C=5/120 for uploads), 401-refresh-retry-once, write gate via `ALLOW_MS_WRITES=true` env (default-deny).
+- **Full rewrite of entity external clients** (Option X — contract-preserved): `sharepoint/external/client.py` (1821 → ~700 lines, 25 functions), `mail/external/client.py` (1801 → ~650 lines, 23 functions), plus 2 Graph-bound helpers in `auth/external/client.py`. All 48 functions route through MsGraphClient; downstream callers unchanged (dict-envelope return shape preserved).
+
+### Phase 2 — Observability
+- **`MsContextAdapter`** (`integrations/ms/base/logger.py`) — `logging.LoggerAdapter` that auto-injects `correlation_id` from the MS `ContextVar`. Dropped manual `extra={"correlation_id": ...}` from ~16 log call sites across client/retry/locking.
+- **Token expiry gauge**: `_emit_token_expiration_check()` emits `ms.auth.token.expiration.check` on every `ensure_valid_token` call (90-day Azure AD baseline via `MS_REFRESH_TOKEN_LIFETIME_DAYS`). Fast path, post-refresh, and concurrent-refresh-winner paths all emit. Wrapped in try/except so instrumentation never breaks auth.
+- **First runbook**: `docs/runbooks/ms-token-expiration.md` — Recovery A (full re-OAuth), B (proactive refresh), C (client-secret rotation in Azure AD).
+- **Deferred**: App Insights verification + Azure Portal alert rules (user's schedule).
+
+### Phase 3 — Durable outbox + reconciliation
+- **`[ms].[Outbox]`** table + 10 sprocs (`integrations/ms/outbox/sql/ms.outbox.sql`). Mirror of `qbo.Outbox` with adjustments: `TenantId` instead of `RealmId`, nullable `Payload NVARCHAR(MAX)` column for upload-session checkpointing.
+- **`[ms].[ReconciliationIssue]`** table + 3 sprocs. MS-specific columns: `DriveItemId`, `WorksheetName`, `OutboxPublicId`. Severity lifecycle for flagged issues.
+- **`MsOutboxService`** with per-Kind coalescing policy: `upload_sharepoint_file` coalesces (Policy C debounce, 5s); `append_excel_row` / `insert_excel_row` never coalesce (each bill is a distinct row). Convenience methods `enqueue_excel_append`, `enqueue_excel_insert`, `enqueue_sharepoint_upload`.
+- **`MsOutboxWorker`** drain loop: cross-process `ms_app_lock` drain guard, per-Kind dispatch table, retry policy (5 attempts → dead-letter) using the shared `compute_backoff_seconds`, typed-error-to-retry mapping. Per-kind handlers exist for upload/append/insert — send_mail reserved for Phase 4.
+- **Resumable large-file upload**: chunked upload-session with per-chunk payload checkpoint. On retry, `uploadUrl` + `completed_bytes` are read from Payload and upload resumes from last offset instead of restarting.
+- **Dead-letter escalation hook**: Excel kinds (`append_excel_row`, `insert_excel_row`) create **critical** `ms.ReconciliationIssue` with `DriftType='{kind}_dead_letter'`. Other kinds get high severity. User's explicit requirement: failed Excel outbox rows must be followed up, never silent dead-letter.
+- **Completion pipeline rewire** — `BillService.complete_bill` and `ExpenseService.complete_expense` enqueue outbox rows instead of inline Graph calls. Touches `_upload_attachments_to_module_folder`, `sync_to_excel_workbook`, `sync_expenses_batch_to_excel`, `_upload_to_general_receipts_folder`. Return shape preserved; messages now say "Queued X row(s)".
+- **Excel missing-row reconciliation**: `ExcelMissingRowDetector` in `integrations/ms/reconciliation/business/excel_detector.py`. Daily run, 30-day lookback, flags `DriftType='excel_row_missing'` severity=high. Narrow Phase 3 scope (missing-only); value drift + duplicate detection deferred.
+- **APScheduler**: `ms_outbox_drain` (5s interval) + `ms_reconcile_excel` (daily, 4h startup delay). Shares scheduler instance with QBO jobs. Prod-only via `ENABLE_SCHEDULER=true`.
+- **Attachment compression**: confirmed to live upstream in `shared/pdf_utils.compact_pdf` at attachment-upload time (aggressive pypdf compaction). Initially added worker-side duplicate; reverted after confirming upstream coverage.
+
+### Phase 4 — DEFERRED
+Original scope (email send wiring, conversation threading, attachment policy, sent_message_id persistence) deferred. Rationale: CLAUDE.md notes "No inbox / email-intake surface" — without an inbox, reply/threading items are moot. User wants a **larger encompassing inbox rebuild** from scratch when the time comes, not a piecemeal add-on.
+
+### Phase 5 — Ops polish
+- **`shared/scheduler.py`**: every APScheduler job wrapper converted to `async def` + `await asyncio.to_thread(sync_fn)`. Covers `_drain_qbo_outbox`, `_drain_ms_outbox`, `_reconcile_bills`, `_reconcile_excel`, and the `_isolated(...)` wrapper for all QBO pull entities. Blocking drain/pull/reconcile work runs on the default thread pool; FastAPI event loop stays free for concurrent user requests. Fixes the 504 observed during Phase 3 smoke — a 14s drain tick had blocked a concurrent UI PATCH.
+- **`scripts/retry_ms_outbox_dead_letters.py`**: dry-run by default; `--apply` resets dead-letter rows back to `pending` (Attempts=0, NextRetryAt=now, LastError=NULL, DeadLetteredAt=NULL). `--kind` filter for targeted resets after a kind-specific outage; `--limit` cap (default 1000).
+- **Three new runbooks** under `docs/runbooks/`: `ms-graph-503-storm.md` (cascading 5xx + dead-letter recovery), `ms-excel-conflict-storm.md` (workbook editor conflicts + stuck locks), `ms-permissions-revoked.md` (Azure AD revocation: app permissions / admin consent / conditional access / service account). All linked from `README.md`.
+
+### Validation
+- SQL migrations applied cleanly: `python scripts/run_sql.py integrations/ms/outbox/sql/ms.outbox.sql` + `integrations/ms/reconciliation/sql/ms.reconciliation_issue.sql`.
+- **Bill 5412** (Ideal Millwork & Hardware, PublicId 6A542FA0): upload_sharepoint_file drain 8s, insert_excel_row drain 17s, QBO push done. PDF in SharePoint, row in Excel, bill in QBO.
+- **Bill 5403** (Ideal Millwork & Hardware, PublicId D6B55EA2): upload 14s, Excel insert 19s, QBO push 30s. All verified in App Service logs showing `ms.outbox.row.{enqueued,drained,completed}` event sequence.
+- Phase 5 smoke pending post-deploy (scheduler async conversion needs to fire correctly).
+
+### Gotchas learned
+- **Drain lock held during Graph call is NORMAL.** 8-30s holds are just Graph call duration, not a leak. Don't kill sessions mid-drain; it interrupts healthy work. Only suspect a leak if held >60s with no drain activity.
+- **Azure App Service restart during deploy can leave orphaned SQL sessions.** ODBC Driver 17's connection pooling keeps sessions alive post-process-death; session-scope app locks persist too. Self-resolves after restart completes.
+- **AsyncIOScheduler + sync jobs blocks the event loop.** Any blocking I/O (httpx, pyodbc) in a scheduled job stalls FastAPI request handling. Always wrap with `asyncio.to_thread`.
+- **Writes through local dev need explicit opt-in.** `ALLOW_MS_WRITES=true` must be set in App Service Application Settings; default-deny prevents accidental fresh-checkout pushes to prod SharePoint.
+- **Option X (contract preservation) dodged a massive cascade.** Rewriting external clients while keeping the dict-envelope return shape meant zero downstream caller changes. Phase 1 shipped without touching service/connector/workflow code.
+- **Inline compression at SharePoint upload time is redundant.** `shared/pdf_utils.compact_pdf` already runs at attachment creation with aggressive settings (`level=9`, `compress_identical_objects`). The initial instinct to add worker-side compression was wrong; reverted.
+
+### Commits
+- `76c3979` — Phase 2 + Phase 3 (observability, outbox, reconciliation)
+- `38820af` — Phase 5 (ops polish)
+
+### Key files (new)
+- `integrations/ms/base/` — client.py, errors.py, locking.py, logger.py, correlation.py, idempotency.py, retry.py
+- `integrations/ms/outbox/` — business (model, service, worker), persistence (repo), sql (ms.outbox.sql)
+- `integrations/ms/reconciliation/` — business (model, service, excel_detector), persistence (repo), sql (ms.reconciliation_issue.sql)
+- `docs/runbooks/ms-token-expiration.md`, `ms-graph-503-storm.md`, `ms-excel-conflict-storm.md`, `ms-permissions-revoked.md`
+- `scripts/retry_ms_outbox_dead_letters.py`
+
+### Open items
+- Post-deploy Phase 5 smoke: confirm scheduler jobs still fire after the async conversion; confirm long drain ticks no longer 504 concurrent requests.
+- Performance investigation flagged by user at session end — starting fresh in the next session.
+
+---
+
 ## Session: Intelligence Layer Build + Scout Agent + React Integration (April 20–22, 2026)
 
 ### Overview

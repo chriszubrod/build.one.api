@@ -7,9 +7,10 @@ from typing import Callable, Optional, TypeVar
 
 # Local Imports
 from integrations.ms.base.errors import MsGraphError
+from integrations.ms.base.logger import get_ms_logger
 
 
-logger = logging.getLogger(__name__)
+logger = get_ms_logger(__name__)
 
 
 T = TypeVar("T")
@@ -111,7 +112,6 @@ def execute_with_retry(
                     extra={
                         "event_name": "ms.retry.non_retryable",
                         "operation_name": operation_name,
-                        "correlation_id": correlation_id,
                         "attempt": attempt,
                         "error_class": type(error).__name__,
                         "http_status": error.http_status,
@@ -126,7 +126,6 @@ def execute_with_retry(
                     extra={
                         "event_name": "ms.retry.exhausted",
                         "operation_name": operation_name,
-                        "correlation_id": correlation_id,
                         "attempt": attempt,
                         "max_attempts": policy.max_attempts,
                         "error_class": type(error).__name__,
@@ -150,7 +149,6 @@ def execute_with_retry(
                     extra={
                         "event_name": "ms.retry.budget_exceeded",
                         "operation_name": operation_name,
-                        "correlation_id": correlation_id,
                         "attempt": attempt,
                         "elapsed_seconds": elapsed,
                         "remaining_budget_seconds": max(0.0, remaining_budget),
@@ -165,7 +163,6 @@ def execute_with_retry(
                 extra={
                     "event_name": "ms.retry.scheduled",
                     "operation_name": operation_name,
-                    "correlation_id": correlation_id,
                     "attempt": attempt,
                     "next_attempt": attempt + 1,
                     "sleep_seconds": sleep_seconds,

@@ -61,6 +61,8 @@ def start_scheduler() -> None:
     _register_qbo_outbox_drain(scheduler)
     _register_qbo_pull_jobs(scheduler)
     _register_qbo_reconcile_jobs(scheduler)
+    _register_ms_outbox_drain(scheduler)
+    _register_ms_reconcile_jobs(scheduler)
 
     scheduler.start()
     _scheduler = scheduler
@@ -68,7 +70,8 @@ def start_scheduler() -> None:
         "Scheduler started. Registered jobs: qbo_outbox_drain (5s), "
         "qbo_sync_{bill,invoice,purchase,vendorcredit} (15m), "
         "qbo_sync_{vendor,customer,item,account,term} (4h), "
-        "qbo_sync_company_info (daily), qbo_reconcile_bills (daily)."
+        "qbo_sync_company_info (daily), qbo_reconcile_bills (daily), "
+        "ms_outbox_drain (5s), ms_reconcile_excel (daily)."
     )
 
 
@@ -252,6 +255,59 @@ def _register_qbo_reconcile_jobs(scheduler) -> None:
         hours=24,
         id="qbo_reconcile_bills",
         next_run_time=now_utc + timedelta(hours=3),
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+
+def _register_ms_outbox_drain(scheduler) -> None:
+    """Register the MS outbox drain tick. Same 5s cadence as QBO; parallel
+    queue with independent drain lock (`ms_outbox_drain` vs `qbo_outbox_drain`)."""
+    from integrations.ms.outbox.business.worker import MsOutboxWorker
+
+    def _drain_ms_outbox() -> None:
+        try:
+            MsOutboxWorker().drain_once()
+        except Exception:
+            logger.exception("ms.outbox.drain.tick_failed")
+
+    scheduler.add_job(
+        _drain_ms_outbox,
+        trigger="interval",
+        seconds=5,
+        id="ms_outbox_drain",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+
+def _register_ms_reconcile_jobs(scheduler) -> None:
+    """Register MS reconciliation jobs. Phase 3: Excel missing-row detector
+    runs daily. Other detectors (value drift, dead-letter sweep) deferred."""
+    from datetime import datetime, timedelta, timezone
+
+    now_utc = datetime.now(timezone.utc)
+
+    def _reconcile_excel() -> None:
+        try:
+            from integrations.ms.reconciliation.business.excel_detector import (
+                ExcelMissingRowDetector,
+            )
+
+            ExcelMissingRowDetector().run()
+        except Exception:
+            logger.exception("ms.reconcile.excel.tick_failed")
+
+    # Fire the first run 4 hours after startup so the boot-time rush subsides
+    # before we start reading every project's workbook.
+    scheduler.add_job(
+        _reconcile_excel,
+        trigger="interval",
+        hours=24,
+        id="ms_reconcile_excel",
+        next_run_time=now_utc + timedelta(hours=4),
         replace_existing=True,
         max_instances=1,
         coalesce=True,

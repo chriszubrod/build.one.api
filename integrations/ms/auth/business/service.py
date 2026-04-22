@@ -1,7 +1,6 @@
 # Python Standard Library Imports
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-import logging
 
 # Third-party Imports
 
@@ -9,8 +8,52 @@ import logging
 from integrations.ms.auth.business.model import MsAuth
 from integrations.ms.auth.persistence.repo import MsAuthRepository
 from integrations.ms.auth.external.client import connect_ms_oauth_2_token_endpoint_refresh
+from integrations.ms.base.logger import get_ms_logger
 
-logger = logging.getLogger(__name__)
+logger = get_ms_logger(__name__)
+
+
+# Azure AD default for single-tenant delegated refresh tokens is ~90 days
+# of inactivity before expiry. Each successful refresh rotates the token
+# and resets the clock.
+MS_REFRESH_TOKEN_LIFETIME_DAYS = 90
+
+
+def _emit_token_expiration_check(ms_auth: MsAuth) -> None:
+    """
+    Emit a structured gauge event with `days_since_refresh` and the derived
+    `days_remaining` estimate. Called on every `ensure_valid_token` so that
+    aggregating the gauge in App Insights produces a continuous view of the
+    refresh-token lifetime. Absolute accuracy is limited because Azure AD
+    doesn't expose the refresh-token expiry directly; we infer from
+    `modified_datetime + MS_REFRESH_TOKEN_LIFETIME_DAYS`.
+    """
+    if not ms_auth or not ms_auth.modified_datetime:
+        return
+    try:
+        modified_time = datetime.strptime(ms_auth.modified_datetime, "%Y-%m-%d %H:%M:%S")
+        if modified_time.tzinfo is None:
+            modified_time = modified_time.replace(tzinfo=timezone.utc)
+        else:
+            modified_time = modified_time.astimezone(timezone.utc)
+        now = datetime.now(timezone.utc)
+        days_since_refresh = (now - modified_time).total_seconds() / 86400.0
+        days_remaining = MS_REFRESH_TOKEN_LIFETIME_DAYS - days_since_refresh
+        logger.info(
+            "ms.auth.token.expiration.check",
+            extra={
+                "event_name": "ms.auth.token.expiration.check",
+                "tenant_id": ms_auth.tenant_id,
+                "days_since_refresh": days_since_refresh,
+                "days_remaining": days_remaining,
+                "metric_name": "ms.auth.token.expiration.days_remaining",
+                "metric_type": "gauge",
+                "metric_value": days_remaining,
+            },
+        )
+    except Exception as error:
+        # Emission is best-effort; never let instrumentation break auth.
+        logger.debug(f"Error emitting token expiration check: {error}")
 
 
 class MsAuthService:
@@ -183,6 +226,7 @@ class MsAuthService:
         # Skip expiry check when force_refresh is requested
         if not force_refresh and not self.is_token_expired(ms_auth, buffer_seconds):
             logger.debug(f"Token for tenant_id {tenant_id} is still valid")
+            _emit_token_expiration_check(ms_auth)
             return ms_auth
 
         # Serialize concurrent refreshes across processes (API + standalone scripts
@@ -220,6 +264,7 @@ class MsAuthService:
                 logger.info(
                     f"Token for tenant_id {tenant_id} was refreshed by a concurrent caller"
                 )
+                _emit_token_expiration_check(ms_auth)
                 return ms_auth
 
             if force_refresh:
@@ -241,6 +286,7 @@ class MsAuthService:
 
                     if updated_auth:
                         logger.info(f"Token refreshed successfully for tenant_id: {tenant_id}")
+                        _emit_token_expiration_check(updated_auth)
                         return updated_auth
                     else:
                         logger.error(f"Token refresh succeeded but could not read updated MsAuth for tenant_id: {tenant_id}")

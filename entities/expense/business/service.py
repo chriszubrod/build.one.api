@@ -696,53 +696,64 @@ class ExpenseService:
                     logger.info(f"SubCostCode {sub_cost_code_number or 'None'}: no match found, will append at end")
                     rows_to_append.extend(group_rows)
 
-            # --- insert bottom-to-top so earlier inserts don't shift later positions ---
-            insert_groups.sort(key=lambda g: (g[0], g[2]), reverse=True)
+            # Enqueue each insert/append as a distinct outbox row. Worker
+            # drains one at a time so order is preserved naturally; no need
+            # to process bottom-to-top to avoid row-shift races.
+            insert_groups.sort(key=lambda g: g[0])
+
+            from integrations.ms.outbox.business.service import MsOutboxService
+            ms_outbox = MsOutboxService()
 
             for insertion_row, group_rows, sub_cost_code_number in insert_groups:
-                insert_result = insert_excel_rows(
+                queued = ms_outbox.enqueue_excel_insert(
+                    entity_type="Expense",
+                    entity_public_id=str(expense.public_id),
                     drive_id=drive.drive_id,
                     item_id=driveitem.item_id,
                     worksheet_name=worksheet_name,
                     row_index=insertion_row,
                     values=group_rows,
-                    session_id=session_id,
+                    session_id=None,
                 )
-                if insert_result.get("status_code") in [200, 201]:
+                if queued is not None:
                     synced_count += len(group_rows)
-                    logger.info(f"Inserted {len(group_rows)} row(s) at row {insertion_row} for SubCostCode {sub_cost_code_number}")
+                    logger.info(
+                        f"Queued Excel insert of {len(group_rows)} row(s) at row "
+                        f"{insertion_row} for SubCostCode {sub_cost_code_number} "
+                        f"(outbox {queued.public_id})"
+                    )
                 else:
-                    error_msg = insert_result.get("message", "Unknown error")
-                    logger.error(f"Failed to insert rows for SubCostCode {sub_cost_code_number}: {error_msg}")
-                    errors.append({"sub_cost_code": sub_cost_code_number, "error": f"Failed to insert rows: {error_msg}"})
-                    rows_to_append.extend(group_rows)
+                    errors.append({
+                        "sub_cost_code": sub_cost_code_number,
+                        "error": "Excel insert enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
+                    })
 
             # --- append remainder ---
             if rows_to_append:
-                logger.info(f"Appending {len(rows_to_append)} row(s) to end of worksheet")
-                append_result = append_excel_rows(
+                logger.info(f"Queuing append of {len(rows_to_append)} row(s) to end of worksheet")
+                queued = ms_outbox.enqueue_excel_append(
+                    entity_type="Expense",
+                    entity_public_id=str(expense.public_id),
                     drive_id=drive.drive_id,
                     item_id=driveitem.item_id,
                     worksheet_name=worksheet_name,
                     values=rows_to_append,
-                    session_id=session_id,
+                    session_id=None,
                 )
-                if append_result.get("status_code") in [200, 201]:
+                if queued is not None:
                     synced_count += len(rows_to_append)
-                    logger.info(f"Appended {len(rows_to_append)} row(s)")
+                    logger.info(f"Queued Excel append of {len(rows_to_append)} row(s) (outbox {queued.public_id})")
                 else:
-                    error_msg = append_result.get("message", "Unknown error")
-                    logger.error(f"Failed to append rows: {error_msg}")
-                    errors.append({"error": f"Failed to append rows: {error_msg}"})
+                    errors.append({"error": "Excel append enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"})
 
             if synced_count == 0 and not errors:
                 return {"success": True, "message": "No rows to sync", "synced_count": 0, "errors": []}
 
-            logger.info(f"Successfully synced {synced_count} row(s) to Excel workbook")
+            logger.info(f"Queued {synced_count} row(s) for Excel workbook sync")
             has_errors = len(errors) > 0
             return {
                 "success": synced_count > 0 or not has_errors,
-                "message": f"Synced {synced_count} row(s) to Excel workbook",
+                "message": f"Queued {synced_count} row(s) for Excel sync",
                 "synced_count": synced_count,
                 "errors": errors,
             }
@@ -888,44 +899,58 @@ class ExpenseService:
                 else:
                     rows_to_append.extend(group_rows)
 
-            # --- insert bottom-to-top ---
-            insert_groups.sort(key=lambda g: (g[0], g[2]), reverse=True)
+            # Enqueue each insert/append as distinct outbox rows.
+            insert_groups.sort(key=lambda g: g[0])
+
+            from integrations.ms.outbox.business.service import MsOutboxService
+            ms_outbox = MsOutboxService()
+
+            # Batch context: the entity_public_id column on the outbox row
+            # represents a bundle of expenses; we record the project_id for
+            # downstream traceability since a single batch-entity isn't
+            # meaningful here.
+            batch_entity_public_id = str(project_id)
 
             for insertion_row, group_rows, scc_number in insert_groups:
-                insert_result = insert_excel_rows(
+                queued = ms_outbox.enqueue_excel_insert(
+                    entity_type="ExpenseBatch",
+                    entity_public_id=batch_entity_public_id,
                     drive_id=drive.drive_id,
                     item_id=driveitem.item_id,
                     worksheet_name=worksheet_name,
                     row_index=insertion_row,
                     values=group_rows,
-                    session_id=session_id,
+                    session_id=None,
                 )
-                if insert_result.get("status_code") in [200, 201]:
+                if queued is not None:
                     synced_count += len(group_rows)
-                    logger.info(f"Inserted {len(group_rows)} row(s) at row {insertion_row} for SubCostCode {scc_number}")
+                    logger.info(
+                        f"Queued batch Excel insert of {len(group_rows)} row(s) at row "
+                        f"{insertion_row} for SubCostCode {scc_number} (outbox {queued.public_id})"
+                    )
                 else:
-                    error_msg = insert_result.get("message", "Unknown error")
-                    logger.error(f"Failed to insert rows for SubCostCode {scc_number}: {error_msg}")
-                    errors.append({"sub_cost_code": scc_number, "error": f"Failed to insert rows: {error_msg}"})
-                    rows_to_append.extend(group_rows)
+                    errors.append({
+                        "sub_cost_code": scc_number,
+                        "error": "Excel insert enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
+                    })
 
             # --- append remainder ---
             if rows_to_append:
-                logger.info(f"Appending {len(rows_to_append)} row(s) to end of worksheet")
-                append_result = append_excel_rows(
+                logger.info(f"Queuing batch append of {len(rows_to_append)} row(s) to end of worksheet")
+                queued = ms_outbox.enqueue_excel_append(
+                    entity_type="ExpenseBatch",
+                    entity_public_id=batch_entity_public_id,
                     drive_id=drive.drive_id,
                     item_id=driveitem.item_id,
                     worksheet_name=worksheet_name,
                     values=rows_to_append,
-                    session_id=session_id,
+                    session_id=None,
                 )
-                if append_result.get("status_code") in [200, 201]:
+                if queued is not None:
                     synced_count += len(rows_to_append)
-                    logger.info(f"Appended {len(rows_to_append)} row(s)")
+                    logger.info(f"Queued batch Excel append of {len(rows_to_append)} row(s) (outbox {queued.public_id})")
                 else:
-                    error_msg = append_result.get("message", "Unknown error")
-                    logger.error(f"Failed to append rows: {error_msg}")
-                    errors.append({"error": f"Failed to append rows: {error_msg}"})
+                    errors.append({"error": "Excel append enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"})
 
             logger.info(f"Project {project_id}: synced {synced_count} row(s) to Excel workbook")
             has_errors = len(errors) > 0
@@ -1018,20 +1043,33 @@ class ExpenseService:
                         file_extension = "." + file_extension
                     sharepoint_filename = base_filename + file_extension
                     try:
-                        file_content, metadata = storage.download_file(attachment.blob_url)
+                        _file_content, _metadata = storage.download_file(attachment.blob_url)
                     except Exception as e:
                         errors.append({"line_item_id": line_item.id, "error": str(e)})
                         continue
-                    content_type = attachment.content_type or metadata.get("content_type", "application/octet-stream")
-                    upload_result = self.driveitem_service.upload_file(drive_public_id=drive.public_id, parent_item_id=folder_item_id, filename=sharepoint_filename, content=file_content, content_type=content_type)
-                    if upload_result.get("status_code") not in [200, 201]:
-                        errors.append({"line_item_id": line_item.id, "error": upload_result.get("message", "Unknown error")})
+                    # Probe the blob (above) to fail-fast if the blob is
+                    # missing. Actual upload happens via outbox; worker
+                    # re-fetches at drain time.
+                    content_type = attachment.content_type or "application/octet-stream"
+                    from integrations.ms.outbox.business.service import MsOutboxService
+                    queued = MsOutboxService().enqueue_sharepoint_upload(
+                        entity_type="Expense",
+                        entity_public_id=str(expense.public_id),
+                        drive_id=drive.drive_id,
+                        parent_item_id=folder_item_id,
+                        filename=sharepoint_filename,
+                        content_type=content_type,
+                        blob_path=attachment.blob_url,
+                        attachment_id=attachment.id,
+                    )
+                    if queued is None:
+                        errors.append({"line_item_id": line_item.id, "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false)"})
                         continue
                     uploaded_attachments[attachment_link.attachment_id] = sharepoint_filename
                     synced_count += 1
                 except Exception as e:
                     errors.append({"line_item_id": line_item.id, "error": str(e)})
-            return {"success": not errors, "message": f"Uploaded {synced_count} file(s)", "synced_count": synced_count, "errors": errors}
+            return {"success": not errors, "message": f"Queued {synced_count} file(s) for SharePoint upload", "synced_count": synced_count, "errors": errors}
         except Exception as e:
             logger.exception(f"Error uploading attachments for project {project_id}")
             return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
@@ -1220,20 +1258,25 @@ class ExpenseService:
                         continue
 
                     content_type = attachment.content_type or metadata.get("content_type", "application/octet-stream")
-                    upload_result = self.driveitem_service.upload_file(
-                        drive_public_id=shared_docs_drive.public_id,
+                    # Receipts-folder uploads go via outbox too.
+                    from integrations.ms.outbox.business.service import MsOutboxService
+                    queued = MsOutboxService().enqueue_sharepoint_upload(
+                        entity_type="Expense",
+                        entity_public_id=str(expense.public_id),
+                        drive_id=shared_docs_drive.drive_id,
                         parent_item_id=month_item_id,
                         filename=sharepoint_filename,
-                        content=file_content,
                         content_type=content_type,
+                        blob_path=attachment.blob_url,
+                        attachment_id=attachment.id,
                     )
-                    if upload_result.get("status_code") not in [200, 201]:
-                        errors.append({"line_item_id": line_item.id, "error": upload_result.get("message", "Unknown error")})
+                    if queued is None:
+                        errors.append({"line_item_id": line_item.id, "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false)"})
                         continue
 
                     uploaded_attachments[attachment_link.attachment_id] = sharepoint_filename
                     synced_count += 1
-                    logger.info(f"Uploaded to receipts folder: {sharepoint_filename}")
+                    logger.info(f"Queued receipts upload: {sharepoint_filename} (outbox {queued.public_id})")
                 except Exception as e:
                     errors.append({"line_item_id": line_item.id, "error": str(e)})
 

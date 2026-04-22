@@ -20,6 +20,7 @@ to run — no need to reverse-engineer the system under pressure.
 | [qbo-sync-lag-exceeded.md](qbo-sync-lag-exceeded.md) | Local mirror is stale; lag exceeds the SLA threshold |
 | [qbo-record-stuck-failure.md](qbo-record-stuck-failure.md) | A single record keeps failing to push to QBO (retry exhausted / dead-lettered) |
 | [qbo-reconciliation-drift.md](qbo-reconciliation-drift.md) | Reconciliation job is flagging growing amounts of drift |
+| [ms-token-expiration.md](ms-token-expiration.md) | MS 365 delegated OAuth access/refresh token expiring or failing to refresh |
 
 ## Runbook format
 

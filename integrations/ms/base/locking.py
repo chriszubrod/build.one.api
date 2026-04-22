@@ -4,9 +4,10 @@ from contextlib import contextmanager
 from typing import Iterator
 
 # Local Imports
+from integrations.ms.base.logger import get_ms_logger
 from shared.database import get_connection
 
-logger = logging.getLogger(__name__)
+logger = get_ms_logger(__name__)
 
 
 @contextmanager

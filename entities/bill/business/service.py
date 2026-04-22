@@ -1219,67 +1219,6 @@ class BillService:
 
         return qbo_bill
 
-    @staticmethod
-    def _compress_file(file_content: bytes, content_type: str, file_extension: str) -> bytes:
-        """
-        Compress file content when applicable.
-        - PDF: compress with Ghostscript-free pypdf if available
-        - Images (JPEG/PNG): optimize with Pillow if available
-        Returns original content if compression fails or is not applicable.
-        """
-        ext = (file_extension or "").lower().lstrip(".")
-        ct = (content_type or "").lower()
-
-        # PDF compression via pypdf
-        if ext == "pdf" or "pdf" in ct:
-            try:
-                import io
-                from pypdf import PdfReader, PdfWriter
-
-                reader = PdfReader(io.BytesIO(file_content))
-                writer = PdfWriter()
-                for page in reader.pages:
-                    page.compress_content_streams()
-                    writer.add_page(page)
-                writer.remove_unreferenced_resources()
-
-                output = io.BytesIO()
-                writer.write(output)
-                compressed = output.getvalue()
-                # Only use compressed version if it's actually smaller
-                if len(compressed) < len(file_content):
-                    return compressed
-            except Exception as e:
-                logger.debug(f"PDF compression skipped: {e}")
-            return file_content
-
-        # Image compression via Pillow
-        if ext in ("jpg", "jpeg", "png") or ct.startswith("image/"):
-            try:
-                import io
-                from PIL import Image
-
-                img = Image.open(io.BytesIO(file_content))
-
-                output = io.BytesIO()
-                if ext == "png" or ct == "image/png":
-                    img.save(output, format="PNG", optimize=True)
-                else:
-                    # JPEG — convert RGBA to RGB if needed
-                    if img.mode in ("RGBA", "P"):
-                        img = img.convert("RGB")
-                    img.save(output, format="JPEG", quality=85, optimize=True)
-
-                compressed = output.getvalue()
-                if len(compressed) < len(file_content):
-                    return compressed
-            except Exception as e:
-                logger.debug(f"Image compression skipped: {e}")
-            return file_content
-
-        # No compression applicable
-        return file_content
-
     def _sync_attachments_to_qbo(self, bill, qbo_bill_id: str, realm_id: str) -> tuple:
         """
         Sync all attachments for a Bill to QBO as Attachable objects.
@@ -1541,52 +1480,58 @@ class BillService:
                     logger.info(f"SubCostCode {sub_cost_code_number or 'None'}: no match found, will append at end")
                     rows_to_append.extend(group_rows)
 
-            # Process insertions from bottom to top so earlier insertions
-            # don't shift the row positions of later ones
-            # Sort by insertion_row descending (bottom-to-top), then by sub_cost_code_number
-            # descending for deterministic ordering when two groups share the same row
-            insert_groups.sort(key=lambda g: (g[0], g[2]), reverse=True)
+            # Enqueue each insert as a separate outbox row so retries + dead-
+            # letter isolation happen per group. No need for the bottom-to-top
+            # ordering now — the worker drains rows one at a time, so each
+            # `insert_excel_rows` call sees the state resulting from all prior
+            # completed rows. Sort ascending for deterministic dispatch order.
+            insert_groups.sort(key=lambda g: g[0])
+
+            from integrations.ms.outbox.business.service import MsOutboxService
+            ms_outbox = MsOutboxService()
 
             for insertion_row, group_rows, sub_cost_code_number in insert_groups:
-                insert_result = insert_excel_rows(
+                queued = ms_outbox.enqueue_excel_insert(
+                    entity_type="Bill",
+                    entity_public_id=str(bill.public_id),
                     drive_id=drive.drive_id,
                     item_id=driveitem.item_id,
                     worksheet_name=worksheet_name,
                     row_index=insertion_row,
                     values=group_rows,
-                    session_id=session_id,
+                    session_id=None,  # outbox-driven drain: no shared session
                 )
-
-                if insert_result.get("status_code") in [200, 201]:
+                if queued is not None:
                     synced_count += len(group_rows)
-                    logger.info(f"Inserted {len(group_rows)} row(s) at row {insertion_row} for SubCostCode {sub_cost_code_number}")
+                    logger.info(
+                        f"Queued Excel insert of {len(group_rows)} row(s) at row "
+                        f"{insertion_row} for SubCostCode {sub_cost_code_number} "
+                        f"(outbox {queued.public_id})"
+                    )
                 else:
-                    error_msg = insert_result.get('message', 'Unknown error')
-                    logger.error(f"Failed to insert rows for SubCostCode {sub_cost_code_number}: {error_msg}")
+                    # Queueing refused (ALLOW_MS_WRITES=false) or hard failure.
                     errors.append({
                         "sub_cost_code": sub_cost_code_number,
-                        "error": f"Failed to insert rows: {error_msg}"
+                        "error": "Excel insert enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
                     })
-                    rows_to_append.extend(group_rows)
-            
+
             # Append any rows that didn't have matching SubCostCodes
             if rows_to_append:
-                logger.info(f"Appending {len(rows_to_append)} row(s) to end of worksheet")
-                append_result = append_excel_rows(
+                logger.info(f"Queuing append of {len(rows_to_append)} row(s) to end of worksheet")
+                queued = ms_outbox.enqueue_excel_append(
+                    entity_type="Bill",
+                    entity_public_id=str(bill.public_id),
                     drive_id=drive.drive_id,
                     item_id=driveitem.item_id,
                     worksheet_name=worksheet_name,
                     values=rows_to_append,
-                    session_id=session_id,
+                    session_id=None,
                 )
-                
-                if append_result.get("status_code") in [200, 201]:
+                if queued is not None:
                     synced_count += len(rows_to_append)
-                    logger.info(f"Appended {len(rows_to_append)} row(s)")
+                    logger.info(f"Queued Excel append of {len(rows_to_append)} row(s) (outbox {queued.public_id})")
                 else:
-                    error_msg = append_result.get('message', 'Unknown error')
-                    logger.error(f"Failed to append rows: {error_msg}")
-                    errors.append({"error": f"Failed to append rows: {error_msg}"})
+                    errors.append({"error": "Excel append enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"})
             
             if synced_count == 0 and not errors:
                 return {
@@ -1595,13 +1540,13 @@ class BillService:
                     "synced_count": 0,
                     "errors": errors
                 }
-            
-            logger.info(f"Successfully synced {synced_count} row(s) to Excel workbook")
-            
+
+            logger.info(f"Queued {synced_count} row(s) for Excel workbook sync")
+
             has_errors = len(errors) > 0
             return {
                 "success": synced_count > 0 or not has_errors,
-                "message": f"Synced {synced_count} row(s) to Excel workbook",
+                "message": f"Queued {synced_count} row(s) for Excel sync",
                 "synced_count": synced_count,
                 "errors": errors
             }
@@ -1843,81 +1788,44 @@ class BillService:
                     
                     sharepoint_filename = base_filename + file_extension
                     
-                    # Download from Azure Blob Storage
-                    try:
-                        logger.info(f"Downloading attachment from Azure: {attachment.blob_url}")
-                        file_content, metadata = storage.download_file(attachment.blob_url)
-                        logger.info(f"Downloaded {len(file_content)} bytes")
-                    except AzureBlobStorageError as e:
-                        error_msg = str(e)
-                        logger.error(f"Failed to download: {error_msg}")
-                        errors.append({
-                            "line_item_id": line_item.id,
-                            "line_item_public_id": line_item.public_id,
-                            "error": f"Failed to download from Azure: {error_msg}"
-                        })
-                        continue
-                    except Exception as e:
-                        logger.exception("Error downloading attachment")
-                        errors.append({
-                            "line_item_id": line_item.id,
-                            "line_item_public_id": line_item.public_id,
-                            "error": f"Error downloading: {str(e)}"
-                        })
-                        continue
-                    
-                    # Compress file if applicable
-                    content_type = attachment.content_type or metadata.get("content_type", "application/octet-stream")
-                    original_size = len(file_content)
-                    file_content = self._compress_file(file_content, content_type, file_extension)
-                    compressed_size = len(file_content)
-                    if compressed_size < original_size:
-                        logger.info(f"Compressed {original_size} -> {compressed_size} bytes ({100 - (compressed_size * 100 // original_size)}% reduction)")
+                    # Determine content_type (needed by the worker to set upload
+                    # Content-Type header). We trust `attachment.content_type`
+                    # first; the worker does not re-read blob metadata.
+                    # TODO(Phase 3.x): inline compression moved to TODO. The
+                    # worker currently uploads the raw blob. Compression gain
+                    # was 20-30% on image-heavy PDFs; acceptable loss for the
+                    # Phase 3 outbox win.
+                    content_type = attachment.content_type or "application/octet-stream"
 
-                    # Upload to SharePoint
-                    logger.info(f"Uploading '{sharepoint_filename}' ({compressed_size} bytes) to SharePoint folder '{module_folder.get('name')}'")
-
-                    upload_result = self.driveitem_service.upload_file(
-                        drive_public_id=drive.public_id,
+                    # Enqueue SharePoint upload. Worker fetches blob at drain
+                    # time, uploads, and links the resulting DriveItem back
+                    # to the Attachment record (via `attachment_id` in payload).
+                    from integrations.ms.outbox.business.service import MsOutboxService
+                    queued = MsOutboxService().enqueue_sharepoint_upload(
+                        entity_type="Bill",
+                        entity_public_id=str(bill.public_id),
+                        drive_id=drive.drive_id,
                         parent_item_id=folder_item_id,
                         filename=sharepoint_filename,
-                        content=file_content,
-                        content_type=content_type
+                        content_type=content_type,
+                        blob_path=attachment.blob_url,
+                        attachment_id=attachment.id,
                     )
-                    
-                    upload_status = upload_result.get("status_code")
-                    if upload_status not in [200, 201]:
-                        error_msg = upload_result.get('message', 'Unknown error')
-                        logger.error(f"SharePoint upload failed: {error_msg}")
+                    if queued is None:
+                        logger.error(f"SharePoint upload enqueue refused for '{sharepoint_filename}'")
                         errors.append({
                             "line_item_id": line_item.id,
                             "line_item_public_id": line_item.public_id,
-                            "error": f"SharePoint upload failed: {error_msg}"
+                            "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
                         })
                         continue
-                    
-                    # Success
+
                     uploaded_attachments[attachment_link.attachment_id] = sharepoint_filename
                     synced_count += 1
-                    uploaded_item = upload_result.get("item", {})
-                    logger.info(f"Uploaded to SharePoint: '{sharepoint_filename}' (item_id: {uploaded_item.get('item_id')})")
-                    
-                    # Store the DriveItem-Attachment mapping for direct lookup later
-                    ms_driveitem_id = uploaded_item.get("id")
-                    if ms_driveitem_id and attachment.id:
-                        try:
-                            from integrations.ms.sharepoint.driveitem.connector.attachment.business.service import DriveItemAttachmentConnector
-                            attachment_connector = DriveItemAttachmentConnector()
-                            link_result = attachment_connector.link_driveitem_to_attachment(
-                                attachment_id=attachment.id,
-                                ms_driveitem_id=ms_driveitem_id
-                            )
-                            if link_result.get("status_code") in [200, 201]:
-                                logger.info(f"Linked attachment {attachment.id} to DriveItem {ms_driveitem_id}")
-                            else:
-                                logger.warning(f"Could not link attachment to DriveItem: {link_result.get('message')}")
-                        except Exception as link_error:
-                            logger.warning(f"Error linking attachment to DriveItem: {link_error}")
+                    logger.info(
+                        f"Queued SharePoint upload: '{sharepoint_filename}' "
+                        f"(outbox {queued.public_id}, attachment_id={attachment.id})"
+                    )
                     
                 except Exception as e:
                     logger.exception(f"Error processing line item {line_item.id}")
@@ -1928,10 +1836,10 @@ class BillService:
                     })
             
             success = synced_count > 0 or len(errors) == 0
-            message = f"Uploaded {synced_count} file(s) to SharePoint"
+            message = f"Queued {synced_count} file(s) for SharePoint upload"
             if errors:
                 message += f" with {len(errors)} error(s)"
-            
+
             return {
                 "success": success,
                 "message": message,

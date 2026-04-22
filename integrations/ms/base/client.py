@@ -25,10 +25,11 @@ from integrations.ms.base.errors import (
     MsWriteRefusedError,
 )
 from integrations.ms.base.idempotency import resolve_idempotency_key
+from integrations.ms.base.logger import get_ms_logger
 from integrations.ms.base.retry import RetryPolicy, execute_with_retry
 
 
-logger = logging.getLogger(__name__)
+logger = get_ms_logger(__name__)
 
 
 DEFAULT_BASE_URL = "https://graph.microsoft.com/v1.0"
@@ -342,7 +343,6 @@ class MsGraphClient:
             "ms.http.request.blocked",
             extra={
                 "event_name": "ms.http.request.blocked",
-                "correlation_id": correlation_id,
                 "operation_name": operation_name,
                 "http_method": method,
                 "request_path": path,
@@ -431,7 +431,6 @@ class MsGraphClient:
             "ms.http.request.started",
             extra={
                 "event_name": "ms.http.request.started",
-                "correlation_id": correlation_id,
                 "operation_name": operation_name,
                 "http_method": method,
                 "request_path": request_path,
@@ -496,7 +495,6 @@ class MsGraphClient:
                 "ms.http.request.completed",
                 extra={
                     "event_name": "ms.http.request.completed",
-                    "correlation_id": correlation_id,
                     "operation_name": operation_name,
                     "http_method": method,
                     "request_path": request_path,
@@ -607,7 +605,6 @@ class MsGraphClient:
             "ms.http.request.started",
             extra={
                 "event_name": "ms.http.request.started",
-                "correlation_id": correlation_id,
                 "operation_name": operation_name,
                 "http_method": method,
                 "request_path": request_path,
@@ -635,7 +632,6 @@ class MsGraphClient:
                     "ms.auth.token.refresh.started",
                     extra={
                         "event_name": "ms.auth.token.refresh.started",
-                        "correlation_id": correlation_id,
                         "operation_name": operation_name,
                         "reason": "401_on_request",
                     },
@@ -646,7 +642,6 @@ class MsGraphClient:
                         "ms.auth.token.refresh.failed",
                         extra={
                             "event_name": "ms.auth.token.refresh.failed",
-                            "correlation_id": correlation_id,
                         },
                     )
                     raise MsAuthError(
@@ -660,7 +655,6 @@ class MsGraphClient:
                     "ms.auth.token.refresh.completed",
                     extra={
                         "event_name": "ms.auth.token.refresh.completed",
-                        "correlation_id": correlation_id,
                     },
                 )
                 response = self._send_http(
@@ -682,7 +676,6 @@ class MsGraphClient:
                 "ms.http.request.failed",
                 extra={
                     "event_name": "ms.http.request.failed",
-                    "correlation_id": correlation_id,
                     "operation_name": operation_name,
                     "http_method": method,
                     "request_path": request_path,
@@ -702,7 +695,6 @@ class MsGraphClient:
                 "ms.http.request.failed",
                 extra={
                     "event_name": "ms.http.request.failed",
-                    "correlation_id": correlation_id,
                     "operation_name": operation_name,
                     "http_method": method,
                     "request_path": request_path,
@@ -724,7 +716,6 @@ class MsGraphClient:
                 "ms.http.request.completed",
                 extra={
                     "event_name": "ms.http.request.completed",
-                    "correlation_id": correlation_id,
                     "operation_name": operation_name,
                     "http_method": method,
                     "request_path": request_path,
@@ -836,14 +827,12 @@ class MsGraphClient:
             "http_status": status,
             "request_method": method,
             "request_path": request_path,
-            "correlation_id": correlation_id,
         }
 
         logger.warning(
             "ms.http.request.failed",
             extra={
                 "event_name": "ms.http.request.failed",
-                "correlation_id": correlation_id,
                 "operation_name": operation_name,
                 "http_method": method,
                 "request_path": request_path,

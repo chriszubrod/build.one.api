@@ -6,7 +6,7 @@ import time
 
 # Third-party Imports
 from typing import Optional
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
 from decimal import Decimal
 
@@ -365,6 +365,7 @@ def get_bill_folder_status_router(
 
 @router.get("/get/bill-folder-summary")
 def get_bill_folder_summary_router(
+    response: Response,
     current_user: dict = Depends(require_module_api(Modules.BILLS)),
 ):
     """Get summary of the linked SharePoint bill source folder."""
@@ -375,8 +376,10 @@ def get_bill_folder_summary_router(
     if cached is not None:
         expires_at, payload = cached
         if time.monotonic() < expires_at:
+            response.headers["X-Cache"] = "hit"
             return item_response(payload)
 
+    response.headers["X-Cache"] = "miss"
     try:
         from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
         from integrations.ms.sharepoint.external import client as sp_client

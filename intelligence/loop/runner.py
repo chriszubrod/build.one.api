@@ -45,13 +45,19 @@ async def run(
     system: Optional[str] = None,
     budget: Optional[BudgetPolicy] = None,
     max_tokens_per_turn: int = 4096,
+    prior_history: Optional[list[Message]] = None,
 ) -> AsyncIterator[LoopEvent]:
-    """Drive one agent run end-to-end. Yields LoopEvents as they happen."""
+    """Drive one agent run end-to-end. Yields LoopEvents as they happen.
+
+    prior_history (optional) is prepended before the new user_message so the
+    LLM sees a continuing conversation. Typically populated by
+    session_runner when continuing a threaded session.
+    """
     budget = budget or BudgetPolicy()
     tool_schemas = [t.to_anthropic_schema() for t in tools]
     by_name: dict[str, Tool] = {t.name: t for t in tools}
 
-    history: list[Message] = [
+    history: list[Message] = list(prior_history or []) + [
         Message(role="user", content=[Text(text=user_message)]),
     ]
     total_usage = Usage()

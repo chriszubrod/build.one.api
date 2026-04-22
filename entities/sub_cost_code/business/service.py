@@ -53,6 +53,30 @@ class SubCostCodeService:
         """
         return self.repo.read_by_alias(alias=alias)
 
+    def search_by_name(self, *, query: str, limit: int = 10) -> List[SubCostCode]:
+        """
+        Substring search against Name and Number (case-insensitive).
+
+        Pulls the full catalog via read_all() and filters in memory —
+        SubCostCode is small (~500 rows) so this is cheaper than a
+        dedicated LIKE sproc. Upgrade to a sproc if the table grows
+        or ranked/fuzzy matching is needed.
+        """
+        q = (query or "").strip().lower()
+        if not q:
+            return []
+        if limit <= 0:
+            return []
+        matches: List[SubCostCode] = []
+        for scc in self.repo.read_all():
+            name = (scc.name or "").lower()
+            number = (scc.number or "").lower()
+            if q in name or q in number:
+                matches.append(scc)
+                if len(matches) >= limit:
+                    break
+        return matches
+
     def upsert(self, *, number: str, name: str, description: Optional[str] = None, cost_code_id: int, aliases: Optional[str] = None) -> SubCostCode:
         """
         Create or update a sub cost code by Number + CostCodeId.

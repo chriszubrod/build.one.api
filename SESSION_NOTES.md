@@ -1,5 +1,105 @@
 # Session Notes
 
+## Session: Intelligence Layer Build + Scout Agent + React Integration (April 20–22, 2026)
+
+### Overview
+Built an agentic framework from scratch — no LangChain/LangGraph, provider-agnostic, colocated with entities. Five levels stood up end-to-end: canonical messages + transport, tools + loop, persistence, agent identity + orchestration, SSE HTTP surface. First agent (`scout`) is a read-only Q&A assistant for sub-cost-codes, callable from the React app via a right-side drawer with conversation threading.
+
+### Architecture decisions
+- **Package name**: `intelligence/` (broader than `agents/` — agents are one discipline inside it; RAG, extraction, etc. will live here too). Renamed `shared/ai/` → `intelligence/` conceptually (old layer was fully deleted earlier; this is a clean rebuild).
+- **Agent-as-user**: every agent has its own user row, Auth credentials, and JWT — tools call internal HTTP endpoints with that bearer token. Goes through `require_module_api()` RBAC exactly like a human request. No direct service calls from the tool layer (`call_sync()` exists as an escape hatch but is unused).
+- **Tools colocated with entities**: `entities/{name}/intelligence/tools.py`. Same pattern as `api/`, `business/`, `persistence/`, `sql/`. Adding a new entity to scout's scope = drop a `tools.py` + add an import to `intelligence/agents/scout/__init__.py` + append to `scout.tools` tuple.
+- **HTTPX directly, no vendor SDKs**: uniform adapter shape per provider (`intelligence/transport/{anthropic,openai,…}.py`). Anthropic-only for now. SDK types don't leak above the Transport boundary.
+- **Credentials via `credentials_key`**: each `Agent` declares a key (e.g. `"scout_agent"`); the auth helper reads `{key}_username` / `{key}_password` off `config.Settings`. Scales to many agents without bespoke config code.
+- **`ParentSessionId`** (nullable FK) — reserved for future sub-agent composition. Wired into schema now, unused until a specialist agent lands.
+- **`PreviousSessionId`** (nullable FK) — active. Conversation threading: each follow-up message = a new `AgentSession` linked to the prior head via this column. `load_chain_history()` walks the chain and synthesizes canonical Messages (user / assistant / tool_result alternation) as prior context for the new session.
+- **Aggregates, not raw events**: `AgentTurn` + `AgentToolCall` rows capture turns' aggregate state, not every `LoopEvent`. Replay for reconnect is coarser (text_delta collapses to one chunk) but the row count stays sane. Raw-event table could be added later if per-delta replay becomes critical.
+
+### What was built, by level
+
+**L1 — Canonical messages + Anthropic HTTPX transport** (`intelligence/messages/`, `intelligence/transport/`)
+- `Message` / `ContentBlock` (discriminated union: `Text`, `ToolUse`, `ToolResult`, `Image`, `Document`) + `Source` (base64 / url)
+- `OutputBlock` union for ToolResult content (text | image | document); `ToolResult.content` is `str | list[OutputBlock]` to support vision-returning tools later
+- `Transport` Protocol, one adapter per provider; `AnthropicTransport` does POST `/v1/messages` with `stream: true`, parses SSE (`event:` / `data:` / blank line) into canonical `TransportEvent`s
+- `transport/registry.py` for name → factory lookup
+
+**L2 — Tools + async think/act/observe loop** (`intelligence/tools/`, `intelligence/loop/`)
+- `Tool` = frozen dataclass `(name, description, input_schema, handler)`; `ToolContext` carries `agent_id`, `auth_token`, `session_id`, `requesting_user_id`; `ToolResult` has `str | list[OutputBlock]` content
+- `tools/registry.py` — register / get / resolve / all / clear
+- `tools/schema.py` — pydantic model → JSON schema (Anthropic-compatible)
+- `tools/builtins.py` — `now` and `add` for wiring tests
+- `loop/runner.py` — async `run(...)` drives turns, relays transport events as `LoopEvent`s, dispatches tool handlers between turns, enforces `BudgetPolicy` (max_turns + max_tokens)
+- `loop/events.py` — `LoopEvent` union: TurnStart, TextDelta, ToolCallStart, ToolCallEnd, TurnEnd, Done, Error
+- `loop/termination.py` — `BudgetPolicy` + `TerminationReason` literal
+- `ToolCallStart` carries `input` (fires on transport's `tool_use_complete`, not `tool_use_start`, so input is always populated)
+
+**L3 — Persistence** (`intelligence/persistence/`)
+- `AgentSession`, `AgentTurn`, `AgentToolCall` tables + `vw_*` views + per-entity sprocs (view + MERGE pattern from persistence refactor)
+- `session_repo.py` — three repo classes (pydantic models, sync pyodbc, wrapped with `asyncio.to_thread` at call sites)
+- `session_runner.py` — wraps `run()` with persistence; creates `AgentSession` at start (`Status='running'`), writes turns/tool_calls as events flow, finalizes to `completed` / `failed`. Pure wrapper — `run()` remains testable without a DB
+- `history.py` (April 22) — `load_chain_history(session_id)` walks `PreviousSessionId` chain, builds canonical `list[Message]` for continuation
+- Parent / previous session id columns added as additive ALTER statements (idempotent)
+
+**L4 — Scout agent, auth, orchestrator** (`intelligence/auth.py`, `intelligence/agents/`, `intelligence/registry/`, `intelligence/run.py`)
+- `auth.py` — `login_agent_with_user_id(credentials_key)` POSTs `/api/v1/mobile/auth/login`, returns `(access_token, auth_user_id)`. `AgentAuthError` for clean failure
+- `Agent` frozen dataclass + `registry/agents.py` (name → Agent)
+- `intelligence/agents/scout/` — `definition.py` builds and registers scout; `prompt.md` holds the system prompt; `__init__.py` imports entity tool modules so they self-register
+- `run.py` — `run_agent(name, user_message, requesting_user_id?, previous_session_id?, …)` orchestrates: registry lookup → login → tool resolution → ToolContext → `run_session`
+
+**L5 — SSE HTTP surface** (`intelligence/api/`)
+- `POST /api/v1/agents/{name}/runs` — starts background task, returns `session_public_id`
+- `GET /api/v1/agents/runs/{public_id}/events` — SSE stream; live from in-memory channel while running, falls back to DB-synthesized replay for completed sessions (via `replay.py`)
+- `POST /api/v1/agents/runs/{public_id}/cancel` — 403 if caller isn't the requesting user
+- `POST /api/v1/agents/runs/{public_id}/continue` (April 22) — conversation follow-up; creates new session with `PreviousSessionId` set
+- `api/channel.py` — `SessionChannel` pub/sub + module-level registry; 60s grace window after completion for late subscribers; disconnect doesn't kill the run
+- `api/background.py` — `asyncio.Task` lifecycle + cancellation plumbing
+
+### Scout's tool set (SubCostCode only today)
+- `list_sub_cost_codes` — full catalog (expensive; nudged down in prompt + tool description)
+- `search_sub_cost_codes` (April 22) — case-insensitive substring search on name + number, default limit 10. ~50× cheaper than list. Scout picks this naturally for name-based queries
+- `read_sub_cost_code_by_public_id` — UUID lookup
+- `read_sub_cost_code_by_number` — dotted format (`10.01`, etc.); prompt tells scout to normalize `10-01` or spelled-out forms
+- `read_sub_cost_code_by_alias` — via SubCostCodeAlias table
+
+Added two new endpoints: `/get/sub-cost-code/by-number/{number}`, `/get/sub-cost-code/by-alias/{alias}`, `/get/sub-cost-code/search?q=...&limit=...`.
+
+### React integration (`build.one.web`)
+- `src/agents/types.ts` — LoopEvent types + accumulated `Turn` / `ToolCall` / `ConversationEntry` for the hook
+- `src/agents/sseClient.ts` — fetch + ReadableStream + hand-parsed SSE. Uses `VITE_API_BASE_URL` (matches the rest of the app). `startAgentRun` / `continueAgentRun` / `streamAgentEvents` / `cancelAgentRun`
+- `src/agents/useAgentRun.ts` — reducer-style accumulation of entries from event stream; routes to `/runs` or `/runs/{head}/continue` based on conversation head; exposes `start(msg)`, `cancel()`, `reset()`
+- `src/agents/ScoutTray.tsx` — right-side drawer (420px, flex sibling of `app-main` → push animation, no overlay). User messages as right-aligned bubbles; agent turns grouped below per user message. Collapsible tool-call chips. Auto-resizing textarea (Enter=send, Shift+Enter=newline). Thinking indicator with three pulsing dots between Send and first event. "New" button in the tray header to reset conversation. Esc closes
+- `src/layout/AppLayout.tsx` — holds tray open state; renders `ScoutTray` as flex sibling
+- `src/layout/Header.tsx` — Scout toggle button (aria-pressed, highlights when open)
+- No sidebar nav entry; no `/scout` route
+
+### Config additions
+- `anthropic_api_key` (Optional[str])
+- `internal_api_base_url` (default `http://localhost:8000`; MUST be set in prod to the app's own prod URL so agent tools don't self-call localhost)
+- `scout_agent_username`, `scout_agent_password` (renamed from earlier `agent_one_*`)
+
+### SQL schema additions
+- `intelligence/persistence/sql/dbo.agent_session.sql` — `AgentSession` + view + sprocs; includes `ParentSessionId` + `PreviousSessionId` columns, FKs, indexes
+- `intelligence/persistence/sql/dbo.agent_turn.sql` — `AgentTurn` + view + sprocs
+- `intelligence/persistence/sql/dbo.agent_tool_call.sql` — `AgentToolCall` + view + sprocs
+- All files idempotent (IF NOT EXISTS guards), safe to re-run
+
+### Deployment notes
+- Prod Azure App Service needs: `ANTHROPIC_API_KEY`, `SCOUT_AGENT_USERNAME`, `SCOUT_AGENT_PASSWORD`, `INTERNAL_API_BASE_URL` set in Application Settings. We hit this live during the session — App Service restarts automatically on setting change (~30–60s)
+- Agent user must exist in prod DB with matching credentials. Sign up via web UI or insert via SQL. We repurposed the existing `agent_one` user
+- `ENABLE_SCHEDULER` remains prod-only (see `shared/scheduler.py`) — local dev is default-deny, so QBO sync jobs don't conflict between local and prod during development
+
+### Deferred intentionally
+- **Sub-agent composition** (e.g. `SubCostCodeAgent` as a delegated tool). `ParentSessionId` column is wired for when this lands. Design preference: extract a specialist when a tool set approaches ~8 tools or when writes with complex validation appear
+- **Other entities for scout**: Vendor, Bill, Project, Invoice, etc. Pattern is proven on SubCostCode; expansion is mechanical
+- **Other transport providers**: OpenAI, Azure, Bedrock — adapter pattern ready; `transport/registry.py` one-entry today
+- **`Last-Event-ID` resumption** on SSE — reconnect currently replays everything
+- **Prompt caching** (Anthropic `cache_control`) — would cut input tokens further on multi-turn conversations
+- **Context assembler module** (`intelligence/context/`) — loop handles context naturally for scout's scope; defer until truncation/summarization/RAG creates a real need
+- **Observability layer** (`intelligence/observability/`) — token counting lives inside `policy/budget.py`; structured tracing defer until needed
+- **Conversation list UI** — a "past conversations" sidebar in the tray that loads prior threads from the `PreviousSessionId` chain
+
+---
+
 ## Session: Persistence Layer Review & Fix — Full 8-Tier Audit (April 12, 2026)
 
 ### Overview

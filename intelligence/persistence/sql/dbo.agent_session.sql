@@ -23,6 +23,7 @@ BEGIN
         [AgentUserId] BIGINT NULL,
         [RequestingUserId] BIGINT NULL,
         [ParentSessionId] BIGINT NULL,
+        [PreviousSessionId] BIGINT NULL,
         [Model] NVARCHAR(100) NOT NULL,
         [Provider] NVARCHAR(50) NOT NULL,
         [UserMessage] NVARCHAR(MAX) NOT NULL,
@@ -48,7 +49,16 @@ BEGIN
 END
 GO
 
--- Self-referential FK constraint
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE Name = 'PreviousSessionId' AND Object_ID = OBJECT_ID('dbo.AgentSession')
+)
+BEGIN
+    ALTER TABLE dbo.[AgentSession] ADD [PreviousSessionId] BIGINT NULL;
+END
+GO
+
+-- Self-referential FK constraint (parent — for sub-agent composition)
 IF NOT EXISTS (
     SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_AgentSession_ParentSessionId'
 )
@@ -56,6 +66,17 @@ BEGIN
     ALTER TABLE dbo.[AgentSession] WITH CHECK
         ADD CONSTRAINT [FK_AgentSession_ParentSessionId]
             FOREIGN KEY ([ParentSessionId]) REFERENCES dbo.[AgentSession] ([Id]);
+END
+GO
+
+-- Self-referential FK constraint (previous — for conversation threading)
+IF NOT EXISTS (
+    SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_AgentSession_PreviousSessionId'
+)
+BEGIN
+    ALTER TABLE dbo.[AgentSession] WITH CHECK
+        ADD CONSTRAINT [FK_AgentSession_PreviousSessionId]
+            FOREIGN KEY ([PreviousSessionId]) REFERENCES dbo.[AgentSession] ([Id]);
 END
 GO
 
@@ -84,6 +105,12 @@ BEGIN
 END
 GO
 
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_AgentSession_PreviousSessionId' AND object_id = OBJECT_ID('dbo.AgentSession'))
+BEGIN
+    CREATE INDEX [IX_AgentSession_PreviousSessionId] ON [dbo].[AgentSession] ([PreviousSessionId]);
+END
+GO
+
 
 -- ============================================================================
 -- AgentSession — View (single source of truth for column formatting)
@@ -101,6 +128,7 @@ AS
         [AgentUserId],
         [RequestingUserId],
         [ParentSessionId],
+        [PreviousSessionId],
         [Model],
         [Provider],
         [UserMessage],
@@ -126,6 +154,7 @@ CREATE OR ALTER PROCEDURE CreateAgentSession
     @AgentUserId BIGINT = NULL,
     @RequestingUserId BIGINT = NULL,
     @ParentSessionId BIGINT = NULL,
+    @PreviousSessionId BIGINT = NULL,
     @Model NVARCHAR(100),
     @Provider NVARCHAR(50),
     @UserMessage NVARCHAR(MAX),
@@ -140,12 +169,12 @@ BEGIN
 
     INSERT INTO dbo.[AgentSession]
         ([CreatedDatetime], [ModifiedDatetime], [AgentName], [AgentUserId],
-         [RequestingUserId], [ParentSessionId], [Model], [Provider],
-         [UserMessage], [SystemPrompt], [Status], [StartedAt])
+         [RequestingUserId], [ParentSessionId], [PreviousSessionId],
+         [Model], [Provider], [UserMessage], [SystemPrompt], [Status], [StartedAt])
     VALUES
         (@Now, @Now, @AgentName, @AgentUserId,
-         @RequestingUserId, @ParentSessionId, @Model, @Provider,
-         @UserMessage, @SystemPrompt, 'running', @Now);
+         @RequestingUserId, @ParentSessionId, @PreviousSessionId,
+         @Model, @Provider, @UserMessage, @SystemPrompt, 'running', @Now);
 
     SELECT * FROM dbo.[vw_AgentSession] WHERE [Id] = SCOPE_IDENTITY();
 

@@ -19,6 +19,7 @@ from typing import AsyncIterator, Optional
 from intelligence.loop.events import LoopEvent
 from intelligence.loop.runner import run
 from intelligence.loop.termination import BudgetPolicy
+from intelligence.persistence.history import load_chain_history
 from intelligence.persistence.session_repo import (
     AgentSession,
     AgentSessionRepo,
@@ -47,6 +48,7 @@ async def run_session(
     agent_user_id: Optional[int] = None,
     requesting_user_id: Optional[int] = None,
     parent_session_id: Optional[int] = None,
+    previous_session_id: Optional[int] = None,
     on_session_created: Optional[callable] = None,
 ) -> AsyncIterator[LoopEvent]:
     """Run an agent and durably record every turn and tool call.
@@ -71,8 +73,16 @@ async def run_session(
         agent_user_id=agent_user_id,
         requesting_user_id=requesting_user_id,
         parent_session_id=parent_session_id,
+        previous_session_id=previous_session_id,
         system_prompt=system,
     )
+
+    # If this is a continuation, synthesize prior conversation history from
+    # the chain so the LLM sees a continuing dialogue rather than a fresh
+    # single-message session.
+    prior_history = None
+    if previous_session_id is not None:
+        prior_history = await load_chain_history(previous_session_id)
     if on_session_created is not None:
         try:
             on_session_created(session)
@@ -97,6 +107,7 @@ async def run_session(
             system=system,
             budget=budget,
             max_tokens_per_turn=max_tokens_per_turn,
+            prior_history=prior_history,
         ):
             t = ev.type
 

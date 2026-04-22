@@ -18,6 +18,7 @@ scout = Agent(
     system_prompt=_PROMPT,
     tools=(
         "list_sub_cost_codes",
+        "search_sub_cost_codes",
         "read_sub_cost_code_by_public_id",
         "read_sub_cost_code_by_number",
         "read_sub_cost_code_by_alias",

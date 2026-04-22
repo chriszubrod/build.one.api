@@ -145,6 +145,71 @@ async def stream_agent_run_events(
     )
 
 
+@router.post("/agents/runs/{public_id}/continue")
+async def continue_agent_run(
+    public_id: str,
+    body: RunStart,
+    current_user: dict = Depends(require_module_api(Modules.DASHBOARD)),
+):
+    """Continue a conversation by posting a follow-up user_message.
+
+    Creates a NEW AgentSession whose PreviousSessionId points at the prior
+    head. The loop loads prior conversation history so the LLM sees the
+    full dialogue. Only the original requester may continue.
+    """
+    repo = AgentSessionRepo()
+    prior = await asyncio.to_thread(repo.read_by_public_id, public_id)
+    if prior is None:
+        raise_not_found("Agent session")
+    if prior.agent_name is None or prior.id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Prior session is malformed; cannot continue.",
+        )
+
+    caller_id = current_user.get("id") or current_user.get("user_id")
+
+    def _coerce(x) -> Optional[int]:
+        if x is None:
+            return None
+        try:
+            return int(x)
+        except (TypeError, ValueError):
+            return None
+
+    if _coerce(caller_id) != _coerce(prior.requesting_user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the user who started the conversation may continue it.",
+        )
+
+    if agent_registry.get(prior.agent_name) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent not found: {prior.agent_name}",
+        )
+
+    try:
+        new_public_id = await background.start_run(
+            agent_name=prior.agent_name,
+            user_message=body.user_message,
+            requesting_user_id=_coerce(caller_id),
+            previous_session_id=prior.id,
+        )
+    except Exception as exc:
+        logger.exception("failed to continue agent run")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to continue run: {exc}",
+        )
+
+    return item_response({
+        "session_public_id": new_public_id,
+        "previous_session_public_id": public_id,
+        "agent": prior.agent_name,
+    })
+
+
 @router.post("/agents/runs/{public_id}/cancel")
 async def cancel_agent_run(
     public_id: str,

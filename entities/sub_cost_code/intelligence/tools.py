@@ -1,8 +1,9 @@
 """Agent-facing tools for the SubCostCode entity.
 
-Four read-only tools wrapping existing GET endpoints:
+Five read-only tools wrapping existing GET endpoints:
 
   list_sub_cost_codes                  → GET /api/v1/get/sub-cost-codes
+  search_sub_cost_codes                → GET /api/v1/get/sub-cost-code/search?q=...&limit=...
   read_sub_cost_code_by_public_id      → GET /api/v1/get/sub-cost-code/{public_id}
   read_sub_cost_code_by_number         → GET /api/v1/get/sub-cost-code/by-number/{number}
   read_sub_cost_code_by_alias          → GET /api/v1/get/sub-cost-code/by-alias/{alias}
@@ -13,6 +14,8 @@ access log. The agent's bearer token on ctx auths the call.
 
 Tools self-register on import. Agents pick them from the registry by name.
 """
+from urllib.parse import quote
+
 from pydantic import BaseModel, Field
 
 from intelligence.tools.base import Tool, ToolContext, ToolResult
@@ -50,6 +53,23 @@ class AliasArgs(BaseModel):
     )
 
 
+class SearchArgs(BaseModel):
+    query: str = Field(
+        description=(
+            "Case-insensitive substring to match against sub-cost-code name "
+            "or number. Examples: `concrete`, `footers`, `10.0`. Partial "
+            "matches are fine — do not wrap in wildcards."
+        ),
+    )
+    limit: int = Field(
+        default=10,
+        description=(
+            "Maximum number of matches to return (1-100). Start small; "
+            "re-search with a larger limit only if needed."
+        ),
+    )
+
+
 # ─── Tools ───────────────────────────────────────────────────────────────
 
 async def _list_sub_cost_codes(args: dict, ctx: ToolContext) -> ToolResult:
@@ -59,15 +79,38 @@ async def _list_sub_cost_codes(args: dict, ctx: ToolContext) -> ToolResult:
 list_sub_cost_codes = Tool(
     name="list_sub_cost_codes",
     description=(
-        "List all sub-cost-codes. Returns every row with full details "
-        "(public_id, number, name, parent cost_code reference). Use when "
-        "the user wants the complete catalog, or when you need to browse "
-        "to find one whose identifier you do not know. Prefer the "
-        "`read_sub_cost_code_by_*` variants when the user has already "
-        "supplied a specific identifier."
+        "List ALL sub-cost-codes (roughly 500 rows, full details). This is "
+        "an expensive tool — every row lands in the conversation context. "
+        "Use only when the user truly needs the complete catalog (e.g. "
+        "'how many are there?', 'show me all of them'). For name-based "
+        "lookups, use `search_sub_cost_codes` instead. For a known "
+        "identifier, use the matching `read_sub_cost_code_by_*` tool."
     ),
     input_schema=input_schema_from(NoArgs),
     handler=_list_sub_cost_codes,
+)
+
+
+async def _search_sub_cost_codes(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = SearchArgs(**args)
+    return await ctx.call_api(
+        "GET",
+        f"/api/v1/get/sub-cost-code/search?q={quote(parsed.query)}&limit={parsed.limit}",
+    )
+
+
+search_sub_cost_codes = Tool(
+    name="search_sub_cost_codes",
+    description=(
+        "Find sub-cost-codes by partial name or number match. This is the "
+        "default tool for name-based lookup — prefer it over "
+        "`list_sub_cost_codes` whenever the user gives you a descriptive "
+        "hint ('concrete', 'footers', 'site prep', etc.). Returns up to "
+        "`limit` matching rows with full details. If the user says "
+        "something like 'find the sub-cost-code for X', search for X."
+    ),
+    input_schema=input_schema_from(SearchArgs),
+    handler=_search_sub_cost_codes,
 )
 
 
@@ -141,6 +184,7 @@ read_sub_cost_code_by_alias = Tool(
 
 for _tool in (
     list_sub_cost_codes,
+    search_sub_cost_codes,
     read_sub_cost_code_by_public_id,
     read_sub_cost_code_by_number,
     read_sub_cost_code_by_alias,

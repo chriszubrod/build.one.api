@@ -36,6 +36,7 @@ async def start_run(
     user_message: str,
     requesting_user_id: Optional[int] = None,
     parent_session_id: Optional[int] = None,
+    previous_session_id: Optional[int] = None,
 ) -> str:
     """Start an agent run in the background. Returns session_public_id.
 
@@ -58,6 +59,7 @@ async def start_run(
                 user_message=user_message,
                 requesting_user_id=requesting_user_id,
                 parent_session_id=parent_session_id,
+                previous_session_id=previous_session_id,
                 on_session_created=_on_session_created,
             ):
                 if channel is None:

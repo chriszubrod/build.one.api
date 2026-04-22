@@ -74,6 +74,27 @@ def get_sub_cost_codes_router(current_user: dict = Depends(require_module_api(Mo
     return list_response([sub_cost_code.to_dict() for sub_cost_code in sub_cost_codes])
 
 
+@router.get("/get/sub-cost-code/search")
+def search_sub_cost_codes_router(
+    q: str,
+    limit: int = 10,
+    current_user: dict = Depends(require_module_api(Modules.COST_CODES)),
+):
+    """
+    Case-insensitive substring search over sub cost code Name and Number.
+
+    Returns up to `limit` matches (default 10). Intended for agent
+    narrow-lookup and dropdown search — cheaper than listing the full
+    catalog when only a few rows are relevant.
+    """
+    if limit < 1:
+        limit = 1
+    if limit > 100:
+        limit = 100
+    matches = service.search_by_name(query=q, limit=limit)
+    return list_response([scc.to_dict() for scc in matches])
+
+
 @router.get("/get/sub-cost-code/{public_id}")
 def get_sub_cost_code_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.COST_CODES))):
     """

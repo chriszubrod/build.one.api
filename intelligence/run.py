@@ -33,6 +33,7 @@ async def run_agent(
     user_message: str,
     requesting_user_id: Optional[int] = None,
     parent_session_id: Optional[int] = None,
+    previous_session_id: Optional[int] = None,
     on_session_created: Optional[callable] = None,
 ) -> AsyncIterator[LoopEvent]:
     """Run an agent by name. Yields LoopEvents as they happen.
@@ -75,6 +76,7 @@ async def run_agent(
         agent_user_id=agent_user_id,
         requesting_user_id=requesting_user_id,
         parent_session_id=parent_session_id,
+        previous_session_id=previous_session_id,
         on_session_created=on_session_created,
     ):
         yield ev

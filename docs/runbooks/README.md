@@ -21,6 +21,9 @@ to run — no need to reverse-engineer the system under pressure.
 | [qbo-record-stuck-failure.md](qbo-record-stuck-failure.md) | A single record keeps failing to push to QBO (retry exhausted / dead-lettered) |
 | [qbo-reconciliation-drift.md](qbo-reconciliation-drift.md) | Reconciliation job is flagging growing amounts of drift |
 | [ms-token-expiration.md](ms-token-expiration.md) | MS 365 delegated OAuth access/refresh token expiring or failing to refresh |
+| [ms-graph-503-storm.md](ms-graph-503-storm.md) | Cascading Graph 5xx failures during a Microsoft service incident; dead-letter recovery |
+| [ms-excel-conflict-storm.md](ms-excel-conflict-storm.md) | Excel workbook writes blocked by a human editor or stuck session lock |
+| [ms-permissions-revoked.md](ms-permissions-revoked.md) | Azure AD revoked the app's Graph permissions (403 everywhere) |
 
 ## Runbook format
 

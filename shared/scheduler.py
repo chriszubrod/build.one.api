@@ -1,9 +1,26 @@
 # Python Standard Library Imports
+import asyncio
 import logging
 import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# --- Phase 5.1 — event-loop protection -------------------------------------
+# APScheduler's AsyncIOScheduler runs jobs on the FastAPI event loop. The
+# drain / pull / reconcile handlers all do synchronous blocking work (httpx
+# against QBO + Graph, pyodbc against SQL Server). If we schedule the sync
+# function directly, it blocks the event loop for the duration of each tick
+# — which queues every concurrent user request behind it. During Phase 3
+# smoke we observed a 14s drain tick causing a 504 on a concurrent UI PATCH.
+#
+# Fix: each scheduled job is now an async wrapper that awaits
+# `asyncio.to_thread(sync_function)`. The blocking call runs on the default
+# thread pool; the event loop stays free to service user requests in parallel.
+# The job's `max_instances=1, coalesce=True` still prevents concurrent ticks
+# of the same job from stacking up — an in-flight drain still causes the
+# next tick to be skipped, not doubled.
 
 
 # Module-level singleton. Populated by start_scheduler() on app startup;
@@ -79,10 +96,14 @@ def _register_qbo_outbox_drain(scheduler) -> None:
     """Register the outbox drain tick."""
     from integrations.intuit.qbo.outbox.business.worker import QboOutboxWorker
 
-    def _drain_qbo_outbox() -> None:
-        # Exception isolator — never let a drain error kill the scheduler.
+    def _sync_drain() -> None:
+        QboOutboxWorker().drain_once()
+
+    async def _drain_qbo_outbox() -> None:
+        # Run the blocking drain off the event loop. Exception isolator —
+        # never let a drain error kill the scheduler.
         try:
-            QboOutboxWorker().drain_once()
+            await asyncio.to_thread(_sync_drain)
         except Exception:
             logger.exception("qbo.outbox.drain.tick_failed")
 
@@ -113,9 +134,13 @@ def _register_qbo_pull_jobs(scheduler) -> None:
     now_utc = datetime.now(timezone.utc)
 
     def _isolated(entity_name: str, sync_fn):
-        """Wrap a sync function with structured logging + exception isolation."""
+        """
+        Wrap a sync function with structured logging + exception isolation.
+        Returns an async callable that awaits the sync work on a thread so
+        APScheduler's event loop isn't blocked by the QBO HTTP calls.
+        """
 
-        def run() -> None:
+        def _run_sync() -> None:
             logger.info(
                 "qbo.sync.pull.started",
                 extra={
@@ -147,6 +172,9 @@ def _register_qbo_pull_jobs(scheduler) -> None:
                         "error_class": type(error).__name__,
                     },
                 )
+
+        async def run() -> None:
+            await asyncio.to_thread(_run_sync)
 
         return run
 
@@ -233,17 +261,20 @@ def _register_qbo_reconcile_jobs(scheduler) -> None:
 
     now_utc = datetime.now(timezone.utc)
 
-    def _reconcile_bills() -> None:
+    def _sync_reconcile_bills() -> None:
+        from integrations.intuit.qbo.auth.business.service import QboAuthService
+        from integrations.intuit.qbo.reconciliation.business.service import (
+            ReconciliationService,
+        )
+        auth = QboAuthService().ensure_valid_token()
+        if not auth or not auth.realm_id:
+            logger.warning("qbo.reconcile.bill.skipped: no valid QBO auth")
+            return
+        ReconciliationService().reconcile_bills(realm_id=auth.realm_id)
+
+    async def _reconcile_bills() -> None:
         try:
-            from integrations.intuit.qbo.auth.business.service import QboAuthService
-            from integrations.intuit.qbo.reconciliation.business.service import (
-                ReconciliationService,
-            )
-            auth = QboAuthService().ensure_valid_token()
-            if not auth or not auth.realm_id:
-                logger.warning("qbo.reconcile.bill.skipped: no valid QBO auth")
-                return
-            ReconciliationService().reconcile_bills(realm_id=auth.realm_id)
+            await asyncio.to_thread(_sync_reconcile_bills)
         except Exception:
             logger.exception("qbo.reconcile.bill.tick_failed")
 
@@ -263,12 +294,17 @@ def _register_qbo_reconcile_jobs(scheduler) -> None:
 
 def _register_ms_outbox_drain(scheduler) -> None:
     """Register the MS outbox drain tick. Same 5s cadence as QBO; parallel
-    queue with independent drain lock (`ms_outbox_drain` vs `qbo_outbox_drain`)."""
+    queue with independent drain lock (`ms_outbox_drain` vs `qbo_outbox_drain`).
+    Blocking drain work is dispatched via `asyncio.to_thread` so the event
+    loop stays free — MS Graph calls can take 10-30s and must not block FastAPI."""
     from integrations.ms.outbox.business.worker import MsOutboxWorker
 
-    def _drain_ms_outbox() -> None:
+    def _sync_drain() -> None:
+        MsOutboxWorker().drain_once()
+
+    async def _drain_ms_outbox() -> None:
         try:
-            MsOutboxWorker().drain_once()
+            await asyncio.to_thread(_sync_drain)
         except Exception:
             logger.exception("ms.outbox.drain.tick_failed")
 
@@ -290,13 +326,15 @@ def _register_ms_reconcile_jobs(scheduler) -> None:
 
     now_utc = datetime.now(timezone.utc)
 
-    def _reconcile_excel() -> None:
-        try:
-            from integrations.ms.reconciliation.business.excel_detector import (
-                ExcelMissingRowDetector,
-            )
+    def _sync_reconcile_excel() -> None:
+        from integrations.ms.reconciliation.business.excel_detector import (
+            ExcelMissingRowDetector,
+        )
+        ExcelMissingRowDetector().run()
 
-            ExcelMissingRowDetector().run()
+    async def _reconcile_excel() -> None:
+        try:
+            await asyncio.to_thread(_sync_reconcile_excel)
         except Exception:
             logger.exception("ms.reconcile.excel.tick_failed")
 

@@ -101,6 +101,12 @@ class AnthropicTransport:
                         usage = Usage(
                             input_tokens=u.get("input_tokens", 0),
                             output_tokens=u.get("output_tokens", 0),
+                            cache_creation_input_tokens=u.get(
+                                "cache_creation_input_tokens", 0
+                            ),
+                            cache_read_input_tokens=u.get(
+                                "cache_read_input_tokens", 0
+                            ),
                         )
                     elif event_name == "content_block_start":
                         idx = data.get("index", 0)
@@ -149,6 +155,8 @@ class AnthropicTransport:
                             usage = Usage(
                                 input_tokens=usage.input_tokens,
                                 output_tokens=u["output_tokens"],
+                                cache_creation_input_tokens=usage.cache_creation_input_tokens,
+                                cache_read_input_tokens=usage.cache_read_input_tokens,
                             )
                     elif event_name == "message_stop":
                         yield TurnEnd(stop_reason=stop_reason)

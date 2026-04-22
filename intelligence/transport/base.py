@@ -14,6 +14,11 @@ from intelligence.messages.types import Message
 class Usage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
+    # Prompt-cache accounting — populated by providers that support it
+    # (Anthropic emits these on message_start/message_delta). Other
+    # providers may leave them at zero; that's semantically correct.
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 class TurnStart(BaseModel):

@@ -123,6 +123,14 @@ async def run(
         total_usage = Usage(
             input_tokens=total_usage.input_tokens + turn_usage.input_tokens,
             output_tokens=total_usage.output_tokens + turn_usage.output_tokens,
+            cache_creation_input_tokens=(
+                total_usage.cache_creation_input_tokens
+                + turn_usage.cache_creation_input_tokens
+            ),
+            cache_read_input_tokens=(
+                total_usage.cache_read_input_tokens
+                + turn_usage.cache_read_input_tokens
+            ),
         )
 
         if assistant_blocks:

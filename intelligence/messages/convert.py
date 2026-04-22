@@ -60,10 +60,24 @@ def to_anthropic_request(
         "max_tokens": max_tokens,
         "messages": api_messages,
     }
+    # System prompt and tool schemas are the stable prefix of every request
+    # in a conversation, so we mark them as cacheable via `cache_control`
+    # (ephemeral, 5-min TTL). First turn writes the cache (small premium);
+    # every subsequent turn hits it (~90% discount on those tokens).
+    # Provider-neutral at the canonical layer — other transports (OpenAI
+    # automatic, Gemini via its own API) implement their own strategies.
     if system_parts:
-        body["system"] = "\n\n".join(system_parts)
+        body["system"] = [
+            {
+                "type": "text",
+                "text": "\n\n".join(system_parts),
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
     if tools:
-        body["tools"] = tools
+        # cache_control on the LAST tool caches the entire tools block.
+        cached_tools: list[dict[str, Any]] = [*tools[:-1], {**tools[-1], "cache_control": {"type": "ephemeral"}}]
+        body["tools"] = cached_tools
     return body
 
 

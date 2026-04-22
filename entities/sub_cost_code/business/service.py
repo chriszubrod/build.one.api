@@ -55,27 +55,56 @@ class SubCostCodeService:
 
     def search_by_name(self, *, query: str, limit: int = 10) -> List[SubCostCode]:
         """
-        Substring search against Name and Number (case-insensitive).
+        Case-insensitive substring search against Name, Number, and Aliases.
 
-        Pulls the full catalog via read_all() and filters in memory —
-        SubCostCode is small (~500 rows) so this is cheaper than a
-        dedicated LIKE sproc. Upgrade to a sproc if the table grows
-        or ranked/fuzzy matching is needed.
+        Results are ranked: exact-prefix matches come before substring
+        matches. Pulls the full catalog via read_all() and filters in
+        memory — SubCostCode is small (~500 rows) so this is cheaper than
+        a dedicated LIKE sproc. Upgrade to a sproc if the table grows or
+        ranked/fuzzy matching gets more complex.
         """
         q = (query or "").strip().lower()
         if not q:
             return []
         if limit <= 0:
             return []
-        matches: List[SubCostCode] = []
+
+        prefix_hits: List[SubCostCode] = []
+        substring_hits: List[SubCostCode] = []
+
         for scc in self.repo.read_all():
             name = (scc.name or "").lower()
             number = (scc.number or "").lower()
-            if q in name or q in number:
-                matches.append(scc)
-                if len(matches) >= limit:
-                    break
-        return matches
+            aliases_raw = (scc.aliases or "").lower()
+            # Aliases are stored as a delimited string; split on common
+            # separators so we can match each alias individually.
+            alias_values = [
+                a.strip()
+                for delim in (",", ";", "|")
+                for a in aliases_raw.split(delim)
+                if a.strip()
+            ] or ([aliases_raw.strip()] if aliases_raw.strip() else [])
+
+            if (
+                name.startswith(q)
+                or number.startswith(q)
+                or any(a.startswith(q) for a in alias_values)
+            ):
+                prefix_hits.append(scc)
+            elif (
+                q in name
+                or q in number
+                or q in aliases_raw
+            ):
+                substring_hits.append(scc)
+
+            if len(prefix_hits) >= limit:
+                break
+
+        combined: List[SubCostCode] = (
+            prefix_hits + substring_hits
+        )[:limit]
+        return combined
 
     def upsert(self, *, number: str, name: str, description: Optional[str] = None, cost_code_id: int, aliases: Optional[str] = None) -> SubCostCode:
         """

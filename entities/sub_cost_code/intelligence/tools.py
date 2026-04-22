@@ -56,9 +56,10 @@ class AliasArgs(BaseModel):
 class SearchArgs(BaseModel):
     query: str = Field(
         description=(
-            "Case-insensitive substring to match against sub-cost-code name "
-            "or number. Examples: `concrete`, `footers`, `10.0`. Partial "
-            "matches are fine — do not wrap in wildcards."
+            "Case-insensitive substring to match against sub-cost-code "
+            "name, number, or alias. Examples: `concrete`, `footers`, "
+            "`10.0`, `SitePrep`. Exact-prefix matches rank above substring "
+            "matches. Partial matches are fine — do not wrap in wildcards."
         ),
     )
     limit: int = Field(
@@ -102,12 +103,12 @@ async def _search_sub_cost_codes(args: dict, ctx: ToolContext) -> ToolResult:
 search_sub_cost_codes = Tool(
     name="search_sub_cost_codes",
     description=(
-        "Find sub-cost-codes by partial name or number match. This is the "
-        "default tool for name-based lookup — prefer it over "
-        "`list_sub_cost_codes` whenever the user gives you a descriptive "
-        "hint ('concrete', 'footers', 'site prep', etc.). Returns up to "
-        "`limit` matching rows with full details. If the user says "
-        "something like 'find the sub-cost-code for X', search for X."
+        "Find sub-cost-codes by partial match against name, number, or "
+        "alias. This is the default tool for name-based lookup — prefer "
+        "it over `list_sub_cost_codes` whenever the user gives you a "
+        "descriptive hint ('concrete', 'footers', 'SitePrep', '10.0', "
+        "etc.). Exact-prefix matches rank above substring matches. "
+        "Returns up to `limit` matching rows with full details."
     ),
     input_schema=input_schema_from(SearchArgs),
     handler=_search_sub_cost_codes,

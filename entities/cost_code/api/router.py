@@ -66,6 +66,22 @@ def get_cost_code_by_public_id_router(public_id: str, current_user: dict = Depen
     return item_response(cost_code.to_dict())
 
 
+@router.get("/get/cost-code/by-id/{id}")
+def get_cost_code_by_id_router(id: int, current_user: dict = Depends(require_module_api(Modules.COST_CODES))):
+    """
+    Read a cost code by its internal ID.
+
+    Intended for agent tools resolving the CostCode referenced by a
+    SubCostCode.cost_code_id (FK). Public consumers should use the
+    public_id endpoint above — this one exists for server-side
+    identifier resolution only.
+    """
+    cost_code = service.read_by_id(id=id)
+    if not cost_code:
+        raise_not_found("Cost code.")
+    return item_response(cost_code.to_dict())
+
+
 @router.put("/update/cost-code/{public_id}")
 def update_cost_code_by_id_router(public_id: str, body: CostCodeUpdate, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_update"))):
     """

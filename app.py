@@ -112,6 +112,7 @@ from entities.review_status.api.router import router as review_status_api_router
 from entities.review_status.web.controller import router as review_status_web_router
 from core.workflow.api.pending_action_router import router as pending_action_api_router
 from shared.api.lookups import router as lookups_api_router
+from shared.api.admin import router as scheduler_admin_api_router
 
 # Intelligence layer — import scout's package to register agent + tools, then
 # include its HTTP router for the SSE/run endpoints.
@@ -301,6 +302,7 @@ app.include_router(review_status_api_router)
 app.include_router(review_status_web_router)
 app.include_router(pending_action_api_router)
 app.include_router(lookups_api_router)
+app.include_router(scheduler_admin_api_router)
 app.include_router(intelligence_api_router)
 
 

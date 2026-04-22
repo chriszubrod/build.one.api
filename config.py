@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     # Encryption
     encryption_key: Optional[str] = None
 
+    # Admin / scheduler-trigger secret. Shared with the build.one.scheduler
+    # Azure Function; caller passes it in the X-Drain-Secret header. When
+    # unset, the admin endpoints fail closed with 503.
+    drain_secret: Optional[str] = None
+
     # Logging
     log_level: str = "INFO"
     log_file: Optional[str] = None

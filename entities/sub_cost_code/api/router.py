@@ -85,6 +85,29 @@ def get_sub_cost_code_by_public_id_router(public_id: str, current_user: dict = D
     return item_response(sub_cost_code.to_dict())
 
 
+@router.get("/get/sub-cost-code/by-number/{number}")
+def get_sub_cost_code_by_number_router(number: str, current_user: dict = Depends(require_module_api(Modules.COST_CODES))):
+    """
+    Read a sub cost code by its number (e.g. "10.01", "9.01", "11.10").
+    """
+    sub_cost_code = service.read_by_number(number=number)
+    if not sub_cost_code:
+        raise_not_found("Sub cost code.")
+    return item_response(sub_cost_code.to_dict())
+
+
+@router.get("/get/sub-cost-code/by-alias/{alias}")
+def get_sub_cost_code_by_alias_router(alias: str, current_user: dict = Depends(require_module_api(Modules.COST_CODES))):
+    """
+    Read a sub cost code by an alias. Aliases are human-friendly lookup
+    strings registered in SubCostCodeAlias (e.g. "SitePrep").
+    """
+    sub_cost_code = service.read_by_alias(alias=alias)
+    if not sub_cost_code:
+        raise_not_found("Sub cost code.")
+    return item_response(sub_cost_code.to_dict())
+
+
 @router.put("/update/sub-cost-code/{public_id}")
 def update_sub_cost_code_by_id_router(public_id: str, body: SubCostCodeUpdate, current_user: dict = Depends(require_module_api(Modules.COST_CODES, "can_update"))):
     """

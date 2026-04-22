@@ -364,12 +364,14 @@ BEGIN
     FROM [qbo].[Outbox] o
     INNER JOIN candidate c ON c.[Id] = o.[Id];
 
-    IF @Id IS NULL
-    BEGIN
-        COMMIT TRANSACTION;
-        RETURN;
-    END;
+    COMMIT TRANSACTION;
 
+    -- Always run the SELECT so the caller (pyodbc) always gets a result
+    -- set. When nothing was claimed, @Id is NULL and the WHERE clause
+    -- matches no rows → cursor.fetchone() returns None cleanly, no
+    -- exception. Previously a RETURN-before-SELECT skipped the result
+    -- set entirely and pyodbc raised "No results. Previous SQL was not
+    -- a query." on every empty tick.
     SELECT
         [Id],
         [PublicId],
@@ -392,8 +394,6 @@ BEGIN
         CONVERT(VARCHAR(19), [DeadLetteredAt], 120) AS [DeadLetteredAt]
     FROM [qbo].[Outbox]
     WHERE [Id] = @Id;
-
-    COMMIT TRANSACTION;
 END;
 GO
 

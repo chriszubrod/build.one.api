@@ -13,6 +13,7 @@ from shared.database import (
     get_connection,
     map_database_error,
 )
+from shared.encryption import decrypt_if_encrypted, encrypt_sensitive_data
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +43,9 @@ class MsAuthRepository:
                 code=getattr(row, "Code", None),
                 state=getattr(row, "State", None),
                 token_type=getattr(row, "TokenType", None),
-                access_token=getattr(row, "AccessToken", None),
+                access_token=decrypt_if_encrypted(getattr(row, "AccessToken", None)),
                 expires_in=getattr(row, "ExpiresIn", None),
-                refresh_token=getattr(row, "RefreshToken", None),
+                refresh_token=decrypt_if_encrypted(getattr(row, "RefreshToken", None)),
                 scope=getattr(row, "Scope", None),
                 tenant_id=getattr(row, "TenantId", None),
                 user_id=getattr(row, "UserId", None)
@@ -58,7 +59,7 @@ class MsAuthRepository:
 
     def create(self, *, code: str, state: str, token_type: str, access_token: str, expires_in: int, refresh_token: str, scope: str, tenant_id: str, user_id: Optional[str] = None) -> MsAuth:
         """
-        Create a new MsAuth.
+        Create a new MsAuth. Token fields are encrypted at rest via Fernet.
         """
         try:
             with get_connection() as conn:
@@ -70,9 +71,9 @@ class MsAuthRepository:
                         "Code": code,
                         "State": state,
                         "TokenType": token_type,
-                        "AccessToken": access_token,
+                        "AccessToken": encrypt_sensitive_data(access_token),
                         "ExpiresIn": expires_in,
-                        "RefreshToken": refresh_token,
+                        "RefreshToken": encrypt_sensitive_data(refresh_token),
                         "Scope": scope,
                         "TenantId": tenant_id,
                         "UserId": user_id,
@@ -167,7 +168,7 @@ class MsAuthRepository:
 
     def update_by_tenant_id(self, code: str, state: str, token_type: str, access_token: str, expires_in: int, refresh_token: str, scope: str, tenant_id: str, user_id: Optional[str] = None) -> Optional[MsAuth]:
         """
-        Update a MsAuth by tenant ID.
+        Update a MsAuth by tenant ID. Token fields are encrypted at rest via Fernet.
         """
         cursor = None
         try:
@@ -181,9 +182,9 @@ class MsAuthRepository:
                             "Code": code,
                             "State": state,
                             "TokenType": token_type,
-                            "AccessToken": access_token,
+                            "AccessToken": encrypt_sensitive_data(access_token),
                             "ExpiresIn": expires_in,
-                            "RefreshToken": refresh_token,
+                            "RefreshToken": encrypt_sensitive_data(refresh_token),
                             "Scope": scope,
                             "TenantId": tenant_id,
                             "UserId": user_id,

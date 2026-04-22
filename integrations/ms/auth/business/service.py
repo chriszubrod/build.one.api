@@ -140,17 +140,26 @@ class MsAuthService:
             # On error, consider expired for safety
             return True
 
-    def ensure_valid_token(self, tenant_id: Optional[str] = None, buffer_seconds: int = 60) -> Optional[MsAuth]:
+    def ensure_valid_token(
+        self,
+        tenant_id: Optional[str] = None,
+        buffer_seconds: int = 60,
+        force_refresh: bool = False,
+    ) -> Optional[MsAuth]:
         """
-        Ensure the access token is valid. If expired, automatically refresh it.
-        
+        Ensure the access token is valid. If expired (or force_refresh=True),
+        automatically refresh it.
+
         Since this is a single-tenant system with only one auth record, tenant_id is optional.
         If not provided, uses the first (and only) auth record.
-        
+
         Args:
             tenant_id: Optional tenant ID. If None, uses the first auth record found.
-            buffer_seconds: Number of seconds before actual expiration to consider token expired (default: 60)
-        
+            buffer_seconds: Seconds before actual expiration to consider the token expired.
+            force_refresh: When True, skip the expiry check and refresh unconditionally.
+                            Used by the shared MsGraphClient's 401-recovery path to force
+                            a fresh token when the cached one appears revoked.
+
         Returns:
             MsAuth object with valid token, or None if refresh failed
         """
@@ -166,41 +175,80 @@ class MsAuthService:
             ms_auth = all_auths[0]
             # Get tenant_id from the auth record for logging/refresh
             tenant_id = ms_auth.tenant_id
-        
+
         if not ms_auth:
             logger.error(f"No MsAuth found for tenant_id: {tenant_id}")
             return None
-        
-        # Check if token is expired
-        if not self.is_token_expired(ms_auth, buffer_seconds):
+
+        # Skip expiry check when force_refresh is requested
+        if not force_refresh and not self.is_token_expired(ms_auth, buffer_seconds):
             logger.debug(f"Token for tenant_id {tenant_id} is still valid")
             return ms_auth
-        
-        # Token is expired, refresh it
-        logger.info(f"Token for tenant_id {tenant_id} is expired, refreshing...")
-        
-        try:
-            # Call the refresh endpoint (it uses read_all()[0] internally, which is fine for single-tenant)
-            refresh_result = connect_ms_oauth_2_token_endpoint_refresh()
 
-            if isinstance(refresh_result, dict) and refresh_result.get("status_code") == 201:
-                # Refresh successful, read the updated auth
-                if tenant_id:
-                    updated_auth = self.read_by_tenant_id(tenant_id)
-                else:
-                    all_auths = self.read_all()
-                    updated_auth = all_auths[0] if all_auths else None
-                
-                if updated_auth:
-                    logger.info(f"Token refreshed successfully for tenant_id: {tenant_id}")
-                    return updated_auth
-                else:
-                    logger.error(f"Token refresh succeeded but could not read updated MsAuth for tenant_id: {tenant_id}")
-                    return None
-            else:
-                error_message = refresh_result.get("message", "Unknown error") if isinstance(refresh_result, dict) else str(refresh_result)
-                logger.error(f"Token refresh failed for tenant_id {tenant_id}: {error_message}")
+        # Serialize concurrent refreshes across processes (API + standalone scripts
+        # can both reach this path simultaneously; without the lock, both would call
+        # Microsoft with the same refresh_token and the loser would be rejected because
+        # MS invalidates the old refresh_token on successful rotation).
+        from integrations.ms.base.locking import ms_app_lock
+
+        lock_resource = f"ms_auth_refresh:{tenant_id}"
+        with ms_app_lock(lock_resource, timeout_ms=15000) as got_lock:
+            if not got_lock:
+                logger.error(
+                    f"Could not acquire token refresh lock for tenant {tenant_id} within timeout"
+                )
                 return None
-        except Exception as e:
-            logger.exception(f"Exception during token refresh for tenant_id {tenant_id}: {e}")
-            return None
+
+            # Re-read after acquiring the lock. Another caller may have just finished
+            # refreshing while we waited — in which case the token is now fresh and
+            # we don't need to call MS at all. Also ensures that if we DO still
+            # need to refresh, we use the latest refresh_token (not the one we read
+            # before the lock).
+            if tenant_id:
+                ms_auth = self.read_by_tenant_id(tenant_id)
+            else:
+                all_auths = self.read_all()
+                ms_auth = all_auths[0] if all_auths else None
+
+            if not ms_auth:
+                logger.error(f"No MsAuth found for tenant_id {tenant_id} after acquiring lock")
+                return None
+
+            # If another caller refreshed while we waited and force_refresh is False,
+            # the freshly-read token is already valid — skip the MS call entirely.
+            if not force_refresh and not self.is_token_expired(ms_auth, buffer_seconds):
+                logger.info(
+                    f"Token for tenant_id {tenant_id} was refreshed by a concurrent caller"
+                )
+                return ms_auth
+
+            if force_refresh:
+                logger.info(f"Force-refreshing token for tenant_id {tenant_id}")
+            else:
+                logger.info(f"Token for tenant_id {tenant_id} is expired, refreshing...")
+
+            try:
+                # Call the refresh endpoint (it uses read_all()[0] internally, which is fine for single-tenant)
+                refresh_result = connect_ms_oauth_2_token_endpoint_refresh()
+
+                if isinstance(refresh_result, dict) and refresh_result.get("status_code") == 201:
+                    # Refresh successful, read the updated auth
+                    if tenant_id:
+                        updated_auth = self.read_by_tenant_id(tenant_id)
+                    else:
+                        all_auths = self.read_all()
+                        updated_auth = all_auths[0] if all_auths else None
+
+                    if updated_auth:
+                        logger.info(f"Token refreshed successfully for tenant_id: {tenant_id}")
+                        return updated_auth
+                    else:
+                        logger.error(f"Token refresh succeeded but could not read updated MsAuth for tenant_id: {tenant_id}")
+                        return None
+                else:
+                    error_message = refresh_result.get("message", "Unknown error") if isinstance(refresh_result, dict) else str(refresh_result)
+                    logger.error(f"Token refresh failed for tenant_id {tenant_id}: {error_message}")
+                    return None
+            except Exception as e:
+                logger.exception(f"Exception during token refresh for tenant_id {tenant_id}: {e}")
+                return None

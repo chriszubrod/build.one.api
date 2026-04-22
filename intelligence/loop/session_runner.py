@@ -46,6 +46,7 @@ async def run_session(
     max_tokens_per_turn: int = 4096,
     agent_user_id: Optional[int] = None,
     requesting_user_id: Optional[int] = None,
+    parent_session_id: Optional[int] = None,
     on_session_created: Optional[callable] = None,
 ) -> AsyncIterator[LoopEvent]:
     """Run an agent and durably record every turn and tool call.
@@ -69,6 +70,7 @@ async def run_session(
         user_message=user_message,
         agent_user_id=agent_user_id,
         requesting_user_id=requesting_user_id,
+        parent_session_id=parent_session_id,
         system_prompt=system,
     )
     if on_session_created is not None:

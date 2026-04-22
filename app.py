@@ -113,6 +113,11 @@ from entities.review_status.web.controller import router as review_status_web_ro
 from core.workflow.api.pending_action_router import router as pending_action_api_router
 from shared.api.lookups import router as lookups_api_router
 
+# Intelligence layer — import scout's package to register agent + tools, then
+# include its HTTP router for the SSE/run endpoints.
+import intelligence.agents.scout  # noqa: F401 — triggers registration
+from intelligence.api.router import router as intelligence_api_router
+
 from integrations.intuit.qbo.auth.api.router import router as intuit_qbo_auth_api_router
 from integrations.intuit.qbo.company_info.api.router import router as intuit_qbo_company_info_api_router
 from integrations.intuit.qbo.physical_address.api.router import router as intuit_qbo_physical_address_api_router
@@ -296,6 +301,7 @@ app.include_router(review_status_api_router)
 app.include_router(review_status_web_router)
 app.include_router(pending_action_api_router)
 app.include_router(lookups_api_router)
+app.include_router(intelligence_api_router)
 
 
 @app.on_event("startup")

@@ -212,7 +212,7 @@ def connect_ms_oauth_2_token_endpoint(request: Request):
         }
         
         print(f"\nSending token request to: {token_endpoint}")
-        resp = requests.post(url=token_endpoint, data=data, headers=headers)
+        resp = requests.post(url=token_endpoint, data=data, headers=headers, timeout=(5, 30))
         
         print(f"Response Status Code: {resp.status_code}")
         print(f"Response Headers: {dict(resp.headers)}")
@@ -359,7 +359,7 @@ def connect_ms_oauth_2_token_endpoint_refresh():
             "refresh_token": refresh_token
         }
         
-        resp = requests.post(url=token_endpoint, data=data, headers=headers)
+        resp = requests.post(url=token_endpoint, data=data, headers=headers, timeout=(5, 30))
 
         if resp.status_code != 200:
             return {
@@ -465,167 +465,74 @@ def test_ms_graph_connection():
     Test the Microsoft Graph API connection by calling the /me endpoint.
     Returns user profile information if successful.
     """
+    from integrations.ms.base.client import MsGraphClient
+    from integrations.ms.base.errors import MsGraphError
+
     try:
-        # Get auth record
-        db_ms_auth_resp = ms_auth_repo.read_all()
-        if not db_ms_auth_resp or len(db_ms_auth_resp) == 0:
-            return {
-                "message": "No MS auth record found. Please authenticate first.",
-                "status_code": 404
-            }
-        auth = db_ms_auth_resp[0]
-        access_token = auth.access_token
-
-        if not access_token:
-            return {
-                "message": "No access token found. Please authenticate first.",
-                "status_code": 404
-            }
-
-        # Call Microsoft Graph /me endpoint
-        graph_endpoint = "https://graph.microsoft.com/v1.0/me"
-        
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
-        }
-        
-        print("=" * 80)
-        print("TESTING MICROSOFT GRAPH API CONNECTION")
-        print("=" * 80)
-        print(f"Endpoint: {graph_endpoint}")
-        print(f"Access Token: {access_token[:30]}... (truncated)")
-        print("=" * 80)
-        
-        resp = requests.get(url=graph_endpoint, headers=headers)
-        
-        print(f"Response Status Code: {resp.status_code}")
-        print(f"Response: {resp.text}")
-        print("=" * 80)
-
-        if resp.status_code == 200:
-            user_data = json.loads(resp.text)
-            return {
-                "message": "Microsoft Graph API connection successful!",
-                "status_code": 200,
-                "user": {
-                    "display_name": user_data.get("displayName"),
-                    "email": user_data.get("mail") or user_data.get("userPrincipalName"),
-                    "id": user_data.get("id"),
-                    "job_title": user_data.get("jobTitle"),
-                    "office_location": user_data.get("officeLocation")
-                }
-            }
-        elif resp.status_code == 401:
-            return {
-                "message": "Access token expired or invalid. Try refreshing the token.",
-                "status_code": 401,
-                "error": resp.text
-            }
-        else:
-            return {
-                "message": f"Graph API call failed: {resp.text}",
-                "status_code": resp.status_code
-            }
-    except Exception as e:
-        logger.exception("Error testing MS Graph connection")
+        with MsGraphClient() as client:
+            user_data = client.get("me", operation_name="auth.test_connection")
         return {
-            "message": f"An error occurred: {str(e)}",
-            "status_code": 500
+            "message": "Microsoft Graph API connection successful!",
+            "status_code": 200,
+            "user": {
+                "display_name": user_data.get("displayName"),
+                "email": user_data.get("mail") or user_data.get("userPrincipalName"),
+                "id": user_data.get("id"),
+                "job_title": user_data.get("jobTitle"),
+                "office_location": user_data.get("officeLocation"),
+            },
         }
+    except MsGraphError as e:
+        logger.error(f"MS Graph connection test failed: {e}")
+        return {"message": str(e), "status_code": e.http_status or 500}
 
 
 def get_ms_graph_messages(top: int = 10, folder: str = "inbox"):
     """
     Fetch recent emails from the user's mailbox.
-    
+
     Args:
         top: Number of messages to retrieve (default 10)
         folder: Mail folder to read from (default "inbox")
-    
+
     Returns:
-        List of messages with subject, from, received date, and preview
+        Dict with status_code, message, count, and messages list
     """
+    from integrations.ms.base.client import MsGraphClient
+    from integrations.ms.base.errors import MsGraphError
+
     try:
-        # Get auth record
-        db_ms_auth_resp = ms_auth_repo.read_all()
-        if not db_ms_auth_resp or len(db_ms_auth_resp) == 0:
-            return {
-                "message": "No MS auth record found. Please authenticate first.",
-                "status_code": 404
-            }
-        auth = db_ms_auth_resp[0]
-        access_token = auth.access_token
-
-        if not access_token:
-            return {
-                "message": "No access token found. Please authenticate first.",
-                "status_code": 404
-            }
-
-        # Call Microsoft Graph messages endpoint
-        graph_endpoint = f"https://graph.microsoft.com/v1.0/me/mailFolders/{folder}/messages"
-        
-        params = {
-            "$top": top,
-            "$select": "id,subject,from,receivedDateTime,bodyPreview,isRead,hasAttachments",
-            "$orderby": "receivedDateTime desc"
-        }
-        
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
-        }
-        
-        print("=" * 80)
-        print(f"FETCHING EMAILS FROM {folder.upper()}")
-        print("=" * 80)
-        print(f"Endpoint: {graph_endpoint}")
-        print(f"Top: {top}")
-        print("=" * 80)
-        
-        resp = requests.get(url=graph_endpoint, headers=headers, params=params)
-        
-        print(f"Response Status Code: {resp.status_code}")
-
-        if resp.status_code == 200:
-            data = json.loads(resp.text)
-            messages = data.get("value", [])
-            
-            formatted_messages = []
-            for msg in messages:
-                from_email = msg.get("from", {}).get("emailAddress", {})
-                formatted_messages.append({
-                    "id": msg.get("id"),
-                    "subject": msg.get("subject"),
-                    "from_name": from_email.get("name"),
-                    "from_email": from_email.get("address"),
-                    "received": msg.get("receivedDateTime"),
-                    "preview": msg.get("bodyPreview", "")[:100] + "..." if msg.get("bodyPreview") else "",
-                    "is_read": msg.get("isRead"),
-                    "has_attachments": msg.get("hasAttachments")
-                })
-            
-            return {
-                "message": f"Successfully retrieved {len(formatted_messages)} messages",
-                "status_code": 200,
-                "count": len(formatted_messages),
-                "messages": formatted_messages
-            }
-        elif resp.status_code == 401:
-            return {
-                "message": "Access token expired or invalid. Try refreshing the token.",
-                "status_code": 401,
-                "error": resp.text
-            }
-        else:
-            return {
-                "message": f"Graph API call failed: {resp.text}",
-                "status_code": resp.status_code
-            }
-    except Exception as e:
-        logger.exception("Error fetching MS Graph messages")
+        with MsGraphClient() as client:
+            data = client.get(
+                f"me/mailFolders/{folder}/messages",
+                params={
+                    "$top": top,
+                    "$select": "id,subject,from,receivedDateTime,bodyPreview,isRead,hasAttachments",
+                    "$orderby": "receivedDateTime desc",
+                },
+                operation_name="auth.get_messages",
+            )
+        messages = data.get("value", [])
+        formatted = []
+        for msg in messages:
+            from_email = msg.get("from", {}).get("emailAddress", {})
+            preview = msg.get("bodyPreview") or ""
+            formatted.append({
+                "id": msg.get("id"),
+                "subject": msg.get("subject"),
+                "from_name": from_email.get("name"),
+                "from_email": from_email.get("address"),
+                "received": msg.get("receivedDateTime"),
+                "preview": (preview[:100] + "...") if preview else "",
+                "is_read": msg.get("isRead"),
+                "has_attachments": msg.get("hasAttachments"),
+            })
         return {
-            "message": f"An error occurred: {str(e)}",
-            "status_code": 500
+            "message": f"Successfully retrieved {len(formatted)} messages",
+            "status_code": 200,
+            "count": len(formatted),
+            "messages": formatted,
         }
+    except MsGraphError as e:
+        logger.error(f"Error fetching MS Graph messages from {folder}: {e}")
+        return {"message": str(e), "status_code": e.http_status or 500}

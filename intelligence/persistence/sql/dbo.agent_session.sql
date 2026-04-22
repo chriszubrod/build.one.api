@@ -3,6 +3,11 @@
 -- ----------------------------------------------------------------------------
 -- One row per agent run. Written at start (Status='running') and updated as
 -- the run progresses. Finalized to 'completed' or 'failed' at end.
+--
+-- ParentSessionId (nullable) supports future hierarchical multi-agent flows:
+-- when a specialist agent is invoked as a tool by a parent agent, the
+-- specialist's session FKs back to the parent's session for audit-trail
+-- nesting.
 -- ============================================================================
 
 IF OBJECT_ID('dbo.AgentSession', 'U') IS NULL
@@ -17,6 +22,7 @@ BEGIN
         [AgentName] NVARCHAR(100) NOT NULL,
         [AgentUserId] BIGINT NULL,
         [RequestingUserId] BIGINT NULL,
+        [ParentSessionId] BIGINT NULL,
         [Model] NVARCHAR(100) NOT NULL,
         [Provider] NVARCHAR(50) NOT NULL,
         [UserMessage] NVARCHAR(MAX) NOT NULL,
@@ -30,6 +36,27 @@ BEGIN
         [ErrorMessage] NVARCHAR(MAX) NULL
     );
 END;
+GO
+
+-- Idempotent column add for existing environments
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE Name = 'ParentSessionId' AND Object_ID = OBJECT_ID('dbo.AgentSession')
+)
+BEGIN
+    ALTER TABLE dbo.[AgentSession] ADD [ParentSessionId] BIGINT NULL;
+END
+GO
+
+-- Self-referential FK constraint
+IF NOT EXISTS (
+    SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_AgentSession_ParentSessionId'
+)
+BEGIN
+    ALTER TABLE dbo.[AgentSession] WITH CHECK
+        ADD CONSTRAINT [FK_AgentSession_ParentSessionId]
+            FOREIGN KEY ([ParentSessionId]) REFERENCES dbo.[AgentSession] ([Id]);
+END
 GO
 
 -- Indexes
@@ -51,6 +78,12 @@ BEGIN
 END
 GO
 
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_AgentSession_ParentSessionId' AND object_id = OBJECT_ID('dbo.AgentSession'))
+BEGIN
+    CREATE INDEX [IX_AgentSession_ParentSessionId] ON [dbo].[AgentSession] ([ParentSessionId]);
+END
+GO
+
 
 -- ============================================================================
 -- AgentSession — View (single source of truth for column formatting)
@@ -67,6 +100,7 @@ AS
         [AgentName],
         [AgentUserId],
         [RequestingUserId],
+        [ParentSessionId],
         [Model],
         [Provider],
         [UserMessage],
@@ -91,6 +125,7 @@ CREATE OR ALTER PROCEDURE CreateAgentSession
     @AgentName NVARCHAR(100),
     @AgentUserId BIGINT = NULL,
     @RequestingUserId BIGINT = NULL,
+    @ParentSessionId BIGINT = NULL,
     @Model NVARCHAR(100),
     @Provider NVARCHAR(50),
     @UserMessage NVARCHAR(MAX),
@@ -105,12 +140,12 @@ BEGIN
 
     INSERT INTO dbo.[AgentSession]
         ([CreatedDatetime], [ModifiedDatetime], [AgentName], [AgentUserId],
-         [RequestingUserId], [Model], [Provider], [UserMessage], [SystemPrompt],
-         [Status], [StartedAt])
+         [RequestingUserId], [ParentSessionId], [Model], [Provider],
+         [UserMessage], [SystemPrompt], [Status], [StartedAt])
     VALUES
         (@Now, @Now, @AgentName, @AgentUserId,
-         @RequestingUserId, @Model, @Provider, @UserMessage, @SystemPrompt,
-         'running', @Now);
+         @RequestingUserId, @ParentSessionId, @Model, @Provider,
+         @UserMessage, @SystemPrompt, 'running', @Now);
 
     SELECT * FROM dbo.[vw_AgentSession] WHERE [Id] = SCOPE_IDENTITY();
 
@@ -215,5 +250,19 @@ AS
 BEGIN
     SET NOCOUNT ON;
     SELECT TOP (@Top) * FROM dbo.[vw_AgentSession] ORDER BY [StartedAt] DESC;
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE ReadAgentSessionsByParentId
+(
+    @ParentSessionId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT * FROM dbo.[vw_AgentSession]
+    WHERE [ParentSessionId] = @ParentSessionId
+    ORDER BY [StartedAt] ASC;
 END;
 GO

@@ -31,6 +31,7 @@ class AgentSession(BaseModel):
     agent_name: Optional[str] = None
     agent_user_id: Optional[int] = None
     requesting_user_id: Optional[int] = None
+    parent_session_id: Optional[int] = None
     model: Optional[str] = None
     provider: Optional[str] = None
     user_message: Optional[str] = None
@@ -106,6 +107,7 @@ class AgentSessionRepo:
                 agent_name=row.AgentName,
                 agent_user_id=row.AgentUserId,
                 requesting_user_id=row.RequestingUserId,
+                parent_session_id=row.ParentSessionId,
                 model=row.Model,
                 provider=row.Provider,
                 user_message=row.UserMessage,
@@ -131,6 +133,7 @@ class AgentSessionRepo:
         user_message: str,
         agent_user_id: Optional[int] = None,
         requesting_user_id: Optional[int] = None,
+        parent_session_id: Optional[int] = None,
         system_prompt: Optional[str] = None,
     ) -> AgentSession:
         try:
@@ -143,6 +146,7 @@ class AgentSessionRepo:
                         "AgentName": agent_name,
                         "AgentUserId": agent_user_id,
                         "RequestingUserId": requesting_user_id,
+                        "ParentSessionId": parent_session_id,
                         "Model": model,
                         "Provider": provider,
                         "UserMessage": user_message,

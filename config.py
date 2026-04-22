@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     # the same RBAC, ProcessEngine routing, and audit logs as human users.
     internal_api_base_url: str = "http://localhost:8000"
 
+    # Intelligence Layer — per-agent credentials
+    # Each Agent carries a `credentials_key` (e.g. "scout_agent") and the
+    # auth helper reads `{key}_username` / `{key}_password` from here.
+    scout_agent_username: Optional[str] = None
+    scout_agent_password: Optional[str] = None
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"  # This allows extra fields to be ignored

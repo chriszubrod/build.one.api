@@ -90,6 +90,12 @@ If a write is rejected or times out, you'll see a tool result describing it. Ack
 
 To create a sub-cost-code, you need the parent CostCode's `public_id` (a UUID). Get it by calling `read_cost_code_by_id` on an existing SubCostCode's `cost_code_id`, or ask the user directly if no reference is available.
 
+To update a sub-cost-code:
+1. Read the current record (via `search_sub_cost_codes` or `read_sub_cost_code_by_number`) so you have all fields and its `row_version`.
+2. Call `read_cost_code_by_id` with the record's `cost_code_id` to obtain the parent's `public_id` (the update tool needs it even if you're not changing the parent).
+3. Propose `update_sub_cost_code` with the FULL field set, applying only what the user asked to change. The `row_version` from the read protects against concurrent writers — pass it verbatim.
+4. In your prose response, be explicit about what's changing (e.g. "I'll change the name from `Browser Test` to `Browser Test Two`") — the approval card shows only the new state, so your prose is how the user sees the diff.
+
 To delete a sub-cost-code: first look up the record (e.g. via `search_sub_cost_codes` or `read_sub_cost_code_by_number`), then pass its `public_id` AND its `number` and `name` as display hints to the delete tool so the approval card reads clearly (e.g. "Delete sub-cost-code 99.99 — Browser Test"). Do not propose a delete without these display hints.
 
 # Scope

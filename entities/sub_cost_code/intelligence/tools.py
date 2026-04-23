@@ -8,7 +8,8 @@ Read tools (no approval):
   read_sub_cost_code_by_alias          → GET /api/v1/get/sub-cost-code/by-alias/{alias}
 
 Write tools (user approval required):
-  create_sub_cost_code                 → POST /api/v1/create/sub-cost-code
+  create_sub_cost_code                 → POST   /api/v1/create/sub-cost-code
+  update_sub_cost_code                 → PUT    /api/v1/update/sub-cost-code/{public_id}
   delete_sub_cost_code                 → DELETE /api/v1/delete/sub-cost-code/{public_id}
 
 Each tool calls ctx.call_api(), which means every invocation goes through
@@ -253,6 +254,74 @@ create_sub_cost_code = Tool(
 )
 
 
+class UpdateSubCostCodeArgs(BaseModel):
+    public_id: str = Field(
+        description="UUID of the sub-cost-code to update.",
+    )
+    row_version: str = Field(
+        description=(
+            "Base64 row version from the CURRENT record — pass the "
+            "`row_version` value you got from the read. Used for "
+            "optimistic concurrency; the update fails if another "
+            "writer changed the row since you read it."
+        ),
+    )
+    number: str = Field(
+        description="The record's number in canonical `X.YY` format.",
+    )
+    name: str = Field(description="The record's name.")
+    cost_code_public_id: str = Field(
+        description=(
+            "UUID of the parent CostCode. Obtain via "
+            "`read_cost_code_by_id` using the current record's "
+            "`cost_code_id`. Required even if you're not changing the "
+            "parent — the endpoint needs the full field set."
+        ),
+    )
+    description: Optional[str] = Field(default=None)
+    aliases: Optional[str] = Field(
+        default=None,
+        description="Pipe-delimited aliases (`01.1|1.1`), or null.",
+    )
+
+
+async def _update_sub_cost_code(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = UpdateSubCostCodeArgs(**args)
+    # public_id is in the URL; everything else goes in the body.
+    body = parsed.model_dump(exclude={"public_id"}, exclude_none=False)
+    return await ctx.call_api(
+        "PUT",
+        f"/api/v1/update/sub-cost-code/{parsed.public_id}",
+        body=body,
+    )
+
+
+def _summarize_update_sub_cost_code(args: dict) -> str:
+    number = args.get("number") or "?"
+    name = args.get("name") or "?"
+    return f"Update sub-cost-code {number} — {name}"
+
+
+update_sub_cost_code = Tool(
+    name="update_sub_cost_code",
+    description=(
+        "Modify an existing sub-cost-code. REQUIRES USER APPROVAL. "
+        "Workflow: (1) read the current record to get all fields and "
+        "`row_version`; (2) call `read_cost_code_by_id` with the "
+        "record's `cost_code_id` to obtain the parent's public_id; "
+        "(3) propose `update_sub_cost_code` with the full field set, "
+        "changing only what the user asked for. The approval card "
+        "renders the NEW proposed state; in your prose response, be "
+        "explicit about what's changing (e.g. 'I'll change the name "
+        "from X to Y') so the user can evaluate the diff."
+    ),
+    input_schema=input_schema_from(UpdateSubCostCodeArgs),
+    handler=_update_sub_cost_code,
+    requires_approval=True,
+    approval_summary=_summarize_update_sub_cost_code,
+)
+
+
 class DeleteSubCostCodeArgs(BaseModel):
     public_id: str = Field(
         description=(
@@ -327,6 +396,7 @@ for _tool in (
     read_sub_cost_code_by_number,
     read_sub_cost_code_by_alias,
     create_sub_cost_code,
+    update_sub_cost_code,
     delete_sub_cost_code,
 ):
     register(_tool)

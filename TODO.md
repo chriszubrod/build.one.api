@@ -28,6 +28,7 @@ Follow-ups when the purge is done:
 
 - [ ] **Promote SSE profile events from B-lite to B-full** (cross-worker). Add `[auth].[ProfileChangeEvent]` table + 2s poll in the SSE handler. Needed once we scale past `-w 2` single instance, or once we have a user base that hits cross-worker edges often.
 - [ ] **Refresh-token flow for React.** API already issues refresh tokens; React doesn't use them. Add `POST /api/v1/auth/refresh` wrapper in `client.ts` on 401 before wiping localStorage and redirecting.
+- [ ] **Add `IsNavigable BIT NOT NULL DEFAULT 1` to `dbo.[Module]`.** Today every Module row that exists for RBAC permission gating also shows up in the sidebar. `Attachments`, `Pending Actions`, and `Time Tracking` are legitimately-scoped permission modules but have no top-level UI page; today they render as broken sidebar links. Splitting the flag lets the backend keep RBAC scopes distinct from navigation. `_resolve_me_payload` should then omit non-navigable modules from the `modules[]` array (or the sidebar should filter on the flag).
 
 ## API cleanup (do in a week, after Function architecture is proven stable)
 

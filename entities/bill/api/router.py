@@ -13,6 +13,7 @@ from decimal import Decimal
 # Local Imports
 from entities.bill.api.schemas import BillCreate, BillUpdate
 from entities.bill.business.service import BillService
+from entities.bill.persistence.folder_run_repo import BillFolderRunRepository
 from entities.bill.persistence.repo import BillRepository
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
 from shared.database import get_connection
@@ -304,8 +305,11 @@ def complete_bill_router(
 # ---------------------------------------------------------------------------
 # Bill Folder Processing
 # ---------------------------------------------------------------------------
+# Run state lives in dbo.BillFolderRun so POST and polling GET see the same
+# row regardless of which gunicorn worker handled them (was broken under
+# -w 2 with an in-process dict).
 
-_folder_processing_results = {}
+_folder_run_repo = BillFolderRunRepository()
 
 
 def _run_folder_processing(run_id: str, company_id: int, tenant_id: int):
@@ -314,20 +318,27 @@ def _run_folder_processing(run_id: str, company_id: int, tenant_id: int):
         from entities.bill.business.folder_processor import BillFolderProcessor
         processor = BillFolderProcessor()
         result = processor.process(company_id=company_id, tenant_id=tenant_id)
-        _folder_processing_results[run_id] = {
-            "status": "completed",
-            **result.to_dict(),
-        }
+        _folder_run_repo.update_status(
+            public_id=run_id,
+            status="completed",
+            result=result.to_dict(),
+            set_completed=True,
+        )
         logger.info(
             "Folder processing %s completed: %d/%d files, %d bills created",
             run_id, result.files_processed, result.files_found, result.bills_created,
         )
     except Exception as e:
         logger.exception("Folder processing %s failed", run_id)
-        _folder_processing_results[run_id] = {
-            "status": "failed",
-            "errors": [str(e)],
-        }
+        try:
+            _folder_run_repo.update_status(
+                public_id=run_id,
+                status="failed",
+                result={"errors": [str(e)]},
+                set_completed=True,
+            )
+        except Exception:
+            logger.exception("Failed to persist folder-processing failure for run %s", run_id)
 
 
 @router.post("/process/bill-folder")
@@ -336,18 +347,16 @@ def process_bill_folder_router(
     current_user: dict = Depends(require_module_api(Modules.BILLS)),
 ):
     """
-    Trigger bill folder processing. Returns 202 immediately;
-    processing runs in background. Poll GET /api/v1/process/bill-folder/{run_id} for status.
+    Trigger bill folder processing. Returns 202 immediately; processing
+    runs in background. Poll GET /api/v1/process/bill-folder/{run_id}.
+    Run state is persisted so any worker can serve the poll.
     """
-    import uuid
-    run_id = str(uuid.uuid4())
-    _folder_processing_results[run_id] = {"status": "processing"}
-
-    background_tasks.add_task(_run_folder_processing, run_id, company_id=1, tenant_id=1)
+    run = _folder_run_repo.create()
+    background_tasks.add_task(_run_folder_processing, run.public_id, company_id=1, tenant_id=1)
 
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
-        content={"status": "accepted", "run_id": run_id},
+        content={"status": "accepted", "run_id": run.public_id},
     )
 
 
@@ -357,10 +366,13 @@ def get_bill_folder_status_router(
     current_user: dict = Depends(require_module_api(Modules.BILLS)),
 ):
     """Get the status of a bill folder processing run."""
-    result = _folder_processing_results.get(run_id)
-    if not result:
+    run = _folder_run_repo.read_by_public_id(public_id=run_id)
+    if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
-    return result
+    payload: dict = {"status": run.status}
+    if run.result:
+        payload.update(run.result)
+    return payload
 
 
 @router.get("/get/bill-folder-summary")

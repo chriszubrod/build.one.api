@@ -365,10 +365,10 @@ def get_drive_item_content(drive_id: str, item_id: str) -> dict:
                 timeout_tier="C",
                 operation_name="driveitem.get_content",
             )
-        # Graph returns a redirect to the raw CDN URL; httpx follows redirects
-        # by default. Content-Type is not reliably captured here because the
-        # final response comes from the CDN; callers that need it should sniff
-        # from the file extension or item metadata.
+        # Graph returns a 302 to a pre-signed CDN URL; MsGraphClient.get_bytes
+        # enables follow_redirects on the raw-bytes path so the final response
+        # comes from the CDN. Content-Type from the CDN is unreliable for
+        # callers — sniff from the file extension or item metadata if needed.
         return {
             "message": "Content retrieved successfully",
             "status_code": 200,

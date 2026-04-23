@@ -438,6 +438,9 @@ class MsGraphClient:
         )
 
         try:
+            # Raw-bytes downloads (/content) return 302 with a pre-signed CDN URL.
+            # Follow the redirect; httpx 0.28 strips Authorization on cross-origin
+            # redirects so the CDN accepts the request without our bearer token.
             response = self._send_http(
                 method=method,
                 url=url,
@@ -449,6 +452,7 @@ class MsGraphClient:
                 extra_headers=extra_headers,
                 client_request_id=None,
                 timeout=timeout,
+                follow_redirects=True,
             )
 
             if response.status_code == 401:
@@ -472,6 +476,7 @@ class MsGraphClient:
                     extra_headers=extra_headers,
                     client_request_id=None,
                     timeout=timeout,
+                    follow_redirects=True,
                 )
         except httpx.TimeoutException as error:
             raise MsTimeoutError(
@@ -760,6 +765,7 @@ class MsGraphClient:
         extra_headers: Optional[Dict[str, str]],
         client_request_id: Optional[str],
         timeout: httpx.Timeout,
+        follow_redirects: bool = False,
     ) -> httpx.Response:
         """Pure HTTP send with auth + idempotency header injection."""
         headers: Dict[str, str] = {
@@ -784,6 +790,7 @@ class MsGraphClient:
             json=json_body if content is None else None,
             content=content,
             timeout=timeout,
+            follow_redirects=follow_redirects,
         )
 
     def _raise_for_status(

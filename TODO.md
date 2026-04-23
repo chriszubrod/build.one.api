@@ -2,11 +2,32 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
-## Next session — frontend perf
+## Frontend perf
 
-- [ ] **React Query caching for `/lookups`, `/vendors`, `/projects`** in `build.one.web`. Biggest remaining user-perceived win. 371 KB vendor payload + 37 KB projects shipping on every page load is wasteful. `staleTime: 5 * 60 * 1000` should make navigation feel instant.
+- [x] ~~React Query caching for `/lookups`, `/vendors`, `/projects`~~ — shipped 2026-04-23 via TanStack Query (build.one.web `42e0a90`). staleTime 5min, gcTime 10min, refetchOnWindowFocus off.
 - [ ] Consider replacing the "dump all vendors" pattern with a searchable/paginated select when tenant size grows past a threshold.
 - [ ] Verify `X-Cache: hit` vs `miss` shows up in dev tools on `bill-folder-summary` after back-to-back loads (we saw 292ms once; want to confirm pattern). If misses are frequent due to per-worker cache with `-w 2`, consider Redis.
+
+## Frontend pre-launch (build.one.web)
+
+- [ ] **Dev-gate the TanStack Query devtools.** `src/main.tsx` currently renders `<ReactQueryDevtools />` unconditionally, so the floating panel ships to prod. Before launch, wrap in `{import.meta.env.DEV && <ReactQueryDevtools ... />}`. Keep the dev-only version for local debugging.
+
+## Jinja purge — migration waves (started 2026-04-23)
+
+Phase 0 audit done. Phase 1 scaffolding (`/auth/me` + SSE `/auth/me/changes` + React `useCurrentUser` + Sidebar gating) shipped.
+
+Phase 2 — delete Jinja per entity in waves, one commit each, verify in UI before next wave:
+
+- [ ] **Wave A — leaf entities:** address_type, payment_term, review_status, vendor_type, taxpayer, classification_override, dashboard.
+- [ ] **Wave B — reference entities:** cost_code, sub_cost_code, customer, vendor, address, organization, project, company, module.
+- [ ] **Wave C — identity surface:** user, role, role_module, user_module, user_project, user_role, vendor_address, project_address.
+- [ ] **Wave D — transactional:** bill, bill_credit, expense, invoice.
+- [ ] **Wave E — blocked six + shared infra:** fix React gaps for contract_labor (/import + /bills), admin, attachment, auth (signup/reset), integration (OAuth callback), legal (EULA/privacy). Then delete `get_current_user_web`, `require_module_web`, `WebAuthenticationRequired` + its `app.py` handler, CSRF helpers, `entities/auth/web/controller.py`, the 5 QBO `web/controller.py` files, and the `templates/` tree.
+
+Follow-ups when the purge is done:
+
+- [ ] **Promote SSE profile events from B-lite to B-full** (cross-worker). Add `[auth].[ProfileChangeEvent]` table + 2s poll in the SSE handler. Needed once we scale past `-w 2` single instance, or once we have a user base that hits cross-worker edges often.
+- [ ] **Refresh-token flow for React.** API already issues refresh tokens; React doesn't use them. Add `POST /api/v1/auth/refresh` wrapper in `client.ts` on 401 before wiping localStorage and redirecting.
 
 ## API cleanup (do in a week, after Function architecture is proven stable)
 

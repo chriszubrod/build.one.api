@@ -1,9 +1,13 @@
 # Python Standard Library Imports
+import asyncio
+import json
+import logging
 from typing import Optional
 import secrets
 
 # Third-party Imports
 from fastapi import APIRouter, HTTPException, Depends, Response, Request
+from fastapi.responses import StreamingResponse
 
 # Local Imports
 from config import Settings
@@ -23,7 +27,16 @@ from entities.auth.business.service import (
     UNSAFE_METHODS,
     _require_csrf,
 )
+from entities.module.business.service import ModuleService
+from entities.role.business.service import RoleService
+from entities.role_module.business.service import RoleModuleService
+from entities.user.business.service import UserService
+from entities.user_role.business.service import UserRoleService
 from shared.api.responses import item_response, raise_not_found
+from shared.profile_events import profile_event_subscription
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1", tags=["auth"])
 service = AuthService()
 
@@ -269,5 +282,122 @@ def mobile_logout_router(body: MobileRefreshRequest, current_user: dict = Depend
     """
     service.revoke_refresh_token(refresh_token=body.refresh_token)
     return item_response({"message": "Logged out."})
+
+
+# ---------------------------------------------------------------------------
+# Profile: /me + /me/changes SSE
+# ---------------------------------------------------------------------------
+
+
+def _resolve_me_payload(user_sub: str) -> dict:
+    """
+    Build the full { user, auth, role, is_admin, modules[] } payload for
+    the current user. Admins get every module flagged with every permission.
+    """
+    auth = AuthService().read_by_public_id(public_id=user_sub)
+    if auth is None or auth.user_id is None:
+        raise HTTPException(status_code=404, detail="Auth profile not found.")
+
+    user = UserService().read_by_id(id=auth.user_id)
+    user_role = UserRoleService().read_by_user_id(user_id=auth.user_id)
+
+    role_dict = None
+    is_admin = False
+    permissions_by_module: dict[int, dict] = {}
+
+    if user_role:
+        role = RoleService().read_by_id(id=user_role.role_id)
+        if role:
+            role_dict = {"public_id": role.public_id, "name": role.name}
+            if role.name and role.name.strip().lower() == "admin":
+                is_admin = True
+
+        if not is_admin:
+            role_modules = RoleModuleService().read_all_by_role_id(role_id=user_role.role_id)
+            for rm in role_modules:
+                permissions_by_module[rm.module_id] = {
+                    "can_create": bool(rm.can_create),
+                    "can_read": bool(rm.can_read),
+                    "can_update": bool(rm.can_update),
+                    "can_delete": bool(rm.can_delete),
+                    "can_submit": bool(rm.can_submit),
+                    "can_approve": bool(rm.can_approve),
+                    "can_complete": bool(rm.can_complete),
+                }
+
+    all_modules = ModuleService().read_all()
+    modules_payload = []
+    for m in all_modules:
+        if is_admin:
+            perms = {p: True for p in (
+                "can_create", "can_read", "can_update", "can_delete",
+                "can_submit", "can_approve", "can_complete",
+            )}
+        else:
+            perms = permissions_by_module.get(m.id, {p: False for p in (
+                "can_create", "can_read", "can_update", "can_delete",
+                "can_submit", "can_approve", "can_complete",
+            )})
+        modules_payload.append({
+            "public_id": m.public_id,
+            "name": m.name,
+            "route": m.route,
+            **perms,
+        })
+
+    return {
+        "auth": {"public_id": auth.public_id, "username": auth.username},
+        "user": user.to_dict() if user else None,
+        "role": role_dict,
+        "is_admin": is_admin,
+        "modules": modules_payload,
+    }
+
+
+@router.get("/auth/me")
+def get_me_router(current_user: dict = Depends(get_current_user_api)):
+    """
+    Current-user profile: identity + role + per-module permissions.
+    Clients cache the result under ['me']; invalidate on SSE `profile_changed`.
+    """
+    payload = _resolve_me_payload(current_user["sub"])
+    return item_response(payload)
+
+
+@router.get("/auth/me/changes")
+async def stream_me_changes_router(
+    request: Request,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """
+    SSE stream of profile-change events for the current user. Emits
+    `profile_changed` when an admin mutates the caller's UserRole, or
+    when a RoleModule under the caller's role changes. Clients react by
+    invalidating their cached `/auth/me` query.
+    """
+    user_sub = current_user["sub"]
+    auth = AuthService().read_by_public_id(public_id=user_sub)
+    if auth is None or auth.user_id is None:
+        raise HTTPException(status_code=404, detail="Auth profile not found.")
+    user_id = auth.user_id
+
+    async def _generator():
+        async with profile_event_subscription(user_id) as queue:
+            yield ": connected\n\n"  # initial comment frame so clients see an open stream
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                yield f"event: {event['event']}\ndata: {json.dumps(event['data'])}\n\n"
+
+    headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(_generator(), media_type="text/event-stream", headers=headers)
 
 

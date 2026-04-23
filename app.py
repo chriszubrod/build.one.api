@@ -316,6 +316,11 @@ async def startup_event():
     if not rbac_warnings:
         logger.info("RBAC startup validation passed — all module constants match database records.")
 
+    # Capture the running event loop so sync mutation hooks can safely
+    # dispatch profile-change events into the SSE subscriber queues.
+    from shared.profile_events import register_event_loop
+    register_event_loop()
+
     # Start the recurring-jobs scheduler (QBO outbox drain, etc.). Gated on
     # ENABLE_SCHEDULER=true so local dev runs silently by default; prod App
     # Service sets the flag in Application Settings.

@@ -10,7 +10,7 @@ from typing import Any, Literal, Optional, Union
 from pydantic import BaseModel, Field
 
 from intelligence.tools.base import ToolResult
-from intelligence.transport.base import Usage
+from intelligence.transport.base import Usage  # noqa: F401 — re-exported for consumers
 
 
 class TurnStart(BaseModel):
@@ -45,10 +45,45 @@ class TurnEnd(BaseModel):
     stop_reason: Optional[str] = None
 
 
+class ApprovalRequest(BaseModel):
+    """Emitted when the loop pauses on a requires_approval tool.
+
+    The consumer (UI, SSE subscriber, or persistence layer) presents
+    this to the user, who responds via POST /runs/{id}/approve. The
+    runner awaits a future keyed by request_id until the decision
+    arrives (or the timeout fires).
+    """
+    type: Literal["approval_request"] = "approval_request"
+    request_id: str
+    tool_name: str
+    summary: str
+    proposed_input: dict[str, Any] = Field(default_factory=dict)
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+
+
+class ApprovalDecision(BaseModel):
+    """Emitted after the user (or timeout) resolves an ApprovalRequest.
+
+    `decision` is "approved", "rejected", or "timed_out". When
+    "approved", final_input holds the values that were actually
+    executed — typically equal to proposed_input, but may differ when
+    the user edited values before approving.
+    """
+    type: Literal["approval_decision"] = "approval_decision"
+    request_id: str
+    decision: Literal["approved", "rejected", "timed_out"]
+    final_input: Optional[dict[str, Any]] = None
+    decided_by: Optional[str] = None
+
+
 class Done(BaseModel):
     type: Literal["done"] = "done"
     reason: str
     usage: Usage
+    # Optional dollar cost computed by the loop runner using the agent's
+    # provider + model. Null when pricing is unknown for that combo so
+    # consumers can degrade gracefully to "tokens only" display.
+    cost_usd: Optional[float] = None
 
 
 class LoopError(BaseModel):
@@ -63,6 +98,8 @@ LoopEvent = Union[
     ToolCallStart,
     ToolCallEnd,
     TurnEnd,
+    ApprovalRequest,
+    ApprovalDecision,
     Done,
     LoopError,
 ]

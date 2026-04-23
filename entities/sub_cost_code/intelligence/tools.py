@@ -1,12 +1,14 @@
 """Agent-facing tools for the SubCostCode entity.
 
-Five read-only tools wrapping existing GET endpoints:
-
+Read tools (no approval):
   list_sub_cost_codes                  → GET /api/v1/get/sub-cost-codes
   search_sub_cost_codes                → GET /api/v1/get/sub-cost-code/search?q=...&limit=...
   read_sub_cost_code_by_public_id      → GET /api/v1/get/sub-cost-code/{public_id}
   read_sub_cost_code_by_number         → GET /api/v1/get/sub-cost-code/by-number/{number}
   read_sub_cost_code_by_alias          → GET /api/v1/get/sub-cost-code/by-alias/{alias}
+
+Write tools (user approval required):
+  create_sub_cost_code                 → POST /api/v1/create/sub-cost-code
 
 Each tool calls ctx.call_api(), which means every invocation goes through
 the same FastAPI stack a human request does: RBAC, JSON envelope, HTTP
@@ -15,6 +17,8 @@ access log. The agent's bearer token on ctx auths the call.
 Tools self-register on import. Agents pick them from the registry by name.
 """
 from urllib.parse import quote
+
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -181,6 +185,73 @@ read_sub_cost_code_by_alias = Tool(
 )
 
 
+# ─── Write tools (require user approval) ─────────────────────────────────
+
+class CreateSubCostCodeArgs(BaseModel):
+    number: str = Field(
+        description=(
+            "The new sub-cost-code's number in canonical `X.YY` format "
+            "(e.g. `10.01`). Must not collide with an existing number."
+        ),
+    )
+    name: str = Field(
+        description="Human-readable name (e.g. `8\" Block`).",
+    )
+    cost_code_public_id: str = Field(
+        description=(
+            "Public UUID of the parent CostCode. Obtain it via "
+            "`read_cost_code_by_id` on an existing SubCostCode's "
+            "`cost_code_id`, or ask the user for it if unclear."
+        ),
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description="Optional description (<=255 chars).",
+    )
+    aliases: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional pipe-delimited alias values (e.g. `01.1|1.1`) that "
+            "the search and lookup tools will match against."
+        ),
+    )
+
+
+async def _create_sub_cost_code(args: dict, ctx: ToolContext) -> ToolResult:
+    # Validate args shape before sending — pydantic will raise on missing
+    # required fields, which surfaces as a ToolError (is_error=True) via
+    # the loop's exception wrapping.
+    parsed = CreateSubCostCodeArgs(**args)
+    return await ctx.call_api(
+        "POST",
+        "/api/v1/create/sub-cost-code",
+        body=parsed.model_dump(exclude_none=False),
+    )
+
+
+def _summarize_create_sub_cost_code(args: dict) -> str:
+    number = args.get("number") or "?"
+    name = args.get("name") or "?"
+    return f"Create sub-cost-code {number} — {name}"
+
+
+create_sub_cost_code = Tool(
+    name="create_sub_cost_code",
+    description=(
+        "Create a new sub-cost-code. THIS TOOL REQUIRES USER APPROVAL — "
+        "the user sees your proposed values in a card and can approve, "
+        "edit, or reject before the row is actually created. Propose the "
+        "tool call with your best-effort values; do not try to negotiate "
+        "every field with the user before calling. If the user rejects or "
+        "edits, you'll get a tool result you can reason about."
+    ),
+    input_schema=input_schema_from(CreateSubCostCodeArgs),
+    handler=_create_sub_cost_code,
+    requires_approval=True,
+    approval_summary=_summarize_create_sub_cost_code,
+)
+
+
 # ─── Self-register ───────────────────────────────────────────────────────
 
 for _tool in (
@@ -189,5 +260,6 @@ for _tool in (
     read_sub_cost_code_by_public_id,
     read_sub_cost_code_by_number,
     read_sub_cost_code_by_alias,
+    create_sub_cost_code,
 ):
     register(_tool)

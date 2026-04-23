@@ -94,12 +94,23 @@ class ToolContext:
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[ToolResult]]
 
 
+ApprovalSummary = Callable[[dict[str, Any]], str]
+
+
 @dataclass(frozen=True)
 class Tool:
     name: str
     description: str
     input_schema: dict[str, Any]
     handler: ToolHandler
+    # When True, the loop runner pauses BEFORE executing this tool and
+    # emits an ApprovalRequest LoopEvent. Execution only proceeds after
+    # the user POSTs a decision via /runs/{id}/approve.
+    requires_approval: bool = False
+    # Optional callable that turns the proposed input into a one-line
+    # human-readable summary for the approval card. If omitted, the card
+    # falls back to a generic "run <tool_name>" label.
+    approval_summary: Optional[ApprovalSummary] = None
 
     def to_anthropic_schema(self) -> dict[str, Any]:
         """Render for the Anthropic /v1/messages `tools` field."""
@@ -108,3 +119,13 @@ class Tool:
             "description": self.description,
             "input_schema": self.input_schema,
         }
+
+    def describe_for_approval(self, proposed_input: dict[str, Any]) -> str:
+        """Human-readable summary for the approval card."""
+        if self.approval_summary is not None:
+            try:
+                return self.approval_summary(proposed_input)
+            except Exception:
+                # A buggy summary function shouldn't block the flow.
+                pass
+        return f"Run {self.name}"

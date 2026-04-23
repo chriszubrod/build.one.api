@@ -16,9 +16,11 @@ import json
 import logging
 from typing import AsyncIterator, Optional
 
+from intelligence.loop import approval as approval_coordinator
 from intelligence.loop.events import LoopEvent
 from intelligence.loop.runner import run
 from intelligence.loop.termination import BudgetPolicy
+from intelligence.persistence.approval_repo import AgentApprovalRequestRepo
 from intelligence.persistence.history import load_chain_history
 from intelligence.persistence.session_repo import (
     AgentSession,
@@ -62,6 +64,7 @@ async def run_session(
     session_repo = AgentSessionRepo()
     turn_repo = AgentTurnRepo()
     tool_call_repo = AgentToolCallRepo()
+    approval_repo = AgentApprovalRequestRepo()
 
     # Create the session row synchronously (but off the event loop thread).
     session: AgentSession = await asyncio.to_thread(
@@ -94,6 +97,9 @@ async def run_session(
     # Map tool_use_id (LLM-generated) → AgentToolCall.Id (DB pk) so the
     # follow-up complete() call can find the right row.
     in_flight_tool_calls: dict[str, int] = {}
+    # Map request_id → AgentApprovalRequest.Id so the decision event can
+    # update the right pending row.
+    in_flight_approvals: dict[str, int] = {}
 
     finalized = False
 
@@ -108,6 +114,8 @@ async def run_session(
             budget=budget,
             max_tokens_per_turn=max_tokens_per_turn,
             prior_history=prior_history,
+            provider=provider,
+            session_public_id=session.public_id,
         ):
             t = ev.type
 
@@ -163,6 +171,45 @@ async def run_session(
                         is_error=ev.result.is_error,
                     )
 
+            elif t == "approval_request":
+                if session.id is None:
+                    logger.warning(
+                        "approval_request before session row id; skipping persistence"
+                    )
+                else:
+                    proposed_json = json.dumps(ev.proposed_input)
+                    approval_row = await asyncio.to_thread(
+                        approval_repo.create,
+                        session_id=session.id,
+                        turn_id=current_turn_id,
+                        request_id=ev.request_id,
+                        tool_name=ev.tool_name,
+                        summary=ev.summary,
+                        proposed_input=proposed_json,
+                    )
+                    in_flight_approvals[ev.request_id] = approval_row.id
+
+            elif t == "approval_decision":
+                approval_id = in_flight_approvals.pop(ev.request_id, None)
+                if approval_id is None:
+                    logger.warning(
+                        "approval_decision with no matching pending approval; "
+                        "request_id=%s", ev.request_id
+                    )
+                else:
+                    final_json = (
+                        json.dumps(ev.final_input)
+                        if ev.final_input is not None
+                        else None
+                    )
+                    await asyncio.to_thread(
+                        approval_repo.set_decision,
+                        id=approval_id,
+                        status=ev.decision,
+                        final_input=final_json,
+                        decided_by_user_id=None,  # resolved by the /approve endpoint, not here
+                    )
+
             elif t == "turn_end":
                 if current_turn_id is not None:
                     await asyncio.to_thread(
@@ -206,3 +253,11 @@ async def run_session(
             except Exception:
                 logger.exception("Failed to mark session as failed during exception handling")
         raise
+    finally:
+        # Release any pending approval futures so they don't linger in
+        # the process-wide registry after this run ends.
+        if session.public_id:
+            try:
+                await approval_coordinator.cleanup(session.public_id)
+            except Exception:
+                logger.exception("approval_coordinator.cleanup failed")

@@ -23,6 +23,7 @@ scout = Agent(
         "read_sub_cost_code_by_number",
         "read_sub_cost_code_by_alias",
         "read_cost_code_by_id",
+        "create_sub_cost_code",
     ),
     model="claude-sonnet-4-6",
     provider="anthropic",

@@ -118,6 +118,18 @@ class QboPurchaseService:
 
         return synced_purchases
 
+    def upsert_from_external(
+        self, qbo_purchase: QboPurchaseExternalSchema, realm_id: str,
+    ) -> tuple[QboPurchase, List[QboPurchaseLine]]:
+        """
+        Persist an external-schema QboPurchase (+ its inline lines) into the local
+        cache and return the stored dataclass form. See QboBillService.upsert_from_external
+        for the rationale — connectors expect the flat dataclass shape.
+        """
+        local_purchase = self._upsert_purchase(qbo_purchase, realm_id)
+        lines = self.line_repo.read_by_qbo_purchase_id(local_purchase.id)
+        return local_purchase, lines
+
     def _upsert_purchase(self, qbo_purchase: QboPurchaseExternalSchema, realm_id: str) -> QboPurchase:
         """
         Create or update a QboPurchase record along with its line items.

@@ -145,20 +145,18 @@ class ReconciliationService:
         """
         # Lazy imports to avoid pulling the QBO stack at module load.
         from integrations.intuit.qbo.bill.external.client import QboBillClient
+        from integrations.intuit.qbo.bill.business.service import QboBillService
         from integrations.intuit.qbo.bill.connector.bill.business.service import (
             BillBillConnector,
         )
         from integrations.intuit.qbo.bill.connector.bill.persistence.repo import (
             BillBillRepository,
         )
-        from integrations.intuit.qbo.bill.persistence.repo import (
-            QboBillRepository,
-            QboBillLineRepository,
-        )
+        from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository
 
         mapping_repo = BillBillRepository()
         qbo_bill_repo = QboBillRepository()
-        qbo_bill_line_repo = QboBillLineRepository()
+        qbo_bill_service = QboBillService()
         connector = BillBillConnector()
 
         auto_fixed = 0
@@ -184,11 +182,13 @@ class ReconciliationService:
                         continue
 
                 # Either QboBill is missing locally, OR it exists but has no
-                # Bill mapping. Either way, pull+sync restores the state.
-                lines = self._fetch_bill_lines(client, qbo_bill)
-
+                # Bill mapping. Persist external → local dataclass first, then
+                # hand the dataclass to the connector.
                 try:
-                    connector.sync_from_qbo_bill(qbo_bill=qbo_bill, qbo_bill_lines=lines)
+                    local_bill, lines = qbo_bill_service.upsert_from_external(
+                        qbo_bill, realm_id
+                    )
+                    connector.sync_from_qbo_bill(qbo_bill=local_bill, qbo_bill_lines=lines)
                     auto_fixed += 1
                     self._record_issue(
                         drift_type=DRIFT_QBO_MISSING_LOCALLY,
@@ -223,12 +223,6 @@ class ReconciliationService:
                 )
 
         return {"auto_fixed": auto_fixed, "flagged": errors, "errors": errors}
-
-    def _fetch_bill_lines(self, client, qbo_bill):
-        """Read QBO Bill lines from the nested `line` attribute of the Bill."""
-        # The Bill client's query returns bills with inline line items via the
-        # `line` attribute on the Pydantic model. Use whatever is present.
-        return getattr(qbo_bill, "line", None) or []
 
     # ------------------------------------------------------------------ #
     # Void detection (task #21)

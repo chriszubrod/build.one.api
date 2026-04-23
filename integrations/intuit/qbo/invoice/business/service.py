@@ -132,6 +132,18 @@ class QboInvoiceService:
         
         return synced_invoices
 
+    def upsert_from_external(
+        self, qbo_invoice: QboInvoiceExternalSchema, realm_id: str,
+    ) -> tuple[QboInvoice, List[QboInvoiceLine]]:
+        """
+        Persist an external-schema QboInvoice (+ its inline lines) into the local
+        cache and return the stored dataclass form. See QboBillService.upsert_from_external
+        for the rationale — connectors expect the flat dataclass shape.
+        """
+        local_invoice = self._upsert_invoice(qbo_invoice, realm_id)
+        lines = self.line_repo.read_by_qbo_invoice_id(local_invoice.id)
+        return local_invoice, lines
+
     def _upsert_invoice(
         self,
         qbo_invoice: QboInvoiceExternalSchema,

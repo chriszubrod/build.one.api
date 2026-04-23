@@ -112,6 +112,23 @@ class QboBillService:
         
         return synced_bills
 
+    def upsert_from_external(
+        self, qbo_bill: QboBillExternalSchema, realm_id: str,
+    ) -> tuple[QboBill, List[QboBillLine]]:
+        """
+        Persist an external-schema QboBill (+ its inline lines) into the local cache
+        and return the stored dataclass form.
+
+        Connectors (`BillBillConnector.sync_from_qbo_bill`) expect the flat business
+        dataclass — internal int `id`, `vendor_ref_value`, etc. Alternate pull entry
+        points (reconciliation, outbox conflict-refresh) come straight from the QBO
+        client holding the nested Pydantic schema, so they must route through here
+        before touching a connector.
+        """
+        local_bill = self._upsert_bill(qbo_bill, realm_id)
+        lines = self.line_repo.read_by_qbo_bill_id(local_bill.id)
+        return local_bill, lines
+
     def _upsert_bill(self, qbo_bill: QboBillExternalSchema, realm_id: str) -> QboBill:
         """
         Create or update a QboBill record along with its line items.

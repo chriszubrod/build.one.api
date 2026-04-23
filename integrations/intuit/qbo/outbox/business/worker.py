@@ -313,6 +313,7 @@ class QboOutboxWorker:
             )
 
     def _refresh_bill(self, row: QboOutbox) -> None:
+        from integrations.intuit.qbo.bill.business.service import QboBillService
         from integrations.intuit.qbo.bill.connector.bill.persistence.repo import (
             BillBillRepository,
         )
@@ -337,10 +338,15 @@ class QboOutboxWorker:
 
         with QboBillClient(realm_id=row.realm_id) as client:
             fresh = client.get_bill(local_qbo_bill.qbo_id)
-            lines = getattr(fresh, "line", None) or []
-        BillBillConnector().sync_from_qbo_bill(qbo_bill=fresh, qbo_bill_lines=lines)
+        refreshed_bill, refreshed_lines = QboBillService().upsert_from_external(
+            fresh, row.realm_id
+        )
+        BillBillConnector().sync_from_qbo_bill(
+            qbo_bill=refreshed_bill, qbo_bill_lines=refreshed_lines
+        )
 
     def _refresh_expense(self, row: QboOutbox) -> None:
+        from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
         from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import (
             PurchaseExpenseRepository,
         )
@@ -365,12 +371,15 @@ class QboOutboxWorker:
 
         with QboPurchaseClient(realm_id=row.realm_id) as client:
             fresh = client.get_purchase(local_qbo_purchase.qbo_id)
-            lines = getattr(fresh, "line", None) or []
+        refreshed_purchase, refreshed_lines = QboPurchaseService().upsert_from_external(
+            fresh, row.realm_id
+        )
         PurchaseExpenseConnector().sync_from_qbo_purchase(
-            qbo_purchase=fresh, qbo_purchase_lines=lines
+            qbo_purchase=refreshed_purchase, qbo_purchase_lines=refreshed_lines
         )
 
     def _refresh_invoice(self, row: QboOutbox) -> None:
+        from integrations.intuit.qbo.invoice.business.service import QboInvoiceService
         from integrations.intuit.qbo.invoice.connector.invoice.persistence.repo import (
             InvoiceInvoiceRepository,
         )
@@ -395,9 +404,11 @@ class QboOutboxWorker:
 
         with QboInvoiceClient(realm_id=row.realm_id) as client:
             fresh = client.get_invoice(local_qbo_invoice.qbo_id)
-            lines = getattr(fresh, "line", None) or []
+        refreshed_invoice, refreshed_lines = QboInvoiceService().upsert_from_external(
+            fresh, row.realm_id
+        )
         InvoiceInvoiceConnector().sync_from_qbo_invoice(
-            qbo_invoice=fresh, qbo_invoice_lines=lines
+            qbo_invoice=refreshed_invoice, qbo_invoice_lines=refreshed_lines
         )
 
     def _handle_sync_bill(self, row: QboOutbox) -> None:

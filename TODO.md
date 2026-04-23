@@ -16,9 +16,10 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 - [ ] Keep `ENABLE_SCHEDULER` env var for at least one more deploy cycle so rollback is still available; remove the code+flag together
 - [ ] Delete duplicate `read_paginated`/`count` in `entities/bill/persistence/repo.py` (lines 123 & 328, 161 & 369). The first definition of each is dead code — the second wins due to Python attribute order
 
-## Pre-existing bugs surfaced during perf work
+## QBO hardening follow-ups (2026-04-23)
 
-- [ ] **QBO reconciliation crashes on every bill**: `AttributeError: 'QboBill' object has no attribute 'vendor_ref_value'` at `integrations/intuit/qbo/bill/connector/bill/business/service.py:95`. Pydantic model changed but `sync_from_qbo_bill` wasn't updated. Should be `qbo_bill.VendorRef.value` or similar. Important because reconciliation now runs daily via the Function App (`/api/v1/admin/reconcile/qbo`).
+- [ ] **Clean up stale `ReconciliationIssue` rows.** Before the `upsert_from_external` fix landed, `_reconcile_bill_qbo_missing_locally` always crashed in the connector and recorded the bill as a flagged issue with `LastError LIKE '%vendor_ref_value%'`. Those rows pollute the Ch6 drift count and alert #6. Query and delete (or mark resolved) once the fix has been deployed for one reconcile cycle. Approx query: `DELETE FROM [qbo].[ReconciliationIssue] WHERE DriftType='qbo_missing_locally' AND LastError LIKE '%vendor_ref_value%'` — verify count before running.
+- [ ] **Un-defer task #8 (QBO test scaffold).** The `vendor_ref_value` bug in reconciliation + all three `_refresh_*` paths would have been caught by a single sandbox integration test. Revisit when App Insights lands (current blocker for #8 per Phase 2 notes).
 
 ## Observability / Ops
 

@@ -9,6 +9,7 @@ Read tools (no approval):
 
 Write tools (user approval required):
   create_sub_cost_code                 → POST /api/v1/create/sub-cost-code
+  delete_sub_cost_code                 → DELETE /api/v1/delete/sub-cost-code/{public_id}
 
 Each tool calls ctx.call_api(), which means every invocation goes through
 the same FastAPI stack a human request does: RBAC, JSON envelope, HTTP
@@ -252,6 +253,71 @@ create_sub_cost_code = Tool(
 )
 
 
+class DeleteSubCostCodeArgs(BaseModel):
+    public_id: str = Field(
+        description=(
+            "The target sub-cost-code's public_id (UUID). Obtain it by "
+            "reading the record first (e.g. search_sub_cost_codes or "
+            "read_sub_cost_code_by_number)."
+        ),
+    )
+    # Display hints for the approval card. NOT sent to the server —
+    # server identifies the record by public_id only. Populate these
+    # from the record you looked up so the user sees what's being
+    # deleted without having to decode a UUID.
+    number: Optional[str] = Field(
+        default=None,
+        description=(
+            "The record's number (e.g. `99.99`) — shown on the approval "
+            "card for context. Populate from the record you already "
+            "fetched; this is NOT how the server identifies the row."
+        ),
+    )
+    name: Optional[str] = Field(
+        default=None,
+        description=(
+            "The record's name — shown on the approval card for "
+            "context. Populate from the record you already fetched."
+        ),
+    )
+
+
+async def _delete_sub_cost_code(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = DeleteSubCostCodeArgs(**args)
+    return await ctx.call_api(
+        "DELETE",
+        f"/api/v1/delete/sub-cost-code/{parsed.public_id}",
+    )
+
+
+def _summarize_delete_sub_cost_code(args: dict) -> str:
+    number = args.get("number")
+    name = args.get("name")
+    public_id = args.get("public_id") or "?"
+    if number and name:
+        return f"Delete sub-cost-code {number} — {name}"
+    if number:
+        return f"Delete sub-cost-code {number}"
+    return f"Delete sub-cost-code {public_id}"
+
+
+delete_sub_cost_code = Tool(
+    name="delete_sub_cost_code",
+    description=(
+        "Permanently delete an existing sub-cost-code. REQUIRES USER "
+        "APPROVAL. Before proposing the call, look up the record (via "
+        "search_sub_cost_codes or read_sub_cost_code_by_number) and pass "
+        "its `number` and `name` as args so the approval card shows a "
+        "clear description. Only `public_id` is sent to the server; "
+        "`number` and `name` are display hints for the user."
+    ),
+    input_schema=input_schema_from(DeleteSubCostCodeArgs),
+    handler=_delete_sub_cost_code,
+    requires_approval=True,
+    approval_summary=_summarize_delete_sub_cost_code,
+)
+
+
 # ─── Self-register ───────────────────────────────────────────────────────
 
 for _tool in (
@@ -261,5 +327,6 @@ for _tool in (
     read_sub_cost_code_by_number,
     read_sub_cost_code_by_alias,
     create_sub_cost_code,
+    delete_sub_cost_code,
 ):
     register(_tool)

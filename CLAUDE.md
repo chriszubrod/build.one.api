@@ -64,11 +64,31 @@ At the start of each session, read SESSION_NOTES.md for historical context.
 Both `integrations/intuit/qbo/` and `integrations/ms/` follow the same hardened shape after the April 2026 refactors. Future external integrations must follow this pattern.
 
 - **`base/` package per integration**: `client.py` (shared HTTP wrapper), `errors.py` (typed exception hierarchy with `is_retryable`), `locking.py` (`sp_getapplock` context manager), `logger.py` (`LoggerAdapter` that auto-injects `correlation_id` from a ContextVar), `retry.py` (RetryPolicy + `execute_with_retry` with backoff + jitter + Retry-After), `correlation.py` (ContextVar-backed correlation + idempotency key), `idempotency.py` (UUID generation / validation).
-- **Durable outbox pattern**: every external write enqueues a row in `[qbo].[Outbox]` or `[ms].[Outbox]` instead of calling the external API inline. An APScheduler job (`qbo_outbox_drain` / `ms_outbox_drain`, both 5s cadence) claims rows via `ClaimNextPending*Outbox` (UPDLOCK+READPAST) and dispatches through per-Kind handlers. 5 failed attempts → dead-letter. Policy C debounce coalesces rapid edits via `ReadyAfter` column.
+- **Durable outbox pattern**: every external write enqueues a row in `[qbo].[Outbox]` or `[ms].[Outbox]` instead of calling the external API inline. Drain is triggered by the `build.one.scheduler` Azure Function App (see "Scheduler Architecture" below), which POSTs `/api/v1/admin/outbox/drain` every 30s. The handler claims rows via `ClaimNextPending*Outbox` (UPDLOCK+READPAST) and dispatches through per-Kind handlers. 5 failed attempts → dead-letter. Policy C debounce coalesces rapid edits via `ReadyAfter` column. (In-process APScheduler fallback exists in `shared/scheduler.py` gated on `ENABLE_SCHEDULER=true`; currently disabled in prod.)
 - **Write gates**: `ALLOW_QBO_WRITES=true` and `ALLOW_MS_WRITES=true` must be explicitly set (case-insensitive `"true"`) in prod App Service Application Settings. Default-deny — a fresh checkout cannot accidentally push to prod. The gate applies at both the shared HTTP client level AND at `*OutboxService.enqueue()`.
-- **Scheduler jobs must be async-wrapped.** `shared/scheduler.py` registers every job as `async def wrapper()` that awaits `asyncio.to_thread(sync_fn)`. Blocking I/O (httpx, pyodbc) runs on the default thread pool; the FastAPI event loop stays free. Synchronous jobs registered on `AsyncIOScheduler` will block ALL user requests during the tick — do not regress this.
+- **Scheduler jobs must be async-wrapped.** Only relevant if `ENABLE_SCHEDULER=true` (fallback mode). `shared/scheduler.py` registers every job as `async def wrapper()` that awaits `asyncio.to_thread(sync_fn)`. Blocking I/O (httpx, pyodbc) runs on the default thread pool; the FastAPI event loop stays free. Synchronous jobs registered on `AsyncIOScheduler` would block ALL user requests during the tick — do not regress this.
 - **Token storage encrypted at rest**: `QboAuthRepository` and `MsAuthRepository` both wrap access/refresh tokens with `shared.encryption.encrypt_sensitive_data()` on write and `decrypt_if_encrypted()` on read. Requires `ENCRYPTION_KEY` env var in prod; self-heals plaintext rows on next write (no migration required).
 - **Dead-letter recovery**: `scripts/retry_ms_outbox_dead_letters.py` (and future QBO equivalent) resets rows back to `pending`. Dry-run by default; `--apply` to mutate; `--kind` to filter.
 - **Reconciliation**: `[qbo].[ReconciliationIssue]` / `[ms].[ReconciliationIssue]` capture drift + dead-letter escalations. Excel-kind MS dead-letters escalate to **critical** severity so they aren't silent. Daily reconciliation jobs detect "locally complete but not in external system" drift.
 - **Completion pipelines enqueue, never call external APIs inline.** `BillService.complete_bill` / `ExpenseService.complete_expense` finalize the entity locally, then enqueue outbox rows for SharePoint upload, Excel sync, QBO push. The API returns 202 immediately; side effects drain asynchronously within ~5-30s.
 - **Runbook discipline**: every external failure mode documented in `docs/runbooks/*.md` with Symptom / Severity / Diagnosis / Recovery / Verification / Prevention sections. Follow the existing runbook format when adding new ones.
+
+## Scheduler Architecture (April 2026)
+
+Recurring jobs (outbox drain, QBO pulls, daily reconciles) live in the sibling `build.one.scheduler` repo — an Azure Function App (Consumption, Python 3.11) that POSTs to admin endpoints on the API.
+
+- **Why separate**: in-process APScheduler on `-w 1/2` stole threadpool slots from user requests. Moving it out eliminates contention and lets the API run at `-w 2` comfortably.
+- **Admin endpoints** (see `shared/api/admin.py`): all require `X-Drain-Secret` header.
+  - `POST /api/v1/admin/outbox/drain` — drains QBO + MS outboxes (30s cadence)
+  - `POST /api/v1/admin/sync/qbo/{entity}` — one of bill/invoice/purchase/vendorcredit/vendor/customer/item/account/term/company_info
+  - `POST /api/v1/admin/reconcile/qbo` — daily
+  - `POST /api/v1/admin/reconcile/ms` — daily
+- **Secret**: `DRAIN_SECRET` env var on both App Service + Function App. Never commit. Rotate if leaked.
+- **Rollback to in-process scheduler**: set `ENABLE_SCHEDULER=true` on App Service + restart. Safe — `sp_getapplock` prevents Function + in-process from double-draining.
+- **Fail-closed auth**: admin endpoints return 503 when `DRAIN_SECRET` is unset on the server, 401 on mismatch.
+
+## App Service Config — Required Production Settings
+
+- **Always On = true**: critical. Without it, the container gets unloaded after ~20 min of inactivity and cold starts take 10–15 seconds. Enable via `az webapp config set --name <app> --resource-group <rg> --always-on true`.
+- **`-w 2`**: configured in `startup.sh`. Two gunicorn/uvicorn workers on B2. Fits in memory now that APScheduler is out of the web process. `-w 4` is feasible but unnecessary at current load.
+- **Env vars** that must exist on App Service: `ENABLE_SCHEDULER=false` (in-process scheduler disabled), `DRAIN_SECRET` (matches Function App), `ALLOW_QBO_WRITES=true`, `ALLOW_MS_WRITES=true`, `ENCRYPTION_KEY`, plus DB creds.

@@ -1,5 +1,64 @@
 # Session Notes
 
+## Session: API Performance Tuning + Scheduler Extraction (April 22, 2026)
+
+### Trigger
+User reported slow API response times on the prod Azure Web App. React frontend running locally, hitting prod API. Baseline numbers from Chrome dev tools: `bill-folder-summary` ~10s, `bills` ~7s, `vendors` ~4–8s, `projects` ~3–9s, `lookups` ~3–6s. Context: recently moved from B1 to B2 tier; had been forced to `-w 1` due to memory pressure from QBO+MS integration imports.
+
+### Root causes discovered (in order of impact)
+1. **`alwaysOn: false`** on App Service. Container was being unloaded after ~20 min idle → every page load after inactivity paid a full cold-start tax (~14s). This was the biggest single contributor and went undiagnosed until late in the session.
+2. **In-process APScheduler** contending with web workers. 5s drain ticks × (QBO + MS) consumed threadpool slots user requests needed.
+3. **All routes were sync (`def`)**. FastAPI dispatches to Starlette's threadpool, but in combination with the scheduler and with `-w 1`, concurrent requests queued.
+4. **3 pyodbc connections per `/get/bills` request** — `read_paginated`, `count`, `read_first_line_item_projects` each opened their own.
+5. **No caching of `bill-folder-summary`** — synchronous MS Graph call on every page load (~10s).
+
+### Stage-by-stage work
+- **Stage 1**: `pyodbc.pooling = True` + in-process TTL cache on `bill-folder-summary` (30s, later bumped to 5min) + `X-Cache: hit|miss` diagnostic header. Commits `b7ca393`, plus earlier cache/pooling commit.
+- **Stage 2a**: Converted 6 bill API routes + vendor/project/lookups routes to `async def` + `asyncio.to_thread`. Commit `7d5a8f7`.
+- **Stage 2b**: `/get/bills` opens one pyodbc connection and shares it across `read_paginated`, `count`, `read_first_line_item_projects`. `conn` kwarg threaded through `BillService` + `BillRepository`.
+- **Stage 2c**: `/lookups` parallelized with `asyncio.gather` so multi-key requests fan out.
+- **Stage 3 — Scheduler extraction** (new `build.one.scheduler` repo):
+  - Created `shared/api/admin.py` with 4 endpoint families (outbox drain, QBO sync by entity, QBO reconcile, MS reconcile), all gated on `X-Drain-Secret` header. Commit `e160f72`.
+  - Stood up sibling `build.one.scheduler` Git repo. Python v2 programming model Azure Function App with 13 timer triggers (30s drain, 15-min QBO transactional syncs staggered, 4-hr reference syncs staggered, daily company_info + reconciles). Commits `ca3dbc9` + `3df3324`.
+  - Deployed Function App to Azure Consumption plan (`build-one-scheduler`, eastus-01). Shared the existing storage account. Used the existing `buildone-id-91d2` user-assigned managed identity for storage auth.
+  - Cutover: `ENABLE_SCHEDULER=false` on App Service. In-process scheduler stopped; Function became sole source of drains/syncs/reconciles.
+- **Stage 4**: `-w 1 → -w 2` in `startup.sh`. Container rebuild via `az acr build` + restart. Commit `05cbb31`.
+- **Stage 5 — THE fix**: enabled Always On on App Service (`az webapp config set --always-on true`). This is what actually made the numbers collapse.
+
+### Final results (warm, after Always On)
+- `bill-folder-summary`: **292 ms** (cache hit) vs 10–15s cold (54× faster)
+- `bills`: 2.6s vs 9s before (3.5×)
+- `vendors`: 4s vs 13s before (3.3×)
+- `projects`: 2.9s vs 11s before (3.8×)
+
+### Rollback paths
+- Scheduler: `az webapp config appsettings set --name buildone --resource-group buildone_group --settings ENABLE_SCHEDULER=true --output none` — in-process scheduler resumes on next restart. Function App can keep running; `sp_getapplock` prevents double-drain.
+- `-w 2 → -w 1`: edit `startup.sh`, rebuild container, restart.
+- Always On: `az webapp config set ... --always-on false` — not recommended; was the biggest win.
+
+### Memory snapshot (pre → post cutover)
+- Pre-cutover, `-w 1` + scheduler: ~461 MB
+- Post-cutover, `-w 1`, no scheduler: ~190 MB (-271 MB — scheduler was heavy)
+- Post-cutover, `-w 2`: ~334 MB. Plenty of headroom on B2 (3.5 GB). `-w 4` feasible.
+
+### Non-urgent findings surfaced
+- Duplicate `read_paginated` / `count` definitions in `entities/bill/persistence/repo.py` (lines 123/328, 161/369). First def is dead code, second wins.
+- QBO reconciliation crashes on every bill: `AttributeError: 'QboBill' object has no attribute 'vendor_ref_value'` at `integrations/intuit/qbo/bill/connector/bill/business/service.py:95`. Pre-existing; didn't fix because scope.
+- `DRAIN_SECRET` leaked briefly via `az` CLI output during debugging. Rotated mid-session; captured in TODO as a thing to re-rotate if anomalies appear.
+
+### Security notes
+- Admin endpoints are fail-closed: 503 when `DRAIN_SECRET` unset on server, 401 on mismatch.
+- Managed identity (`buildone-id-91d2`) used for Function App's storage auth. No secret needed for that path.
+
+### Commits shipped
+- `build.one.api`: `7d5a8f7`, `b7ca393`, `e160f72`, `05cbb31`
+- `build.one.scheduler`: `ca3dbc9`, `3df3324`
+
+### Pointer to follow-ups
+See `TODO.md` in `build.one.api` — frontend caching is the next session's focus.
+
+---
+
 ## Session: MS Integration Hardening — Phases 1-3 + 5 (April 22, 2026)
 
 ### Overview

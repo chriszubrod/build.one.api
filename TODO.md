@@ -1,0 +1,40 @@
+# TODO
+
+Carry-over items from sessions. Check off as done; prune anything stale.
+
+## Next session — frontend perf
+
+- [ ] **React Query caching for `/lookups`, `/vendors`, `/projects`** in `build.one.web`. Biggest remaining user-perceived win. 371 KB vendor payload + 37 KB projects shipping on every page load is wasteful. `staleTime: 5 * 60 * 1000` should make navigation feel instant.
+- [ ] Consider replacing the "dump all vendors" pattern with a searchable/paginated select when tenant size grows past a threshold.
+- [ ] Verify `X-Cache: hit` vs `miss` shows up in dev tools on `bill-folder-summary` after back-to-back loads (we saw 292ms once; want to confirm pattern). If misses are frequent due to per-worker cache with `-w 2`, consider Redis.
+
+## API cleanup (do in a week, after Function architecture is proven stable)
+
+- [ ] Delete `shared/scheduler.py` + remove `start_scheduler()` / `shutdown_scheduler()` calls from `app.py`
+- [ ] Remove `apscheduler` from `requirements.txt` and `requirements-prod.txt`
+- [ ] Memory savings: probably 50–100 MB per worker after the scheduler imports are gone
+- [ ] Keep `ENABLE_SCHEDULER` env var for at least one more deploy cycle so rollback is still available; remove the code+flag together
+- [ ] Delete duplicate `read_paginated`/`count` in `entities/bill/persistence/repo.py` (lines 123 & 328, 161 & 369). The first definition of each is dead code — the second wins due to Python attribute order
+
+## Pre-existing bugs surfaced during perf work
+
+- [ ] **QBO reconciliation crashes on every bill**: `AttributeError: 'QboBill' object has no attribute 'vendor_ref_value'` at `integrations/intuit/qbo/bill/connector/bill/business/service.py:95`. Pydantic model changed but `sync_from_qbo_bill` wasn't updated. Should be `qbo_bill.VendorRef.value` or similar. Important because reconciliation now runs daily via the Function App (`/api/v1/admin/reconcile/qbo`).
+
+## Observability / Ops
+
+- [ ] App Insights alert rules on Function App failures: `drain_outbox` > 3 failures in 15 min; any QBO sync > 2 consecutive failures
+- [ ] Structured cross-service correlation: Function sends its invocation id in a header; API logs it alongside `admin.job.completed`. Lets App Insights trace "Function ran X" → "API processed Y"
+- [ ] Outbox lag metric: query `SELECT COUNT(*) FROM [qbo].[Outbox] WHERE Status='pending' AND ReadyAfter <= GETUTCDATE()` periodically; alert on sustained backlog
+- [ ] Write runbook `docs/runbooks/scheduler-function-failure.md` documenting Symptom / Recovery (flip `ENABLE_SCHEDULER=true` + restart) / Verification
+
+## Lower priority / backlog
+
+- [ ] Verify (or add) `Pooling=Yes` in the container's `/etc/odbcinst.ini`. Without driver-manager pooling, each request opens a fresh pyodbc connection (TLS + SQL auth handshake). `pyodbc.pooling = True` alone in Python doesn't help unless the driver config enables it.
+- [ ] Rate-limit admin endpoints. Low risk given `sp_getapplock` serializes, but belt-and-suspenders
+- [ ] Cross-region latency audit: confirm Azure SQL is in the same region as App Service + Function App. A different region adds 50–200 ms per query
+- [ ] Consider going `-w 4` once we confirm `-w 2` is steady. Memory easily accommodates it (current usage ~334 MB on 3.5 GB tier)
+- [ ] Shared cache (Redis) for `bill-folder-summary` — eliminates per-worker cache miss when `-w 2` round-robins. Not urgent; Always On mitigates
+
+## Rotate / security hygiene
+
+- [ ] `DRAIN_SECRET` was leaked briefly during this session's debugging, was rotated mid-session. If you see unfamiliar activity in App Insights for `/api/v1/admin/*` endpoints, rotate again.

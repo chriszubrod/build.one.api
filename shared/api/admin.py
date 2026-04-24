@@ -182,3 +182,81 @@ async def reconcile_ms_router():
         return {"reconciled": True}
 
     return await _timed("reconcile.ms", _run)
+
+
+# --- Bill folder processing -- one file per tick --------------------------- #
+
+
+@router.post("/bill-folder/tick", dependencies=[Depends(_require_drain_secret)])
+async def bill_folder_tick_router():
+    """
+    Process one queued BillFolderRunItem. Called on a cadence by the
+    scheduler Function App. Returns {"processed": false} when the queue
+    is empty so the caller can stop looping.
+
+    Bounded work — one file per call — so Azure App Service's idle
+    timeout and transient MS Graph failures only affect that single
+    file. Per-file errors go on the item row; the parent run keeps
+    draining the rest.
+    """
+    def _run() -> dict[str, Any]:
+        from entities.bill.business.folder_processor import BillFolderProcessor
+        from entities.bill.persistence.folder_run_repo import BillFolderRunItemRepository
+
+        item_repo = BillFolderRunItemRepository()
+
+        # Sweep stale items + runs before claiming. Cheap (indexed) and
+        # keeps the UI from hanging on abandoned runs after a bad deploy.
+        try:
+            item_repo.auto_fail_stale(stale_after_minutes=30)
+        except Exception:
+            logger.exception("auto_fail_stale swallowed")
+
+        item = item_repo.claim_next(reclaim_after_seconds=180, max_attempts=3)
+        if item is None:
+            return {"processed": False}
+
+        logger.info(
+            "bill_folder.tick.claimed item=%s filename=%s attempts=%d",
+            item.public_id, item.filename, item.attempts,
+        )
+
+        try:
+            outcome = BillFolderProcessor().process_single_item(
+                filename=item.filename,
+                item_id=item.item_id,
+                company_id=1,
+                tenant_id=1,
+            )
+        except Exception as error:
+            # Transient failure — return to queue or dead-letter.
+            logger.exception("bill_folder.tick.failed item=%s", item.public_id)
+            item_repo.mark_failure(
+                public_id=item.public_id,
+                last_error=f"{type(error).__name__}: {error}",
+                max_attempts=3,
+            )
+            item_repo.check_and_complete_run(run_id=item.run_id)
+            return {
+                "processed": True,
+                "run_id": item.run_id,
+                "filename": item.filename,
+                "item_status": "retry",
+            }
+
+        # Permanent-terminal path: processor returned a result dict.
+        terminal_status = outcome.get("status", "skipped")
+        item_repo.mark_success(
+            public_id=item.public_id,
+            status=terminal_status,
+            result=outcome,
+        )
+        item_repo.check_and_complete_run(run_id=item.run_id)
+        return {
+            "processed": True,
+            "run_id": item.run_id,
+            "filename": item.filename,
+            "item_status": terminal_status,
+        }
+
+    return await _timed("bill_folder.tick", _run)

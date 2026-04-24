@@ -331,73 +331,187 @@ class BillFolderProcessor:
 
         return pending
 
-    def process(self, company_id: int = 1, tenant_id: int = 1) -> ProcessingResult:
-        """Process all PDF files in the source folder."""
-        result = ProcessingResult()
+    # ---------------------------------------------------------------------
+    # New per-item flow (replaces process()). The POST enumerates, then the
+    # scheduler ticks process_single_item one file at a time so no single
+    # HTTP call runs long enough to hit Azure App Service idle timeouts.
+    # ---------------------------------------------------------------------
 
-        # Get source folder
+    def enumerate_source_folder(self, company_id: int = 1) -> list[dict]:
+        """
+        List PDF files in the SharePoint source folder.
+
+        Returns a list of {"filename": str, "item_id": str} dicts, one per
+        PDF ready to queue for per-item processing. Raises ValueError when
+        the source folder is not linked or Graph listing fails.
+        """
         source_folder = self.folder_connector.get_folder(company_id, "source")
         if not source_folder:
             raise ValueError("No source folder linked for this company.")
-        source_drive_id = source_folder.get("drive_id")
+        drive_id = source_folder.get("drive_id")
         source_item_id = source_folder.get("item_id")
-        if not source_drive_id or not source_item_id:
+        if not drive_id or not source_item_id:
             raise ValueError("Source folder missing drive_id or item_id.")
 
-        # Get processed folder
-        processed_folder = self.folder_connector.get_folder(company_id, "processed")
-        if not processed_folder:
-            raise ValueError("No processed folder linked for this company.")
-        processed_item_id = processed_folder.get("item_id")
-        if not processed_item_id:
-            raise ValueError("Processed folder missing item_id.")
-
-        # List files
-        children_result = sp_client.list_drive_item_children(source_drive_id, source_item_id)
+        children_result = sp_client.list_drive_item_children(drive_id, source_item_id)
         if children_result.get("status_code") != 200:
             raise ValueError(f"Failed to list source folder: {children_result.get('message')}")
 
-        items = children_result.get("items", [])
-        pdf_files = [
-            item for item in items
-            if item.get("item_type") == "file" and item.get("name", "").lower().endswith('.pdf')
-        ]
+        pdfs = []
+        for item in children_result.get("items", []):
+            if item.get("item_type") != "file":
+                continue
+            name = item.get("name", "")
+            if not name.lower().endswith(".pdf"):
+                continue
+            pdfs.append({"filename": name, "item_id": item.get("item_id", "")})
+        return pdfs
 
-        result.files_found = len(pdf_files)
-        if not pdf_files:
-            logger.info("No PDF files found in source folder")
-            return result
+    def process_single_item(
+        self,
+        filename: str,
+        item_id: str,
+        company_id: int = 1,
+        tenant_id: int = 1,
+    ) -> dict:
+        """
+        Process a single PDF by filename + SharePoint item_id.
 
-        # Load reference data once
+        Returns:
+            {"status": "completed", "bill_public_id": ..., "bill_number": ...}
+                bill created, file moved to processed/.
+            {"status": "skipped", "reason": ...}
+                parse/resolve error or duplicate; file moved when possible.
+
+        Raises for transient errors (SharePoint or blob upload failures,
+        DB exceptions) so the caller can re-queue the item for retry.
+        """
+        logger.info("Processing file: %s", filename)
+
+        source_folder = self.folder_connector.get_folder(company_id, "source")
+        processed_folder = self.folder_connector.get_folder(company_id, "processed")
+        if not source_folder or not processed_folder:
+            raise ValueError("Source or processed folder not configured.")
+        drive_id = source_folder.get("drive_id")
+        processed_item_id = processed_folder.get("item_id")
+        if not drive_id or not processed_item_id:
+            raise ValueError("Source or processed folder missing drive_id/item_id.")
+
         projects = ProjectService().read_all()
         vendors = VendorService().read_all()
         sub_cost_codes = SubCostCodeService().read_all()
-
         payment_term = PaymentTermService().read_by_name("Due on receipt")
         payment_term_public_id = payment_term.public_id if payment_term else None
 
-        # Process each file
-        for file_item in pdf_files:
-            try:
-                self._process_single_file(
-                    file_item=file_item,
-                    drive_id=source_drive_id,
-                    processed_item_id=processed_item_id,
-                    projects=projects,
-                    vendors=vendors,
-                    sub_cost_codes=sub_cost_codes,
-                    tenant_id=tenant_id,
-                    payment_term_public_id=payment_term_public_id,
-                    result=result,
-                )
-            except Exception as e:
-                filename = file_item.get("name", "unknown")
-                error_msg = f"Error processing '{filename}': {str(e)}"
-                logger.exception(error_msg)
-                result.errors.append(error_msg)
-                result.files_skipped += 1
+        parsed = parse_bill_filename(filename)
+        if parsed.project_abbrev:
+            parsed.project_public_id = _resolve_project(parsed.project_abbrev, projects)
+        if parsed.vendor_name:
+            parsed.vendor_public_id = _resolve_vendor(parsed.vendor_name, vendors)
+        if parsed.sub_cost_code_raw:
+            parsed.sub_cost_code_id = _resolve_sub_cost_code(
+                parsed.sub_cost_code_raw, sub_cost_codes
+            )
 
-        return result
+        # Permanent skips — these are data issues, not transient. Leave the
+        # file in source/ so the operator can rename/fix and re-run.
+        if not parsed.vendor_name:
+            return {"status": "skipped", "reason": "Could not parse filename (7-segment convention)."}
+        if not parsed.vendor_public_id:
+            return {"status": "skipped", "reason": f"Could not resolve vendor '{parsed.vendor_name}'."}
+        if not parsed.bill_number:
+            return {"status": "skipped", "reason": "No bill number in filename."}
+        if not parsed.bill_date:
+            return {"status": "skipped", "reason": "No bill date in filename."}
+
+        existing_bill = self.bill_service.read_by_bill_number_and_vendor_public_id(
+            bill_number=parsed.bill_number, vendor_public_id=parsed.vendor_public_id,
+        )
+        if existing_bill:
+            try:
+                self._move_file_to_processed(drive_id, item_id, processed_item_id, filename)
+            except Exception as move_error:
+                logger.warning("Failed to move duplicate '%s': %s", filename, move_error)
+            return {
+                "status": "skipped",
+                "reason": "Duplicate bill already exists.",
+                "bill_public_id": existing_bill.public_id,
+            }
+
+        content_result = sp_client.get_drive_item_content(drive_id, item_id)
+        if content_result.get("status_code") != 200:
+            raise RuntimeError(f"Failed to download file: {content_result.get('message')}")
+        file_bytes = content_result.get("content")
+        if not file_bytes:
+            raise RuntimeError("Downloaded file has no content")
+
+        file_hash = hashlib.sha256(file_bytes).hexdigest()
+        blob_name = f"bills/{uuid.uuid4()}.pdf"
+        storage = AzureBlobStorage()
+        blob_url = storage.upload_file(
+            blob_name=blob_name,
+            file_content=file_bytes,
+            content_type="application/pdf",
+        )
+
+        attachment = self.attachment_service.create(
+            tenant_id=tenant_id,
+            filename=blob_name,
+            original_filename=filename,
+            file_extension="pdf",
+            content_type="application/pdf",
+            file_size=len(file_bytes),
+            file_hash=file_hash,
+            blob_url=blob_url,
+            description=parsed.description,
+            category="bill",
+        )
+
+        bill = self.bill_service.create(
+            tenant_id=tenant_id,
+            vendor_public_id=parsed.vendor_public_id,
+            payment_term_public_id=payment_term_public_id,
+            bill_date=parsed.bill_date,
+            due_date=parsed.bill_date,
+            bill_number=parsed.bill_number,
+            total_amount=parsed.rate,
+            memo=parsed.description,
+            is_draft=True,
+        )
+
+        line_item = self.bill_line_item_service.create(
+            tenant_id=tenant_id,
+            bill_public_id=bill.public_id,
+            sub_cost_code_id=parsed.sub_cost_code_id,
+            project_public_id=parsed.project_public_id,
+            description=parsed.description or parsed.vendor_name,
+            quantity=1,
+            rate=parsed.rate,
+            amount=parsed.rate,
+            markup=Decimal("0"),
+            price=parsed.rate,
+            is_draft=True,
+        )
+
+        self.bill_line_item_attachment_service.create(
+            tenant_id=tenant_id,
+            bill_line_item_public_id=line_item.public_id,
+            attachment_public_id=attachment.public_id,
+        )
+
+        try:
+            self._move_file_to_processed(drive_id, item_id, processed_item_id, filename)
+        except Exception as move_error:
+            logger.warning("Failed to move '%s' to processed folder: %s (bill still created)", filename, move_error)
+
+        logger.info("Created bill draft: vendor=%s, bill_number=%s, amount=%s, file=%s",
+                     parsed.vendor_public_id, parsed.bill_number, parsed.rate, filename)
+        return {
+            "status": "completed",
+            "bill_public_id": bill.public_id,
+            "bill_number": parsed.bill_number,
+            "line_item_public_id": line_item.public_id,
+        }
 
     def _process_single_file(
         self,

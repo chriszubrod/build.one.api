@@ -13,7 +13,10 @@ from decimal import Decimal
 # Local Imports
 from entities.bill.api.schemas import BillCreate, BillUpdate
 from entities.bill.business.service import BillService
-from entities.bill.persistence.folder_run_repo import BillFolderRunRepository
+from entities.bill.persistence.folder_run_repo import (
+    BillFolderRunItemRepository,
+    BillFolderRunRepository,
+)
 from entities.bill.persistence.repo import BillRepository
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
 from shared.database import get_connection
@@ -303,60 +306,63 @@ def complete_bill_router(
 
 
 # ---------------------------------------------------------------------------
-# Bill Folder Processing
+# Bill Folder Processing — queue-driven, one file per Function-App tick.
 # ---------------------------------------------------------------------------
-# Run state lives in dbo.BillFolderRun so POST and polling GET see the same
-# row regardless of which gunicorn worker handled them (was broken under
-# -w 2 with an in-process dict).
+# POST enumerates the SharePoint source folder and inserts one
+# BillFolderRunItem per PDF (status='queued'). The build.one.scheduler
+# Function App POSTs /admin/bill-folder/tick every 30s; each tick claims
+# ONE item, processes it end-to-end, and returns. No background task in
+# the web process; no long-running HTTP request; cross-worker safe.
 
 _folder_run_repo = BillFolderRunRepository()
-
-
-def _run_folder_processing(run_id: str, company_id: int, tenant_id: int):
-    """Background task for bill folder processing."""
-    try:
-        from entities.bill.business.folder_processor import BillFolderProcessor
-        processor = BillFolderProcessor()
-        result = processor.process(company_id=company_id, tenant_id=tenant_id)
-        _folder_run_repo.update_status(
-            public_id=run_id,
-            status="completed",
-            result=result.to_dict(),
-            set_completed=True,
-        )
-        logger.info(
-            "Folder processing %s completed: %d/%d files, %d bills created",
-            run_id, result.files_processed, result.files_found, result.bills_created,
-        )
-    except Exception as e:
-        logger.exception("Folder processing %s failed", run_id)
-        try:
-            _folder_run_repo.update_status(
-                public_id=run_id,
-                status="failed",
-                result={"errors": [str(e)]},
-                set_completed=True,
-            )
-        except Exception:
-            logger.exception("Failed to persist folder-processing failure for run %s", run_id)
+_folder_run_item_repo = BillFolderRunItemRepository()
 
 
 @router.post("/process/bill-folder")
 def process_bill_folder_router(
-    background_tasks: BackgroundTasks,
     current_user: dict = Depends(require_module_api(Modules.BILLS)),
 ):
     """
-    Trigger bill folder processing. Returns 202 immediately; processing
-    runs in background. Poll GET /api/v1/process/bill-folder/{run_id}.
-    Run state is persisted so any worker can serve the poll.
+    Enqueue a bill-folder run. Lists the source folder, inserts one
+    BillFolderRunItem per PDF in 'queued' status, and returns 202 with
+    the run_id. The scheduler drains the queue asynchronously; clients
+    poll GET /api/v1/process/bill-folder/{run_id} for progress.
     """
+    from entities.bill.business.folder_processor import BillFolderProcessor
+
     run = _folder_run_repo.create()
-    background_tasks.add_task(_run_folder_processing, run.public_id, company_id=1, tenant_id=1)
+
+    try:
+        pdfs = BillFolderProcessor().enumerate_source_folder(company_id=1)
+    except Exception as error:
+        logger.exception("Folder enumeration failed for run %s", run.public_id)
+        _folder_run_repo.update_status(
+            public_id=run.public_id,
+            status="failed",
+            result={"error": str(error)},
+            set_completed=True,
+        )
+        raise HTTPException(status_code=502, detail=f"Failed to enumerate source folder: {error}")
+
+    for pdf in pdfs:
+        _folder_run_item_repo.create(
+            run_id=run.id,
+            filename=pdf["filename"],
+            item_id=pdf["item_id"],
+        )
+
+    if not pdfs:
+        # Nothing to do — mark the run 'completed' right away so the client
+        # stops polling instead of waiting for a tick that won't happen.
+        _folder_run_item_repo.check_and_complete_run(run_id=run.id)
 
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
-        content={"status": "accepted", "run_id": run.public_id},
+        content={
+            "status": "accepted",
+            "run_id": run.public_id,
+            "files_queued": len(pdfs),
+        },
     )
 
 
@@ -365,13 +371,36 @@ def get_bill_folder_status_router(
     run_id: str,
     current_user: dict = Depends(require_module_api(Modules.BILLS)),
 ):
-    """Get the status of a bill folder processing run."""
-    run = _folder_run_repo.read_by_public_id(public_id=run_id)
-    if run is None:
+    """
+    Poll progress for a bill-folder run. Returns aggregate item counts
+    (queued / processing / completed / skipped / failed) plus the
+    currently-processing filename when one is in flight.
+    """
+    agg = _folder_run_item_repo.read_aggregate(run_public_id=run_id)
+    if agg is None:
         raise HTTPException(status_code=404, detail="Run not found")
-    payload: dict = {"status": run.status}
-    if run.result:
-        payload.update(run.result)
+
+    payload: dict = {
+        "status": agg.run_status,
+        "files_total": agg.files_total,
+        "files_queued": agg.files_queued,
+        "files_processing": agg.files_processing,
+        "files_processed": agg.files_processed,
+        "files_skipped": agg.files_skipped,
+        "files_failed": agg.files_failed,
+        "current_file": agg.current_file,
+        # Legacy aliases so older clients still work until the UI is updated.
+        "files_found": agg.files_total,
+        "bills_created": agg.files_processed,
+    }
+
+    if agg.run_status in ("completed", "failed"):
+        errors = _folder_run_item_repo.read_errors(run_public_id=run_id)
+        payload["errors"] = [
+            f"{e.filename}: {e.last_error or e.status}"
+            for e in errors
+        ]
+
     return payload
 
 

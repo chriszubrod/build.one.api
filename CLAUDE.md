@@ -105,4 +105,4 @@ Recurring jobs (outbox drain, QBO pulls, daily reconciles) live in the sibling `
 
 - **Always On = true**: critical. Without it, the container gets unloaded after ~20 min of inactivity and cold starts take 10–15 seconds. Enable via `az webapp config set --name <app> --resource-group <rg> --always-on true`.
 - **`-w 2`**: configured in `startup.sh`. Two gunicorn/uvicorn workers on B2. Fits in memory now that APScheduler is out of the web process. `-w 4` is feasible but unnecessary at current load.
-- **Env vars** that must exist on App Service: `ENABLE_SCHEDULER=false` (in-process scheduler disabled), `DRAIN_SECRET` (matches Function App), `ALLOW_QBO_WRITES=true`, `ALLOW_MS_WRITES=true`, `ENCRYPTION_KEY`, `WEB_APP_URL` (public URL of `build.one.web` — required post-Wave E5 so the QBO OAuth callback redirects users to the React integration list, otherwise they land on a 404 on the API host), plus DB creds.
+- **Env vars** that must exist on App Service: `ENABLE_SCHEDULER=false` (in-process scheduler disabled), `DRAIN_SECRET` (matches Function App), `ALLOW_QBO_WRITES=true`, `ALLOW_MS_WRITES=true`, `ENCRYPTION_KEY`, plus DB creds.

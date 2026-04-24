@@ -1,5 +1,68 @@
 # Session Notes
 
+## Session: Frontend Caching + QBO/MS Bug Sweep + Jinja Purge Phase 1 + Process Folder Refactor (April 23–24, 2026)
+
+### Overview
+Marathon session spanning frontend perf, backend bug sweeps, the start of the Jinja-to-React migration, and an architectural refactor of the Process Folder feature to a queue + one-file-per-tick model. Six themes below, each an independent commit set, mostly shipped to prod same-day.
+
+### 1. Frontend caching via TanStack Query (build.one.web `42e0a90`)
+- Replaced raw-`fetch` hooks (`useLookups`, `useEntityList`, `useEntityItem`) with `useQuery` under preserved return shapes — none of ~179 call sites needed to change.
+- `staleTime: 5 min`, `gcTime: 10 min`, `refetchOnWindowFocus: false`, `retry: 1`.
+- `useIdNameMap` collapsed onto the same `['list', listPath]` key so `/get/vendors` (371 KB) is fetched once per session instead of on every navigation.
+- Devtools mounted at `main.tsx`; TODO tracks dev-gating before launch.
+
+### 2. QBO reconciler + outbox refresh path fix (build.one.api `c5fc21f`)
+- Four entry points passed external Pydantic schemas (nested `vendor_ref.value`, QBO string id) into connectors that expect the flat business dataclass (flat `vendor_ref_value`, internal int id): `reconciliation/_reconcile_bill_qbo_missing_locally` (daily 03:00 UTC) + the three `outbox/_refresh_*` methods (SyncToken conflict recovery).
+- All four raised `AttributeError` on first use; the reconciler's `except` swallowed crashes and flagged every missing-locally bill, polluting `[qbo].[ReconciliationIssue]`.
+- Added public `upsert_from_external()` helpers on `QboBillService`, `QboPurchaseService`, `QboInvoiceService` wrapping the existing private `_upsert_*` (which persists external → dataclass) and returning `(local, lines)` ready for the connector.
+- Rewrote the four call sites to route through the helper. Pattern memorialized as `project_qbo_upsert_from_external.md` so alternate pull entry points added in the future don't re-introduce the bug.
+
+### 3. Jinja → React Phase 1: `/auth/me` + SSE profile events (build.one.api `37a6743`, build.one.web `a40054f`)
+- Added `GET /api/v1/auth/me` returning `{auth, user, role, is_admin, modules[]}`. Admin bypass returns every module with every flag true; non-admin uses the existing `_permission_cache` + `RoleModule` map.
+- Added `GET /api/v1/auth/me/changes` SSE stream. In-process pub/sub (`shared/profile_events.py`) keyed by `user_id`; UserRole + RoleModule mutation routers publish via `call_soon_threadsafe` after `invalidate_all_caches()`. Under `-w 2` delivery is per-worker ("B-lite") — `refetchOnWindowFocus` on `['me']` covers the cross-worker gap until we outgrow single-instance.
+- React: `useCurrentUser` hook on `['me']` key, `profileEventsClient.ts` (fetch-based SSE reader since EventSource can't attach bearer tokens), subscriber in `AuthContext` calls `queryClient.invalidateQueries(['me'])` on each event, `AppLayout` drives `Sidebar` from `me.modules` filtered by `can_read` (+ admin bypass).
+
+### 4. Phantom Module row cleanup (build.one.api `9a2606c`)
+- Audited `dbo.[Module]` against backend references (grep for `Modules.<CONST>`) and React App.tsx routes. Identified 9 rows with zero backend callers and no working React page: Anomaly Detection, Categorization, Classification Overrides, Contacts, Copilot, Email Threads, Inbox, Search, Tasks.
+- `entities/module/sql/cleanup_phantom_modules.sql` is idempotent — deletes dependent `RoleModule`/`UserModule` rows first, then the `Module` rows. Applied to prod.
+- Three gray-area rows intentionally kept: Attachments, Pending Actions, Time Tracking — backend RBAC gates on them but no top-level React page. TODO tracks adding an `IsNavigable` flag so permission scopes can exist without sidebar entries.
+
+### 5. Web dev is prod-only now (build.one.web `cbb3afa`)
+- Decision mid-session: stop running `uvicorn app:app` locally; React dev server talks directly to prod via `VITE_API_BASE_URL` in `.env`. Symptom that surfaced the need: a 502 on `/api/v1/process/bill-folder` from the Vite proxy (target `localhost:8000`, no API running).
+- Fixed two raw `fetch("/api/v1/...")` calls in `BillList.tsx` to use `rawRequest` from `client.ts` (which prefixes `API_BASE`).
+- Removed the `/api` proxy from `vite.config.ts` so future relative-path fetches fail loudly instead of silently hitting nothing.
+- Memorialized in `project_web_prod_only.md` + web repo's `CLAUDE.md`.
+
+### 6. Process Folder: worker-shared state → queue → one-file-per-tick
+Three waves of work as we debugged in prod:
+- **6a. DB-backed run state** (`b205568`) — in-process `_folder_processing_results` dict was per-worker under `-w 2`. POST on worker A, poll on worker B → 404. New `dbo.[BillFolderRun]` table + 3 sprocs. Fixed the 404 polling loop.
+- **6b. Graph 302 follow-redirects** (`9554deb`) — every file download failed with "HTTP 302". `MsGraphClient`'s httpx client had `follow_redirects=False` (httpx default, unlike requests). Graph's `/content` returns 302 to a pre-signed CDN URL. Added `follow_redirects` kwarg on `_send_http`, set True on both `_send_once_raw` call sites. httpx 0.28 strips Authorization on cross-origin redirects so the CDN accepts cleanly.
+- **6c. Queue + one-file-per-tick** (`d684b3d` SQL, `5f9fd83` API, `3569264` scheduler, `3a88dea` web) — all-files-in-one-background-task was the wrong shape; worker got wedged during the ~2-min run, Azure proxy returned 502s, browser reported as CORS errors. New pattern:
+  - `dbo.[BillFolderRunItem]` — one row per PDF, `queued → processing → completed | skipped | failed` with Attempts / ClaimedAt / LastError.
+  - POST enumerates SharePoint, inserts N items, returns 202 (~instant).
+  - `POST /api/v1/admin/bill-folder/tick` claims one item (UPDLOCK+READPAST, reclaim after 180s, max 3 attempts), processes end-to-end, marks terminal.
+  - New scheduler timer `process_bill_folder` every 30s; inner-loops while `processed:true` up to ~4 min to drain fast when work exists.
+  - React `BillList.tsx` shows `Processing {done}/{total}...` with current filename in tooltip.
+  - `BillFolderProcessor.process()` removed; split into `enumerate_source_folder()` + `process_single_item()` returning a result dict (skip/complete) or raising (transient retry).
+  - Validated in prod: 72 files, 47 processed end-to-end, 25 permanent skips (vendor-resolve misses) left in source/ for operator data cleanup.
+
+### Commits shipped
+- `build.one.api`: `c5fc21f`, `37a6743`, `9a2606c`, `cbb3afa` (web only — ignore), `b205568`, `9554deb`, `d684b3d`, `5f9fd83`
+- `build.one.scheduler`: `3569264`
+- `build.one.web`: `42e0a90`, `a40054f`, `cbb3afa`, `3a88dea`
+
+### Non-urgent findings surfaced
+- 25 of the 72 bill-folder PDFs fail vendor resolution — data issue (missing vendors in table, or filename token mismatches). Operator task.
+- Scout/intelligence work in both repos has been accumulating uncommitted across the last three sessions. Not mine to commit; flag each session.
+- Old `_run_single_file_processing` path (single-file Process from the pending list) still uses the in-process `_folder_processing_results` dict and has the same cross-worker bug as the old Process Folder. Wasn't in scope; noted for future.
+
+### Pointer to follow-ups
+- TODO.md has the Phase 2 wave roadmap: Wave A (leaf entities: address_type, payment_term, review_status, vendor_type, taxpayer, classification_override, dashboard) is next.
+- Pre-launch: dev-gate TanStack Query devtools, wire React refresh-token flow.
+- Ops: cleanup stale `ReconciliationIssue` rows, un-defer QBO test scaffold (task #8), promote SSE from B-lite to B-full if we scale past single-instance.
+
+---
+
 ## Session: API Performance Tuning + Scheduler Extraction (April 22, 2026)
 
 ### Trigger

@@ -43,6 +43,11 @@ Follow-ups when the purge is done:
 - [ ] **Clean up stale `ReconciliationIssue` rows.** Before the `upsert_from_external` fix landed, `_reconcile_bill_qbo_missing_locally` always crashed in the connector and recorded the bill as a flagged issue with `LastError LIKE '%vendor_ref_value%'`. Those rows pollute the Ch6 drift count and alert #6. Query and delete (or mark resolved) once the fix has been deployed for one reconcile cycle. Approx query: `DELETE FROM [qbo].[ReconciliationIssue] WHERE DriftType='qbo_missing_locally' AND LastError LIKE '%vendor_ref_value%'` — verify count before running.
 - [ ] **Un-defer task #8 (QBO test scaffold).** The `vendor_ref_value` bug in reconciliation + all three `_refresh_*` paths would have been caught by a single sandbox integration test. Revisit when App Insights lands (current blocker for #8 per Phase 2 notes).
 
+## Bill Folder follow-ups (2026-04-24)
+
+- [ ] **`_run_single_file_processing` still uses the in-process dict** and has the same cross-worker `-w 2` bug the bulk Process Folder flow had before today's refactor. Route is `POST /api/v1/process/bill-folder-single` in `entities/bill/api/router.py`. Fix by routing it through the same `BillFolderRunItem` table + tick pattern (one ad-hoc `BillFolderRun` with one item in it) — or by replacing with a direct synchronous call since it's already single-file. Low urgency (users rarely hit it), but it will silently 404 the polling loop when workers disagree.
+- [ ] **If we add a third feature that needs the one-file-per-tick pattern**, generalize into `[tasks].[Run]` / `[tasks].[RunItem]` + a `TaskQueueService` so we stop duplicating sprocs. Pattern captured in `project_one_file_per_tick.md` memory.
+
 ## Observability / Ops
 
 - [ ] App Insights alert rules on Function App failures: `drain_outbox` > 3 failures in 15 min; any QBO sync > 2 consecutive failures

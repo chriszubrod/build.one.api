@@ -56,6 +56,7 @@ async def run(
     prior_history: Optional[list[Message]] = None,
     provider: Optional[str] = None,
     session_public_id: Optional[str] = None,
+    session_id: Optional[int] = None,
 ) -> AsyncIterator[LoopEvent]:
     """Drive one agent run end-to-end. Yields LoopEvents as they happen.
 
@@ -213,6 +214,7 @@ async def run(
                     decision = await approval_coordinator.await_decision(
                         session_public_id=session_public_id,
                         request_id=call.id,
+                        session_id=session_id,
                     )
                     yield ApprovalDecision(
                         request_id=call.id,

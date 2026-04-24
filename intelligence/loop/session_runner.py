@@ -116,6 +116,7 @@ async def run_session(
             prior_history=prior_history,
             provider=provider,
             session_public_id=session.public_id,
+            session_id=session.id,
         ):
             t = ev.type
 

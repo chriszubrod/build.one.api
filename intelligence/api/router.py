@@ -57,18 +57,53 @@ def _event_to_sse(event: LoopEvent) -> bytes:
     return f"event: {event.type}\ndata: {payload}\n\n".encode("utf-8")
 
 
+SSE_KEEPALIVE_INTERVAL_SECONDS = 15
+
+
 async def _live_stream(
     public_id: str, request: Request
 ) -> AsyncIterator[bytes]:
-    """Subscribe to a live channel and emit SSE records until it ends or client disconnects."""
+    """Subscribe to a live channel and emit SSE records until it ends
+    or the client disconnects.
+
+    Emits a ``: keepalive`` SSE comment every 15s during gaps (e.g. when
+    the loop is paused awaiting an approval decision). Azure App Service
+    drops idle connections around 4 min; without this, a long approval
+    wait would sever the stream.
+    """
     channel = await session_channel.get(public_id)
     if channel is None:
         return
 
-    async for event in channel.subscribe():
-        if await request.is_disconnected():
-            return
-        yield _event_to_sse(event)
+    gen = channel.subscribe()
+    next_task: Optional[asyncio.Task] = asyncio.create_task(
+        gen.__anext__()
+    )
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(
+                    asyncio.shield(next_task),
+                    timeout=SSE_KEEPALIVE_INTERVAL_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                if await request.is_disconnected():
+                    return
+                # SSE comment line — EventSource ignores it; proxies see
+                # traffic and keep the connection open.
+                yield b": keepalive\n\n"
+                continue
+            except StopAsyncIteration:
+                return
+
+            next_task = asyncio.create_task(gen.__anext__())
+            if await request.is_disconnected():
+                return
+            yield _event_to_sse(event)
+    finally:
+        if next_task is not None and not next_task.done():
+            next_task.cancel()
+        await gen.aclose()
 
 
 async def _replay_stream(

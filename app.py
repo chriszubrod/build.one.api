@@ -55,7 +55,6 @@ from entities.role_module.api.router import router as role_module_api_router
 from entities.user_module.api.router import router as user_module_api_router
 from entities.contact.api.router import router as contact_api_router
 from entities.admin.api.router import router as admin_api_router
-from entities.admin.web.controller import router as admin_web_router
 from entities.dashboard.api.router import router as dashboard_api_router
 from entities.attachment.api.router import router as attachment_api_router
 from entities.bill.api.router import router as bill_api_router
@@ -216,7 +215,6 @@ app.include_router(taxpayer_api_router)
 app.include_router(role_module_api_router)
 app.include_router(user_module_api_router)
 app.include_router(admin_api_router)
-app.include_router(admin_web_router)
 app.include_router(dashboard_api_router)
 app.include_router(attachment_api_router)
 app.include_router(bill_api_router)

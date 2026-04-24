@@ -1,5 +1,65 @@
 # Session Notes
 
+## Session: Jinja Purge Phase 2 — Waves A-D (April 24, 2026)
+
+### Overview
+Executed the full leaf→transactional deletion sweep in one sitting. 28 entities' Jinja controllers + templates removed across four commits (one per wave), one business-logic extraction, one dead-code cleanup discovered mid-audit, all deployed to prod same-day. Wave E (blocked six + shared infra) remains pending React gap work.
+
+### Cumulative impact
+| Wave | Commit | Entities | Routes retired | Route count |
+|---|---|---|---|---|
+| A — leaf | `f34b63b` | address_type, payment_term, review_status, vendor_type, taxpayer, dashboard (+ classification_override noop) | 21 | 622 → 601 |
+| B — reference | `f6cecf2` | cost_code, sub_cost_code, customer, vendor, address, organization, project, company, module | 36 | 601 → 565 |
+| C — identity | `e0ddc32` | user, role, role_module, user_module, user_project, user_role, vendor_address, project_address | 28 | 565 → 537 |
+| D — transactional | `7758405` | bill, bill_credit, expense, invoice | 17 | 537 → 520 |
+| **Total** | — | **28 entities** | **102 routes** | **−102** |
+
+~13K lines of Jinja HTML deleted; `require_module_web` caller count dropped by the same 102.
+
+### Pattern per wave
+1. Pre-flight audit: routes per controller, template dir existence, React page parity, App.tsx routes, inbound non-app.py refs, helper functions.
+2. Compact per-entity confirmation table, wait for approval.
+3. `rm -rf entities/<e>/web/` + `rm -rf templates/<e>/`
+4. Paired `app.py` edits: remove 2 lines per entity (import + `include_router`).
+5. Verify: `from app import app` boots, expected route-count delta, `py_compile` clean, grep for dangling router/template refs clean.
+6. Single commit per wave, explicit file list (never `-A` — `.claude/settings.local.json` stays out).
+7. Push, deploy, verify, queue next wave.
+
+### Discoveries during audit
+- **Wave A orphans** — `address_type` and `taxpayer` had controllers but no template dirs (prior incomplete cleanup); their routes would 500 if hit. `classification_override` API-side had been fully removed already, noop entry.
+- **Wave B `address`** — same orphan shape as above.
+- **Wave C `project_address`** — controller file existed but was never imported or registered in `app.py`. Dead code since inception; deletion is pure hygiene, zero route-count impact.
+- **Wave C `vendor_address`** — controller was registered but templates had been deleted in a prior pass (orphan).
+- **Wave D `expense.edit_expense_redirect`** — 5th route on `expense`, a legacy `/expense/edit/{id}` → 302 to `/expense/{id}/edit` migration aid from an earlier URL-scheme change. React uses the canonical path directly; the redirect served no React user. Dropped without replacement.
+
+### The one real extraction: invoice enrichment
+Blocker surfaced during Wave D audit: `entities/invoice/api/router.py` imports `_enrich_line_items` from the web controller at two sites (lines 389 + 728 in the packet PDF generator and the Excel reconciliation path). ~170 lines of pure batched-SQL business logic that had been living in the wrong place — zero Jinja dependencies, pure polymorphic line-item enrichment across Bill/Expense/BillCredit.
+
+Extracted verbatim to `entities/invoice/business/enrichment.py` as `enrich_line_items` (dropped the underscore — public function now). Updated 2 API router callsites. Docs (CLAUDE.md + MEMORY.md Invoice section) retargeted at the new location.
+
+### What stays (Wave E, not this session)
+Per the original Phase 2 plan, these require React gap work before their Jinja can be deleted:
+- **contract_labor** (`/import` + `/bills`), **admin**, **attachment**, **auth** (signup/reset), **integration** (OAuth callback), **legal** (EULA/privacy) — the blocked six.
+- Shared Jinja infra: `get_current_user_web`, `require_module_web`, `WebAuthenticationRequired` + its `app.py` exception handler, CSRF helpers, `entities/auth/web/controller.py`, the 5 QBO `web/controller.py` files, `shared/layout/`, `shared/partials/` — all stay until the blocked six land.
+
+Wave E is React feature work, not deletion work — a planning conversation, not a follow-on to this session.
+
+### Post-deploy click-through verified
+Prod deploy (`az acr build` + `az webapp restart`) completed. All 28 React entity pages + invoice packet PDF generation (highest-risk path from the `enrich_line_items` extraction) confirmed working.
+
+### Commits shipped
+- `build.one.api`: `f34b63b` (Wave A), `f6cecf2` (Wave B), `e0ddc32` (Wave C), `7758405` (Wave D), `f14b33c` (TODO checkboxes)
+
+### Non-urgent findings surfaced
+- `/dashboard` Jinja route is gone (Wave A); React serves dashboard at `/`. Any legacy bookmark to `/dashboard` now 404s. Low impact, worth knowing.
+- Scout/intelligence work continues to sit uncommitted in both repos across sessions. Still not mine to commit.
+
+### Pointer to follow-ups
+- TODO.md now has Waves A-D checked with SHAs. Wave E unchecked; separate planning required.
+- MEMORY.md Entity Module Pattern updated to reflect that `web/` subpackage is now present only on the 6 blocked Wave E entities.
+
+---
+
 ## Session: Frontend Caching + QBO/MS Bug Sweep + Jinja Purge Phase 1 + Process Folder Refactor (April 23–24, 2026)
 
 ### Overview

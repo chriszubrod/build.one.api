@@ -23,6 +23,7 @@ Phase 2 — delete Jinja per entity in waves, one commit each, verify in UI befo
 - [x] **Wave C — identity surface:** user, role, role_module, user_module, user_project, user_role, vendor_address, project_address. (2026-04-24, `e0ddc32`; 28 routes retired, 565 → 537. `project_address` controller was dead code — never registered in `app.py`.)
 - [x] **Wave D — transactional:** bill, bill_credit, expense, invoice. (2026-04-24, `7758405`; 17 routes retired, 537 → 520. Extracted `_enrich_line_items` → `entities/invoice/business/enrichment.py` as `enrich_line_items` since the invoice packet PDF generator depends on it; dropped legacy `/expense/edit/{id}` redirect.)
 - [ ] **Wave E — blocked six + shared infra:** fix React gaps for contract_labor (/import + /bills), admin, attachment, auth (signup/reset), integration (OAuth callback), legal (EULA/privacy). Then delete `get_current_user_web`, `require_module_web`, `WebAuthenticationRequired` + its `app.py` handler, CSRF helpers, `entities/auth/web/controller.py`, the 5 QBO `web/controller.py` files, and the `templates/` tree.
+- [ ] **Contact UI re-implementation.** Waves B/C purged all parent entity (Vendor, Company, Customer, Project, User) Jinja pages, including the inline `shared/partials/contacts_*.html` integration. Contact API is intact but has no UI as of 2026-04-24. Add an inline Contact manager to the React parent view/edit pages (Vendor, Company, Customer, Project, User) when contacts come back into scope.
 
 Follow-ups when the purge is done:
 

@@ -71,7 +71,7 @@ At the start of each session, read SESSION_NOTES.md for historical context.
 - **Contract Labor bills summary**: The per-vendor aggregation for the React Bills page lives at `entities/contract_labor/business/bill_summary.py::build_bills_summary(billing_period)`. Exposed via `GET /api/v1/contract-labor/bills-summary?billing_period=...`. Returns vendor-grouped dicts with `line_items[]`, day-aggregated `line_items_summary[]` (billed_hours / cost_before_markup / price_after_markup), totals, and date range. Extracted from the deleted Jinja `bills_page` web controller in Wave E3.
 - **Scroll restoration**: Pages that scroll via `<main id="content" class="main-content overflow-y: auto">` must use `document.getElementById('content').scrollTop`, NOT `window.scrollY` / `window.scrollTo()`. Save to `sessionStorage` on navigation; restore on `DOMContentLoaded` with double `requestAnimationFrame`.
 - **Contract Labor import tuple unpack**: `_parse_row()` returns `(dict, skip_reason)` — always unpack with `parsed, skip_reason = self._parse_row(...)`. Assigning to a single variable and calling `.get()` on the tuple crashes at runtime.
-- **VENDOR_CONFIG**: Single source of truth for vendor rate/markup in `bill_service.py`. Do not maintain parallel hardcoded JS maps in templates — pass `VENDOR_CONFIG` from the controller and derive JS maps via `{{ vendor_config|tojson }}`.
+- **VENDOR_CONFIG**: Single source of truth for vendor rate/markup lives in `entities/contract_labor/business/bill_service.py`. If the React contract-labor pages ever need it client-side, expose via an API endpoint that returns the dict — do not duplicate the config in TypeScript.
 
 ## External Integrations (QBO + MS) — Hardening Patterns (April 2026)
 

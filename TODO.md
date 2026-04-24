@@ -38,11 +38,11 @@ Phase 2 — delete Jinja per entity in waves, one commit each, verify in UI befo
   - [x] **E1 — dead-code + quick wins (2026-04-24):** deleted `entities/attachment/web/controller.py` (unreachable duplicate of `/api/v1/view/attachment`), deleted entire `entities/legal/` + `templates/legal/` and added React `EulaPage`/`PrivacyPage`, wired `<InlineContacts>` into `UserEdit`/`UserView` (Company already had it). Routes 520 → 516 (−4). (An OAuth `?success=&message=` toast was also added to `IntegrationList` but removed later the same day — React runs locally only, so the callback renders a self-contained HTML landing page on the API host rather than cross-redirecting.)
 - [x] **Contact UI re-implementation (2026-04-24).** `<InlineContacts>` React component is wired into all 5 parent edit pages (Vendor, Company, Customer, Project, User) and all 5 parent view pages (readOnly). Old `shared/partials/contacts_*.html` partials are unreachable and will be removed with shared-infra deletion.
 
-Follow-ups when the purge is done:
+Follow-ups / post-purge:
 
 - [ ] **Promote SSE profile events from B-lite to B-full** (cross-worker). Add `[auth].[ProfileChangeEvent]` table + 2s poll in the SSE handler. Needed once we scale past `-w 2` single instance, or once we have a user base that hits cross-worker edges often.
-- [ ] **Refresh-token flow for React.** API already issues refresh tokens; React doesn't use them. Add `POST /api/v1/auth/refresh` wrapper in `client.ts` on 401 before wiping localStorage and redirecting.
 - [ ] **Add `IsNavigable BIT NOT NULL DEFAULT 1` to `dbo.[Module]`.** Today every Module row that exists for RBAC permission gating also shows up in the sidebar. `Attachments`, `Pending Actions`, and `Time Tracking` are legitimately-scoped permission modules but have no top-level UI page; today they render as broken sidebar links. Splitting the flag lets the backend keep RBAC scopes distinct from navigation. `_resolve_me_payload` should then omit non-navigable modules from the `modules[]` array (or the sidebar should filter on the flag).
+- [ ] **Password reset flow.** Login + signup + silent refresh all work; reset has no implementation anywhere (no API endpoint, no token schema, no React page). Ship as its own small wave when needed — doesn't block anything.
 
 ## API cleanup (do in a week, after Function architecture is proven stable)
 

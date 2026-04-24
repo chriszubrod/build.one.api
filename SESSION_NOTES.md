@@ -1,5 +1,135 @@
 # Session Notes
 
+## Session: Jinja Purge Phase 2 Wave E — React gap-closers + shared-infra deletion + admin rip + OAuth fix (April 24, 2026 — late evening)
+
+### Overview
+Closed out the Jinja migration. Six original blockers (attachment, legal, auth signup, integration, contract_labor, admin) all shipped. Shared-infra deletion followed (templates/, static/, web helpers, Jinja2 dep). Mid-session realized the admin surface we'd just built was ever-empty observability (async workflow states no production code transitions to anymore), so we tore it back out. End-of-session course correction on QBO OAuth topology: there's no deployed React host to redirect to — React runs locally only — so the callback now renders a self-contained HTML landing page on the API host instead of bouncing via a `WEB_APP_URL` env var. Net: Jinja gone, admin gone, 13 paired commits, 520 → 472 routes.
+
+### Route-count trajectory
+
+| Wave | API | Web | Routes | What |
+|---|---|---|---|---|
+| E1 | `d7aaeef` | `1500c92` | 520 → 516 | Dead-code + quick wins |
+| E2 | `5beb6d8` | `d93ff49` | 516 → 515 | React signup |
+| E3 | `c6e20b4` | `e3aa540` | 515 → 510 | Contract Labor Import + Bills |
+| E4 | `aa19cb2` | `0b4966e` | 510 → 508 | Admin dashboard + workflow detail |
+| E5 | `3178755` | — | 508 → 484 | Shared-infra deletion |
+| Admin rip | `ae72e7c` | `eedc11c` | 484 → 472 | Undo E4 + dead pending_actions |
+| OAuth fix | `741c7ac` | `e47b0b5` | 472 | Inline HTML landing |
+| **Total** | — | — | **520 → 472 (−48)** | — |
+
+### E1 — dead-code + quick wins (`d7aaeef` + `1500c92`)
+- `entities/attachment/web/controller.py` was an unreachable duplicate of `/api/v1/view/attachment` — no templates, no inbound links, React already consumed the API path. Deleted cleanly.
+- Legal (EULA + privacy) migrated to static React pages `src/pages/legal/EulaPage.tsx` + `PrivacyPage.tsx` at `/legal/eula` and `/legal/privacy`. Deleted `entities/legal/` + `templates/legal/`.
+- Audit had missed that `CompanyView` was already wired for `<InlineContacts>` — only `UserEdit` + `UserView` were missing it. Added both.
+- Added an OAuth-result toast handler to `IntegrationList.tsx` reading `?success=&message=` on mount. Removed later in the same session after the OAuth topology became clear (see below).
+
+### E2 — React signup (`5beb6d8` + `d93ff49`)
+- New `src/auth/SignupPage.tsx` + `signup()` on `AuthContext`. Fields match existing `POST /api/v1/signup/auth`. Redirects to `/user/create` on success to complete the User entity. CSRF dance works because login + signup cookies + token rotation already handled on the API side.
+- `LoginPage` cross-linked to `/signup`.
+- Deleted Jinja `GET /auth/signup` + `templates/auth/signup.html`. The Jinja refresh/logout/reset routes stayed here, pending Wave E5.
+
+### E3 — Contract Labor Import + Bills (`c6e20b4` + `e3aa540`)
+- Two new React pages: `ContractLaborImport.tsx` (drag-and-drop Excel upload + results display — imported / skipped / errors, unmatched vendors + projects) and `ContractLaborBills.tsx` (per-vendor card grid, per-vendor + bulk generate, collapsible day summary, auth-aware PDF preview via blob-URL).
+- Added Import + Generate Bills links to `ContractLaborList.tsx`.
+- Business-logic extraction: ~200 lines of vendor aggregation (ready entries → per-vendor groups with day-level `line_items_summary`) moved from the Jinja `bills_page` controller into `entities/contract_labor/business/bill_summary.py::build_bills_summary(billing_period)`. Exposed at `GET /api/v1/contract-labor/bills-summary?billing_period=...`. Matches the Wave D `enrich_line_items` extraction pattern.
+- Deleted the entire `entities/contract_labor/web/` controller (all 481 lines — list/edit/view Jinja routes that React had long superseded, plus the import + bills pages just replaced) + all four Jinja templates.
+
+### E4 — Admin in React (`aa19cb2` + `0b4966e`)
+- New `src/pages/admin/AdminDashboard.tsx`: 6 stat cards (workflows today / completed today / awaiting approval / failed 24h / active / avg completion) + searchable/filterable workflows table. Toggles between `/admin/recent-workflows` and `/workflows/search` based on filter state.
+- New `src/pages/admin/WorkflowDetail.tsx`: meta header, related-entities deep-links (vendor/project/bill), event timeline, and Retry / Approve / Reject / Cancel actions via inline modals. State-gated buttons.
+- Dropped the Jinja "Inbox Quality" tab — it referenced `/api/v1/admin/inbox-stats` + classification-overrides CRUD endpoints that were never implemented (the email-intake surface was decommissioned months ago).
+- Cleanup: deleted 4 orphan React `ClassificationOverride*` pages + App.tsx routes + the type. Entity was purged from the API months ago and those pages 404'd every call.
+- Deleted `entities/admin/web/` + `templates/admin/` (view.html, workflow_detail.html, the already-orphaned overrides.html).
+
+### E5 — shared-infra deletion (`3178755`, API only)
+Biggest single commit of the day — 79 files, +62 / −19,628 lines.
+
+- Deleted 10 still-registered Jinja web controllers: `entities/auth/web`, `entities/integration/web`, `integrations/intuit/qbo/{auth,client,company_info,purchase,vendor}/web`, `integrations/sync/web`, plus 4 empty-stub web controllers (`taxpayer_attachment`, `invoice_line_item`, `invoice_attachment`, `invoice_line_item_attachment`).
+- Deleted 2 on-disk-but-unregistered dead controllers: `integrations/intuit/qbo/{auth,company_info}/web/controller.py`.
+- Deleted the entire `templates/` tree (auth, integration, qbo-purchase, shared/layout, shared/partials, sync) and the entire `static/` directory (27 CSS files + static JS).
+- Removed Jinja helpers from `entities/auth/business/service.py`: `get_current_user_web`, `WebAuthenticationRequired`, `RefreshRequired`. Dropped the 7 orphaned service imports (`OrganizationService`, `CompanyService`, `ModuleService`, `ProjectService`, `UserModuleService`, `UserProjectService`, `UserRoleService`) and `ThreadPoolExecutor` — only `get_current_user_web` had used them.
+- Removed `require_module_web` from `shared/rbac.py` and the corresponding docstring example.
+- Removed the two FastAPI exception handlers (`RefreshRequired`, `WebAuthenticationRequired`) + the `StaticFiles` mount from `app.py`.
+- Dropped `Jinja2==3.1.6` from `requirements.txt` + `requirements-prod.txt`. MarkupSafe stayed (transitive dep of Starlette).
+- **Kept CSRF helpers** (`_require_csrf`, `CSRF_COOKIE_NAME`, `CSRF_HEADER_NAME`) — React's silent refresh (`fetchWithRefresh`, shipped this morning) uses them for cookie-auth paths.
+- Changed `GET /` from a 302 to `/dashboard` (gone since Wave A) to a simple JSON health ping.
+
+### Admin rip (`ae72e7c` + `eedc11c`)
+Post-E5 cleanup, driven by a "wait, what is /admin actually used for?" conversation.
+
+The admin dashboard was showing a noise log of every CRUD operation (since `ProcessEngine.execute_synchronous` writes a Workflow + WorkflowEvent row for every mutation). All the action buttons (Retry / Approve / Reject / Cancel) were gated on states — `awaiting_approval`, `failed`, `needs_review` — that **no production code transitions to anymore**. The email-intake workflow that used them was decommissioned months ago; agents use a separate approval system on `AgentSession`. So the entire observability + action surface was ever-empty.
+
+- Deleted `entities/admin/` (api/router.py + schemas.py + empty business/persistence/sql stubs).
+- Deleted `core/workflow/business/admin.py` (the 700-line `WorkflowAdmin` class).
+- Deleted `core/workflow/business/pending_actions.py` + `execute_pending_action.py` + `core/workflow/api/pending_action_router.py` — the whole pending-action execution surface (`POST /api/v1/execute-pending-action`) had zero callers outside its own package.
+- Deleted React `AdminDashboard.tsx` + `WorkflowDetail.tsx` + their App.tsx routes.
+
+**Kept the workflow data layer** — `orchestrator`, `instant`, `models`, `WorkflowRepository`, `WorkflowEventRepository`, `execute_synchronous`. Every entity CRUD still records a `Workflow` + `WorkflowEvent` row. The audit trail is intact; there's just no dashboard to browse it anymore. If email-intake returns in the planned "inbox rebuild," the admin UI gets rebuilt for the new workflow shape then.
+
+### OAuth callback topology correction (`741c7ac` + `e47b0b5`)
+End-of-session catch: the `WEB_APP_URL` env var added in E5 was solving a problem we don't have. Real topology:
+
+- Prod API: deployed Azure App Service
+- React: **runs locally only** (`npm run dev` pointed at the prod API via `VITE_API_BASE_URL`); there is no deployed React host
+- QBO OAuth: Intuit redirects to the API host's callback, which then landed on a Jinja `/integration/list` page pre-E5. With Jinja gone the callback would 404 unless it had somewhere to bounce to.
+
+Redirecting "back to React" doesn't make sense — there's no stable URL to redirect to (localhost:3000 only works when dev is up on that port, on that machine, for that one user).
+
+Fix: callback returns an `HTMLResponse` with a small self-contained card — ✓ / ✗ icon, inline CSS, escaped message text — saying "QuickBooks connected / Connection failed — you can close this tab and return to Build One." No redirect, no env var, no dependency on where React lives.
+
+- Dropped `web_app_url` from `config.Settings` + the `_integration_list_redirect` helper.
+- Callback now uses `_callback_landing(success, message)` returning `HTMLResponse`.
+- Removed the now-dead `?success=&message=` toast handler from React `IntegrationList.tsx`.
+- Dropped CLAUDE.md's `WEB_APP_URL` env-vars-list entry + TODO's "set `WEB_APP_URL` before deploying E5" prerequisite.
+
+### Commits shipped
+
+| repo | commits |
+|---|---|
+| `build.one.api` | `d7aaeef` (E1), `5beb6d8` (E2), `c6e20b4` (E3), `aa19cb2` (E4), `3178755` (E5), `ae72e7c` (admin rip), `741c7ac` (OAuth HTML) |
+| `build.one.web` | `1500c92` (E1), `d93ff49` (E2), `e3aa540` (E3), `0b4966e` (E4), `eedc11c` (admin rip), `e47b0b5` (toast cleanup) |
+
+### Discoveries during the work
+
+- **`IntegrationList` toast was dormant from day one.** Added in E1 to catch the post-OAuth redirect, but the redirect was relative (`/integration/list?...`) and resolved to the **API** host's Jinja page, not the web host's React page. Never fired. Removed at end of session when the callback switched to HTML.
+- **Audit missed that CompanyView was already wired for `<InlineContacts>`.** Only 2 of the 3 sites flagged in the Contact audit were actually missing — cost 5 minutes to verify.
+- **`entities/admin/overrides.html` was orphaned.** A dead Jinja template for a route that didn't exist, referencing classification-override endpoints that also didn't exist. Cleanup in E4.
+- **Four empty-stub web controllers** (`taxpayer_attachment`, `invoice_line_item`, `invoice_attachment`, `invoice_line_item_attachment`) were still registered in app.py. Zero routes each. Deleted in E5.
+- **Two unregistered QBO web controllers** (`qbo/auth/web`, `qbo/company_info/web`) were on disk but not included in app.py. Deleted without replacement since they were already dead code.
+- **`pending_actions` infrastructure** (`POST /api/v1/execute-pending-action` + helpers) had zero callers outside its own package. Vestige of the old email-intake approval flow.
+- **`/` route redirected to `/dashboard`** which was deleted in Wave A. Changed to JSON health ping in E5.
+
+### Non-urgent findings surfaced
+
+- **`/admin` sidebar link wasn't in React anyway** — Admin isn't a Module row (it was gated on `Modules.ROLES`), so the sidebar never showed a link. Users had to know the URL. Moot now that admin is gone, but if admin is ever rebuilt it needs either a sidebar hardcoding or the `IsNavigable` flag follow-up.
+- **`static/css/admin.css` was flagged as orphaned** during E4, deleted in E5 along with the whole `static/` tree.
+- **Password reset intentionally deferred.** Signup + login + silent refresh all work; reset has no implementation anywhere (no API endpoint, no token schema, no React page). Ship as its own small wave when needed — it doesn't block anything.
+
+### Non-scope-creep surprises avoided
+
+- Didn't touch the scout/intelligence uncommitted work that's been floating across sessions. Still not mine to commit.
+- Didn't drop `MarkupSafe` from requirements even though it was a Jinja transitive dep — Starlette also pulls it in.
+- Didn't restructure the OAuth flow to use popups + `postMessage`; HTML landing page is sufficient for a single local-dev user.
+
+### Pointer to follow-ups
+
+- TODO.md has the Wave E entry fully checked. Follow-ups: none blocking; `sseClient.ts` refresh-machinery patch is the next active-user bug to fix (flagged 2026-04-24 under "Frontend pre-launch").
+- MEMORY.md updated: Entity Module Pattern (web/ gone), Jinja decommission note, Contact UI pattern (React InlineContacts).
+- CLAUDE.md updated: Jinja-gone note, env vars list (no WEB_APP_URL).
+
+### Deploy
+
+Two commands (user runs):
+```
+az acr build --registry buildone --image buildone:latest --image buildone:<shortsha> --file Dockerfile .
+az webapp restart --name buildone --resource-group buildone_group
+```
+
+No new env vars needed. No schema changes. React changes can be deployed at user's preferred time (local `npm run dev` picks them up automatically on next pull).
+
+---
+
 ## Session: Intelligence layer hardening + fleet buildout (April 24, 2026 — evening)
 
 ### Overview

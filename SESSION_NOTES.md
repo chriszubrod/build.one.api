@@ -1,5 +1,72 @@
 # Session Notes
 
+## Session: Intelligence layer hardening + fleet buildout (April 24, 2026 — evening)
+
+### Overview
+Started the evening with scout doing direct SubCostCode work; ended with a three-agent fleet (scout as pure orchestrator + two specialists), cross-worker correctness fixes, transport retry, web refresh-token flow, and both CostCode + SubCostCode fully under approval-gated CRUD. Every item verified end-to-end in prod.
+
+### What shipped (API, build.one.api)
+
+| commit | what |
+|---|---|
+| `8d56dae` | cross-worker approval coordinator (prior session context — DB poll fallback when `/approve` lands on a different worker than the one running the loop) |
+| `4da7996` | cross-worker SSE tail stream (`/events` polls DB when local channel is missing; fixed premature `Done` bug) |
+| `443f31b` | agent-fleet credentials seed (3 agents) + cost_code_agent config fields |
+| `cca80bb` | sub-agent composition (Phase 1A) + SubCostCodeSpecialist |
+| `61f9353` | scout pure-delegation cutover (Phase 1B) — direct entity tools removed |
+| `b3671b8` | pre-register sub-session channel before `start_run` returns (race fix) |
+| `45a3f81` | retry transient HTTP errors from Anthropic (429/503/529) |
+| `93128d1` | CostCodeSpecialist + scout routes to it |
+| `acfb3e1` | narrow scout to least-privilege `Agent Orchestrator` role |
+| `2b949dd` | CostCode CRUD tools (approval-gated) |
+| `a65380a` | scout routing respects literal word choice |
+| `eab6db2` | scout's stale "Read-only today" hint removed now that CostCode CRUD is live |
+
+### What shipped (web, build.one.web)
+
+| commit | what |
+|---|---|
+| `c0839dd` | route sub-agent approvals to their own session URL (`session_public_id` on the event) |
+| `36573c6` | silent token refresh on 401 in `client.ts` (covers `request` / `uploadFile` / `fetchViewAttachmentBlob`) |
+
+### Proof points verified in prod
+
+| test | result | cost |
+|---|---|---|
+| simple read via delegation ("What is sub-cost-code 10.01?") | scout → sub_cost_code_specialist → record card | $0.011 |
+| compound ("Compare 10.01 and 10.02") | scout fans out two delegations, synthesizes table + judgment | $0.018 |
+| out of scope ("How many vendors?") | scout refuses cleanly, no delegation | $0.010 |
+| CostCode catalog + children ("Show cost code 10 and its children") | scout fans out to BOTH specialists in one turn | $0.023 |
+| CostCode create 99.5 (approval-gated) | read → propose → approve → row created | $0.039 |
+| CostCode update (rename) | read → diff narration → approve → row renamed | $0.038 |
+| CostCode delete (with child-check) | search for children → propose → approve → row gone | $0.009 |
+
+### Architecture commitments reinforced
+
+- **Scout is a pure orchestrator.** No direct entity tools, no module permissions. `Agent Orchestrator` role with zero grants. If scout ever needs a direct HTTP tool, add the specific grant then — not an umbrella Admin.
+- **Delegation is a Tool, not a loop primitive.** `intelligence/composition/delegation.py::make_delegation_tool` factory returns a registrable Tool. Handler spawns sub-session, forwards events, returns final text. No changes to the core loop.
+- **Cross-worker: dual-signal everywhere.** Both the approval coordinator and the SSE tail now have an in-memory path AND a DB-polled path. Same-worker still wins in ms; cross-worker wins in ~1.5s. No Redis, no IPC.
+- **Docker deploy, not ZIP.** `az acr build` → `az webapp restart`. Kudu's `/api/deployments` endpoint is stale (Feb 2 entries) — ignore it. The true source of truth is ACR image timestamps.
+
+### Deferred (documented in TODO)
+
+- **Parallel tool dispatch in `runner.py`.** Today's dispatch is sequential. Would cut compound-query wall time in half, but sub-agent event forwarding would interleave unless the UI groups sub-events into their own lane — so deferred with paired UI work.
+- **`sseClient.ts` refresh-on-401.** Main `client.ts` now handles 401 → refresh → retry, but `sseClient.ts` (agent start/continue/approve/cancel/events) has its own fetch calls that bypass it. User hit this mid-session: scout's `/continue` 401'd with "Token has expired." Quick fix is log-out-and-back-in; proper fix is routing sseClient through the same machinery.
+- **`read_cost_code_by_number` tool.** Specialist today has to `list_cost_codes` + scan when asked about "cost code 10" — extra round-trip each time.
+
+### Operational gotchas caught (and some fresh ones)
+
+- **Token expiry mid-conversation** surfaces as a 401 on `/continue` with zero retry on the agent SSE path. Until sseClient gets the refresh treatment, every 30 min of idle = one forced re-login in the tray.
+- **Stale cache + prompt invalidation.** Scout's prompt changed multiple times today; each change invalidates the cached prefix (cache write vs read cost differential = ~$0.02/turn). Once the prompt stabilizes, steady-state cost drops.
+- **Scout's format-matching was too clever.** User said "cost code 99.5" and scout inferred X.YY → SubCostCode. Fixed with an explicit routing rule in the prompt: literal word choice wins over number format.
+- **Stale routing hints.** After adding CostCode CRUD tools, the delegation tool description AND scout's in-prompt routing table still said "read-only today" — scout refused writes because its own description told it to. Fixed `eab6db2`.
+
+### Final prod state
+
+- ACR `:latest` = `sha256:339c4360…` (tag `:eab6db2`), deployed 2026-04-24 20:36 UTC.
+- DB: `scout_agent` on `Agent Orchestrator` (0 grants), `sub_cost_code_agent` on `Sub Cost Code Specialist` (2 grants), `cost_code_agent` on `Cost Code Specialist` (2 grants). Test row `99.5` created + updated + deleted; catalog is clean.
+- Web: `36573c6` committed, awaiting web deploy to land refresh-token flow.
+
 ## Session: Jinja Purge Phase 2 — Waves A-D (April 24, 2026)
 
 ### Overview

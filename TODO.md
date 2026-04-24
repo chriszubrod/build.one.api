@@ -5,6 +5,8 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 ## Intelligence layer
 
 - [ ] **Parallel tool dispatch in `runner.py`.** Today's dispatch loop iterates `pending_calls` sequentially (`for call in pending_calls: ... await tool.handler(...)`). For scout's compound-query case (fan-out to multiple specialists in one turn), this doubles wall-clock vs. parallel. `asyncio.gather` with an event queue would cut it in half. Deferred because sub-agent events forwarded onto the parent's channel would interleave under parallelism — per-sub-agent chronology preserved, but visually jumbled in the tray. Pair with a UI pass that groups sub-agent events into their own lane (collapsible, tabbed, or indented) so parallelism is legible.
+- [ ] **Add `read_cost_code_by_number` tool.** Today the CostCode specialist has to `list_cost_codes` + scan when the user asks about "cost code 10" by number — extra round-trip each time. Add `read_cost_code_by_number` wrapping `GET /api/v1/get/cost-code/by-number/{number}` (endpoint doesn't exist yet either — add both).
+- [ ] **Entity expansion: next specialist** (Vendor or Project likely). Same template as CostCode / SubCostCode: `entities/{name}/intelligence/tools.py` for list + search + read + CRUD (with approval on writes), new `intelligence/agents/{name}_specialist/` package, new agent user + narrow role via `seed.intelligence_agents.sql` pattern, register scout's delegation tool. Expect 20-30 min mechanical per entity.
 
 ## Frontend perf
 
@@ -14,7 +16,8 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 
 ## Frontend pre-launch (build.one.web)
 
-- [ ] **Graceful token refresh — stop the 30-min lockouts.** Observed 2026-04-24: active users get bounced to login every 30 minutes when the access token expires. API already issues refresh tokens; React doesn't use them. Wire a refresh wrapper into `client.ts` that, on a 401 response, hits `POST /api/v1/auth/refresh` and retries the original request before falling through to the wipe-localStorage-and-redirect path. Supersedes the (related) post-purge item below.
+- [x] **Graceful token refresh — stop the 30-min lockouts.** (web `36573c6`, 2026-04-24) `client.ts` now calls `POST /api/v1/auth/refresh` on 401 and retries once before wiping localStorage. Covers `request`, `uploadFile`, `fetchViewAttachmentBlob`.
+- [ ] **Patch `src/agents/sseClient.ts` to use the same refresh machinery.** Scout-tray paths (`start`, `continue`, `approve`, `cancel`, `events`) have their own fetch calls that bypass `client.ts`'s refresh-on-401. Observed 2026-04-24: mid-conversation `POST /api/v1/agents/runs/{id}/continue` returns `HTTP 401 "Token has expired"` and the run fails outright with no refresh attempted. Route sseClient fetches through a shared helper (or inline the same 401 → refresh → retry pattern) so the agent endpoints are covered too.
 - [ ] **Dev-gate the TanStack Query devtools.** `src/main.tsx` currently renders `<ReactQueryDevtools />` unconditionally, so the floating panel ships to prod. Before launch, wrap in `{import.meta.env.DEV && <ReactQueryDevtools ... />}`. Keep the dev-only version for local debugging.
 
 ## Jinja purge — migration waves (started 2026-04-23)

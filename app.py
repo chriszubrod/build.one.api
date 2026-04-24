@@ -44,22 +44,15 @@ from entities.sub_cost_code.api.router import router as sub_cost_code_api_router
 from entities.module.api.router import router as module_api_router
 from entities.project.api.router import router as project_api_router
 from entities.user.api.router import router as user_api_router
-from entities.user.web.controller import router as user_web_router
 from entities.role.api.router import router as role_api_router
-from entities.role.web.controller import router as role_web_router
 from entities.user_role.api.router import router as user_role_api_router
-from entities.user_role.web.controller import router as user_role_web_router
 from entities.user_project.api.router import router as user_project_api_router
-from entities.user_project.web.controller import router as user_project_web_router
 from entities.vendor.api.router import router as vendor_api_router
 from entities.vendor_address.api.router import router as vendor_address_api_router
-from entities.vendor_address.web.controller import router as vendor_address_web_router
 from entities.vendor_type.api.router import router as vendor_type_api_router
 from entities.taxpayer.api.router import router as taxpayer_api_router
 from entities.role_module.api.router import router as role_module_api_router
-from entities.role_module.web.controller import router as role_module_web_router
 from entities.user_module.api.router import router as user_module_api_router
-from entities.user_module.web.controller import router as user_module_web_router
 from entities.contact.api.router import router as contact_api_router
 from entities.admin.api.router import router as admin_api_router
 from entities.admin.web.controller import router as admin_web_router
@@ -199,17 +192,12 @@ app.include_router(sub_cost_code_api_router)
 app.include_router(module_api_router)
 app.include_router(project_api_router)
 app.include_router(user_api_router)
-app.include_router(user_web_router)
 app.include_router(role_api_router)
-app.include_router(role_web_router)
 app.include_router(user_role_api_router)
-app.include_router(user_role_web_router)
 app.include_router(user_project_api_router)
-app.include_router(user_project_web_router)
 app.include_router(contact_api_router)
 app.include_router(vendor_api_router)
 app.include_router(vendor_address_api_router)
-app.include_router(vendor_address_web_router)
 app.include_router(intuit_qbo_auth_api_router)
 app.include_router(intuit_qbo_company_info_api_router)
 app.include_router(intuit_qbo_physical_address_api_router)
@@ -233,9 +221,7 @@ app.include_router(ms_mail_api_router)
 app.include_router(vendor_type_api_router)
 app.include_router(taxpayer_api_router)
 app.include_router(role_module_api_router)
-app.include_router(role_module_web_router)
 app.include_router(user_module_api_router)
-app.include_router(user_module_web_router)
 app.include_router(admin_api_router)
 app.include_router(admin_web_router)
 app.include_router(dashboard_api_router)

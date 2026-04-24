@@ -31,26 +31,18 @@ from entities.auth.business.service import (
 )
 
 from entities.address.api.router import router as address_api_router
-from entities.address.web.controller import router as address_web_router
 from entities.address_type.api.router import router as address_type_api_router
 from entities.auth.api.router import router as auth_api_router
 from entities.auth.web.controller import router as auth_web_router
 from entities.customer.api.router import router as customer_api_router
-from entities.customer.web.controller import router as customer_web_router
 from entities.integration.api.router import router as integration_api_router
 from entities.integration.web.controller import router as integration_web_router
 from entities.organization.api.router import router as organization_api_router
-from entities.organization.web.controller import router as organization_web_router
 from entities.company.api.router import router as company_api_router
-from entities.company.web.controller import router as company_web_router
 from entities.cost_code.api.router import router as cost_code_api_router
-from entities.cost_code.web.controller import router as cost_code_web_router
 from entities.sub_cost_code.api.router import router as sub_cost_code_api_router
-from entities.sub_cost_code.web.controller import router as sub_cost_code_web_router
 from entities.module.api.router import router as module_api_router
-from entities.module.web.controller import router as module_web_router
 from entities.project.api.router import router as project_api_router
-from entities.project.web.controller import router as project_web_router
 from entities.user.api.router import router as user_api_router
 from entities.user.web.controller import router as user_web_router
 from entities.role.api.router import router as role_api_router
@@ -60,7 +52,6 @@ from entities.user_role.web.controller import router as user_role_web_router
 from entities.user_project.api.router import router as user_project_api_router
 from entities.user_project.web.controller import router as user_project_web_router
 from entities.vendor.api.router import router as vendor_api_router
-from entities.vendor.web.controller import router as vendor_web_router
 from entities.vendor_address.api.router import router as vendor_address_api_router
 from entities.vendor_address.web.controller import router as vendor_address_web_router
 from entities.vendor_type.api.router import router as vendor_type_api_router
@@ -195,26 +186,18 @@ async def web_authentication_required_handler(request: Request, exc: WebAuthenti
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.include_router(address_api_router)
-app.include_router(address_web_router)
 app.include_router(address_type_api_router)
 app.include_router(auth_api_router)
 app.include_router(auth_web_router)
 app.include_router(customer_api_router)
-app.include_router(customer_web_router)
 app.include_router(integration_api_router)
 app.include_router(integration_web_router)
 app.include_router(organization_api_router)
-app.include_router(organization_web_router)
 app.include_router(company_api_router)
-app.include_router(company_web_router)
 app.include_router(cost_code_api_router)
-app.include_router(cost_code_web_router)
 app.include_router(sub_cost_code_api_router)
-app.include_router(sub_cost_code_web_router)
 app.include_router(module_api_router)
-app.include_router(module_web_router)
 app.include_router(project_api_router)
-app.include_router(project_web_router)
 app.include_router(user_api_router)
 app.include_router(user_web_router)
 app.include_router(role_api_router)
@@ -225,7 +208,6 @@ app.include_router(user_project_api_router)
 app.include_router(user_project_web_router)
 app.include_router(contact_api_router)
 app.include_router(vendor_api_router)
-app.include_router(vendor_web_router)
 app.include_router(vendor_address_api_router)
 app.include_router(vendor_address_web_router)
 app.include_router(intuit_qbo_auth_api_router)

@@ -70,6 +70,42 @@ async def get_projects_router(current_user: dict = Depends(require_module_api(Mo
     return list_response([project.to_dict() for project in projects])
 
 
+@router.get("/get/project/search")
+def search_projects_router(
+    q: str,
+    limit: int = 10,
+    current_user: dict = Depends(require_module_api(Modules.PROJECTS)),
+):
+    """
+    Case-insensitive substring search over Project name + abbreviation.
+    Returns up to `limit` matches (default 10). Intended for agent
+    narrow-lookup and dropdown search — cheaper than listing the full
+    catalog when only a few rows matter.
+    """
+    if limit < 1:
+        limit = 1
+    if limit > 100:
+        limit = 100
+    matches = ProjectService().search_by_name(query=q, limit=limit)
+    return list_response([p.to_dict() for p in matches])
+
+
+@router.get("/get/project/by-customer/{customer_id}")
+def get_projects_by_customer_router(
+    customer_id: int,
+    current_user: dict = Depends(require_module_api(Modules.PROJECTS)),
+):
+    """
+    Return all projects belonging to a Customer (BIGINT FK).
+
+    Intended for the Customer specialist agent's "what projects does X
+    have?" query, where it has the parent's internal id from a previous
+    Customer read.
+    """
+    projects = ProjectService().read_by_customer_id(customer_id=customer_id)
+    return list_response([p.to_dict() for p in projects])
+
+
 @router.get("/get/project/{public_id}")
 def get_project_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.PROJECTS))):
     """

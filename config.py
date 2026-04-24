@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     sub_cost_code_agent_password: Optional[str] = None
     cost_code_agent_username: Optional[str] = None
     cost_code_agent_password: Optional[str] = None
+    customer_agent_username: Optional[str] = None
+    customer_agent_password: Optional[str] = None
+    project_agent_username: Optional[str] = None
+    project_agent_password: Optional[str] = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

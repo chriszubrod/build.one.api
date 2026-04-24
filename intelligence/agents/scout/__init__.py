@@ -15,6 +15,8 @@ Callers that want scout available should `import intelligence.agents.scout`
 # Sub-agents register themselves AND the entity tools they wrap.
 import intelligence.agents.sub_cost_code_specialist  # noqa: F401
 import intelligence.agents.cost_code_specialist  # noqa: F401
+import intelligence.agents.customer_specialist  # noqa: F401
+import intelligence.agents.project_specialist  # noqa: F401
 
 from intelligence.composition.delegation import make_delegation_tool
 from intelligence.tools.registry import register as _register_tool
@@ -49,6 +51,31 @@ _register_tool(make_delegation_tool(
         "for creating, updating, or deleting CostCodes (approval-gated). "
         "Do NOT use this for SubCostCode work — route that to "
         "delegate_to_sub_cost_code instead."
+    ),
+))
+
+_register_tool(make_delegation_tool(
+    name="delegate_to_customer",
+    target_agent="customer_specialist",
+    description=(
+        "Hand a Customer (or 'client') task off to the Customer "
+        "specialist agent. Use for customer lookups, searches, "
+        "creates, updates, deletes, and questions about which "
+        "projects belong to a customer. Do NOT use this for "
+        "Project-specific edits — route those to delegate_to_project."
+    ),
+))
+
+_register_tool(make_delegation_tool(
+    name="delegate_to_project",
+    target_agent="project_specialist",
+    description=(
+        "Hand a Project task off to the Project specialist agent. "
+        "Use for project lookups, searches, creates, updates, "
+        "deletes, and parent Customer resolution from a specific "
+        "project. Do NOT use this for Customer-centric questions "
+        "('what customers do we have?') — route those to "
+        "delegate_to_customer."
     ),
 ))
 

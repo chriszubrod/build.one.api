@@ -55,6 +55,48 @@ class ProjectService:
         """
         return self.repo.read_by_name(name)
 
+    def search_by_name(self, *, query: str, limit: int = 10):
+        """
+        Case-insensitive substring search against Name + Abbreviation.
+        Prefix matches rank above substring matches.
+
+        In-memory filter over `read_all()` — Project is small (~130 rows)
+        so this beats a dedicated LIKE sproc. Upgrade to a sproc if the
+        table grows or fuzzy matching gets more complex.
+        """
+        q = (query or "").strip().lower()
+        if not q or limit <= 0:
+            return []
+
+        prefix_hits = []
+        substring_hits = []
+
+        for project in self.repo.read_all():
+            name = (project.name or "").lower()
+            abbreviation = (project.abbreviation or "").lower()
+
+            if name.startswith(q) or abbreviation.startswith(q):
+                prefix_hits.append(project)
+            elif q in name or q in abbreviation:
+                substring_hits.append(project)
+
+            if len(prefix_hits) >= limit:
+                break
+
+        return (prefix_hits + substring_hits)[:limit]
+
+    def read_by_customer_id(self, customer_id: int):
+        """
+        Return all projects belonging to a Customer (BIGINT FK).
+
+        Useful for parent-child queries from the Customer specialist
+        agent ("what projects does Customer X have?"). In-memory filter
+        over read_all() since Project is small (~130 rows).
+        """
+        return [
+            p for p in self.repo.read_all() if p.customer_id == customer_id
+        ]
+
     def update_by_public_id(
         self,
         public_id: str,

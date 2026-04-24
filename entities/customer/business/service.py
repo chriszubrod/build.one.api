@@ -53,6 +53,37 @@ class CustomerService:
         """
         return self.repo.read_by_name(name)
 
+    def search_by_name(self, *, query: str, limit: int = 10):
+        """
+        Case-insensitive substring search against Name (with email + phone
+        as secondary fields). Prefix matches rank above substring matches.
+
+        In-memory filter over `read_all()` — Customer is small (~70 rows)
+        so this beats a dedicated LIKE sproc. Upgrade to a sproc if the
+        table grows or fuzzy matching gets more complex.
+        """
+        q = (query or "").strip().lower()
+        if not q or limit <= 0:
+            return []
+
+        prefix_hits = []
+        substring_hits = []
+
+        for customer in self.repo.read_all():
+            name = (customer.name or "").lower()
+            email = (customer.email or "").lower()
+            phone = (customer.phone or "").lower()
+
+            if name.startswith(q):
+                prefix_hits.append(customer)
+            elif q in name or q in email or q in phone:
+                substring_hits.append(customer)
+
+            if len(prefix_hits) >= limit:
+                break
+
+        return (prefix_hits + substring_hits)[:limit]
+
     def update_by_public_id(
         self,
         public_id: str,

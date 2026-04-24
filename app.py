@@ -60,15 +60,12 @@ from entities.dashboard.api.router import router as dashboard_api_router
 from entities.attachment.api.router import router as attachment_api_router
 from entities.attachment.web.controller import router as attachment_web_router
 from entities.bill.api.router import router as bill_api_router
-from entities.bill.web.controller import router as bill_web_router
 from entities.bill_line_item.api.router import router as bill_line_item_api_router
 from entities.bill_line_item_attachment.api.router import router as bill_line_item_attachment_api_router
 from entities.expense.api.router import router as expense_api_router
-from entities.expense.web.controller import router as expense_web_router
 from entities.expense_line_item.api.router import router as expense_line_item_api_router
 from entities.expense_line_item_attachment.api.router import router as expense_line_item_attachment_api_router
 from entities.bill_credit.api.router import router as bill_credit_api_router
-from entities.bill_credit.web.controller import router as bill_credit_web_router
 from entities.bill_credit_line_item.api.router import router as bill_credit_line_item_api_router
 from entities.bill_credit_line_item_attachment.api.router import router as bill_credit_line_item_attachment_api_router
 from entities.taxpayer_attachment.api.router import router as taxpayer_attachment_api_router
@@ -80,7 +77,6 @@ from entities.contract_labor.web.controller import router as contract_labor_web_
 from entities.time_entry.api.router import router as time_entry_api_router
 from entities.time_entry.api.router import time_log_router as time_log_api_router
 from entities.invoice.api.router import router as invoice_api_router
-from entities.invoice.web.controller import router as invoice_web_router
 from entities.invoice_line_item.api.router import router as invoice_line_item_api_router
 from entities.invoice_line_item.web.controller import router as invoice_line_item_web_router
 from entities.invoice_attachment.api.router import router as invoice_attachment_api_router
@@ -228,15 +224,12 @@ app.include_router(dashboard_api_router)
 app.include_router(attachment_api_router)
 app.include_router(attachment_web_router)
 app.include_router(bill_api_router)
-app.include_router(bill_web_router)
 app.include_router(bill_line_item_api_router)
 app.include_router(bill_line_item_attachment_api_router)
 app.include_router(expense_api_router)
-app.include_router(expense_web_router)
 app.include_router(expense_line_item_api_router)
 app.include_router(expense_line_item_attachment_api_router)
 app.include_router(bill_credit_api_router)
-app.include_router(bill_credit_web_router)
 app.include_router(bill_credit_line_item_api_router)
 app.include_router(bill_credit_line_item_attachment_api_router)
 app.include_router(taxpayer_attachment_api_router)
@@ -248,7 +241,6 @@ app.include_router(contract_labor_web_router)
 app.include_router(time_entry_api_router)
 app.include_router(time_log_api_router)
 app.include_router(invoice_api_router)
-app.include_router(invoice_web_router)
 app.include_router(invoice_line_item_api_router)
 app.include_router(invoice_line_item_web_router)
 app.include_router(invoice_attachment_api_router)

@@ -386,9 +386,9 @@ def _generate_invoice_packet(public_id: str):
         raise HTTPException(status_code=400, detail="Invoice has no line items")
 
     # Build TOC pages from enriched data (all line items, including those without attachments)
-    from entities.invoice.web.controller import _enrich_line_items
+    from entities.invoice.business.enrichment import enrich_line_items
     logger.info(f"Packet [{public_id}]: enriching {len(line_items)} line items")
-    enriched_items = _enrich_line_items(line_items)
+    enriched_items = enrich_line_items(line_items)
 
     _type_order_map = {"BillLineItem": 0, "BillCreditLineItem": 1, "ExpenseLineItem": 2}
 
@@ -725,8 +725,8 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
 
     # Load and enrich DB line items
     line_items = InvoiceLineItemService().read_by_invoice_id(invoice_id=invoice.id)
-    from entities.invoice.web.controller import _enrich_line_items
-    enriched = _enrich_line_items(line_items)
+    from entities.invoice.business.enrichment import enrich_line_items
+    enriched = enrich_line_items(line_items)
 
     db_bills = [li for li in enriched if li.get("source_type") == "BillLineItem"]
     db_expenses = [li for li in enriched if li.get("source_type") in ("ExpenseLineItem", "BillCreditLineItem")]

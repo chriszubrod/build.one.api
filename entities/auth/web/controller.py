@@ -28,19 +28,6 @@ def login(request: Request):
     )
 
 
-@router.get("/signup")
-def signup(request: Request):
-    """
-    Signup.
-    """
-    return templates.TemplateResponse(
-        "signup.html",
-        {
-            "request": request,
-        }
-    )
-
-
 @router.get("/refresh")
 def refresh(request: Request):
     """

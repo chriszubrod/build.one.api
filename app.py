@@ -45,7 +45,6 @@ from entities.taxpayer.api.router import router as taxpayer_api_router
 from entities.role_module.api.router import router as role_module_api_router
 from entities.user_module.api.router import router as user_module_api_router
 from entities.contact.api.router import router as contact_api_router
-from entities.admin.api.router import router as admin_api_router
 from entities.dashboard.api.router import router as dashboard_api_router
 from entities.attachment.api.router import router as attachment_api_router
 from entities.bill.api.router import router as bill_api_router
@@ -67,7 +66,6 @@ from entities.invoice_line_item.api.router import router as invoice_line_item_ap
 from entities.invoice_attachment.api.router import router as invoice_attachment_api_router
 from entities.invoice_line_item_attachment.api.router import router as invoice_line_item_attachment_api_router
 from entities.review_status.api.router import router as review_status_api_router
-from core.workflow.api.pending_action_router import router as pending_action_api_router
 from shared.api.lookups import router as lookups_api_router
 from shared.api.admin import router as scheduler_admin_api_router
 
@@ -172,7 +170,6 @@ app.include_router(vendor_type_api_router)
 app.include_router(taxpayer_api_router)
 app.include_router(role_module_api_router)
 app.include_router(user_module_api_router)
-app.include_router(admin_api_router)
 app.include_router(dashboard_api_router)
 app.include_router(attachment_api_router)
 app.include_router(bill_api_router)
@@ -194,7 +191,6 @@ app.include_router(invoice_line_item_api_router)
 app.include_router(invoice_attachment_api_router)
 app.include_router(invoice_line_item_attachment_api_router)
 app.include_router(review_status_api_router)
-app.include_router(pending_action_api_router)
 app.include_router(lookups_api_router)
 app.include_router(scheduler_admin_api_router)
 app.include_router(intelligence_api_router)

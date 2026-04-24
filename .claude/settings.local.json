@@ -8,7 +8,20 @@
       "Bash(python3 -c ':*)",
       "Bash(curl -s http://localhost:8000/api/v1/time-entries/8EAB5569-CD6A-4F6E-9939-9BF0FE133498/statuses -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIzMDlDMEFBOS1BODUyLTRCREQtODU5Ni01Q0ZBNEM4MzVFODkiLCJ1c2VybmFtZSI6ImFnZW50X29uZSIsInRlbmFudF9pZCI6MSwiaWF0IjoxNzc2MjIxNzU3LCJleHAiOjE3NzYyMjUzNTcsImp0aSI6Ijk4ZDQ0ZGI5LTQzOGQtNGIyYi1iNGRhLTI2YmE5NzM5OWNiZSIsInRva2VuX3R5cGUiOiJhY2Nlc3MifQ.nR_AMVG79fiD7gWff-oyM99EhYSTkq7TXEpfTHRrDF0')",
       "Bash(curl -s http://localhost:8000/api/v1/time-entries/count -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIzMDlDMEFBOS1BODUyLTRCREQtODU5Ni01Q0ZBNEM4MzVFODkiLCJ1c2VybmFtZSI6ImFnZW50X29uZSIsInRlbmFudF9pZCI6MSwiaWF0IjoxNzc2MjIxNzU3LCJleHAiOjE3NzYyMjUzNTcsImp0aSI6Ijk4ZDQ0ZGI5LTQzOGQtNGIyYi1iNGRhLTI2YmE5NzM5OWNiZSIsInRva2VuX3R5cGUiOiJhY2Nlc3MifQ.nR_AMVG79fiD7gWff-oyM99EhYSTkq7TXEpfTHRrDF0')",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(.venv/bin/python *)",
+      "Bash(.venv/bin/uvicorn app:app *)",
+      "Read(//Users/chris/Applications/build.one/build.one.web/**)",
+      "Bash(npx tsc *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(curl -sf http://localhost:8000/ping)",
+      "Bash(git fetch *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(git -C /Users/chris/Applications/build.one/build.one.web add src/agents/types.ts src/agents/useAgentRun.ts)",
+      "Bash(git -C /Users/chris/Applications/build.one/build.one.web commit -m ' *)",
+      "Bash(git -C /Users/chris/Applications/build.one/build.one.web push)"
     ]
   }
 }

@@ -16,14 +16,6 @@ Usage on API routers:
     async def create_bill(current_user=Depends(require_module_api(Modules.BILLS, "can_create"))):
         ...
 
-Usage on web controllers:
-    from shared.rbac import require_module_web
-    from shared.rbac_constants import Modules
-
-    @router.get("/bill/list")
-    async def bill_list(request: Request, current_user=Depends(require_module_web(Modules.BILLS))):
-        ...
-
 Permission levels (from RoleModule):
     can_read, can_create, can_update, can_delete,
     can_submit, can_approve, can_complete
@@ -39,7 +31,6 @@ from fastapi import Depends, HTTPException
 
 from entities.auth.business.service import (
     get_current_user_api,
-    get_current_user_web,
     AuthService,
 )
 from entities.module.business.service import ModuleService
@@ -218,24 +209,6 @@ def require_module_api(module_name: str, permission: str = "can_read"):
         current_user=Depends(require_module_api(Modules.BILLS, "can_create"))
     """
     def _dependency(current_user=Depends(get_current_user_api)):
-        _enforce_module_permission(
-            user_sub=current_user["sub"],
-            module_name=module_name,
-            permission=permission,
-        )
-        return current_user
-    return _dependency
-
-
-def require_module_web(module_name: str, permission: str = "can_read"):
-    """
-    FastAPI dependency for web (Jinja2) routes.
-    Wraps get_current_user_web + cached RBAC check.
-
-    Usage:
-        current_user=Depends(require_module_web(Modules.BILLS))
-    """
-    def _dependency(current_user=Depends(get_current_user_web)):
         _enforce_module_permission(
             user_sub=current_user["sub"],
             module_name=module_name,

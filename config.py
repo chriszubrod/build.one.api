@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     # unset, the admin endpoints fail closed with 503.
     drain_secret: Optional[str] = None
 
+    # Public URL of the React web app (build.one.web). Used as the host for
+    # OAuth callback redirects so the user lands on React after an external
+    # provider (QBO, MS, ...) hands control back to the API. When unset,
+    # redirects fall back to relative URLs — which will 404 on the API host
+    # now that the Jinja pages are gone. Must be set in prod App Service
+    # Application Settings; local dev can leave unset if not exercising OAuth.
+    web_app_url: Optional[str] = None
+
     # Logging
     log_level: str = "INFO"
     log_file: Optional[str] = None

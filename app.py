@@ -2,7 +2,6 @@
 import logging
 import os
 import config
-from urllib.parse import quote
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
@@ -19,24 +18,16 @@ if os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"):
 
 # Third-party Imports
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import RedirectResponse
-from fastapi.staticfiles import StaticFiles
 from typing_extensions import Annotated
 
 # Local Imports
-from entities.auth.business.service import (
-    RefreshRequired,
-    WebAuthenticationRequired,
-    get_current_user_api,
-)
+from entities.auth.business.service import get_current_user_api
 
 from entities.address.api.router import router as address_api_router
 from entities.address_type.api.router import router as address_type_api_router
 from entities.auth.api.router import router as auth_api_router
-from entities.auth.web.controller import router as auth_web_router
 from entities.customer.api.router import router as customer_api_router
 from entities.integration.api.router import router as integration_api_router
-from entities.integration.web.controller import router as integration_web_router
 from entities.organization.api.router import router as organization_api_router
 from entities.company.api.router import router as company_api_router
 from entities.cost_code.api.router import router as cost_code_api_router
@@ -67,18 +58,14 @@ from entities.bill_credit.api.router import router as bill_credit_api_router
 from entities.bill_credit_line_item.api.router import router as bill_credit_line_item_api_router
 from entities.bill_credit_line_item_attachment.api.router import router as bill_credit_line_item_attachment_api_router
 from entities.taxpayer_attachment.api.router import router as taxpayer_attachment_api_router
-from entities.taxpayer_attachment.web.controller import router as taxpayer_attachment_web_router
 from entities.payment_term.api.router import router as payment_term_api_router
 from entities.contract_labor.api.router import router as contract_labor_api_router
 from entities.time_entry.api.router import router as time_entry_api_router
 from entities.time_entry.api.router import time_log_router as time_log_api_router
 from entities.invoice.api.router import router as invoice_api_router
 from entities.invoice_line_item.api.router import router as invoice_line_item_api_router
-from entities.invoice_line_item.web.controller import router as invoice_line_item_web_router
 from entities.invoice_attachment.api.router import router as invoice_attachment_api_router
-from entities.invoice_attachment.web.controller import router as invoice_attachment_web_router
 from entities.invoice_line_item_attachment.api.router import router as invoice_line_item_attachment_api_router
-from entities.invoice_line_item_attachment.web.controller import router as invoice_line_item_attachment_web_router
 from entities.review_status.api.router import router as review_status_api_router
 from core.workflow.api.pending_action_router import router as pending_action_api_router
 from shared.api.lookups import router as lookups_api_router
@@ -93,11 +80,8 @@ from integrations.intuit.qbo.auth.api.router import router as intuit_qbo_auth_ap
 from integrations.intuit.qbo.company_info.api.router import router as intuit_qbo_company_info_api_router
 from integrations.intuit.qbo.physical_address.api.router import router as intuit_qbo_physical_address_api_router
 from integrations.sync.api.router import router as sync_api_router
-from integrations.sync.web.controller import router as sync_web_router
 from integrations.intuit.qbo.vendor.api.router import router as qbo_vendor_api_router
-from integrations.intuit.qbo.vendor.web.controller import router as qbo_vendor_web_router
 from integrations.intuit.qbo.client.api.router import router as qbo_client_api_router
-from integrations.intuit.qbo.client.web.controller import router as qbo_client_web_router
 from integrations.ms.auth.api.router import router as ms_auth_api_router
 from integrations.ms.sharepoint.site.api.router import router as ms_sharepoint_site_api_router
 from integrations.ms.sharepoint.drive.api.router import router as ms_sharepoint_drive_api_router
@@ -105,7 +89,6 @@ from integrations.ms.sharepoint.driveitem.api.router import router as ms_sharepo
 from integrations.ms.mail.message.api.router import router as ms_mail_api_router
 from integrations.intuit.qbo.account.api.router import router as qbo_account_api_router
 from integrations.intuit.qbo.purchase.api.router import router as qbo_purchase_api_router
-from integrations.intuit.qbo.purchase.web.controller import router as qbo_purchase_web_router
 from integrations.intuit.qbo.vendorcredit.api.router import router as qbo_vendorcredit_api_router
 from integrations.intuit.qbo.bill.api.router import router as qbo_bill_api_router
 from integrations.intuit.qbo.invoice.api.router import router as qbo_invoice_api_router
@@ -151,32 +134,11 @@ app.add_middleware(
 )
 
 
-@app.exception_handler(RefreshRequired)
-async def refresh_required_handler(request: Request, exc: RefreshRequired):
-    """
-    Access token expired but refresh token may be valid.
-    Redirect to web refresh endpoint to restore session then continue to requested page.
-    """
-    return RedirectResponse(url=f"/auth/refresh?next={quote(exc.next_path, safe='/')}", status_code=303)
-
-
-@app.exception_handler(WebAuthenticationRequired)
-async def web_authentication_required_handler(request: Request, exc: WebAuthenticationRequired):
-    """
-    Exception handler for web authentication failures.
-    Redirects to login page when authentication is required.
-    """
-    return RedirectResponse(url="/auth/login", status_code=303)
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
 app.include_router(address_api_router)
 app.include_router(address_type_api_router)
 app.include_router(auth_api_router)
-app.include_router(auth_web_router)
 app.include_router(customer_api_router)
 app.include_router(integration_api_router)
-app.include_router(integration_web_router)
 app.include_router(organization_api_router)
 app.include_router(company_api_router)
 app.include_router(cost_code_api_router)
@@ -194,14 +156,10 @@ app.include_router(intuit_qbo_auth_api_router)
 app.include_router(intuit_qbo_company_info_api_router)
 app.include_router(intuit_qbo_physical_address_api_router)
 app.include_router(sync_api_router)
-app.include_router(sync_web_router)
 app.include_router(qbo_vendor_api_router)
-app.include_router(qbo_vendor_web_router)
 app.include_router(qbo_client_api_router)
-app.include_router(qbo_client_web_router)
 app.include_router(qbo_account_api_router)
 app.include_router(qbo_purchase_api_router)
-app.include_router(qbo_purchase_web_router)
 app.include_router(qbo_vendorcredit_api_router)
 app.include_router(qbo_bill_api_router)
 app.include_router(qbo_invoice_api_router)
@@ -227,18 +185,14 @@ app.include_router(bill_credit_api_router)
 app.include_router(bill_credit_line_item_api_router)
 app.include_router(bill_credit_line_item_attachment_api_router)
 app.include_router(taxpayer_attachment_api_router)
-app.include_router(taxpayer_attachment_web_router)
 app.include_router(payment_term_api_router)
 app.include_router(contract_labor_api_router)
 app.include_router(time_entry_api_router)
 app.include_router(time_log_api_router)
 app.include_router(invoice_api_router)
 app.include_router(invoice_line_item_api_router)
-app.include_router(invoice_line_item_web_router)
 app.include_router(invoice_attachment_api_router)
-app.include_router(invoice_attachment_web_router)
 app.include_router(invoice_line_item_attachment_api_router)
-app.include_router(invoice_line_item_attachment_web_router)
 app.include_router(review_status_api_router)
 app.include_router(pending_action_api_router)
 app.include_router(lookups_api_router)
@@ -281,7 +235,7 @@ def get_settings():
 
 @app.get("/")
 def root():
-    return RedirectResponse(url="/dashboard")
+    return {"service": "build.one.api", "status": "ok"}
 
 
 @app.get("/ping")

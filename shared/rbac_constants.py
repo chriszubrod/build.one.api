@@ -1,7 +1,7 @@
 """
 RBAC Module Name Constants
 ==========================
-Canonical module names for use with require_module_api / require_module_web.
+Canonical module names for use with require_module_api.
 These MUST match the Name column in dbo.[Module] exactly.
 
 Usage:

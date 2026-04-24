@@ -8,7 +8,6 @@ import json
 import logging
 import secrets
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 
 # Third-party Imports
 import jwt
@@ -23,15 +22,7 @@ from entities.auth.business.model import (
 )
 from entities.auth.persistence.repo import AuthRepository
 from entities.auth.persistence.token_repo import AuthRefreshTokenRepository
-from entities.organization.business.service import OrganizationService
-from entities.company.business.service import CompanyService
 from entities.user.business.service import UserService
-from entities.module.business.service import ModuleService
-from entities.project.business.service import ProjectService
-from entities.role.business.service import RoleService
-from entities.user_module.business.service import UserModuleService
-from entities.user_project.business.service import UserProjectService
-from entities.user_role.business.service import UserRoleService
 from shared.database import (
     DatabaseConcurrencyError,
     DatabaseOperationError,
@@ -46,24 +37,6 @@ UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # Allow tokens that expired this many seconds ago (clock skew / in-flight requests)
 JWT_EXP_LEEWAY_SECONDS = 30
 logger = logging.getLogger(__name__)
-
-
-class WebAuthenticationRequired(Exception):
-    """
-    Exception raised when web authentication is required.
-    This will be caught by an exception handler that redirects to login.
-    """
-    pass
-
-
-class RefreshRequired(Exception):
-    """
-    Exception raised when access token is expired but refresh token may be valid.
-    Handler redirects to /auth/refresh?next=... so the session can be restored.
-    """
-    def __init__(self, next_path: str):
-        self.next_path = next_path
-        super().__init__(next_path)
 
 
 def _hash_password(password: str) -> str:
@@ -186,110 +159,6 @@ def get_current_user_api(
         detail=detail,
         headers={"WWW-Authenticate": "Bearer"},
     )
-
-def get_current_user_web(request: Request):
-    """
-    Dependency for web routes that reads token from cookies or headers only.
-    Security: Does not read from query parameters to prevent token leakage.
-    Raises WebAuthenticationRequired exception if authentication fails,
-    which will be caught by an exception handler that redirects to login.
-    """
-    auth_token = request.cookies.get("token.access_token")
-    used_header = False
-
-    if not auth_token:
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            auth_token = auth_header[7:]
-            used_header = True
-
-    if not auth_token:
-        raise WebAuthenticationRequired()
-
-    try:
-        if not used_header and request.cookies.get("token.access_token"):
-            _require_csrf(request)
-        auth_payload = verify_token(
-            token=auth_token,
-            expected_token_type="access",
-            allow_legacy=True,
-        )
-
-        # Resolve user role for scoping modules and projects
-        _auth = None
-        _is_admin = False
-        try:
-            _auth = AuthService().read_by_public_id(public_id=auth_payload["sub"])
-            if _auth and _auth.user_id:
-                _user_role = UserRoleService().read_by_user_id(user_id=_auth.user_id)
-                if _user_role:
-                    _role = RoleService().read_by_id(id=_user_role.role_id)
-                    if _role and _role.name and _role.name.lower() == "admin":
-                        _is_admin = True
-        except Exception:
-            pass
-
-        # Fetch enrichment data concurrently
-        def _fetch_organizations():
-            try:
-                return [org.to_dict() for org in OrganizationService().read_all()]
-            except Exception:
-                return []
-
-        def _fetch_companies():
-            try:
-                return [c.to_dict() for c in CompanyService().read_all()]
-            except Exception:
-                return []
-
-        def _fetch_modules():
-            try:
-                if _is_admin:
-                    return [m.to_dict() for m in ModuleService().read_all()]
-                elif _auth and _auth.user_id:
-                    _user_modules = UserModuleService().read_all_by_user_id(user_id=_auth.user_id)
-                    _assigned_ids = {um.module_id for um in _user_modules}
-                    return [m.to_dict() for m in ModuleService().read_all() if m.id in _assigned_ids]
-                return []
-            except Exception:
-                return []
-
-        def _fetch_projects():
-            try:
-                if _is_admin:
-                    return [p.to_dict() for p in ProjectService().read_all()]
-                elif _auth and _auth.user_id:
-                    _user_projects = UserProjectService().read_by_user_id(user_id=_auth.user_id)
-                    _assigned_ids = {up.project_id for up in _user_projects}
-                    return [p.to_dict() for p in ProjectService().read_all() if p.id in _assigned_ids]
-                return []
-            except Exception:
-                return []
-
-        if _auth and _auth.user_id:
-            auth_payload["user_id"] = _auth.user_id
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            orgs_future = executor.submit(_fetch_organizations)
-            companies_future = executor.submit(_fetch_companies)
-            modules_future = executor.submit(_fetch_modules)
-            projects_future = executor.submit(_fetch_projects)
-
-            auth_payload["organizations"] = orgs_future.result()
-            auth_payload["companies"] = companies_future.result()
-            auth_payload["modules"] = modules_future.result()
-            auth_payload["projects"] = projects_future.result()
-
-        return auth_payload
-    except ValueError as e:
-        # On expired access token, try refresh via redirect so full-page nav stays logged in
-        if str(e) == "Token has expired." and request.cookies.get("token.refresh_token"):
-            next_path = request.url.path or "/dashboard"
-            if request.url.query:
-                next_path = f"{next_path}?{request.url.query}"
-            raise RefreshRequired(next_path=next_path)
-        raise WebAuthenticationRequired()
-
 
 class AuthService:
     """

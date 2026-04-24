@@ -18,6 +18,7 @@ scout = Agent(
     system_prompt=_PROMPT,
     tools=(
         "delegate_to_sub_cost_code",
+        "delegate_to_cost_code",
     ),
     model="claude-sonnet-4-6",
     provider="anthropic",

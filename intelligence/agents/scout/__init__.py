@@ -14,6 +14,7 @@ Callers that want scout available should `import intelligence.agents.scout`
 """
 # Sub-agents register themselves AND the entity tools they wrap.
 import intelligence.agents.sub_cost_code_specialist  # noqa: F401
+import intelligence.agents.cost_code_specialist  # noqa: F401
 
 from intelligence.composition.delegation import make_delegation_tool
 from intelligence.tools.registry import register as _register_tool
@@ -25,13 +26,28 @@ _register_tool(make_delegation_tool(
     target_agent="sub_cost_code_specialist",
     description=(
         "Hand a sub-cost-code task off to the SubCostCode specialist "
-        "agent. Use for ANY sub-cost-code work — lookups, searches, "
-        "creates, updates, deletes, and parent CostCode resolution. "
-        "Pass the user's request verbatim, or a clarified version that "
-        "captures all needed context (the specialist starts with no "
-        "memory of this conversation). The specialist returns a final "
-        "answer as markdown, often including a record card; relay it "
-        "to the user per the rules in the system prompt."
+        "agent. Use for ANY sub-cost-code work — lookups, searches by "
+        "name, creates, updates, deletes, and parent CostCode resolution "
+        "from a specific sub-cost-code. Pass the user's request verbatim, "
+        "or a clarified version that captures all needed context (the "
+        "specialist starts with no memory of this conversation). The "
+        "specialist returns a final answer as markdown, often including "
+        "a record card; relay it to the user per the rules in the "
+        "system prompt."
+    ),
+))
+
+_register_tool(make_delegation_tool(
+    name="delegate_to_cost_code",
+    target_agent="cost_code_specialist",
+    description=(
+        "Hand a CostCode (broad parent category) task off to the "
+        "CostCode specialist agent. Use for CostCode catalog questions "
+        "('what CostCodes do we have?', 'how many?', 'list them'), "
+        "looking up a specific CostCode by number or public_id, or "
+        "finding which SubCostCodes sit under a given CostCode. Do NOT "
+        "use this for SubCostCode work — route that to "
+        "delegate_to_sub_cost_code instead."
     ),
 ))
 

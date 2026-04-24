@@ -50,4 +50,59 @@ read_cost_code_by_id = Tool(
 )
 
 
-register(read_cost_code_by_id)
+class _NoArgs(BaseModel):
+    pass
+
+
+async def _list_cost_codes(args: dict, ctx: ToolContext) -> ToolResult:
+    return await ctx.call_api("GET", "/api/v1/get/cost-codes")
+
+
+list_cost_codes = Tool(
+    name="list_cost_codes",
+    description=(
+        "List ALL CostCodes (the broad parent categories). The catalog "
+        "is small (roughly 20-40 rows) so this is cheap. Use when the "
+        "user asks about the catalog as a whole ('what CostCodes do "
+        "we have?', 'how many categories?') or when you need to find a "
+        "CostCode by name but don't have a public_id. Returns each row's "
+        "number, name, public_id, and description."
+    ),
+    input_schema=input_schema_from(_NoArgs),
+    handler=_list_cost_codes,
+)
+
+
+class ReadCostCodeByPublicIdArgs(BaseModel):
+    public_id: str = Field(
+        description="The CostCode's public_id (UUID string).",
+    )
+
+
+async def _read_cost_code_by_public_id(
+    args: dict, ctx: ToolContext
+) -> ToolResult:
+    parsed = ReadCostCodeByPublicIdArgs(**args)
+    return await ctx.call_api(
+        "GET", f"/api/v1/get/cost-code/{parsed.public_id}"
+    )
+
+
+read_cost_code_by_public_id = Tool(
+    name="read_cost_code_by_public_id",
+    description=(
+        "Fetch one CostCode by its public_id (UUID). Use when you "
+        "already have the public_id — typically from an earlier "
+        "`list_cost_codes` call or surfaced by another tool."
+    ),
+    input_schema=input_schema_from(ReadCostCodeByPublicIdArgs),
+    handler=_read_cost_code_by_public_id,
+)
+
+
+for _tool in (
+    read_cost_code_by_id,
+    list_cost_codes,
+    read_cost_code_by_public_id,
+):
+    register(_tool)

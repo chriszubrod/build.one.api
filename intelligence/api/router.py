@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from intelligence.api import background
 from intelligence.api import channel as session_channel
-from intelligence.api.replay import replay_session
+from intelligence.api.replay import tail_session
 from intelligence.loop import approval as approval_coordinator
 from intelligence.loop.events import LoopEvent
 from intelligence.persistence.approval_repo import AgentApprovalRequestRepo
@@ -60,24 +60,19 @@ def _event_to_sse(event: LoopEvent) -> bytes:
 SSE_KEEPALIVE_INTERVAL_SECONDS = 15
 
 
-async def _live_stream(
-    public_id: str, request: Request
+async def _with_keepalive(
+    events: AsyncIterator[LoopEvent], request: Request
 ) -> AsyncIterator[bytes]:
-    """Subscribe to a live channel and emit SSE records until it ends
-    or the client disconnects.
+    """Wrap any LoopEvent iterator: render to SSE bytes + inject keepalive.
 
-    Emits a ``: keepalive`` SSE comment every 15s during gaps (e.g. when
-    the loop is paused awaiting an approval decision). Azure App Service
-    drops idle connections around 4 min; without this, a long approval
-    wait would sever the stream.
+    Emits a ``: keepalive`` SSE comment when no event arrives for 15s.
+    Azure App Service drops idle connections at ~4 min; without this, a
+    long approval wait would sever the stream. Browsers' EventSource
+    ignores comment lines; proxies just see traffic.
     """
-    channel = await session_channel.get(public_id)
-    if channel is None:
-        return
-
-    gen = channel.subscribe()
+    aiter = events.__aiter__()
     next_task: Optional[asyncio.Task] = asyncio.create_task(
-        gen.__anext__()
+        aiter.__anext__()
     )
     try:
         while True:
@@ -89,44 +84,44 @@ async def _live_stream(
             except asyncio.TimeoutError:
                 if await request.is_disconnected():
                     return
-                # SSE comment line — EventSource ignores it; proxies see
-                # traffic and keep the connection open.
                 yield b": keepalive\n\n"
                 continue
             except StopAsyncIteration:
                 return
 
-            next_task = asyncio.create_task(gen.__anext__())
+            next_task = asyncio.create_task(aiter.__anext__())
             if await request.is_disconnected():
                 return
             yield _event_to_sse(event)
     finally:
         if next_task is not None and not next_task.done():
             next_task.cancel()
-        await gen.aclose()
-
-
-async def _replay_stream(
-    public_id: str, request: Request
-) -> AsyncIterator[bytes]:
-    """Synthesize events from the DB for a completed session with no live channel."""
-    async for event in replay_session(public_id):
-        if await request.is_disconnected():
-            return
-        yield _event_to_sse(event)
+        aclose = getattr(aiter, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:
+                logger.exception("error closing event iterator")
 
 
 async def _sse_generator(
     public_id: str, request: Request
 ) -> AsyncIterator[bytes]:
-    """Pick live vs. replay and stream accordingly."""
+    """Pick the event source for this session and stream as SSE.
+
+    Live channel on this worker → subscribe and tail.
+    Channel missing (cross-worker, or already cleaned up) → DB tail
+    that polls and synthesizes events. The same path serves long-since
+    completed sessions: the first poll yields everything, status check
+    sees it terminal, and the stream ends.
+    """
     channel = await session_channel.get(public_id)
     if channel is not None:
-        async for chunk in _live_stream(public_id, request):
-            yield chunk
+        events = channel.subscribe()
     else:
-        async for chunk in _replay_stream(public_id, request):
-            yield chunk
+        events = tail_session(public_id)
+    async for chunk in _with_keepalive(events, request):
+        yield chunk
 
 
 # ─── Endpoints ───────────────────────────────────────────────────────────

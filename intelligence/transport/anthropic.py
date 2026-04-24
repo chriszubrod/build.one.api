@@ -16,7 +16,10 @@ SSE events consumed:
 
 ping and other events are ignored.
 """
+import asyncio
 import json
+import logging
+import random
 from typing import Any, AsyncIterator, Optional, Tuple
 
 import httpx
@@ -37,8 +40,26 @@ from intelligence.transport.base import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
+
+# Transient upstream conditions worth retrying. Anthropic returns 529
+# during capacity events; 429 for rate limits; 503 during deploys.
+_RETRYABLE_STATUSES = frozenset({429, 503, 529})
+_MAX_RETRIES = 2            # 3 attempts total
+_BASE_DELAY_SECONDS = 1.0   # exponential: 1s, 2s, 4s…
+_MAX_DELAY_SECONDS = 8.0
+
+
+def _retry_delay(attempt: int, retry_after: Optional[float] = None) -> float:
+    """Exponential backoff with jitter, honoring server's Retry-After."""
+    exp = min(_BASE_DELAY_SECONDS * (2 ** attempt), _MAX_DELAY_SECONDS)
+    jittered = exp * (0.75 + random.random() * 0.5)  # ±25%
+    if retry_after is not None and retry_after > 0:
+        return max(retry_after, jittered)
+    return jittered
 
 
 class AnthropicTransport:
@@ -82,17 +103,48 @@ class AnthropicTransport:
         active_tool_blocks: dict[int, dict[str, Any]] = {}
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            async with client.stream(
-                "POST", ANTHROPIC_URL, headers=headers, json=body
-            ) as resp:
-                if resp.status_code != 200:
-                    err_body = await resp.aread()
-                    yield TransportError(
-                        message=f"HTTP {resp.status_code}: {err_body.decode(errors='replace')[:500]}",
-                        code=f"http_{resp.status_code}",
+            resp_ctx = None
+            for attempt in range(_MAX_RETRIES + 1):
+                resp_ctx = client.stream(
+                    "POST", ANTHROPIC_URL, headers=headers, json=body
+                )
+                resp = await resp_ctx.__aenter__()
+                if resp.status_code == 200:
+                    break
+                # Non-200 — decide: retry or surface.
+                err_body = await resp.aread()
+                try:
+                    retry_after_raw = resp.headers.get("retry-after")
+                    retry_after = (
+                        float(retry_after_raw) if retry_after_raw else None
                     )
-                    return
+                except (TypeError, ValueError):
+                    retry_after = None
+                status = resp.status_code
+                await resp_ctx.__aexit__(None, None, None)
+                resp_ctx = None
 
+                if (
+                    status in _RETRYABLE_STATUSES
+                    and attempt < _MAX_RETRIES
+                ):
+                    delay = _retry_delay(attempt, retry_after)
+                    logger.info(
+                        "anthropic transport: retrying after HTTP %s "
+                        "(attempt %d/%d, sleeping %.1fs)",
+                        status, attempt + 1, _MAX_RETRIES + 1, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                yield TransportError(
+                    message=f"HTTP {status}: {err_body.decode(errors='replace')[:500]}",
+                    code=f"http_{status}",
+                )
+                return
+
+            # resp_ctx is the successful (200) context; process + close.
+            try:
                 async for event_name, data in _parse_sse(resp):
                     if event_name == "message_start":
                         msg = data.get("message", {}) or {}
@@ -167,6 +219,9 @@ class AnthropicTransport:
                             message=err.get("message", "unknown error"),
                             code=err.get("type"),
                         )
+            finally:
+                if resp_ctx is not None:
+                    await resp_ctx.__aexit__(None, None, None)
 
 
 async def _parse_sse(resp: httpx.Response) -> AsyncIterator[Tuple[str, dict]]:

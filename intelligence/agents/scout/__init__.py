@@ -44,9 +44,10 @@ _register_tool(make_delegation_tool(
         "Hand a CostCode (broad parent category) task off to the "
         "CostCode specialist agent. Use for CostCode catalog questions "
         "('what CostCodes do we have?', 'how many?', 'list them'), "
-        "looking up a specific CostCode by number or public_id, or "
-        "finding which SubCostCodes sit under a given CostCode. Do NOT "
-        "use this for SubCostCode work — route that to "
+        "looking up a specific CostCode by number or public_id, "
+        "finding which SubCostCodes sit under a given CostCode, AND "
+        "for creating, updating, or deleting CostCodes (approval-gated). "
+        "Do NOT use this for SubCostCode work — route that to "
         "delegate_to_sub_cost_code instead."
     ),
 ))

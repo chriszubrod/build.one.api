@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, 
 # Local Imports
 from entities.contract_labor.business.service import ContractLaborService
 from entities.contract_labor.business.import_service import ContractLaborImportService
+from entities.contract_labor.business.bill_summary import build_bills_summary
 from entities.contract_labor.api.schemas import (
     ContractLaborCreate,
     ContractLaborUpdate,
@@ -143,6 +144,22 @@ def read_contract_labors_by_status(status: str, current_user: dict = Depends(req
     service = ContractLaborService()
     results = service.read_by_status(status=status)
     return list_response([r.to_dict() for r in results])
+
+
+@router.get("/bills-summary")
+def read_contract_labor_bills_summary(
+    billing_period: Optional[str] = None,
+    current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR)),
+):
+    """
+    Aggregated per-vendor summary of ready-to-bill ContractLabor entries.
+
+    Powers the React Bills page. Each element includes vendor_id / vendor_name,
+    total_hours, total_amount, min_date/max_date, a flat line_items list, and a
+    line_items_summary grouped by day (billed_hours / cost_before_markup /
+    price_after_markup).
+    """
+    return list_response(build_bills_summary(billing_period=billing_period))
 
 
 @router.get("/by-billing-period/{billing_period_start}")

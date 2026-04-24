@@ -71,7 +71,6 @@ from entities.taxpayer_attachment.api.router import router as taxpayer_attachmen
 from entities.taxpayer_attachment.web.controller import router as taxpayer_attachment_web_router
 from entities.payment_term.api.router import router as payment_term_api_router
 from entities.contract_labor.api.router import router as contract_labor_api_router
-from entities.contract_labor.web.controller import router as contract_labor_web_router
 from entities.time_entry.api.router import router as time_entry_api_router
 from entities.time_entry.api.router import time_log_router as time_log_api_router
 from entities.invoice.api.router import router as invoice_api_router
@@ -233,7 +232,6 @@ app.include_router(taxpayer_attachment_api_router)
 app.include_router(taxpayer_attachment_web_router)
 app.include_router(payment_term_api_router)
 app.include_router(contract_labor_api_router)
-app.include_router(contract_labor_web_router)
 app.include_router(time_entry_api_router)
 app.include_router(time_log_api_router)
 app.include_router(invoice_api_router)

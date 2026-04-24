@@ -118,6 +118,23 @@ async def register(session_public_id: str) -> SessionChannel:
         return ch
 
 
+async def get_or_register(session_public_id: str) -> SessionChannel:
+    """Idempotent register — returns the existing channel if one exists.
+
+    Used to close a race between `start_run` (which pre-registers the
+    channel before returning so the caller can subscribe immediately)
+    and the background task (which would otherwise lazily register on
+    its first event).
+    """
+    async with _registry_lock:
+        ch = _channels.get(session_public_id)
+        if ch is not None:
+            return ch
+        ch = SessionChannel(session_public_id)
+        _channels[session_public_id] = ch
+        return ch
+
+
 async def get(session_public_id: str) -> Optional[SessionChannel]:
     async with _registry_lock:
         return _channels.get(session_public_id)

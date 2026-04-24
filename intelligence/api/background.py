@@ -63,12 +63,13 @@ async def start_run(
                 on_session_created=_on_session_created,
             ):
                 if channel is None:
-                    # First event implies the session row now exists — the
-                    # on_session_created callback ran before run_session
-                    # yielded anything. Register the channel here under the
-                    # public_id we learned.
+                    # First event implies the session row now exists.
+                    # `start_run` may have pre-registered the channel
+                    # already (so callers like the delegation tool can
+                    # subscribe before any events flow); use idempotent
+                    # get_or_register either way.
                     public_id = session_public_id_future.result()
-                    channel = await session_channel.register(public_id)
+                    channel = await session_channel.get_or_register(public_id)
                 channel.publish(ev)
         except asyncio.CancelledError:
             # Cancellation arrived mid-run. Surface it as an error event on
@@ -105,6 +106,14 @@ async def start_run(
     except Exception:
         # Surface the initial-setup error to the HTTP caller.
         raise
+
+    # Pre-register the channel so the caller can subscribe immediately.
+    # Without this, there's a race window between session creation and
+    # the background task's first event during which session_channel.get
+    # returns None — the delegation tool hits this on every sub-agent
+    # spawn. _run_and_publish uses get_or_register so the second-touch
+    # path is harmless.
+    await session_channel.get_or_register(public_id)
 
     async with _tasks_lock:
         _tasks[public_id] = task

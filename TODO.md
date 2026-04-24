@@ -18,10 +18,10 @@ Phase 0 audit done. Phase 1 scaffolding (`/auth/me` + SSE `/auth/me/changes` + R
 
 Phase 2 — delete Jinja per entity in waves, one commit each, verify in UI before next wave:
 
-- [ ] **Wave A — leaf entities:** address_type, payment_term, review_status, vendor_type, taxpayer, classification_override, dashboard.
-- [ ] **Wave B — reference entities:** cost_code, sub_cost_code, customer, vendor, address, organization, project, company, module.
-- [ ] **Wave C — identity surface:** user, role, role_module, user_module, user_project, user_role, vendor_address, project_address.
-- [ ] **Wave D — transactional:** bill, bill_credit, expense, invoice.
+- [x] **Wave A — leaf entities:** address_type, payment_term, review_status, vendor_type, taxpayer, classification_override, dashboard. (2026-04-24, `f34b63b`; 21 routes retired, 622 → 601)
+- [x] **Wave B — reference entities:** cost_code, sub_cost_code, customer, vendor, address, organization, project, company, module. (2026-04-24, `f6cecf2`; 36 routes retired, 601 → 565)
+- [x] **Wave C — identity surface:** user, role, role_module, user_module, user_project, user_role, vendor_address, project_address. (2026-04-24, `e0ddc32`; 28 routes retired, 565 → 537. `project_address` controller was dead code — never registered in `app.py`.)
+- [x] **Wave D — transactional:** bill, bill_credit, expense, invoice. (2026-04-24, `7758405`; 17 routes retired, 537 → 520. Extracted `_enrich_line_items` → `entities/invoice/business/enrichment.py` as `enrich_line_items` since the invoice packet PDF generator depends on it; dropped legacy `/expense/edit/{id}` redirect.)
 - [ ] **Wave E — blocked six + shared infra:** fix React gaps for contract_labor (/import + /bills), admin, attachment, auth (signup/reset), integration (OAuth callback), legal (EULA/privacy). Then delete `get_current_user_web`, `require_module_web`, `WebAuthenticationRequired` + its `app.py` handler, CSRF helpers, `entities/auth/web/controller.py`, the 5 QBO `web/controller.py` files, and the `templates/` tree.
 
 Follow-ups when the purge is done:

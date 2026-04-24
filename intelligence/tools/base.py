@@ -50,10 +50,16 @@ class ToolContext:
 
     `requesting_user_id` records the human who asked the agent to run, for
     attribution purposes. RBAC does not use it.
+
+    `session_id` (BIGINT) and `session_public_id` (UUID) are populated by
+    session_runner once the session row exists. Tools that need to spawn
+    sub-sessions (delegation) read these to set ParentSessionId and to
+    forward events into the parent's channel.
     """
     agent_id: Optional[str] = None          # the agent user's public_id (sub)
     auth_token: Optional[str] = None        # agent's bearer JWT
-    session_id: Optional[str] = None
+    session_id: Optional[int] = None        # AgentSession.Id (BIGINT)
+    session_public_id: Optional[str] = None # AgentSession.PublicId (UUID)
     requesting_user_id: Optional[str] = None  # human who initiated the run
 
     async def call_api(

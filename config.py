@@ -80,6 +80,8 @@ class Settings(BaseSettings):
     # auth helper reads `{key}_username` / `{key}_password` from here.
     scout_agent_username: Optional[str] = None
     scout_agent_password: Optional[str] = None
+    sub_cost_code_agent_username: Optional[str] = None
+    sub_cost_code_agent_password: Optional[str] = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

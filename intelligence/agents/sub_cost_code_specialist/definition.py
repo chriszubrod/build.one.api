@@ -1,7 +1,8 @@
-"""Scout — read-only Q&A agent over the build.one data model.
+"""SubCostCode specialist agent definition.
 
-Scout's tool set grows methodically: one entity at a time, colocated with
-the entity (entities/{name}/intelligence/tools.py). Today: SubCostCode.
+Invoked by other agents (today: scout) via the `delegate_to_sub_cost_code`
+tool. Carries its own User+Auth+Role with permissions narrowed to
+SubCostCode + CostCode modules only.
 """
 from pathlib import Path
 
@@ -13,11 +14,10 @@ from intelligence.registry import agents as agent_registry
 _PROMPT = (Path(__file__).parent / "prompt.md").read_text()
 
 
-scout = Agent(
-    name="scout",
+sub_cost_code_specialist = Agent(
+    name="sub_cost_code_specialist",
     system_prompt=_PROMPT,
     tools=(
-        "delegate_to_sub_cost_code",
         "list_sub_cost_codes",
         "search_sub_cost_codes",
         "read_sub_cost_code_by_public_id",
@@ -30,10 +30,10 @@ scout = Agent(
     ),
     model="claude-sonnet-4-6",
     provider="anthropic",
-    credentials_key="scout_agent",
+    credentials_key="sub_cost_code_agent",
     budget=BudgetPolicy(max_turns=12, max_tokens=150_000),
-    description="Read-only Q&A assistant. Today: sub-cost-codes only.",
+    description="Specialist for sub-cost-codes — read + approval-gated writes.",
 )
 
 
-agent_registry.register(scout)
+agent_registry.register(sub_cost_code_specialist)

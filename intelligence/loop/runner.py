@@ -210,6 +210,7 @@ async def run(
                         summary=summary,
                         proposed_input=call.input,
                         input_schema=tool.input_schema,
+                        session_public_id=session_public_id,
                     )
                     decision = await approval_coordinator.await_decision(
                         session_public_id=session_public_id,

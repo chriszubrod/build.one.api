@@ -52,6 +52,11 @@ class ApprovalRequest(BaseModel):
     this to the user, who responds via POST /runs/{id}/approve. The
     runner awaits a future keyed by request_id until the decision
     arrives (or the timeout fires).
+
+    `session_public_id` identifies which session owns this request — so
+    sub-agent approvals (forwarded onto a parent's stream) POST to the
+    correct URL. Optional for backwards compatibility; runner populates
+    it when known.
     """
     type: Literal["approval_request"] = "approval_request"
     request_id: str
@@ -59,6 +64,7 @@ class ApprovalRequest(BaseModel):
     summary: str
     proposed_input: dict[str, Any] = Field(default_factory=dict)
     input_schema: dict[str, Any] = Field(default_factory=dict)
+    session_public_id: Optional[str] = None
 
 
 class ApprovalDecision(BaseModel):

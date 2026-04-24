@@ -12,6 +12,7 @@ with `asyncio.to_thread`. Pyodbc is sync and the loop is async, so we bounce
 DB work to a worker thread to keep the event stream flowing smoothly.
 """
 import asyncio
+import dataclasses
 import json
 import logging
 from typing import AsyncIterator, Optional
@@ -91,6 +92,13 @@ async def run_session(
             on_session_created(session)
         except Exception:
             logger.exception("on_session_created callback raised")
+
+    # Hand the session identifiers to the loop's tool context so tools
+    # (notably agent-delegation) can spawn child sessions with the right
+    # ParentSessionId and forward events to the right channel.
+    ctx = dataclasses.replace(
+        ctx, session_id=session.id, session_public_id=session.public_id,
+    )
 
     current_turn_id: Optional[int] = None
     current_turn_text_buf: str = ""

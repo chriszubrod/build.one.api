@@ -58,7 +58,6 @@ from entities.admin.api.router import router as admin_api_router
 from entities.admin.web.controller import router as admin_web_router
 from entities.dashboard.api.router import router as dashboard_api_router
 from entities.attachment.api.router import router as attachment_api_router
-from entities.attachment.web.controller import router as attachment_web_router
 from entities.bill.api.router import router as bill_api_router
 from entities.bill_line_item.api.router import router as bill_line_item_api_router
 from entities.bill_line_item_attachment.api.router import router as bill_line_item_attachment_api_router
@@ -70,7 +69,6 @@ from entities.bill_credit_line_item.api.router import router as bill_credit_line
 from entities.bill_credit_line_item_attachment.api.router import router as bill_credit_line_item_attachment_api_router
 from entities.taxpayer_attachment.api.router import router as taxpayer_attachment_api_router
 from entities.taxpayer_attachment.web.controller import router as taxpayer_attachment_web_router
-from entities.legal.web.controller import router as legal_web_router
 from entities.payment_term.api.router import router as payment_term_api_router
 from entities.contract_labor.api.router import router as contract_labor_api_router
 from entities.contract_labor.web.controller import router as contract_labor_web_router
@@ -222,7 +220,6 @@ app.include_router(admin_api_router)
 app.include_router(admin_web_router)
 app.include_router(dashboard_api_router)
 app.include_router(attachment_api_router)
-app.include_router(attachment_web_router)
 app.include_router(bill_api_router)
 app.include_router(bill_line_item_api_router)
 app.include_router(bill_line_item_attachment_api_router)
@@ -234,7 +231,6 @@ app.include_router(bill_credit_line_item_api_router)
 app.include_router(bill_credit_line_item_attachment_api_router)
 app.include_router(taxpayer_attachment_api_router)
 app.include_router(taxpayer_attachment_web_router)
-app.include_router(legal_web_router)
 app.include_router(payment_term_api_router)
 app.include_router(contract_labor_api_router)
 app.include_router(contract_labor_web_router)

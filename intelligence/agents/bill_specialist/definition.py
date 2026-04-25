@@ -13,10 +13,12 @@ bill_specialist = Agent(
     name="bill_specialist",
     system_prompt=_PROMPT,
     tools=(
-        # Bill — search-only reads + parent-field updates + workflow action
+        # Bill — search-only reads + create-draft + parent-field updates +
+        # workflow action. Line item CRUD is a separate future tool set.
         "search_bills",
         "read_bill_by_public_id",
         "read_bill_by_number_and_vendor",
+        "create_bill",
         "update_bill",
         "delete_bill",
         "complete_bill",

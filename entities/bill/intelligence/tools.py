@@ -17,6 +17,10 @@ Read tools (no approval):
   read_bill_by_number_and_vendor  → GET  /api/v1/get/bill/by-bill-number-and-vendor
 
 Write tools (user approval required):
+  create_bill                     → POST   /api/v1/create/bill
+                                    (Creates a DRAFT bill with no line
+                                    items. Line items are added via a
+                                    separate workflow / future tool.)
   update_bill                     → PUT    /api/v1/update/bill/{public_id}
   delete_bill                     → DELETE /api/v1/delete/bill/{public_id}
   complete_bill                   → POST   /api/v1/complete/bill/{public_id}
@@ -154,6 +158,81 @@ read_bill_by_number_and_vendor = Tool(
 
 
 # ─── Write tools (require user approval) ─────────────────────────────────
+
+class CreateBillArgs(BaseModel):
+    vendor_public_id: str = Field(
+        description=(
+            "UUID of the vendor on the bill. If the user names a "
+            "vendor, search_vendors first to resolve the UUID."
+        ),
+    )
+    bill_date: str = Field(
+        description="Bill date — ISO `YYYY-MM-DD`.",
+    )
+    due_date: str = Field(
+        description="Due date — ISO `YYYY-MM-DD`.",
+    )
+    bill_number: str = Field(
+        description=(
+            "The vendor's bill / invoice number (<=50 chars). Must be "
+            "unique within this vendor."
+        ),
+    )
+    total_amount: Optional[float] = Field(
+        default=None,
+        description=(
+            "Optional total amount. Often left blank at draft time — "
+            "totals come from line items, which are added separately "
+            "after creation."
+        ),
+    )
+    memo: Optional[str] = Field(default=None, description="Optional memo.")
+    payment_term_public_id: Optional[str] = Field(
+        default=None,
+        description="Optional UUID of a payment term.",
+    )
+    is_draft: Optional[bool] = Field(
+        default=True,
+        description=(
+            "Defaults to true. The agent layer should rarely need to "
+            "set this — bills get finalized later via `complete_bill` "
+            "after line items are added."
+        ),
+    )
+
+
+async def _create_bill(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = CreateBillArgs(**args)
+    return await ctx.call_api(
+        "POST",
+        "/api/v1/create/bill",
+        body=parsed.model_dump(exclude_none=False),
+    )
+
+
+def _summarize_create_bill(args: dict) -> str:
+    number = args.get("bill_number") or "?"
+    return f"Create draft bill {number}"
+
+
+create_bill = Tool(
+    name="create_bill",
+    description=(
+        "Create a NEW DRAFT BILL with no line items. REQUIRES USER "
+        "APPROVAL. The bill becomes a draft (IsDraft=true) — line items "
+        "are added separately (via the UI today; via dedicated tools in "
+        "a future iteration). Once the lines are in, use `complete_bill` "
+        "to finalize and push to QBO + SharePoint + Excel. If the user "
+        "names a vendor, resolve via `search_vendors` first to get the "
+        "vendor's `public_id`. The server enforces (vendor, bill_number) "
+        "uniqueness — surface that error plainly if it fires."
+    ),
+    input_schema=input_schema_from(CreateBillArgs),
+    handler=_create_bill,
+    requires_approval=True,
+    approval_summary=_summarize_create_bill,
+)
+
 
 class UpdateBillArgs(BaseModel):
     public_id: str = Field(description="UUID of the bill to update.")
@@ -323,6 +402,7 @@ for _tool in (
     search_bills,
     read_bill_by_public_id,
     read_bill_by_number_and_vendor,
+    create_bill,
     update_bill,
     delete_bill,
     complete_bill,

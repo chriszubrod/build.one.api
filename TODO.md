@@ -4,9 +4,10 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 
 ## Intelligence layer
 
-- [ ] **Parallel tool dispatch in `runner.py`.** Today's dispatch loop iterates `pending_calls` sequentially (`for call in pending_calls: ... await tool.handler(...)`). For scout's compound-query case (fan-out to multiple specialists in one turn), this doubles wall-clock vs. parallel. `asyncio.gather` with an event queue would cut it in half. Deferred because sub-agent events forwarded onto the parent's channel would interleave under parallelism — per-sub-agent chronology preserved, but visually jumbled in the tray. Pair with a UI pass that groups sub-agent events into their own lane (collapsible, tabbed, or indented) so parallelism is legible.
-- [ ] **Add `read_cost_code_by_number` tool.** Today the CostCode specialist has to `list_cost_codes` + scan when the user asks about "cost code 10" by number — extra round-trip each time. Add `read_cost_code_by_number` wrapping `GET /api/v1/get/cost-code/by-number/{number}` (endpoint doesn't exist yet either — add both).
-- [ ] **Entity expansion: next specialist** (Vendor or Project likely). Same template as CostCode / SubCostCode: `entities/{name}/intelligence/tools.py` for list + search + read + CRUD (with approval on writes), new `intelligence/agents/{name}_specialist/` package, new agent user + narrow role via `seed.intelligence_agents.sql` pattern, register scout's delegation tool. Expect 20-30 min mechanical per entity.
+- [x] **Parallel tool dispatch in `runner.py`.** (API `bd327b5`, 2026-04-25) Refactored the dispatch loop into `_dispatch_tools_concurrently` — handlers run via `asyncio.create_task`, events forward live via a shared queue, result_blocks land in original call order. Verified ~2x speedup on the synthetic two-tool case.
+- [x] **Add `read_cost_code_by_number` tool.** (API `bd327b5`, 2026-04-25) Endpoint `GET /api/v1/get/cost-code/by-number/{number}` + agent tool added (service + repo + sproc were already in place).
+- [ ] **UI lanes for concurrent sub-agent events.** With parallel dispatch live, forwarded sub-agent events from concurrent delegations now interleave on scout's stream. Per-sub-agent chronology is preserved (each event carries its session_public_id), but visually they mix together. Group sub-agent events into their own lane in the tray (collapsible / tabbed / indented) so the user can read each specialist's flow coherently.
+- [ ] **Entity expansion: next specialist.** SubCostCode / CostCode / Customer / Project / Vendor all live. Future picks: Bill, Expense, Invoice, ContractLabor, etc. Same template per entity (~20-30 min each).
 
 ## Frontend perf
 

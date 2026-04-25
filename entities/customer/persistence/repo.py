@@ -51,15 +51,22 @@ class CustomerRepository:
             logger.error(f"Unexpected error during customer mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, name: str, email: str, phone: str) -> Customer:
+    def create(
+        self,
+        *,
+        tenant_id: int = 1,
+        name: str,
+        email: Optional[str] = None,
+        phone: Optional[str] = None,
+    ) -> Customer:
         """
         Create a new customer.
-        
+
         Args:
             tenant_id: Tenant ID for multi-tenant isolation (logged for audit, not yet used for filtering)
-            name: Customer name
-            email: Customer email
-            phone: Customer phone
+            name: Customer name (required)
+            email: Optional customer email
+            phone: Optional customer phone
         """
         try:
             with get_connection() as conn:

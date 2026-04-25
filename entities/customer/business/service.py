@@ -17,15 +17,22 @@ class CustomerService:
         """Initialize the CustomerService."""
         self.repo = repo or CustomerRepository()
 
-    def create(self, *, tenant_id: int = 1, name: str, email: str, phone: str) -> Customer:
+    def create(
+        self,
+        *,
+        tenant_id: int = 1,
+        name: str,
+        email: Optional[str] = None,
+        phone: Optional[str] = None,
+    ) -> Customer:
         """
         Create a new customer.
-        
+
         Args:
             tenant_id: Tenant ID for multi-tenant isolation (default: 1)
-            name: Customer name
-            email: Customer email
-            phone: Customer phone
+            name: Customer name (required)
+            email: Optional customer email
+            phone: Optional customer phone
         """
         return self.repo.create(tenant_id=tenant_id, name=name, email=email, phone=phone)
 

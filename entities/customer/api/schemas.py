@@ -13,15 +13,15 @@ class CustomerCreate(BaseModel):
         max_length=50,
         description="The name of the customer."
     )
-    email: str = Field(
-        min_length=1,
+    email: Optional[str] = Field(
+        default=None,
         max_length=255,
-        description="The email of the customer."
+        description="Optional email of the customer.",
     )
-    phone: str = Field(
-        min_length=1,
+    phone: Optional[str] = Field(
+        default=None,
         max_length=50,
-        description="The phone of the customer."
+        description="Optional phone of the customer.",
     )
 
 
@@ -34,13 +34,13 @@ class CustomerUpdate(BaseModel):
         max_length=50,
         description="The name of the customer."
     )
-    email: str = Field(
-        min_length=1,
+    email: Optional[str] = Field(
+        default=None,
         max_length=255,
-        description="The email of the customer."
+        description="Optional email of the customer.",
     )
-    phone: str = Field(
-        min_length=1,
+    phone: Optional[str] = Field(
+        default=None,
         max_length=50,
-        description="The phone of the customer."
+        description="Optional phone of the customer.",
     )

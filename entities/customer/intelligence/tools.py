@@ -143,12 +143,11 @@ class CreateCustomerArgs(BaseModel):
 
 async def _create_customer(args: dict, ctx: ToolContext) -> ToolResult:
     parsed = CreateCustomerArgs(**args)
-    body = {
-        "name": parsed.name,
-        "email": parsed.email or "",
-        "phone": parsed.phone or "",
-    }
-    return await ctx.call_api("POST", "/api/v1/create/customer", body=body)
+    return await ctx.call_api(
+        "POST",
+        "/api/v1/create/customer",
+        body=parsed.model_dump(exclude_none=False),
+    )
 
 
 def _summarize_create_customer(args: dict) -> str:
@@ -184,12 +183,7 @@ class UpdateCustomerArgs(BaseModel):
 
 async def _update_customer(args: dict, ctx: ToolContext) -> ToolResult:
     parsed = UpdateCustomerArgs(**args)
-    body = {
-        "row_version": parsed.row_version,
-        "name": parsed.name,
-        "email": parsed.email or "",
-        "phone": parsed.phone or "",
-    }
+    body = parsed.model_dump(exclude={"public_id"}, exclude_none=False)
     return await ctx.call_api(
         "PUT", f"/api/v1/update/customer/{parsed.public_id}", body=body
     )

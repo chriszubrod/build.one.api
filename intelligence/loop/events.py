@@ -13,15 +13,27 @@ from intelligence.tools.base import ToolResult
 from intelligence.transport.base import Usage  # noqa: F401 — re-exported for consumers
 
 
+# All forwardable event types carry the same source-identification
+# fields. The delegation tool stamps each forwarded event with the
+# sub-session's public_id and the target agent's name before
+# publishing onto the parent's channel; scout's own events leave
+# these unset (UI treats unset = "primary agent"). Optional throughout
+# for backwards compatibility — older clients ignore unknown fields.
+
+
 class TurnStart(BaseModel):
     type: Literal["turn_start"] = "turn_start"
     turn: int
     model: str
+    session_public_id: Optional[str] = None
+    agent_name: Optional[str] = None
 
 
 class TextDelta(BaseModel):
     type: Literal["text_delta"] = "text_delta"
     text: str
+    session_public_id: Optional[str] = None
+    agent_name: Optional[str] = None
 
 
 class ToolCallStart(BaseModel):
@@ -29,6 +41,8 @@ class ToolCallStart(BaseModel):
     id: str
     name: str
     input: dict[str, Any] = Field(default_factory=dict)
+    session_public_id: Optional[str] = None
+    agent_name: Optional[str] = None
 
 
 class ToolCallEnd(BaseModel):
@@ -36,6 +50,8 @@ class ToolCallEnd(BaseModel):
     id: str
     name: str
     result: ToolResult
+    session_public_id: Optional[str] = None
+    agent_name: Optional[str] = None
 
 
 class TurnEnd(BaseModel):
@@ -43,6 +59,8 @@ class TurnEnd(BaseModel):
     turn: int
     usage: Usage
     stop_reason: Optional[str] = None
+    session_public_id: Optional[str] = None
+    agent_name: Optional[str] = None
 
 
 class ApprovalRequest(BaseModel):
@@ -56,7 +74,8 @@ class ApprovalRequest(BaseModel):
     `session_public_id` identifies which session owns this request — so
     sub-agent approvals (forwarded onto a parent's stream) POST to the
     correct URL. Optional for backwards compatibility; runner populates
-    it when known.
+    it when known. `agent_name` is set for forwarded events so the UI
+    can label the lane.
     """
     type: Literal["approval_request"] = "approval_request"
     request_id: str
@@ -65,6 +84,7 @@ class ApprovalRequest(BaseModel):
     proposed_input: dict[str, Any] = Field(default_factory=dict)
     input_schema: dict[str, Any] = Field(default_factory=dict)
     session_public_id: Optional[str] = None
+    agent_name: Optional[str] = None
 
 
 class ApprovalDecision(BaseModel):
@@ -80,6 +100,8 @@ class ApprovalDecision(BaseModel):
     decision: Literal["approved", "rejected", "timed_out"]
     final_input: Optional[dict[str, Any]] = None
     decided_by: Optional[str] = None
+    session_public_id: Optional[str] = None
+    agent_name: Optional[str] = None
 
 
 class Done(BaseModel):

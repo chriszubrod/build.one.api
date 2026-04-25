@@ -128,7 +128,15 @@ def make_delegation_tool(
                 and parent_channel is not None
             ):
                 try:
-                    parent_channel.publish(ev)
+                    # Stamp the source so the UI can group concurrent
+                    # sub-agent events into per-specialist lanes. Use
+                    # model_copy so we don't mutate the channel-buffered
+                    # original (other late subscribers see it untouched).
+                    stamped = ev.model_copy(update={
+                        "session_public_id": sub_public_id,
+                        "agent_name": target_agent,
+                    })
+                    parent_channel.publish(stamped)
                 except Exception:
                     logger.exception(
                         "delegation: failed to forward %s event to parent",

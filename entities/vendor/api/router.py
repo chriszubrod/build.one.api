@@ -56,6 +56,26 @@ async def get_vendors_router(current_user: dict = Depends(require_module_api(Mod
     return list_response([vendor.to_dict() for vendor in vendors])
 
 
+@router.get("/get/vendor/search")
+def search_vendors_router(
+    q: str,
+    limit: int = 10,
+    current_user: dict = Depends(require_module_api(Modules.VENDORS)),
+):
+    """
+    Case-insensitive substring search over Vendor name + abbreviation.
+    Excludes soft-deleted rows. Returns up to `limit` matches (default
+    10). Intended for agent narrow-lookup and dropdown search — much
+    cheaper than listing the full ~1100-row catalog.
+    """
+    if limit < 1:
+        limit = 1
+    if limit > 100:
+        limit = 100
+    matches = service.search_by_name(query=q, limit=limit)
+    return list_response([v.to_dict() for v in matches])
+
+
 @router.get("/get/vendor/{public_id}")
 def get_vendor_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS))):
     """

@@ -44,6 +44,10 @@ Follow-ups / post-purge:
 - [ ] **Add `IsNavigable BIT NOT NULL DEFAULT 1` to `dbo.[Module]`.** Today every Module row that exists for RBAC permission gating also shows up in the sidebar. `Attachments`, `Pending Actions`, and `Time Tracking` are legitimately-scoped permission modules but have no top-level UI page; today they render as broken sidebar links. Splitting the flag lets the backend keep RBAC scopes distinct from navigation. `_resolve_me_payload` should then omit non-navigable modules from the `modules[]` array (or the sidebar should filter on the flag).
 - [ ] **Password reset flow.** Login + signup + silent refresh all work; reset has no implementation anywhere (no API endpoint, no token schema, no React page). Ship as its own small wave when needed — doesn't block anything.
 
+## Data hygiene
+
+- [ ] **Audit which entities should use soft delete vs hard delete (cross-cutting).** The model is inconsistent today — `Vendor` soft-deletes (`IsDeleted` column + `SoftDeleteVendorByPublicId` sproc), but `CostCode` / `SubCostCode` / `Customer` / `Project` hard-delete. Some hard-delete entities probably want soft: anything FK-referenced from historical records (customers with old projects, sub-cost-codes referenced from old line items, projects on completed bills, etc.). For each entity decide: what FKs point at it, what's the audit/history value of keeping the row, what's the UX cost of orphaned references on hard-delete. Apply uniformly. The agent delete tools' approval gate stays the same either way — only the underlying behavior changes.
+
 ## API cleanup (do in a week, after Function architecture is proven stable)
 
 - [ ] Delete `shared/scheduler.py` + remove `start_scheduler()` / `shutdown_scheduler()` calls from `app.py`

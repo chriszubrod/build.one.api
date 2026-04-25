@@ -77,6 +77,39 @@ class VendorService:
         """
         return self.repo.read_by_name(name)
 
+    def search_by_name(self, *, query: str, limit: int = 10):
+        """
+        Case-insensitive substring search against Name + Abbreviation.
+        Soft-deleted rows are excluded; prefix matches rank above
+        substring matches.
+
+        In-memory filter over `read_all()` (~1100 rows). Cheap enough
+        today; upgrade to a dedicated LIKE sproc if it becomes a hot
+        path or fuzzy ranking gets more complex.
+        """
+        q = (query or "").strip().lower()
+        if not q or limit <= 0:
+            return []
+
+        prefix_hits = []
+        substring_hits = []
+
+        for vendor in self.repo.read_all():
+            if getattr(vendor, "is_deleted", False):
+                continue
+            name = (vendor.name or "").lower()
+            abbreviation = (getattr(vendor, "abbreviation", "") or "").lower()
+
+            if name.startswith(q) or abbreviation.startswith(q):
+                prefix_hits.append(vendor)
+            elif q in name or q in abbreviation:
+                substring_hits.append(vendor)
+
+            if len(prefix_hits) >= limit:
+                break
+
+        return (prefix_hits + substring_hits)[:limit]
+
     def update_by_public_id(
         self,
         public_id: str,

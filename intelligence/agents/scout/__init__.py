@@ -17,6 +17,7 @@ import intelligence.agents.sub_cost_code_specialist  # noqa: F401
 import intelligence.agents.cost_code_specialist  # noqa: F401
 import intelligence.agents.customer_specialist  # noqa: F401
 import intelligence.agents.project_specialist  # noqa: F401
+import intelligence.agents.vendor_specialist  # noqa: F401
 
 from intelligence.composition.delegation import make_delegation_tool
 from intelligence.tools.registry import register as _register_tool
@@ -76,6 +77,20 @@ _register_tool(make_delegation_tool(
         "project. Do NOT use this for Customer-centric questions "
         "('what customers do we have?') — route those to "
         "delegate_to_customer."
+    ),
+))
+
+_register_tool(make_delegation_tool(
+    name="delegate_to_vendor",
+    target_agent="vendor_specialist",
+    description=(
+        "Hand a Vendor task off to the Vendor specialist agent. Use "
+        "for vendor lookups, searches by name/abbreviation, creates, "
+        "updates, and (soft) deletes. The vendor catalog is large "
+        "(~1100 rows) so the specialist works search-first; do not "
+        "ask it to list everything. Vendor delete is soft — the row "
+        "is hidden from search but historical records pointing at it "
+        "are preserved."
     ),
 ))
 

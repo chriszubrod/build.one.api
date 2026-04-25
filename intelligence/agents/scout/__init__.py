@@ -20,6 +20,8 @@ import intelligence.agents.project_specialist  # noqa: F401
 import intelligence.agents.vendor_specialist  # noqa: F401
 import intelligence.agents.bill_specialist  # noqa: F401
 import intelligence.agents.bill_credit_specialist  # noqa: F401
+import intelligence.agents.expense_specialist  # noqa: F401
+import intelligence.agents.invoice_specialist  # noqa: F401
 
 from intelligence.composition.delegation import make_delegation_tool
 from intelligence.tools.registry import register as _register_tool
@@ -123,6 +125,40 @@ _register_tool(make_delegation_tool(
         "a draft credit. Catalog is small (~400 rows) but search-"
         "first discipline still applies. NOT for vendor bills — "
         "route those to delegate_to_bill instead. No line-item edits."
+    ),
+))
+
+_register_tool(make_delegation_tool(
+    name="delegate_to_expense",
+    target_agent="expense_specialist",
+    description=(
+        "Hand an Expense task off to the Expense specialist agent. "
+        "Use for expense lookups (by vendor, reference, or filter), "
+        "reads, draft creation (parent record only — no line items), "
+        "updates to parent fields, deletes, and the `complete` "
+        "workflow action that pushes to QBO + Excel. **Refunds "
+        "(credit-card credits / 'ExpenseRefunds') are also handled "
+        "here** — they're stored as Expense rows with `IsCredit=true`, "
+        "no separate entity. Large catalog (~10K); specialist is "
+        "search-first. No line-item edits today."
+    ),
+))
+
+_register_tool(make_delegation_tool(
+    name="delegate_to_invoice",
+    target_agent="invoice_specialist",
+    description=(
+        "Hand an Invoice task off to the Invoice specialist agent. "
+        "**Invoices are OUR invoices to a customer** (billed against "
+        "a Project) — distinct from Bills (vendor invoices to us). "
+        "Use for invoice lookups (by project, number, or filter), "
+        "reads, draft creation (parent record only — no line items), "
+        "updates to parent fields, deletes, and the `complete` "
+        "workflow action that generates the PDF packet, uploads to "
+        "SharePoint, pushes to QBO, and syncs source bill/expense/"
+        "credit lines' billed status. Catalog is small (~900 rows). "
+        "No line-item edits today — the 'select billable items to "
+        "roll into this invoice' workflow goes through the UI."
     ),
 ))
 

@@ -3,9 +3,10 @@ import hashlib
 import io
 import logging
 import uuid
+from typing import Optional
 
 # Third-party Imports
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from decimal import Decimal
 
 # Local Imports
@@ -322,9 +323,41 @@ def create_invoice_router(body: InvoiceCreate, current_user: dict = Depends(requ
 
 
 @router.get("/get/invoices")
-def get_invoices_router(current_user: dict = Depends(require_module_api(Modules.INVOICES))):
-    invoices = InvoiceService().read_all()
-    return list_response([inv.to_dict() for inv in invoices])
+def get_invoices_router(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    search: Optional[str] = Query(default=None),
+    project_id: Optional[int] = Query(default=None),
+    is_draft: Optional[bool] = Query(default=None),
+    current_user: dict = Depends(require_module_api(Modules.INVOICES)),
+):
+    """
+    Read invoices with pagination + filters.
+
+    Mirrors `GET /get/bills` so agent tooling can search consistently.
+    Service layer (`read_paginated` + `count`) was already in place;
+    this route just wires the filters through. Backwards-compatible —
+    bare GET still works.
+    """
+    service = InvoiceService()
+    invoices = service.read_paginated(
+        page_number=page,
+        page_size=page_size,
+        search_term=search,
+        project_id=project_id,
+        is_draft=is_draft,
+    )
+    total = service.count(
+        search_term=search,
+        project_id=project_id,
+        is_draft=is_draft,
+    )
+    return {
+        "data": [inv.to_dict() for inv in invoices],
+        "count": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.get("/get/invoice/billable-items/{project_public_id}")

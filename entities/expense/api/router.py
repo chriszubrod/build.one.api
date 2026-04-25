@@ -1,9 +1,10 @@
 # Python Standard Library Imports
 import logging
 import time
+from typing import Optional
 
 # Third-party Imports
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from decimal import Decimal
 
@@ -63,12 +64,41 @@ def create_expense_router(body: ExpenseCreate, current_user: dict = Depends(requ
 
 
 @router.get("/get/expenses")
-def get_expenses_router(current_user: dict = Depends(require_module_api(Modules.EXPENSES))):
+def get_expenses_router(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    search: Optional[str] = Query(default=None),
+    vendor_id: Optional[int] = Query(default=None),
+    is_draft: Optional[bool] = Query(default=None),
+    current_user: dict = Depends(require_module_api(Modules.EXPENSES)),
+):
     """
-    Read all expenses.
+    Read expenses with pagination + filters.
+
+    Mirrors `GET /get/bills` so agent tooling can search consistently
+    across transactional entities. Service layer (`read_paginated` +
+    `count`) was already in place; this route just wires the filters
+    through. Backwards-compatible — bare GET still works.
     """
-    expenses = ExpenseService().read_all()
-    return list_response([expense.to_dict() for expense in expenses])
+    service = ExpenseService()
+    expenses = service.read_paginated(
+        page_number=page,
+        page_size=page_size,
+        search_term=search,
+        vendor_id=vendor_id,
+        is_draft=is_draft,
+    )
+    total = service.count(
+        search_term=search,
+        vendor_id=vendor_id,
+        is_draft=is_draft,
+    )
+    return {
+        "data": [e.to_dict() for e in expenses],
+        "count": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.get("/get/expense/by-reference-number-and-vendor")

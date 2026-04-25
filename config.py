@@ -92,6 +92,8 @@ class Settings(BaseSettings):
     vendor_agent_password: Optional[str] = None
     bill_agent_username: Optional[str] = None
     bill_agent_password: Optional[str] = None
+    bill_credit_agent_username: Optional[str] = None
+    bill_credit_agent_password: Optional[str] = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

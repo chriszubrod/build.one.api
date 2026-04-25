@@ -19,6 +19,7 @@ import intelligence.agents.customer_specialist  # noqa: F401
 import intelligence.agents.project_specialist  # noqa: F401
 import intelligence.agents.vendor_specialist  # noqa: F401
 import intelligence.agents.bill_specialist  # noqa: F401
+import intelligence.agents.bill_credit_specialist  # noqa: F401
 
 from intelligence.composition.delegation import make_delegation_tool
 from intelligence.tools.registry import register as _register_tool
@@ -107,6 +108,21 @@ _register_tool(make_delegation_tool(
         "+ Excel. The bill catalog is large (~18K rows) so the "
         "specialist works search-first. The specialist does NOT edit "
         "line items — tell the user to use the UI for that today."
+    ),
+))
+
+_register_tool(make_delegation_tool(
+    name="delegate_to_bill_credit",
+    target_agent="bill_credit_specialist",
+    description=(
+        "Hand a BillCredit (vendor credit memo) task off to the "
+        "BillCredit specialist agent. Use for credit lookups (by "
+        "vendor, number, or filter), reads, draft creation (parent "
+        "record only — no line items), updates to parent fields, "
+        "deletes, and the workflow `complete` action that finalizes "
+        "a draft credit. Catalog is small (~400 rows) but search-"
+        "first discipline still applies. NOT for vendor bills — "
+        "route those to delegate_to_bill instead. No line-item edits."
     ),
 ))
 

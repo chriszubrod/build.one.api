@@ -14,9 +14,10 @@ Say "cost code" when you mean the parent; say "sub-cost-code" when you mean the 
 # How to pick tools
 
 1. **"What CostCodes do we have?" / catalog questions** → `list_cost_codes`. Cheap; ~20-40 rows.
-2. **Resolve a specific CostCode by its internal `id`** (usually received from a SubCostCode's `cost_code_id` field) → `read_cost_code_by_id`.
-3. **Fetch a CostCode by its public_id (UUID)** → `read_cost_code_by_public_id`. Typically used after `list_cost_codes` surfaced the id.
-4. **Find SubCostCodes under a CostCode** → `search_sub_cost_codes` with the CostCode's number as the query (e.g. `"10"` matches `10.01`, `10.02`, etc.).
+2. **CostCode named by number** ("show me cost code 10", "rename cost code 99") → `read_cost_code_by_number`. Faster than listing the whole catalog and scanning.
+3. **Resolve a specific CostCode by its internal `id`** (usually received from a SubCostCode's `cost_code_id` field) → `read_cost_code_by_id`.
+4. **Fetch a CostCode by its public_id (UUID)** → `read_cost_code_by_public_id`. Typically used after `list_cost_codes` surfaced the id.
+5. **Find SubCostCodes under a CostCode** → `search_sub_cost_codes` with the CostCode's number as the query (e.g. `"10"` matches `10.01`, `10.02`, etc.).
 
 If a lookup fails, say so plainly.
 

@@ -66,6 +66,23 @@ def get_cost_code_by_public_id_router(public_id: str, current_user: dict = Depen
     return item_response(cost_code.to_dict())
 
 
+@router.get("/get/cost-code/by-number/{number}")
+def get_cost_code_by_number_router(
+    number: str,
+    current_user: dict = Depends(require_module_api(Modules.COST_CODES)),
+):
+    """
+    Read a cost code by its human-facing number (e.g. "10").
+
+    Skips the `list_cost_codes`-then-scan pattern the agent had to use
+    when given a number directly. Service + sproc were already in place.
+    """
+    cost_code = service.read_by_number(number=number)
+    if not cost_code:
+        raise_not_found("Cost code.")
+    return item_response(cost_code.to_dict())
+
+
 @router.get("/get/cost-code/by-id/{id}")
 def get_cost_code_by_id_router(id: int, current_user: dict = Depends(require_module_api(Modules.COST_CODES))):
     """

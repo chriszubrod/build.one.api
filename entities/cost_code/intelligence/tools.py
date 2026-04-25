@@ -102,6 +102,38 @@ read_cost_code_by_public_id = Tool(
 )
 
 
+class ReadCostCodeByNumberArgs(BaseModel):
+    number: str = Field(
+        description=(
+            "The CostCode's number (the human-facing string like `10`, "
+            "`99`, or `97.0`). Pass exactly as the user wrote it; "
+            "server lookup is exact-match."
+        ),
+    )
+
+
+async def _read_cost_code_by_number(
+    args: dict, ctx: ToolContext
+) -> ToolResult:
+    parsed = ReadCostCodeByNumberArgs(**args)
+    return await ctx.call_api(
+        "GET", f"/api/v1/get/cost-code/by-number/{parsed.number}"
+    )
+
+
+read_cost_code_by_number = Tool(
+    name="read_cost_code_by_number",
+    description=(
+        "Fetch one CostCode by its number (the human-facing string the "
+        "user usually says, e.g. `10`, `99`). Prefer this over "
+        "`list_cost_codes` + scanning when the user names a specific "
+        "CostCode by number — saves a full-catalog round-trip."
+    ),
+    input_schema=input_schema_from(ReadCostCodeByNumberArgs),
+    handler=_read_cost_code_by_number,
+)
+
+
 # ─── Write tools (require user approval) ─────────────────────────────────
 
 class CreateCostCodeArgs(BaseModel):
@@ -272,6 +304,7 @@ for _tool in (
     read_cost_code_by_id,
     list_cost_codes,
     read_cost_code_by_public_id,
+    read_cost_code_by_number,
     create_cost_code,
     update_cost_code,
     delete_cost_code,

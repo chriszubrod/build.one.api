@@ -17,7 +17,7 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 ## Frontend pre-launch (build.one.web)
 
 - [x] **Graceful token refresh — stop the 30-min lockouts.** (web `36573c6`, 2026-04-24) `client.ts` now calls `POST /api/v1/auth/refresh` on 401 and retries once before wiping localStorage. Covers `request`, `uploadFile`, `fetchViewAttachmentBlob`.
-- [ ] **Patch `src/agents/sseClient.ts` to use the same refresh machinery.** Scout-tray paths (`start`, `continue`, `approve`, `cancel`, `events`) have their own fetch calls that bypass `client.ts`'s refresh-on-401. Observed 2026-04-24: mid-conversation `POST /api/v1/agents/runs/{id}/continue` returns `HTTP 401 "Token has expired"` and the run fails outright with no refresh attempted. Route sseClient fetches through a shared helper (or inline the same 401 → refresh → retry pattern) so the agent endpoints are covered too.
+- [x] **Patch `src/agents/sseClient.ts` to use the same refresh machinery.** (web `5b9aaa9`, 2026-04-24) `start`, `continue`, `approve`, and `events` all now route through the shared `fetchWithRefresh` helper exported from `client.ts`. `cancel` stays raw but proactively refreshes first.
 - [ ] **Dev-gate the TanStack Query devtools.** `src/main.tsx` currently renders `<ReactQueryDevtools />` unconditionally, so the floating panel ships to prod. Before launch, wrap in `{import.meta.env.DEV && <ReactQueryDevtools ... />}`. Keep the dev-only version for local debugging.
 
 ## Jinja purge — migration waves (started 2026-04-23)

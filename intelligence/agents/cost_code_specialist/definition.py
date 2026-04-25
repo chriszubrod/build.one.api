@@ -21,6 +21,7 @@ cost_code_specialist = Agent(
         "list_cost_codes",
         "read_cost_code_by_id",
         "read_cost_code_by_public_id",
+        "read_cost_code_by_number",
         "search_sub_cost_codes",
         "read_sub_cost_code_by_public_id",
         "create_cost_code",

@@ -10,6 +10,7 @@ Orchestrates one turn at a time:
 
 Termination caps (BudgetPolicy) are checked after each turn.
 """
+import asyncio
 import logging
 from typing import AsyncIterator, Optional
 
@@ -171,32 +172,71 @@ async def run(
             )
             return
 
-        # Dispatch tools and collect results into a single user message.
+        # Dispatch tools concurrently. Each pending_call is handled by a
+        # coroutine that pushes its events to a shared queue and writes
+        # its final ToolResult into a slot indexed by the call's
+        # position in pending_calls (preserving the order required by the
+        # LLM's tool_result history block).
         result_blocks: list[ContentBlock] = []
-        for call in pending_calls:
+        async for ev in _dispatch_tools_concurrently(
+            pending_calls=pending_calls,
+            by_name=by_name,
+            ctx=ctx,
+            session_public_id=session_public_id,
+            session_id=session_id,
+            result_blocks=result_blocks,
+        ):
+            yield ev
+
+        history.append(Message(role="user", content=result_blocks))
+        # fall through to next turn
+
+
+async def _dispatch_tools_concurrently(
+    *,
+    pending_calls: list[ToolUse],
+    by_name: dict[str, Tool],
+    ctx: ToolContext,
+    session_public_id: Optional[str],
+    session_id: Optional[int],
+    result_blocks: list[ContentBlock],
+) -> AsyncIterator[LoopEvent]:
+    """Run all tool handlers in parallel, yielding events as they happen.
+
+    Approval requests, decisions, and tool_call_end events arrive on a
+    shared queue and may interleave between concurrent dispatches —
+    that's the whole point of running in parallel. Each event carries
+    its own request_id / tool_use id so the UI can route it correctly
+    even when interleaved.
+
+    `result_blocks` is mutated in place (in pending_calls order) so the
+    caller can append to history without depending on completion order.
+    """
+    if not pending_calls:
+        return
+
+    queue: asyncio.Queue = asyncio.Queue()
+    sentinel = object()
+    # Slot per call so we can place result_blocks in pending_calls order
+    # regardless of dispatch completion order.
+    results: list[Optional[ToolResult]] = [None] * len(pending_calls)
+
+    async def _dispatch_one(idx: int, call: ToolUse) -> None:
+        try:
             tool = by_name.get(call.name) or tool_registry.get(call.name)
             if tool is None:
                 result = ToolResult(
                     content=f"Unknown tool: {call.name}", is_error=True
                 )
-                yield ToolCallEnd(id=call.id, name=call.name, result=result)
-                result_blocks.append(
-                    ToolResultBlock(
-                        tool_use_id=call.id,
-                        content=result.content,
-                        is_error=True,
-                    )
+                await queue.put(
+                    ToolCallEnd(id=call.id, name=call.name, result=result)
                 )
-                continue
+                results[idx] = result
+                return
 
-            # Approval gate — if the tool opts in and we have a session
-            # id (required to key the approval registry), pause here and
-            # wait for the user's decision.
             final_input = call.input
             if tool.requires_approval:
                 if session_public_id is None:
-                    # Non-persistent run (no session = no user to ask).
-                    # Execute without approval but log the fact.
                     logger.warning(
                         "tool %s requires_approval but no session_public_id; "
                         "executing without approval",
@@ -204,25 +244,25 @@ async def run(
                     )
                 else:
                     summary = tool.describe_for_approval(call.input)
-                    yield ApprovalRequest(
+                    await queue.put(ApprovalRequest(
                         request_id=call.id,
                         tool_name=tool.name,
                         summary=summary,
                         proposed_input=call.input,
                         input_schema=tool.input_schema,
                         session_public_id=session_public_id,
-                    )
+                    ))
                     decision = await approval_coordinator.await_decision(
                         session_public_id=session_public_id,
                         request_id=call.id,
                         session_id=session_id,
                     )
-                    yield ApprovalDecision(
+                    await queue.put(ApprovalDecision(
                         request_id=call.id,
                         decision=decision.decision,
                         final_input=decision.final_input,
                         decided_by=decision.decided_by,
-                    )
+                    ))
                     if decision.decision == "approved":
                         final_input = (
                             decision.final_input
@@ -230,43 +270,71 @@ async def run(
                             else call.input
                         )
                     else:
-                        # Rejected or timed out — skip execution, return a
-                        # synthetic result the LLM can reason about.
                         reason = (
                             "The user rejected this action."
                             if decision.decision == "rejected"
                             else "The approval request timed out with no decision."
                         )
                         result = ToolResult(content=reason, is_error=True)
-                        yield ToolCallEnd(
+                        await queue.put(ToolCallEnd(
                             id=call.id, name=call.name, result=result
-                        )
-                        result_blocks.append(
-                            ToolResultBlock(
-                                tool_use_id=call.id,
-                                content=result.content,
-                                is_error=True,
-                            )
-                        )
-                        continue
+                        ))
+                        results[idx] = result
+                        return
 
             try:
                 result = await tool.handler(final_input, ctx)
-            except Exception as exc:  # noqa: BLE001 — surface any tool crash as a tool error
+            except Exception as exc:  # noqa: BLE001 — surface tool crash as a tool error
                 result = ToolResult(
                     content=f"Tool raised {type(exc).__name__}: {exc}",
                     is_error=True,
                 )
-            yield ToolCallEnd(id=call.id, name=call.name, result=result)
-            result_blocks.append(
-                ToolResultBlock(
-                    tool_use_id=call.id,
-                    content=result.content,
-                    is_error=result.is_error,
-                )
+            await queue.put(
+                ToolCallEnd(id=call.id, name=call.name, result=result)
             )
-        history.append(Message(role="user", content=result_blocks))
-        # fall through to next turn
+            results[idx] = result
+        finally:
+            # Always signal completion so the drainer doesn't hang on
+            # cancellation / unexpected exception paths.
+            await queue.put(sentinel)
+
+    tasks = [
+        asyncio.create_task(_dispatch_one(i, c))
+        for i, c in enumerate(pending_calls)
+    ]
+
+    completed = 0
+    try:
+        while completed < len(pending_calls):
+            item = await queue.get()
+            if item is sentinel:
+                completed += 1
+                continue
+            yield item
+    finally:
+        # If the consumer aborted (e.g. parent run cancelled), make sure
+        # the in-flight dispatch tasks don't leak. They'll finish their
+        # cleanup quickly because every branch pushes sentinel via the
+        # finally above.
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+
+    # Build result_blocks in pending_calls order. None slots can only
+    # happen if a dispatch task crashed before writing — in that case
+    # synthesize an error block so the LLM sees something for that id.
+    for call, result in zip(pending_calls, results):
+        if result is None:
+            result = ToolResult(
+                content="Tool dispatch did not complete.", is_error=True
+            )
+        result_blocks.append(
+            ToolResultBlock(
+                tool_use_id=call.id,
+                content=result.content,
+                is_error=result.is_error,
+            )
+        )
 
 
 def _cost(provider: Optional[str], model: str, usage: Usage) -> Optional[float]:

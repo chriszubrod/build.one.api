@@ -1,9 +1,9 @@
 # Session Notes
 
-## Session: Three more specialists + sseClient refresh (April 24, 2026 — late evening)
+## Session: Three more specialists + sseClient refresh + parallel dispatch (April 24-25, 2026 — late evening into early morning)
 
 ### Overview
-Continuation of the same evening's intelligence-layer push. Added the Customer/Project parent-child pair and the Vendor specialist (search-only — its catalog is too big to list). Patched a real Customer-API bug found during smoke tests, hardened error-reporting in the prompts, closed the agent-SSE refresh-token gap, and captured the cross-cutting soft-delete decision as a TODO.
+Continuation of the same evening's intelligence-layer push. Added the Customer/Project parent-child pair and the Vendor specialist (search-only — its catalog is too big to list). Patched a real Customer-API bug found during smoke tests, hardened error-reporting in the prompts, closed the agent-SSE refresh-token gap, captured the cross-cutting soft-delete decision as a TODO, then knocked out the two remaining Intelligence-layer TODOs (parallel tool dispatch + read_cost_code_by_number).
 
 ### What shipped (API, build.one.api)
 
@@ -18,6 +18,13 @@ Continuation of the same evening's intelligence-layer push. Added the Customer/P
 | commit | what |
 |---|---|
 | `5b9aaa9` | sseClient.ts now routes start/continue/approve/events through the same `fetchWithRefresh` helper client.ts uses. Fixes the 30-min lockouts on agent-tray paths. cancelAgentRun stays raw (one fire-and-forget call) but proactively refreshes first. |
+
+### Parallel dispatch + by-number tool (API `bd327b5`)
+
+After the fleet was complete, knocked out the two remaining Intelligence-layer TODOs:
+
+- **Parallel tool dispatch.** Refactored runner.py's dispatch loop into `_dispatch_tools_concurrently` — handlers run via `asyncio.create_task`, ApprovalRequest / ApprovalDecision / ToolCallEnd events forward live via a shared queue, result_blocks land in original `pending_calls` order. Verified ~2x speedup on a synthetic two-tool case (two 500ms handlers complete in ~500ms wall-clock). Compound queries like "compare cost code 10 and 11" now run their two delegations concurrently. Sub-agent events from concurrent delegations interleave on scout's stream — captured as a UI-lanes follow-up.
+- **`read_cost_code_by_number`** — service + repo + sproc were already in place from earlier work. Added the missing API endpoint (`GET /api/v1/get/cost-code/by-number/{number}`) and the agent tool. CostCode specialist's prompt now picks this when the user names a CostCode by number, saving the `list_cost_codes` + scan round-trip.
 
 ### Proof points verified in prod (Customer + Project)
 
@@ -43,12 +50,13 @@ Vendor specialist deployed but not yet operator-smoke-tested.
 ### Architecture notes
 
 - **Search-first discipline scales by entity size.** SubCostCode (~500) and CostCode (~30) both expose `list_*`. Customer (70) and Project (130) expose both list + search. Vendor (~1,100) deliberately omits list — too big. Threshold: when a list response approaches ~10K tokens of context, drop list and force search.
+- **Parallel dispatch is now the default for compound LLM turns.** Sequential dispatch was a real cost on multi-delegation turns; the speedup is roughly N× for N independent tools. Tradeoff captured: forwarded sub-agent events interleave on the parent's stream. UI lanes are a separate piece of work.
 - **Soft- vs hard-delete is inconsistent.** Vendor soft-deletes (preserves FK references on bills/expenses). Customer / Project / CostCode / SubCostCode all hard-delete. Some probably should be soft (FK-referenced from historical records). Captured in TODO under "Data hygiene" — needs a per-entity audit.
 - **The schema-validation-on-empty-string pattern surfaced in Customer is probably present elsewhere.** Worth a sweep when the next entity gets agent tools — make sure agent-friendly defaults match real intent.
 
 ### Final prod state
 
-- ACR `:latest` = `sha256:09e8fc72…` (tag `:8c41d7d`), deployed 2026-04-25 03:35 UTC.
+- ACR `:latest` = `sha256:62c2b0f5…` (tag `:bd327b5`), deployed 2026-04-25 04:27 UTC.
 - DB: 6 agent users, all on narrow roles:
   - `scout` → Agent Orchestrator (0 grants)
   - `sub_cost_code_agent` → Sub Cost Code Specialist (SCC CRUD + CC read)

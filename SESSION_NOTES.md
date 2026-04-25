@@ -1,5 +1,57 @@
 # Session Notes
 
+## Session: Transactional fleet + UI lanes + storage migration (April 25, 2026)
+
+### Overview
+Big push to bring transactional entities into the agent fleet. Started the day with five specialists (scout + sub_cost_code / cost_code / customer / project / vendor); ended with **ten** (added bill / bill_credit / expense / invoice). Plus the UI-lanes work for parallel sub-agent rendering, a storage-migration saga around the lanes data shape, and a number of small bug fixes that emerged during smoke testing.
+
+### Fleet expansion (API commits)
+
+| commit | what |
+|---|---|
+| `7d8337e` | Bill specialist V1 — search-first reads + parent-only update + delete + complete workflow. Reuses Vendor read tools for parent resolution. No create or line-item edits. |
+| `2188a0f` | `create_bill` reconsidered — draft bills are valid without line items, so add the parent-only create. Captures the email-intake → draft → review → complete trajectory in memory + prompt. |
+| `7f40ff9` | BillCredit specialist (vendor credit memos). Same shape as Bill, schema differences (credit_date / credit_number, no due_date, no payment_term). Wired filters into existing /get/bill-credits endpoint. |
+| `1b64184` | Expense + Invoice specialists in one commit. Expense.IsCredit=true doubles as ExpenseRefund (no separate entity). Invoice's parent is Project (not Vendor); complete_invoice does the heaviest workflow in the fleet (PDF + SharePoint + QBO + source-line billed sync). |
+
+### UI lanes (web)
+
+Pairs with the parallel-dispatch work from the previous session.
+
+| commit | what |
+|---|---|
+| `5c60dfe` (final) | Forwarded sub-agent events now carry `session_public_id` + `agent_name`; useAgentRun groups them into per-source "lanes" rather than mashing them into one flat turns array. ScoutTray renders sub-agent lanes with a "↳ delegated to {agent}" header + indent + left border so concurrent delegations are legible. |
+
+Migration saga (each commit a follow-up to the prior bug):
+- `0d868d7` — STORAGE_VERSION 1→2 wiped the dropdown; added v1→v2 forward migration in `loadCurrent` + `loadRecent`.
+- `5508e7a` — migration was masked because the auto-save useEffect wrote `{version:2,entries:[]}` to v2 before any v2 content existed; flipped to check v1 key first.
+- `39e06c2` — duplicate-key warning + `turns: undefined` polish (omit the legacy field instead of nulling it).
+- `5c60dfe` — `isAwaitingFirstEvent` was still reading `entry.turns.length` (gone in v2 shape) and threw "Cannot read properties of undefined (reading length)" the moment ScoutTray rendered any agent entry.
+
+### Architecture decisions
+
+- **Server-side filters wired into transactional list endpoints.** `GET /get/bills` already had `page/page_size/search/vendor_id/is_draft`; this session extended the same pattern to `/get/bill-credits`, `/get/expenses`, and `/get/invoices`. Backwards-compatible — bare GET still works. Brings agent-tool consistency: every transactional specialist's search tool wraps the same shape.
+- **Forwarded events stamp source.** `LoopEvent` types `TurnStart` / `TextDelta` / `ToolCallStart` / `ToolCallEnd` / `TurnEnd` / `ApprovalRequest` / `ApprovalDecision` all gain optional `session_public_id` + `agent_name`. The delegation tool stamps each forwarded event via `model_copy(update={...})` so the UI can route to the correct lane and approval card.
+- **STORAGE_VERSION semantics.** Every v→v+1 bump now needs a forward migration in both `loadCurrent` and `loadRecent`. The migration MUST check the v(N-1) key first — auto-saves create empty v(N) early in the session and an "if v(N) is missing" check is too late.
+- **Long-term workflow trajectory captured.** The transactional specialists are stepping stones toward a multi-agent pipeline: email-intake agent parses a vendor email → calls `create_bill` to record a draft → reviewer (via scout) approves → `add_bill_line_item` calls fill in lines → `complete_bill` finalizes via QBO + SharePoint + Excel. Today only the create / parent-update / complete ends are wired; line-item CRUD comes when we design the variable-length-array approval card.
+
+### Final prod state (end of session)
+
+- ACR `:latest` with all four transactional specialists. Every specialist V1-scoped (read + parent-only updates + workflow finalize). No line-item CRUD yet — captured as v2 work.
+- DB: 10 agent users / narrow roles. New ones this session:
+  - `bill_agent` → Bill Specialist (Bills CRUD+Complete + Vendors read)
+  - `bill_credit_agent` → Bill Credit Specialist (Bill Credits CRUD+Complete + Vendors read)
+  - `expense_agent` → Expense Specialist (Expenses CRUD+Complete + Vendors read)
+  - `invoice_agent` → Invoice Specialist (Invoices CRUD+Complete + Projects read)
+- Web: `5c60dfe` is current; user pulls + restarts Vite locally.
+
+### Deferred (V2 of transactional specialists)
+
+- Line-item CRUD on each entity. Approval card needs to render a variable-length array of structured items, each with its own FKs (SubCostCodeId, ProjectId). The bill_line_item / expense_line_item / invoice_line_item tables exist; the agent surface doesn't.
+- Bill folder-processing tools (the `/process/bill-folder*` endpoints).
+- Invoice's billable-items-for-project workflow (`/get/invoice/billable-items/{project_public_id}` + `/get/invoice/next-number/{project_public_id}`) — selects which Bill / Expense / BillCredit lines roll into a new invoice's line items.
+- Invoice attachment / packet tools.
+
 ## Session: Three more specialists + sseClient refresh + parallel dispatch (April 24-25, 2026 — late evening into early morning)
 
 ### Overview

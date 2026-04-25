@@ -22,6 +22,7 @@ scout = Agent(
         "delegate_to_customer",
         "delegate_to_project",
         "delegate_to_vendor",
+        "delegate_to_bill",
     ),
     model="claude-sonnet-4-6",
     provider="anthropic",

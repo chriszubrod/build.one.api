@@ -18,6 +18,7 @@ import intelligence.agents.cost_code_specialist  # noqa: F401
 import intelligence.agents.customer_specialist  # noqa: F401
 import intelligence.agents.project_specialist  # noqa: F401
 import intelligence.agents.vendor_specialist  # noqa: F401
+import intelligence.agents.bill_specialist  # noqa: F401
 
 from intelligence.composition.delegation import make_delegation_tool
 from intelligence.tools.registry import register as _register_tool
@@ -91,6 +92,22 @@ _register_tool(make_delegation_tool(
         "ask it to list everything. Vendor delete is soft — the row "
         "is hidden from search but historical records pointing at it "
         "are preserved."
+    ),
+))
+
+_register_tool(make_delegation_tool(
+    name="delegate_to_bill",
+    target_agent="bill_specialist",
+    description=(
+        "Hand a Bill task off to the Bill specialist agent. Use for "
+        "bill lookups (by vendor, number, or filter), reads, updates "
+        "to parent fields, deletes, and the workflow `complete` "
+        "action that finalizes a draft bill and pushes it to QBO + "
+        "SharePoint + Excel. The bill catalog is large (~18K rows) "
+        "so the specialist works search-first. The specialist does "
+        "NOT create bills (line items make that a v2 problem) and "
+        "does NOT edit line items — tell the user to use the UI for "
+        "those flows."
     ),
 ))
 

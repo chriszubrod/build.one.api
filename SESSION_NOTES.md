@@ -1,5 +1,63 @@
 # Session Notes
 
+## Session: Three more specialists + sseClient refresh (April 24, 2026 — late evening)
+
+### Overview
+Continuation of the same evening's intelligence-layer push. Added the Customer/Project parent-child pair and the Vendor specialist (search-only — its catalog is too big to list). Patched a real Customer-API bug found during smoke tests, hardened error-reporting in the prompts, closed the agent-SSE refresh-token gap, and captured the cross-cutting soft-delete decision as a TODO.
+
+### What shipped (API, build.one.api)
+
+| commit | what |
+|---|---|
+| `e002798` | Customer + Project specialists. Fleet went 3→5. New tools: list/search/read-by-public-id/read-by-id (Customer parent-resolution) + CRUD; project_specialist also gets read-by-customer-id for child queries. |
+| `f925338` | Customer email/phone now Optional everywhere (Pydantic schema, service, repo, agent tool); DB column was already nullable so no migration. Plus prompt hardening: scout's relay surfaces the underlying error reason, specialists never retry the same payload after a failure or rejection. |
+| `8c41d7d` | Vendor specialist. Fleet 5→6. Search-only — `list_vendors` deliberately not exposed because the catalog is ~1,100 rows and would dominate context. Soft-delete via `IsDeleted` (server-side `SoftDeleteVendorByPublicId` sproc); specialist's prompt explains this to the user. |
+
+### What shipped (web, build.one.web)
+
+| commit | what |
+|---|---|
+| `5b9aaa9` | sseClient.ts now routes start/continue/approve/events through the same `fetchWithRefresh` helper client.ts uses. Fixes the 30-min lockouts on agent-tray paths. cancelAgentRun stays raw (one fire-and-forget call) but proactively refreshes first. |
+
+### Proof points verified in prod (Customer + Project)
+
+| test | result |
+|---|---|
+| customer search ("find smith") | ✓ search_customers, no full list |
+| customer count ("how many") | ✓ specialist responded with total without listing |
+| customer's projects (children) | ✓ customer_specialist used read_projects_by_customer_id |
+| project + parent (compound) | ✓ project_specialist + read_customer_by_id |
+| customer create with name only | ✓ AFTER schema fix in `f925338` |
+| customer rename | ✓ read → diff narration → approve |
+| project create under customer (cross-specialist resolution) | ✓ project_specialist resolved customer via search_customers |
+| project + customer deletes | ✓ both cleaned via approval-gated tools |
+
+Vendor specialist deployed but not yet operator-smoke-tested.
+
+### Bugs hit and fixed live
+
+- **Customer schema over-strict**: `email` + `phone` both required `min_length=1`. Specialist proposed a name-only customer → 422. Fix: Optional throughout the four Python layers (schema/service/repo/tool). DB was already correct.
+- **Specialist retry loop**: when the create_customer 422'd, the specialist proposed the *exact same payload* again. Without prompt guidance against blind retry, it would have looped indefinitely. Fix: explicit "do not retry the same payload after an error" rule in customer + project specialist prompts.
+- **Scout error opacity**: scout's relay said "the operation failed" with no actionable detail. Fix: scout's prompt now requires pulling field-level reasons out of error messages and translating to plain language.
+
+### Architecture notes
+
+- **Search-first discipline scales by entity size.** SubCostCode (~500) and CostCode (~30) both expose `list_*`. Customer (70) and Project (130) expose both list + search. Vendor (~1,100) deliberately omits list — too big. Threshold: when a list response approaches ~10K tokens of context, drop list and force search.
+- **Soft- vs hard-delete is inconsistent.** Vendor soft-deletes (preserves FK references on bills/expenses). Customer / Project / CostCode / SubCostCode all hard-delete. Some probably should be soft (FK-referenced from historical records). Captured in TODO under "Data hygiene" — needs a per-entity audit.
+- **The schema-validation-on-empty-string pattern surfaced in Customer is probably present elsewhere.** Worth a sweep when the next entity gets agent tools — make sure agent-friendly defaults match real intent.
+
+### Final prod state
+
+- ACR `:latest` = `sha256:09e8fc72…` (tag `:8c41d7d`), deployed 2026-04-25 03:35 UTC.
+- DB: 6 agent users, all on narrow roles:
+  - `scout` → Agent Orchestrator (0 grants)
+  - `sub_cost_code_agent` → Sub Cost Code Specialist (SCC CRUD + CC read)
+  - `cost_code_agent` → Cost Code Specialist (CC CRUD + SCC read)
+  - `customer_agent` → Customer Specialist (Customers CRUD + Projects read)
+  - `project_agent` → Project Specialist (Projects CRUD + Customers read)
+  - `vendor_agent` → Vendor Specialist (Vendors CRUD)
+- Web: `5b9aaa9` pushed to GitHub; user pulls + restarts Vite to pick up the sseClient patch (no prod web deploy exists — local dev only).
+
 ## Session: Jinja Purge Phase 2 Wave E — React gap-closers + shared-infra deletion + admin rip + OAuth fix (April 24, 2026 — late evening)
 
 ### Overview

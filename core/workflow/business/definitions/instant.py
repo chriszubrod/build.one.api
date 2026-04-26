@@ -90,6 +90,7 @@ SYNCHRONOUS_TASKS = [
 
     # Review workflow
     "review_status",
+    "review",
 
     # Other
     "integration",

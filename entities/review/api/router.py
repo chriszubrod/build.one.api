@@ -4,6 +4,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
+from entities.auth.business.service import AuthService
 from entities.review.api.schemas import (
     ReviewAdvanceRequest,
     ReviewDeclineRequest,
@@ -36,6 +37,21 @@ router = APIRouter(prefix="/api/v1", tags=["api", "review"])
 # Internal helpers
 # =============================================================================
 
+def _resolve_user_id(current_user: dict) -> int:
+    """
+    Translate the JWT's `sub` (Auth.PublicId) into Auth.UserId. Reviews
+    require a non-null UserId on every row, so we cannot rely on the
+    nullable `current_user.get("id")` pattern other routers use.
+    """
+    sub = current_user.get("sub")
+    if not sub:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token subject.")
+    auth = AuthService().read_by_public_id(public_id=sub)
+    if not auth or not auth.user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token does not map to a known user.")
+    return auth.user_id
+
+
 def _execute_create(payload: dict, current_user: dict, default_error: str):
     """
     Fire ProcessEngine with workflow_type='review_create'. The InstantWorkflow
@@ -64,27 +80,28 @@ def _do_action(
     current_user: dict,
     body,
 ):
+    user_id = _resolve_user_id(current_user)
     service = ReviewService()
     try:
         if action == "submit":
             payload = service.build_submit_payload(
                 parent_type=parent_type,
                 parent_public_id=parent_public_id,
-                user_id=current_user["id"],
+                user_id=user_id,
                 comments=body.comments,
             )
         elif action == "advance":
             payload = service.build_advance_payload(
                 parent_type=parent_type,
                 parent_public_id=parent_public_id,
-                user_id=current_user["id"],
+                user_id=user_id,
                 comments=body.comments,
             )
         elif action == "decline":
             payload = service.build_decline_payload(
                 parent_type=parent_type,
                 parent_public_id=parent_public_id,
-                user_id=current_user["id"],
+                user_id=user_id,
                 target_status_public_id=body.target_status_public_id,
                 comments=body.comments,
             )

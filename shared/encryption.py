@@ -41,7 +41,15 @@ def _get_encryption_key() -> bytes:
     In production, this should come from secure config/environment variables.
     """
     settings = config.Settings()
-    key_str = getattr(settings, 'encryption_key', None) or os.getenv('ENCRYPTION_KEY', '')
+    # azure_encryption_key takes precedence so a developer running local
+    # against prod-encrypted DB rows can override without touching the
+    # dev-only encryption_key. Falls back to encryption_key, then the
+    # ENCRYPTION_KEY env var (which is what prod App Service sets).
+    key_str = (
+        getattr(settings, 'azure_encryption_key', None)
+        or getattr(settings, 'encryption_key', None)
+        or os.getenv('ENCRYPTION_KEY', '')
+    )
     
     if key_str:
         # Use existing key from config/environment

@@ -18,6 +18,8 @@ class EmailMessage:
     mailbox_address: Optional[str] = None
     from_address: Optional[str] = None
     from_name: Optional[str] = None
+    to_recipients: Optional[str] = None  # JSON array string
+    cc_recipients: Optional[str] = None  # JSON array string
     subject: Optional[str] = None
     body_preview: Optional[str] = None
     body_content: Optional[str] = None

@@ -37,6 +37,10 @@ class Settings(BaseSettings):
 
     # Encryption
     encryption_key: Optional[str] = None
+    # Override that takes precedence when set — useful for running local
+    # against prod-encrypted DB rows without overwriting the dev-only
+    # encryption_key.
+    azure_encryption_key: Optional[str] = None
 
     # Admin / scheduler-trigger secret. Shared with the build.one.scheduler
     # Azure Function; caller passes it in the X-Drain-Secret header. When

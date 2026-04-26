@@ -178,6 +178,10 @@ class MailboxPollService:
                     continue
 
                 email = full.get("email", {}) or {}
+                # Persist recipients as JSON arrays so the agent (and any
+                # auditor) can see who else got the message.
+                to_json = json.dumps(email.get("to_recipients") or []) if email.get("to_recipients") else None
+                cc_json = json.dumps(email.get("cc_recipients") or []) if email.get("cc_recipients") else None
                 persisted = self.message_repo.upsert(
                     graph_message_id=graph_message_id,
                     internet_message_id=email.get("internet_message_id"),
@@ -185,6 +189,8 @@ class MailboxPollService:
                     mailbox_address=mailbox,
                     from_address=email.get("from_email"),
                     from_name=email.get("from_name"),
+                    to_recipients=to_json,
+                    cc_recipients=cc_json,
                     subject=email.get("subject"),
                     body_preview=email.get("body_preview"),
                     body_content=email.get("body_content"),
@@ -283,7 +289,9 @@ class MailboxPollService:
             graph_attachment_id=graph_attachment_id,
             filename=filename,
             content_type=content_type,
-            size_bytes=attachment.get("size"),
+            # Use the decoded byte length, NOT Graph's reported size (Graph
+            # reports the base64-inflated wire size, ~33% larger).
+            size_bytes=len(content),
             is_inline=False,
             blob_uri=blob_uri,
         )

@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     # Leave blank to fall back to the primary authenticated user's own mailbox.
     invoice_inbox_email: Optional[str] = None
 
+    # Azure AI Document Intelligence Configuration
+    # Used by the email-agent pipeline to extract structured data from
+    # vendor-invoice PDFs (deterministic — never hallucinates dollar amounts).
+    azure_document_intelligence_endpoint: Optional[str] = None
+    azure_document_intelligence_key: Optional[str] = None
+    # Override the API version if needed; the default tracks the current GA.
+    azure_document_intelligence_api_version: str = "2024-11-30"
+
     # Intelligence Layer — provider API keys
     anthropic_api_key: Optional[str] = None
 

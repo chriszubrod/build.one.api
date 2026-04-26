@@ -184,6 +184,40 @@ async def reconcile_ms_router():
     return await _timed("reconcile.ms", _run)
 
 
+# --- Email inbox poll ------------------------------------------------------ #
+
+
+@router.post("/email/poll", dependencies=[Depends(_require_drain_secret)])
+async def email_poll_router():
+    """
+    Poll the configured shared invoice inbox for messages tagged
+    `Agent: Process` and persist them (with attachments) for the email
+    agent to pick up. Returns a summary of what was polled.
+
+    Idempotent: messages already in the DB are skipped; attachments
+    already pushed to blob are not re-uploaded.
+    """
+    def _run() -> dict[str, Any]:
+        from entities.email_message.business.service import MailboxPollService
+        return MailboxPollService().poll_invoice_inbox(top=50)
+
+    return await _timed("email.poll", _run)
+
+
+@router.post("/email/extract/{attachment_public_id}", dependencies=[Depends(_require_drain_secret)])
+async def email_extract_router(attachment_public_id: str = Path(...)):
+    """
+    Run Document Intelligence against a single EmailAttachment by
+    public_id. Used for verification today; the email agent calls the
+    underlying service directly in Phase 2.
+    """
+    def _run() -> dict[str, Any]:
+        from entities.email_message.business.service import EmailAttachmentExtractionService
+        return EmailAttachmentExtractionService().extract_by_public_id(attachment_public_id)
+
+    return await _timed("email.extract", _run)
+
+
 # --- Bill folder processing -- one file per tick --------------------------- #
 
 
@@ -260,3 +294,32 @@ async def bill_folder_tick_router():
         }
 
     return await _timed("bill_folder.tick", _run)
+
+
+@router.post("/bill-folder/enumerate", dependencies=[Depends(_require_drain_secret)])
+async def bill_folder_enumerate_router():
+    """
+    Scan the SharePoint source folder and enqueue any new PDFs as run
+    items. Called on a 5-min cadence by the scheduler Function App so
+    files dropped into the folder get picked up without anyone clicking
+    the React 'Process Folder' button.
+
+    Skips files that are already in 'queued' or 'processing' so a
+    button-triggered run + scheduled tick can't double-queue the same
+    PDF. Returns {"status": "noop"} when nothing new is found (no run
+    row created).
+    """
+    def _run() -> dict[str, Any]:
+        from entities.bill.business.folder_processor import (
+            BillFolderEnumerationError,
+            enqueue_bill_folder_run,
+        )
+        try:
+            return enqueue_bill_folder_run(dedup_active=True)
+        except BillFolderEnumerationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to enumerate source folder: {error}",
+            )
+
+    return await _timed("bill_folder.enumerate", _run)

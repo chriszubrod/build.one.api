@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     # Override the API version if needed; the default tracks the current GA.
     azure_document_intelligence_api_version: str = "2024-11-30"
 
+    # Azure App Service default domain for the prod API. Used by smoke
+    # scripts and any local tooling that needs to hit the deployed API.
+    # Format: <name>.<region>.azurewebsites.net
+    azure_default_domain: Optional[str] = None
+
     # Intelligence Layer — provider API keys
     anthropic_api_key: Optional[str] = None
 

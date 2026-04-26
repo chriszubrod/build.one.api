@@ -8,8 +8,11 @@ Keeping these as constants in one place avoids drift between the poll
 filter, the agent's tagging logic, and any future UI tooling.
 """
 
-# Input — human applies this to enroll a message.
-AGENT_PROCESS = "Agent: Process"
+# Input — human applies this to enroll a message. We use Outlook's
+# default "Blue category" so users don't have to create a custom
+# category before getting started; the *outcome* categories below stay
+# semantic so an Outlook viewer can audit results at a glance.
+AGENT_PROCESS = "Blue category"
 
 # Outcomes — exactly one of these gets stamped after processing.
 AGENT_PROCESSED = "Agent: Processed"

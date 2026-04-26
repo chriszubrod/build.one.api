@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class BillFolderRun:
+    id: int                          # internal numeric PK; needed by BillFolderRunItem.RunId FK
     public_id: str
     status: str                      # "processing" | "completed" | "failed"
     result: Optional[dict]           # parsed JSON payload (files_found, bills_created, errors, ...)
@@ -39,6 +40,7 @@ class BillFolderRunRepository:
             except (TypeError, ValueError):
                 logger.warning("BillFolderRun %s has invalid JSON in Result", row.PublicId)
         return BillFolderRun(
+            id=row.Id,
             public_id=str(row.PublicId),
             status=row.Status,
             result=parsed_result,
@@ -308,6 +310,26 @@ class BillFolderRunItemRepository:
                 ]
         except Exception as error:
             logger.error(f"Error reading errors for run {run_public_id}: {error}")
+            raise map_database_error(error)
+
+    def read_active_item_ids(self, recent_window_minutes: int = 60) -> set[str]:
+        """
+        Return the SharePoint item_ids the scheduled enumerator should
+        skip — anything currently 'queued'/'processing', plus anything
+        attempted within the last `recent_window_minutes` (so files that
+        keep failing don't churn through a new queue row every tick).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadActiveBillFolderRunItemIds",
+                    params={"RecentWindowMinutes": recent_window_minutes},
+                )
+                return {row.ItemId for row in cursor.fetchall()}
+        except Exception as error:
+            logger.error(f"Error reading active item ids: {error}")
             raise map_database_error(error)
 
     def auto_fail_stale(self, stale_after_minutes: int = 30) -> None:

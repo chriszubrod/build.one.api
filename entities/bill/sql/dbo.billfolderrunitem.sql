@@ -81,6 +81,12 @@ CREATE OR ALTER PROCEDURE ClaimNextBillFolderRunItem
 )
 AS
 BEGIN
+    -- SET NOCOUNT ON suppresses UPDATE rowcount messages so pyodbc sees only
+    -- the SELECT below as the result set. Without this AND a guaranteed
+    -- terminal SELECT, claim_next() crashes with "No results. Previous SQL
+    -- was not a query." every time the queue is empty.
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
@@ -111,21 +117,20 @@ BEGIN
     FROM dbo.[BillFolderRunItem] i
     INNER JOIN candidate c ON i.[Id] = c.[Id];
 
-    IF @ClaimedId IS NOT NULL
-    BEGIN
-        SELECT
-            [Id],
-            [PublicId],
-            [RunId],
-            [Filename],
-            [ItemId],
-            [Status],
-            [Attempts],
-            [ClaimedAt],
-            [StartedAt]
-        FROM dbo.[BillFolderRunItem]
-        WHERE [Id] = @ClaimedId;
-    END
+    -- Always emit a result set so the caller can fetchone() unconditionally.
+    -- WHERE Id = @ClaimedId returns 0 rows when nothing was claimed.
+    SELECT
+        [Id],
+        [PublicId],
+        [RunId],
+        [Filename],
+        [ItemId],
+        [Status],
+        [Attempts],
+        [ClaimedAt],
+        [StartedAt]
+    FROM dbo.[BillFolderRunItem]
+    WHERE [Id] = @ClaimedId;
 
     COMMIT TRANSACTION;
 END;
@@ -295,6 +300,34 @@ BEGIN
     ORDER BY i.[Id];
 
     COMMIT TRANSACTION;
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE ReadActiveBillFolderRunItemIds
+(
+    @RecentWindowMinutes INT = 60
+)
+AS
+BEGIN
+    -- Returns the SharePoint ItemId of every BillFolderRunItem the
+    -- enumerator should skip:
+    --   * 'queued' / 'processing' — currently in flight.
+    --   * Anything modified inside the recent window — already attempted
+    --     (success/skip/fail). Without this guard, files that keep
+    --     failing the SharePoint move would be re-enqueued every 5-min
+    --     scheduler tick and create a flood of failed-item rows.
+    -- After the window expires the file gets another shot, so an
+    -- operator who fixes the underlying SP issue doesn't have to
+    -- manually trigger anything.
+    SET NOCOUNT ON;
+
+    DECLARE @Cutoff DATETIME2(3) = DATEADD(MINUTE, -@RecentWindowMinutes, SYSUTCDATETIME());
+
+    SELECT DISTINCT [ItemId]
+    FROM dbo.[BillFolderRunItem]
+    WHERE [Status] IN ('queued', 'processing')
+       OR [ModifiedDatetime] > @Cutoff;
 END;
 GO
 

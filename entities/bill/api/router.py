@@ -328,42 +328,17 @@ def process_bill_folder_router(
     the run_id. The scheduler drains the queue asynchronously; clients
     poll GET /api/v1/process/bill-folder/{run_id} for progress.
     """
-    from entities.bill.business.folder_processor import BillFolderProcessor
-
-    run = _folder_run_repo.create()
+    from entities.bill.business.folder_processor import (
+        BillFolderEnumerationError,
+        enqueue_bill_folder_run,
+    )
 
     try:
-        pdfs = BillFolderProcessor().enumerate_source_folder(company_id=1)
-    except Exception as error:
-        logger.exception("Folder enumeration failed for run %s", run.public_id)
-        _folder_run_repo.update_status(
-            public_id=run.public_id,
-            status="failed",
-            result={"error": str(error)},
-            set_completed=True,
-        )
+        result = enqueue_bill_folder_run(dedup_active=False)
+    except BillFolderEnumerationError as error:
         raise HTTPException(status_code=502, detail=f"Failed to enumerate source folder: {error}")
 
-    for pdf in pdfs:
-        _folder_run_item_repo.create(
-            run_id=run.id,
-            filename=pdf["filename"],
-            item_id=pdf["item_id"],
-        )
-
-    if not pdfs:
-        # Nothing to do — mark the run 'completed' right away so the client
-        # stops polling instead of waiting for a tick that won't happen.
-        _folder_run_item_repo.check_and_complete_run(run_id=run.id)
-
-    return JSONResponse(
-        status_code=status.HTTP_202_ACCEPTED,
-        content={
-            "status": "accepted",
-            "run_id": run.public_id,
-            "files_queued": len(pdfs),
-        },
-    )
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=result)
 
 
 @router.get("/process/bill-folder/{run_id}")

@@ -12,6 +12,10 @@ from typing import Optional
 
 from entities.attachment.business.service import AttachmentService
 from entities.bill.business.service import BillService
+from entities.bill.persistence.folder_run_repo import (
+    BillFolderRunItemRepository,
+    BillFolderRunRepository,
+)
 from entities.bill_line_item.business.service import BillLineItemService
 from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
 from entities.payment_term.business.service import PaymentTermService
@@ -23,6 +27,75 @@ from integrations.ms.sharepoint.external import client as sp_client
 from shared.storage import AzureBlobStorage
 
 logger = logging.getLogger(__name__)
+
+
+class BillFolderEnumerationError(RuntimeError):
+    """Raised when listing the SharePoint source folder fails."""
+
+
+def enqueue_bill_folder_run(dedup_active: bool = False) -> dict:
+    """
+    List the SharePoint source folder, create a BillFolderRun, and insert
+    one BillFolderRunItem (status='queued') per PDF. The scheduler tick
+    drains the queue one file at a time.
+
+    When `dedup_active=True` the enumerator skips item_ids that are
+    'queued'/'processing' OR were attempted in the last hour (success,
+    skip, or fail). The hour window prevents files that keep failing
+    from churning a fresh queue row every 5-min tick — once the cause
+    is fixed (or the window expires) the next pass picks them up. On
+    noop, no run row is created so empty ticks don't pollute history.
+
+    The button-driven path passes `dedup_active=False` so an enumeration
+    failure is captured against a freshly-created run row (the UI shows
+    the error tied to that run). The scheduled path passes `True`.
+    """
+    run_repo = BillFolderRunRepository()
+    item_repo = BillFolderRunItemRepository()
+
+    if dedup_active:
+        try:
+            pdfs = BillFolderProcessor().enumerate_source_folder(company_id=1)
+        except Exception as error:
+            logger.exception("Folder enumeration failed (scheduled path)")
+            raise BillFolderEnumerationError(str(error)) from error
+        active_ids = item_repo.read_active_item_ids()
+        if active_ids:
+            pdfs = [p for p in pdfs if p["item_id"] not in active_ids]
+        if not pdfs:
+            return {"status": "noop", "files_queued": 0}
+        run = run_repo.create()
+    else:
+        run = run_repo.create()
+        try:
+            pdfs = BillFolderProcessor().enumerate_source_folder(company_id=1)
+        except Exception as error:
+            logger.exception("Folder enumeration failed for run %s", run.public_id)
+            run_repo.update_status(
+                public_id=run.public_id,
+                status="failed",
+                result={"error": str(error)},
+                set_completed=True,
+            )
+            raise BillFolderEnumerationError(str(error)) from error
+
+    for pdf in pdfs:
+        item_repo.create(
+            run_id=run.id,
+            filename=pdf["filename"],
+            item_id=pdf["item_id"],
+        )
+
+    if not pdfs:
+        # Button click on an empty folder — close the run immediately so
+        # the UI stops polling instead of waiting for a tick that won't fire.
+        item_repo.check_and_complete_run(run_id=run.id)
+
+    return {
+        "status": "accepted",
+        "run_id": run.public_id,
+        "files_queued": len(pdfs),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -428,10 +501,11 @@ class BillFolderProcessor:
             bill_number=parsed.bill_number, vendor_public_id=parsed.vendor_public_id,
         )
         if existing_bill:
-            try:
-                self._move_file_to_processed(drive_id, item_id, processed_item_id, filename)
-            except Exception as move_error:
-                logger.warning("Failed to move duplicate '%s': %s", filename, move_error)
+            # Move can raise — let it propagate so the item lands in 'failed'
+            # with the move error visible. After 3 attempts the row is
+            # permanently 'failed' and the operator can investigate. The
+            # bill itself already exists, so retries are safe.
+            self._move_file_to_processed(drive_id, item_id, processed_item_id, filename)
             return {
                 "status": "skipped",
                 "reason": "Duplicate bill already exists.",
@@ -499,10 +573,11 @@ class BillFolderProcessor:
             attachment_public_id=attachment.public_id,
         )
 
-        try:
-            self._move_file_to_processed(drive_id, item_id, processed_item_id, filename)
-        except Exception as move_error:
-            logger.warning("Failed to move '%s' to processed folder: %s (bill still created)", filename, move_error)
+        # Bill is durable now. If move fails the next claim's duplicate
+        # check will short-circuit (bill_number+vendor already exists) so
+        # retrying is cheap and idempotent — and on terminal failure the
+        # item shows up in the run's error list with the actual reason.
+        self._move_file_to_processed(drive_id, item_id, processed_item_id, filename)
 
         logger.info("Created bill draft: vendor=%s, bill_number=%s, amount=%s, file=%s",
                      parsed.vendor_public_id, parsed.bill_number, parsed.rate, filename)
@@ -646,16 +721,20 @@ class BillFolderProcessor:
     def _move_file_to_processed(
         self, drive_id: str, file_item_id: str, processed_item_id: str, filename: str,
     ) -> None:
-        """Move a file to the processed folder."""
+        """
+        Move a file from the source folder to the processed folder. Raises
+        on unrecoverable failure so the caller can surface the error
+        instead of leaving the PDF stranded in /source. The legacy code
+        warned-and-returned, which is why we accumulated 60+ stale files.
+        """
         move_result = sp_client.move_item(drive_id, file_item_id, processed_item_id)
         if move_result.get("status_code") == 200:
             return
 
         if "nameAlreadyExists" not in str(move_result.get("message", "")):
-            logger.warning("Move failed for '%s': %s", filename, move_result.get("message"))
-            return
+            raise RuntimeError(f"Move failed: {move_result.get('message')}")
 
-        # Delete existing file in processed folder, then retry
+        # Conflict — delete the existing copy in /processed, then retry.
         children = sp_client.list_drive_item_children(drive_id, processed_item_id)
         if children.get("status_code") == 200:
             for item in children.get("items", []):
@@ -666,4 +745,4 @@ class BillFolderProcessor:
 
         retry_result = sp_client.move_item(drive_id, file_item_id, processed_item_id)
         if retry_result.get("status_code") != 200:
-            logger.warning("Retry move failed for '%s': %s", filename, retry_result.get("message"))
+            raise RuntimeError(f"Retry move failed: {retry_result.get('message')}")

@@ -396,6 +396,201 @@ complete_bill = Tool(
 )
 
 
+# ─── Line-item tools (V2) ─────────────────────────────────────────────────
+
+import json as _json
+
+
+class _BillLineItemSpec(BaseModel):
+    """One bill line item to create. The agent assembles these from
+    user instructions or upstream parsing (e.g. an email-intake agent's
+    extraction). Fields mirror BillLineItemCreate."""
+    sub_cost_code_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Internal BIGINT id of the SubCostCode to charge. Resolve "
+            "via `read_sub_cost_code_by_number` or `search_sub_cost_codes` "
+            "first to get the `id`. Optional — can be filled in later."
+        ),
+    )
+    project_public_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional UUID of the Project to bill against. If the "
+            "user names a project, search_projects first to resolve."
+        ),
+    )
+    description: Optional[str] = Field(default=None)
+    quantity: Optional[int] = Field(default=None)
+    rate: Optional[float] = Field(default=None)
+    amount: Optional[float] = Field(default=None)
+    is_billable: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Whether this line is billable to the customer (default: "
+            "true at the DB level)."
+        ),
+    )
+    markup: Optional[float] = Field(default=None)
+    price: Optional[float] = Field(default=None)
+
+
+class AddBillLineItemsArgs(BaseModel):
+    bill_public_id: str = Field(description="UUID of the bill to add lines to.")
+    items: list[_BillLineItemSpec] = Field(
+        description=(
+            "List of line item specs. Each is created via "
+            "POST /api/v1/create/bill_line_item with is_draft=true. "
+            "The bill itself stays a draft until completed via "
+            "complete_bill."
+        ),
+    )
+
+
+async def _add_bill_line_items(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = AddBillLineItemsArgs(**args)
+    if not parsed.items:
+        return ToolResult(content="No items provided — nothing to add.", is_error=True)
+    created: list[dict] = []
+    errors: list[dict] = []
+    for idx, spec in enumerate(parsed.items):
+        body = {
+            "bill_public_id": parsed.bill_public_id,
+            "sub_cost_code_id": spec.sub_cost_code_id,
+            "project_public_id": spec.project_public_id,
+            "description": spec.description,
+            "quantity": spec.quantity,
+            "rate": spec.rate,
+            "amount": spec.amount,
+            "is_billable": spec.is_billable,
+            "markup": spec.markup,
+            "price": spec.price,
+            "is_draft": True,
+        }
+        result = await ctx.call_api(
+            "POST", "/api/v1/create/bill_line_item", body=body
+        )
+        if result.is_error:
+            errors.append({"index": idx, "error": str(result.content)[:300]})
+        else:
+            created.append({"index": idx, "result": result.content})
+    return ToolResult(
+        content=_json.dumps({
+            "added": len(created),
+            "failed": len(errors),
+            "created": created,
+            "errors": errors,
+        }),
+        is_error=bool(errors and not created),
+    )
+
+
+def _summarize_add_bill_line_items(args: dict) -> str:
+    items = args.get("items") or []
+    return f"Add {len(items)} line item(s) to bill"
+
+
+add_bill_line_items = Tool(
+    name="add_bill_line_items",
+    description=(
+        "Add line items to an existing bill in batch. REQUIRES USER "
+        "APPROVAL (one card per batch). Each line item needs a "
+        "`sub_cost_code_id` (BIGINT — resolve via "
+        "`read_sub_cost_code_by_number` or `search_sub_cost_codes` "
+        "first) and an optional `project_public_id`. Server creates "
+        "each line as IsDraft=true; the bill itself remains a draft "
+        "until `complete_bill`. If some succeed and some fail, the "
+        "result includes `created` and `errors` arrays — retry only "
+        "the failed indices, do not re-submit the whole batch."
+    ),
+    input_schema=input_schema_from(AddBillLineItemsArgs),
+    handler=_add_bill_line_items,
+    requires_approval=True,
+    approval_summary=_summarize_add_bill_line_items,
+)
+
+
+class UpdateBillLineItemArgs(BaseModel):
+    public_id: str = Field(description="UUID of the bill line item to update.")
+    row_version: str = Field(
+        description="Base64 row version from your most recent read. Pass verbatim.",
+    )
+    bill_public_id: str = Field(
+        description="UUID of the parent bill — required by the API even when not changing it.",
+    )
+    sub_cost_code_id: Optional[int] = Field(default=None)
+    project_public_id: Optional[str] = Field(default=None)
+    description: Optional[str] = Field(default=None)
+    quantity: Optional[int] = Field(default=None)
+    rate: Optional[float] = Field(default=None)
+    amount: Optional[float] = Field(default=None)
+    is_billable: Optional[bool] = Field(default=None)
+    markup: Optional[float] = Field(default=None)
+    price: Optional[float] = Field(default=None)
+
+
+async def _update_bill_line_item(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = UpdateBillLineItemArgs(**args)
+    body = parsed.model_dump(exclude={"public_id"}, exclude_none=False)
+    return await ctx.call_api(
+        "PUT", f"/api/v1/update/bill_line_item/{parsed.public_id}", body=body
+    )
+
+
+def _summarize_update_bill_line_item(args: dict) -> str:
+    return f"Update bill line item {args.get('public_id') or '?'}"
+
+
+update_bill_line_item = Tool(
+    name="update_bill_line_item",
+    description=(
+        "Edit a single BillLineItem (sub-cost-code / project / "
+        "description / numeric fields). REQUIRES USER APPROVAL. Read "
+        "the line item first for `row_version`. Pass through fields "
+        "you're not changing as their existing values."
+    ),
+    input_schema=input_schema_from(UpdateBillLineItemArgs),
+    handler=_update_bill_line_item,
+    requires_approval=True,
+    approval_summary=_summarize_update_bill_line_item,
+)
+
+
+class RemoveBillLineItemArgs(BaseModel):
+    public_id: str = Field(description="UUID of the line item to remove.")
+    description: Optional[str] = Field(
+        default=None,
+        description="Description — display hint for the approval card.",
+    )
+
+
+async def _remove_bill_line_item(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = RemoveBillLineItemArgs(**args)
+    return await ctx.call_api(
+        "DELETE", f"/api/v1/delete/bill_line_item/{parsed.public_id}"
+    )
+
+
+def _summarize_remove_bill_line_item(args: dict) -> str:
+    desc = args.get("description")
+    return f"Remove bill line — {desc}" if desc else f"Remove bill line {args.get('public_id') or '?'}"
+
+
+remove_bill_line_item = Tool(
+    name="remove_bill_line_item",
+    description=(
+        "Drop a single line from a bill. REQUIRES USER APPROVAL. The "
+        "service-level cascade nullifies any InvoiceLineItem.BillLineItemId "
+        "FK before deleting, so already-billed lines unlink cleanly. "
+        "Pass `description` as a display hint for the card."
+    ),
+    input_schema=input_schema_from(RemoveBillLineItemArgs),
+    handler=_remove_bill_line_item,
+    requires_approval=True,
+    approval_summary=_summarize_remove_bill_line_item,
+)
+
+
 # ─── Self-register ───────────────────────────────────────────────────────
 
 for _tool in (
@@ -406,5 +601,8 @@ for _tool in (
     update_bill,
     delete_bill,
     complete_bill,
+    add_bill_line_items,
+    update_bill_line_item,
+    remove_bill_line_item,
 ):
     register(_tool)

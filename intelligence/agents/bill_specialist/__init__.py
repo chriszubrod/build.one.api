@@ -1,12 +1,13 @@
-"""Bill specialist agent — Bill read + parent-only updates + complete workflow.
+"""Bill specialist agent — Bill CRUD + line-item CRUD + complete workflow.
 
-Reuses the Vendor read tools for parent resolution. No write tools for
-line items in v1 — variable-length-array approval cards are deferred.
+Reuses Vendor / SubCostCode / Project read tools for resolution.
 
 Importing this package triggers tool + agent registration.
 """
 import entities.bill.intelligence.tools  # noqa: F401
 import entities.vendor.intelligence.tools  # noqa: F401
+import entities.sub_cost_code.intelligence.tools  # noqa: F401
+import entities.project.intelligence.tools  # noqa: F401
 
 from intelligence.agents.bill_specialist.definition import (  # noqa: F401
     bill_specialist,

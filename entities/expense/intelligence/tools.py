@@ -379,6 +379,174 @@ complete_expense = Tool(
 )
 
 
+# ─── Line-item tools (V2) ─────────────────────────────────────────────────
+
+import json as _json
+
+
+class _ExpenseLineItemSpec(BaseModel):
+    sub_cost_code_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Internal BIGINT id of the SubCostCode. Resolve via "
+            "`read_sub_cost_code_by_number` or `search_sub_cost_codes` "
+            "first to get the `id`."
+        ),
+    )
+    project_public_id: Optional[str] = Field(
+        default=None,
+        description="Optional UUID of the Project to bill against.",
+    )
+    description: Optional[str] = Field(default=None)
+    quantity: Optional[int] = Field(default=None)
+    rate: Optional[float] = Field(default=None)
+    amount: Optional[float] = Field(default=None)
+    is_billable: Optional[bool] = Field(default=None)
+    markup: Optional[float] = Field(default=None)
+    price: Optional[float] = Field(default=None)
+
+
+class AddExpenseLineItemsArgs(BaseModel):
+    expense_public_id: str = Field(description="UUID of the expense.")
+    items: list[_ExpenseLineItemSpec] = Field(
+        description=(
+            "List of line item specs. Created via "
+            "POST /api/v1/create/expense_line_item with is_draft=true."
+        ),
+    )
+
+
+async def _add_expense_line_items(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = AddExpenseLineItemsArgs(**args)
+    if not parsed.items:
+        return ToolResult(content="No items provided — nothing to add.", is_error=True)
+    created: list[dict] = []
+    errors: list[dict] = []
+    for idx, spec in enumerate(parsed.items):
+        body = {
+            "expense_public_id": parsed.expense_public_id,
+            "sub_cost_code_id": spec.sub_cost_code_id,
+            "project_public_id": spec.project_public_id,
+            "description": spec.description,
+            "quantity": spec.quantity,
+            "rate": spec.rate,
+            "amount": spec.amount,
+            "is_billable": spec.is_billable,
+            "markup": spec.markup,
+            "price": spec.price,
+            "is_draft": True,
+        }
+        result = await ctx.call_api(
+            "POST", "/api/v1/create/expense_line_item", body=body
+        )
+        if result.is_error:
+            errors.append({"index": idx, "error": str(result.content)[:300]})
+        else:
+            created.append({"index": idx, "result": result.content})
+    return ToolResult(
+        content=_json.dumps({
+            "added": len(created),
+            "failed": len(errors),
+            "created": created,
+            "errors": errors,
+        }),
+        is_error=bool(errors and not created),
+    )
+
+
+def _summarize_add_expense_line_items(args: dict) -> str:
+    items = args.get("items") or []
+    return f"Add {len(items)} line item(s) to expense"
+
+
+add_expense_line_items = Tool(
+    name="add_expense_line_items",
+    description=(
+        "Add line items to an existing expense in batch. REQUIRES USER "
+        "APPROVAL. Each line item needs a `sub_cost_code_id` (BIGINT — "
+        "resolve via SubCostCode tools first) and optional "
+        "`project_public_id`. Server creates each line as IsDraft=true; "
+        "the expense itself remains a draft until `complete_expense`. "
+        "Same partial-success contract as add_bill_line_items."
+    ),
+    input_schema=input_schema_from(AddExpenseLineItemsArgs),
+    handler=_add_expense_line_items,
+    requires_approval=True,
+    approval_summary=_summarize_add_expense_line_items,
+)
+
+
+class UpdateExpenseLineItemArgs(BaseModel):
+    public_id: str = Field(description="UUID of the line item.")
+    row_version: str = Field(description="Base64 row version. Pass verbatim.")
+    expense_public_id: str = Field(description="UUID of the parent expense.")
+    sub_cost_code_id: Optional[int] = Field(default=None)
+    project_public_id: Optional[str] = Field(default=None)
+    description: Optional[str] = Field(default=None)
+    quantity: Optional[int] = Field(default=None)
+    rate: Optional[float] = Field(default=None)
+    amount: Optional[float] = Field(default=None)
+    is_billable: Optional[bool] = Field(default=None)
+    markup: Optional[float] = Field(default=None)
+    price: Optional[float] = Field(default=None)
+
+
+async def _update_expense_line_item(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = UpdateExpenseLineItemArgs(**args)
+    body = parsed.model_dump(exclude={"public_id"}, exclude_none=False)
+    return await ctx.call_api(
+        "PUT", f"/api/v1/update/expense_line_item/{parsed.public_id}", body=body
+    )
+
+
+def _summarize_update_expense_line_item(args: dict) -> str:
+    return f"Update expense line item {args.get('public_id') or '?'}"
+
+
+update_expense_line_item = Tool(
+    name="update_expense_line_item",
+    description=(
+        "Edit a single ExpenseLineItem. REQUIRES USER APPROVAL. Read "
+        "the line item first for `row_version`."
+    ),
+    input_schema=input_schema_from(UpdateExpenseLineItemArgs),
+    handler=_update_expense_line_item,
+    requires_approval=True,
+    approval_summary=_summarize_update_expense_line_item,
+)
+
+
+class RemoveExpenseLineItemArgs(BaseModel):
+    public_id: str = Field(description="UUID of the line item.")
+    description: Optional[str] = Field(default=None, description="Display hint for the card.")
+
+
+async def _remove_expense_line_item(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = RemoveExpenseLineItemArgs(**args)
+    return await ctx.call_api(
+        "DELETE", f"/api/v1/delete/expense_line_item/{parsed.public_id}"
+    )
+
+
+def _summarize_remove_expense_line_item(args: dict) -> str:
+    desc = args.get("description")
+    return f"Remove expense line — {desc}" if desc else f"Remove expense line {args.get('public_id') or '?'}"
+
+
+remove_expense_line_item = Tool(
+    name="remove_expense_line_item",
+    description=(
+        "Drop a single line from an expense. REQUIRES USER APPROVAL. "
+        "Service-level cascade handles attachment + InvoiceLineItem FK "
+        "cleanup. Pass `description` as a display hint."
+    ),
+    input_schema=input_schema_from(RemoveExpenseLineItemArgs),
+    handler=_remove_expense_line_item,
+    requires_approval=True,
+    approval_summary=_summarize_remove_expense_line_item,
+)
+
+
 # ─── Self-register ───────────────────────────────────────────────────────
 
 for _tool in (
@@ -389,5 +557,8 @@ for _tool in (
     update_expense,
     delete_expense,
     complete_expense,
+    add_expense_line_items,
+    update_expense_line_item,
+    remove_expense_line_item,
 ):
     register(_tool)

@@ -21,7 +21,32 @@
       "Bash(git push *)",
       "Bash(git -C /Users/chris/Applications/build.one/build.one.web add src/agents/types.ts src/agents/useAgentRun.ts)",
       "Bash(git -C /Users/chris/Applications/build.one/build.one.web commit -m ' *)",
-      "Bash(git -C /Users/chris/Applications/build.one/build.one.web push)"
+      "Bash(git -C /Users/chris/Applications/build.one/build.one.web push)",
+      "Bash(curl -s 'https://$buildone:JoyYTXaqjPc04lKyuRYT0YsJ7dRXGvvZ7mQ9doq17uRBZMKxMYlcYTLscmZ0@buildone-esgaducjg4d3eucf.scm.eastus-01.azurewebsites.net/api/vfs/')",
+      "Bash(curl -s 'https://$buildone:JoyYTXaqjPc04lKyuRYT0YsJ7dRXGvvZ7mQ9doq17uRBZMKxMYlcYTLscmZ0@buildone-esgaducjg4d3eucf.scm.eastus-01.azurewebsites.net/api/vfs/site/')",
+      "Bash(curl -s 'https://$buildone:JoyYTXaqjPc04lKyuRYT0YsJ7dRXGvvZ7mQ9doq17uRBZMKxMYlcYTLscmZ0@buildone-esgaducjg4d3eucf.scm.eastus-01.azurewebsites.net/api/vfs/site/deployments/')",
+      "Bash(curl -s 'https://$buildone:JoyYTXaqjPc04lKyuRYT0YsJ7dRXGvvZ7mQ9doq17uRBZMKxMYlcYTLscmZ0@buildone-esgaducjg4d3eucf.scm.eastus-01.azurewebsites.net/api/vfs/../../tmp/')",
+      "Bash(az webapp *)",
+      "Bash(curl -s 'https://$buildone:JoyYTXaqjPc04lKyuRYT0YsJ7dRXGvvZ7mQ9doq17uRBZMKxMYlcYTLscmZ0@buildone-esgaducjg4d3eucf.scm.eastus-01.azurewebsites.net/api/vfs/site/deployments/3a5033a3-66bd-4555-bfb7-47cfc39fa619/')",
+      "Bash(curl -s 'https://$buildone:JoyYTXaqjPc04lKyuRYT0YsJ7dRXGvvZ7mQ9doq17uRBZMKxMYlcYTLscmZ0@buildone-esgaducjg4d3eucf.scm.eastus-01.azurewebsites.net/api/vfs/site/deployments/3a5033a3-66bd-4555-bfb7-47cfc39fa619/log.log')",
+      "Bash(curl -s 'https://$buildone:JoyYTXaqjPc04lKyuRYT0YsJ7dRXGvvZ7mQ9doq17uRBZMKxMYlcYTLscmZ0@buildone-esgaducjg4d3eucf.scm.eastus-01.azurewebsites.net/api/vfs/site/wwwroot/')",
+      "Bash(curl -s 'https://$buildone:JoyYTXaqjPc04lKyuRYT0YsJ7dRXGvvZ7mQ9doq17uRBZMKxMYlcYTLscmZ0@buildone-esgaducjg4d3eucf.scm.eastus-01.azurewebsites.net/api/vfs/site/deployments/pending/')",
+      "Bash(az acr *)",
+      "Bash(docker version *)",
+      "Bash(git -C /Users/chris/Applications/build.one/build.one.api status --short)",
+      "Bash(git -C /Users/chris/Applications/build.one/build.one.api diff --stat CLAUDE.md SESSION_NOTES.md TODO.md)",
+      "Bash(git log *)",
+      "Bash(git -C /Users/chris/Applications/build.one/build.one.web add src/api/client.ts src/agents/sseClient.ts)",
+      "Bash(git -C /Users/chris/Applications/build.one/build.one.web diff --cached --stat)",
+      "Bash(git commit -m 'docs: check off parallel-dispatch + read_cost_code_by_number TODOs; capture UI-lanes follow-up *)",
+      "Bash(npx --prefix /Users/chris/Applications/build.one/build.one.web tsc -p /Users/chris/Applications/build.one/build.one.web/tsconfig.json --noEmit)",
+      "Bash(git -C /Users/chris/Applications/build.one/build.one.web add src/agents/types.ts src/agents/useAgentRun.ts src/agents/ScoutTray.tsx src/index.css)",
+      "Bash(git -C /Users/chris/Applications/build.one/build.one.web add src/agents/useAgentRun.ts)",
+      "Bash(git -C /Users/chris/Applications/build.one/build.one.web add src/agents/useAgentRun.ts src/agents/ScoutTray.tsx)",
+      "Bash(git -C /Users/chris/Applications/build.one/build.one.web add src/agents/ScoutTray.tsx)",
+      "Bash(sed -n '319,355p' /Users/chris/Applications/build.one/build.one.api/integrations/ms/sharepoint/external/client.py)",
+      "Bash(sed -n '557,605p' /Users/chris/Applications/build.one/build.one.api/integrations/ms/sharepoint/external/client.py)",
+      "Bash(git commit *)"
     ]
   }
 }

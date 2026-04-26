@@ -13,15 +13,21 @@ invoice_specialist = Agent(
     name="invoice_specialist",
     system_prompt=_PROMPT,
     tools=(
-        # Invoice — search-only reads + draft create + parent update +
-        # workflow action. Line item CRUD (including the polymorphic
-        # "select billable items" workflow) is a separate future tool set.
+        # Invoice CRUD + workflow
         "search_invoices",
         "read_invoice_by_public_id",
         "create_invoice",
         "update_invoice",
         "delete_invoice",
         "complete_invoice",
+        # Packet workflow (V2)
+        "get_billable_items_for_invoice",
+        "get_next_invoice_number",
+        "reconcile_invoice",
+        "add_invoice_line_items",
+        "update_invoice_line_item",
+        "remove_invoice_line_item",
+        "generate_invoice_packet",
         # Project read tools — for parent name resolution / lookup-by-name
         "search_projects",
         "read_project_by_public_id",

@@ -250,6 +250,60 @@ class MsDriveItemService:
         # Create folder in MS Graph
         return graph_create_folder(drive.drive_id, parent_item_id, folder_name)
 
+    def read_or_create_folder(
+        self,
+        drive_public_id: str,
+        parent_item_id: str,
+        folder_name: str,
+    ) -> dict:
+        """
+        Idempotent folder create. Returns the existing folder when one
+        with the given name already lives under `parent_item_id`;
+        creates and returns a new one otherwise.
+
+        Used by workflows that re-run (e.g. the invoice-completion
+        flow that uploads the packet + supporting PDFs into a per-
+        invoice subfolder). Plain `create_folder` uses Graph's
+        `conflictBehavior: fail` and 409s on the second run, killing
+        the workflow.
+
+        Returns the same shape as `create_folder` for drop-in use:
+            { status_code, message, item }
+        """
+        drive = self.drive_repo.read_by_public_id(drive_public_id)
+        if not drive:
+            return {
+                "message": "Linked drive not found",
+                "status_code": 404,
+                "item": None,
+            }
+
+        # 1. List children of the parent and look for a folder match.
+        from integrations.ms.sharepoint.external.client import (
+            list_drive_item_children,
+        )
+        list_result = list_drive_item_children(drive.drive_id, parent_item_id)
+        if list_result.get("status_code") == 200:
+            for child in list_result.get("items") or []:
+                if (
+                    child.get("item_type") == "folder"
+                    and child.get("name") == folder_name
+                ):
+                    return {
+                        "message": "Folder exists; reusing.",
+                        "status_code": 200,
+                        "item": child,
+                    }
+        # If the listing failed (4xx/5xx), fall through to create — it
+        # will surface its own error if there's a real problem.
+
+        # 2. Otherwise create as usual.
+        return self.create_folder(
+            drive_public_id=drive_public_id,
+            parent_item_id=parent_item_id,
+            folder_name=folder_name,
+        )
+
     def link_item(self, drive_public_id: str, item_id: str) -> dict:
         """
         Link a DriveItem by fetching from MS Graph and storing locally.

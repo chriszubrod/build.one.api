@@ -347,7 +347,31 @@ class InvoiceService:
                 logger.warning(f"Error marking source as billed for line item {line_item.id}: {e}")
                 errors.append({"line_item_id": line_item.id, "error": f"mark_billed: {str(e)}"})
 
-        # Step 3b: Upload attachments to SharePoint
+        # Step 3a: Regenerate the packet PDF. _generate_invoice_packet
+        # already deletes the prior `invoice_packet` Attachment + blob
+        # before writing the new one, so re-runs replace cleanly. Wrapped
+        # in try/except so a packet failure doesn't kill the whole
+        # complete flow — supporting attachments still upload.
+        packet_result = {"success": True, "message": "Generated", "errors": []}
+        try:
+            from entities.invoice.api.router import _generate_invoice_packet
+            _generate_invoice_packet(public_id)
+            logger.info(f"Packet regenerated for invoice {public_id}")
+        except Exception as e:
+            logger.warning(f"Packet regeneration failed for invoice {public_id}: {e}")
+            packet_result = {
+                "success": False,
+                "message": f"Packet regeneration failed: {e}",
+                "errors": [{"step": "generate_packet", "error": str(e)}],
+            }
+            errors.append({"step": "generate_packet", "error": str(e)})
+        # Refresh line items so the upload step sees the freshly-linked packet attachment.
+        line_items = self.invoice_line_item_service.read_by_invoice_id(invoice_id=invoice.id)
+
+        # Step 3b: Upload attachments + packet to SharePoint. Folder
+        # create is idempotent (read_or_create_folder); file uploads use
+        # conflictBehavior:replace, so the packet + supporting PDFs
+        # overwrite on each re-run.
         sharepoint_result = self._upload_to_sharepoint(invoice=finalized, line_items=line_items)
         if not sharepoint_result.get("success"):
             errors.extend(sharepoint_result.get("errors", []))
@@ -355,10 +379,33 @@ class InvoiceService:
         else:
             logger.info(f"SharePoint upload complete for invoice {public_id}: {sharepoint_result.get('message')}")
 
-        # Excel workbook sync disabled
-        excel_result = {"success": True, "message": "Disabled", "synced_count": 0, "errors": []}
+        # Step 3c: Excel sync — write the invoice number into the DRAW
+        # REQUEST column for each source row. sync_to_excel_workbook
+        # finds source rows by the public_id key in column Z and updates
+        # column H. Manual line items are skipped (they have no source
+        # row in the worksheet).
+        excel_result = {"success": True, "message": "Skipped — no project_id", "synced_count": 0, "errors": []}
+        if invoice.project_id:
+            try:
+                excel_result = self.sync_to_excel_workbook(
+                    invoice=finalized,
+                    line_items=line_items,
+                    project_id=invoice.project_id,
+                )
+                if not excel_result.get("success"):
+                    errors.extend(excel_result.get("errors", []) or [{"step": "excel_sync", "error": excel_result.get("message", "")}])
+            except Exception as e:
+                logger.warning(f"Excel sync failed for invoice {public_id}: {e}")
+                excel_result = {
+                    "success": False,
+                    "message": f"Excel sync failed: {e}",
+                    "synced_count": 0,
+                    "errors": [{"step": "excel_sync", "error": str(e)}],
+                }
+                errors.append({"step": "excel_sync", "error": str(e)})
 
-        # QBO push sync disabled
+        # QBO push sync deliberately disabled — re-enable when QBO
+        # invoice sync is wired end-to-end.
         qbo_result = {"success": True, "message": "Disabled", "errors": []}
 
         status_code = 200 if not errors else 207
@@ -366,6 +413,7 @@ class InvoiceService:
             "status_code": status_code,
             "message": "Invoice completed successfully" + (f" with {len(errors)} error(s)" if errors else ""),
             "invoice_finalized": True,
+            "packet_regenerated": packet_result,
             "sharepoint_upload": sharepoint_result,
             "excel_sync": excel_result,
             "qbo_sync": qbo_result,
@@ -851,9 +899,14 @@ class InvoiceService:
             synced_count = 0
             uploaded_attachment_ids: set = set()
 
-            # Create (or reuse) a subfolder named after the invoice number
+            # Create (or reuse) a subfolder named after the invoice
+            # number. Uses read_or_create so re-runs of complete_invoice
+            # land in the existing subfolder rather than 409'ing on a
+            # name conflict. File uploads inside use replace semantics
+            # (conflictBehavior:replace) so packet + supporting PDFs
+            # overwrite cleanly on each run.
             safe_folder_name = re.sub(r'[<>:"/\\|?*]', '_', invoice_number)
-            folder_result = self.driveitem_service.create_folder(
+            folder_result = self.driveitem_service.read_or_create_folder(
                 drive_public_id=drive.public_id,
                 parent_item_id=folder_item_id,
                 folder_name=safe_folder_name,

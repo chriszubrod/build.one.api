@@ -122,6 +122,15 @@ _cors_origins_env = os.getenv("CORS_ALLOW_ORIGINS", "")
 _default_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    # Vite falls back to 3001/3002/3003 when 3000 is busy. Allow the
+    # whole local-dev range so the React app works regardless of which
+    # port Vite picks.
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+    "http://localhost:3002",
+    "http://127.0.0.1:3002",
+    "http://localhost:3003",
+    "http://127.0.0.1:3003",
 ]
 _allowed_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()] or _default_origins
 

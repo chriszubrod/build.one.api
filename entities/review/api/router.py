@@ -4,7 +4,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
-from entities.auth.business.service import AuthService
 from entities.review.api.schemas import (
     ReviewAdvanceRequest,
     ReviewDeclineRequest,
@@ -22,6 +21,7 @@ from core.workflow.api.process_engine import (
     ProcessEngine,
     TriggerContext,
 )
+from shared.api.auth_user import resolve_user_id
 from shared.api.responses import (
     item_response,
     list_response,
@@ -36,21 +36,6 @@ router = APIRouter(prefix="/api/v1", tags=["api", "review"])
 # =============================================================================
 # Internal helpers
 # =============================================================================
-
-def _resolve_user_id(current_user: dict) -> int:
-    """
-    Translate the JWT's `sub` (Auth.PublicId) into Auth.UserId. Reviews
-    require a non-null UserId on every row, so we cannot rely on the
-    nullable `current_user.get("id")` pattern other routers use.
-    """
-    sub = current_user.get("sub")
-    if not sub:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token subject.")
-    auth = AuthService().read_by_public_id(public_id=sub)
-    if not auth or not auth.user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token does not map to a known user.")
-    return auth.user_id
-
 
 def _execute_create(payload: dict, current_user: dict, default_error: str):
     """
@@ -80,7 +65,7 @@ def _do_action(
     current_user: dict,
     body,
 ):
-    user_id = _resolve_user_id(current_user)
+    user_id = resolve_user_id(current_user)
     service = ReviewService()
     try:
         if action == "submit":

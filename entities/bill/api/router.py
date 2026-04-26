@@ -18,6 +18,7 @@ from entities.bill.persistence.folder_run_repo import (
     BillFolderRunRepository,
 )
 from entities.bill.persistence.repo import BillRepository
+from shared.api.auth_user import resolve_user_id
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
 from shared.database import get_connection
 from shared.rbac import require_module_api
@@ -46,12 +47,13 @@ async def create_bill_router(
     When is_draft=False, triggers background completion (SharePoint, Excel, QBO).
     """
     is_draft = body.is_draft if body.is_draft is not None else True
+    user_id = resolve_user_id(current_user)
 
     context = TriggerContext(
         trigger_type=EventType.API_CALL,
         trigger_source=Channel.API,
         tenant_id=current_user.get("tenant_id", 1),
-        user_id=current_user.get("id"),
+        user_id=user_id,
         payload={
             "vendor_public_id": body.vendor_public_id,
             "payment_term_public_id": body.payment_term_public_id,
@@ -61,6 +63,7 @@ async def create_bill_router(
             "total_amount": Decimal(str(body.total_amount)) if body.total_amount is not None else None,
             "memo": body.memo,
             "is_draft": is_draft,
+            "user_id": user_id,
         },
         workflow_type="bill_create",
     )

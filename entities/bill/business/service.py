@@ -186,12 +186,15 @@ class BillService:
             self._attachable_attachment_connector = AttachableAttachmentConnector()
         return self._attachable_attachment_connector
 
-    def create(self, *, tenant_id: int = 1, vendor_public_id: Optional[str] = None, payment_term_public_id: Optional[str] = None, bill_date: str, due_date: str, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True) -> Bill:
+    def create(self, *, tenant_id: int = 1, user_id: Optional[int] = None, vendor_public_id: Optional[str] = None, payment_term_public_id: Optional[str] = None, bill_date: str, due_date: str, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True) -> Bill:
         """
         Create a new bill.
-        
+
         Args:
             tenant_id: Tenant ID for multi-tenant isolation (default: 1)
+            user_id: dbo.[User].Id of the caller. When provided AND the bill
+                     is created in draft, an auto-Submitted Review row is
+                     written for the new bill (audit-of-submission).
             vendor_public_id: Vendor public ID (required)
             payment_term_public_id: Payment term public ID (optional)
             bill_date: Bill date
@@ -238,7 +241,7 @@ class BillService:
             if existing:
                 raise ValueError(f"A bill with BillNumber '{bill_number}' and this date already exists for this vendor. Please update the existing bill instead of creating a new one.")
         
-        return self.repo.create(
+        bill = self.repo.create(
             tenant_id=tenant_id,
             vendor_id=vendor_id,
             payment_term_id=payment_term_id,
@@ -249,6 +252,41 @@ class BillService:
             memo=memo,
             is_draft=is_draft,
         )
+
+        # Auto-Submit hook. Creating a draft bill IS submitting it for review,
+        # so write a Review row at status=Submitted. Skipped when:
+        #   - is_draft=False (bill was created already-finalized; no review window)
+        #   - user_id is None (caller didn't go through the auth-resolved router;
+        #     don't fabricate a UserId for the audit row)
+        # Failures are logged but do NOT roll back the bill — a missing review
+        # row is recoverable (manual /submit/review/bill/<id> works), a missing
+        # bill is not.
+        if is_draft and user_id is not None:
+            try:
+                from entities.review.business.service import ReviewService
+                from entities.review_status.business.service import ReviewStatusService
+
+                first_status = ReviewStatusService().get_first_status()
+                if first_status is None:
+                    logger.warning(
+                        "Bill %s created but no initial ReviewStatus is configured; "
+                        "skipping auto-Submit Review write.",
+                        bill.public_id,
+                    )
+                else:
+                    ReviewService().create(
+                        review_status_id=first_status.id,
+                        user_id=user_id,
+                        comments=None,
+                        bill_id=bill.id,
+                    )
+            except Exception as review_error:
+                logger.exception(
+                    "Failed to auto-write Submitted Review row for bill %s: %s",
+                    bill.public_id, review_error,
+                )
+
+        return bill
 
     def read_all(self) -> list[Bill]:
         """

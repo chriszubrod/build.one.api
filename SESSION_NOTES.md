@@ -1,5 +1,132 @@
 # Session Notes
 
+## Session: OHR2-GUEST-09 InvoiceAgent run + qbo/dbo keyspace incident (April 26, 2026)
+
+### Overview
+Second end-to-end run of the InvoiceAgent playbook (after BR-MAIN-22). Invoice OHR2-GUEST-09 was created manually in QBO (8 lines, $67,706.05) against project OHR2-GUEST. The full playbook completed cleanly **except for a self-inflicted incident in Step 7** that drove a real lesson into memory.
+
+### What completed cleanly
+- Project + QBO mapping resolved: `project_id=32`, `realm_id=9130353016965726`, `customer_ref_value=1184`.
+- All 4 QBO sync scripts ran (no new bills/purchases/credits in the watermark window; the invoice came through).
+- `dbo.Invoice.Id=1031` / `PublicId=45B5AA28...`, no `-2/-3` suffix duplicates.
+- All 8 lines fingerprint-matched uniquely to `BillLineItem` sources (no Manual remainders, no Purchase matches, no ambiguity).
+- Packet generated: 12 pages, 932 KB, 0 attachments skipped, `Attachment.PublicId=8E6FEFC5...`.
+- Direction A initial reconciliation: 4 of 8 source rows already in DETAILS with column-Z public_id; 4 missing.
+- Direction B clean (no pre-existing `OHR2-GUEST-09` tags).
+- Final Direction A: 8/8 source rows tagged H=`OHR2-GUEST-09`; SharePoint upload 9/9 (1 packet + 8 line attachments).
+
+### Incident: `qbo.Bill.Id` ≠ `dbo.Bill.Id`
+In the Step 4 fingerprint-match SQL I aliased `b.Id AS BillId` while joining `qbo.BillLine` → `qbo.Bill` → `qbo.BillLineItemBillLine`. That gave me values like `BillId=17910` (the `qbo.Bill` internal staging PK), which I then treated as `dbo.Bill.Id` in Step 7's call to `BillService().sync_to_excel_workbook(bill_id=...)`. The actual `dbo.Bill.Id` values (re-derived via `dbo.BillLineItem.BillId`) were `17621/17622/17836/17943` — totally different bills.
+
+The `BillService.sync_to_excel_workbook()` call accepted the (legitimate but wrong) bills, enqueued 4 MS outbox rows for Excel inserts, and the `build.one.scheduler` Function App's 30s `outbox/drain` tick fired before I could review. By the time I tried to cancel the still-pending row (id=150), all four were `done`. Worksheet went 1708 → 1712 rows; 4 unrelated bills (Structure Company, Cincinnati Insurance ×2, Austin Rogers Rockler Cabinet) had landed in OHR2-GUEST's DETAILS.
+
+### Recovery (option B per user direction)
+Cleared the 4 wrong rows in place via `clear_excel_range`, located by their column-Z `BillLineItem.PublicId` (deliberately not by row number, since the original inserts had shifted everything below them). Bottom-up clear order to keep indices stable: `A1712:Z1712`, `A1137:Z1137`, `A91:Z91`, `A71:Z71`. Excel auto-trimmed the trailing blank row (1712 → effectively empty), so used range went 1712 → 1715 after the correct round of inserts.
+
+Then re-ran with the correct `dbo.Bill.Id` values (`17621/17622/17836/17943`). Outbox rows 153–156 drained normally; `InvoiceService.sync_to_excel_workbook` ran twice (idempotent re-pass per playbook) and tagged H=`OHR2-GUEST-09` on all 8 source rows. Direction B clean. SharePoint upload clean.
+
+### Lessons & memory updates
+- **Memory: `feedback_qbo_dbo_id_keyspaces.md`** — never alias `qb.Id AS BillId` / `qp.Id AS PurchaseId` in `qbo.*` joins; only `BillLineItemId` / `ExpenseLineItemId` cross cleanly to dbo. Re-derive `dbo.Bill.Id` via `dbo.BillLineItem.BillId` when needed.
+- **MS outbox auto-drain leaves no human-cancel window.** With the scheduler Function App live, *enqueue is effectively final* — pause-and-verify must happen *before* the enqueue call. Reflected in `CLAUDE.md` "Common Bug Patterns."
+- **InvoiceAgent playbook (`project_invoice_agent.md`) updated**: Step 4 now requires `QboBillId` aliases and warns on the keyspace; Step 7 now requires a sanity-check SELECT against `dbo.{Entity}` before any `sync_to_excel_workbook` call, and documents the `clear_excel_range` recovery.
+- **OHR2-GUEST-09** appended to "Invoices Completed" with incident note.
+
+### Final prod state
+- 8 ILIs linked to BillLineItem sources (29591–29598 → 21522/21523/21890/22025/21783/22043/22024/22026).
+- 1 invoice packet attachment (`Invoice-OHR2-GUEST-09-Packet.pdf`, 932 KB, 12 pp).
+- DETAILS column H tagged on rows 169 / 1073 / 1139 / 1140 / 1239 / 1240 / 1264 / 1363.
+- 9 files uploaded to project SharePoint folder.
+- No QBO writes (pull-only per playbook; `BillLineItem.IsBilled` deliberately not flipped).
+
+## Session: Bill folder back to auto-pickup (April 26, 2026)
+
+### Overview
+Investigation into why 61 PDFs were sitting in the SharePoint /source folder despite the Process-Folder button having been "successful" multiple times. Two pre-compact bug fixes (`SET NOCOUNT ON` on the claim sproc + missing `id` field on `BillFolderRun` dataclass) had unblocked the queue earlier in the day; this post-compact half closed the gap that left files stranded.
+
+### Root cause(s)
+
+1. **`_move_file_to_processed` swallowed every move failure** — including the one we hit consistently. Bills got created, but the source PDF stayed put. Next run's duplicate check skip-and-moved, also failed silently. Net effect: 61 stale files, 0 surfaced errors.
+2. **No scheduled enumeration.** The 30s scheduler tick *drained* the queue but nothing *filled* the queue except the React button. The April Jinja/AI purge had deleted the old `bill_agent` folder scanner and never replaced it for the new architecture.
+
+### What shipped (API `5c2f6d9`)
+
+| change | file |
+|---|---|
+| `enqueue_bill_folder_run(dedup_active)` helper — both the button POST and the new admin endpoint go through it | `entities/bill/business/folder_processor.py` |
+| Hour-window dedup sproc — skips item_ids currently `queued`/`processing` OR modified within the last 60 min | `entities/bill/sql/dbo.billfolderrunitem.sql` (`ReadActiveBillFolderRunItemIds`) |
+| `read_active_item_ids(recent_window_minutes=60)` | `entities/bill/persistence/folder_run_repo.py` |
+| `_move_file_to_processed` now raises on unrecoverable failure (post-conflict-retry path included) | `entities/bill/business/folder_processor.py` |
+| Removed silent `try/except` wrappers around the move calls in `process_single_item` (bill-created path + duplicate path) | `entities/bill/business/folder_processor.py` |
+| `POST /api/v1/admin/bill-folder/enumerate` — drain-secret-protected | `shared/api/admin.py` |
+| Button POST simplified to call the helper with `dedup_active=False` | `entities/bill/api/router.py` |
+
+### What shipped (scheduler `54702bc`)
+
+| change | file |
+|---|---|
+| `enumerate_bill_folder` timer (`0 */5 * * * *`) — fires every 5 min at second 0 | `function_app.py` |
+| README cadence table updated for `process_bill_folder` + `enumerate_bill_folder` | `README.md` |
+
+### Design choices
+
+- **Hour-window dedup, not just queued/processing.** With move-failures now permanent (instead of silently swallowed), a stuck file would otherwise get re-queued every 5 min and create a new failed-item row. The window stops the churn — operator gets one clean pass per hour to investigate, plus the latest run's errors show the actual SP error message rather than empty success counts.
+- **No run row when nothing to enqueue.** `dedup_active=True` early-returns `{"status": "noop"}` before creating a `BillFolderRun`, so empty 5-min ticks don't pollute the runs history.
+- **Button still creates the run row first.** When dedup is off (button path) we keep the original behavior — create the run, then enumerate, so an enumeration failure is captured against a visible `BillFolderRun` for the UI.
+- **Cadence: 5 min.** 30s would have been overkill (one drained file per tick already, and SP listing isn't free); 15-min would feel slow when an operator drops a file expecting near-immediate pickup. Cron `0 */5 * * * *`.
+
+### Deploy
+
+1. `python scripts/run_sql.py entities/bill/sql/dbo.billfolderrunitem.sql` — 14 batches applied; `ReadActiveBillFolderRunItemIds` live.
+2. `func azure functionapp publish build-one-scheduler --python` — host running, 16 timers loaded (the 14 existing + `enumerate_bill_folder` + `poll_email_inbox` from the email-agent work). API push held at user's request.
+
+### Follow-up
+
+- Once API ships, watch the next 5-min tick — the 61 stuck files should now surface their actual move failures via `BillFolderRunItem.LastError` so we can finally diagnose what's wrong with the SP move call (permissions? locked files? something with the post-conflict retry?).
+
+## Session: BR-MAIN-22 end-to-end + InvoiceAgent playbook (April 26, 2026)
+
+### Overview
+First end-to-end run of the customer-invoice completion process for an invoice **created manually in QBO** (BR-MAIN-22, 14 lines, $262,548.60). Walked the full chain — pull QBO → link Manual ILIs to source Bills/Expenses → packet → reconcile Excel DETAILS → SharePoint — discovering and patching gaps along the way. Captured the procedure as a generalized InvoiceAgent playbook in memory.
+
+### What shipped (API)
+
+| commit | what |
+|---|---|
+| `6cc0bcc` | Removed the early-return guard in `scripts/sync_qbo_invoice.py:309-311` (`Invoice QBO sync is disabled`). Deleted `scripts/reconcile_qbo_billable.py` (one-off audit script). Invoice pull sync now runs as written; pull-only, no QBO writeback. |
+
+### Walkthrough findings
+
+1. **Invoice QBO sync was gated off.** Dropping the early-return enabled `qbo.Invoice` + `qbo.InvoiceLine` staging to populate. After the first run, BR-MAIN-22 (and 50+ other invoices missing since BR-MAIN-19) landed locally.
+2. **InvoiceInvoiceConnector creates Manual-source ILIs.** Every `dbo.InvoiceLineItem` from a QBO pull has `SourceType='Manual'` with no `BillLineItemId` / `ExpenseLineItemId` FK. The packet generator depends on the source FK chain (`BillLineItem → BillLineItemAttachment → Attachment`) to find PDFs, so each line must be back-linked.
+3. **Fingerprint matching against staging works for bills AND purchases.** Match `qbo.InvoiceLine` (Description + Amount + ServiceDate) against both `qbo.BillLine` (RealmId + CustomerRef + TxnDate) and `qbo.PurchaseLine`. 13/14 BR-MAIN-22 lines matched a Bill; the 14th (Vevor "Trim Materials" $1,409.34) matched a Purchase (mapped → `dbo.ExpenseLineItem` 11213). Initial diagnostic only searched `qbo.BillLine` and missed the Vevor line — important to search both.
+4. **Duplicate `dbo.Invoice` rows.** Pull added 54 new rows; some are suffixed `-2`/`-3`/`-4` because BR-MAIN-20/21 etc. were created locally first (pre-pull) and the unique constraint forced a suffix on the QBO copy. The user accepted these as historical artifacts; no cleanup this session.
+5. **Manual-typed line on QBO invoice** with no underlying Bill/Purchase: the Vevor case wasn't this — it had an underlying Purchase. But this scenario is real and the playbook handles it (line listed in TOC, no attachment page).
+6. **Excel DETAILS reconciliation directions matter.**
+   - Direction A (Invoice → DETAILS): all 14 matched by `public_id` in column Z — clean.
+   - Direction B (DETAILS → Invoice): 2 extra rows tagged `BR-MAIN-22` in column H that aren't on the invoice (Metal Werks $9,000 + Construction Services $75,000). User flagged these as pre-existing manual edits, will correct in Excel themselves.
+7. **Outbox drain timing matters.** `ExpenseService.sync_to_excel_workbook` enqueues a row via the MS outbox; `InvoiceService.sync_to_excel_workbook` reads the worksheet to look up `public_id` in column Z. Without an immediate drain, the Vevor row was missing from the read and got skipped. Drain via `POST /api/v1/admin/outbox/drain` + re-run `InvoiceService.sync_to_excel_workbook` worked.
+8. **`ALLOW_MS_WRITES=true` is required for any Excel write.** The local `.env` deliberately omits it; set inline on the Python process for the duration of a single run with explicit user authorization. Don't persist to `.env`.
+9. **`InvoiceService._upload_to_sharepoint(invoice, line_items)`** is the established function for pushing the packet + per-line attachments. Uploaded 15 files (1 packet + 14 source PDFs).
+
+### Mutations made to prod DB this session
+
+- Linked 13 ILIs to `BillLineItemId` + `SourceType='BillLineItem'`; 1 ILI to `ExpenseLineItemId=11213` + `SourceType='ExpenseLineItem'`.
+- Generated 2 packet attachments (first one replaced by second after relinking the Vevor line). Final packet: 21 pages, 1.37 MB.
+- Inserted 1 row in DETAILS for the Vevor expense (Cost Code 43, row 1624).
+- Wrote `BR-MAIN-22` into column H for 14 source rows in DETAILS.
+- Uploaded 15 files to SharePoint.
+
+### Memory (auto-memory at `~/.claude/projects/.../memory/`)
+
+- **`project_invoice_agent.md`** — replaced procedural notes with the canonical 9-step InvoiceAgent playbook, preserving "Invoices Completed" history. Added BR-MAIN-22 entry.
+- **`MEMORY.md`** — index renamed "Invoice Packet Creation Process" → "InvoiceAgent Playbook" with new description.
+
+### Key takeaways for future agent work
+
+- The InvoiceInvoiceConnector's Manual-source behavior is **structural, not accidental** — until/unless we want to enhance it with auto-linking, the playbook's Step 4 (fingerprint match) is mandatory.
+- Any cross-system invoice work needs to consider both Bill and Purchase staging tables; never just one.
+- Excel writes always require: gate authorization → enqueue → drain → re-read → idempotent re-write loop. Never assume single-pass works after an insert.
+
 ## Session: Transactional fleet + UI lanes + storage migration (April 25, 2026)
 
 ### Overview
@@ -1648,3 +1775,78 @@ Wired the Role entity into the UserRole and RoleModule join table UIs, and added
 - `static/css/bill.css` — folder summary styles
 - `entities/company/web/controller.py` — bill folder data in template context
 - `templates/company/view.html` — Bill Processing Folders section with picker
+
+
+---
+
+# Email-Agent Pipeline — Phase 1 + Phase 2 (2026-04-26 → 2026-04-27)
+
+## Overview
+
+Built a polled-inbox → DI extraction → orchestrator-agent → bill_specialist delegation chain end-to-end. Replaces (cleanly, from scratch) the legacy email-intake surface that was decommissioned in early April. Uses the current `intelligence/` pattern — pure orchestrator, agent-as-user RBAC, approval-gated downstream.
+
+## Architectural decisions (locked during planning)
+
+1. **Trigger model** — scheduler-driven poll, not webhook. `build.one.scheduler` Function App posts to admin endpoints on a 5-minute cadence (poll) and 1-minute cadence (agent processor).
+2. **Source mailbox** — single shared mailbox configured via `invoice_inbox_email` env var. Today: `invoice@rogersbuild.com`.
+3. **Agent shape** — pure orchestrator like Scout. Zero direct entity tools; everything via delegation. v1 routes to bill_specialist only; credits/refunds flag for human review.
+4. **Autonomy** — runs unattended, gates sensitive actions through approval cards. Approval requests sit in DB until a human approves (UI = Phase 3, deferred).
+5. **Extraction approach** — Azure Document Intelligence (deterministic numbers, never hallucinates) → Sonnet 4.6 reasons over the structured DI output. Double layer: DI extracts, then a server-side validation pass (line-item sum within $0.50 of total or subtotal, total > 0, dates parse, vendor non-empty). Confidence threshold 0.7 — below → `Agent: Needs Review`, no delegation.
+6. **Vendor matching** — bill_specialist resolves via `search_vendors`. The email_specialist passes the raw DI vendor string + sender domain (e.g. `walkerlumber.com`) to the specialist as supplementary context. Documented future TODO: vendor record hints (alias strings, default project, default sub-cost-code) — `project_vendor_hints.md` memory.
+7. **Categories** — opt-in via Outlook's default `Blue category` (no need for users to create a custom category first). Outcome categories stay semantic: `Agent: Processed | Awaiting Approval | Needs Review | Irrelevant`. Outlook PATCH appends, never replaces, so the human's input tag stays visible.
+8. **Multi-attachment outcome rollup** — hybrid precedence: `Awaiting Approval > Needs Review > Processed > Irrelevant`. Single category per email regardless of how many attachments it had.
+9. **Lazy DI** — agent decides which attachments to extract. Filename hint, size > 2KB, content_type in PDF/JPG/PNG/TIFF. Skip xlsx/docx → flag the email Needs Review. Inline attachments (signature images) filtered out at poll time.
+10. **No-attachment emails** — agent reads body and picks Irrelevant or Needs Review. Body content (e.g. the Kerley Flooring reply) carries real signal — discussion / approvals / forwards we don't want silently dropped.
+11. **mark_email_outcome silent** — no approval card; the protective layer is the approval cards on `create_bill` etc. downstream.
+12. **Source FK** — single nullable `SourceEmailMessageId` on Bill / Expense / BillCredit. Many-to-one (one email → many possible bills, e.g. multi-PDF packet). "Many emails per bill" via thread navigation: `JOIN EmailMessage ON ConversationId`. Documented design choice; many-to-many table can be added later if cross-thread linkage becomes a real need.
+
+## Phase 1 — plumbing (commits `b1dc881`, `7818a10`, `620b9e1`)
+
+- **Schema** — `entities/email_message/sql/dbo.email_message.sql` and `dbo.email_attachment.sql`. Idempotent `UpsertEmailMessage` (key: `GraphMessageId`), `UpsertEmailAttachment` (key: `EmailMessageId + GraphAttachmentId`), atomic `ClaimNextPendingEmailMessage` (UPDLOCK + READPAST + CTE since SQL Server doesn't support ORDER BY in plain UPDATE), `UpdateEmailMessageStatus`, `UpdateEmailAttachmentExtraction`. Cascade delete sproc has `SET NOCOUNT ON` so the cascade DELETE rowcount doesn't surface as a phantom result set. Recipients (To/Cc) added in a follow-up migration as JSON array NVARCHAR(MAX) columns.
+- **Repos + services** — `EmailMessageService` (read paths), `MailboxPollService` (poll orchestration), `EmailAttachmentExtractionService` (DI on demand + persist), `EmailAttachmentBridgeService` (EmailAttachment → Attachment, hash-dedup'd, no blob copy).
+- **Document Intelligence** — `integrations/azure/document_intelligence/external/client.py` with HTTPX-direct calls to the prebuilt-invoice REST API. Long-running operation polling, retries 429/5xx with exponential backoff. `business/service.py::DocumentIntelligenceService.extract_invoice` hoists DI's nested response into flat `vendor_name`, `invoice_number`, `invoice_date`, `due_date`, `subtotal`, `total_amount`, `currency`, `confidence`, `line_items[]`, plus the validation block.
+- **Categories module** — `entities/email_message/business/categories.py` with constants for `Blue category` (input) and the four outcome categories. `has_outcome([categories])` helper.
+- **Read API** — `GET /get/email-messages` (paginated, filter by status / search / dates), `GET /get/email-message/{public_id}` (with attachments), `GET /get/email-message/{public_id}/attachments`. Gated on the new `Modules.EMAIL_MESSAGES`.
+- **Admin endpoints** — `POST /admin/email/poll` (5m cadence in scheduler), `POST /admin/email/extract/{public_id}` (verification — DRAIN_SECRET-gated alternative to the agent's RBAC-gated tool path), `POST /admin/email/process_one` (1m cadence in scheduler — claims and kicks off agent runs).
+- **Scheduler timer** — added `poll_email_inbox` (5m) and `process_email_inbox` (1m, inner-drain) to `build.one.scheduler/function_app.py`.
+- **Cleanup pass (commit `620b9e1`)** — fixed `SizeBytes` to record actual decoded byte length (not Graph's base64-inflated wire size). Added `ToRecipients` + `CcRecipients` columns. Added `SourceEmailMessageId` BIGINT NULL FK + index on Bill / Expense / BillCredit (sproc only updated on Bill — Phase 2 wires it through). Added `azure_encryption_key` config field with precedence over `encryption_key` so a developer can decrypt prod-encrypted DB rows locally.
+
+## Phase 2 — agent + RBAC + delegation
+
+- **2a. Module + RBAC** — added `Email Messages` row to `dbo.[Module]` (id 37) and `Modules.EMAIL_MESSAGES` constant. Re-gated the read endpoints from `DASHBOARD` → `EMAIL_MESSAGES`.
+- **2b. email_agent user/role/grants** — `seed.email_agent.sql`. Username `email_agent`, role `Email Specialist`, grants ONLY on Email Messages (read + update). No grants on Vendors, Bills, etc. — those flow through bill_specialist's role.
+- **2c. Source FK plumbing on Bill** — extended `CreateBill` sproc with `@SourceEmailMessageId BIGINT = NULL`, BillCreate Pydantic, workflow payload, BillService.create signature (resolves UUID → BIGINT via EmailMessageService), repo.create, BillRepository, and the agent's CreateBillArgs schema. Smoke-tested end-to-end with a synthetic Bill that JOINed back to EmailMessage on the FK.
+- **2d. Agent-side write endpoints** — three new RBAC-gated routes (gated on EMAIL_MESSAGES `can_update`):
+  - `POST /api/v1/email-attachments/{public_id}/extract` — runs DI on demand, persists hoisted result.
+  - `POST /api/v1/email-attachments/{public_id}/bridge-to-attachment` — bridges an EmailAttachment into a regular Attachment row (shares blob URL, hash-dedup'd).
+  - `PATCH /api/v1/email-messages/{public_id}/outcome` — flips `ProcessingStatus` and applies the Outlook outcome category (PATCH-append, never strip).
+- **2e. Agent tools** — `entities/email_message/intelligence/tools.py`: `read_email_message`, `extract_email_attachment`, `bridge_email_attachment`, `mark_email_outcome`. None require approval.
+- **2f. email_specialist package** — `intelligence/agents/email_specialist/{__init__.py, definition.py, prompt.md}`. Tools tuple: the four email-message tools + `delegate_to_bill_specialist`. Prompt teaches the decision tree (read → classify → extract-if-applicable → validate → bridge → delegate, then mark outcome).
+- **2g. process_one admin endpoint** — `POST /api/v1/admin/email/process_one`. Claims next pending email via `claim_next_pending` sproc, resolves email_agent's User.Id, calls `start_run(agent_name="email_specialist", ...)`, returns `{processed: bool, email_public_id, agent_session_public_id}`. Idempotent — concurrent ticks can't claim the same row.
+- **2h. Scheduler timer** — `process_email_inbox` in `build.one.scheduler/function_app.py`, 1m cadence with the inner-drain pattern matching `process_bill_folder` (loops claim+process up to ~4 min before yielding).
+
+## bill_specialist follow-on update (same session)
+
+The `BillCreate` Pydantic schema added a required `attachment_public_id` field (separate developer's commit, merged early in this session). The agent layer wasn't yet aware:
+- Updated `CreateBillArgs` (in `entities/bill/intelligence/tools.py`) to include `attachment_public_id` as a REQUIRED field.
+- Updated `bill_specialist`'s prompt (`intelligence/agents/bill_specialist/prompt.md`) to teach it about the new contract — pass through the bridged attachment_public_id verbatim from the email_specialist's task description; for human-driven flows, instruct the user to upload via `/upload/attachment` first.
+
+## End-to-end smoke (against real prod data)
+
+Verified the full chain on a real Walker Lumber invoice email tagged `Blue category`:
+1. Poll persisted EmailMessage + EmailAttachment + uploaded the PDF to blob storage.
+2. process_one claimed the email and kicked off email_specialist agent session.
+3. email_specialist read the email + bridged the attachment.
+4. delegate_to_bill_specialist spawned a sub-session.
+5. bill_specialist tried `search_vendors("WALKER LUMBER & SUPPLY")` (no match), retried `search_vendors("WALKER LUMBER")` (found "Walker Lumber & Hardware"), used the sender domain `walkerlumber.com` as the disambiguating tiebreaker.
+6. bill_specialist proposed `create_bill` with `vendor_public_id`, `bill_date=2026-04-24`, `due_date=2026-05-24`, `bill_number="198316/1"`, `total_amount=$1,567`, `attachment_public_id` (bridged), `source_email_message_public_id` (the FK).
+7. The approval card landed in `AgentApprovalRequest` with status `pending`, awaiting human approval.
+
+## What's still TODO / deferred
+
+- **Phase 3 React UI** for pending approvals — without it, approvals sit in the DB invisible to a human walking by. Today you'd verify via `SELECT * FROM dbo.AgentApprovalRequest WHERE Status='pending'`.
+- **Vendor record hints/intelligence** — alias strings, default project, default sub-cost-code learned over time. Captured in memory file `project_vendor_hints.md`. Don't build until prod traffic shows recurring patterns.
+- **Expense / BillCredit routing** — v1 routes to bill_specialist only. Add `delegate_to_expense_specialist` / `delegate_to_bill_credit_specialist` to email_specialist's tools tuple if real data shows them often.
+- **`mark_email_outcome` agent_session_id wiring** — the endpoint accepts the param but the tool doesn't pass it. Means `EmailMessage.AgentSessionId` stays NULL even when an agent successfully processes the email. Linkage is recoverable via the `AgentSession.UserMessage` text which contains the email's public_id, but a dedicated FK would be cleaner.
+- **Stale-`processing` recovery** — if an agent run crashes mid-way and never calls `mark_email_outcome`, the EmailMessage row is stuck in `processing`. Today: manual recovery via SQL UPDATE. Should add a stale-sweep similar to `BillFolderRunItem.auto_fail_stale`.
+- **Outlook category stamp on local dev** — `ALLOW_MS_WRITES` is intentionally not `true` in local `.env`, so the Graph PATCH refuses with a 500 from the integration layer (`MS write refused`). DB-side state still updates correctly. In prod the stamp will land.

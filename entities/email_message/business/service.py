@@ -411,6 +411,76 @@ def _decimal_to_str(d: Optional[Decimal]) -> Optional[str]:
     return str(d) if d is not None else None
 
 
+class EmailAttachmentBridgeService:
+    """Bridges an EmailAttachment into an Attachment row.
+
+    The new Attachment shares the EmailAttachment's BlobUri (no blob copy),
+    so cost stays the same and there's only one canonical bytes location.
+    Bill creation requires `attachment_public_id`; the email agent calls
+    this bridge to obtain one before delegating to bill_specialist.
+
+    Hash-based dedup: re-bridging the same EmailAttachment (or a different
+    one whose blob has identical bytes) returns the existing Attachment
+    rather than creating a duplicate row.
+    """
+
+    def __init__(self):
+        self.attachment_repo = EmailAttachmentRepository()
+        self.storage = AzureBlobStorage()
+
+    def bridge(self, email_attachment_public_id: str):
+        # Lazy import — Attachment service has its own dependency tree
+        from entities.attachment.business.service import AttachmentService
+
+        ea = self.attachment_repo.read_by_public_id(email_attachment_public_id)
+        if not ea:
+            raise ValueError(f"EmailAttachment '{email_attachment_public_id}' not found")
+        if ea.is_inline:
+            raise ValueError("Inline attachments cannot be bridged (no blob)")
+        if not ea.blob_uri:
+            raise ValueError("EmailAttachment has no blob_uri — cannot bridge")
+
+        attachment_service = AttachmentService()
+
+        # Compute the hash from blob bytes for dedup. Downloading is the
+        # only authoritative way; we don't trust Graph-reported sizes.
+        content, metadata = self.storage.download_file(ea.blob_uri)
+        file_hash = attachment_service.calculate_hash(content)
+
+        existing = attachment_service.read_by_hash(file_hash)
+        if existing:
+            logger.info(
+                f"Bridge: attachment with hash {file_hash[:16]}... already exists "
+                f"({existing.public_id}); reusing"
+            )
+            return existing
+
+        # Resolve content type + extension
+        content_type = (
+            metadata.get("content_type")
+            or ea.content_type
+            or "application/octet-stream"
+        )
+        file_extension = attachment_service.extract_extension(ea.filename or "")
+
+        attachment = attachment_service.create(
+            filename=ea.filename,
+            original_filename=ea.filename,
+            file_extension=file_extension,
+            content_type=content_type,
+            file_size=len(content),
+            file_hash=file_hash,
+            blob_url=ea.blob_uri,
+            description=f"Bridged from EmailAttachment {ea.public_id}",
+            category="email_intake",
+            is_archived=False,
+        )
+        logger.info(
+            f"Bridge: created Attachment {attachment.public_id} from EmailAttachment {ea.public_id}"
+        )
+        return attachment
+
+
 def _normalize_datetime(raw: Optional[str]) -> Optional[str]:
     """Graph returns ISO 8601 like '2026-04-26T15:00:00Z'. Trim to the
     DATETIME2(3) friendly format expected by the sproc.

@@ -93,7 +93,8 @@ CREATE OR ALTER PROCEDURE CreateBill
     @Memo NVARCHAR(MAX) = NULL,
     @IsDraft BIT = 1,
     @IntakeSource NVARCHAR(20) = NULL,
-    @IntakeSourceDetail NVARCHAR(100) = NULL
+    @IntakeSourceDetail NVARCHAR(100) = NULL,
+    @SourceEmailMessageId BIGINT = NULL
 )
 AS
 BEGIN
@@ -101,7 +102,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Bill] ([CreatedDatetime], [ModifiedDatetime], [VendorId], [PaymentTermId], [BillDate], [DueDate], [BillNumber], [TotalAmount], [Memo], [IsDraft], [IntakeSource], [IntakeSourceDetail])
+    INSERT INTO dbo.[Bill] ([CreatedDatetime], [ModifiedDatetime], [VendorId], [PaymentTermId], [BillDate], [DueDate], [BillNumber], [TotalAmount], [Memo], [IsDraft], [IntakeSource], [IntakeSourceDetail], [SourceEmailMessageId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -117,8 +118,9 @@ BEGIN
         INSERTED.[Memo],
         INSERTED.[IsDraft],
         INSERTED.[IntakeSource],
-        INSERTED.[IntakeSourceDetail]
-    VALUES (@Now, @Now, @VendorId, @PaymentTermId, @BillDate, @DueDate, @BillNumber, @TotalAmount, @Memo, @IsDraft, @IntakeSource, @IntakeSourceDetail);
+        INSERTED.[IntakeSourceDetail],
+        INSERTED.[SourceEmailMessageId]
+    VALUES (@Now, @Now, @VendorId, @PaymentTermId, @BillDate, @DueDate, @BillNumber, @TotalAmount, @Memo, @IsDraft, @IntakeSource, @IntakeSourceDetail, @SourceEmailMessageId);
 
     COMMIT TRANSACTION;
 END;

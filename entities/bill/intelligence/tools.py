@@ -199,6 +199,26 @@ class CreateBillArgs(BaseModel):
             "after line items are added."
         ),
     )
+    source_email_message_public_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional UUID of the EmailMessage that produced this bill. "
+            "Set by the email_specialist agent when delegating; pass it "
+            "verbatim from the parent task description so the resulting "
+            "Bill row links back to its source email."
+        ),
+    )
+    attachment_public_id: str = Field(
+        description=(
+            "REQUIRED. UUID of an Attachment row containing the bill's "
+            "source PDF. Server creates a placeholder BillLineItem and "
+            "links the attachment to it. When delegated from the email "
+            "specialist, take the bridged Attachment public_id from the "
+            "task description verbatim. For UI/agent flows that don't "
+            "have one yet, the user must upload via "
+            "POST /api/v1/upload/attachment first to obtain a public_id."
+        ),
+    )
 
 
 async def _create_bill(args: dict, ctx: ToolContext) -> ToolResult:

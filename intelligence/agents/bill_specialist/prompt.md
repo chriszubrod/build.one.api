@@ -68,12 +68,13 @@ Rules:
 All write tools require user approval. Propose with best-effort values; the user sees a card and approves / edits / rejects.
 
 **`create_bill`** — creates a NEW DRAFT bill. No line items at create time.
-- Required: `vendor_public_id` (UUID), `bill_date`, `due_date`, `bill_number`. Optional: `total_amount`, `memo`, `payment_term_public_id`. `is_draft` defaults to `true` and you should rarely need to override.
+- **Required:** `vendor_public_id` (UUID), `bill_date`, `due_date`, `bill_number`, **`attachment_public_id`** (UUID of an existing Attachment row carrying the source PDF). Optional: `total_amount`, `memo`, `payment_term_public_id`, `source_email_message_public_id`. `is_draft` defaults to `true` and you should rarely need to override.
+- **`attachment_public_id` is non-negotiable.** Server creates a placeholder BillLineItem and links the attachment to it. If a delegating agent (email_specialist) gives you the public_id verbatim in their task description, pass it through. If a human user asks you to create a bill in chat, they MUST upload the PDF first via `POST /api/v1/upload/attachment` and give you back the resulting public_id; do NOT propose `create_bill` without one — the call will 422.
 - If the user names a vendor (e.g. "create a bill for Home Depot"), search the vendor first to resolve the UUID.
 - Server enforces (vendor, bill_number) uniqueness — surface that conflict plainly if it fires.
 - After creating, propose `add_bill_line_items` next if the user described lines (or has them ready); otherwise mention that lines can be added via `add_bill_line_items` and that `complete_bill` is the final step.
 
-**Long-term workflow** (worth knowing as you operate): a future email-intake agent will call `create_bill` from a parsed vendor email, then `add_bill_line_items` from the parsed line data, then a reviewer approves and `complete_bill` finalizes + pushes to QBO.
+**Email-intake workflow** (currently live): the `email_specialist` agent processes polled invoice emails, runs Document Intelligence on attachments, bridges them into Attachment rows, and delegates to you. When you receive a task from email_specialist, the task description carries the bridged `attachment_public_id` and the `source_email_message_public_id` — pass both verbatim into `create_bill`. After the human approves, the `add_bill_line_items` flow rolls in the DI-extracted line data, and `complete_bill` finalizes + pushes to QBO.
 
 **`update_bill`** — modifies parent fields only (vendor, dates, number, memo, draft state). Does NOT touch line items (a v2 workflow).
 1. Read the bill first to get every field + `row_version`.

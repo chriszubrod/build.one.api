@@ -218,6 +218,101 @@ async def email_extract_router(attachment_public_id: str = Path(...)):
     return await _timed("email.extract", _run)
 
 
+@router.post("/email/process_one", dependencies=[Depends(_require_drain_secret)])
+async def email_process_one_router():
+    """
+    Claim the oldest pending EmailMessage and kick off an
+    `email_specialist` agent run on it. Returns immediately — the agent
+    runs in the background and stamps the outcome via mark_email_outcome
+    when it finishes.
+
+    Returns `{processed: false}` when the queue is empty so the
+    scheduler's inner-drain loop knows to stop. Idempotent — the
+    underlying claim sproc uses UPDLOCK + READPAST so concurrent ticks
+    can't claim the same row.
+    """
+    import asyncio as _asyncio
+
+    started = time.monotonic()
+
+    # Lazy imports — avoid pulling the agent registry into the FastAPI
+    # boot path unnecessarily.
+    from entities.email_message.business.service import EmailMessageService
+    from intelligence.api.background import start_run
+    from shared.database import get_connection
+
+    # 1. Atomically claim the next pending email.
+    service = EmailMessageService()
+    email = await _asyncio.to_thread(service.claim_next_pending)
+    if not email:
+        return {
+            "status": "ok",
+            "job": "email.process_one",
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "result": {"processed": False},
+        }
+
+    # 2. Resolve the email_agent User.Id so the AgentSession is owned by
+    #    the correct agent identity.
+    def _resolve_email_agent_user_id() -> Optional[int]:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT u.Id FROM dbo.[User] u "
+                "JOIN dbo.Auth a ON a.UserId = u.Id "
+                "WHERE a.Username = 'email_agent'"
+            )
+            row = cur.fetchone()
+            return row.Id if row else None
+
+    email_agent_user_id = await _asyncio.to_thread(_resolve_email_agent_user_id)
+    if email_agent_user_id is None:
+        # Roll the email back to 'pending' so the next tick can retry.
+        await _asyncio.to_thread(
+            service.update_status,
+            id=email.id,
+            processing_status="pending",
+            last_error="email_agent user not provisioned",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="email_agent user not provisioned — run seed.email_agent.sql",
+        )
+
+    # 3. Build the user_message and kick off the run. The agent's prompt
+    #    teaches it to take the EmailMessage public_id from this seed
+    #    message and drive the rest from there.
+    user_message = (
+        f"Process polled EmailMessage public_id={email.public_id}\n\n"
+        f"From: {email.from_address}\n"
+        f"Subject: {email.subject!r}\n"
+        f"Has attachments: {email.has_attachments}\n"
+    )
+
+    session_public_id = await start_run(
+        agent_name="email_specialist",
+        user_message=user_message,
+        requesting_user_id=email_agent_user_id,
+    )
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+    logger.info(
+        "admin.email.process_one.kicked_off email=%s session=%s duration_ms=%d",
+        email.public_id, session_public_id, duration_ms,
+    )
+
+    return {
+        "status": "ok",
+        "job": "email.process_one",
+        "duration_ms": duration_ms,
+        "result": {
+            "processed": True,
+            "email_public_id": email.public_id,
+            "agent_session_public_id": session_public_id,
+        },
+    }
+
+
 # --- Bill folder processing -- one file per tick --------------------------- #
 
 

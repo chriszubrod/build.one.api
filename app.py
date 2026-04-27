@@ -74,6 +74,9 @@ from shared.api.admin import router as scheduler_admin_api_router
 # Intelligence layer — import scout's package to register agent + tools, then
 # include its HTTP router for the SSE/run endpoints.
 import intelligence.agents.scout  # noqa: F401 — triggers registration of scout + sub-agents
+# email_specialist is system-triggered (not under scout), so import it
+# explicitly to register the agent + its delegation/tool surface.
+import intelligence.agents.email_specialist  # noqa: F401
 from intelligence.api.router import router as intelligence_api_router
 
 from integrations.intuit.qbo.auth.api.router import router as intuit_qbo_auth_api_router

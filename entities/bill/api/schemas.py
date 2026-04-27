@@ -38,6 +38,22 @@ class BillCreate(BaseModel):
         default=True,
         description="Whether the bill is a draft."
     )
+    attachment_public_id: str = Field(
+        description=(
+            "REQUIRED. UUID of an Attachment row (must be a PDF) that the "
+            "client uploaded via POST /api/v1/upload/attachment. Server "
+            "creates a placeholder BillLineItem and links the attachment "
+            "to it. Universal rule — agents and scripts must satisfy too."
+        )
+    )
+    source_email_message_public_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional UUID of the EmailMessage that produced this bill. "
+            "Set by the email-agent pipeline so we can trace any draft "
+            "back to its source email. Manual creators leave this blank."
+        )
+    )
 
 
 class BillUpdate(BaseModel):

@@ -74,6 +74,8 @@ async def create_bill_router(
             "user_id": user_id,
             "intake_source": intake_source,
             "intake_source_detail": intake_source_detail,
+            "source_email_message_public_id": body.source_email_message_public_id,
+            "attachment_public_id": body.attachment_public_id,
         },
         workflow_type="bill_create",
     )

@@ -186,7 +186,7 @@ class BillService:
             self._attachable_attachment_connector = AttachableAttachmentConnector()
         return self._attachable_attachment_connector
 
-    def create(self, *, tenant_id: int = 1, user_id: Optional[int] = None, vendor_public_id: Optional[str] = None, payment_term_public_id: Optional[str] = None, bill_date: str, due_date: str, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, intake_source: Optional[str] = None, intake_source_detail: Optional[str] = None) -> Bill:
+    def create(self, *, tenant_id: int = 1, user_id: Optional[int] = None, vendor_public_id: Optional[str] = None, payment_term_public_id: Optional[str] = None, bill_date: str, due_date: str, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, intake_source: Optional[str] = None, intake_source_detail: Optional[str] = None, source_email_message_public_id: Optional[str] = None, attachment_public_id: Optional[str] = None) -> Bill:
         """
         Create a new bill.
 
@@ -208,7 +208,24 @@ class BillService:
                            from the JWT username; scripts pass explicitly.
             intake_source_detail: Specific actor — username, agent name, or
                                    script name. Disambiguates within a source.
+            attachment_public_id: REQUIRED (universal rule). UUID of an Attachment
+                                   row that was uploaded ahead of this call. Must
+                                   be application/pdf. The server creates a
+                                   placeholder BillLineItem and links the
+                                   attachment to it via BillLineItemAttachment.
         """
+        # Universal rule: every Bill must have a PDF attachment from the moment
+        # of creation. Validate up front — fail fast before touching any DB.
+        if not attachment_public_id:
+            raise ValueError("Attachment is required. Upload a PDF first and pass attachment_public_id.")
+        attachment = self.attachment_service.read_by_public_id(public_id=attachment_public_id)
+        if not attachment:
+            raise ValueError(f"Attachment with public_id '{attachment_public_id}' not found.")
+        if attachment.content_type != "application/pdf":
+            raise ValueError(
+                f"Attachment must be application/pdf; got '{attachment.content_type}'."
+            )
+
         if not bill_date:
             raise ValueError("Bill date is required.")
         if not due_date:
@@ -245,7 +262,16 @@ class BillService:
             existing = self.repo.read_by_bill_number_and_vendor_id(bill_number=bill_number, vendor_id=vendor_id, bill_date=bill_date)
             if existing:
                 raise ValueError(f"A bill with BillNumber '{bill_number}' and this date already exists for this vendor. Please update the existing bill instead of creating a new one.")
-        
+
+        # Resolve source EmailMessage UUID → BIGINT for the FK column.
+        source_email_message_id = None
+        if source_email_message_public_id:
+            from entities.email_message.business.service import EmailMessageService
+            source_email = EmailMessageService().read_by_public_id(public_id=source_email_message_public_id)
+            if not source_email:
+                raise ValueError(f"EmailMessage with public_id '{source_email_message_public_id}' not found.")
+            source_email_message_id = source_email.id
+
         bill = self.repo.create(
             tenant_id=tenant_id,
             vendor_id=vendor_id,
@@ -258,7 +284,40 @@ class BillService:
             is_draft=is_draft,
             intake_source=intake_source,
             intake_source_detail=intake_source_detail,
+            source_email_message_id=source_email_message_id,
         )
+
+        # Universal-PDF rule: the Bill is meaningless without its attachment,
+        # so every newly-created bill carries one. The attachment hangs off a
+        # placeholder BillLineItem created here. The user fills in its fields
+        # (description, sub-cost-code, qty, rate, etc.) on the Edit page or
+        # adds more line items alongside it. If either of these inserts fails
+        # we roll back the bill — having a Bill row without its required
+        # attachment violates the invariant.
+        try:
+            placeholder_line_item = self.bill_line_item_service.create(
+                tenant_id=tenant_id,
+                bill_public_id=bill.public_id,
+                is_billable=True,
+            )
+            self.bill_line_item_attachment_service.create(
+                tenant_id=tenant_id,
+                bill_line_item_public_id=placeholder_line_item.public_id,
+                attachment_public_id=attachment_public_id,
+            )
+        except Exception as attach_error:
+            logger.exception(
+                "Failed to attach PDF to new bill %s; rolling back the bill row.",
+                bill.public_id,
+            )
+            try:
+                self.repo.delete_by_id(id=bill.id)
+            except Exception:
+                logger.exception(
+                    "Best-effort rollback of bill %s also failed; manual cleanup may be required.",
+                    bill.public_id,
+                )
+            raise ValueError(f"Failed to attach PDF to new bill: {attach_error}")
 
         # Auto-Submit hook. Creating a draft bill IS submitting it for review,
         # so write a Review row at status=Submitted. Skipped when:

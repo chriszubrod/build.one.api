@@ -24,6 +24,8 @@ class Bill:
     total_amount: Optional[Decimal]
     memo: Optional[str]
     is_draft: Optional[bool]
+    intake_source: Optional[str] = None        # "manual" | "agent" | "script" — set-once at create
+    intake_source_detail: Optional[str] = None  # username / agent name / script name
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

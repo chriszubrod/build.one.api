@@ -62,6 +62,8 @@ class BillRepository:
                 total_amount=Decimal(str(getattr(row, "TotalAmount", None))) if getattr(row, "TotalAmount", None) is not None else None,
                 memo=getattr(row, "Memo", None),
                 is_draft=bool(getattr(row, "IsDraft", False)) if getattr(row, "IsDraft", None) is not None else None,
+                intake_source=getattr(row, "IntakeSource", None),
+                intake_source_detail=getattr(row, "IntakeSourceDetail", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during bill mapping: {error}")
@@ -70,10 +72,10 @@ class BillRepository:
             logger.error(f"Unexpected error during bill mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, vendor_id: Optional[int] = None, payment_term_id: Optional[int] = None, bill_date: Optional[str] = None, due_date: Optional[str] = None, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True) -> Bill:
+    def create(self, *, tenant_id: int = 1, vendor_id: Optional[int] = None, payment_term_id: Optional[int] = None, bill_date: Optional[str] = None, due_date: Optional[str] = None, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, intake_source: Optional[str] = None, intake_source_detail: Optional[str] = None) -> Bill:
         """
         Create a new bill.
-        
+
         Args:
             tenant_id: Tenant ID for multi-tenant isolation (logged for audit, not yet used for filtering)
             vendor_id: Vendor ID
@@ -84,6 +86,8 @@ class BillRepository:
             total_amount: Total amount
             memo: Memo
             is_draft: Whether bill is in draft state
+            intake_source: How this bill arrived ('manual' | 'agent' | 'script'). Set-once.
+            intake_source_detail: Specific actor — username, agent name, or script name.
         """
         try:
             with get_connection() as conn:
@@ -102,6 +106,8 @@ class BillRepository:
                         "TotalAmount": Decimal(str(total_amount)) if total_amount is not None else None,
                         "Memo": memo,
                         "IsDraft": 1 if is_draft else 0,
+                        "IntakeSource": intake_source,
+                        "IntakeSourceDetail": intake_source_detail,
                     },
                 )
                 row = cursor.fetchone()

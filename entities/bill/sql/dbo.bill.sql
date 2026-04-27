@@ -15,9 +15,28 @@ CREATE TABLE [dbo].[Bill]
     [TotalAmount] DECIMAL(18,2) NULL,
     [Memo] NVARCHAR(MAX) NULL,
     [IsDraft] BIT NOT NULL DEFAULT 1,
+    [IntakeSource] NVARCHAR(20) NULL,
+    [IntakeSourceDetail] NVARCHAR(100) NULL,
     CONSTRAINT [FK_Bill_Vendor] FOREIGN KEY ([VendorId]) REFERENCES [dbo].[Vendor]([Id]),
     CONSTRAINT [FK_Bill_PaymentTerm] FOREIGN KEY ([PaymentTermId]) REFERENCES [dbo].[PaymentTerm]([Id])
 );
+END
+GO
+
+-- Additive: IntakeSource + IntakeSourceDetail capture how a bill arrived
+-- (manual UI / agent / script). Set-once at create. Pre-existing rows
+-- stay NULL.
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'IntakeSource')
+BEGIN
+    ALTER TABLE [dbo].[Bill] ADD [IntakeSource] NVARCHAR(20) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'IntakeSourceDetail')
+BEGIN
+    ALTER TABLE [dbo].[Bill] ADD [IntakeSourceDetail] NVARCHAR(100) NULL;
 END
 GO
 
@@ -72,7 +91,9 @@ CREATE OR ALTER PROCEDURE CreateBill
     @BillNumber NVARCHAR(50) = NULL,
     @TotalAmount DECIMAL(18,2) = NULL,
     @Memo NVARCHAR(MAX) = NULL,
-    @IsDraft BIT = 1
+    @IsDraft BIT = 1,
+    @IntakeSource NVARCHAR(20) = NULL,
+    @IntakeSourceDetail NVARCHAR(100) = NULL
 )
 AS
 BEGIN
@@ -80,7 +101,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Bill] ([CreatedDatetime], [ModifiedDatetime], [VendorId], [PaymentTermId], [BillDate], [DueDate], [BillNumber], [TotalAmount], [Memo], [IsDraft])
+    INSERT INTO dbo.[Bill] ([CreatedDatetime], [ModifiedDatetime], [VendorId], [PaymentTermId], [BillDate], [DueDate], [BillNumber], [TotalAmount], [Memo], [IsDraft], [IntakeSource], [IntakeSourceDetail])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -94,8 +115,10 @@ BEGIN
         INSERTED.[BillNumber],
         INSERTED.[TotalAmount],
         INSERTED.[Memo],
-        INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @VendorId, @PaymentTermId, @BillDate, @DueDate, @BillNumber, @TotalAmount, @Memo, @IsDraft);
+        INSERTED.[IsDraft],
+        INSERTED.[IntakeSource],
+        INSERTED.[IntakeSourceDetail]
+    VALUES (@Now, @Now, @VendorId, @PaymentTermId, @BillDate, @DueDate, @BillNumber, @TotalAmount, @Memo, @IsDraft, @IntakeSource, @IntakeSourceDetail);
 
     COMMIT TRANSACTION;
 END;
@@ -123,7 +146,9 @@ BEGIN
         [BillNumber],
         [TotalAmount],
         [Memo],
-        [IsDraft]
+        [IsDraft],
+        [IntakeSource],
+        [IntakeSourceDetail]
     FROM dbo.[Bill]
     ORDER BY [BillDate] DESC, [BillNumber] ASC;
 
@@ -159,7 +184,9 @@ BEGIN
         [BillNumber],
         [TotalAmount],
         [Memo],
-        [IsDraft]
+        [IsDraft],
+        [IntakeSource],
+        [IntakeSourceDetail]
     FROM dbo.[Bill]
     WHERE [Id] = @Id;
 
@@ -193,7 +220,9 @@ BEGIN
         [BillNumber],
         [TotalAmount],
         [Memo],
-        [IsDraft]
+        [IsDraft],
+        [IntakeSource],
+        [IntakeSourceDetail]
     FROM dbo.[Bill]
     WHERE [PublicId] = @PublicId;
 
@@ -225,7 +254,9 @@ BEGIN
         [BillNumber],
         [TotalAmount],
         [Memo],
-        [IsDraft]
+        [IsDraft],
+        [IntakeSource],
+        [IntakeSourceDetail]
     FROM dbo.[Bill]
     WHERE [BillNumber] = @BillNumber;
 
@@ -264,7 +295,9 @@ BEGIN
         [BillNumber],
         [TotalAmount],
         [Memo],
-        [IsDraft]
+        [IsDraft],
+        [IntakeSource],
+        [IntakeSourceDetail]
     FROM dbo.[Bill]
     WHERE [BillNumber] = @BillNumber
       AND [VendorId] = @VendorId
@@ -299,6 +332,8 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
+    -- IntakeSource / IntakeSourceDetail are set-once at create. The UPDATE
+    -- statement deliberately omits them so existing values are preserved.
     UPDATE dbo.[Bill]
     SET
         [ModifiedDatetime] = @Now,
@@ -323,7 +358,9 @@ BEGIN
         INSERTED.[BillNumber],
         INSERTED.[TotalAmount],
         INSERTED.[Memo],
-        INSERTED.[IsDraft]
+        INSERTED.[IsDraft],
+        INSERTED.[IntakeSource],
+        INSERTED.[IntakeSourceDetail]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -357,7 +394,9 @@ BEGIN
         DELETED.[BillNumber],
         DELETED.[TotalAmount],
         DELETED.[Memo],
-        DELETED.[IsDraft]
+        DELETED.[IsDraft],
+        DELETED.[IntakeSource],
+        DELETED.[IntakeSourceDetail]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
@@ -416,11 +455,13 @@ BEGIN
         b.[BillNumber],
         b.[TotalAmount],
         b.[Memo],
-        b.[IsDraft]
+        b.[IsDraft],
+        b.[IntakeSource],
+        b.[IntakeSourceDetail]
     FROM dbo.[Bill] b
     LEFT JOIN dbo.[Vendor] v ON b.[VendorId] = v.[Id]
     WHERE
-        (@SearchTerm IS NULL OR 
+        (@SearchTerm IS NULL OR
          b.[BillNumber] LIKE '%' + @SearchTerm + '%' OR
          b.[Memo] LIKE '%' + @SearchTerm + '%' OR
          v.[Name] LIKE '%' + @SearchTerm + '%' OR

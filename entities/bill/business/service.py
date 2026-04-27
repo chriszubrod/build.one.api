@@ -186,7 +186,7 @@ class BillService:
             self._attachable_attachment_connector = AttachableAttachmentConnector()
         return self._attachable_attachment_connector
 
-    def create(self, *, tenant_id: int = 1, user_id: Optional[int] = None, vendor_public_id: Optional[str] = None, payment_term_public_id: Optional[str] = None, bill_date: str, due_date: str, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True) -> Bill:
+    def create(self, *, tenant_id: int = 1, user_id: Optional[int] = None, vendor_public_id: Optional[str] = None, payment_term_public_id: Optional[str] = None, bill_date: str, due_date: str, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, intake_source: Optional[str] = None, intake_source_detail: Optional[str] = None) -> Bill:
         """
         Create a new bill.
 
@@ -203,6 +203,11 @@ class BillService:
             total_amount: Total amount (optional)
             memo: Memo (optional)
             is_draft: Whether bill is in draft state
+            intake_source: How this bill arrived. One of 'manual' | 'agent' |
+                           'script'. Set-once at create. Routers compute this
+                           from the JWT username; scripts pass explicitly.
+            intake_source_detail: Specific actor — username, agent name, or
+                                   script name. Disambiguates within a source.
         """
         if not bill_date:
             raise ValueError("Bill date is required.")
@@ -251,6 +256,8 @@ class BillService:
             total_amount=total_amount,
             memo=memo,
             is_draft=is_draft,
+            intake_source=intake_source,
+            intake_source_detail=intake_source_detail,
         )
 
         # Auto-Submit hook. Creating a draft bill IS submitting it for review,

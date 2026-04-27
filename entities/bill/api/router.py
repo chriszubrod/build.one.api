@@ -49,6 +49,14 @@ async def create_bill_router(
     is_draft = body.is_draft if body.is_draft is not None else True
     user_id = resolve_user_id(current_user)
 
+    # Derive intake source from the caller's username. Agent users are
+    # provisioned with usernames ending in "_agent" (per the agent-as-user
+    # convention); everyone else is treated as a manual UI/API caller.
+    # Scripts that bypass this router pass intake_source explicitly.
+    username = current_user.get("username") or ""
+    intake_source = "agent" if username.endswith("_agent") else "manual"
+    intake_source_detail = username or None
+
     context = TriggerContext(
         trigger_type=EventType.API_CALL,
         trigger_source=Channel.API,
@@ -64,6 +72,8 @@ async def create_bill_router(
             "memo": body.memo,
             "is_draft": is_draft,
             "user_id": user_id,
+            "intake_source": intake_source,
+            "intake_source_detail": intake_source_detail,
         },
         workflow_type="bill_create",
     )

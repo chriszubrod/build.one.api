@@ -45,6 +45,7 @@ from entities.taxpayer.api.router import router as taxpayer_api_router
 from entities.role_module.api.router import router as role_module_api_router
 from entities.user_module.api.router import router as user_module_api_router
 from entities.contact.api.router import router as contact_api_router
+from entities.device_token.api.router import router as device_token_api_router
 from entities.dashboard.api.router import router as dashboard_api_router
 from entities.attachment.api.router import router as attachment_api_router
 from entities.bill.api.router import router as bill_api_router
@@ -162,6 +163,7 @@ app.include_router(role_api_router)
 app.include_router(user_role_api_router)
 app.include_router(user_project_api_router)
 app.include_router(contact_api_router)
+app.include_router(device_token_api_router)
 app.include_router(vendor_api_router)
 app.include_router(vendor_address_api_router)
 app.include_router(intuit_qbo_auth_api_router)

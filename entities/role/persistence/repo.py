@@ -90,6 +90,24 @@ class RoleRepository:
             logger.error(f"Error during read all roles: {error}")
             raise map_database_error(error)
 
+    def read_by_user_id(self, user_id: int) -> list[Role]:
+        """
+        Read roles the user is assigned to (joined through dbo.UserRole).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadRolesByUserId",
+                    params={"UserId": user_id},
+                )
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(f"Error during read roles by user_id: {error}")
+            raise map_database_error(error)
+
     def read_by_id(self, id: int) -> Optional[Role]:
         """
         Read a role by ID.

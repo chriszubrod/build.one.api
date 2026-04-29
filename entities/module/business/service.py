@@ -30,6 +30,13 @@ class ModuleService:
         """
         return self.repo.read_all()
 
+    def read_by_user_id(self, user_id: int) -> list[Module]:
+        """
+        Read modules the user has access to, transitively via
+        UserRole -> Role -> RoleModule -> Module.
+        """
+        return self.repo.read_by_user_id(user_id=user_id)
+
     def read_by_id(self, id: str) -> Optional[Module]:
         """
         Read a module by ID.

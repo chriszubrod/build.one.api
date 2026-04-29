@@ -4,6 +4,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
+from entities.auth.business.service import get_current_user_api
 from entities.role.api.schemas import RoleCreate, RoleUpdate
 from entities.role.business.service import RoleService
 from shared.rbac import require_module_api
@@ -46,6 +47,23 @@ def get_roles_router(current_user: dict = Depends(require_module_api(Modules.ROL
     Read all roles.
     """
     roles = RoleService().read_all()
+    return list_response([role.to_dict() for role in roles])
+
+
+@router.get("/get/roles/user/{user_id}")
+def get_roles_by_user_id_router(
+    user_id: int,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """
+    Read roles assigned to the user via dbo.UserRole.
+
+    Auth-only (no module RBAC) — any authenticated user can read role
+    assignments for any user_id. The iOS app uses this to read its own
+    roles to drive tab visibility, which a field worker without the
+    Roles module permission needs to be able to do.
+    """
+    roles = RoleService().read_by_user_id(user_id=user_id)
     return list_response([role.to_dict() for role in roles])
 
 

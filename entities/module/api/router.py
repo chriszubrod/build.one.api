@@ -4,6 +4,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
+from entities.auth.business.service import get_current_user_api
 from entities.module.api.schemas import ModuleCreate, ModuleUpdate
 from entities.module.business.service import ModuleService
 from shared.rbac import require_module_api
@@ -39,6 +40,23 @@ def create_module_router(body: ModuleCreate, current_user: dict = Depends(requir
         raise_workflow_error(result.get("error", ""), "Failed to create module")
     
     return item_response(result.get("data"))
+
+
+@router.get("/get/modules/user/{user_id}")
+def get_modules_by_user_id_router(
+    user_id: int,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """
+    Read modules the user has access to, transitively via
+    UserRole -> Role -> RoleModule -> Module.
+
+    Auth-only (no module RBAC) — the iOS app uses this to know what
+    tabs to render, which a field worker without the Modules permission
+    needs to be able to do.
+    """
+    modules = ModuleService().read_by_user_id(user_id=user_id)
+    return list_response([module.to_dict() for module in modules])
 
 
 @router.get("/get/modules")

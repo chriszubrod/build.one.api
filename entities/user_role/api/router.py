@@ -4,6 +4,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
+from entities.auth.business.service import get_current_user_api
 from entities.user_role.api.schemas import UserRoleCreate, UserRoleUpdate
 from entities.user_role.business.service import UserRoleService
 from shared.profile_events import publish_profile_changed
@@ -42,6 +43,23 @@ def create_user_role_router(body: UserRoleCreate, current_user: dict = Depends(r
     invalidate_all_caches()
     publish_profile_changed(body.user_id)
     return item_response(result.get("data"))
+
+
+@router.get("/get/user_roles/user/{user_id}")
+def get_user_roles_by_user_id_router(
+    user_id: int,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """
+    Read all UserRole rows for the user.
+
+    Auth-only (no module RBAC) — iOS uses this to populate CDUserRole so
+    RoleModuleService.currentUserRoleIds can determine the user's roles
+    for permission checks. A field worker without the Roles module
+    permission still needs to read their own role assignments.
+    """
+    user_roles = UserRoleService().read_all_by_user_id(user_id=user_id)
+    return list_response([user_role.to_dict() for user_role in user_roles])
 
 
 @router.get("/get/user_roles")

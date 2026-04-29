@@ -108,6 +108,24 @@ class ProjectRepository:
             logger.error(f"Error during read all projects: {error}")
             raise map_database_error(error)
 
+    def read_by_user_id(self, user_id: int) -> list[Project]:
+        """
+        Read projects the user has access to (joined through dbo.UserProject).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadProjectsByUserId",
+                    params={"UserId": user_id},
+                )
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(f"Error during read projects by user_id: {error}")
+            raise map_database_error(error)
+
     def read_by_id(self, id: int) -> Optional[Project]:
         """
         Read a project by ID.

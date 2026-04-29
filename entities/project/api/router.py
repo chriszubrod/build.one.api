@@ -5,6 +5,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
+from entities.auth.business.service import get_current_user_api
 from entities.project.api.schemas import ProjectCreate, ProjectUpdate
 from entities.project.business.service import ProjectService
 from entities.customer.business.service import CustomerService
@@ -67,6 +68,22 @@ async def get_projects_router(current_user: dict = Depends(require_module_api(Mo
     Read all projects.
     """
     projects = await asyncio.to_thread(ProjectService().read_all)
+    return list_response([project.to_dict() for project in projects])
+
+
+@router.get("/get/projects/user/{user_id}")
+async def get_projects_by_user_id_router(
+    user_id: int,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """
+    Read projects the user has access to, joined through dbo.UserProject.
+
+    Auth-only (no module RBAC) — a field worker who only has the Time
+    Tracking module permission still needs to read their assigned
+    projects to populate the Clock-In project picker.
+    """
+    projects = await asyncio.to_thread(ProjectService().read_by_user_id, user_id=user_id)
     return list_response([project.to_dict() for project in projects])
 
 

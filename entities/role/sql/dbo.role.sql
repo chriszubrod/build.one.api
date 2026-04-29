@@ -200,3 +200,31 @@ BEGIN
 END
 GO
 
+
+-- User-scoped read: returns Role records assigned to the user via
+-- dbo.UserRole. Used by iOS so it doesn't fetch every Role in the
+-- system just to find which ones the current user holds.
+CREATE OR ALTER PROCEDURE ReadRolesByUserId
+(
+    @UserId BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT DISTINCT
+        r.[Id],
+        r.[PublicId],
+        r.[RowVersion],
+        CONVERT(VARCHAR(19), r.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), r.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        r.[Name]
+    FROM dbo.[Role] r
+    INNER JOIN dbo.[UserRole] ur ON ur.[RoleId] = r.[Id]
+    WHERE ur.[UserId] = @UserId
+    ORDER BY r.[Name] ASC;
+
+    COMMIT TRANSACTION;
+END;
+GO
+

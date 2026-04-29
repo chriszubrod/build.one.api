@@ -92,6 +92,25 @@ class ModuleRepository:
             logger.error(f"Error during read all modules: {error}")
             raise map_database_error(error)
 
+    def read_by_user_id(self, user_id: int) -> list[Module]:
+        """
+        Read modules the user has access to, transitively via
+        UserRole -> Role -> RoleModule -> Module.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadModulesByUserId",
+                    params={"UserId": user_id},
+                )
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(f"Error during read modules by user_id: {error}")
+            raise map_database_error(error)
+
     def read_by_id(self, id: int) -> Optional[Module]:
         """
         Read a module by ID.

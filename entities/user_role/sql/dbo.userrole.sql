@@ -252,3 +252,32 @@ BEGIN
     ALTER TABLE [dbo].[UserRole] ADD CONSTRAINT [UQ_UserRole_UserId_RoleId] UNIQUE ([UserId], [RoleId]);
 END
 GO
+
+
+-- Plural variant of ReadUserRoleByUserId. Returns ALL UserRole rows for
+-- a given user (multi-role users) rather than just the first. iOS uses
+-- this to populate CDUserRole so RoleModuleService.currentUserRoleIds
+-- knows the full set of roles the user holds.
+CREATE OR ALTER PROCEDURE ReadUserRolesByUserId
+(
+    @UserId BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [UserId],
+        [RoleId]
+    FROM dbo.[UserRole]
+    WHERE [UserId] = @UserId
+    ORDER BY [Id] ASC;
+
+    COMMIT TRANSACTION;
+END;
+GO

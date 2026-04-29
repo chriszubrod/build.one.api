@@ -253,3 +253,35 @@ BEGIN
     ADD Abbreviation NVARCHAR(20) NULL;
 END
 GO
+
+
+-- User-scoped read: returns Project records the user has access to,
+-- joined through dbo.UserProject. Used by iOS so the client doesn't
+-- have to fetch all projects and filter client-side.
+CREATE OR ALTER PROCEDURE ReadProjectsByUserId
+(
+    @UserId BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT DISTINCT
+        p.[Id],
+        p.[PublicId],
+        p.[RowVersion],
+        CONVERT(VARCHAR(19), p.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), p.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        p.[Name],
+        p.[Description],
+        p.[Status],
+        p.[CustomerId],
+        p.[Abbreviation]
+    FROM dbo.[Project] p
+    INNER JOIN dbo.[UserProject] up ON up.[ProjectId] = p.[Id]
+    WHERE up.[UserId] = @UserId
+    ORDER BY p.[Name] ASC;
+
+    COMMIT TRANSACTION;
+END;
+GO

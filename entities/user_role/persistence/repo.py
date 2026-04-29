@@ -146,6 +146,25 @@ class UserRoleRepository:
             logger.error(f"Error during read user role by user ID: {error}")
             raise map_database_error(error)
 
+    def read_all_by_user_id(self, user_id: int) -> list[UserRole]:
+        """
+        Read every UserRole row assigned to the user (multi-role support).
+        Returns all rows rather than the singular first match.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadUserRolesByUserId",
+                    params={"UserId": user_id},
+                )
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(f"Error during read all user roles by user ID: {error}")
+            raise map_database_error(error)
+
     def read_by_role_id(self, role_id: int) -> Optional[UserRole]:
         """
         Read a user role by role ID.

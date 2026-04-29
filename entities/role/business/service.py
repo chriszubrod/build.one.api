@@ -30,6 +30,12 @@ class RoleService:
         """
         return self.repo.read_all()
 
+    def read_by_user_id(self, user_id: int) -> list[Role]:
+        """
+        Read roles the user is assigned to (joined through dbo.UserRole).
+        """
+        return self.repo.read_by_user_id(user_id=user_id)
+
     def read_by_id(self, id: str) -> Optional[Role]:
         """
         Read a role by ID.

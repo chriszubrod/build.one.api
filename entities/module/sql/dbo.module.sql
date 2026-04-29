@@ -214,3 +214,36 @@ BEGIN
     CREATE INDEX [IX_Module_PublicId] ON [dbo].[Module] ([PublicId]);
 END
 GO
+
+
+-- User-scoped read: returns Module records the user has access to,
+-- transitively via dbo.UserRole -> dbo.Role -> dbo.RoleModule -> dbo.Module.
+-- A module is included if any of the user's roles holds any RoleModule
+-- grant on it (any of the seven permission flags). The iOS RoleModule
+-- service still controls per-permission gating; this just bounds the
+-- module catalog the user sees to what's potentially relevant.
+CREATE OR ALTER PROCEDURE ReadModulesByUserId
+(
+    @UserId BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT DISTINCT
+        m.[Id],
+        m.[PublicId],
+        m.[RowVersion],
+        CONVERT(VARCHAR(19), m.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), m.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        m.[Name],
+        m.[Route]
+    FROM dbo.[Module] m
+    INNER JOIN dbo.[RoleModule] rm ON rm.[ModuleId] = m.[Id]
+    INNER JOIN dbo.[UserRole] ur ON ur.[RoleId] = rm.[RoleId]
+    WHERE ur.[UserId] = @UserId
+    ORDER BY m.[Name] ASC;
+
+    COMMIT TRANSACTION;
+END;
+GO

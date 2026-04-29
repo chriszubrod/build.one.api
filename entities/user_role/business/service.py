@@ -48,6 +48,12 @@ class UserRoleService:
         """
         return self.repo.read_by_user_id(user_id)
 
+    def read_all_by_user_id(self, user_id: int) -> list[UserRole]:
+        """
+        Read every UserRole row assigned to the user (multi-role support).
+        """
+        return self.repo.read_all_by_user_id(user_id=user_id)
+
     def read_by_role_id(self, role_id: int) -> Optional[UserRole]:
         """
         Read a user role by role ID.

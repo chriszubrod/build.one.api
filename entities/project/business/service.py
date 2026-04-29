@@ -37,6 +37,12 @@ class ProjectService:
         """
         return self.repo.read_all()
 
+    def read_by_user_id(self, user_id: int) -> list[Project]:
+        """
+        Read projects the user has access to (joined through dbo.UserProject).
+        """
+        return self.repo.read_by_user_id(user_id=user_id)
+
     def read_by_id(self, id: int) -> Optional[Project]:
         """
         Read a project by ID.

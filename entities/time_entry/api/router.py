@@ -33,6 +33,21 @@ def _resolve_user_id(current_user: dict) -> int:
         raise ValueError("Could not resolve user from token.")
     return auth.user_id
 
+
+def _entry_dict_with_current_status(entry) -> dict:
+    """
+    Inject `current_status` into a TimeEntry's serialized dict by reading
+    the latest TimeEntryStatus row. The column doesn't exist on the
+    TimeEntry table itself — status lives in TimeEntryStatus history. Use
+    this everywhere a route returns a TimeEntry, otherwise iOS / web see
+    a null status and fall back to "draft", which silently strips the UI's
+    knowledge of the entry's actual lifecycle position.
+    """
+    d = entry.to_dict()
+    current = TimeEntryStatusService().repo.read_current(time_entry_id=entry.id)
+    d["current_status"] = current.status if current else "draft"
+    return d
+
 router = APIRouter(
     prefix="/api/v1/time-entries",
     tags=["api", "Time Tracking"],
@@ -111,20 +126,13 @@ def read_time_entries(
         start_date=start_date,
         end_date=end_date,
     )
-    # Inject current_status (computed from latest TimeEntryStatus row) into
-    # each entry — the column doesn't exist on the TimeEntry table itself
-    # but iOS / web both expect it on every list response. Without this the
-    # client falls back to "draft" and gates editing/submitting on stale data.
-    # N+1 lookup is acceptable for a typical week's-worth of entries; bump to
-    # a batched fetch if the list ever grows materially.
-    status_repo = TimeEntryStatusService().repo
-    data = []
-    for entry in results:
-        entry_dict = entry.to_dict()
-        current = status_repo.read_current(time_entry_id=entry.id)
-        entry_dict["current_status"] = current.status if current else "draft"
-        data.append(entry_dict)
-    return list_response(data=data, count=total_count)
+    # Inject current_status into every entry — see _entry_dict_with_current_status
+    # for the why. N+1 lookup is acceptable at typical list sizes; bump to a
+    # batched fetch if the list ever grows materially.
+    return list_response(
+        data=[_entry_dict_with_current_status(entry) for entry in results],
+        count=total_count,
+    )
 
 
 @router.get("/count")
@@ -251,7 +259,7 @@ def submit_time_entry(
     service = TimeEntryService()
     try:
         entry = service.submit(public_id=public_id, user_id=_resolve_user_id(current_user))
-        return item_response(entry.to_dict())
+        return item_response(_entry_dict_with_current_status(entry))
     except ValueError as e:
         raise_workflow_error(str(e), "Failed to submit time entry")
 
@@ -273,7 +281,7 @@ def approve_time_entry(
             user_id=_resolve_user_id(current_user),
             note=note,
         )
-        return item_response(entry.to_dict())
+        return item_response(_entry_dict_with_current_status(entry))
     except ValueError as e:
         raise_workflow_error(str(e), "Failed to approve time entry")
 
@@ -295,7 +303,7 @@ def reject_time_entry(
             user_id=_resolve_user_id(current_user),
             note=note,
         )
-        return item_response(entry.to_dict())
+        return item_response(_entry_dict_with_current_status(entry))
     except ValueError as e:
         raise_workflow_error(str(e), "Failed to reject time entry")
 

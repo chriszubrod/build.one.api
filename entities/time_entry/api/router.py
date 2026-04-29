@@ -111,10 +111,20 @@ def read_time_entries(
         start_date=start_date,
         end_date=end_date,
     )
-    return list_response(
-        data=[r.to_dict() for r in results],
-        count=total_count,
-    )
+    # Inject current_status (computed from latest TimeEntryStatus row) into
+    # each entry — the column doesn't exist on the TimeEntry table itself
+    # but iOS / web both expect it on every list response. Without this the
+    # client falls back to "draft" and gates editing/submitting on stale data.
+    # N+1 lookup is acceptable for a typical week's-worth of entries; bump to
+    # a batched fetch if the list ever grows materially.
+    status_repo = TimeEntryStatusService().repo
+    data = []
+    for entry in results:
+        entry_dict = entry.to_dict()
+        current = status_repo.read_current(time_entry_id=entry.id)
+        entry_dict["current_status"] = current.status if current else "draft"
+        data.append(entry_dict)
+    return list_response(data=data, count=total_count)
 
 
 @router.get("/count")

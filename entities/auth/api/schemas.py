@@ -35,3 +35,8 @@ class AuthRefreshRequest(BaseModel):
 
 class MobileRefreshRequest(BaseModel):
     refresh_token: str = Field(min_length=1, description="Refresh token (required for mobile clients)")
+
+
+class AdminSetCredentials(BaseModel):
+    username: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=8, max_length=255)

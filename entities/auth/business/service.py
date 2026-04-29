@@ -196,6 +196,46 @@ class AuthService:
         """
         return self.repo.read_by_username(username=username)
 
+    def read_by_user_id(self, *, user_id: int) -> Optional[Auth]:
+        """
+        Get the Auth row linked to the given UserId, if any.
+        """
+        return self.repo.read_by_user_id(user_id=user_id)
+
+    def set_credentials_for_user(self, *, user_public_id: str, username: str, password: str) -> Auth:
+        """
+        Admin: create-or-update the Auth row for a User. Sets username and
+        password. Validates password length (>= 8) and username uniqueness
+        across other Auth rows.
+        """
+        if not username or len(username.strip()) < 1:
+            raise ValueError("Username is required.")
+        username = username.strip()
+        if not password or len(password) < 8:
+            raise ValueError("Password must be at least 8 characters.")
+
+        user = UserService().read_by_public_id(public_id=user_public_id)
+        if not user:
+            raise ValueError(f"User with public ID {user_public_id} not found.")
+
+        existing_auth = self.repo.read_by_user_id(user_id=user.id)
+
+        # Username uniqueness — must not collide with another Auth row
+        username_owner = self.read_by_username(username=username)
+        if username_owner and (not existing_auth or username_owner.id != existing_auth.id):
+            raise ValueError("Username already exists.")
+
+        if existing_auth:
+            existing_auth.username = username
+            existing_auth.password_hash = _hash_password(password)
+            existing_auth.user_id = user.id
+            return self.repo.update_by_id(existing_auth)
+
+        # No Auth yet — create one and link to the user
+        new_auth = self.repo.create(username=username, password_hash=_hash_password(password))
+        new_auth.user_id = user.id
+        return self.repo.update_by_id(new_auth)
+
     def update_by_public_id(self, *, public_id: str, auth) -> Auth:
         _auth = self.read_by_public_id(public_id=public_id)
         if not _auth:

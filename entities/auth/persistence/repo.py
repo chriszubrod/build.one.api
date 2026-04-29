@@ -117,6 +117,22 @@ class AuthRepository:
             logger.error(f"Error during read auth by username: {error}")
             raise map_database_error(error)
 
+    def read_by_user_id(self, user_id: int) -> Optional[Auth]:
+        """Read the Auth row linked to the given UserId, if any."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadAuthByUserId",
+                    params={"UserId": user_id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read auth by user ID: {error}")
+            raise map_database_error(error)
+
     def update_by_id(self, auth: Auth) -> Optional[Auth]:
         """
         Update auth by ID with optimistic concurrency control.

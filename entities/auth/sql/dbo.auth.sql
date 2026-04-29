@@ -286,6 +286,32 @@ END;
 GO
 
 
+CREATE OR ALTER PROCEDURE dbo.ReadAuthByUserId
+(
+    @UserId BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+    SET NOCOUNT ON;
+
+    SELECT TOP 1
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [Username],
+        [PasswordHash],
+        [UserId]
+    FROM dbo.[Auth]
+    WHERE [UserId] = @UserId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
 
 
 

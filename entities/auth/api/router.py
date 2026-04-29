@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 # Local Imports
 from config import Settings
 from entities.auth.api.schemas import (
+    AdminSetCredentials,
     AuthCreate,
     AuthUpdate,
     AuthLogin,
@@ -35,7 +36,9 @@ from entities.user_module.business.service import UserModuleService
 from entities.user_project.business.service import UserProjectService
 from entities.user_role.business.service import UserRoleService
 from shared.api.responses import item_response, raise_not_found
-from shared.profile_events import profile_event_subscription
+from shared.profile_events import profile_event_subscription, publish_profile_changed
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +159,53 @@ def delete_auth_by_public_id_router(public_id: str, current_user: dict = Depends
         return item_response(auth.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/admin/auth/by-user/{user_public_id}")
+def admin_get_auth_by_user_public_id_router(
+    user_public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.USERS, "can_read")),
+):
+    """
+    Admin: read the credential summary for a user (username + has_auth).
+    Never returns the password hash.
+    """
+    user = UserService().read_by_public_id(public_id=user_public_id)
+    if not user:
+        raise_not_found("User")
+    auth = service.read_by_user_id(user_id=user.id)
+    if not auth:
+        return item_response({"username": None, "has_auth": False})
+    return item_response({"username": auth.username, "has_auth": True})
+
+
+@router.post("/admin/auth/set-credentials/{user_public_id}")
+def admin_set_credentials_router(
+    user_public_id: str,
+    body: AdminSetCredentials,
+    current_user: dict = Depends(require_module_api(Modules.USERS, "can_update")),
+):
+    """
+    Admin: create-or-update the Auth row (username + password) for a user.
+    """
+    try:
+        auth = service.set_credentials_for_user(
+            user_public_id=user_public_id,
+            username=body.username,
+            password=body.password,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    logger.info(
+        "admin set credentials: actor_sub=%s target_user_public_id=%s auth_public_id=%s",
+        current_user.get("sub"),
+        user_public_id,
+        auth.public_id,
+    )
+    if auth.user_id is not None:
+        publish_profile_changed(auth.user_id)
+    return item_response({"username": auth.username, "has_auth": True})
 
 
 @router.post("/auth/login")

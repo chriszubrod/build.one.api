@@ -1,5 +1,115 @@
 # Session Notes
 
+## Session: User entity UI — Profile page + 3 join entities + UserModule enforcement + admin credentials (April 29, 2026)
+
+### Overview
+Six-wave build turning `/user/:id` into a single "Profile" surface that combines identity, relationships, authz scoping, and credentials. Three new join entities (`UserOrganization`, `UserCompany`, `OrganizationCompany`) plus enforcement wiring for `UserModule` plus admin endpoints to set username/password. Each wave: plan-first → API → DB migration (paused for explicit approval per `feedback_prod_deploy_flow.md`) → web. All five DB migrations (4 new tables + 1 sproc append on `dbo.Auth`) ran clean against prod.
+
+### Wave 1 — UserProfile page shell (web only)
+- New `build.one.web/src/pages/users/UserProfile.tsx` replacing `UserView` + `UserEdit`. Sections: Profile basics, Contacts (existing `<InlineContacts>`, readOnly when not admin), placeholders for Organizations/Companies, Roles (relocated from old UserEdit), Modules (`UserModule` checkbox grid against all 25 modules from `/api/v1/get/modules`), Projects (`UserProject` table+dropdown). Admin gating from `useCurrentUser().is_admin`.
+- `App.tsx` routes `/user/:id` and `/user/:id/edit` both render `UserProfile` (kept the `/edit` alias to avoid 404s on old links). `UserView.tsx` + `UserEdit.tsx` deleted.
+
+### Wave 2 — `UserOrganization` entity
+- Standard entity template (sql + 8 sprocs + repo + service + 6 routes). Gated `Modules.USERS`. Routed through `ProcessEngine.execute_synchronous`.
+- DB: `dbo.UserOrganization` + FKs (User, Organization) + `UQ_UserOrganization_UserId_OrganizationId`. Migration ran clean (13 batches).
+- Web: `UserOrganization` type added to `src/types/api.ts`. Organizations placeholder on `UserProfile` swapped for live table + "Add Organization" dropdown.
+
+### Wave 3 — `UserCompany` entity
+- Same template as Wave 2; gated `Modules.USERS`. Migration clean (13 batches).
+- Web: `UserCompany` type, Companies section on UserProfile (initial cut — dropdown unfiltered; Wave 4 added the cross-link filter).
+
+### Wave 4 — `OrganizationCompany` join + cross-link UI
+- 9 sprocs (two read-by-parent variants: `…ByOrganizationId`, `…ByCompanyId`). Gated `Modules.ORGANIZATIONS`. Migration clean.
+- Web:
+  - `OrganizationCompany` type added.
+  - `OrganizationEdit.tsx` rewritten to include a Companies section (table + dropdown + Remove). `OrganizationView.tsx` rewritten to show a read-only Companies list under DetailView's `children` slot.
+  - `UserProfile.tsx` Companies dropdown filtered: `availableCompanies = allCompanies WHERE company_id ∈ orgScopedCompanyIds(user's orgs via OrganizationCompany)`. Existing `UserCompany` rows are NOT auto-removed when an Organization is unassigned.
+  - Empty-state hints: "Add an Organization first…" when `userOrganizations.length === 0`; otherwise inline links to each Organization's edit page so the admin can navigate, link companies, and return. (Polished after a real-world test where the empty-dropdown state was confusing.)
+
+### Wave 5 — Wire `UserModule`/`UserProject` into `/auth/me`
+- **Design call**: `UserModule` = additive **read-only** grant on top of role (`can_read=true`, others false; never downgrades a role-granted module). `UserProject` = informational only (`accessible_project_ids: int[]` published to client; no per-endpoint filtering).
+- `shared/rbac.py::_resolve_permissions_from_db` — merges UserModule rows after RoleModule, using `types.SimpleNamespace` to mimic RoleModule's attribute shape inside the cached perms dict.
+- `entities/auth/api/router.py::_resolve_me_payload` — same merge logic for the modules array; appends `accessible_project_ids` from `UserProject`.
+- `entities/user_module/api/router.py` + `entities/user_project/api/router.py` — added `invalidate_all_caches()` (UserModule only) + `publish_profile_changed(user_id)` (both) on create/update/delete so grants take effect within ~1s instead of after the 5-min rbac cache TTL.
+- Web: `CurrentUser.accessible_project_ids: number[]` added.
+
+### Wave 6 — Admin credentials endpoints
+- `dbo.ReadAuthByUserId` sproc appended to `entities/auth/sql/dbo.auth.sql` (idempotent CREATE OR ALTER). Migration ran (18 batches; only the new sproc takes effect).
+- `AuthRepository.read_by_user_id`, `AuthService.read_by_user_id`, `AuthService.set_credentials_for_user`. The latter validates password ≥ 8 chars + username uniqueness across other Auth rows; creates the Auth row and links via `Auth.UserId` if the user has none, otherwise updates username + password hash.
+- Two admin routes:
+  - `GET /api/v1/admin/auth/by-user/{user_public_id}` (Modules.USERS, can_read) — returns `{username, has_auth}`. Never returns the hash.
+  - `POST /api/v1/admin/auth/set-credentials/{user_public_id}` (Modules.USERS, can_update) — body `{username, password}`. Logs actor + target + auth_public_id and publishes `profile_changed`.
+- Web: admin-only Credentials card on UserProfile between Profile basics and Contacts. Loads existing summary on mount; lets admin set username + password (min 8 chars).
+- **Existing sessions are NOT revoked on password change** — security follow-up tracked in TODO.md.
+
+### Migrations (prod DB, all idempotent)
+1. `dbo.UserOrganization` table + 8 sprocs + FKs + UQ
+2. `dbo.UserCompany` table + 8 sprocs + FKs + UQ
+3. `dbo.OrganizationCompany` table + 9 sprocs + FKs + UQ
+4. `dbo.ReadAuthByUserId` sproc append on existing `dbo.auth.sql`
+
+### Commits / pushes
+- API `master`: `41fbf06..931fd8b` (Waves 2-5) → `81443a1` (Wave 6).
+- Web `main`: `53cd809..01c6a3c` (Waves 1-5 client) → `a72b48f` (cross-link hint links) → `311c3bc` (Credentials section).
+
+### Memory updates
+- New: `project_user_profile.md` — page shape, join entities, additive-grant semantic, admin credentials, cross-link UI heuristic.
+- `MEMORY.md` index gained the link.
+- API `CLAUDE.md` Project Conventions: added 5 bullets covering UserModule additive grant, UserProject informational, User Profile page, user-relationship join entities, admin credentials.
+- Web `CLAUDE.md` Conventions: added the User Profile single-page convention.
+
+### Lessons / non-obvious calls
+- **Plan-first per CLAUDE.md was the right call.** Each wave's design ambiguity (UserModule semantics, UserProject scope, where to put the Credentials section, what hint to show when companies dropdown is empty) was easier to resolve in plain English than in code. Six waves shipped with no rework.
+- **Pause-before-migration protocol** matched user's preference. Generating SQL → asking → running → continuing kept prod-DB writes explicit at every step.
+- **Cache invalidation is not optional on UserModule mutation** — without `invalidate_all_caches()`, grants sit unused for up to 5 minutes (the `_permission_cache` TTL in `shared/rbac.py`). User-facing UI feels broken until then.
+- **Soft filters with empty-state escape hatches** — Wave 4's "Companies dropdown filtered by Organizations" was technically correct but UX-confusing in the real-world test (no Companies were linked to the org yet). Fix landed within the same session: turn the hint into clickable navigation to the fix-it page (`/organization/:id/edit`).
+
+## Session: iOS v0.1.0 TestFlight upload + multi-user CoreData state-bleed discovery (April 29, 2026)
+
+### Overview
+Pushed `build.one.ios` v0.1.0 through Apple validation, fixed three blocker validation errors, generated the app icon, uploaded to App Store Connect, set up Internal + External TestFlight groups, submitted Beta App Review with `apple-reviewer` test credentials. Status at session close: v0.1.0 in **Waiting For Review**. Multi-user verification on-device surfaced a real CoreData state-bleed bug that became the v0.1.1 plan.
+
+### What shipped (iOS `<this commit>`)
+- `BuildOne/Info.plist`: added `CFBundlePackageType=APPL`, `CFBundleIconName=AppIcon`, `CFBundleName`, `CFBundleInfoDictionaryVersion=6.0`, `ITSAppUsesNonExemptEncryption=false` (skips export-compliance prompt on future uploads).
+- `BuildOne/Assets.xcassets/AppIcon.appiconset/Contents.json`: wired `filename: AppIcon-1024.png`.
+- `BuildOne/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png`: generated 1024×1024 black/white "B1" icon (no alpha, sRGB).
+- (Privacy Manifest `BuildOne/PrivacyInfo.xcprivacy` and ModuleKey trim shipped pre-session in commit `26d0f81`.)
+
+### Validation blocker errors and fixes
+1. **Missing icon file (120×120 / 152×152)** — asset catalog had `Contents.json` declaring a 1024×1024 universal icon but no PNG. Fix: drop the PNG in + reference filename. Modern Xcode generates all sizes at build time from one 1024 source.
+2. **Missing Info.plist `CFBundleIconName`** — required for asset-catalog icons when `GENERATE_INFOPLIST_FILE=NO`.
+3. **Invalid `CFBundlePackageType`** — must be `APPL` for iOS apps; was missing entirely.
+
+After fixes + clean build, validation passed green on second attempt.
+
+### Apple reviewer test account setup
+- Created `apple-reviewer` user in prod via the new web UI: User + Auth + UserRole + UserProject (BR-Brattleboro) + UserCompany + UserOrganization rows.
+- Initially gave `Admin` role → reviewer saw all 23 modules (correct behavior given Admin transitively grants all RoleModule rows). Switched to `Project Manager` → 403 "module not assigned to your role" because Project Manager lacks Time Tracking. Switched back to `Admin` (acceptable for v0.1.0 reviewer since data is benign).
+- Validated full clock in / clock out / submit-for-review loop end-to-end on device after deleting+reinstalling app to simulate a fresh reviewer device.
+
+### Multi-user CoreData state-bleed bug (the v0.1.1 driver)
+On the developer device (Chris was the prior signed-in user), signing in as `apple-reviewer` showed Chris's cached time entries on the Time tab during the load window before the API response landed. Root cause: every per-user service (`TimeEntryService`, `ProjectService`, `ModuleService`, `RoleService`) calls `CD<Entity>.fetchAll()` in cache pre-populate with no `userId` filter; CoreData rows from prior users persist across logout. `resetForLogout()` clears in-memory `@Observable` state only — CoreData is untouched.
+
+Apple reviewer is unaffected (fresh device → empty cache), but real-world multi-user scenarios (shared field iPhones, account switches) hit this immediately.
+
+**Correct fix is scope, not wipe** — wiping CoreData on logout would destroy a field worker's offline-queued edits if a session-expiry path triggered logout. Plan: add `userId` predicate to per-user CDEntity reads, tag rows with `userId` on upsert, leave logout-clears-in-memory pattern unchanged. CDTimeEntry already has a `userId` attribute, so the TimeEntry fix is filter-on-read + tag-on-upsert (no model migration). CDModule/CDRole/CDProject would need model migrations for full fix; deferred since the user-scoped API call we wired in commit `655a69c` correctly replaces in-memory state on response (the visible flash is brief, not a security issue).
+
+### Decisions
+- **No dev/prod backend split for v0.1.x.** Real breaking point is multi-tenant; until then, test-org-in-prod pattern + additive-only schema discipline gets ~70% of the benefit at ~5% of the cost. Revisit when second customer signs on.
+- **No RBAC architectural rewrite to "no role grants modules" for v0.1.x.** Trim individual role assignments instead. Eliminating role-based grants entirely would touch API repos/services + web UI + iOS auth flow + 4 user-scoped sproc joins from this session — multi-day project, defer to v0.2.0.
+- **v0.1.1 scope** locked to TimeEntry cache scoping only (~1-2 hours focused work).
+
+### Lessons
+- **Pre-release multi-user smoke test missing from checklist.** Single-developer single-device testing hides the entire class of state-bleed bugs. Saved to memory `feedback_ios_multi_user_testing.md`.
+- **TestFlight upload checklist** for future iOS work: Info.plist keys (`CFBundlePackageType`, `CFBundleIconName`, `CFBundleName`, `CFBundleInfoDictionaryVersion`, `ITSAppUsesNonExemptEncryption`), 1024×1024 icon (sRGB, no alpha), `MARKETING_VERSION` + `CURRENT_PROJECT_VERSION` (always increment), Privacy Manifest, usage descriptions. Now in iOS `CLAUDE.md`.
+- **Internal vs External TestFlight tradeoff**: external requires Beta App Review (~24h first time, faster after) but accepts any email and supports 10K testers; internal is instant but requires Apple ID + ASC seat per tester. Field SMEs go external.
+
+### Next session
+- Implement the TimeEntry cache scoping fix (add `userId` predicate to `CDTimeEntry.fetchAll()` + tag-on-upsert).
+- Bump `MARKETING_VERSION` 0.1.0 → 0.1.1, `CURRENT_PROJECT_VERSION` 1 → 2.
+- Archive + Validate + Upload + submit Beta App Review for v0.1.1.
+- Target distribution to Field SMEs by Friday May 1st.
+
 ## Session: OHR2-GUEST-09 InvoiceAgent run + qbo/dbo keyspace incident (April 26, 2026)
 
 ### Overview

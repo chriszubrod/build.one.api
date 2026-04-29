@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.user_module.api.schemas import UserModuleCreate, UserModuleUpdate
 from entities.user_module.business.service import UserModuleService
-from shared.rbac import require_module_api
+from shared.profile_events import publish_profile_changed
+from shared.rbac import invalidate_all_caches, require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 from shared.api.responses import list_response, item_response, raise_workflow_error
@@ -38,6 +39,8 @@ def create_user_module_router(body: UserModuleCreate, current_user: dict = Depen
     if not result.get("success"):
         raise_workflow_error(result.get("error", ""), "Failed to create user module")
 
+    invalidate_all_caches()
+    publish_profile_changed(body.user_id)
     return item_response(result.get("data"))
 
 
@@ -75,6 +78,13 @@ def update_user_module_by_public_id_router(public_id: str, body: UserModuleUpdat
 
     Routes through the workflow engine for audit logging and state tracking.
     """
+    existing = UserModuleService().read_by_public_id(public_id=public_id)
+    affected_user_ids: set[int] = set()
+    if existing and existing.user_id is not None:
+        affected_user_ids.add(existing.user_id)
+    if body.user_id is not None:
+        affected_user_ids.add(body.user_id)
+
     context = TriggerContext(
         trigger_type=EventType.API_CALL,
         trigger_source=Channel.API,
@@ -94,6 +104,9 @@ def update_user_module_by_public_id_router(public_id: str, body: UserModuleUpdat
     if not result.get("success"):
         raise_workflow_error(result.get("error", ""), "Failed to update user module")
 
+    invalidate_all_caches()
+    for uid in affected_user_ids:
+        publish_profile_changed(uid)
     return item_response(result.get("data"))
 
 
@@ -104,6 +117,9 @@ def delete_user_module_by_public_id_router(public_id: str, current_user: dict = 
 
     Routes through the workflow engine for audit logging and state tracking.
     """
+    existing = UserModuleService().read_by_public_id(public_id=public_id)
+    affected_user_id = existing.user_id if existing else None
+
     context = TriggerContext(
         trigger_type=EventType.API_CALL,
         trigger_source=Channel.API,
@@ -120,4 +136,7 @@ def delete_user_module_by_public_id_router(public_id: str, current_user: dict = 
     if not result.get("success"):
         raise_workflow_error(result.get("error", ""), "Failed to delete user module")
 
+    invalidate_all_caches()
+    if affected_user_id is not None:
+        publish_profile_changed(affected_user_id)
     return item_response(result.get("data"))

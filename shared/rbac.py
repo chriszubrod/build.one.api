@@ -29,6 +29,8 @@ from typing import Optional
 
 from fastapi import Depends, HTTPException
 
+from types import SimpleNamespace
+
 from entities.auth.business.service import (
     get_current_user_api,
     AuthService,
@@ -36,6 +38,7 @@ from entities.auth.business.service import (
 from entities.module.business.service import ModuleService
 from entities.role.business.service import RoleService
 from entities.role_module.business.service import RoleModuleService
+from entities.user_module.business.service import UserModuleService
 from entities.user_role.business.service import UserRoleService
 
 logger = logging.getLogger(__name__)
@@ -99,32 +102,55 @@ def _resolve_permissions_from_db(user_sub: str) -> Optional[dict]:
             -> UserRole -> role_id
                 -> Role (admin check)
                 -> RoleModule + Module (permission map)
+            -> UserModule (additive read-only grants on top of role)
     """
     # Resolve user_id
     auth = AuthService().read_by_public_id(public_id=user_sub)
     if not auth or not auth.user_id:
         return None
 
-    # Resolve role
-    user_role = UserRoleService().read_by_user_id(user_id=auth.user_id)
-    if not user_role:
-        return None
-
-    # Admin bypass
-    role = RoleService().read_by_id(id=user_role.role_id)
-    if role and role.name and role.name.strip().lower() == "admin":
-        return {_ADMIN_SENTINEL: True}
-
-    # Build { module_name: RoleModule } map
-    role_modules = RoleModuleService().read_all_by_role_id(role_id=user_role.role_id)
+    user_id = auth.user_id
     all_modules = ModuleService().read_all()
     module_id_to_name = {m.id: m.name for m in all_modules}
 
-    perms = {}
-    for rm in role_modules:
-        name = module_id_to_name.get(rm.module_id)
-        if name:
-            perms[name] = rm
+    # Resolve role
+    user_role = UserRoleService().read_by_user_id(user_id=user_id)
+
+    # Admin bypass — role check before any module lookup
+    if user_role:
+        role = RoleService().read_by_id(id=user_role.role_id)
+        if role and role.name and role.name.strip().lower() == "admin":
+            return {_ADMIN_SENTINEL: True}
+
+    # Build { module_name: RoleModule } map from role
+    perms: dict = {}
+    if user_role:
+        role_modules = RoleModuleService().read_all_by_role_id(role_id=user_role.role_id)
+        for rm in role_modules:
+            name = module_id_to_name.get(rm.module_id)
+            if name:
+                perms[name] = rm
+
+    # Layer in additive UserModule grants — read-only, never downgrades a
+    # role-granted module.
+    user_modules = UserModuleService().read_all_by_user_id(user_id=user_id)
+    for um in user_modules:
+        name = module_id_to_name.get(um.module_id)
+        if not name or name in perms:
+            continue
+        perms[name] = SimpleNamespace(
+            can_read=True,
+            can_create=False,
+            can_update=False,
+            can_delete=False,
+            can_submit=False,
+            can_approve=False,
+            can_complete=False,
+        )
+
+    # No role and no UserModule grants — treat as no access
+    if not perms:
+        return None
 
     return perms
 

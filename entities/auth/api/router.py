@@ -31,6 +31,8 @@ from entities.module.business.service import ModuleService
 from entities.role.business.service import RoleService
 from entities.role_module.business.service import RoleModuleService
 from entities.user.business.service import UserService
+from entities.user_module.business.service import UserModuleService
+from entities.user_project.business.service import UserProjectService
 from entities.user_role.business.service import UserRoleService
 from shared.api.responses import item_response, raise_not_found
 from shared.profile_events import profile_event_subscription
@@ -325,6 +327,23 @@ def _resolve_me_payload(user_sub: str) -> dict:
                     "can_complete": bool(rm.can_complete),
                 }
 
+    # Layer in additive UserModule grants — read-only, never downgrades a
+    # role-granted module. Admins already have full access; skip the merge.
+    if not is_admin:
+        user_modules = UserModuleService().read_all_by_user_id(user_id=auth.user_id)
+        for um in user_modules:
+            if um.module_id in permissions_by_module:
+                continue
+            permissions_by_module[um.module_id] = {
+                "can_read": True,
+                "can_create": False,
+                "can_update": False,
+                "can_delete": False,
+                "can_submit": False,
+                "can_approve": False,
+                "can_complete": False,
+            }
+
     all_modules = ModuleService().read_all()
     modules_payload = []
     for m in all_modules:
@@ -345,12 +364,16 @@ def _resolve_me_payload(user_sub: str) -> dict:
             **perms,
         })
 
+    user_projects = UserProjectService().read_by_user_id(user_id=auth.user_id)
+    accessible_project_ids = sorted({up.project_id for up in user_projects if up.project_id is not None})
+
     return {
         "auth": {"public_id": auth.public_id, "username": auth.username},
         "user": user.to_dict() if user else None,
         "role": role_dict,
         "is_admin": is_admin,
         "modules": modules_payload,
+        "accessible_project_ids": accessible_project_ids,
     }
 
 

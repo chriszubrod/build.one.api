@@ -77,6 +77,9 @@ SYNCHRONOUS_TASKS = [
     "role",
     "user_role",
     "user_project",
+    "user_organization",
+    "user_company",
+    "organization_company",
     "role_module",
     "user_module",
 

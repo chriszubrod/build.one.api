@@ -38,6 +38,9 @@ from entities.user.api.router import router as user_api_router
 from entities.role.api.router import router as role_api_router
 from entities.user_role.api.router import router as user_role_api_router
 from entities.user_project.api.router import router as user_project_api_router
+from entities.user_organization.api.router import router as user_organization_api_router
+from entities.user_company.api.router import router as user_company_api_router
+from entities.organization_company.api.router import router as organization_company_api_router
 from entities.vendor.api.router import router as vendor_api_router
 from entities.vendor_address.api.router import router as vendor_address_api_router
 from entities.vendor_type.api.router import router as vendor_type_api_router
@@ -162,6 +165,9 @@ app.include_router(user_api_router)
 app.include_router(role_api_router)
 app.include_router(user_role_api_router)
 app.include_router(user_project_api_router)
+app.include_router(user_organization_api_router)
+app.include_router(user_company_api_router)
+app.include_router(organization_company_api_router)
 app.include_router(contact_api_router)
 app.include_router(device_token_api_router)
 app.include_router(vendor_api_router)

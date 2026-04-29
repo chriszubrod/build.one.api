@@ -66,6 +66,9 @@ PROCESS_REGISTRY: Dict[str, str] = {
     "role": "entities.role.business.service.RoleService",
     "user_role": "entities.user_role.business.service.UserRoleService",
     "user_project": "entities.user_project.business.service.UserProjectService",
+    "user_organization": "entities.user_organization.business.service.UserOrganizationService",
+    "user_company": "entities.user_company.business.service.UserCompanyService",
+    "organization_company": "entities.organization_company.business.service.OrganizationCompanyService",
     "role_module": "entities.role_module.business.service.RoleModuleService",
     "user_module": "entities.user_module.business.service.UserModuleService",
     

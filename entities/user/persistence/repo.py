@@ -34,6 +34,13 @@ class UserRepository:
             return None
 
         try:
+            # New access-control discriminators are tolerated as missing for
+            # any sproc that hasn't been re-issued with the new SELECT shape.
+            is_system_admin = getattr(row, "IsSystemAdmin", None)
+            is_agent = getattr(row, "IsAgent", None)
+            last_company_id = getattr(row, "LastCompanyId", None)
+            created_by_user_id = getattr(row, "CreatedByUserId", None)
+            modified_by_user_id = getattr(row, "ModifiedByUserId", None)
             return User(
                 id=row.Id,
                 public_id=row.PublicId,
@@ -42,6 +49,11 @@ class UserRepository:
                 modified_datetime=row.ModifiedDatetime,
                 firstname=row.Firstname,
                 lastname=row.Lastname,
+                is_system_admin=bool(is_system_admin) if is_system_admin is not None else None,
+                is_agent=bool(is_agent) if is_agent is not None else None,
+                last_company_id=last_company_id,
+                created_by_user_id=created_by_user_id,
+                modified_by_user_id=modified_by_user_id,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during user mapping: {error}")
@@ -50,9 +62,16 @@ class UserRepository:
             logger.error(f"Unexpected error during user mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, firstname: str, lastname: str) -> User:
+    def create(
+        self,
+        *,
+        firstname: str,
+        lastname: str,
+        created_by_user_id: Optional[int] = None,
+        modified_by_user_id: Optional[int] = None,
+    ) -> User:
         """
-        Create a new user.
+        Create a new user, stamping CreatedByUserId / ModifiedByUserId.
         """
         try:
             with get_connection() as conn:
@@ -63,6 +82,8 @@ class UserRepository:
                     params={
                         "Firstname": firstname,
                         "Lastname": lastname,
+                        "CreatedByUserId": created_by_user_id,
+                        "ModifiedByUserId": modified_by_user_id,
                     },
                 )
                 row = cursor.fetchone()
@@ -179,12 +200,33 @@ class UserRepository:
                         "RowVersion": user.row_version_bytes,
                         "Firstname": user.firstname,
                         "Lastname": user.lastname,
+                        "ModifiedByUserId": user.modified_by_user_id,
                     },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during update user by ID: {error}")
+            raise map_database_error(error)
+
+    def set_last_company_id(self, *, user_id: int, last_company_id: int) -> None:
+        """
+        Phase 0 — remember the active Company a user last switched to so
+        the next login can default `cid` to it. Does not return a row.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="SetUserLastCompanyId",
+                    params={
+                        "UserId": user_id,
+                        "LastCompanyId": last_company_id,
+                    },
+                )
+        except Exception as error:
+            logger.error(f"Error during set last company id: {error}")
             raise map_database_error(error)
 
     def delete_by_id(self, id: int) -> Optional[User]:

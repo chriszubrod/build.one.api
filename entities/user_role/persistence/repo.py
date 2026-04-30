@@ -27,9 +27,6 @@ class UserRoleRepository:
         pass
 
     def _from_db(self, row: pyodbc.Row) -> Optional[UserRole]:
-        """
-        Convert a database row into a UserRole dataclass.
-        """
         if not row:
             return None
 
@@ -42,6 +39,9 @@ class UserRoleRepository:
                 modified_datetime=row.ModifiedDatetime,
                 user_id=row.UserId,
                 role_id=row.RoleId,
+                company_id=getattr(row, "CompanyId", None),
+                created_by_user_id=getattr(row, "CreatedByUserId", None),
+                modified_by_user_id=getattr(row, "ModifiedByUserId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during user role mapping: {error}")
@@ -50,10 +50,15 @@ class UserRoleRepository:
             logger.error(f"Unexpected error during user role mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, user_id: int, role_id: int) -> UserRole:
-        """
-        Create a new user role.
-        """
+    def create(
+        self,
+        *,
+        user_id: int,
+        role_id: int,
+        company_id: Optional[int] = None,
+        created_by_user_id: Optional[int] = None,
+        modified_by_user_id: Optional[int] = None,
+    ) -> UserRole:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -63,6 +68,9 @@ class UserRoleRepository:
                     params={
                         "UserId": user_id,
                         "RoleId": role_id,
+                        "CompanyId": company_id,
+                        "CreatedByUserId": created_by_user_id,
+                        "ModifiedByUserId": modified_by_user_id,
                     },
                 )
                 row = cursor.fetchone()
@@ -75,9 +83,6 @@ class UserRoleRepository:
             raise map_database_error(error)
 
     def read_all(self) -> list[UserRole]:
-        """
-        Read all user roles.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -93,9 +98,6 @@ class UserRoleRepository:
             raise map_database_error(error)
 
     def read_by_id(self, id: int) -> Optional[UserRole]:
-        """
-        Read a user role by ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -111,9 +113,6 @@ class UserRoleRepository:
             raise map_database_error(error)
 
     def read_by_public_id(self, public_id: str) -> Optional[UserRole]:
-        """
-        Read a user role by public ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -129,9 +128,6 @@ class UserRoleRepository:
             raise map_database_error(error)
 
     def read_by_user_id(self, user_id: int) -> Optional[UserRole]:
-        """
-        Read a user role by user ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -147,10 +143,6 @@ class UserRoleRepository:
             raise map_database_error(error)
 
     def read_all_by_user_id(self, user_id: int) -> list[UserRole]:
-        """
-        Read every UserRole row assigned to the user (multi-role support).
-        Returns all rows rather than the singular first match.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -165,10 +157,31 @@ class UserRoleRepository:
             logger.error(f"Error during read all user roles by user ID: {error}")
             raise map_database_error(error)
 
+    def read_all_by_user_id_and_company_id(
+        self, *, user_id: int, company_id: int
+    ) -> list[UserRole]:
+        """
+        Phase 2 permission resolver: returns ALL UserRole rows for the
+        (user, company) pair so the resolver can OR their RoleModule
+        grants together.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadUserRolesByUserIdAndCompanyId",
+                    params={"UserId": user_id, "CompanyId": company_id},
+                )
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(
+                f"Error during read user roles by user+company: {error}"
+            )
+            raise map_database_error(error)
+
     def read_by_role_id(self, role_id: int) -> Optional[UserRole]:
-        """
-        Read a user role by role ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -184,9 +197,6 @@ class UserRoleRepository:
             raise map_database_error(error)
 
     def update_by_id(self, user_role: UserRole) -> Optional[UserRole]:
-        """
-        Update a user role by ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -198,6 +208,8 @@ class UserRoleRepository:
                         "RowVersion": user_role.row_version_bytes,
                         "UserId": user_role.user_id,
                         "RoleId": user_role.role_id,
+                        "CompanyId": user_role.company_id,
+                        "ModifiedByUserId": user_role.modified_by_user_id,
                     },
                 )
                 row = cursor.fetchone()
@@ -207,9 +219,6 @@ class UserRoleRepository:
             raise map_database_error(error)
 
     def delete_by_id(self, id: int) -> Optional[UserRole]:
-        """
-        Delete a user role by ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()

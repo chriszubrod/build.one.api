@@ -35,6 +35,8 @@ class UserCompanyRepository:
                 modified_datetime=row.ModifiedDatetime,
                 user_id=row.UserId,
                 company_id=row.CompanyId,
+                created_by_user_id=getattr(row, "CreatedByUserId", None),
+                modified_by_user_id=getattr(row, "ModifiedByUserId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during user company mapping: {error}")
@@ -43,7 +45,14 @@ class UserCompanyRepository:
             logger.error(f"Unexpected error during user company mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, user_id: int, company_id: int) -> UserCompany:
+    def create(
+        self,
+        *,
+        user_id: int,
+        company_id: int,
+        created_by_user_id: Optional[int] = None,
+        modified_by_user_id: Optional[int] = None,
+    ) -> UserCompany:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -53,6 +62,8 @@ class UserCompanyRepository:
                     params={
                         "UserId": user_id,
                         "CompanyId": company_id,
+                        "CreatedByUserId": created_by_user_id,
+                        "ModifiedByUserId": modified_by_user_id,
                     },
                 )
                 row = cursor.fetchone()
@@ -147,6 +158,7 @@ class UserCompanyRepository:
                         "RowVersion": user_company.row_version_bytes,
                         "UserId": user_company.user_id,
                         "CompanyId": user_company.company_id,
+                        "ModifiedByUserId": user_company.modified_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

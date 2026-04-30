@@ -17,6 +17,11 @@ class User:
     modified_datetime: Optional[str]
     firstname: Optional[str]
     lastname: Optional[str]
+    is_system_admin: Optional[bool] = None
+    is_agent: Optional[bool] = None
+    last_company_id: Optional[int] = None
+    created_by_user_id: Optional[int] = None
+    modified_by_user_id: Optional[int] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

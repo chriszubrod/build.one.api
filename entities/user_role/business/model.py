@@ -17,6 +17,9 @@ class UserRole:
     modified_datetime: Optional[str]
     user_id: Optional[int]
     role_id: Optional[int]
+    company_id: Optional[int] = None
+    created_by_user_id: Optional[int] = None
+    modified_by_user_id: Optional[int] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

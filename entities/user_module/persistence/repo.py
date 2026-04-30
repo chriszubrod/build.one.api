@@ -27,9 +27,6 @@ class UserModuleRepository:
         pass
 
     def _from_db(self, row: pyodbc.Row) -> Optional[UserModule]:
-        """
-        Convert a database row into a UserModule dataclass.
-        """
         if not row:
             return None
 
@@ -42,6 +39,9 @@ class UserModuleRepository:
                 modified_datetime=row.ModifiedDatetime,
                 user_id=row.UserId,
                 module_id=row.ModuleId,
+                company_id=getattr(row, "CompanyId", None),
+                created_by_user_id=getattr(row, "CreatedByUserId", None),
+                modified_by_user_id=getattr(row, "ModifiedByUserId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during user module mapping: {error}")
@@ -50,10 +50,15 @@ class UserModuleRepository:
             logger.error(f"Unexpected error during user module mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, user_id: int, module_id: int) -> UserModule:
-        """
-        Create a new user module.
-        """
+    def create(
+        self,
+        *,
+        user_id: int,
+        module_id: int,
+        company_id: Optional[int] = None,
+        created_by_user_id: Optional[int] = None,
+        modified_by_user_id: Optional[int] = None,
+    ) -> UserModule:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -63,6 +68,9 @@ class UserModuleRepository:
                     params={
                         "UserId": user_id,
                         "ModuleId": module_id,
+                        "CompanyId": company_id,
+                        "CreatedByUserId": created_by_user_id,
+                        "ModifiedByUserId": modified_by_user_id,
                     },
                 )
                 row = cursor.fetchone()
@@ -75,17 +83,10 @@ class UserModuleRepository:
             raise map_database_error(error)
 
     def read_all(self) -> list[UserModule]:
-        """
-        Read all user modules.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                call_procedure(
-                    cursor=cursor,
-                    name="ReadUserModules",
-                    params={}
-                )
+                call_procedure(cursor=cursor, name="ReadUserModules", params={})
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
         except Exception as error:
@@ -93,9 +94,6 @@ class UserModuleRepository:
             raise map_database_error(error)
 
     def read_by_id(self, id: int) -> Optional[UserModule]:
-        """
-        Read a user module by ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -111,9 +109,6 @@ class UserModuleRepository:
             raise map_database_error(error)
 
     def read_by_public_id(self, public_id: str) -> Optional[UserModule]:
-        """
-        Read a user module by public ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -129,9 +124,6 @@ class UserModuleRepository:
             raise map_database_error(error)
 
     def read_by_user_id(self, user_id: int) -> Optional[UserModule]:
-        """
-        Read a user module by user ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -147,9 +139,6 @@ class UserModuleRepository:
             raise map_database_error(error)
 
     def read_all_by_user_id(self, user_id: int) -> list[UserModule]:
-        """
-        Read all user modules by user ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -164,10 +153,30 @@ class UserModuleRepository:
             logger.error(f"Error during read all user modules by user ID: {error}")
             raise map_database_error(error)
 
+    def read_all_by_user_id_and_company_id(
+        self, *, user_id: int, company_id: int
+    ) -> list[UserModule]:
+        """
+        Phase 2 permission resolver: returns the user's additive
+        UserModule grants scoped to the active Company.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadUserModulesByUserIdAndCompanyId",
+                    params={"UserId": user_id, "CompanyId": company_id},
+                )
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(
+                f"Error during read user modules by user+company: {error}"
+            )
+            raise map_database_error(error)
+
     def read_by_module_id(self, module_id: int) -> Optional[UserModule]:
-        """
-        Read a user module by module ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -183,9 +192,6 @@ class UserModuleRepository:
             raise map_database_error(error)
 
     def update_by_id(self, user_module: UserModule) -> Optional[UserModule]:
-        """
-        Update a user module by ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -197,6 +203,8 @@ class UserModuleRepository:
                         "RowVersion": user_module.row_version_bytes,
                         "UserId": user_module.user_id,
                         "ModuleId": user_module.module_id,
+                        "CompanyId": user_module.company_id,
+                        "ModifiedByUserId": user_module.modified_by_user_id,
                     },
                 )
                 row = cursor.fetchone()
@@ -206,9 +214,6 @@ class UserModuleRepository:
             raise map_database_error(error)
 
     def delete_by_id(self, id: int) -> Optional[UserModule]:
-        """
-        Delete a user module by ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()

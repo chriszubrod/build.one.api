@@ -42,6 +42,8 @@ class UserProjectRepository:
                 modified_datetime=row.ModifiedDatetime,
                 user_id=row.UserId,
                 project_id=row.ProjectId,
+                created_by_user_id=getattr(row, "CreatedByUserId", None),
+                modified_by_user_id=getattr(row, "ModifiedByUserId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during user project mapping: {error}")
@@ -50,9 +52,16 @@ class UserProjectRepository:
             logger.error(f"Unexpected error during user project mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, user_id: int, project_id: int) -> UserProject:
+    def create(
+        self,
+        *,
+        user_id: int,
+        project_id: int,
+        created_by_user_id: Optional[int] = None,
+        modified_by_user_id: Optional[int] = None,
+    ) -> UserProject:
         """
-        Create a new user project.
+        Create a new user project, stamping CreatedByUserId / ModifiedByUserId.
         """
         try:
             with get_connection() as conn:
@@ -63,6 +72,8 @@ class UserProjectRepository:
                     params={
                         "UserId": user_id,
                         "ProjectId": project_id,
+                        "CreatedByUserId": created_by_user_id,
+                        "ModifiedByUserId": modified_by_user_id,
                     },
                 )
                 row = cursor.fetchone()
@@ -179,6 +190,7 @@ class UserProjectRepository:
                         "RowVersion": user_project.row_version_bytes,
                         "UserId": user_project.user_id,
                         "ProjectId": user_project.project_id,
+                        "ModifiedByUserId": user_project.modified_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

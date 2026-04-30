@@ -18,7 +18,8 @@ from entities.auth.api.schemas import (
     AuthLogin,
     AuthSignup,
     AuthRefreshRequest,
-    MobileRefreshRequest
+    MobileRefreshRequest,
+    SwitchCompanyRequest,
 )
 from entities.auth.business.service import (
     AuthService,
@@ -36,6 +37,10 @@ from entities.user_module.business.service import UserModuleService
 from entities.user_project.business.service import UserProjectService
 from entities.user_role.business.service import UserRoleService
 from shared.api.responses import item_response, raise_not_found
+from shared.authz.companies import (
+    list_accessible_companies,
+    resolve_active_company_for_user,
+)
 from shared.profile_events import profile_event_subscription, publish_profile_changed
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
@@ -279,6 +284,88 @@ def refresh_token_router(request: Request, response: Response, body: Optional[Au
         raise HTTPException(status_code=500, detail="Token refresh failed.")
 
 
+@router.post("/auth/switch-company")
+def switch_company_router(
+    body: SwitchCompanyRequest,
+    response: Response,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """
+    Switch the caller's active Company. Validates membership (or
+    system-admin bypass), persists `User.LastCompanyId`, and re-mints
+    access + refresh tokens carrying the new `cid`. Old tokens stay
+    valid until they expire — there is no server-side revocation on
+    switch (token rotation handles steady-state).
+    """
+    user_sub = current_user.get("sub")
+    if not user_sub:
+        raise HTTPException(status_code=401, detail="Invalid session.")
+    try:
+        auth, access_token, refresh_token, active_company = service.switch_active_company(
+            user_sub=user_sub,
+            company_public_id=body.company_public_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    _set_auth_cookies(
+        response=response, access_token=access_token, refresh_token=refresh_token
+    )
+    return item_response({
+        "active_company": {
+            "public_id": active_company.public_id,
+            "name": active_company.name,
+            "organization": (
+                {
+                    "public_id": active_company.organization_public_id,
+                    "name": active_company.organization_name,
+                }
+                if active_company.organization_public_id
+                else None
+            ),
+        },
+        "token": access_token.to_dict(),
+    })
+
+
+@router.post("/mobile/auth/switch-company")
+def mobile_switch_company_router(
+    body: SwitchCompanyRequest,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """
+    Mobile variant — same as `/auth/switch-company` but returns both
+    access and refresh tokens in the response body (no cookies, no CSRF).
+    """
+    user_sub = current_user.get("sub")
+    if not user_sub:
+        raise HTTPException(status_code=401, detail="Invalid session.")
+    try:
+        auth, access_token, refresh_token, active_company = service.switch_active_company(
+            user_sub=user_sub,
+            company_public_id=body.company_public_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return item_response({
+        "active_company": {
+            "public_id": active_company.public_id,
+            "name": active_company.name,
+            "organization": (
+                {
+                    "public_id": active_company.organization_public_id,
+                    "name": active_company.organization_name,
+                }
+                if active_company.organization_public_id
+                else None
+            ),
+        },
+        "token": access_token.to_dict(),
+        "refresh_token": refresh_token.to_dict(),
+    })
+
+
 # ---------------------------------------------------------------------------
 # Mobile endpoints — token-based (no cookies, no CSRF)
 # ---------------------------------------------------------------------------
@@ -417,13 +504,63 @@ def _resolve_me_payload(user_sub: str) -> dict:
     user_projects = UserProjectService().read_by_user_id(user_id=auth.user_id)
     accessible_project_ids = sorted({up.project_id for up in user_projects if up.project_id is not None})
 
+    # Phase 0 — surface the user's tenant context so future React/iOS
+    # pickers can render without an extra round-trip.
+    is_system_admin = bool(getattr(user, "is_system_admin", False)) if user else False
+    accessible_companies = list_accessible_companies(auth.user_id) if auth.user_id else []
+    companies_payload = [
+        {
+            "public_id": c.public_id,
+            "name": c.name,
+            "organization": (
+                {"public_id": c.organization_public_id, "name": c.organization_name}
+                if c.organization_public_id
+                else None
+            ),
+        }
+        for c in accessible_companies
+    ]
+    seen_org_ids: set[str] = set()
+    organizations_payload: list[dict] = []
+    for c in accessible_companies:
+        if c.organization_public_id and c.organization_public_id not in seen_org_ids:
+            seen_org_ids.add(c.organization_public_id)
+            organizations_payload.append({
+                "public_id": c.organization_public_id,
+                "name": c.organization_name,
+            })
+
+    active_company_obj = (
+        resolve_active_company_for_user(auth.user_id) if auth.user_id else None
+    )
+    active_company_payload = (
+        {
+            "public_id": active_company_obj.public_id,
+            "name": active_company_obj.name,
+            "organization": (
+                {
+                    "public_id": active_company_obj.organization_public_id,
+                    "name": active_company_obj.organization_name,
+                }
+                if active_company_obj.organization_public_id
+                else None
+            ),
+        }
+        if active_company_obj
+        else None
+    )
+
     return {
         "auth": {"public_id": auth.public_id, "username": auth.username},
         "user": user.to_dict() if user else None,
         "role": role_dict,
         "is_admin": is_admin,
+        "is_system_admin": is_system_admin,
         "modules": modules_payload,
         "accessible_project_ids": accessible_project_ids,
+        "companies": companies_payload,
+        "organizations": organizations_payload,
+        "active_company": active_company_payload,
     }
 
 

@@ -59,6 +59,8 @@ class OrganizationRepository:
                 modified_datetime=row.ModifiedDatetime,
                 name=row.Name,
                 website=row.Website,
+                created_by_user_id=getattr(row, "CreatedByUserId", None),
+                modified_by_user_id=getattr(row, "ModifiedByUserId", None),
             )
         except AttributeError as e:
             logger.error(f"Attribute error during from db: {e}")
@@ -68,22 +70,16 @@ class OrganizationRepository:
             raise map_database_error(e)
 
 
-    def create(self, *, name: str, website: Optional[str] = None) -> Organization:
+    def create(
+        self,
+        *,
+        name: str,
+        website: Optional[str] = None,
+        created_by_user_id: Optional[int] = None,
+        modified_by_user_id: Optional[int] = None,
+    ) -> Organization:
         """
-        Create a new organization.
-        
-        Inserts a new organization record into the database using the
-        CreateOrganization stored procedure.
-        
-        Args:
-            name: Organization name
-            website: Organization website URL (optional)
-            
-        Returns:
-            Created Organization object with generated ID and timestamps
-            
-        Raises:
-            DatabaseError: If database operation fails
+        Create a new organization, stamping CreatedByUserId / ModifiedByUserId.
         """
         try:
             with get_connection() as conn:
@@ -94,6 +90,8 @@ class OrganizationRepository:
                     params={
                         "Name": name,
                         "Website": website,
+                        "CreatedByUserId": created_by_user_id,
+                        "ModifiedByUserId": modified_by_user_id,
                     }
                 )
                 row = cursor.fetchone()
@@ -254,6 +252,7 @@ class OrganizationRepository:
                         "RowVersion": org.row_version_bytes,
                         "Name": org.name,
                         "Website": org.website,
+                        "ModifiedByUserId": org.modified_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

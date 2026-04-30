@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     refresh_token_expire_seconds: int
     iterations: int
     signup_registration_code: Optional[str] = None
+    # Phase 0 — Access Control Rebuild
+    # Number of days after deploy during which the auth dependency
+    # tolerates an access token missing the new `cid` claim. While
+    # active, missing-cid requests fall back to the user's default
+    # Company via DB lookup. Phase 2 flips enforcement on by setting
+    # this to 0; once stable, the fallback code is removed entirely.
+    jwt_cid_grace_days: int = 7
 
     # Encryption
     encryption_key: Optional[str] = None

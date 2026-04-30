@@ -40,3 +40,11 @@ class MobileRefreshRequest(BaseModel):
 class AdminSetCredentials(BaseModel):
     username: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=8, max_length=255)
+
+
+class SwitchCompanyRequest(BaseModel):
+    company_public_id: str = Field(
+        min_length=36,
+        max_length=36,
+        description="UUID of the Company to switch to.",
+    )

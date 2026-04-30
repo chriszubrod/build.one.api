@@ -17,6 +17,8 @@ class UserProject:
     modified_datetime: Optional[str]
     user_id: Optional[int]
     project_id: Optional[int]
+    created_by_user_id: Optional[int] = None
+    modified_by_user_id: Optional[int] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

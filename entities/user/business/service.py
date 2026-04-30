@@ -6,6 +6,7 @@ from typing import Optional
 # Local Imports
 from entities.user.business.model import User
 from entities.user.persistence.repo import UserRepository
+from shared.authz import current_user_id
 
 
 class UserService:
@@ -17,12 +18,26 @@ class UserService:
         """Initialize the UserService."""
         self.repo = repo or UserRepository()
 
-    def create(self, *, tenant_id: int = None, firstname: str, lastname: str) -> User:
+    def create(
+        self,
+        *,
+        tenant_id: int = None,
+        firstname: str,
+        lastname: str,
+        created_by_user_id: Optional[int] = None,
+    ) -> User:
         """
-        Create a new user.
+        Create a new user. CreatedByUserId / ModifiedByUserId are pulled
+        from the per-request ContextVar when not supplied. Signup paths
+        (no authenticated actor) leave them NULL.
         """
-        # TODO: In Phase 10, use tenant_id for tenant isolation
-        return self.repo.create(firstname=firstname, lastname=lastname)
+        actor = created_by_user_id if created_by_user_id is not None else current_user_id.get()
+        return self.repo.create(
+            firstname=firstname,
+            lastname=lastname,
+            created_by_user_id=actor,
+            modified_by_user_id=actor,
+        )
 
     def read_all(self) -> list[User]:
         """
@@ -62,11 +77,12 @@ class UserService:
         row_version: str,
         firstname: str = None,
         lastname: str = None,
+        modified_by_user_id: Optional[int] = None,
     ) -> Optional[User]:
         """
-        Update a user by public ID.
+        Update a user by public ID. ModifiedByUserId pulled from
+        ContextVar when not supplied.
         """
-        # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
         if existing:
             existing.row_version = row_version
@@ -74,13 +90,24 @@ class UserService:
                 existing.firstname = firstname
             if lastname is not None:
                 existing.lastname = lastname
+            existing.modified_by_user_id = (
+                modified_by_user_id
+                if modified_by_user_id is not None
+                else current_user_id.get()
+            )
         return self.repo.update_by_id(existing)
+
+    def set_last_company_id(self, *, user_id: int, last_company_id: int) -> None:
+        """
+        Persist the active Company a user last switched to so their next
+        login defaults `cid` to it.
+        """
+        self.repo.set_last_company_id(user_id=user_id, last_company_id=last_company_id)
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[User]:
         """
         Delete a user by public ID.
         """
-        # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
         if existing:
             return self.repo.delete_by_id(existing.id)

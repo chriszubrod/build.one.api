@@ -6,6 +6,7 @@ from typing import Optional
 # Local Imports
 from entities.user_company.business.model import UserCompany
 from entities.user_company.persistence.repo import UserCompanyRepository
+from shared.authz import current_user_id
 
 
 class UserCompanyService:
@@ -14,8 +15,21 @@ class UserCompanyService:
     def __init__(self, repo: Optional[UserCompanyRepository] = None):
         self.repo = repo or UserCompanyRepository()
 
-    def create(self, *, tenant_id: int = None, user_id: int, company_id: int) -> UserCompany:
-        return self.repo.create(user_id=user_id, company_id=company_id)
+    def create(
+        self,
+        *,
+        tenant_id: int = None,
+        user_id: int,
+        company_id: int,
+        created_by_user_id: Optional[int] = None,
+    ) -> UserCompany:
+        actor = created_by_user_id if created_by_user_id is not None else current_user_id.get()
+        return self.repo.create(
+            user_id=user_id,
+            company_id=company_id,
+            created_by_user_id=actor,
+            modified_by_user_id=actor,
+        )
 
     def read_all(self) -> list[UserCompany]:
         return self.repo.read_all()
@@ -40,6 +54,7 @@ class UserCompanyService:
         row_version: str,
         user_id: int = None,
         company_id: int = None,
+        modified_by_user_id: Optional[int] = None,
     ) -> Optional[UserCompany]:
         existing = self.read_by_public_id(public_id=public_id)
         if existing:
@@ -48,6 +63,11 @@ class UserCompanyService:
                 existing.user_id = user_id
             if company_id is not None:
                 existing.company_id = company_id
+            existing.modified_by_user_id = (
+                modified_by_user_id
+                if modified_by_user_id is not None
+                else current_user_id.get()
+            )
         return self.repo.update_by_id(existing)
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[UserCompany]:

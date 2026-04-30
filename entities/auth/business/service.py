@@ -23,6 +23,12 @@ from entities.auth.business.model import (
 from entities.auth.persistence.repo import AuthRepository
 from entities.auth.persistence.token_repo import AuthRefreshTokenRepository
 from entities.user.business.service import UserService
+from shared.authz import set_authz_context
+from shared.authz.companies import (
+    ActiveCompany,
+    resolve_active_company_for_user,
+    resolve_company_by_public_id_for_user,
+)
 from shared.database import (
     DatabaseConcurrencyError,
     DatabaseOperationError,
@@ -118,6 +124,77 @@ def _require_csrf(request: Request) -> None:
     if not hmac.compare_digest(csrf_cookie, csrf_header):
         raise HTTPException(status_code=403, detail="CSRF token missing or invalid.")
 
+def _enrich_payload_with_authz(payload: dict) -> dict:
+    """
+    Phase 0 — read `uid`, `cid`, `isa` from the JWT payload and populate
+    the access-control ContextVars. For tokens issued before the
+    rebuild (no claims present), fall back to a DB lookup for the
+    user's default Company (`JWT_CID_GRACE_DAYS` controls how long this
+    fallback is allowed; the env var is read in Phase 2 to flip
+    enforcement). Phase 0 does not reject — it always falls back.
+
+    Mutates `payload` in place to add resolved `user_id`, `company_id`,
+    and `is_system_admin` keys for downstream consumers, then returns
+    it.
+    """
+    sub = payload.get("sub")
+    cid_claim = payload.get("cid")
+    uid_claim = payload.get("uid")
+    isa_claim = payload.get("isa")
+
+    user_id: Optional[int] = None
+    user_public_id: Optional[str] = uid_claim
+    is_system_admin: bool = bool(isa_claim) if isa_claim is not None else False
+    company_id: Optional[int] = None
+    company_public_id: Optional[str] = cid_claim
+
+    # Resolve user_id from `uid` if present, else from `sub` -> Auth.user_id.
+    if uid_claim:
+        user = UserService().read_by_public_id(public_id=uid_claim)
+        if user:
+            user_id = user.id
+            if isa_claim is None:
+                is_system_admin = bool(getattr(user, "is_system_admin", False))
+    elif sub:
+        # Legacy token without `uid` — derive from Auth row.
+        try:
+            auth_row = AuthService().read_by_public_id(public_id=sub)
+        except Exception:
+            auth_row = None
+        if auth_row and auth_row.user_id:
+            user_id = auth_row.user_id
+            user = UserService().read_by_id(id=user_id)
+            if user:
+                user_public_id = user.public_id
+                is_system_admin = bool(getattr(user, "is_system_admin", False))
+
+    # Resolve company_id from `cid` if present and accessible. Otherwise
+    # fall back via the user's default (grace-window behavior).
+    if user_id is not None:
+        if cid_claim:
+            company = resolve_company_by_public_id_for_user(
+                user_id=user_id, company_public_id=cid_claim
+            )
+        else:
+            company = resolve_active_company_for_user(user_id)
+        if company is not None:
+            company_id = company.id
+            company_public_id = company.public_id
+
+    set_authz_context(
+        user_id=user_id,
+        company_id=company_id,
+        is_system_admin=is_system_admin,
+    )
+
+    payload["user_id"] = user_id
+    payload["user_public_id"] = user_public_id
+    payload["company_id"] = company_id
+    payload["company_public_id"] = company_public_id
+    payload["is_system_admin"] = is_system_admin
+    return payload
+
+
 def get_current_user_api(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
@@ -133,11 +210,12 @@ def get_current_user_api(
         header_token = credentials.credentials
         if header_token and header_token not in {"null", "undefined"}:
             try:
-                return verify_token(
+                payload = verify_token(
                     token=header_token,
                     expected_token_type="access",
                     allow_legacy=True,
                 )
+                return _enrich_payload_with_authz(payload)
             except ValueError as e:
                 errors.append(str(e))
 
@@ -145,11 +223,12 @@ def get_current_user_api(
     if cookie_token:
         _require_csrf(request)
         try:
-            return verify_token(
+            payload = verify_token(
                 token=cookie_token,
                 expected_token_type="access",
                 allow_legacy=True,
             )
+            return _enrich_payload_with_authz(payload)
         except ValueError as e:
             errors.append(str(e))
 
@@ -271,6 +350,9 @@ class AuthService:
         auth: Auth,
         token_type: str,
         expires_in: int,
+        user_public_id: Optional[str] = None,
+        active_company: Optional[ActiveCompany] = None,
+        is_system_admin: Optional[bool] = None,
     ) -> Tuple[dict, datetime, datetime, str]:
         now = datetime.now(timezone.utc)
         exp = now + timedelta(seconds=expires_in)
@@ -278,13 +360,38 @@ class AuthService:
         payload = {
             "sub": auth.public_id,
             "username": auth.username,
-            "tenant_id": 1,  # Default tenant for now, will come from user/org lookup in future
+            "tenant_id": 1,  # Legacy claim kept for backwards-compat; replaced by `cid`.
             "iat": now,
             "exp": exp,
             "jti": jti,
             "token_type": token_type,
         }
+        # New access-control claims (Phase 0). Tokens issued before the
+        # rebuild won't carry these — the auth dependency falls back via
+        # DB lookup during the JWT_CID_GRACE_DAYS window.
+        if user_public_id:
+            payload["uid"] = user_public_id
+        if active_company is not None:
+            payload["cid"] = active_company.public_id
+        if is_system_admin is not None:
+            payload["isa"] = bool(is_system_admin)
         return payload, now, exp, jti
+
+    def _resolve_user_for_auth(self, auth: Auth) -> Tuple[Optional[int], Optional[str], bool]:
+        """
+        Look up (user_id, user_public_id, is_system_admin) for a given Auth.
+        Returns (None, None, False) if the Auth row isn't linked to a user.
+        """
+        if not auth or not auth.user_id:
+            return None, None, False
+        user = UserService().read_by_id(id=auth.user_id)
+        if not user:
+            return auth.user_id, None, False
+        return (
+            auth.user_id,
+            user.public_id,
+            bool(getattr(user, "is_system_admin", False)),
+        )
 
     def _hash_refresh_token(self, refresh_token: str) -> str:
         settings = Settings()
@@ -318,12 +425,22 @@ class AuthService:
             replaced_by_token_jti=replaced_by_jti,
         )
 
-    def _issue_refresh_token(self, *, auth: Auth) -> Tuple[RefreshToken, dict]:
+    def _issue_refresh_token(
+        self,
+        *,
+        auth: Auth,
+        user_public_id: Optional[str] = None,
+        active_company: Optional[ActiveCompany] = None,
+        is_system_admin: Optional[bool] = None,
+    ) -> Tuple[RefreshToken, dict]:
         settings = Settings()
         payload, issued_at, expires_at, jti = self._build_token_payload(
             auth=auth,
             token_type="refresh",
             expires_in=settings.refresh_token_expire_seconds,
+            user_public_id=user_public_id,
+            active_company=active_company,
+            is_system_admin=is_system_admin,
         )
         token = jwt.encode(
             payload,
@@ -342,15 +459,26 @@ class AuthService:
         }
         return refresh_token, meta
 
-    def generate_auth_token(self, *, auth: Auth) -> AuthToken:
+    def generate_auth_token(
+        self,
+        *,
+        auth: Auth,
+        user_public_id: Optional[str] = None,
+        active_company: Optional[ActiveCompany] = None,
+        is_system_admin: Optional[bool] = None,
+    ) -> AuthToken:
         """
-        Generate a token for a auth.
+        Generate an access token for a given Auth row, optionally
+        embedding the new access-control claims (`uid`, `cid`, `isa`).
         """
         settings = Settings()
         payload, _, _, _ = self._build_token_payload(
             auth=auth,
             token_type="access",
             expires_in=settings.access_token_expire_seconds,
+            user_public_id=user_public_id,
+            active_company=active_company,
+            is_system_admin=is_system_admin,
         )
 
         token = jwt.encode(
@@ -365,19 +493,37 @@ class AuthService:
             expires_in=settings.access_token_expire_seconds
         )
 
-    def generate_refresh_token(self, *, auth: Auth) -> RefreshToken:
+    def generate_refresh_token(
+        self,
+        *,
+        auth: Auth,
+        user_public_id: Optional[str] = None,
+        active_company: Optional[ActiveCompany] = None,
+        is_system_admin: Optional[bool] = None,
+    ) -> RefreshToken:
         """
-        Generate a refresh token for a auth.
+        Generate a refresh token for a given Auth row.
         """
-        refresh_token, _ = self._issue_refresh_token(auth=auth)
+        refresh_token, _ = self._issue_refresh_token(
+            auth=auth,
+            user_public_id=user_public_id,
+            active_company=active_company,
+            is_system_admin=is_system_admin,
+        )
         return refresh_token
 
     def login(self, *, username: str, password: str) -> Tuple[Auth, AuthToken, RefreshToken]:
         """
-        Authenticate and return auth record with access and refresh tokens.
+        Authenticate the credentials, resolve the user's active Company,
+        and mint access + refresh tokens carrying `uid`, `cid`, `isa`
+        claims.
+
+        Per Q7 (Phase 0 design): a non-system-admin user with zero
+        accessible Companies is rejected here with a clear error rather
+        than minted a `cid`-less token.
         """
         auth = self.read_by_username(username=username)
-        
+
         if not auth:
             raise ValueError("Invalid credentials.")
 
@@ -391,8 +537,29 @@ class AuthService:
             except Exception as error:
                 logger.warning("Failed to upgrade legacy password hash for %s: %s", auth.public_id, error)
 
-        access_token = self.generate_auth_token(auth=auth)
-        refresh_token, refresh_meta = self._issue_refresh_token(auth=auth)
+        user_id, user_public_id, is_system_admin = self._resolve_user_for_auth(auth)
+        active_company = (
+            resolve_active_company_for_user(user_id) if user_id is not None else None
+        )
+
+        # Q7: reject regular users with zero accessible Companies.
+        if not is_system_admin and active_company is None and user_id is not None:
+            raise ValueError(
+                "No company access — contact your administrator."
+            )
+
+        access_token = self.generate_auth_token(
+            auth=auth,
+            user_public_id=user_public_id,
+            active_company=active_company,
+            is_system_admin=is_system_admin,
+        )
+        refresh_token, refresh_meta = self._issue_refresh_token(
+            auth=auth,
+            user_public_id=user_public_id,
+            active_company=active_company,
+            is_system_admin=is_system_admin,
+        )
         self._store_refresh_token(
             auth=auth,
             refresh_token=refresh_token,
@@ -400,7 +567,7 @@ class AuthService:
             expires_at=refresh_meta["expires_at"],
             jti=refresh_meta["jti"],
         )
-        
+
         return auth, access_token, refresh_token
 
     def signup(self, *, username: str, password: str, confirm_password: str, registration_code: str) -> Tuple[Auth, AuthToken, RefreshToken]:
@@ -422,6 +589,10 @@ class AuthService:
             raise ValueError("Username already exists.")
 
         auth = self.create(username=username, password=password)
+        # Signup precedes any User row + UserCompany grants; tokens here
+        # carry no `uid` / `cid`. The caller must subsequently bind a
+        # User and grant Company access; the next refresh will pick up
+        # the new claims.
         access_token = self.generate_auth_token(auth=auth)
         refresh_token, refresh_meta = self._issue_refresh_token(auth=auth)
         self._store_refresh_token(
@@ -472,9 +643,35 @@ class AuthService:
             else:
                 logger.info("Legacy refresh token accepted for migration for %s", auth.public_id)
 
+            # Re-resolve the access-control claims so token rotation
+            # picks up any UserCompany / IsSystemAdmin / role changes
+            # since the previous token was minted. Prefer the `cid`
+            # carried by the refresh token (so the user stays in the
+            # Company they were last in); fall back to the user's
+            # default if the refresh token predates the rebuild.
+            user_id, user_public_id, is_system_admin = self._resolve_user_for_auth(auth)
+            active_company: Optional[ActiveCompany] = None
+            prior_cid = refresh_payload.get("cid")
+            if prior_cid and user_id is not None:
+                active_company = resolve_company_by_public_id_for_user(
+                    user_id=user_id, company_public_id=prior_cid
+                )
+            if active_company is None and user_id is not None:
+                active_company = resolve_active_company_for_user(user_id)
+
             # Generate new tokens (token rotation for security)
-            new_access_token = self.generate_auth_token(auth=auth)
-            new_refresh_token, refresh_meta = self._issue_refresh_token(auth=auth)
+            new_access_token = self.generate_auth_token(
+                auth=auth,
+                user_public_id=user_public_id,
+                active_company=active_company,
+                is_system_admin=is_system_admin,
+            )
+            new_refresh_token, refresh_meta = self._issue_refresh_token(
+                auth=auth,
+                user_public_id=user_public_id,
+                active_company=active_company,
+                is_system_admin=is_system_admin,
+            )
 
             # Revoke old token (or record legacy token as revoked); skip if already revoked in grace
             replaced_by_jti = refresh_meta["jti"]
@@ -516,6 +713,69 @@ class AuthService:
             raise
         except Exception as e:
             raise ValueError(f"Token refresh failed: {str(e)}")
+
+    def switch_active_company(
+        self,
+        *,
+        user_sub: str,
+        company_public_id: str,
+    ) -> Tuple[Auth, AuthToken, RefreshToken, ActiveCompany]:
+        """
+        Re-mint access + refresh tokens for the caller with a new active
+        Company. Validates membership (or system-admin bypass) and
+        persists `User.LastCompanyId` so future logins remember it.
+        """
+        auth = self.read_by_public_id(public_id=user_sub)
+        if not auth:
+            raise ValueError("Invalid session.")
+
+        user_id, user_public_id, is_system_admin = self._resolve_user_for_auth(auth)
+        if user_id is None:
+            raise ValueError("User profile not found.")
+
+        active_company = resolve_company_by_public_id_for_user(
+            user_id=user_id, company_public_id=company_public_id
+        )
+        if active_company is None:
+            raise ValueError(
+                "Company not accessible to this user."
+            )
+
+        try:
+            UserService().set_last_company_id(
+                user_id=user_id, last_company_id=active_company.id
+            )
+        except Exception as error:
+            # Persisting LastCompanyId is best-effort; the switch still
+            # succeeds even if this fails so the user isn't locked out
+            # by a transient DB error.
+            logger.warning(
+                "Failed to persist LastCompanyId for user %s: %s",
+                user_id,
+                error,
+            )
+
+        access_token = self.generate_auth_token(
+            auth=auth,
+            user_public_id=user_public_id,
+            active_company=active_company,
+            is_system_admin=is_system_admin,
+        )
+        refresh_token, refresh_meta = self._issue_refresh_token(
+            auth=auth,
+            user_public_id=user_public_id,
+            active_company=active_company,
+            is_system_admin=is_system_admin,
+        )
+        self._store_refresh_token(
+            auth=auth,
+            refresh_token=refresh_token,
+            issued_at=refresh_meta["issued_at"],
+            expires_at=refresh_meta["expires_at"],
+            jti=refresh_meta["jti"],
+        )
+
+        return auth, access_token, refresh_token, active_company
 
     def revoke_refresh_token(self, *, refresh_token: str) -> None:
         """

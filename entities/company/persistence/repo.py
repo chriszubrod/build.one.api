@@ -27,9 +27,6 @@ class CompanyRepository:
         pass
 
     def _from_db(self, row: pyodbc.Row) -> Optional[Company]:
-        """
-        Convert a database row into a Company dataclass.
-        """
         if not row:
             return None
 
@@ -42,6 +39,9 @@ class CompanyRepository:
                 modified_datetime=row.ModifiedDatetime,
                 name=row.Name,
                 website=row.Website,
+                organization_id=getattr(row, "OrganizationId", None),
+                created_by_user_id=getattr(row, "CreatedByUserId", None),
+                modified_by_user_id=getattr(row, "ModifiedByUserId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during company mapping: {error}")
@@ -50,10 +50,15 @@ class CompanyRepository:
             logger.error(f"Unexpected error during company mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, name: str, website: str) -> Company:
-        """
-        Create a new company.
-        """
+    def create(
+        self,
+        *,
+        name: str,
+        website: str,
+        organization_id: Optional[int] = None,
+        created_by_user_id: Optional[int] = None,
+        modified_by_user_id: Optional[int] = None,
+    ) -> Company:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -63,6 +68,9 @@ class CompanyRepository:
                     params={
                         "Name": name,
                         "Website": website,
+                        "OrganizationId": organization_id,
+                        "CreatedByUserId": created_by_user_id,
+                        "ModifiedByUserId": modified_by_user_id,
                     },
                 )
                 row = cursor.fetchone()
@@ -75,9 +83,6 @@ class CompanyRepository:
             raise map_database_error(error)
 
     def read_all(self) -> list[Company]:
-        """
-        Read all companies.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -93,9 +98,6 @@ class CompanyRepository:
             raise map_database_error(error)
 
     def read_by_id(self, id: int) -> Optional[Company]:
-        """
-        Read a company by ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -111,9 +113,6 @@ class CompanyRepository:
             raise map_database_error(error)
 
     def read_by_public_id(self, public_id: str) -> Optional[Company]:
-        """
-        Read a company by public ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -129,9 +128,6 @@ class CompanyRepository:
             raise map_database_error(error)
 
     def read_by_name(self, name: str) -> Optional[Company]:
-        """
-        Read a company by name.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -147,9 +143,6 @@ class CompanyRepository:
             raise map_database_error(error)
 
     def update_by_id(self, company: Company) -> Optional[Company]:
-        """
-        Update a company by ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -161,6 +154,8 @@ class CompanyRepository:
                         "RowVersion": company.row_version_bytes,
                         "Name": company.name,
                         "Website": company.website,
+                        "OrganizationId": company.organization_id,
+                        "ModifiedByUserId": company.modified_by_user_id,
                     },
                 )
                 row = cursor.fetchone()
@@ -170,9 +165,6 @@ class CompanyRepository:
             raise map_database_error(error)
 
     def delete_by_id(self, id: int) -> Optional[Company]:
-        """
-        Delete a company by ID.
-        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()

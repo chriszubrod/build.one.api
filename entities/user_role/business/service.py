@@ -6,6 +6,7 @@ from typing import Optional
 # Local Imports
 from entities.user_role.business.model import UserRole
 from entities.user_role.persistence.repo import UserRoleRepository
+from shared.authz import current_company_id, current_user_id
 
 
 class UserRoleService:
@@ -17,47 +18,54 @@ class UserRoleService:
         """Initialize the UserRoleService."""
         self.repo = repo or UserRoleRepository()
 
-    def create(self, *, tenant_id: int = None, user_id: int, role_id: int) -> UserRole:
+    def create(
+        self,
+        *,
+        tenant_id: int = None,
+        user_id: int,
+        role_id: int,
+        company_id: Optional[int] = None,
+        created_by_user_id: Optional[int] = None,
+    ) -> UserRole:
         """
-        Create a new user role.
+        Create a UserRole row. CompanyId defaults to the active Company
+        from the per-request ContextVar; CreatedByUserId / ModifiedByUserId
+        default to the active subject. Admin paths can override either.
         """
-        # TODO: In Phase 10, use tenant_id for tenant isolation
-        return self.repo.create(user_id=user_id, role_id=role_id)
+        cid = company_id if company_id is not None else current_company_id.get()
+        actor = created_by_user_id if created_by_user_id is not None else current_user_id.get()
+        return self.repo.create(
+            user_id=user_id,
+            role_id=role_id,
+            company_id=cid,
+            created_by_user_id=actor,
+            modified_by_user_id=actor,
+        )
 
     def read_all(self) -> list[UserRole]:
-        """
-        Read all user roles.
-        """
         return self.repo.read_all()
 
     def read_by_id(self, id: str) -> Optional[UserRole]:
-        """
-        Read a user role by ID.
-        """
         return self.repo.read_by_id(id)
 
     def read_by_public_id(self, public_id: str) -> Optional[UserRole]:
-        """
-        Read a user role by public ID.
-        """
         return self.repo.read_by_public_id(public_id)
 
     def read_by_user_id(self, user_id: int) -> Optional[UserRole]:
-        """
-        Read a user role by user ID.
-        """
         return self.repo.read_by_user_id(user_id)
 
     def read_all_by_user_id(self, user_id: int) -> list[UserRole]:
-        """
-        Read every UserRole row assigned to the user (multi-role support).
-        """
         return self.repo.read_all_by_user_id(user_id=user_id)
 
+    def read_all_by_user_id_and_company_id(
+        self, *, user_id: int, company_id: int
+    ) -> list[UserRole]:
+        """Phase 2 permission resolver entry point."""
+        return self.repo.read_all_by_user_id_and_company_id(
+            user_id=user_id, company_id=company_id
+        )
+
     def read_by_role_id(self, role_id: int) -> Optional[UserRole]:
-        """
-        Read a user role by role ID.
-        """
         return self.repo.read_by_role_id(role_id)
 
     def update_by_public_id(
@@ -68,11 +76,9 @@ class UserRoleService:
         row_version: str,
         user_id: int = None,
         role_id: int = None,
+        company_id: Optional[int] = None,
+        modified_by_user_id: Optional[int] = None,
     ) -> Optional[UserRole]:
-        """
-        Update a user role by public ID.
-        """
-        # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
         if existing:
             existing.row_version = row_version
@@ -80,13 +86,16 @@ class UserRoleService:
                 existing.user_id = user_id
             if role_id is not None:
                 existing.role_id = role_id
+            if company_id is not None:
+                existing.company_id = company_id
+            existing.modified_by_user_id = (
+                modified_by_user_id
+                if modified_by_user_id is not None
+                else current_user_id.get()
+            )
         return self.repo.update_by_id(existing)
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[UserRole]:
-        """
-        Delete a user role by public ID.
-        """
-        # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
         if existing:
             return self.repo.delete_by_id(existing.id)

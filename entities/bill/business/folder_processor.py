@@ -551,27 +551,50 @@ class BillFolderProcessor:
             total_amount=parsed.rate,
             memo=parsed.description,
             is_draft=True,
-        )
-
-        line_item = self.bill_line_item_service.create(
-            tenant_id=tenant_id,
-            bill_public_id=bill.public_id,
-            sub_cost_code_id=parsed.sub_cost_code_id,
-            project_public_id=parsed.project_public_id,
-            description=parsed.description or parsed.vendor_name,
-            quantity=1,
-            rate=parsed.rate,
-            amount=parsed.rate,
-            markup=Decimal("0"),
-            price=parsed.rate,
-            is_draft=True,
-        )
-
-        self.bill_line_item_attachment_service.create(
-            tenant_id=tenant_id,
-            bill_line_item_public_id=line_item.public_id,
             attachment_public_id=attachment.public_id,
+            intake_source="bill_folder",
         )
+
+        # BillService.create now creates a placeholder line item linked to the
+        # attachment. Find that placeholder and update it with the parsed data
+        # rather than creating a new line item (which would leave the placeholder
+        # orphaned).
+        existing_line_items = self.bill_line_item_service.read_by_bill_id(bill.id)
+        if existing_line_items:
+            placeholder = existing_line_items[0]
+            line_item = self.bill_line_item_service.update_by_public_id(
+                placeholder.public_id,
+                bill_public_id=bill.public_id,
+                sub_cost_code_id=parsed.sub_cost_code_id,
+                project_public_id=parsed.project_public_id,
+                description=parsed.description or parsed.vendor_name,
+                quantity=1,
+                rate=parsed.rate,
+                amount=parsed.rate,
+                markup=Decimal("0"),
+                price=parsed.rate,
+                is_draft=True,
+                row_version=placeholder.row_version,
+            )
+        else:
+            line_item = self.bill_line_item_service.create(
+                tenant_id=tenant_id,
+                bill_public_id=bill.public_id,
+                sub_cost_code_id=parsed.sub_cost_code_id,
+                project_public_id=parsed.project_public_id,
+                description=parsed.description or parsed.vendor_name,
+                quantity=1,
+                rate=parsed.rate,
+                amount=parsed.rate,
+                markup=Decimal("0"),
+                price=parsed.rate,
+                is_draft=True,
+            )
+            self.bill_line_item_attachment_service.create(
+                tenant_id=tenant_id,
+                bill_line_item_public_id=line_item.public_id,
+                attachment_public_id=attachment.public_id,
+            )
 
         # Bill is durable now. If move fails the next claim's duplicate
         # check will short-circuit (bill_number+vendor already exists) so
@@ -672,7 +695,7 @@ class BillFolderProcessor:
             category="bill",
         )
 
-        # Create Bill draft
+        # Create Bill draft (creates placeholder line item linked to attachment)
         bill = self.bill_service.create(
             tenant_id=tenant_id,
             vendor_public_id=parsed.vendor_public_id,
@@ -683,29 +706,47 @@ class BillFolderProcessor:
             total_amount=parsed.rate,
             memo=parsed.description,
             is_draft=True,
-        )
-
-        # Create BillLineItem
-        line_item = self.bill_line_item_service.create(
-            tenant_id=tenant_id,
-            bill_public_id=bill.public_id,
-            sub_cost_code_id=parsed.sub_cost_code_id,
-            project_public_id=parsed.project_public_id,
-            description=parsed.description or parsed.vendor_name,
-            quantity=1,
-            rate=parsed.rate,
-            amount=parsed.rate,
-            markup=Decimal("0"),
-            price=parsed.rate,
-            is_draft=True,
-        )
-
-        # Link attachment
-        self.bill_line_item_attachment_service.create(
-            tenant_id=tenant_id,
-            bill_line_item_public_id=line_item.public_id,
             attachment_public_id=attachment.public_id,
+            intake_source="bill_folder",
         )
+
+        # Update the placeholder line item with parsed data
+        existing_line_items = self.bill_line_item_service.read_by_bill_id(bill.id)
+        if existing_line_items:
+            placeholder = existing_line_items[0]
+            line_item = self.bill_line_item_service.update_by_public_id(
+                placeholder.public_id,
+                bill_public_id=bill.public_id,
+                sub_cost_code_id=parsed.sub_cost_code_id,
+                project_public_id=parsed.project_public_id,
+                description=parsed.description or parsed.vendor_name,
+                quantity=1,
+                rate=parsed.rate,
+                amount=parsed.rate,
+                markup=Decimal("0"),
+                price=parsed.rate,
+                is_draft=True,
+                row_version=placeholder.row_version,
+            )
+        else:
+            line_item = self.bill_line_item_service.create(
+                tenant_id=tenant_id,
+                bill_public_id=bill.public_id,
+                sub_cost_code_id=parsed.sub_cost_code_id,
+                project_public_id=parsed.project_public_id,
+                description=parsed.description or parsed.vendor_name,
+                quantity=1,
+                rate=parsed.rate,
+                amount=parsed.rate,
+                markup=Decimal("0"),
+                price=parsed.rate,
+                is_draft=True,
+            )
+            self.bill_line_item_attachment_service.create(
+                tenant_id=tenant_id,
+                bill_line_item_public_id=line_item.public_id,
+                attachment_public_id=attachment.public_id,
+            )
 
         # Move to processed folder
         try:

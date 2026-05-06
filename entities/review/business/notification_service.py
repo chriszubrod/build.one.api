@@ -1,5 +1,5 @@
 # Python Standard Library Imports
-import base64
+import html
 import logging
 from datetime import datetime
 from decimal import Decimal
@@ -61,16 +61,39 @@ class ReviewNotificationService:
     def _do_enqueue(self, *, bill, review, exclude_user_id):
         # Lazy imports to avoid circular dependencies with BillService.
         from config import Settings
-        from entities.attachment.business.service import AttachmentService
         from entities.bill_line_item.business.service import BillLineItemService
-        from entities.bill_line_item_attachment.persistence.repo import (
-            BillLineItemAttachmentRepository,
-        )
+        from entities.email_message.business.service import EmailMessageService
         from entities.project.business.service import ProjectService
         from entities.user.business.service import UserService
         from entities.vendor.business.service import VendorService
         from integrations.ms.outbox.business.service import MsOutboxService
-        from shared.storage import AzureBlobStorage
+
+        # 0. Forward-only design: bill must trace back to a polled vendor
+        # email so the notification is a forward of that email, keeping
+        # reviewer replies in the same MS Graph conversation thread. Bills
+        # from bill_folder intake have no source email and are out of
+        # scope for v1 (already-reviewed historical batch + intake path
+        # being phased out).
+        source_email_message_id = getattr(bill, "source_email_message_id", None)
+        if not source_email_message_id:
+            logger.info(
+                "review_notification.skipped bill_public_id=%s "
+                "reason=no_source_email_message_id (bill_folder or manual intake)",
+                bill.public_id,
+            )
+            return
+
+        email_message = EmailMessageService().read_by_id(source_email_message_id)
+        if email_message is None or not email_message.graph_message_id:
+            logger.warning(
+                "review_notification.skipped bill_public_id=%s "
+                "reason=source_email_no_graph_message_id "
+                "source_email_message_id=%s",
+                bill.public_id,
+                source_email_message_id,
+            )
+            return
+        forward_message_id = email_message.graph_message_id
 
         # 1. Resolve recipients.
         envelope = ReviewRecipientService().resolve_for_bill(
@@ -166,60 +189,23 @@ class ReviewNotificationService:
                 if full:
                     submitter_name = full
 
-        # 3. Look up the source-summary attachment. First line item by Id
-        #    ASC is the summary line for email-agent flows; for human-
-        #    created bills it's whichever line was created first. Walk
-        #    line items in id order and grab the first one that has an
-        #    Attachment link.
-        attachment_dict = None
-        sorted_lis = sorted(line_items, key=lambda li: li.id or 0)
-        bli_attachment_repo = BillLineItemAttachmentRepository()
-        attachment_service = AttachmentService()
-        blob_storage = AzureBlobStorage()
-        for li in sorted_lis:
-            if li.id is None:
-                continue
-            link = bli_attachment_repo.read_by_bill_line_item_id(
-                bill_line_item_id=li.id
-            )
-            if link is None or link.attachment_id is None:
-                continue
-            attachment = attachment_service.read_by_id(link.attachment_id)
-            if attachment is None or not attachment.blob_url:
-                continue
-            try:
-                content, _meta = blob_storage.download_file(attachment.blob_url)
-            except Exception as blob_error:
-                logger.warning(
-                    "review_notification.blob_download_failed bill_public_id=%s "
-                    "attachment_id=%s blob_url=%s: %s",
-                    bill.public_id,
-                    attachment.id,
-                    attachment.blob_url,
-                    blob_error,
-                )
-                break
-            attachment_dict = {
-                "name": attachment.original_filename or attachment.filename or "bill.pdf",
-                "content_type": attachment.content_type or "application/pdf",
-                "content_bytes": base64.b64encode(content).decode("ascii"),
-            }
-            break
-
-        # 4. Build subject + body.
-        subject = self._build_subject(
-            bill=bill,
-            vendor_name=vendor_name,
-            project_label=project_label,
-        )
-        body = self._build_body(
+        # 3. Build the HTML preamble. Graph's `comment` field on
+        # createForward is plain text and strips newlines (everything
+        # collapses into a single <div> in Outlook). To get a properly
+        # formatted preamble with line breaks, we use the 2-step PATCH
+        # path: Graph creates the forward with the original body; the
+        # client PATCHes the body to prepend our HTML preamble. Vendor
+        # / project / submitter values are HTML-escaped so a vendor
+        # name containing `<` or `&` doesn't render as broken markup.
+        html_preamble = self._build_html_preamble(
             bill=bill,
             vendor_name=vendor_name,
             project_label=project_label,
             submitter_name=submitter_name,
+            to_recipients=to_with_email,
         )
 
-        # 5. Enqueue.
+        # 4. Enqueue as a forward of the original vendor email.
         mode = settings.review_notification_mode
         result = MsOutboxService().enqueue_send_mail(
             entity_type="Bill",
@@ -231,13 +217,18 @@ class ReviewNotificationService:
                 {"email": r.email, "name": r.display_name} for r in cc_with_email
             ],
             bcc_addresses=bcc_with_email,
-            subject=subject,
-            body=body,
-            body_type="HTML",
-            attachment=attachment_dict,
+            # Subject / body / attachment are unused on the forward path —
+            # Graph inherits them from the source vendor email. We pass
+            # placeholders so the outbox payload schema stays consistent.
+            subject="",
+            body="",
+            body_type="Text",
+            attachment=None,
             mode=mode,
             review_id=review.id,
             bill_id=bill.id,
+            forward_message_id=forward_message_id,
+            html_preamble=html_preamble,
         )
 
         if result is None:
@@ -249,14 +240,14 @@ class ReviewNotificationService:
 
         logger.info(
             "review_notification.enqueued bill_public_id=%s outbox_public_id=%s "
-            "mode=%s to=%d cc=%d bcc=%d has_attachment=%s",
+            "mode=%s to=%d cc=%d bcc=%d forward_of=%s",
             bill.public_id,
             result.public_id,
             mode,
             len(to_with_email),
             len(cc_with_email),
             len(bcc_with_email),
-            attachment_dict is not None,
+            forward_message_id[:24] + "..." if len(forward_message_id) > 24 else forward_message_id,
         )
 
     @staticmethod
@@ -287,28 +278,55 @@ class ReviewNotificationService:
         return s
 
     @classmethod
-    def _build_subject(cls, *, bill, vendor_name: str, project_label: str) -> str:
-        bill_number = bill.bill_number or "(no number)"
-        amount_str = cls._format_amount(bill.total_amount)
-        return f"{project_label} - {vendor_name} - {bill_number} - {amount_str}"
+    def _build_html_preamble(
+        cls,
+        *,
+        bill,
+        vendor_name: str,
+        project_label: str,
+        submitter_name: str,
+        to_recipients: Optional[list] = None,
+    ) -> str:
+        """HTML preamble prepended to the forwarded body via the 2-step
+        createForward + PATCH path. Renders with real line breaks above
+        a horizontal rule that separates from the forwarded original.
 
-    @classmethod
-    def _build_body(cls, *, bill, vendor_name: str, project_label: str, submitter_name: str) -> str:
-        bill_number = bill.bill_number or "(no number)"
-        amount_str = cls._format_amount(bill.total_amount)
-        submitted_date = cls._format_submitted_date(bill.created_datetime)
+        When `to_recipients` is supplied (the resolved list of PMs going
+        in the To: line), the preamble opens with a greeting addressed
+        to their firstnames — e.g., `Cassidy,` or `Cassidy/Zach,`. With
+        no PM recipients (BCC-archive-only fallback), the greeting is
+        omitted."""
+        bill_number = html.escape(bill.bill_number or "(no number)")
+        vendor = html.escape(vendor_name)
+        project = html.escape(project_label)
+        submitter = html.escape(submitter_name)
+        amount_str = cls._format_amount(bill.total_amount)  # numeric, safe
+        submitted_date = cls._format_submitted_date(bill.created_datetime)  # safe
+
+        greeting = ""
+        if to_recipients:
+            firstnames = [
+                html.escape(r.firstname.strip())
+                for r in to_recipients
+                if getattr(r, "firstname", None) and r.firstname.strip()
+            ]
+            if firstnames:
+                greeting = f"<p>{'/'.join(firstnames)},</p>"
+
         return (
+            f"{greeting}"
             "<p>A new bill has been submitted for review:</p>"
             "<p>"
-            f"Project: {project_label}<br/>"
-            f"Vendor: {vendor_name}<br/>"
+            f"Project: {project}<br/>"
+            f"Vendor: {vendor}<br/>"
             f"Number: {bill_number}<br/>"
             f"Amount: {amount_str}"
             "</p>"
             "<p>"
-            f"Submitted By: {submitter_name}<br/>"
+            f"Submitted By: {submitter}<br/>"
             f"Submitted Date: {submitted_date}"
             "</p>"
             "<p>When you have a moment, will you please reply for approval "
             "with Sub Cost Code and Description or non-approval?</p>"
+            "<hr/>"
         )

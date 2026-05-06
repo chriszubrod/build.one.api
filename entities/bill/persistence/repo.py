@@ -64,6 +64,7 @@ class BillRepository:
                 is_draft=bool(getattr(row, "IsDraft", False)) if getattr(row, "IsDraft", None) is not None else None,
                 intake_source=getattr(row, "IntakeSource", None),
                 intake_source_detail=getattr(row, "IntakeSourceDetail", None),
+                source_email_message_id=getattr(row, "SourceEmailMessageId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during bill mapping: {error}")

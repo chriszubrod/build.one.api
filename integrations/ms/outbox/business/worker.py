@@ -579,6 +579,8 @@ class MsOutboxWorker:
         """
         from integrations.ms.mail.external.client import (
             create_draft,
+            create_forward_draft,
+            forward_message,
             send_message,
         )
 
@@ -590,13 +592,41 @@ class MsOutboxWorker:
         body_type = payload.get("body_type") or "HTML"
         attachment = payload.get("attachment")
         mode = (payload.get("mode") or "draft").lower()
+        forward_message_id = payload.get("forward_message_id")
+        comment_text = payload.get("comment_text") or ""
+        html_preamble = payload.get("html_preamble") or None
 
         if not to_addresses and not cc_addresses and not bcc_addresses:
             raise ValueError("send_mail payload has no recipients on any line")
 
         attachments = [attachment] if attachment else None
 
-        if mode == "send":
+        if forward_message_id:
+            # Forward path — inherit subject/body/attachments from the
+            # source message; `comment_text` becomes the plain-text
+            # preamble. `subject` / `body` / `attachment` ignored.
+            if mode == "send":
+                result = forward_message(
+                    message_id=forward_message_id,
+                    to_recipients=to_addresses,
+                    comment=comment_text or None,
+                    cc_recipients=cc_addresses or None,
+                    bcc_recipients=bcc_addresses or None,
+                )
+            elif mode == "draft":
+                result = create_forward_draft(
+                    message_id=forward_message_id,
+                    # html_preamble takes precedence; comment_text is the
+                    # fallback for callers that don't need rich formatting.
+                    comment=(comment_text or None) if not html_preamble else None,
+                    html_preamble=html_preamble,
+                    to_recipients=to_addresses or None,
+                    cc_recipients=cc_addresses or None,
+                    bcc_recipients=bcc_addresses or None,
+                )
+            else:
+                raise ValueError(f"send_mail payload has unknown mode: {mode!r}")
+        elif mode == "send":
             result = send_message(
                 to_recipients=to_addresses,
                 subject=subject,

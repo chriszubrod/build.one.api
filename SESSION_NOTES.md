@@ -1,5 +1,52 @@
 # Session Notes
 
+## Session: Review-submit notifications — pivot to forward-of-original vendor email (May 6, 2026)
+
+### Overview
+Mid-flight design pivot on the review-submit notification feature shipped earlier today (commit `fe0d1f1`). User direction: instead of synthesizing a new email with the bill PDF attached, **draft a forward of the original vendor email** so the reviewer reply lives in the same MS Graph conversation thread as the source — gives the email-agent (when reply-handling lands) the full thread for context.
+
+### What changed
+- **`ReviewNotificationService.enqueue_for_bill` is now forward-only.** Looks up `Bill.SourceEmailMessageId → EmailMessage.GraphMessageId`, builds an HTML preamble + greeting, calls `MsOutboxService.enqueue_send_mail(..., forward_message_id=..., html_preamble=...)`. Bills without a source email (manual web-UI creation, bill_folder intake) are silently skipped — TODO captures the synth-email fallback for future.
+- **Mail client `create_forward_draft` extended** with `comment` (plain-text) and `html_preamble` (HTML, via 2-step PATCH) modes plus `to/cc/bcc_recipients`. `forward_message` (mode=send equivalent) gained `cc/bcc_recipients` for parity. Both use Graph's `message` property for cc/bcc since they aren't top-level on `/forward`.
+- **MsOutboxService.enqueue_send_mail** gained `forward_message_id`, `comment_text`, `html_preamble` payload fields. Worker `_handle_send_mail` dispatches to `create_forward_draft` / `forward_message` when `forward_message_id` is present, falls through to `create_draft` / `send_message` otherwise.
+- **Email body rendering — three iterations to get right:**
+  1. First attempt used Graph's plain-text `comment` field — Outlook collapsed all newlines into a single run-on `<div>` (Graph's behavior; comment is not interpreted as HTML).
+  2. Second attempt: 2-step POST createForward + PATCH with HTML body via simple `html_preamble + existing_body` concat. Preamble formatted correctly, but the **forwarded section** ran-on because the original Walker Lumber email's `contentType` is `text` (not HTML); the `\n` newlines didn't render in HTML mode.
+  3. Final fix: the PATCH inspects the existing body's `contentType`. For `text` originals: HTML-escape the body and replace `\n` with `<br>`, then prepend the preamble. For `html` originals: regex-find the `<body>` tag and inject the preamble RIGHT AFTER its opening (preserving the existing `<head>` / `<style>` block + body markup so Outlook's auto-styled `EmailQuote` continues to work).
+- **Greeting added:** preamble opens with `Cassidy/Zach,` (slash-joined firstnames of the resolved To-line PMs) — passed through `_build_html_preamble(..., to_recipients=to_with_email)`. Greeting omitted when there are no PMs (e.g., projects without role assignments). Firstnames pulled from `User.Firstname` via the existing recipient resolver — already in the `ResolvedRecipient` dataclass.
+- **`Bill` dataclass** gained `source_email_message_id: Optional[int]` field; `_from_db` reads via `getattr` so existing read sprocs (which don't SELECT it) keep working — only `CreateBill`'s OUTPUT populates it. Sufficient for the auto-Submit hook's flow.
+
+### Validated end-to-end
+4 additional smokes (8–11) against Bill 18388 (BR-MAIN, no PMs assigned → empty TO/CC + only BCC=invoice@). After the 3rd iteration:
+- Subject auto-prefixed `FW: Invoice 202980` ✓
+- HTML preamble at top with proper line breaks per field ✓
+- `<hr/>` separator between preamble and forwarded original ✓
+- Forwarded vendor email with proper line breaks (`From: / Sent: / To: / Subject:` each on their own line) ✓
+- Vendor PDF attachment inherited from original (no separate blob fetch) ✓
+- Greeting unit-tested: `<p>Cassidy/Zach,</p>` for 2 PMs; omitted for 0 PMs ✓
+- User confirmed in Outlook: format renders correctly; manually filled in TO/CC for the BR-MAIN draft (since no role assignments) and submitted for review.
+
+### Files edited (6)
+- `entities/bill/business/model.py` — `source_email_message_id` field
+- `entities/bill/persistence/repo.py` — `_from_db` reads `SourceEmailMessageId`
+- `entities/review/business/notification_service.py` — forward-only pivot, `_build_html_preamble` (with greeting + HTML escape), `_build_comment_text` removed (dead), attachment-fetch logic removed (forward inherits)
+- `integrations/ms/mail/external/client.py` — `create_forward_draft` + `forward_message` extended; 2-step PATCH path with content-type-aware body handling
+- `integrations/ms/outbox/business/service.py` — `forward_message_id`, `comment_text`, `html_preamble` payload fields
+- `integrations/ms/outbox/business/worker.py` — `_handle_send_mail` dispatches forward path when `forward_message_id` present
+
+### TODO impact
+- New: **synth-email fallback for bills without `SourceEmailMessageId`** (manual web-UI creation surface). Plumbing partially deleted in this pivot; pointer to commit `fe0d1f1` for future revival. Captured at the top of the "Review-submit notifications follow-ups" section in TODO.md.
+- The Wave 5-era TODO items (mode=send smoke, deep-link CTA, React UI for UserProject.RoleId, etc.) remain valid. Reply-handling becomes more relevant since replies stay in-thread now.
+
+### Lessons / non-obvious calls
+- **Graph's `comment` field is plain text only.** Despite docs implying HTML acceptance via the `message.body` override, that override REPLACES the forwarded body (defeats the forward). 2-step POST + PATCH is the only clean way to inject HTML preamble while keeping the original body.
+- **PATCH body must respect the source contentType.** Walker Lumber's emails are `contentType=text`; their `\n` newlines don't render in HTML mode. Force-converting `\n` → `<br>` is required for plain-text source bodies to look right after PATCH.
+- **`<body>` tag injection vs simple prepend.** For HTML-source emails, simple concatenation strips the `<style>` block (Graph normalizes the resulting double-`<html>` document). Regex-finding `<body[^>]*>` and injecting after it preserves the `<head>` / `<style>` block intact. Only matters for HTML-source originals.
+- **Forward-only is a real product decision, not just an implementation choice.** Bills with no source email get NO notification today. Bill_folder bills are out of scope (already approved + intake being phased out per user). Manual web-UI creation IS in scope but deferred — TODO captures the synth-email fallback design.
+
+### Commits
+TBD — pending the doc updates in this entry + CLAUDE.md + memory.
+
 ## Session: Access Control Rebuild — Phases 2 / 3 / 4 / 5 (May 6, 2026)
 
 ### Overview

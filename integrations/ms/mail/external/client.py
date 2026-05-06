@@ -824,11 +824,25 @@ def forward_message(
     message_id: str,
     to_recipients: List[dict],
     comment: Optional[str] = None,
+    cc_recipients: Optional[List[dict]] = None,
+    bcc_recipients: Optional[List[dict]] = None,
 ) -> dict:
-    """Forward a message to recipients."""
+    """Forward a message to recipients (immediate send via /forward).
+
+    Graph's /forward endpoint accepts toRecipients + comment at the top
+    level and additional message overrides (cc / bcc) under a `message`
+    property. `comment` is plain text; HTML is not interpreted.
+    """
     payload: Dict[str, Any] = {"toRecipients": _build_recipient_list(to_recipients)}
     if comment:
         payload["comment"] = comment
+    if cc_recipients or bcc_recipients:
+        message_overrides: Dict[str, Any] = {}
+        if cc_recipients:
+            message_overrides["ccRecipients"] = _build_recipient_list(cc_recipients)
+        if bcc_recipients:
+            message_overrides["bccRecipients"] = _build_recipient_list(bcc_recipients)
+        payload["message"] = message_overrides
     try:
         with MsGraphClient() as client:
             client.post(
@@ -843,14 +857,112 @@ def forward_message(
         return _error_response(e)
 
 
-def create_forward_draft(message_id: str) -> dict:
-    """Create a forward draft for a message (for more control before sending)."""
+def create_forward_draft(
+    message_id: str,
+    comment: Optional[str] = None,
+    html_preamble: Optional[str] = None,
+    to_recipients: Optional[List[dict]] = None,
+    cc_recipients: Optional[List[dict]] = None,
+    bcc_recipients: Optional[List[dict]] = None,
+) -> dict:
+    """Create a forward draft for a message.
+
+    Graph's /createForward endpoint accepts toRecipients + comment top-
+    level, and cc / bcc inside `message`. The returned draft inherits the
+    original subject (auto-prefixed `FW: `), body, and attachments.
+
+    Two preamble modes:
+      - `comment` (plain text): passed via Graph's `comment` field.
+        Graph wraps it in a `<div>` and **strips newlines** — fields end
+        up running together on one line. Cheap (single POST) but visually
+        flat.
+      - `html_preamble` (HTML): two-step POST createForward + PATCH
+        body. The PATCH prepends the HTML preamble to the forwarded body
+        content, preserving the original message AND giving Outlook real
+        line breaks. Slightly heavier (2 Graph calls) but produces a
+        properly formatted email.
+
+    Pass either or neither; passing both raises ValueError.
+    """
+    if comment and html_preamble:
+        raise ValueError("create_forward_draft: pass either comment or html_preamble, not both")
+
+    payload: Dict[str, Any] = {}
+    if comment:
+        payload["comment"] = comment
+    if to_recipients:
+        payload["toRecipients"] = _build_recipient_list(to_recipients)
+    if cc_recipients or bcc_recipients:
+        message_overrides: Dict[str, Any] = {}
+        if cc_recipients:
+            message_overrides["ccRecipients"] = _build_recipient_list(cc_recipients)
+        if bcc_recipients:
+            message_overrides["bccRecipients"] = _build_recipient_list(bcc_recipients)
+        payload["message"] = message_overrides
     try:
         with MsGraphClient() as client:
             draft = client.post(
                 f"me/messages/{message_id}/createForward",
+                json=payload if payload else None,
                 operation_name="mail.create_forward_draft",
             )
+            if html_preamble:
+                draft_id = draft.get("id") if isinstance(draft, dict) else None
+                if not draft_id:
+                    raise MsGraphError(
+                        message="createForward returned no draft id",
+                        http_status=500,
+                    )
+                existing_body = (draft.get("body") or {}).get("content") or ""
+                existing_content_type = (
+                    (draft.get("body") or {}).get("contentType") or ""
+                ).lower()
+
+                if existing_content_type == "text":
+                    # Plain-text vendor emails (Walker Lumber, etc.) come
+                    # back from createForward as `contentType=text` with
+                    # `\n` newlines. PATCHing with `contentType=HTML`
+                    # would collapse those newlines visually, so we
+                    # HTML-escape the existing content and convert
+                    # newlines to `<br>` first, then prepend the preamble.
+                    import html as _html
+                    safe_existing = _html.escape(existing_body).replace("\n", "<br>")
+                    new_body = html_preamble + safe_existing
+                else:
+                    # HTML body: inject the preamble inside the <body>
+                    # tag so the existing <head>/<style> block (which
+                    # styles the forwarded EmailQuote) and the original
+                    # body markup stay untouched.
+                    import re
+                    body_open = re.search(r"<body[^>]*>", existing_body, flags=re.IGNORECASE)
+                    if body_open:
+                        insert_pos = body_open.end()
+                        new_body = (
+                            existing_body[:insert_pos]
+                            + html_preamble
+                            + existing_body[insert_pos:]
+                        )
+                    else:
+                        # Fallback: no <body> tag → simple prepend.
+                        new_body = html_preamble + existing_body
+
+                client.patch(
+                    f"me/messages/{draft_id}",
+                    json={
+                        "body": {
+                            "contentType": "HTML",
+                            "content": new_body,
+                        }
+                    },
+                    timeout_tier="B",
+                    operation_name="mail.create_forward_draft.patch_body",
+                )
+                # Re-fetch for the return shape so callers see the
+                # updated body.
+                draft = client.get(
+                    f"me/messages/{draft_id}",
+                    operation_name="mail.create_forward_draft.refetch",
+                )
         return {
             "message": "Forward draft created successfully",
             "status_code": 201,

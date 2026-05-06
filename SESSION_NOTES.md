@@ -47,6 +47,64 @@ Mid-flight design pivot on the review-submit notification feature shipped earlie
 ### Commits
 TBD — pending the doc updates in this entry + CLAUDE.md + memory.
 
+## Session: Multi-user RBAC review — Gaps 1 / 2 / 3 (May 6, 2026)
+
+### Overview
+
+Independent of the 5-phase access-control rebuild that shipped earlier today, an audit of the multi-user posture surfaced three real gaps:
+1. **Per-user transactional data isolation** — TimeEntry was scoped (Phase 3) but Bill / BillCredit / Expense / Invoice / ContractLabor / Project were globally visible to anyone with module read.
+2. **Audit attribution on transactional entities** — only the 7 access-control entities and Workflow / WorkflowEvent had `CreatedByUserId`; the 30 transactional + reference entities did not.
+3. **Credential lifecycle** — no self-service password change; admin password reset didn't revoke target user's outstanding refresh tokens.
+
+Tackled in reverse-size order: Gap 3 (smallest) → Gap 2 (medium) → Gap 1 (biggest). Three separate commits to master.
+
+### Gap 3 — Credential lifecycle (commit 64a2a05)
+
+`POST /api/v1/auth/change-password` (cookie + CSRF, refreshes auth cookies) and `POST /api/v1/mobile/auth/change-password` (token-only, returns tokens in body). User stays logged in via fresh access + refresh pair. New `RevokeAllAuthRefreshTokensByAuthId` sproc + `revoke_all_for_auth_id` repo method. `set_credentials_for_user` (admin endpoint) now revokes the target user's tokens after a password change. 2FA deferred per Q3.3. Verified end-to-end against a synthetic user.
+
+### Gap 2 — `CreatedByUserId` on 30 transactional + reference entities (commit 361d248)
+
+Same Phase 5 DEFAULT-trick pattern — zero code change required. ADD COLUMN nullable + FK User.Id + filtered index, backfill all rows to id=17 (Christopher / IsSystemAdmin), DEFAULT (17) constraint, NOT NULL flip with drop/recreate index. The 30 tables = 24 from Phase 5 + 6 reference entities (Vendor / Customer / SubCostCode / CostCode / PaymentTerm / ProjectAddress) per Q2.1 = b. `ModifiedByUserId` SKIPPED per Q2.2 = c — Workflow audit trail already captures actor + timestamp on every CRUD. ~80,000 rows tagged across 30 tables, zero NULLs.
+
+**Initial bug**: first migration assumed `User.Id=1` (Phase 5 used `Company.Id=1`). User table starts at Id=17. Fixed via sed before re-running.
+
+**Caveat surfaced**: today every new row stamps `CreatedByUserId=17` regardless of who created it because the DEFAULT fires uniformly. Until services thread `current_user_id` from ContextVar through to the sproc INSERT, the column shows "Christopher created everything." Phase 5b will land service-layer threading.
+
+### Gap 1 — Per-user transactional data isolation via UserProject (commit e2d3afb)
+
+The biggest of the three. Five Q&A questions answered before any SQL:
+
+1. **Bill / BillCredit / Expense scoping shape** (Q1.1 = b): EXISTS via line items. Parent visible if ANY of its line items' `ProjectId` is in user's `UserProject` set.
+2. **Project list filtering** (Q1.2 = a): yes — non-admins see only Projects they have UserProject access to.
+3. **ContractLabor** (Q1.3 = a): include — its parent has `ProjectId` (correction from the Phase 3 deferral).
+4. **Tenant Admin role bypass** (Q1.4 = a): no — only `IsSystemAdmin` bypasses. Tenant Admins get explicit UserProject rows.
+5. **Cutover backfill** (Q1.5 = a): agents-only × every Project. Honor humans' existing explicit UserProject assignments. Without the agent backfill, the entire agent fleet would go blind.
+
+**Scope reduction mid-execution**: with 6 entities × ~5-8 sprocs each = 40+ sprocs to scope, agreed to a "list-path only first" pass — `Read{Entity}s` + `Read{Entity}sPaginated` + `Count{Entity}s` per entity, defer `By{Id|PublicId|...}` direct-lookup tightening to a follow-up.
+
+**Performance journey**:
+- **v1** (scalar UDFs `dbo.UserCanAccessBill/BillCredit/Expense` wrapping EXISTS-via-line-items in `CONVERT(BIT, CASE)`): 113 s for non-admin Bill count. Per-row UDF execution; SQL Server's Froid scalar inlining didn't kick in due to the CONVERT wrap.
+- **v2** (inline correlated EXISTS): same 113 s — inline EXISTS still re-evaluates the join per Bill row.
+- **v3** (non-correlated IN-subquery against `BillLineItem × UserProject` join): **0.82 s**. The optimizer materializes the accessible-parent-id set once and hash-semi-joins it against `Bill.Id`. Plus added `b.[CreatedByUserId] = @ActorUserId` to handle the empty-bill edge case (drafts with no line items stay visible to their creator).
+
+The two failed migration files stay in commit history as a record (`gap1_bill_family_inline_filter.sql` = v2; `gap1_bill_family_inline_filter_v2.sql` = v3 = shipped). UDF helpers stay in place — `UserCanAccessProject` is fast and used by Project / Invoice / ContractLabor where direct `ProjectId` lives on the parent.
+
+**Final perf** (Cassidy = 1 UserProject):
+```
+Bill count:        18,248 → 479 in 0.82s
+BillCredit count:     413 → 8   in 2.49s
+Expense count:     10,692 → 145 in 0.52s
+Invoice count:      1,013 → 22  in 0.14s
+ContractLabor:        421 → 0   in 0.11s
+Project list:         131 → 1   in 0.09s
+```
+
+**Known follow-ups** (TODO.md): direct-URL leak on `By{Id|PublicId}` lookups across the 5 transactional entities; tightening pass. 1050 line-item-less Bills are creator-only visible per the model (acceptable edge case).
+
+### Working style
+
+Q&A-driven scoping at every gap boundary. Picking (B) "list-path only" mid-execution saved hours when the by-id surface turned out to be 40+ more sprocs. Picking (v3) "IN-subquery + CreatedByUserId" after two failed attempts was the difference between a 113-second non-admin query and a sub-second one. The pivots cost minutes of round-trip; stubbornness would have cost hours.
+
 ## Session: Access Control Rebuild — Phases 2 / 3 / 4 / 5 (May 6, 2026)
 
 ### Overview

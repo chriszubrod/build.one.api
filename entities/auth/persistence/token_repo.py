@@ -111,3 +111,32 @@ class AuthRefreshTokenRepository:
         except Exception as error:
             logger.error("Error during revoke refresh token by hash: %s", error)
             raise map_database_error(error)
+
+    def revoke_all_for_auth_id(
+        self,
+        *,
+        auth_id: int,
+        revoked_datetime,
+    ) -> int:
+        """
+        Bulk-revoke every non-revoked refresh token for the given auth.
+        Returns the number of rows revoked. Used on password change
+        (self-service or admin) to invalidate the user's outstanding
+        sessions.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="RevokeAllAuthRefreshTokensByAuthId",
+                    params={
+                        "AuthId": auth_id,
+                        "RevokedDatetime": revoked_datetime,
+                    },
+                )
+                rows = cursor.fetchall()
+                return len(rows)
+        except Exception as error:
+            logger.error("Error during revoke-all refresh tokens: %s", error)
+            raise map_database_error(error)

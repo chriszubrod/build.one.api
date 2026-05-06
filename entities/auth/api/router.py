@@ -18,6 +18,7 @@ from entities.auth.api.schemas import (
     AuthLogin,
     AuthSignup,
     AuthRefreshRequest,
+    ChangePasswordRequest,
     MobileRefreshRequest,
     SwitchCompanyRequest,
 )
@@ -282,6 +283,66 @@ def refresh_token_router(request: Request, response: Response, body: Optional[Au
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail="Token refresh failed.")
+
+
+@router.post("/auth/change-password")
+def change_password_router(
+    body: ChangePasswordRequest,
+    request: Request,
+    response: Response,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """
+    Self-service password change. Validates the current password,
+    updates the hash, revokes every existing refresh token for this
+    Auth, mints a fresh access + refresh pair, and refreshes auth
+    cookies (+ CSRF token) so the caller stays logged in.
+    """
+    user_sub = current_user.get("sub")
+    if not user_sub:
+        raise HTTPException(status_code=401, detail="Invalid session.")
+    try:
+        _, access_token, refresh_token = service.change_password(
+            user_sub=user_sub,
+            current_password=body.current_password,
+            new_password=body.new_password,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    _set_auth_cookies(
+        response=response, access_token=access_token, refresh_token=refresh_token
+    )
+    return item_response({"token": access_token.to_dict()})
+
+
+@router.post("/mobile/auth/change-password")
+def mobile_change_password_router(
+    body: ChangePasswordRequest,
+    current_user: dict = Depends(get_current_user_api),
+):
+    """
+    Mobile self-service password change. Same as the cookie variant
+    but returns both access and refresh tokens in the response body
+    (no cookies, no CSRF) so the iOS client can replace its stored
+    credentials.
+    """
+    user_sub = current_user.get("sub")
+    if not user_sub:
+        raise HTTPException(status_code=401, detail="Invalid session.")
+    try:
+        _, access_token, refresh_token = service.change_password(
+            user_sub=user_sub,
+            current_password=body.current_password,
+            new_password=body.new_password,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return item_response({
+        "token": access_token.to_dict(),
+        "refresh_token": refresh_token.to_dict(),
+    })
 
 
 @router.post("/auth/switch-company")

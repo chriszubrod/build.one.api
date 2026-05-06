@@ -294,11 +294,35 @@ class AuthService:
         """
         return self.repo.read_by_user_id(user_id=user_id)
 
+    def revoke_all_refresh_tokens_for_auth(self, *, auth_id: int) -> int:
+        """
+        Bulk-revoke every non-revoked refresh token for the given Auth.
+        Returns the number of rows revoked. Called on password change
+        (self-service or admin) to invalidate outstanding sessions.
+        Failure is best-effort — caller logs and continues.
+        """
+        try:
+            return self.token_repo.revoke_all_for_auth_id(
+                auth_id=auth_id,
+                revoked_datetime=datetime.now(timezone.utc),
+            )
+        except Exception as error:
+            logger.warning(
+                "Failed to revoke refresh tokens for auth_id=%s: %s",
+                auth_id,
+                error,
+            )
+            return 0
+
     def set_credentials_for_user(self, *, user_public_id: str, username: str, password: str) -> Auth:
         """
         Admin: create-or-update the Auth row for a User. Sets username and
         password. Validates password length (>= 8) and username uniqueness
         across other Auth rows.
+
+        Side effect (Gap 3): on every password change, revokes all of the
+        target user's outstanding refresh tokens so they're forced to
+        re-login with the new password.
         """
         if not username or len(username.strip()) < 1:
             raise ValueError("Username is required.")
@@ -321,12 +345,80 @@ class AuthService:
             existing_auth.username = username
             existing_auth.password_hash = _hash_password(password)
             existing_auth.user_id = user.id
-            return self.repo.update_by_id(existing_auth)
+            updated = self.repo.update_by_id(existing_auth)
+            # Admin password change is a security operation — invalidate
+            # the target user's outstanding sessions.
+            self.revoke_all_refresh_tokens_for_auth(auth_id=updated.id)
+            return updated
 
         # No Auth yet — create one and link to the user
         new_auth = self.repo.create(username=username, password_hash=_hash_password(password))
         new_auth.user_id = user.id
         return self.repo.update_by_id(new_auth)
+
+    def change_password(
+        self,
+        *,
+        user_sub: str,
+        current_password: str,
+        new_password: str,
+    ) -> Tuple[Auth, AuthToken, RefreshToken]:
+        """
+        Self-service password change. Validates the current password,
+        updates the hash, revokes every outstanding refresh token for
+        this Auth, and mints a fresh access + refresh pair so the
+        caller stays logged in (Q3.1 = (a)).
+        """
+        if not current_password or not new_password:
+            raise ValueError("Current and new passwords are required.")
+        if len(new_password) < 8:
+            raise ValueError("New password must be at least 8 characters.")
+        if current_password == new_password:
+            raise ValueError("New password must differ from the current password.")
+
+        auth = self.read_by_public_id(public_id=user_sub)
+        if not auth:
+            raise ValueError("Invalid session.")
+
+        valid, upgraded_hash = _verify_password(current_password, auth.password_hash)
+        if not valid:
+            raise ValueError("Current password is incorrect.")
+
+        # Apply new password. The upgraded_hash from the legacy SHA-256
+        # path is irrelevant — we're about to overwrite it.
+        auth.password_hash = _hash_password(new_password)
+        updated = self.repo.update_by_id(auth)
+
+        # Revoke every outstanding refresh token for this Auth — old
+        # sessions die immediately. Then mint a fresh pair for the
+        # caller so they stay logged in.
+        self.revoke_all_refresh_tokens_for_auth(auth_id=updated.id)
+
+        user_id, user_public_id, is_system_admin = self._resolve_user_for_auth(updated)
+        active_company = (
+            resolve_active_company_for_user(user_id) if user_id is not None else None
+        )
+
+        access_token = self.generate_auth_token(
+            auth=updated,
+            user_public_id=user_public_id,
+            active_company=active_company,
+            is_system_admin=is_system_admin,
+        )
+        refresh_token, refresh_meta = self._issue_refresh_token(
+            auth=updated,
+            user_public_id=user_public_id,
+            active_company=active_company,
+            is_system_admin=is_system_admin,
+        )
+        self._store_refresh_token(
+            auth=updated,
+            refresh_token=refresh_token,
+            issued_at=refresh_meta["issued_at"],
+            expires_at=refresh_meta["expires_at"],
+            jti=refresh_meta["jti"],
+        )
+        return updated, access_token, refresh_token
 
     def update_by_public_id(self, *, public_id: str, auth) -> Auth:
         _auth = self.read_by_public_id(public_id=public_id)

@@ -126,21 +126,30 @@ def _require_csrf(request: Request) -> None:
 
 def _enrich_payload_with_authz(payload: dict) -> dict:
     """
-    Phase 0 — read `uid`, `cid`, `isa` from the JWT payload and populate
-    the access-control ContextVars. For tokens issued before the
-    rebuild (no claims present), fall back to a DB lookup for the
-    user's default Company (`JWT_CID_GRACE_DAYS` controls how long this
-    fallback is allowed; the env var is read in Phase 2 to flip
-    enforcement). Phase 0 does not reject — it always falls back.
+    Read `uid`, `cid`, `isa` from the JWT payload and populate the
+    access-control ContextVars + the returned payload dict.
 
-    Mutates `payload` in place to add resolved `user_id`, `company_id`,
-    and `is_system_admin` keys for downstream consumers, then returns
-    it.
+    When the token is missing one of those claims (legacy token issued
+    before the rebuild), behavior depends on `Settings.jwt_cid_grace_days`:
+
+      - grace_days > 0: fall back via DB lookup (resolve the user from
+        the Auth.sub link, pick the user's default Company).
+      - grace_days == 0 (default since Phase 2): skip the fallback. The
+        corresponding context field stays None and downstream RBAC fails
+        closed — the user has to log in again to mint a fresh token
+        carrying the claims.
+
+    Mutates `payload` in place to add resolved `user_id`, `user_public_id`,
+    `company_id`, `company_public_id`, and `is_system_admin` keys for
+    downstream consumers, then returns it.
     """
     sub = payload.get("sub")
     cid_claim = payload.get("cid")
     uid_claim = payload.get("uid")
     isa_claim = payload.get("isa")
+
+    grace_days = Settings().jwt_cid_grace_days
+    legacy_fallback_allowed = grace_days > 0
 
     user_id: Optional[int] = None
     user_public_id: Optional[str] = uid_claim
@@ -148,15 +157,15 @@ def _enrich_payload_with_authz(payload: dict) -> dict:
     company_id: Optional[int] = None
     company_public_id: Optional[str] = cid_claim
 
-    # Resolve user_id from `uid` if present, else from `sub` -> Auth.user_id.
+    # Resolve user_id from `uid` if present, else from `sub` -> Auth.user_id
+    # (only allowed during the grace window).
     if uid_claim:
         user = UserService().read_by_public_id(public_id=uid_claim)
         if user:
             user_id = user.id
             if isa_claim is None:
                 is_system_admin = bool(getattr(user, "is_system_admin", False))
-    elif sub:
-        # Legacy token without `uid` — derive from Auth row.
+    elif sub and legacy_fallback_allowed:
         try:
             auth_row = AuthService().read_by_public_id(public_id=sub)
         except Exception:
@@ -168,15 +177,19 @@ def _enrich_payload_with_authz(payload: dict) -> dict:
                 user_public_id = user.public_id
                 is_system_admin = bool(getattr(user, "is_system_admin", False))
 
-    # Resolve company_id from `cid` if present and accessible. Otherwise
-    # fall back via the user's default (grace-window behavior).
+    # Resolve company_id from `cid` if present and accessible. Without a
+    # `cid` claim, fall back to the user's default Company only during
+    # the grace window — otherwise leave it unset so downstream RBAC
+    # can't accidentally resolve to a stale Company.
     if user_id is not None:
         if cid_claim:
             company = resolve_company_by_public_id_for_user(
                 user_id=user_id, company_public_id=cid_claim
             )
-        else:
+        elif legacy_fallback_allowed:
             company = resolve_active_company_for_user(user_id)
+        else:
+            company = None
         if company is not None:
             company_id = company.id
             company_public_id = company.public_id
@@ -723,7 +736,9 @@ class AuthService:
         """
         Re-mint access + refresh tokens for the caller with a new active
         Company. Validates membership (or system-admin bypass) and
-        persists `User.LastCompanyId` so future logins remember it.
+        persists `User.LastCompanyId` so future logins remember it. Busts
+        the RBAC permission cache so the next request resolves the new
+        Company's permission map fresh.
         """
         auth = self.read_by_public_id(public_id=user_sub)
         if not auth:
@@ -752,6 +767,18 @@ class AuthService:
             logger.warning(
                 "Failed to persist LastCompanyId for user %s: %s",
                 user_id,
+                error,
+            )
+
+        # Drop any cached permission map keyed under this user — the next
+        # request resolves under the new Company.
+        try:
+            from shared.rbac import invalidate_user_cache
+            invalidate_user_cache(user_sub)
+        except Exception as error:
+            logger.warning(
+                "Failed to invalidate RBAC cache after switch for %s: %s",
+                user_sub,
                 error,
             )
 

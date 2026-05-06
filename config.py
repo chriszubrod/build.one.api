@@ -34,13 +34,16 @@ class Settings(BaseSettings):
     refresh_token_expire_seconds: int
     iterations: int
     signup_registration_code: Optional[str] = None
-    # Phase 0 — Access Control Rebuild
+    # Access Control Rebuild — grace window
     # Number of days after deploy during which the auth dependency
-    # tolerates an access token missing the new `cid` claim. While
-    # active, missing-cid requests fall back to the user's default
-    # Company via DB lookup. Phase 2 flips enforcement on by setting
-    # this to 0; once stable, the fallback code is removed entirely.
-    jwt_cid_grace_days: int = 7
+    # tolerates an access token missing the new `uid`/`cid` claims.
+    # Phase 2 flipped this to 0 (enforcement on) — tokens missing
+    # claims no longer fall back to a DB lookup; the resolver simply
+    # leaves the corresponding context field None and downstream RBAC
+    # fails closed. Override via env to re-enable the fallback if a
+    # rollback is ever needed. Once Phase 2 has soaked, the fallback
+    # branch will be removed entirely.
+    jwt_cid_grace_days: int = 0
 
     # Encryption
     encryption_key: Optional[str] = None

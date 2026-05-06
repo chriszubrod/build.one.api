@@ -19,6 +19,18 @@ Usage on API routers:
 Permission levels (from RoleModule):
     can_read, can_create, can_update, can_delete,
     can_submit, can_approve, can_complete
+
+Resolver model (Phase 2 — Access Control Rebuild)
+-------------------------------------------------
+- `User.IsSystemAdmin = 1` bypasses every module check (no role lookup, no
+  Company scoping). Replaces the old role-name "admin" magic-string check.
+- For non-system-admin users, permissions are the OR-union of every
+  `UserRole` row for the (user, active Company) pair, joined to `RoleModule`
+  per role.
+- `UserModule` rows are layered on top as additive read-only grants
+  (can_read=True, others False). Never downgrades a role-granted module.
+- The cache is keyed by `(user_sub, company_id)` so switching Companies
+  resolves a fresh permission map.
 """
 from __future__ import annotations
 
@@ -31,12 +43,8 @@ from fastapi import Depends, HTTPException
 
 from types import SimpleNamespace
 
-from entities.auth.business.service import (
-    get_current_user_api,
-    AuthService,
-)
+from entities.auth.business.service import get_current_user_api
 from entities.module.business.service import ModuleService
-from entities.role.business.service import RoleService
 from entities.role_module.business.service import RoleModuleService
 from entities.user_module.business.service import UserModuleService
 from entities.user_role.business.service import UserRoleService
@@ -48,7 +56,20 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 CACHE_TTL_SECONDS = 300          # 5 minutes
-_ADMIN_SENTINEL = "__admin__"
+
+
+# Sentinel marker for system-admin permission maps. Typed object — avoids
+# the magic-string approach the old `_ADMIN_SENTINEL` used.
+class _SystemAdminGrant:
+    """Singleton marker indicating a user has the IsSystemAdmin bypass."""
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover — diagnostic only
+        return "<SystemAdminGrant>"
+
+
+SYSTEM_ADMIN_GRANT = _SystemAdminGrant()
+
 
 # Valid permission attributes on RoleModule
 VALID_PERMISSIONS = frozenset({
@@ -59,96 +80,150 @@ VALID_PERMISSIONS = frozenset({
 # ---------------------------------------------------------------------------
 # Permission cache
 # ---------------------------------------------------------------------------
-# Structure: { user_sub: (timestamp, permissions) }
-#   permissions = { module_name: RoleModule } for normal users
-#   permissions = { "__admin__": True }       for admin users
-#   permissions = None                        for users with no role
+# Structure: { (user_sub, company_id): (timestamp, permissions) }
+#   permissions = SYSTEM_ADMIN_GRANT                  for system admins
+#   permissions = { module_name: SimpleNamespace }    for normal users
+#   permissions = None                                for users with no access
+#
+# company_id is None for system-admin entries (admins bypass Company scoping).
 # ---------------------------------------------------------------------------
 
-_permission_cache: dict[str, tuple[float, Optional[dict]]] = {}
+_CacheKey = tuple[str, Optional[int]]
+_permission_cache: dict[_CacheKey, tuple[float, Optional[object]]] = {}
 _cache_lock = threading.Lock()
 
 
-def _get_user_permissions(user_sub: str) -> Optional[dict]:
+def _cache_key_for(user_sub: str, *, is_system_admin: bool, company_id: Optional[int]) -> _CacheKey:
     """
-    Resolve and cache the full permission map for a user.
+    System admins are keyed without a Company so a single cache entry
+    serves them across Company switches. Regular users are keyed by
+    (sub, company_id) — switching Companies resolves a fresh entry.
+    """
+    if is_system_admin:
+        return (user_sub, None)
+    return (user_sub, company_id)
+
+
+def _get_user_permissions(current_user: dict) -> Optional[object]:
+    """
+    Resolve and cache the permission map for the current request.
 
     Returns:
-        { module_name: RoleModule }  — for normal users
-        { "__admin__": True }        — for admin users
-        None                         — no role assigned
+        SYSTEM_ADMIN_GRANT             — if `current_user["is_system_admin"]`
+        { module_name: SimpleNamespace } — for normal users with permissions
+        None                           — if the user has no access
     """
+    user_sub = current_user.get("sub")
+    if not user_sub:
+        return None
+
+    is_system_admin = bool(current_user.get("is_system_admin"))
+    company_id = current_user.get("company_id")
+    user_id = current_user.get("user_id")
+
+    cache_key = _cache_key_for(
+        user_sub, is_system_admin=is_system_admin, company_id=company_id
+    )
     now = time.time()
 
     with _cache_lock:
-        if user_sub in _permission_cache:
-            cached_time, cached_perms = _permission_cache[user_sub]
+        if cache_key in _permission_cache:
+            cached_time, cached_perms = _permission_cache[cache_key]
             if now - cached_time < CACHE_TTL_SECONDS:
                 return cached_perms
 
-    # Cache miss — resolve from DB (outside lock to avoid holding it during IO)
-    perms = _resolve_permissions_from_db(user_sub)
+    perms = _resolve_permissions_from_db(
+        user_id=user_id,
+        company_id=company_id,
+        is_system_admin=is_system_admin,
+    )
 
     with _cache_lock:
-        _permission_cache[user_sub] = (time.time(), perms)
+        _permission_cache[cache_key] = (time.time(), perms)
 
     return perms
 
 
-def _resolve_permissions_from_db(user_sub: str) -> Optional[dict]:
+def _resolve_permissions_from_db(
+    *,
+    user_id: Optional[int],
+    company_id: Optional[int],
+    is_system_admin: bool,
+) -> Optional[object]:
     """
     Full resolution chain:
-        JWT sub (public_id) -> Auth -> user_id
-            -> UserRole -> role_id
-                -> Role (admin check)
-                -> RoleModule + Module (permission map)
-            -> UserModule (additive read-only grants on top of role)
+        IsSystemAdmin            -> SYSTEM_ADMIN_GRANT
+        UserRole(user, company)+ -> RoleModule UNION across roles
+        UserModule(user, company)+ additive read-only grant
     """
-    # Resolve user_id
-    auth = AuthService().read_by_public_id(public_id=user_sub)
-    if not auth or not auth.user_id:
+    if is_system_admin:
+        return SYSTEM_ADMIN_GRANT
+
+    # Non-admin path requires both an internal user_id and an active Company.
+    # Either missing -> deny.
+    if user_id is None or company_id is None:
         return None
 
-    user_id = auth.user_id
-    all_modules = ModuleService().read_all()
-    module_id_to_name = {m.id: m.name for m in all_modules}
+    user_roles = UserRoleService().read_all_by_user_id_and_company_id(
+        user_id=user_id, company_id=company_id
+    )
 
-    # Resolve role
-    user_role = UserRoleService().read_by_user_id(user_id=user_id)
+    perms: dict[str, SimpleNamespace] = {}
 
-    # Admin bypass — role check before any module lookup
-    if user_role:
-        role = RoleService().read_by_id(id=user_role.role_id)
-        if role and role.name and role.name.strip().lower() == "admin":
-            return {_ADMIN_SENTINEL: True}
+    if user_roles:
+        all_modules = ModuleService().read_all()
+        module_id_to_name = {m.id: m.name for m in all_modules}
+        role_module_service = RoleModuleService()
 
-    # Build { module_name: RoleModule } map from role
-    perms: dict = {}
-    if user_role:
-        role_modules = RoleModuleService().read_all_by_role_id(role_id=user_role.role_id)
-        for rm in role_modules:
-            name = module_id_to_name.get(rm.module_id)
-            if name:
-                perms[name] = rm
+        for ur in user_roles:
+            role_modules = role_module_service.read_all_by_role_id(role_id=ur.role_id)
+            for rm in role_modules:
+                module_name = module_id_to_name.get(rm.module_id)
+                if not module_name:
+                    continue
+                existing = perms.get(module_name)
+                if existing is None:
+                    perms[module_name] = SimpleNamespace(
+                        can_create=bool(rm.can_create),
+                        can_read=bool(rm.can_read),
+                        can_update=bool(rm.can_update),
+                        can_delete=bool(rm.can_delete),
+                        can_submit=bool(rm.can_submit),
+                        can_approve=bool(rm.can_approve),
+                        can_complete=bool(rm.can_complete),
+                    )
+                else:
+                    existing.can_create = existing.can_create or bool(rm.can_create)
+                    existing.can_read = existing.can_read or bool(rm.can_read)
+                    existing.can_update = existing.can_update or bool(rm.can_update)
+                    existing.can_delete = existing.can_delete or bool(rm.can_delete)
+                    existing.can_submit = existing.can_submit or bool(rm.can_submit)
+                    existing.can_approve = existing.can_approve or bool(rm.can_approve)
+                    existing.can_complete = existing.can_complete or bool(rm.can_complete)
 
     # Layer in additive UserModule grants — read-only, never downgrades a
     # role-granted module.
-    user_modules = UserModuleService().read_all_by_user_id(user_id=user_id)
-    for um in user_modules:
-        name = module_id_to_name.get(um.module_id)
-        if not name or name in perms:
-            continue
-        perms[name] = SimpleNamespace(
-            can_read=True,
-            can_create=False,
-            can_update=False,
-            can_delete=False,
-            can_submit=False,
-            can_approve=False,
-            can_complete=False,
-        )
+    user_modules = UserModuleService().read_all_by_user_id_and_company_id(
+        user_id=user_id, company_id=company_id
+    )
+    if user_modules:
+        if not perms:
+            all_modules = ModuleService().read_all()
+            module_id_to_name = {m.id: m.name for m in all_modules}
+        for um in user_modules:
+            module_name = module_id_to_name.get(um.module_id)
+            if not module_name or module_name in perms:
+                continue
+            perms[module_name] = SimpleNamespace(
+                can_read=True,
+                can_create=False,
+                can_update=False,
+                can_delete=False,
+                can_submit=False,
+                can_approve=False,
+                can_complete=False,
+            )
 
-    # No role and no UserModule grants — treat as no access
     if not perms:
         return None
 
@@ -160,9 +235,21 @@ def _resolve_permissions_from_db(user_sub: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 def invalidate_user_cache(user_sub: str) -> None:
-    """Remove a specific user's cached permissions (e.g. after role change)."""
+    """
+    Remove every cached entry for the given user across all Companies.
+    Called on UserRole / UserModule mutation, role grant change, and
+    Company switch.
+    """
     with _cache_lock:
-        _permission_cache.pop(user_sub, None)
+        stale = [k for k in _permission_cache if k[0] == user_sub]
+        for key in stale:
+            _permission_cache.pop(key, None)
+
+
+def invalidate_user_company_cache(user_sub: str, company_id: Optional[int]) -> None:
+    """Targeted invalidation for a single (user, Company) cache entry."""
+    with _cache_lock:
+        _permission_cache.pop((user_sub, company_id), None)
 
 
 def invalidate_all_caches() -> None:
@@ -176,7 +263,7 @@ def invalidate_all_caches() -> None:
 # ---------------------------------------------------------------------------
 
 def _enforce_module_permission(
-    user_sub: str,
+    current_user: dict,
     module_name: str,
     permission: str,
 ) -> None:
@@ -190,21 +277,21 @@ def _enforce_module_permission(
             f"Must be one of: {sorted(VALID_PERMISSIONS)}"
         )
 
-    perms = _get_user_permissions(user_sub)
+    perms = _get_user_permissions(current_user)
 
-    # No role assigned
+    # System-admin bypass — short-circuit before any module lookup.
+    if perms is SYSTEM_ADMIN_GRANT:
+        return
+
+    # No role assigned + no UserModule grant
     if perms is None:
         raise HTTPException(
             status_code=403,
             detail="Access denied — no role assigned.",
         )
 
-    # Admin bypass
-    if _ADMIN_SENTINEL in perms:
-        return
-
     # Module not assigned to role
-    role_module = perms.get(module_name)
+    role_module = perms.get(module_name) if isinstance(perms, dict) else None
     if not role_module:
         raise HTTPException(
             status_code=403,
@@ -236,7 +323,7 @@ def require_module_api(module_name: str, permission: str = "can_read"):
     """
     def _dependency(current_user=Depends(get_current_user_api)):
         _enforce_module_permission(
-            user_sub=current_user["sub"],
+            current_user=current_user,
             module_name=module_name,
             permission=permission,
         )
@@ -250,14 +337,10 @@ def require_module_api(module_name: str, permission: str = "can_read"):
 
 def is_admin_user(current_user: dict) -> bool:
     """
-    Check if the current user has the admin role.
-    Uses the cached permission map — no extra DB call.
+    True iff the current user has IsSystemAdmin set on their User row.
+    Reads the flag directly from the enriched JWT payload — no DB call.
     """
-    user_sub = current_user.get("sub")
-    if not user_sub:
-        return False
-    perms = _get_user_permissions(user_sub)
-    return perms is not None and _ADMIN_SENTINEL in perms
+    return bool(current_user.get("is_system_admin"))
 
 
 # ---------------------------------------------------------------------------

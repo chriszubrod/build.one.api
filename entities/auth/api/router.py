@@ -431,43 +431,58 @@ def mobile_logout_router(body: MobileRefreshRequest, current_user: dict = Depend
 def _resolve_me_payload(user_sub: str) -> dict:
     """
     Build the full { user, auth, role, is_admin, modules[] } payload for
-    the current user. Admins get every module flagged with every permission.
+    the current user. System admins (`User.IsSystemAdmin = 1`) get every
+    module flagged with every permission. Other users get the OR-union of
+    every UserRole row for the active Company, layered with UserModule
+    additive read-only grants.
     """
     auth = AuthService().read_by_public_id(public_id=user_sub)
     if auth is None or auth.user_id is None:
         raise HTTPException(status_code=404, detail="Auth profile not found.")
 
     user = UserService().read_by_id(id=auth.user_id)
-    user_role = UserRoleService().read_by_user_id(user_id=auth.user_id)
+    is_system_admin = bool(getattr(user, "is_system_admin", False)) if user else False
+    active_company_obj = (
+        resolve_active_company_for_user(auth.user_id) if auth.user_id else None
+    )
+    active_company_id = active_company_obj.id if active_company_obj else None
 
-    role_dict = None
-    is_admin = False
     permissions_by_module: dict[int, dict] = {}
 
-    if user_role:
-        role = RoleService().read_by_id(id=user_role.role_id)
-        if role:
-            role_dict = {"public_id": role.public_id, "name": role.name}
-            if role.name and role.name.strip().lower() == "admin":
-                is_admin = True
-
-        if not is_admin:
-            role_modules = RoleModuleService().read_all_by_role_id(role_id=user_role.role_id)
+    # Multi-role UNION across UserRole rows for the active Company.
+    if not is_system_admin and active_company_id is not None:
+        user_roles = UserRoleService().read_all_by_user_id_and_company_id(
+            user_id=auth.user_id, company_id=active_company_id
+        )
+        role_module_service = RoleModuleService()
+        for ur in user_roles:
+            role_modules = role_module_service.read_all_by_role_id(role_id=ur.role_id)
             for rm in role_modules:
-                permissions_by_module[rm.module_id] = {
-                    "can_create": bool(rm.can_create),
-                    "can_read": bool(rm.can_read),
-                    "can_update": bool(rm.can_update),
-                    "can_delete": bool(rm.can_delete),
-                    "can_submit": bool(rm.can_submit),
-                    "can_approve": bool(rm.can_approve),
-                    "can_complete": bool(rm.can_complete),
-                }
+                existing = permissions_by_module.get(rm.module_id)
+                if existing is None:
+                    permissions_by_module[rm.module_id] = {
+                        "can_create": bool(rm.can_create),
+                        "can_read": bool(rm.can_read),
+                        "can_update": bool(rm.can_update),
+                        "can_delete": bool(rm.can_delete),
+                        "can_submit": bool(rm.can_submit),
+                        "can_approve": bool(rm.can_approve),
+                        "can_complete": bool(rm.can_complete),
+                    }
+                else:
+                    existing["can_create"] = existing["can_create"] or bool(rm.can_create)
+                    existing["can_read"] = existing["can_read"] or bool(rm.can_read)
+                    existing["can_update"] = existing["can_update"] or bool(rm.can_update)
+                    existing["can_delete"] = existing["can_delete"] or bool(rm.can_delete)
+                    existing["can_submit"] = existing["can_submit"] or bool(rm.can_submit)
+                    existing["can_approve"] = existing["can_approve"] or bool(rm.can_approve)
+                    existing["can_complete"] = existing["can_complete"] or bool(rm.can_complete)
 
-    # Layer in additive UserModule grants — read-only, never downgrades a
-    # role-granted module. Admins already have full access; skip the merge.
-    if not is_admin:
-        user_modules = UserModuleService().read_all_by_user_id(user_id=auth.user_id)
+        # Layer in additive UserModule grants — read-only, never downgrades a
+        # role-granted module.
+        user_modules = UserModuleService().read_all_by_user_id_and_company_id(
+            user_id=auth.user_id, company_id=active_company_id
+        )
         for um in user_modules:
             if um.module_id in permissions_by_module:
                 continue
@@ -481,10 +496,25 @@ def _resolve_me_payload(user_sub: str) -> dict:
                 "can_complete": False,
             }
 
+    # Surface a representative role for legacy UI bits that still display
+    # one — pick the first matched UserRole row. Phase 4 will replace this
+    # with a multi-role list in the payload.
+    role_dict = None
+    if not is_system_admin and active_company_id is not None:
+        primary_role = next(iter(
+            UserRoleService().read_all_by_user_id_and_company_id(
+                user_id=auth.user_id, company_id=active_company_id
+            )
+        ), None)
+        if primary_role:
+            role = RoleService().read_by_id(id=primary_role.role_id)
+            if role:
+                role_dict = {"public_id": role.public_id, "name": role.name}
+
     all_modules = ModuleService().read_all()
     modules_payload = []
     for m in all_modules:
-        if is_admin:
+        if is_system_admin:
             perms = {p: True for p in (
                 "can_create", "can_read", "can_update", "can_delete",
                 "can_submit", "can_approve", "can_complete",
@@ -506,7 +536,6 @@ def _resolve_me_payload(user_sub: str) -> dict:
 
     # Phase 0 — surface the user's tenant context so future React/iOS
     # pickers can render without an extra round-trip.
-    is_system_admin = bool(getattr(user, "is_system_admin", False)) if user else False
     accessible_companies = list_accessible_companies(auth.user_id) if auth.user_id else []
     companies_payload = [
         {
@@ -530,9 +559,6 @@ def _resolve_me_payload(user_sub: str) -> dict:
                 "name": c.organization_name,
             })
 
-    active_company_obj = (
-        resolve_active_company_for_user(auth.user_id) if auth.user_id else None
-    )
     active_company_payload = (
         {
             "public_id": active_company_obj.public_id,
@@ -554,7 +580,7 @@ def _resolve_me_payload(user_sub: str) -> dict:
         "auth": {"public_id": auth.public_id, "username": auth.username},
         "user": user.to_dict() if user else None,
         "role": role_dict,
-        "is_admin": is_admin,
+        "is_admin": is_system_admin,
         "is_system_admin": is_system_admin,
         "modules": modules_payload,
         "accessible_project_ids": accessible_project_ids,

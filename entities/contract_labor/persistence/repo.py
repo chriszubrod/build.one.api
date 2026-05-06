@@ -18,6 +18,13 @@ from shared.database import (
 logger = logging.getLogger(__name__)
 
 
+def _bit(flag):
+    """SQL Server BIT params take 0/1, not Python bool."""
+    if flag is None:
+        return None
+    return 1 if flag else 0
+
+
 class ContractLaborRepository:
     """
     Repository for ContractLabor persistence operations.
@@ -144,17 +151,23 @@ class ContractLaborRepository:
             logger.error(f"Error during create contract labor: {error}")
             raise map_database_error(error)
 
-    def read_all(self) -> list[ContractLabor]:
-        """
-        Read all contract labor entries.
-        """
+    def read_all(
+        self,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[ContractLabor]:
+        """Read contract labor entries, scoped by UserProject for non-admins."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="ReadContractLabors",
-                    params={},
+                    params={
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
@@ -319,10 +332,10 @@ class ContractLaborRepository:
         end_date: Optional[str] = None,
         sort_by: str = "WorkDate",
         sort_direction: str = "DESC",
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
     ) -> list[ContractLabor]:
-        """
-        Read contract labor entries with pagination and filtering.
-        """
+        """Read contract labor with pagination + filters, scoped by UserProject."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -341,6 +354,8 @@ class ContractLaborRepository:
                         "EndDate": end_date,
                         "SortBy": sort_by,
                         "SortDirection": sort_direction,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                     },
                 )
                 rows = cursor.fetchall()
@@ -359,10 +374,10 @@ class ContractLaborRepository:
         billing_period_start: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
     ) -> int:
-        """
-        Count contract labor entries matching the filter criteria.
-        """
+        """Count contract labor matching filter criteria, scoped by UserProject."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -377,6 +392,8 @@ class ContractLaborRepository:
                         "BillingPeriodStart": billing_period_start,
                         "StartDate": start_date,
                         "EndDate": end_date,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                     },
                 )
                 row = cursor.fetchone()

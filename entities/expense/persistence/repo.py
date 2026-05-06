@@ -18,6 +18,13 @@ from shared.database import (
 logger = logging.getLogger(__name__)
 
 
+def _bit(flag):
+    """SQL Server BIT params take 0/1, not Python bool."""
+    if flag is None:
+        return None
+    return 1 if flag else 0
+
+
 class ExpenseRepository:
     """
     Repository for Expense persistence operations.
@@ -94,17 +101,23 @@ class ExpenseRepository:
             logger.error(f"Error during create expense: {error}")
             raise map_database_error(error)
 
-    def read_all(self) -> list[Expense]:
-        """
-        Read all expenses.
-        """
+    def read_all(
+        self,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[Expense]:
+        """Read expenses, scoped by UserProject for non-admin actors."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="ReadExpenses",
-                    params={},
+                    params={
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
@@ -224,10 +237,10 @@ class ExpenseRepository:
         is_draft: Optional[bool] = None,
         sort_by: str = "ExpenseDate",
         sort_direction: str = "DESC",
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
     ) -> list[Expense]:
-        """
-        Read expenses with pagination and filtering.
-        """
+        """Read expenses with pagination + filters, scoped by UserProject."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -241,6 +254,8 @@ class ExpenseRepository:
                     "IsDraft": 1 if is_draft else (0 if is_draft is False else None),
                     "SortBy": sort_by,
                     "SortDirection": sort_direction,
+                    "ActorUserId": actor_user_id,
+                    "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                 }
                 call_procedure(
                     cursor=cursor,
@@ -261,10 +276,10 @@ class ExpenseRepository:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         is_draft: Optional[bool] = None,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
     ) -> int:
-        """
-        Count expenses matching the filter criteria.
-        """
+        """Count expenses matching filter criteria, scoped by UserProject."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -274,6 +289,8 @@ class ExpenseRepository:
                     "StartDate": start_date,
                     "EndDate": end_date,
                     "IsDraft": 1 if is_draft else (0 if is_draft is False else None),
+                    "ActorUserId": actor_user_id,
+                    "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                 }
                 call_procedure(
                     cursor=cursor,

@@ -9,6 +9,7 @@ from typing import Any, Optional
 # Local Imports
 from entities.invoice.business.model import Invoice
 from entities.invoice.persistence.repo import InvoiceRepository
+from shared.authz import current_user_id, current_is_system_admin
 from entities.payment_term.business.service import PaymentTermService
 from entities.project.business.service import ProjectService
 from entities.module.business.service import ModuleService
@@ -120,7 +121,10 @@ class InvoiceService:
         )
 
     def read_all(self) -> list[Invoice]:
-        return self.repo.read_all()
+        return self.repo.read_all(
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
+        )
 
     def read_paginated(
         self,
@@ -145,6 +149,8 @@ class InvoiceService:
             is_draft=is_draft,
             sort_by=sort_by,
             sort_direction=sort_direction,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
         )
 
     def count(
@@ -162,6 +168,8 @@ class InvoiceService:
             start_date=start_date,
             end_date=end_date,
             is_draft=is_draft,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
         )
 
     def read_by_id(self, id: int) -> Optional[Invoice]:

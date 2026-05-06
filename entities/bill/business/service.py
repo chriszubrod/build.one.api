@@ -9,6 +9,7 @@ from typing import Any, List, Optional
 # Third-party Imports
 
 # Local Imports
+from shared.authz import current_user_id, current_is_system_admin
 from entities.attachment.business.service import AttachmentService
 from entities.bill.api.schemas import BillUpdate
 from entities.bill.business.model import Bill
@@ -448,9 +449,12 @@ class BillService:
 
     def read_all(self) -> list[Bill]:
         """
-        Read all bills.
+        Read bills, scoped by UserProject for non-admin actors.
         """
-        return self.repo.read_all()
+        return self.repo.read_all(
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
+        )
 
     def read_paginated(
         self,
@@ -467,7 +471,7 @@ class BillService:
         conn=None,
     ) -> list[Bill]:
         """
-        Read bills with pagination and filtering.
+        Read bills with pagination and filtering, scoped by UserProject.
         """
         return self.repo.read_paginated(
             page_number=page_number,
@@ -480,6 +484,8 @@ class BillService:
             sort_by=sort_by,
             sort_direction=sort_direction,
             conn=conn,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
         )
 
     def count(
@@ -493,7 +499,7 @@ class BillService:
         conn=None,
     ) -> int:
         """
-        Count bills matching the filter criteria.
+        Count bills matching filter criteria, scoped by UserProject.
         """
         return self.repo.count(
             search_term=search_term,
@@ -502,6 +508,8 @@ class BillService:
             end_date=end_date,
             is_draft=is_draft,
             conn=conn,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
         )
 
     def read_by_id(self, id: int) -> Optional[Bill]:

@@ -90,9 +90,14 @@ class ProjectRepository:
             logger.error(f"Error during create project: {error}")
             raise map_database_error(error)
 
-    def read_all(self) -> list[Project]:
+    def read_all(
+        self,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[Project]:
         """
-        Read all projects.
+        Read projects, scoped by UserProject membership for non-admin actors.
         """
         try:
             with get_connection() as conn:
@@ -100,7 +105,10 @@ class ProjectRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadProjects",
-                    params={},
+                    params={
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
@@ -126,9 +134,15 @@ class ProjectRepository:
             logger.error(f"Error during read projects by user_id: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: int) -> Optional[Project]:
+    def read_by_id(
+        self,
+        id: int,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[Project]:
         """
-        Read a project by ID.
+        Read a project by ID, scoped to actor's UserProject set.
         """
         try:
             with get_connection() as conn:
@@ -136,7 +150,11 @@ class ProjectRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadProjectById",
-                    params={"Id": id},
+                    params={
+                        "Id": id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
@@ -144,9 +162,15 @@ class ProjectRepository:
             logger.error(f"Error during read project by ID: {error}")
             raise map_database_error(error)
 
-    def read_by_public_id(self, public_id: str) -> Optional[Project]:
+    def read_by_public_id(
+        self,
+        public_id: str,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[Project]:
         """
-        Read a project by public ID.
+        Read a project by public ID, scoped to actor's UserProject set.
         """
         try:
             with get_connection() as conn:
@@ -154,7 +178,11 @@ class ProjectRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadProjectByPublicId",
-                    params={"PublicId": public_id},
+                    params={
+                        "PublicId": public_id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
@@ -162,9 +190,15 @@ class ProjectRepository:
             logger.error(f"Error during read project by public ID: {error}")
             raise map_database_error(error)
 
-    def read_by_name(self, name: str) -> Optional[Project]:
+    def read_by_name(
+        self,
+        name: str,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[Project]:
         """
-        Read a project by name.
+        Read a project by name, scoped to actor's UserProject set.
         """
         try:
             with get_connection() as conn:
@@ -172,13 +206,24 @@ class ProjectRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadProjectByName",
-                    params={"Name": name},
+                    params={
+                        "Name": name,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during read project by name: {error}")
             raise map_database_error(error)
+
+
+def _bit(flag: Optional[bool]) -> Optional[int]:
+    """SQL Server BIT params take 0/1, not Python bool."""
+    if flag is None:
+        return None
+    return 1 if flag else 0
 
     def find_for_invoice(self, *, address_hint: Optional[str] = None,
                          project_name_hint: Optional[str] = None) -> list[dict]:

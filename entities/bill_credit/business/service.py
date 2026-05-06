@@ -9,6 +9,7 @@ from decimal import Decimal
 from entities.bill_credit.business.model import BillCredit
 from entities.bill_credit.persistence.repo import BillCreditRepository
 from entities.vendor.business.service import VendorService
+from shared.authz import current_user_id, current_is_system_admin
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +64,11 @@ class BillCreditService:
         )
 
     def read_all(self) -> list[BillCredit]:
-        """
-        Read all bill credits.
-        """
-        return self.repo.read_all()
+        """Read bill credits, scoped by UserProject for non-admin actors."""
+        return self.repo.read_all(
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
+        )
 
     def read_paginated(
         self,
@@ -81,9 +83,7 @@ class BillCreditService:
         sort_by: str = "CreditDate",
         sort_direction: str = "DESC",
     ) -> list[BillCredit]:
-        """
-        Read bill credits with pagination and filtering.
-        """
+        """Read bill credits with pagination + filters, scoped by UserProject."""
         return self.repo.read_paginated(
             page_number=page_number,
             page_size=page_size,
@@ -94,6 +94,8 @@ class BillCreditService:
             is_draft=is_draft,
             sort_by=sort_by,
             sort_direction=sort_direction,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
         )
 
     def count(
@@ -105,15 +107,15 @@ class BillCreditService:
         end_date: Optional[str] = None,
         is_draft: Optional[bool] = None,
     ) -> int:
-        """
-        Count bill credits matching the filter criteria.
-        """
+        """Count bill credits matching filter criteria, scoped by UserProject."""
         return self.repo.count(
             search_term=search_term,
             vendor_id=vendor_id,
             start_date=start_date,
             end_date=end_date,
             is_draft=is_draft,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
         )
 
     def read_by_id(self, id: int) -> Optional[BillCredit]:

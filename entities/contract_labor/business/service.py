@@ -11,6 +11,7 @@ from entities.contract_labor.persistence.repo import ContractLaborRepository
 from entities.vendor.business.service import VendorService
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
+from shared.authz import current_user_id, current_is_system_admin
 
 logger = logging.getLogger(__name__)
 
@@ -107,10 +108,11 @@ class ContractLaborService:
         )
 
     def read_all(self) -> list[ContractLabor]:
-        """
-        Read all contract labor entries.
-        """
-        return self.repo.read_all()
+        """Read contract labor entries, scoped by UserProject for non-admins."""
+        return self.repo.read_all(
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
+        )
 
     def read_by_id(self, id: int) -> Optional[ContractLabor]:
         """
@@ -172,9 +174,7 @@ class ContractLaborService:
         sort_by: str = "WorkDate",
         sort_direction: str = "DESC",
     ) -> list[ContractLabor]:
-        """
-        Read contract labor entries with pagination and filtering.
-        """
+        """Read contract labor with pagination + filters, scoped by UserProject."""
         return self.repo.read_paginated(
             page_number=page_number,
             page_size=page_size,
@@ -187,6 +187,8 @@ class ContractLaborService:
             end_date=end_date,
             sort_by=sort_by,
             sort_direction=sort_direction,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
         )
 
     def count(
@@ -200,8 +202,7 @@ class ContractLaborService:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
     ) -> int:
-        """
-        Count contract labor entries matching the filter criteria.
+        """Count contract labor matching filter criteria, scoped by UserProject.
         """
         return self.repo.count(
             search_term=search_term,
@@ -211,6 +212,8 @@ class ContractLaborService:
             billing_period_start=billing_period_start,
             start_date=start_date,
             end_date=end_date,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
         )
 
     def update_by_public_id(

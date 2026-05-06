@@ -13,6 +13,7 @@ from entities.expense.business.model import Expense
 from entities.expense.persistence.repo import ExpenseRepository
 from entities.attachment.business.service import AttachmentService
 from entities.project.business.service import ProjectService
+from shared.authz import current_user_id, current_is_system_admin
 from entities.vendor.business.service import VendorService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.module.business.service import ModuleService
@@ -155,10 +156,11 @@ class ExpenseService:
         )
 
     def read_all(self) -> list[Expense]:
-        """
-        Read all expenses.
-        """
-        return self.repo.read_all()
+        """Read expenses, scoped by UserProject for non-admin actors."""
+        return self.repo.read_all(
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
+        )
 
     def read_paginated(
         self,
@@ -173,9 +175,7 @@ class ExpenseService:
         sort_by: str = "ExpenseDate",
         sort_direction: str = "DESC",
     ) -> list[Expense]:
-        """
-        Read expenses with pagination and filtering.
-        """
+        """Read expenses with pagination + filters, scoped by UserProject."""
         return self.repo.read_paginated(
             page_number=page_number,
             page_size=page_size,
@@ -186,6 +186,8 @@ class ExpenseService:
             is_draft=is_draft,
             sort_by=sort_by,
             sort_direction=sort_direction,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
         )
 
     def count(
@@ -197,15 +199,15 @@ class ExpenseService:
         end_date: Optional[str] = None,
         is_draft: Optional[bool] = None,
     ) -> int:
-        """
-        Count expenses matching the filter criteria.
-        """
+        """Count expenses matching filter criteria, scoped by UserProject."""
         return self.repo.count(
             search_term=search_term,
             vendor_id=vendor_id,
             start_date=start_date,
             end_date=end_date,
             is_draft=is_draft,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
         )
 
     def read_by_id(self, id: int) -> Optional[Expense]:

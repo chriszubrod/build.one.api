@@ -1,11 +1,17 @@
 # Python Standard Library Imports
-from typing import Optional
+from typing import Optional, Tuple
 
 # Third-party Imports
 
 # Local Imports
 from entities.project.business.model import Project
 from entities.project.persistence.repo import ProjectRepository
+from shared.authz import current_user_id, current_is_system_admin
+
+
+def _actor_scope() -> Tuple[Optional[int], Optional[bool]]:
+    """Read the current request actor from ContextVars."""
+    return current_user_id.get(), current_is_system_admin.get()
 
 
 class ProjectService:
@@ -33,9 +39,13 @@ class ProjectService:
 
     def read_all(self) -> list[Project]:
         """
-        Read all projects.
+        Read projects, scoped by UserProject for non-admin actors.
         """
-        return self.repo.read_all()
+        actor_user_id, actor_is_system_admin = _actor_scope()
+        return self.repo.read_all(
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
     def read_by_user_id(self, user_id: int) -> list[Project]:
         """
@@ -44,22 +54,28 @@ class ProjectService:
         return self.repo.read_by_user_id(user_id=user_id)
 
     def read_by_id(self, id: int) -> Optional[Project]:
-        """
-        Read a project by ID.
-        """
-        return self.repo.read_by_id(id)
+        actor_user_id, actor_is_system_admin = _actor_scope()
+        return self.repo.read_by_id(
+            id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
     def read_by_public_id(self, public_id: str) -> Optional[Project]:
-        """
-        Read a project by public ID.
-        """
-        return self.repo.read_by_public_id(public_id)
+        actor_user_id, actor_is_system_admin = _actor_scope()
+        return self.repo.read_by_public_id(
+            public_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
     def read_by_name(self, name: str) -> Optional[Project]:
-        """
-        Read a project by name.
-        """
-        return self.repo.read_by_name(name)
+        actor_user_id, actor_is_system_admin = _actor_scope()
+        return self.repo.read_by_name(
+            name,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
     def find_for_invoice(self, *, address_hint: Optional[str] = None,
                          project_name_hint: Optional[str] = None) -> list[dict]:

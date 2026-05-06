@@ -18,6 +18,13 @@ from shared.database import (
 logger = logging.getLogger(__name__)
 
 
+def _bit(flag):
+    """SQL Server BIT params take 0/1, not Python bool."""
+    if flag is None:
+        return None
+    return 1 if flag else 0
+
+
 class InvoiceRepository:
     """
     Repository for Invoice persistence operations.
@@ -80,11 +87,24 @@ class InvoiceRepository:
             logger.error(f"Error during create invoice: {error}")
             raise map_database_error(error)
 
-    def read_all(self) -> list[Invoice]:
+    def read_all(
+        self,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[Invoice]:
+        """Read invoices, scoped by UserProject for non-admin actors."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                call_procedure(cursor=cursor, name="ReadInvoices", params={})
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadInvoices",
+                    params={
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
+                )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
         except Exception as error:
@@ -184,7 +204,10 @@ class InvoiceRepository:
         is_draft: Optional[bool] = None,
         sort_by: str = "InvoiceDate",
         sort_direction: str = "DESC",
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
     ) -> list[Invoice]:
+        """Read invoices with pagination + filters, scoped by UserProject."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -198,6 +221,8 @@ class InvoiceRepository:
                     "IsDraft": 1 if is_draft else (0 if is_draft is False else None),
                     "SortBy": sort_by,
                     "SortDirection": sort_direction,
+                    "ActorUserId": actor_user_id,
+                    "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                 }
                 call_procedure(cursor=cursor, name="ReadInvoicesPaginated", params=params)
                 rows = cursor.fetchall()
@@ -214,7 +239,10 @@ class InvoiceRepository:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         is_draft: Optional[bool] = None,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
     ) -> int:
+        """Count invoices matching filter criteria, scoped by UserProject."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -224,6 +252,8 @@ class InvoiceRepository:
                     "StartDate": start_date,
                     "EndDate": end_date,
                     "IsDraft": 1 if is_draft else (0 if is_draft is False else None),
+                    "ActorUserId": actor_user_id,
+                    "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                 }
                 call_procedure(cursor=cursor, name="CountInvoices", params=params)
                 row = cursor.fetchone()

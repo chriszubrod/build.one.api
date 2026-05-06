@@ -121,9 +121,14 @@ class BillRepository:
             logger.error(f"Error during create bill: {error}")
             raise map_database_error(error)
 
-    def read_all(self) -> list[Bill]:
+    def read_all(
+        self,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[Bill]:
         """
-        Read all bills.
+        Read bills, scoped by UserProject membership for non-admin actors.
         """
         try:
             with get_connection() as conn:
@@ -131,7 +136,10 @@ class BillRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadBills",
-                    params={},
+                    params={
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
@@ -151,8 +159,10 @@ class BillRepository:
         is_draft: Optional[bool] = None,
         sort_by: str = "BillDate",
         sort_direction: str = "DESC",
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
     ) -> list[Bill]:
-        """Read bills with pagination and optional filtering."""
+        """Read bills with pagination + filters, scoped by UserProject."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -169,6 +179,8 @@ class BillRepository:
                         "IsDraft": (1 if is_draft else 0) if is_draft is not None else None,
                         "SortBy": sort_by,
                         "SortDirection": sort_direction,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                     },
                 )
                 rows = cursor.fetchall()
@@ -185,8 +197,10 @@ class BillRepository:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         is_draft: Optional[bool] = None,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
     ) -> int:
-        """Count bills matching filter criteria."""
+        """Count bills matching filter criteria, scoped by UserProject."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -199,6 +213,8 @@ class BillRepository:
                         "StartDate": start_date,
                         "EndDate": end_date,
                         "IsDraft": (1 if is_draft else 0) if is_draft is not None else None,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                     },
                 )
                 row = cursor.fetchone()
@@ -386,9 +402,11 @@ class BillRepository:
         sort_by: str = "BillDate",
         sort_direction: str = "DESC",
         conn: Optional[pyodbc.Connection] = None,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
     ) -> list[Bill]:
         """
-        Read bills with pagination and filtering.
+        Read bills with pagination and filtering, scoped by UserProject.
         """
         try:
             with _conn_ctx(conn) as c:
@@ -403,6 +421,8 @@ class BillRepository:
                     "IsDraft": 1 if is_draft else (0 if is_draft is False else None),
                     "SortBy": sort_by,
                     "SortDirection": sort_direction,
+                    "ActorUserId": actor_user_id,
+                    "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                 }
                 call_procedure(
                     cursor=cursor,
@@ -424,9 +444,11 @@ class BillRepository:
         end_date: Optional[str] = None,
         is_draft: Optional[bool] = None,
         conn: Optional[pyodbc.Connection] = None,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
     ) -> int:
         """
-        Count bills matching the filter criteria.
+        Count bills matching the filter criteria, scoped by UserProject.
         """
         try:
             with _conn_ctx(conn) as c:
@@ -437,6 +459,8 @@ class BillRepository:
                     "StartDate": start_date,
                     "EndDate": end_date,
                     "IsDraft": 1 if is_draft else (0 if is_draft is False else None),
+                    "ActorUserId": actor_user_id,
+                    "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                 }
                 call_procedure(
                     cursor=cursor,
@@ -501,3 +525,11 @@ class BillRepository:
         except Exception as error:
             logger.error(f"Error reading bill completion result: {error}")
             raise map_database_error(error)
+
+
+def _bit(flag):
+    """SQL Server BIT params take 0/1, not Python bool."""
+    if flag is None:
+        return None
+    return 1 if flag else 0
+

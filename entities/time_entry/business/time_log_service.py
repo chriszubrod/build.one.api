@@ -1,6 +1,6 @@
 # Python Standard Library Imports
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 from decimal import Decimal
 from datetime import datetime
 
@@ -11,14 +11,23 @@ from entities.time_entry.business.model import TimeLog
 from entities.time_entry.persistence.repo import TimeEntryRepository
 from entities.time_entry.persistence.time_log_repo import TimeLogRepository
 from entities.time_entry.persistence.time_entry_status_repo import TimeEntryStatusRepository
+from shared.authz import current_user_id, current_is_system_admin
 
 logger = logging.getLogger(__name__)
+
+
+def _actor_scope() -> Tuple[Optional[int], Optional[bool]]:
+    """Read the current request actor from ContextVars."""
+    return current_user_id.get(), current_is_system_admin.get()
 
 
 class TimeLogService:
     """
     Service for TimeLog entity business operations.
     Lightweight child entity — direct CRUD, no ProcessEngine routing.
+
+    Phase 3 row-scoping: forwards the actor's UserId + IsSystemAdmin
+    flag to the repo, which scopes via the parent TimeEntry.UserId.
     """
 
     def __init__(self, repo: Optional[TimeLogRepository] = None):
@@ -41,19 +50,22 @@ class TimeLogService:
         Create a new time log for a time entry.
         Only allowed when the parent time entry is in 'draft' status.
         """
-        # Validate parent exists
-        time_entry = TimeEntryRepository().read_by_public_id(public_id=time_entry_public_id)
+        actor_user_id, actor_is_system_admin = _actor_scope()
+
+        # Validate parent exists AND is accessible to the actor
+        time_entry = TimeEntryRepository().read_by_public_id(
+            public_id=time_entry_public_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
         if not time_entry:
             raise ValueError(f"TimeEntry with public_id '{time_entry_public_id}' not found.")
 
-        # Check parent status allows editing
         self._validate_parent_is_draft(time_entry.id)
 
-        # Validate log_type
         if log_type not in ("work", "break"):
             raise ValueError(f"Invalid log_type '{log_type}'. Must be 'work' or 'break'.")
 
-        # Calculate duration from timestamps
         duration = self._calculate_duration(clock_in, clock_out)
 
         return self.repo.create(
@@ -72,16 +84,30 @@ class TimeLogService:
         """
         Read all time logs for a time entry by the parent's public ID.
         """
-        time_entry = TimeEntryRepository().read_by_public_id(public_id=time_entry_public_id)
+        actor_user_id, actor_is_system_admin = _actor_scope()
+        time_entry = TimeEntryRepository().read_by_public_id(
+            public_id=time_entry_public_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
         if not time_entry:
             raise ValueError(f"TimeEntry with public_id '{time_entry_public_id}' not found.")
-        return self.repo.read_by_time_entry_id(time_entry_id=time_entry.id)
+        return self.repo.read_by_time_entry_id(
+            time_entry_id=time_entry.id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
     def read_by_public_id(self, public_id: str) -> Optional[TimeLog]:
         """
-        Read a time log by public ID.
+        Read a time log by public ID, scoped to the actor.
         """
-        return self.repo.read_by_public_id(public_id)
+        actor_user_id, actor_is_system_admin = _actor_scope()
+        return self.repo.read_by_public_id(
+            public_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
     def update_by_public_id(
         self,
@@ -97,21 +123,24 @@ class TimeLogService:
         note: Optional[str] = None,
     ) -> Optional[TimeLog]:
         """
-        Update a time log by public ID.
+        Update a time log by public ID, scoped to the actor.
         Only allowed when the parent time entry is in 'draft' status.
         """
-        existing = self.repo.read_by_public_id(public_id=public_id)
+        actor_user_id, actor_is_system_admin = _actor_scope()
+
+        existing = self.repo.read_by_public_id(
+            public_id=public_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
         if not existing:
             raise ValueError(f"TimeLog with public_id '{public_id}' not found.")
 
-        # Check parent status allows editing
         self._validate_parent_is_draft(existing.time_entry_id)
 
-        # Validate log_type if provided
         if log_type is not None and log_type not in ("work", "break"):
             raise ValueError(f"Invalid log_type '{log_type}'. Must be 'work' or 'break'.")
 
-        # Apply updates
         if clock_in is not None:
             existing.clock_in = clock_in
         if clock_out is not None:
@@ -127,33 +156,48 @@ class TimeLogService:
         if note is not None:
             existing.note = note
 
-        # Recalculate duration
         existing.duration = self._calculate_duration(existing.clock_in, existing.clock_out)
-
-        # Use provided row_version for optimistic locking
         existing.row_version = row_version
 
-        return self.repo.update_by_id(existing)
+        return self.repo.update_by_id(
+            existing,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
     def delete_by_public_id(self, public_id: str) -> Optional[TimeLog]:
         """
-        Delete a time log by public ID.
+        Delete a time log by public ID, scoped to the actor.
         Only allowed when the parent time entry is in 'draft' status.
         """
-        existing = self.repo.read_by_public_id(public_id=public_id)
+        actor_user_id, actor_is_system_admin = _actor_scope()
+
+        existing = self.repo.read_by_public_id(
+            public_id=public_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
         if not existing:
             raise ValueError(f"TimeLog with public_id '{public_id}' not found.")
 
-        # Check parent status allows editing
         self._validate_parent_is_draft(existing.time_entry_id)
 
-        return self.repo.delete_by_id(id=existing.id)
+        return self.repo.delete_by_id(
+            id=existing.id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
     def _validate_parent_is_draft(self, time_entry_id: int) -> None:
         """
         Validate that the parent time entry is in 'draft' status.
+        Status reads bypass row-scope — the parent read already
+        proved access to the actor.
         """
-        current_status = TimeEntryStatusRepository().read_current(time_entry_id=time_entry_id)
+        current_status = TimeEntryStatusRepository().read_current(
+            time_entry_id=time_entry_id,
+            actor_is_system_admin=True,
+        )
         if current_status and current_status.status != "draft":
             raise ValueError(
                 f"Cannot modify time logs when time entry is in '{current_status.status}' status. "
@@ -170,7 +214,6 @@ class TimeLogService:
             return None
 
         try:
-            # Try parsing with milliseconds first, then without
             for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
                 try:
                     dt_in = datetime.strptime(clock_in, fmt)
@@ -193,7 +236,6 @@ class TimeLogService:
 
             delta = dt_out - dt_in
             hours = Decimal(str(delta.total_seconds())) / Decimal("3600")
-            # Round to 2 decimal places
             return hours.quantize(Decimal("0.01"))
         except Exception as e:
             logger.warning(f"Error calculating duration: {e}")

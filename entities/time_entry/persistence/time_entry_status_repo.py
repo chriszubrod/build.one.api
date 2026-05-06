@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 class TimeEntryStatusRepository:
     """
     Repository for TimeEntryStatus persistence operations.
+
+    Phase 3 row-scoping: read paths forward
+    `actor_user_id` and `actor_is_system_admin` to the sproc layer,
+    which INNER JOINs the parent TimeEntry and filters
+    TimeEntry.UserId = actor_user_id.
     """
 
     def __init__(self):
@@ -60,7 +65,8 @@ class TimeEntryStatusRepository:
         note: Optional[str] = None,
     ) -> TimeEntryStatus:
         """
-        Create a new time entry status record.
+        Create a new time entry status record. Create paths are unscoped —
+        the service layer ensures the parent TimeEntry is accessible.
         """
         try:
             with get_connection() as conn:
@@ -84,9 +90,15 @@ class TimeEntryStatusRepository:
             logger.error(f"Error during create time entry status: {error}")
             raise map_database_error(error)
 
-    def read_by_time_entry_id(self, time_entry_id: int) -> list[TimeEntryStatus]:
+    def read_by_time_entry_id(
+        self,
+        time_entry_id: int,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[TimeEntryStatus]:
         """
-        Read all status records for a specific time entry (full history).
+        Read all status records for a specific time entry, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -94,7 +106,11 @@ class TimeEntryStatusRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadTimeEntryStatusesByTimeEntryId",
-                    params={"TimeEntryId": time_entry_id},
+                    params={
+                        "TimeEntryId": time_entry_id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
@@ -102,9 +118,15 @@ class TimeEntryStatusRepository:
             logger.error(f"Error during read time entry statuses by time entry ID: {error}")
             raise map_database_error(error)
 
-    def read_current(self, time_entry_id: int) -> Optional[TimeEntryStatus]:
+    def read_current(
+        self,
+        time_entry_id: int,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[TimeEntryStatus]:
         """
-        Read the current (most recent) status for a time entry.
+        Read the current (most recent) status for a time entry, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -112,10 +134,21 @@ class TimeEntryStatusRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadCurrentTimeEntryStatus",
-                    params={"TimeEntryId": time_entry_id},
+                    params={
+                        "TimeEntryId": time_entry_id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during read current time entry status: {error}")
             raise map_database_error(error)
+
+
+def _bit(flag: Optional[bool]) -> Optional[int]:
+    """SQL Server BIT params take 0/1, not Python bool."""
+    if flag is None:
+        return None
+    return 1 if flag else 0

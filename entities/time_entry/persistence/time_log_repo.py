@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 class TimeLogRepository:
     """
     Repository for TimeLog persistence operations.
+
+    Phase 3 row-scoping: every read/update/delete forwards
+    `actor_user_id` and `actor_is_system_admin` to the sproc layer.
+    Sprocs INNER JOIN the parent TimeEntry and filter
+    TimeEntry.UserId = actor_user_id.
     """
 
     def __init__(self):
@@ -72,7 +77,8 @@ class TimeLogRepository:
         note: Optional[str] = None,
     ) -> TimeLog:
         """
-        Create a new time log.
+        Create a new time log. Create paths are unscoped — the
+        service layer ensures the parent TimeEntry is accessible.
         """
         try:
             with get_connection() as conn:
@@ -101,9 +107,15 @@ class TimeLogRepository:
             logger.error(f"Error during create time log: {error}")
             raise map_database_error(error)
 
-    def read_by_time_entry_id(self, time_entry_id: int) -> list[TimeLog]:
+    def read_by_time_entry_id(
+        self,
+        time_entry_id: int,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[TimeLog]:
         """
-        Read all time logs for a specific time entry.
+        Read all time logs for a specific time entry, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -111,7 +123,11 @@ class TimeLogRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadTimeLogsByTimeEntryId",
-                    params={"TimeEntryId": time_entry_id},
+                    params={
+                        "TimeEntryId": time_entry_id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
@@ -119,9 +135,15 @@ class TimeLogRepository:
             logger.error(f"Error during read time logs by time entry ID: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: int) -> Optional[TimeLog]:
+    def read_by_id(
+        self,
+        id: int,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[TimeLog]:
         """
-        Read a time log by ID.
+        Read a time log by ID, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -129,7 +151,11 @@ class TimeLogRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadTimeLogById",
-                    params={"Id": id},
+                    params={
+                        "Id": id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
@@ -137,9 +163,15 @@ class TimeLogRepository:
             logger.error(f"Error during read time log by ID: {error}")
             raise map_database_error(error)
 
-    def read_by_public_id(self, public_id: str) -> Optional[TimeLog]:
+    def read_by_public_id(
+        self,
+        public_id: str,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[TimeLog]:
         """
-        Read a time log by public ID.
+        Read a time log by public ID, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -147,7 +179,11 @@ class TimeLogRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadTimeLogByPublicId",
-                    params={"PublicId": public_id},
+                    params={
+                        "PublicId": public_id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
@@ -155,9 +191,15 @@ class TimeLogRepository:
             logger.error(f"Error during read time log by public ID: {error}")
             raise map_database_error(error)
 
-    def update_by_id(self, time_log: TimeLog) -> Optional[TimeLog]:
+    def update_by_id(
+        self,
+        time_log: TimeLog,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[TimeLog]:
         """
-        Update a time log by ID.
+        Update a time log by ID, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -176,17 +218,19 @@ class TimeLogRepository:
                         "Longitude": Decimal(str(time_log.longitude)) if time_log.longitude is not None else None,
                         "ProjectId": time_log.project_id,
                         "Note": time_log.note,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                     },
                 )
                 row = cursor.fetchone()
                 if not row:
                     logger.warning(
-                        "UpdateTimeLogById returned no row (id=%s); possible row-version conflict or record not found.",
+                        "UpdateTimeLogById returned no row (id=%s); possible row-version conflict, scope mismatch, or record not found.",
                         time_log.id,
                     )
                     raise map_database_error(
                         Exception(
-                            "Update did not match any row; the time log may have been modified by another process (row-version conflict) or no longer exists."
+                            "Update did not match any row; the time log may have been modified by another process (row-version conflict), is not accessible to this user, or no longer exists."
                         )
                     )
                 return self._from_db(row)
@@ -194,9 +238,15 @@ class TimeLogRepository:
             logger.error(f"Error during update time log by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: int) -> Optional[TimeLog]:
+    def delete_by_id(
+        self,
+        id: int,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[TimeLog]:
         """
-        Delete a time log by ID.
+        Delete a time log by ID, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -204,7 +254,11 @@ class TimeLogRepository:
                 call_procedure(
                     cursor=cursor,
                     name="DeleteTimeLogById",
-                    params={"Id": id},
+                    params={
+                        "Id": id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row) if row else None
@@ -212,15 +266,36 @@ class TimeLogRepository:
             logger.error(f"Error during delete time log by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_public_id(self, public_id: str) -> Optional[TimeLog]:
+    def delete_by_public_id(
+        self,
+        public_id: str,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[TimeLog]:
         """
-        Delete a time log by public ID.
+        Delete a time log by public ID, scoped to the actor.
         """
         try:
-            log = self.read_by_public_id(public_id=public_id)
+            log = self.read_by_public_id(
+                public_id=public_id,
+                actor_user_id=actor_user_id,
+                actor_is_system_admin=actor_is_system_admin,
+            )
             if not log:
                 return None
-            return self.delete_by_id(id=log.id)
+            return self.delete_by_id(
+                id=log.id,
+                actor_user_id=actor_user_id,
+                actor_is_system_admin=actor_is_system_admin,
+            )
         except Exception as error:
             logger.error(f"Error during delete time log by public ID: {error}")
             raise map_database_error(error)
+
+
+def _bit(flag: Optional[bool]) -> Optional[int]:
+    """SQL Server BIT params take 0/1, not Python bool."""
+    if flag is None:
+        return None
+    return 1 if flag else 0

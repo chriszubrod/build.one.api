@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 class TimeEntryRepository:
     """
     Repository for TimeEntry persistence operations.
+
+    Phase 3 row-scoping: every read/update/delete forwards
+    `actor_user_id` and `actor_is_system_admin` to the sproc layer.
+    Sprocs filter to rows where TimeEntry.UserId = actor_user_id
+    (system admin bypasses, NULL bypasses for legacy back-compat).
     """
 
     def __init__(self):
@@ -59,7 +64,8 @@ class TimeEntryRepository:
         note: Optional[str] = None,
     ) -> TimeEntry:
         """
-        Create a new time entry.
+        Create a new time entry. Create paths are unscoped — the
+        service layer prevents impersonation at the API surface.
         """
         try:
             with get_connection() as conn:
@@ -82,9 +88,14 @@ class TimeEntryRepository:
             logger.error(f"Error during create time entry: {error}")
             raise map_database_error(error)
 
-    def read_all(self) -> list[TimeEntry]:
+    def read_all(
+        self,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[TimeEntry]:
         """
-        Read all time entries.
+        Read time entries, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -92,7 +103,10 @@ class TimeEntryRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadTimeEntries",
-                    params={},
+                    params={
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
@@ -100,9 +114,15 @@ class TimeEntryRepository:
             logger.error(f"Error during read all time entries: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: int) -> Optional[TimeEntry]:
+    def read_by_id(
+        self,
+        id: int,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[TimeEntry]:
         """
-        Read a time entry by ID.
+        Read a time entry by ID, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -110,7 +130,11 @@ class TimeEntryRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadTimeEntryById",
-                    params={"Id": id},
+                    params={
+                        "Id": id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
@@ -118,9 +142,15 @@ class TimeEntryRepository:
             logger.error(f"Error during read time entry by ID: {error}")
             raise map_database_error(error)
 
-    def read_by_public_id(self, public_id: str) -> Optional[TimeEntry]:
+    def read_by_public_id(
+        self,
+        public_id: str,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[TimeEntry]:
         """
-        Read a time entry by public ID.
+        Read a time entry by public ID, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -128,7 +158,11 @@ class TimeEntryRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadTimeEntryByPublicId",
-                    params={"PublicId": public_id},
+                    params={
+                        "PublicId": public_id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
@@ -136,9 +170,15 @@ class TimeEntryRepository:
             logger.error(f"Error during read time entry by public ID: {error}")
             raise map_database_error(error)
 
-    def read_by_user_id(self, user_id: int) -> list[TimeEntry]:
+    def read_by_user_id(
+        self,
+        user_id: int,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[TimeEntry]:
         """
-        Read all time entries for a specific user.
+        Read all time entries for a specific user, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -146,7 +186,11 @@ class TimeEntryRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadTimeEntriesByUserId",
-                    params={"UserId": user_id},
+                    params={
+                        "UserId": user_id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
@@ -154,9 +198,15 @@ class TimeEntryRepository:
             logger.error(f"Error during read time entries by user ID: {error}")
             raise map_database_error(error)
 
-    def read_by_project_id(self, project_id: int) -> list[TimeEntry]:
+    def read_by_project_id(
+        self,
+        project_id: int,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[TimeEntry]:
         """
-        Read all time entries for a specific project.
+        Read all time entries for a specific project, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -164,7 +214,11 @@ class TimeEntryRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadTimeEntriesByProjectId",
-                    params={"ProjectId": project_id},
+                    params={
+                        "ProjectId": project_id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
@@ -185,9 +239,11 @@ class TimeEntryRepository:
         end_date: Optional[str] = None,
         sort_by: str = "WorkDate",
         sort_direction: str = "DESC",
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
     ) -> list[TimeEntry]:
         """
-        Read time entries with pagination and filtering.
+        Read time entries with pagination and filtering, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -206,6 +262,8 @@ class TimeEntryRepository:
                         "EndDate": end_date,
                         "SortBy": sort_by,
                         "SortDirection": sort_direction,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                     },
                 )
                 rows = cursor.fetchall()
@@ -223,9 +281,11 @@ class TimeEntryRepository:
         status: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
     ) -> int:
         """
-        Count time entries matching the filter criteria.
+        Count time entries matching the filter criteria, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -240,6 +300,8 @@ class TimeEntryRepository:
                         "Status": status,
                         "StartDate": start_date,
                         "EndDate": end_date,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                     },
                 )
                 row = cursor.fetchone()
@@ -248,9 +310,15 @@ class TimeEntryRepository:
             logger.error(f"Error during count time entries: {error}")
             raise map_database_error(error)
 
-    def update_by_id(self, time_entry: TimeEntry) -> Optional[TimeEntry]:
+    def update_by_id(
+        self,
+        time_entry: TimeEntry,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[TimeEntry]:
         """
-        Update a time entry by ID.
+        Update a time entry by ID, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -264,17 +332,19 @@ class TimeEntryRepository:
                         "UserId": time_entry.user_id,
                         "WorkDate": time_entry.work_date,
                         "Note": time_entry.note,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                     },
                 )
                 row = cursor.fetchone()
                 if not row:
                     logger.warning(
-                        "UpdateTimeEntryById returned no row (id=%s); possible row-version conflict or record not found.",
+                        "UpdateTimeEntryById returned no row (id=%s); possible row-version conflict, scope mismatch, or record not found.",
                         time_entry.id,
                     )
                     raise map_database_error(
                         Exception(
-                            "Update did not match any row; the time entry may have been modified by another process (row-version conflict) or no longer exists."
+                            "Update did not match any row; the time entry may have been modified by another process (row-version conflict), is not accessible to this user, or no longer exists."
                         )
                     )
                 return self._from_db(row)
@@ -282,9 +352,15 @@ class TimeEntryRepository:
             logger.error(f"Error during update time entry by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: int) -> Optional[TimeEntry]:
+    def delete_by_id(
+        self,
+        id: int,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[TimeEntry]:
         """
-        Delete a time entry by ID.
+        Delete a time entry by ID, scoped to the actor.
         """
         try:
             with get_connection() as conn:
@@ -292,7 +368,11 @@ class TimeEntryRepository:
                 call_procedure(
                     cursor=cursor,
                     name="DeleteTimeEntryById",
-                    params={"Id": id},
+                    params={
+                        "Id": id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row) if row else None
@@ -300,15 +380,36 @@ class TimeEntryRepository:
             logger.error(f"Error during delete time entry by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_public_id(self, public_id: str) -> Optional[TimeEntry]:
+    def delete_by_public_id(
+        self,
+        public_id: str,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[TimeEntry]:
         """
-        Delete a time entry by public ID.
+        Delete a time entry by public ID, scoped to the actor.
         """
         try:
-            entry = self.read_by_public_id(public_id=public_id)
+            entry = self.read_by_public_id(
+                public_id=public_id,
+                actor_user_id=actor_user_id,
+                actor_is_system_admin=actor_is_system_admin,
+            )
             if not entry:
                 return None
-            return self.delete_by_id(id=entry.id)
+            return self.delete_by_id(
+                id=entry.id,
+                actor_user_id=actor_user_id,
+                actor_is_system_admin=actor_is_system_admin,
+            )
         except Exception as error:
             logger.error(f"Error during delete time entry by public ID: {error}")
             raise map_database_error(error)
+
+
+def _bit(flag: Optional[bool]) -> Optional[int]:
+    """SQL Server BIT params take 0/1, not Python bool."""
+    if flag is None:
+        return None
+    return 1 if flag else 0

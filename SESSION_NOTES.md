@@ -1,5 +1,73 @@
 # Session Notes
 
+## Session: Access Control Rebuild — Phases 2 / 3 / 4 / 5 (May 6, 2026)
+
+### Overview
+
+Single-day push that took the access-control rebuild from "Phase 0+1 shipped, four phases ahead" to "all five phases shipped." Q&A-driven scoping at each phase boundary surfaced data-model surprises that materially changed plans (TimeEntry's UserId-vs-ProjectId model; Bill/BillCredit/Expense having no parent ProjectId; the polymorphic Attachment link-table shape; Phase 5's late pivot from threading 24 services to a single DEFAULT constraint). Four separate commits to `master`: Phase 2 (533b4c5), Phase 3 (9653c8e), Phase 4 (9a7967d), Phase 5 (6d22e55).
+
+### Phase 2 — Resolver rewrite (commit 533b4c5)
+
+Rewrote `shared/rbac.py` for the multi-tenant + multi-user model. Dropped the role-name "admin" magic string; `User.IsSystemAdmin = 1` is now the bypass primitive. Permission resolution unions across every `UserRole` row for the (user, active Company) pair via `read_all_by_user_id_and_company_id` (added in Phase 1), then layers `UserModule` additive read-only grants on top. Cache key became `(user_sub, company_id)` so switching Companies resolves a fresh map; `switch_active_company` calls `invalidate_user_cache(sub)` after persisting `LastCompanyId`. `is_admin_user(current_user)` reads `is_system_admin` directly from the enriched payload — no more DB call. Mirrored the same merge in `_resolve_me_payload` so React's modules list matches the resolver. `is_admin` field is now a passthrough of `is_system_admin`.
+
+Flipped `JWT_CID_GRACE_DAYS` default from 7 to 0. Tokens missing `uid`/`cid` claims (legacy tokens issued before the rebuild) no longer fall back to a DB lookup — the resolver leaves the corresponding context field None and downstream RBAC fails closed. Override via env var if rollback is ever needed.
+
+Seeded the 8 curated human roles (Tenant Admin, Controller, AP Specialist, AR Specialist, Project Manager, Reviewer, Time Clerk, Auditor). Per Q1 sign-off, no `RoleModule` grants seeded — assign per-role via React `/role/:id` Modules tab. Project Manager already existed from the review-notification seed; the IF NOT EXISTS guards co-existed cleanly.
+
+Verified: Christopher (system admin) gets all 24 modules; Cassidy (Project Manager) gets 8 modules with correct flag union; cache key shape `(sub, cid)` confirmed; sweep + targeted invalidation tested; 403 raised correctly for missing module / permission / unknown user.
+
+### Phase 3 — Row scoping (commit 9653c8e)
+
+Originally planned to scope all 5 transactional entities (Bill / BillCredit / Expense / Invoice / TimeEntry) by `UserProject` membership. Discovery surfaced two findings that reshaped scope:
+
+1. **Bill / BillCredit / Expense / ContractLabor parents have no `ProjectId`** — they're vendor-level financial documents that span projects. Project-membership scoping is a forced fit. Their tenant isolation properly belongs in Phase 5 via `CompanyId`.
+2. **TimeEntry has both `UserId` AND `ProjectId` on the parent.** For a time-tracker, the natural scope is "own entries", not "any entry on accessible projects" — workers' hours are personal data. Switched the model to UserId scoping with system-admin bypass.
+
+Final Phase 3 scope: TimeEntry only, scoped by UserId. Every read/update/delete sproc on TimeEntry / TimeLog / TimeEntryStatus accepts `@ActorUserId BIGINT = NULL, @ActorIsSystemAdmin BIT = NULL`. Filter: `(@ActorIsSystemAdmin = 1 OR @ActorUserId IS NULL OR t.[UserId] = @ActorUserId)`. Children scope through INNER JOIN on `TimeEntry`. NULL-actor bypass preserves back-compat during deploy. `submit/approve/reject` transitions bypass UserId scope — the API surface gates them on `Time Tracking can_submit/can_approve` permissions, so the service can trust callers acting on entries they don't own.
+
+Verified end-to-end: admin sees all 10 rows; user 18 sees 4 of her own; user 17 sees 4 of theirs; cross-user lookups all hide other-user rows; TimeLog + TimeEntryStatus scope through parent join.
+
+### Phase 4 — Audit attribution + IsAgent filter (commit 9a7967d)
+
+**4a. Workflow.CreatedByUserId.** Added `CreatedByUserId BIGINT NULL FK User.Id` + index to `Workflow` and `WorkflowEvent`. Discovery showed `Workflow.CreatedBy` was 100% NULL across 3,984 rows (the column existed but ProcessEngine never populated it), but `WorkflowEvent.CreatedBy` had real data — 25 rows in `'user:{id}'` format plus system tags (`'instant_workflow_handler'` 7842, `'system'` 3897, legacy agent tags). Backfilled the 25 user-attributed rows by parsing the string format with `EXISTS` guard against `User.Id`. Updated `CreateWorkflow` + `CreateWorkflowEvent` sprocs with `@CreatedByUserId BIGINT = NULL`. Repos auto-stamp from `current_user_id` ContextVar — orchestrator + ProcessEngine inherit it for free, no orchestrator changes required. Legacy `CreatedBy` VARCHAR stays in place as a free-text source/component tag for non-user origins.
+
+**4b. IsAgent filter.** `ReadUsers` accepts `@IncludeAgents BIT = 0`. Default = hide agents. Direct lookups (`ReadUserById/ByPublicId/ByFirstname/ByLastname`) intentionally NOT filtered. `UserService.read_all(include_agents=False)`. `GET /api/v1/get/users?include_agents=true` query param.
+
+**4c. Company picker UI** — deferred to `build.one.web` and `build.one.ios`. The API endpoints already shipped in Phase 0.
+
+Verified: `ReadUsers` default = 5 humans; `include_agents=True` = 17 total (12 agents hidden); creating a `WorkflowEvent` with ContextVar set to user 18 stamps `CreatedByUserId=18` correctly.
+
+### Phase 5 — Multi-tenant CompanyId on 24 tables (commit 6d22e55)
+
+Phased Q&A locked the scope at 24 tables (Project + 6 financial parents + 6 line items + 4 attachments + 2 email pipeline + 3 review + 2 bill folder). Reference entities (Vendor / Customer / SubCostCode / etc.) stay global per Q1; audit/internal tables (Workflow / AgentSession / etc.) inherit through their referenced entity per Q2; integration staging (qbo.* / ms.*) stays implicitly scoped via OAuth per Q3; Phase 5-thin = schema + backfill + NOT NULL flip only (no enforcement) per Q4.
+
+**The late pivot.** Mid-execution, the cost of threading `CompanyId` through 24 services + 24 sprocs + 24 repo `_from_db` mappings became apparent — ~1000 lines of mechanical edits, big risk surface for typos, and most of it would just default to single-Company anyway. Surfaced the cleaner alternative: `DEFAULT (1)` constraint on each new column. SQL Server applies the default automatically when an INSERT statement omits `CompanyId` from its column list — and existing sprocs all do that. Zero code changes required. The NOT NULL flip still works because every existing row was backfilled and every new row picks up the DEFAULT.
+
+User chose the DEFAULT-constraint path. Final Phase 5 = 5 SQL migration files, zero Python changes:
+
+1. `phase5_company_id_columns.sql` — `CompanyId BIGINT NULL FK Company` + index on each of the 24 tables.
+2. `phase5_company_id_backfill.sql` — dependency-ordered backfill: Project → ProjectId-bearing tables (Invoice, TimeEntry, all line items, TimeLog) via JOIN to `Project.CompanyId` → vendor-keyed parents (Bill, BillCredit, Expense, ContractLabor) to default Company → InvoiceLineItem via Invoice → Attachment link tables via parent line item → Attachment proper via any link table else default → email/review/billfolder to default.
+3. `phase5b_review_table_fixup.sql` — patches `dbo.Review` (the original migration mistakenly targeted dead-schema `dbo.ReviewEntry`).
+4. `phase5_company_id_defaults.sql` — `DEFAULT (1)` constraint on each new column. The zero-code mechanism.
+5. `phase5_company_id_not_null_flip.sql` — pre-flight NULL assertion (RAISERROR + abort if any NULL remains anywhere) → drop dependent index → ALTER COLUMN NOT NULL → recreate index. Phase 1 pattern. Hit one transient gap row (scheduler created 3 BillFolderRun rows between backfill and flip); re-running the idempotent backfill caught them, then the flip succeeded clean.
+
+Final state: ~75,200 rows tagged across 24 tables, zero NULL CompanyIds, all NOT NULL with FK + index + DEFAULT. Most-recent Bill (id=18390) verified `CompanyId=1` via direct query — DEFAULT fires through real production sprocs without any code change.
+
+### Phase 5b — what's still NOT done
+
+The DEFAULT-constraint approach makes Phase 5 zero-cost today but defers the real multi-tenant work. The day a 2nd Company arrives (or enforcement is preemptively wanted), Phase 5b lands:
+- Update Create sprocs to accept explicit `@CompanyId BIGINT` param.
+- Thread CompanyId through services from `current_company_id` ContextVar.
+- Drop the `DEFAULT (1)` constraints so explicit values are required.
+- Add `@ActorIsSystemAdmin BIT` + filter clause to read sprocs (same pattern as Phase 3's TimeEntry).
+- Decide reference-entity scoping (per-Company vs per-Organization) for shared catalogs.
+
+Plus standing follow-ups carried forward: Phase 1b (drop `OrganizationCompany` + `UserOrganization` once React stops reading them), Phase 4c (React + iOS Company picker UI in those repos), Phase 2 polish (drop the legacy fallback branch in `_enrich_payload_with_authz` after a week of soak with `JWT_CID_GRACE_DAYS=0`).
+
+### Working style
+
+Plan-before-coding per CLAUDE.md at every phase boundary. Q&A-driven scoping (5 questions on Phase 5 alone before the first SQL line) caught data-model surprises before they became code-revisit problems. Phase 5's mid-execution pivot (DEFAULT vs threading) was the sharpest example: the user-confirmed plan wasn't wrong, but a much smaller path appeared once the cost of the original was concrete. Surfacing it cost one round-trip and saved hours of mechanical work.
+
 ## Session: Review-submit notifications — Bill v1 (May 6, 2026)
 
 ### Overview

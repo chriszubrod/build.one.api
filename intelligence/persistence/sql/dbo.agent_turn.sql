@@ -19,6 +19,9 @@ BEGIN
         [Model] NVARCHAR(100) NOT NULL,
         [InputTokens] INT NOT NULL DEFAULT 0,
         [OutputTokens] INT NOT NULL DEFAULT 0,
+        [CacheCreationInputTokens] INT NOT NULL DEFAULT 0,
+        [CacheReadInputTokens] INT NOT NULL DEFAULT 0,
+        [CostUsd] DECIMAL(12, 6) NULL,
         [StopReason] NVARCHAR(50) NULL,
         [AssistantText] NVARCHAR(MAX) NULL,
         [StartedAt] DATETIME2(3) NOT NULL,
@@ -27,6 +30,34 @@ BEGIN
             FOREIGN KEY ([SessionId]) REFERENCES dbo.[AgentSession] ([Id])
     );
 END;
+GO
+
+-- Idempotent column adds for existing environments
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE Name = 'CacheCreationInputTokens' AND Object_ID = OBJECT_ID('dbo.AgentTurn')
+)
+BEGIN
+    ALTER TABLE dbo.[AgentTurn] ADD [CacheCreationInputTokens] INT NOT NULL DEFAULT 0;
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE Name = 'CacheReadInputTokens' AND Object_ID = OBJECT_ID('dbo.AgentTurn')
+)
+BEGIN
+    ALTER TABLE dbo.[AgentTurn] ADD [CacheReadInputTokens] INT NOT NULL DEFAULT 0;
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE Name = 'CostUsd' AND Object_ID = OBJECT_ID('dbo.AgentTurn')
+)
+BEGIN
+    ALTER TABLE dbo.[AgentTurn] ADD [CostUsd] DECIMAL(12, 6) NULL;
+END
 GO
 
 -- Indexes
@@ -60,6 +91,9 @@ AS
         [Model],
         [InputTokens],
         [OutputTokens],
+        [CacheCreationInputTokens],
+        [CacheReadInputTokens],
+        [CostUsd],
         [StopReason],
         [AssistantText],
         CONVERT(VARCHAR(19), [StartedAt], 120) AS [StartedAt],
@@ -105,7 +139,10 @@ CREATE OR ALTER PROCEDURE CompleteAgentTurn
     @InputTokens INT,
     @OutputTokens INT,
     @StopReason NVARCHAR(50) = NULL,
-    @AssistantText NVARCHAR(MAX) = NULL
+    @AssistantText NVARCHAR(MAX) = NULL,
+    @CacheCreationInputTokens INT = 0,
+    @CacheReadInputTokens INT = 0,
+    @CostUsd DECIMAL(12, 6) = NULL
 )
 AS
 BEGIN
@@ -119,6 +156,9 @@ BEGIN
         [ModifiedDatetime] = @Now,
         [InputTokens] = @InputTokens,
         [OutputTokens] = @OutputTokens,
+        [CacheCreationInputTokens] = @CacheCreationInputTokens,
+        [CacheReadInputTokens] = @CacheReadInputTokens,
+        [CostUsd] = @CostUsd,
         [StopReason] = @StopReason,
         [AssistantText] = @AssistantText,
         [CompletedAt] = @Now

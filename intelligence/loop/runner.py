@@ -138,7 +138,12 @@ async def run(
             )
             return
 
-        yield TurnEnd(turn=turn, usage=turn_usage, stop_reason=stop_reason)
+        yield TurnEnd(
+            turn=turn,
+            usage=turn_usage,
+            stop_reason=stop_reason,
+            cost_usd=_cost(provider, model, turn_usage),
+        )
 
         total_usage = Usage(
             input_tokens=total_usage.input_tokens + turn_usage.input_tokens,

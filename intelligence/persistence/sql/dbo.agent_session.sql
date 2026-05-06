@@ -32,6 +32,9 @@ BEGIN
         [TerminationReason] NVARCHAR(50) NULL,
         [TotalInputTokens] INT NOT NULL DEFAULT 0,
         [TotalOutputTokens] INT NOT NULL DEFAULT 0,
+        [TotalCacheCreationInputTokens] INT NOT NULL DEFAULT 0,
+        [TotalCacheReadInputTokens] INT NOT NULL DEFAULT 0,
+        [TotalCostUsd] DECIMAL(12, 6) NULL,
         [StartedAt] DATETIME2(3) NOT NULL,
         [CompletedAt] DATETIME2(3) NULL,
         [ErrorMessage] NVARCHAR(MAX) NULL
@@ -55,6 +58,33 @@ IF NOT EXISTS (
 )
 BEGIN
     ALTER TABLE dbo.[AgentSession] ADD [PreviousSessionId] BIGINT NULL;
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE Name = 'TotalCacheCreationInputTokens' AND Object_ID = OBJECT_ID('dbo.AgentSession')
+)
+BEGIN
+    ALTER TABLE dbo.[AgentSession] ADD [TotalCacheCreationInputTokens] INT NOT NULL DEFAULT 0;
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE Name = 'TotalCacheReadInputTokens' AND Object_ID = OBJECT_ID('dbo.AgentSession')
+)
+BEGIN
+    ALTER TABLE dbo.[AgentSession] ADD [TotalCacheReadInputTokens] INT NOT NULL DEFAULT 0;
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE Name = 'TotalCostUsd' AND Object_ID = OBJECT_ID('dbo.AgentSession')
+)
+BEGIN
+    ALTER TABLE dbo.[AgentSession] ADD [TotalCostUsd] DECIMAL(12, 6) NULL;
 END
 GO
 
@@ -137,6 +167,9 @@ AS
         [TerminationReason],
         [TotalInputTokens],
         [TotalOutputTokens],
+        [TotalCacheCreationInputTokens],
+        [TotalCacheReadInputTokens],
+        [TotalCostUsd],
         CONVERT(VARCHAR(19), [StartedAt], 120) AS [StartedAt],
         CONVERT(VARCHAR(19), [CompletedAt], 120) AS [CompletedAt],
         [ErrorMessage]
@@ -188,7 +221,10 @@ CREATE OR ALTER PROCEDURE CompleteAgentSession
     @Id BIGINT,
     @TerminationReason NVARCHAR(50),
     @TotalInputTokens INT,
-    @TotalOutputTokens INT
+    @TotalOutputTokens INT,
+    @TotalCacheCreationInputTokens INT = 0,
+    @TotalCacheReadInputTokens INT = 0,
+    @TotalCostUsd DECIMAL(12, 6) = NULL
 )
 AS
 BEGIN
@@ -204,6 +240,9 @@ BEGIN
         [TerminationReason] = @TerminationReason,
         [TotalInputTokens] = @TotalInputTokens,
         [TotalOutputTokens] = @TotalOutputTokens,
+        [TotalCacheCreationInputTokens] = @TotalCacheCreationInputTokens,
+        [TotalCacheReadInputTokens] = @TotalCacheReadInputTokens,
+        [TotalCostUsd] = @TotalCostUsd,
         [CompletedAt] = @Now
     WHERE [Id] = @Id;
 
@@ -220,7 +259,10 @@ CREATE OR ALTER PROCEDURE FailAgentSession
     @Id BIGINT,
     @ErrorMessage NVARCHAR(MAX),
     @TotalInputTokens INT = 0,
-    @TotalOutputTokens INT = 0
+    @TotalOutputTokens INT = 0,
+    @TotalCacheCreationInputTokens INT = 0,
+    @TotalCacheReadInputTokens INT = 0,
+    @TotalCostUsd DECIMAL(12, 6) = NULL
 )
 AS
 BEGIN
@@ -236,6 +278,9 @@ BEGIN
         [ErrorMessage] = @ErrorMessage,
         [TotalInputTokens] = @TotalInputTokens,
         [TotalOutputTokens] = @TotalOutputTokens,
+        [TotalCacheCreationInputTokens] = @TotalCacheCreationInputTokens,
+        [TotalCacheReadInputTokens] = @TotalCacheReadInputTokens,
+        [TotalCostUsd] = @TotalCostUsd,
         [CompletedAt] = @Now
     WHERE [Id] = @Id;
 

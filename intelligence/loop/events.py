@@ -59,6 +59,7 @@ class TurnEnd(BaseModel):
     turn: int
     usage: Usage
     stop_reason: Optional[str] = None
+    cost_usd: Optional[float] = None
     session_public_id: Optional[str] = None
     agent_name: Optional[str] = None
 

@@ -41,6 +41,9 @@ class AgentSession(BaseModel):
     termination_reason: Optional[str] = None
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    total_cache_creation_input_tokens: int = 0
+    total_cache_read_input_tokens: int = 0
+    total_cost_usd: Optional[float] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     error_message: Optional[str] = None
@@ -57,6 +60,9 @@ class AgentTurn(BaseModel):
     model: Optional[str] = None
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cost_usd: Optional[float] = None
     stop_reason: Optional[str] = None
     assistant_text: Optional[str] = None
     started_at: Optional[str] = None
@@ -118,6 +124,9 @@ class AgentSessionRepo:
                 termination_reason=row.TerminationReason,
                 total_input_tokens=row.TotalInputTokens,
                 total_output_tokens=row.TotalOutputTokens,
+                total_cache_creation_input_tokens=row.TotalCacheCreationInputTokens,
+                total_cache_read_input_tokens=row.TotalCacheReadInputTokens,
+                total_cost_usd=float(row.TotalCostUsd) if row.TotalCostUsd is not None else None,
                 started_at=row.StartedAt,
                 completed_at=row.CompletedAt,
                 error_message=row.ErrorMessage,
@@ -172,6 +181,9 @@ class AgentSessionRepo:
         termination_reason: str,
         total_input_tokens: int,
         total_output_tokens: int,
+        total_cache_creation_input_tokens: int = 0,
+        total_cache_read_input_tokens: int = 0,
+        total_cost_usd: Optional[float] = None,
     ) -> Optional[AgentSession]:
         try:
             with get_connection() as conn:
@@ -184,6 +196,9 @@ class AgentSessionRepo:
                         "TerminationReason": termination_reason,
                         "TotalInputTokens": total_input_tokens,
                         "TotalOutputTokens": total_output_tokens,
+                        "TotalCacheCreationInputTokens": total_cache_creation_input_tokens,
+                        "TotalCacheReadInputTokens": total_cache_read_input_tokens,
+                        "TotalCostUsd": total_cost_usd,
                     },
                 )
                 row = cursor.fetchone()
@@ -199,6 +214,9 @@ class AgentSessionRepo:
         error_message: str,
         total_input_tokens: int = 0,
         total_output_tokens: int = 0,
+        total_cache_creation_input_tokens: int = 0,
+        total_cache_read_input_tokens: int = 0,
+        total_cost_usd: Optional[float] = None,
     ) -> Optional[AgentSession]:
         try:
             with get_connection() as conn:
@@ -211,6 +229,9 @@ class AgentSessionRepo:
                         "ErrorMessage": error_message,
                         "TotalInputTokens": total_input_tokens,
                         "TotalOutputTokens": total_output_tokens,
+                        "TotalCacheCreationInputTokens": total_cache_creation_input_tokens,
+                        "TotalCacheReadInputTokens": total_cache_read_input_tokens,
+                        "TotalCostUsd": total_cost_usd,
                     },
                 )
                 row = cursor.fetchone()
@@ -274,6 +295,9 @@ class AgentTurnRepo:
                 model=row.Model,
                 input_tokens=row.InputTokens,
                 output_tokens=row.OutputTokens,
+                cache_creation_input_tokens=row.CacheCreationInputTokens,
+                cache_read_input_tokens=row.CacheReadInputTokens,
+                cost_usd=float(row.CostUsd) if row.CostUsd is not None else None,
                 stop_reason=row.StopReason,
                 assistant_text=row.AssistantText,
                 started_at=row.StartedAt,
@@ -312,6 +336,9 @@ class AgentTurnRepo:
         output_tokens: int,
         stop_reason: Optional[str] = None,
         assistant_text: Optional[str] = None,
+        cache_creation_input_tokens: int = 0,
+        cache_read_input_tokens: int = 0,
+        cost_usd: Optional[float] = None,
     ) -> Optional[AgentTurn]:
         try:
             with get_connection() as conn:
@@ -325,6 +352,9 @@ class AgentTurnRepo:
                         "OutputTokens": output_tokens,
                         "StopReason": stop_reason,
                         "AssistantText": assistant_text,
+                        "CacheCreationInputTokens": cache_creation_input_tokens,
+                        "CacheReadInputTokens": cache_read_input_tokens,
+                        "CostUsd": cost_usd,
                     },
                 )
                 row = cursor.fetchone()

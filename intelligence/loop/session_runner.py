@@ -228,6 +228,9 @@ async def run_session(
                         output_tokens=ev.usage.output_tokens,
                         stop_reason=ev.stop_reason,
                         assistant_text=current_turn_text_buf or None,
+                        cache_creation_input_tokens=ev.usage.cache_creation_input_tokens,
+                        cache_read_input_tokens=ev.usage.cache_read_input_tokens,
+                        cost_usd=ev.cost_usd,
                     )
                     current_turn_id = None
 
@@ -238,6 +241,9 @@ async def run_session(
                     termination_reason=ev.reason,
                     total_input_tokens=ev.usage.input_tokens,
                     total_output_tokens=ev.usage.output_tokens,
+                    total_cache_creation_input_tokens=ev.usage.cache_creation_input_tokens,
+                    total_cache_read_input_tokens=ev.usage.cache_read_input_tokens,
+                    total_cost_usd=ev.cost_usd,
                 )
                 finalized = True
 

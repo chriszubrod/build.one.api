@@ -27,6 +27,7 @@ bill_specialist = Agent(
         "remove_bill_line_item",
         # Vendor read tools — for parent name resolution and lookup-by-name
         "search_vendors",
+        "find_vendor_for_invoice",
         "read_vendor_by_public_id",
         # SubCostCode reads — required to resolve cost-code id for line items
         "search_sub_cost_codes",
@@ -35,6 +36,9 @@ bill_specialist = Agent(
         # Project reads — required to resolve project_public_id for line items
         "search_projects",
         "read_project_by_public_id",
+        # Project resolution for invoice-driven creates: delegate to
+        # project_specialist with the Ship To address.
+        "delegate_to_project_specialist",
     ),
     model="claude-sonnet-4-6",
     provider="anthropic",

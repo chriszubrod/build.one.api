@@ -22,6 +22,9 @@ class Vendor:
     is_draft: Optional[bool]
     is_deleted: Optional[bool] = False
     is_contract_labor: Optional[bool] = False
+    # Free-text per-vendor agent notes. Read by bill_specialist via
+    # FindVendorForInvoice when creating bills from invoice emails.
+    intake_notes: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

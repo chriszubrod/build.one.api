@@ -57,6 +57,13 @@ class EmailMessageRepository:
                 agent_session_id=getattr(row, "AgentSessionId", None),
                 web_link=getattr(row, "WebLink", None),
                 has_attachments=bool(getattr(row, "HasAttachments", False)),
+                agent_classification=getattr(row, "AgentClassification", None),
+                agent_classification_reason=getattr(row, "AgentClassificationReason", None),
+                agent_decided_action=getattr(row, "AgentDecidedAction", None),
+                agent_classification_confidence=(
+                    Decimal(str(row.AgentClassificationConfidence))
+                    if getattr(row, "AgentClassificationConfidence", None) is not None else None
+                ),
             )
         except Exception as error:
             logger.error(f"EmailMessage mapping error: {error}")
@@ -137,7 +144,12 @@ class EmailMessageRepository:
 
     def update_status(self, *, id: int, processing_status: str,
                       last_error: Optional[str] = None,
-                      agent_session_id: Optional[int] = None) -> Optional[EmailMessage]:
+                      agent_session_id: Optional[int] = None,
+                      agent_classification: Optional[str] = None,
+                      agent_classification_reason: Optional[str] = None,
+                      agent_decided_action: Optional[str] = None,
+                      agent_classification_confidence: Optional[Decimal] = None,
+                      ) -> Optional[EmailMessage]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -146,6 +158,10 @@ class EmailMessageRepository:
                     "ProcessingStatus": processing_status,
                     "LastError": last_error,
                     "AgentSessionId": agent_session_id,
+                    "AgentClassification": agent_classification,
+                    "AgentClassificationReason": agent_classification_reason,
+                    "AgentDecidedAction": agent_decided_action,
+                    "AgentClassificationConfidence": agent_classification_confidence,
                 })
                 row = cursor.fetchone()
                 if not row:
@@ -157,9 +173,94 @@ class EmailMessageRepository:
                     processing_status=row.ProcessingStatus,
                     last_error=row.LastError,
                     agent_session_id=row.AgentSessionId,
+                    agent_classification=getattr(row, "AgentClassification", None),
+                    agent_classification_reason=getattr(row, "AgentClassificationReason", None),
+                    agent_decided_action=getattr(row, "AgentDecidedAction", None),
+                    agent_classification_confidence=(
+                        Decimal(str(row.AgentClassificationConfidence))
+                        if getattr(row, "AgentClassificationConfidence", None) is not None else None
+                    ),
                 )
         except Exception as error:
             logger.error(f"Error updating email message status: {error}")
+            raise map_database_error(error)
+
+    def read_sender_history(self, from_email: str,
+                            exclude_public_id: Optional[str] = None) -> dict:
+        """Aggregate prior-context lookup keyed on email sender. Two
+        result sets from the sproc: aggregate counts row + per-vendor
+        rows (associated via committed Bills)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor=cursor, name="ReadEmailSenderHistory", params={
+                    "FromEmail": from_email,
+                    "ExcludePublicId": exclude_public_id,
+                })
+                agg_row = cursor.fetchone()
+                vendors: list[dict] = []
+                if cursor.nextset():
+                    for vrow in cursor.fetchall():
+                        vendors.append({
+                            "id": vrow.VendorId,
+                            "public_id": vrow.VendorPublicId,
+                            "name": vrow.VendorName,
+                            "bill_count": vrow.BillCount,
+                        })
+                if not agg_row:
+                    return {
+                        "from_email": from_email,
+                        "prior_emails": {"total": 0, "by_status": {}, "by_classification": {}, "by_action": {}},
+                        "prior_bills_committed": 0,
+                        "prior_expenses_committed": 0,
+                        "prior_bill_credits_committed": 0,
+                        "associated_vendors": vendors,
+                    }
+                return {
+                    "from_email": from_email,
+                    "prior_emails": {
+                        "total": int(agg_row.PriorEmailsTotal or 0),
+                        "by_status": {
+                            "pending":         int(agg_row.StatusPending or 0),
+                            "processing":      int(agg_row.StatusProcessing or 0),
+                            "extracted":       int(agg_row.StatusExtracted or 0),
+                            "awaiting_review": int(agg_row.StatusAwaitingReview or 0),
+                            "agent_complete":  int(agg_row.StatusAgentComplete or 0),
+                            "irrelevant":      int(agg_row.StatusIrrelevant or 0),
+                            "failed":          int(agg_row.StatusFailed or 0),
+                        },
+                        "by_classification": {
+                            "vendor_invoice":         int(agg_row.ClassVendorInvoice or 0),
+                            "vendor_credit_memo":     int(agg_row.ClassVendorCreditMemo or 0),
+                            "vendor_statement":       int(agg_row.ClassVendorStatement or 0),
+                            "vendor_expense_receipt": int(agg_row.ClassVendorExpenseReceipt or 0),
+                            "customer_payment":       int(agg_row.ClassCustomerPayment or 0),
+                            "customer_question":      int(agg_row.ClassCustomerQuestion or 0),
+                            "customer_dispute":       int(agg_row.ClassCustomerDispute or 0),
+                            "internal_reply":         int(agg_row.ClassInternalReply or 0),
+                            "internal_forward":       int(agg_row.ClassInternalForward or 0),
+                            "vendor_newsletter":      int(agg_row.ClassVendorNewsletter or 0),
+                            "non_actionable":         int(agg_row.ClassNonActionable or 0),
+                            "unknown":                int(agg_row.ClassUnknown or 0),
+                            "unclassified":           int(agg_row.ClassUnclassified or 0),
+                        },
+                        "by_action": {
+                            "delegated_to_bill_specialist":        int(agg_row.ActionDelegatedBill or 0),
+                            "delegated_to_bill_credit_specialist": int(agg_row.ActionDelegatedBillCredit or 0),
+                            "delegated_to_expense_specialist":     int(agg_row.ActionDelegatedExpense or 0),
+                            "flagged_needs_review":                int(agg_row.ActionFlaggedReview or 0),
+                            "marked_irrelevant":                   int(agg_row.ActionMarkedIrrelevant or 0),
+                            "marked_processed":                    int(agg_row.ActionMarkedProcessed or 0),
+                            "unset":                               int(agg_row.ActionUnset or 0),
+                        },
+                    },
+                    "prior_bills_committed":         int(agg_row.PriorBillsCommitted or 0),
+                    "prior_expenses_committed":      int(agg_row.PriorExpensesCommitted or 0),
+                    "prior_bill_credits_committed":  int(agg_row.PriorBillCreditsCommitted or 0),
+                    "associated_vendors":            vendors,
+                }
+        except Exception as error:
+            logger.error(f"Error reading email sender history: {error}")
             raise map_database_error(error)
 
     def claim_next_pending(self) -> Optional[EmailMessage]:
@@ -345,6 +446,36 @@ class EmailAttachmentRepository:
                 return self._from_db(cursor.fetchone())
         except Exception as error:
             logger.error(f"Error reading email attachment by id: {error}")
+            raise map_database_error(error)
+
+    def update_extracted_fields(self, *, id: int,
+                                di_vendor_name: Optional[str] = None,
+                                di_invoice_number: Optional[str] = None,
+                                di_invoice_date: Optional[str] = None,
+                                di_due_date: Optional[str] = None,
+                                di_subtotal: Optional[Decimal] = None,
+                                di_total_amount: Optional[Decimal] = None,
+                                di_currency: Optional[str] = None) -> bool:
+        """Agent-driven typed-field overlay. Writes ONLY the Di* typed
+        columns; preserves ExtractionStatus, DiResultJson, DiModel, etc.
+        Used by the email_specialist's record_extracted_fields tool after
+        the agent reads DI's prebuilt-layout output and pulls out fields."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor=cursor, name="UpdateEmailAttachmentExtractedFields", params={
+                    "Id": id,
+                    "DiVendorName": di_vendor_name,
+                    "DiInvoiceNumber": di_invoice_number,
+                    "DiInvoiceDate": di_invoice_date,
+                    "DiDueDate": di_due_date,
+                    "DiSubtotal": di_subtotal,
+                    "DiTotalAmount": di_total_amount,
+                    "DiCurrency": di_currency,
+                })
+                return cursor.fetchone() is not None
+        except Exception as error:
+            logger.error(f"Error updating email attachment extracted fields: {error}")
             raise map_database_error(error)
 
     def update_extraction(self, *, id: int, extraction_status: str,

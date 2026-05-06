@@ -54,6 +54,47 @@ class BillCreate(BaseModel):
             "back to its source email. Manual creators leave this blank."
         )
     )
+    # ───── Inline summary line item ──────────────────────────────────────
+    # When provided, the server populates the placeholder BillLineItem
+    # (the one that always carries the attachment) with these values
+    # instead of leaving it blank. Avoids a follow-up update call from
+    # agent-driven flows. Manual UI uploads typically leave these unset.
+    line_description: Optional[str] = Field(
+        default=None,
+        description="Summary description for the placeholder line (~6 words)."
+    )
+    line_quantity: Optional[int] = Field(
+        default=None,
+        description="Quantity. Summary-line use typically passes 1."
+    )
+    line_rate: Optional[Decimal] = Field(
+        default=None,
+        description="Rate (often equals total_amount on a summary line)."
+    )
+    line_amount: Optional[Decimal] = Field(
+        default=None,
+        description="Amount = quantity × rate."
+    )
+    line_markup: Optional[Decimal] = Field(
+        default=None,
+        description="Markup decimal (0.10 = 10%). Null = no markup."
+    )
+    line_price: Optional[Decimal] = Field(
+        default=None,
+        description="Price = amount × (1 + markup). Equals amount when markup is null/0."
+    )
+    line_is_billable: Optional[bool] = Field(
+        default=None,
+        description="Defaults to True server-side when omitted."
+    )
+    line_sub_cost_code_id: Optional[int] = Field(
+        default=None,
+        description="BIGINT — resolve via SubCostCode read tools first."
+    )
+    line_project_public_id: Optional[str] = Field(
+        default=None,
+        description="UUID of the Project for this line."
+    )
 
 
 class BillUpdate(BaseModel):

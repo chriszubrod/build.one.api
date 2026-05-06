@@ -4,12 +4,15 @@ Uses the REST API directly (no Azure SDK), mirroring the
 `integrations/ms/...` pattern. Three concerns:
 
   1. Kick off an `analyze` operation against a model (we default to
-     `prebuilt-invoice` but the call accepts any model id).
+     `prebuilt-layout` with the `keyValuePairs` add-on so the same
+     extractor handles invoices, credit memos, receipts, statements,
+     and any other generic document the email agent encounters; the
+     call accepts any model id + features combo).
   2. Poll the returned `Operation-Location` until status is `succeeded`
      or `failed` (with backoff + a hard ceiling).
-  3. Return the raw `analyzeResult` JSON. Field hoisting (turning
-     DI's nested `valueCurrency` shape into our `DiTotalAmount`
-     decimal) is the caller's job — keeps this layer dumb.
+  3. Return the raw `analyzeResult` JSON. Higher-level interpretation
+     (which fields matter, doc-type classification, validation) is the
+     caller's job — keeps this layer dumb.
 
 Errors raise `DocumentIntelligenceError`. Transient failures
 (429/5xx) are retried inside `analyze_document_url`; the caller
@@ -35,7 +38,7 @@ class DocumentIntelligenceConfigError(DocumentIntelligenceError):
     """Raised when endpoint / key are not configured."""
 
 
-# Polling tuning — DI's prebuilt-invoice typically completes in 2-6s
+# Polling tuning — DI's prebuilt-layout typically completes in 2-6s
 # on a single-page PDF. We poll every 1s up to 60s before giving up.
 _POLL_INTERVAL_SECONDS = 1.0
 _POLL_MAX_SECONDS = 60.0
@@ -119,16 +122,23 @@ def _await_result(operation_location: str, key: str) -> dict:
     )
 
 
-def analyze_document_url(blob_url: str, *, model_id: str = "prebuilt-invoice") -> dict:
+def analyze_document_url(blob_url: str, *, model_id: str = "prebuilt-layout",
+                         features: Optional[str] = "keyValuePairs") -> dict:
     """Analyze a publicly-accessible PDF/image URL via Document Intelligence.
 
     NOTE: when the blob is private, the caller must pass a SAS-signed URL
     so DI can fetch it. For now our blob storage is keyed-access only, so
     callers should prefer `analyze_document_bytes` until SAS support is
     wired through `shared.storage`.
+
+    `features` defaults to `"keyValuePairs"` (the add-on that gives us
+    the auto-extracted key/value pairs prebuilt-layout doesn't return on
+    its own). Pass `None` for other models that don't support add-ons.
     """
     endpoint, key, api_version = _settings()
     url = f"{endpoint}/documentintelligence/documentModels/{model_id}:analyze?api-version={api_version}"
+    if features:
+        url = f"{url}&features={features}"
     response = _do_request(
         "POST",
         url,
@@ -146,12 +156,18 @@ def analyze_document_url(blob_url: str, *, model_id: str = "prebuilt-invoice") -
 
 
 def analyze_document_bytes(content: bytes, content_type: str,
-                           *, model_id: str = "prebuilt-invoice") -> dict:
+                           *, model_id: str = "prebuilt-layout",
+                           features: Optional[str] = "keyValuePairs") -> dict:
     """Analyze a PDF/image already in memory. Use this for blobs without
     public/SAS access — the caller downloads the bytes and passes them in.
+
+    `features` defaults to `"keyValuePairs"` for prebuilt-layout. Pass
+    `None` when calling another model that doesn't support add-ons.
     """
     endpoint, key, api_version = _settings()
     url = f"{endpoint}/documentintelligence/documentModels/{model_id}:analyze?api-version={api_version}"
+    if features:
+        url = f"{url}&features={features}"
     response = _do_request(
         "POST",
         url,

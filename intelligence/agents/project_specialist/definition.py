@@ -15,6 +15,7 @@ project_specialist = Agent(
     tools=(
         "list_projects",
         "search_projects",
+        "find_project_for_invoice",
         "read_project_by_public_id",
         "read_projects_by_customer_id",
         "create_project",

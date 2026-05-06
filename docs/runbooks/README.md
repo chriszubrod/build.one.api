@@ -24,6 +24,7 @@ to run — no need to reverse-engineer the system under pressure.
 | [ms-graph-503-storm.md](ms-graph-503-storm.md) | Cascading Graph 5xx failures during a Microsoft service incident; dead-letter recovery |
 | [ms-excel-conflict-storm.md](ms-excel-conflict-storm.md) | Excel workbook writes blocked by a human editor or stuck session lock |
 | [ms-permissions-revoked.md](ms-permissions-revoked.md) | Azure AD revoked the app's Graph permissions (403 everywhere) |
+| [deploy-restart-timing.md](deploy-restart-timing.md) | Work triggered within ~2 min of `az webapp restart` runs against OLD code while DB is on NEW migrations — sproc-rename / column-add contract mismatches surface as 500s and stuck `running` agent sessions |
 
 ## Runbook format
 

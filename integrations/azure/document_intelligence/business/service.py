@@ -1,44 +1,54 @@
 """DocumentIntelligenceService — DI orchestration for the email pipeline.
 
-`extract_invoice(content_bytes, content_type)` runs DI's `prebuilt-invoice`
-model against an in-memory PDF/image, then hoists DI's nested response
-shape into a flat dict with the fields we care about:
+`extract_invoice(content_bytes, content_type)` runs DI's `prebuilt-layout`
+model (with the `keyValuePairs` add-on) against an in-memory PDF/image,
+then reshapes DI's nested response into a flat dict the agent layer can
+read directly:
 
     {
-      "vendor_name": "Home Depot",
-      "invoice_number": "INV-001",
-      "invoice_date": "2026-04-15",
-      "due_date": "2026-05-15",
-      "subtotal": Decimal("1100.00"),
-      "total_amount": Decimal("1234.56"),
-      "currency": "USD",
-      "confidence": Decimal("0.94"),       # document-level confidence (min of field confidences)
-      "line_items": [{
-          "description": "Item 1",
-          "quantity": Decimal("1"),
-          "unit_price": Decimal("100.00"),
-          "amount": Decimal("100.00"),
-      }, ...],
-      "validation": {
-          "is_valid": True,
-          "issues": [],                    # list of strings if anything fails
-      },
-      "raw": {...}                         # full DI analyzeResult, for the DB JSON column
+      "content": "Full document text as a single string ...",
+      "key_value_pairs": [
+          {"key": "Invoice #", "value": "202980/1", "confidence": 0.95},
+          {"key": "Total",     "value": "$3,553.71", "confidence": 0.91},
+          ...
+      ],
+      "tables": [
+          {"row_count": 5, "column_count": 3,
+           "rows": [["Description", "Qty", "Amount"],
+                    ["1.5x5.5 LVL",  "8",   "$526.00"], ...]},
+          ...
+      ],
+      "pages_count": 1,
+
+      # Backward-compat keys retained as None — populated separately when
+      # the agent extracts typed fields and persists them via a follow-up
+      # tool call (tracked as deferred work, not done here).
+      "vendor_name":    None,
+      "invoice_number": None,
+      "invoice_date":   None,
+      "due_date":       None,
+      "subtotal":       None,
+      "total_amount":   None,
+      "currency":       None,
+      "confidence":     None,
+      "line_items":     [],
+
+      # Validation moves from rule-based hoist to LLM narration; this
+      # block is preserved (always is_valid=True / issues=[]) so existing
+      # callers don't crash on the new shape.
+      "validation": {"is_valid": True, "issues": []},
+
+      "raw": {...},   # full DI analyzeResult, persisted to DiResultJson
     }
 
-Validation rules (the second half of the "double layer"):
-  - total_amount must be > 0
-  - sum(line_items[].amount) within ±$0.50 of total_amount (or subtotal
-    when subtotal is present and total isn't)
-  - invoice_date must parse
-  - vendor_name must be non-empty
-
-If validation fails, `is_valid` is False and `issues` lists what broke.
-The agent layer reads this and routes to `flag_for_review` accordingly.
+The previous prebuilt-invoice + typed-field hoist logic has been replaced
+with this thin pass-through. Document-type classification, field
+extraction, and validation now happen in the email_specialist agent's
+prompt, which reads `content` + `key_value_pairs` + `tables` directly.
 """
 import logging
 from decimal import Decimal, InvalidOperation
-from typing import Any, Optional
+from typing import Optional
 
 from integrations.azure.document_intelligence.external.client import (
     DocumentIntelligenceConfigError,
@@ -49,175 +59,104 @@ from integrations.azure.document_intelligence.external.client import (
 logger = logging.getLogger(__name__)
 
 
-# Tolerance for "line-item sum matches total" validation. Vendors round
-# differently and per-line subtotals can drift by a few cents; $0.50 is
-# loose enough to swallow that without missing real extraction errors.
-_LINE_SUM_TOLERANCE = Decimal("0.50")
-
-
 class DocumentIntelligenceService:
-    """High-level DI extraction + validation for vendor invoices."""
+    """High-level DI extraction for arbitrary documents (invoices, credit
+    memos, receipts, statements, etc.). Returns a generic structure; the
+    caller decides what the document is."""
 
     def extract_invoice(self, content: bytes, content_type: str) -> dict:
-        """Run DI on an in-memory invoice PDF/image and return a hoisted,
-        validated structure ready to persist to EmailAttachment.
+        """Run DI on an in-memory PDF/image and return a hoisted, agent-
+        friendly structure. Method name kept for backward compat with
+        existing callers; under the new model this is doc-type-agnostic.
 
-        Raises DocumentIntelligenceConfigError if DI is unconfigured (no
-        silent skips — see Phase 1.2 decision).
+        Raises DocumentIntelligenceConfigError if DI is unconfigured.
         """
         analyze_result = analyze_document_bytes(content, content_type=content_type)
         return self._hoist_and_validate(analyze_result)
 
     def _hoist_and_validate(self, analyze_result: dict) -> dict:
-        documents = analyze_result.get("documents") or []
-        if not documents:
-            return {
-                "vendor_name": None,
-                "invoice_number": None,
-                "invoice_date": None,
-                "due_date": None,
-                "subtotal": None,
-                "total_amount": None,
-                "currency": None,
-                "confidence": None,
-                "line_items": [],
-                "validation": {"is_valid": False, "issues": ["DI returned no documents"]},
-                "raw": analyze_result,
-            }
-
-        # The prebuilt-invoice model returns one document per detected
-        # invoice; for v1 we treat the first as authoritative.
-        fields = (documents[0] or {}).get("fields") or {}
-
-        vendor_name = _get_string(fields, "VendorName")
-        invoice_number = _get_string(fields, "InvoiceId")
-        invoice_date = _get_date(fields, "InvoiceDate")
-        due_date = _get_date(fields, "DueDate")
-        subtotal_amount, _ = _get_currency(fields, "SubTotal")
-        total_amount, total_currency = _get_currency(fields, "InvoiceTotal")
-
-        line_items = _get_line_items(fields)
-
-        confidence = _document_confidence(fields)
-
-        # --- validation pass --------------------------------------------------
-        issues: list[str] = []
-        if not vendor_name:
-            issues.append("VendorName missing")
-        if total_amount is None or total_amount <= Decimal("0"):
-            issues.append("InvoiceTotal missing or non-positive")
-        if not invoice_date:
-            issues.append("InvoiceDate missing or unparseable")
-
-        if line_items and total_amount is not None:
-            line_sum = sum((li.get("amount") or Decimal("0")) for li in line_items)
-            # Compare line sum against total_amount; fall back to subtotal
-            # if total has tax/shipping baked in and lines don't.
-            target = total_amount
-            diff = abs(Decimal(line_sum) - target)
-            if diff > _LINE_SUM_TOLERANCE and subtotal_amount is not None:
-                # try subtotal as a second chance
-                diff_sub = abs(Decimal(line_sum) - subtotal_amount)
-                if diff_sub <= _LINE_SUM_TOLERANCE:
-                    diff = diff_sub
-            if diff > _LINE_SUM_TOLERANCE:
-                issues.append(
-                    f"Line-item sum {line_sum} diverges from total {total_amount} by {diff}"
-                )
-
+        """Reshape `prebuilt-layout` analyzeResult into a flat agent-
+        friendly dict. No semantic interpretation — the agent does that.
+        """
         return {
-            "vendor_name": vendor_name,
-            "invoice_number": invoice_number,
-            "invoice_date": invoice_date,
-            "due_date": due_date,
-            "subtotal": subtotal_amount,
-            "total_amount": total_amount,
-            "currency": total_currency,
-            "confidence": confidence,
-            "line_items": line_items,
-            "validation": {"is_valid": not issues, "issues": issues},
-            "raw": analyze_result,
+            "content":         analyze_result.get("content") or "",
+            "key_value_pairs": _flatten_key_value_pairs(analyze_result),
+            "tables":          _flatten_tables(analyze_result),
+            "pages_count":     len(analyze_result.get("pages") or []),
+
+            # Backward-compat — populated by future agent-driven flow
+            "vendor_name":    None,
+            "invoice_number": None,
+            "invoice_date":   None,
+            "due_date":       None,
+            "subtotal":       None,
+            "total_amount":   None,
+            "currency":       None,
+            "confidence":     None,
+            "line_items":     [],
+
+            "validation": {"is_valid": True, "issues": []},
+            "raw":        analyze_result,
         }
 
 
 # ─── DI response unpacking helpers ──────────────────────────────────────────
 
 
-def _get_string(fields: dict, name: str) -> Optional[str]:
-    field = fields.get(name) or {}
-    value = field.get("valueString") or field.get("content")
-    if isinstance(value, str):
-        cleaned = value.strip()
-        return cleaned or None
-    return None
+def _flatten_key_value_pairs(analyze_result: dict) -> list[dict]:
+    """`prebuilt-layout` with features=keyValuePairs returns a top-level
+    `keyValuePairs` array shaped:
+        [{"key": {"content": "Invoice #"},
+          "value": {"content": "202980/1"},
+          "confidence": 0.945}, ...]
 
-
-def _get_date(fields: dict, name: str) -> Optional[str]:
-    """DI returns dates as 'YYYY-MM-DD' strings under valueDate.
-    We pass them straight through (the SQL DATE column accepts that)."""
-    field = fields.get(name) or {}
-    raw = field.get("valueDate")
-    if isinstance(raw, str) and raw.strip():
-        return raw.strip()
-    return None
-
-
-def _get_currency(fields: dict, name: str) -> tuple[Optional[Decimal], Optional[str]]:
-    """DI prebuilt-invoice currency fields look like:
-       {"valueCurrency": {"amount": 1234.56, "currencyCode": "USD"}}
+    Flatten to {"key", "value", "confidence"} and drop entries with no
+    key text (DI sometimes emits orphan values for stray text regions).
     """
-    field = fields.get(name) or {}
-    cur = field.get("valueCurrency") or {}
-    amount_raw = cur.get("amount")
-    currency_code = cur.get("currencyCode")
-    amount: Optional[Decimal] = None
-    if amount_raw is not None:
-        try:
-            amount = Decimal(str(amount_raw))
-        except (InvalidOperation, ValueError):
-            amount = None
-    return amount, currency_code
-
-
-def _get_line_items(fields: dict) -> list[dict]:
-    items_field = fields.get("Items") or {}
-    array = items_field.get("valueArray") or []
     out: list[dict] = []
-    for entry in array:
-        obj = (entry or {}).get("valueObject") or {}
-        description = _get_string(obj, "Description") or _get_string(obj, "ProductCode")
-        quantity_raw = ((obj.get("Quantity") or {}).get("valueNumber"))
-        unit_price, _ = _get_currency(obj, "UnitPrice")
-        amount, _ = _get_currency(obj, "Amount")
-
-        quantity: Optional[Decimal] = None
-        if quantity_raw is not None:
+    for kvp in analyze_result.get("keyValuePairs") or []:
+        key_text = ((kvp.get("key") or {}).get("content") or "").strip()
+        if not key_text:
+            continue
+        value_obj = kvp.get("value") or {}
+        value_text = (value_obj.get("content") or "").strip()
+        confidence_raw = kvp.get("confidence")
+        confidence: Optional[Decimal] = None
+        if isinstance(confidence_raw, (int, float)):
             try:
-                quantity = Decimal(str(quantity_raw))
+                confidence = Decimal(str(confidence_raw))
             except (InvalidOperation, ValueError):
-                quantity = None
-
+                confidence = None
         out.append({
-            "description": description,
-            "quantity": quantity,
-            "unit_price": unit_price,
-            "amount": amount,
+            "key": key_text,
+            "value": value_text,
+            "confidence": confidence,
         })
     return out
 
 
-def _document_confidence(fields: dict) -> Optional[Decimal]:
-    """Take the minimum confidence of the top-level fields we care about
-    as the document-level confidence — gives the agent one number to
-    threshold against."""
-    confidences: list[Decimal] = []
-    for name in ("VendorName", "InvoiceId", "InvoiceTotal", "InvoiceDate"):
-        c = (fields.get(name) or {}).get("confidence")
-        if isinstance(c, (int, float)):
-            try:
-                confidences.append(Decimal(str(c)))
-            except (InvalidOperation, ValueError):
-                pass
-    if not confidences:
-        return None
-    return min(confidences)
+def _flatten_tables(analyze_result: dict) -> list[dict]:
+    """Reshape DI's cell-list table representation into a row-major matrix
+    of cell-content strings — much easier for an LLM to read than
+    the original {rowIndex, columnIndex, content} records.
+    """
+    out: list[dict] = []
+    for table in analyze_result.get("tables") or []:
+        row_count = int(table.get("rowCount") or 0)
+        col_count = int(table.get("columnCount") or 0)
+        if row_count <= 0 or col_count <= 0:
+            continue
+        rows: list[list[str]] = [["" for _ in range(col_count)] for _ in range(row_count)]
+        for cell in table.get("cells") or []:
+            r = cell.get("rowIndex")
+            c = cell.get("columnIndex")
+            if not isinstance(r, int) or not isinstance(c, int):
+                continue
+            if 0 <= r < row_count and 0 <= c < col_count:
+                rows[r][c] = (cell.get("content") or "").strip()
+        out.append({
+            "row_count": row_count,
+            "column_count": col_count,
+            "rows": rows,
+        })
+    return out

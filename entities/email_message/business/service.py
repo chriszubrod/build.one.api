@@ -80,12 +80,30 @@ class EmailMessageService:
 
     def update_status(self, *, id: int, processing_status: str,
                       last_error: Optional[str] = None,
-                      agent_session_id: Optional[int] = None) -> Optional[EmailMessage]:
+                      agent_session_id: Optional[int] = None,
+                      agent_classification: Optional[str] = None,
+                      agent_classification_reason: Optional[str] = None,
+                      agent_decided_action: Optional[str] = None,
+                      agent_classification_confidence: Optional[Decimal] = None,
+                      ) -> Optional[EmailMessage]:
         return self.repo.update_status(
             id=id,
             processing_status=processing_status,
             last_error=last_error,
             agent_session_id=agent_session_id,
+            agent_classification=agent_classification,
+            agent_classification_reason=agent_classification_reason,
+            agent_decided_action=agent_decided_action,
+            agent_classification_confidence=agent_classification_confidence,
+        )
+
+    def get_sender_history(self, from_email: str,
+                           exclude_public_id: Optional[str] = None) -> dict:
+        """Look up prior-context for an email sender. Used by the
+        email_specialist's search_email_sender_history tool."""
+        return self.repo.read_sender_history(
+            from_email=from_email,
+            exclude_public_id=exclude_public_id,
         )
 
     def claim_next_pending(self) -> Optional[EmailMessage]:
@@ -311,6 +329,41 @@ class EmailAttachmentExtractionService:
         self.storage = AzureBlobStorage()
         self.di = DocumentIntelligenceService()
 
+    def record_extracted_fields_by_public_id(self, public_id: str, *,
+                                             vendor_name: Optional[str] = None,
+                                             invoice_number: Optional[str] = None,
+                                             invoice_date: Optional[str] = None,
+                                             due_date: Optional[str] = None,
+                                             subtotal: Optional[Decimal] = None,
+                                             total_amount: Optional[Decimal] = None,
+                                             currency: Optional[str] = None) -> dict:
+        """Agent-driven typed-field overlay onto EmailAttachment.Di* columns.
+        Preserves the underlying DI extraction (status, raw JSON, model)
+        — this is the agent's interpretation, not DI's hoist."""
+        attachment = self.attachment_repo.read_by_public_id(public_id)
+        if not attachment:
+            raise ValueError(f"EmailAttachment not found: {public_id}")
+        self.attachment_repo.update_extracted_fields(
+            id=attachment.id,
+            di_vendor_name=vendor_name,
+            di_invoice_number=invoice_number,
+            di_invoice_date=invoice_date,
+            di_due_date=due_date,
+            di_subtotal=subtotal,
+            di_total_amount=total_amount,
+            di_currency=currency,
+        )
+        return {
+            "public_id": public_id,
+            "vendor_name": vendor_name,
+            "invoice_number": invoice_number,
+            "invoice_date": invoice_date,
+            "due_date": due_date,
+            "subtotal": _decimal_to_str(subtotal),
+            "total_amount": _decimal_to_str(total_amount),
+            "currency": currency,
+        }
+
     def extract_by_public_id(self, public_id: str) -> dict:
         attachment = self.attachment_repo.read_by_public_id(public_id)
         if not attachment:
@@ -339,6 +392,40 @@ class EmailAttachmentExtractionService:
                 last_error="No BlobUri on attachment — cannot extract",
             )
             return {"status": "failed", "reason": "no_blob_uri"}
+
+        # Cache-aware: if this attachment has already been DI'd successfully,
+        # short-circuit and reshape the persisted DiResultJson into the same
+        # response the live extraction produces. Saves ~6s of DI latency +
+        # the ~$0.05 DI charge on every agent re-run of the same email.
+        if (attachment.extraction_status == "extracted"
+                and attachment.di_result_json):
+            try:
+                cached_raw = json.loads(attachment.di_result_json)
+            except Exception:
+                cached_raw = None
+            if cached_raw:
+                cached = self.di._hoist_and_validate(cached_raw)
+                return {
+                    "status": "extracted",
+                    "cached": True,
+                    "content": cached.get("content"),
+                    "key_value_pairs": [
+                        {
+                            "key": kvp["key"],
+                            "value": kvp["value"],
+                            "confidence": _decimal_to_str(kvp.get("confidence")),
+                        }
+                        for kvp in (cached.get("key_value_pairs") or [])
+                    ],
+                    "tables": cached.get("tables") or [],
+                    "pages_count": cached.get("pages_count"),
+                    "vendor_name": attachment.di_vendor_name,
+                    "invoice_number": attachment.di_invoice_number,
+                    "total_amount": _decimal_to_str(attachment.di_total_amount),
+                    "currency": attachment.di_currency,
+                    "confidence": _decimal_to_str(attachment.di_confidence),
+                    "validation": cached.get("validation") or {"is_valid": True, "issues": []},
+                }
 
         # Pull the bytes from blob (avoids needing a SAS-signed URL).
         try:
@@ -383,7 +470,7 @@ class EmailAttachmentExtractionService:
         self.attachment_repo.update_extraction(
             id=attachment.id,
             extraction_status=new_status,
-            di_model="prebuilt-invoice",
+            di_model="prebuilt-layout",
             di_result_json=json.dumps(extracted.get("raw") or {}),
             di_confidence=extracted.get("confidence"),
             di_vendor_name=extracted.get("vendor_name"),
@@ -398,6 +485,20 @@ class EmailAttachmentExtractionService:
 
         return {
             "status": new_status,
+            # Generic prebuilt-layout output — primary signal for the agent
+            "content": extracted.get("content"),
+            "key_value_pairs": [
+                {
+                    "key": kvp["key"],
+                    "value": kvp["value"],
+                    "confidence": _decimal_to_str(kvp.get("confidence")),
+                }
+                for kvp in (extracted.get("key_value_pairs") or [])
+            ],
+            "tables": extracted.get("tables") or [],
+            "pages_count": extracted.get("pages_count"),
+            # Backward-compat — currently None for prebuilt-layout extractions;
+            # will be populated when agent-driven typed-field persistence ships.
             "vendor_name": extracted.get("vendor_name"),
             "invoice_number": extracted.get("invoice_number"),
             "total_amount": _decimal_to_str(extracted.get("total_amount")),
@@ -409,6 +510,42 @@ class EmailAttachmentExtractionService:
 
 def _decimal_to_str(d: Optional[Decimal]) -> Optional[str]:
     return str(d) if d is not None else None
+
+
+# File-extension → canonical MIME mapping. Used to recover from mail
+# systems that send "application/octet-stream" regardless of the
+# actual file shape (Walker Lumber's mailer is one such culprit;
+# downstream validators like create_bill's PDF-only check then reject
+# the bridged Attachment if the type isn't normalized).
+_EXT_TO_MIME = {
+    "pdf":  "application/pdf",
+    "jpg":  "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png":  "image/png",
+    "tif":  "image/tiff",
+    "tiff": "image/tiff",
+    "heic": "image/heic",
+}
+
+
+def _normalize_content_type(raw_content_type: str,
+                            file_extension: Optional[str]) -> str:
+    """Override an unhelpful generic MIME with one inferred from the
+    file extension. Returns the original type when no override applies."""
+    if not raw_content_type:
+        raw_content_type = "application/octet-stream"
+    ext = (file_extension or "").lower().lstrip(".")
+    mapped = _EXT_TO_MIME.get(ext)
+    # Only override the generic catch-all and (defensively) empty types.
+    if mapped and raw_content_type.lower() in (
+        "application/octet-stream", "binary/octet-stream", "application/x-binary",
+    ):
+        logger.info(
+            "bridge.normalize_content_type override: %s + ext=%s -> %s",
+            raw_content_type, ext, mapped,
+        )
+        return mapped
+    return raw_content_type
 
 
 class EmailAttachmentBridgeService:
@@ -455,13 +592,20 @@ class EmailAttachmentBridgeService:
             )
             return existing
 
-        # Resolve content type + extension
-        content_type = (
+        # Resolve content type + extension. Mail systems frequently send
+        # PDFs (and images) as the generic "application/octet-stream" MIME
+        # when they don't sniff the type — Walker Lumber's mailer is one
+        # such culprit ("IN125AAC.pdf" with content_type=octet-stream).
+        # Fall back to the file extension as the source of truth so
+        # downstream validators (e.g. create_bill's PDF-only check) get
+        # a usable type.
+        raw_content_type = (
             metadata.get("content_type")
             or ea.content_type
             or "application/octet-stream"
         )
         file_extension = attachment_service.extract_extension(ea.filename or "")
+        content_type = _normalize_content_type(raw_content_type, file_extension)
 
         attachment = attachment_service.create(
             filename=ea.filename,

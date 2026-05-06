@@ -15,8 +15,25 @@ CREATE TABLE [dbo].[Vendor]
     [TaxpayerId] BIGINT NULL,
     [IsDraft] BIT NOT NULL DEFAULT 1,
     [IsDeleted] BIT NOT NULL DEFAULT 0,
-    [IsContractLabor] BIT NOT NULL DEFAULT 0
+    [IsContractLabor] BIT NOT NULL DEFAULT 0,
+    -- Free-text per-vendor notes for the bill_specialist agent. Populate
+    -- this with vendor-specific quirks the agent should apply when
+    -- creating bills — e.g. "trim /N suffix from invoice numbers" for
+    -- Walker Lumber, or "default cost code 13.1 for materials". The
+    -- agent reads this via FindVendorForInvoice and applies the
+    -- guidance in its create_bill payload. Free-text on purpose;
+    -- structured rules can come later when patterns stabilize.
+    [IntakeNotes] NVARCHAR(MAX) NULL
 );
+END
+GO
+
+-- Idempotent column add for existing environments.
+IF OBJECT_ID('dbo.Vendor', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.columns WHERE Name = 'IntakeNotes' AND Object_ID = OBJECT_ID('dbo.Vendor')
+)
+BEGIN
+    ALTER TABLE dbo.[Vendor] ADD [IntakeNotes] NVARCHAR(MAX) NULL;
 END
 GO
 
@@ -315,4 +332,139 @@ BEGIN
     WHERE [PublicId] = @PublicId AND [IsDeleted] = 0;
 
     COMMIT TRANSACTION;
+END;
+GO
+
+-- ============================================================================
+-- FindVendorForInvoice — single-call multi-strategy ranked vendor lookup for
+-- invoice classification. Designed for the bill_specialist agent so it doesn't
+-- have to retry search_vendors with progressively-shorter substrings.
+--
+-- Strategies (descending confidence):
+--   1.00  domain_contact       — Vendor has a Contact whose Email ends in @<sender_domain>
+--   0.95  exact_name           — case-insensitive Name == @VendorName
+--   0.90  exact_abbreviation   — case-insensitive Abbreviation == @VendorName
+--   0.85  prefix_name          — Name STARTS WITH first 2 words of @VendorName
+--   0.75  substring_two_words  — Name CONTAINS first 2 words of @VendorName
+--   0.65  substring_first_word — Name CONTAINS first word of @VendorName
+--
+-- Each Vendor row appears at most once — at its highest-scoring strategy.
+-- Returns up to 5 candidates ordered by confidence desc.
+--
+-- Caller passes BOTH @VendorName and (optionally) @SenderDomain. Either may
+-- match independently — passing both increases recall.
+-- ============================================================================
+
+CREATE OR ALTER PROCEDURE FindVendorForInvoice
+(
+    @VendorName NVARCHAR(450),
+    @SenderDomain NVARCHAR(255) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @NameNorm NVARCHAR(450) = LTRIM(RTRIM(ISNULL(@VendorName, '')));
+    DECLARE @DomainNorm NVARCHAR(255) = LTRIM(RTRIM(LOWER(ISNULL(@SenderDomain, ''))));
+
+    -- Extract the first word and the first two words for substring/prefix
+    -- strategies. Defaults to the full @NameNorm when there are fewer
+    -- than two words.
+    DECLARE @FirstSpace INT = NULLIF(CHARINDEX(' ', @NameNorm), 0);
+    DECLARE @SecondSpace INT = NULLIF(CHARINDEX(' ', @NameNorm, ISNULL(@FirstSpace, 0) + 1), 0);
+
+    DECLARE @FirstWord NVARCHAR(255) =
+        CASE WHEN @FirstSpace IS NOT NULL THEN LEFT(@NameNorm, @FirstSpace - 1)
+             ELSE @NameNorm END;
+    DECLARE @TwoWords NVARCHAR(255) =
+        CASE WHEN @SecondSpace IS NOT NULL THEN LEFT(@NameNorm, @SecondSpace - 1)
+             ELSE @NameNorm END;
+
+    -- Escape % and _ in the LIKE patterns so vendor names with literal
+    -- wildcards (rare) don't accidentally pattern-match.
+    DECLARE @TwoWordsLike NVARCHAR(257) = REPLACE(REPLACE(LOWER(@TwoWords), '%', '[%]'), '_', '[_]');
+    DECLARE @FirstWordLike NVARCHAR(257) = REPLACE(REPLACE(LOWER(@FirstWord), '%', '[%]'), '_', '[_]');
+
+    ;WITH
+    domain_match AS (
+        SELECT DISTINCT v.[Id],
+               CAST(1.00 AS DECIMAL(3,2)) AS Confidence,
+               CAST('domain_contact' AS NVARCHAR(50)) AS Strategy,
+               c.[Email] AS MatchedTerm
+        FROM dbo.[Vendor] v
+        INNER JOIN dbo.[Contact] c ON c.[VendorId] = v.[Id]
+        WHERE v.[IsDeleted] = 0
+          AND @DomainNorm <> ''
+          AND c.[Email] IS NOT NULL
+          AND LOWER(c.[Email]) LIKE '%@' + @DomainNorm
+    ),
+    exact_name AS (
+        SELECT [Id], CAST(0.95 AS DECIMAL(3,2)) AS Confidence,
+               CAST('exact_name' AS NVARCHAR(50)) AS Strategy,
+               [Name] AS MatchedTerm
+        FROM dbo.[Vendor]
+        WHERE [IsDeleted] = 0 AND @NameNorm <> ''
+          AND LOWER([Name]) = LOWER(@NameNorm)
+    ),
+    exact_abbr AS (
+        SELECT [Id], CAST(0.90 AS DECIMAL(3,2)) AS Confidence,
+               CAST('exact_abbreviation' AS NVARCHAR(50)) AS Strategy,
+               [Abbreviation] AS MatchedTerm
+        FROM dbo.[Vendor]
+        WHERE [IsDeleted] = 0 AND @NameNorm <> ''
+          AND [Abbreviation] IS NOT NULL
+          AND LOWER([Abbreviation]) = LOWER(@NameNorm)
+    ),
+    prefix_two AS (
+        SELECT [Id], CAST(0.85 AS DECIMAL(3,2)) AS Confidence,
+               CAST('prefix_name' AS NVARCHAR(50)) AS Strategy,
+               [Name] AS MatchedTerm
+        FROM dbo.[Vendor]
+        WHERE [IsDeleted] = 0 AND @TwoWords <> ''
+          AND LOWER([Name]) LIKE @TwoWordsLike + '%'
+    ),
+    substring_two AS (
+        SELECT [Id], CAST(0.75 AS DECIMAL(3,2)) AS Confidence,
+               CAST('substring_two_words' AS NVARCHAR(50)) AS Strategy,
+               [Name] AS MatchedTerm
+        FROM dbo.[Vendor]
+        WHERE [IsDeleted] = 0 AND @TwoWords <> ''
+          AND LOWER([Name]) LIKE '%' + @TwoWordsLike + '%'
+    ),
+    substring_one AS (
+        SELECT [Id], CAST(0.65 AS DECIMAL(3,2)) AS Confidence,
+               CAST('substring_first_word' AS NVARCHAR(50)) AS Strategy,
+               [Name] AS MatchedTerm
+        FROM dbo.[Vendor]
+        WHERE [IsDeleted] = 0 AND @FirstWord <> ''
+          AND LOWER([Name]) LIKE '%' + @FirstWordLike + '%'
+    ),
+    all_candidates AS (
+        SELECT * FROM domain_match
+        UNION ALL SELECT * FROM exact_name
+        UNION ALL SELECT * FROM exact_abbr
+        UNION ALL SELECT * FROM prefix_two
+        UNION ALL SELECT * FROM substring_two
+        UNION ALL SELECT * FROM substring_one
+    ),
+    -- Per-vendor pick the highest-confidence strategy that matched.
+    ranked AS (
+        SELECT [Id], Confidence, Strategy, MatchedTerm,
+               ROW_NUMBER() OVER (PARTITION BY [Id] ORDER BY Confidence DESC) AS rn
+        FROM all_candidates
+    )
+    SELECT TOP 5
+        v.[Id]                              AS VendorId,
+        CAST(v.[PublicId] AS NVARCHAR(36))  AS VendorPublicId,
+        v.[Name]                            AS VendorName,
+        v.[Abbreviation]                    AS Abbreviation,
+        v.[IsDraft]                         AS IsDraft,
+        v.[IntakeNotes]                     AS IntakeNotes,
+        r.Confidence                        AS Confidence,
+        r.Strategy                          AS Strategy,
+        r.MatchedTerm                       AS MatchedTerm
+    FROM ranked r
+    INNER JOIN dbo.[Vendor] v ON v.[Id] = r.[Id]
+    WHERE r.rn = 1
+    ORDER BY r.Confidence DESC, v.[Name] ASC;
 END;

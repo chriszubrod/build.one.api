@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 import asyncio
+from typing import Optional
 
 # Third-party Imports
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -85,6 +86,36 @@ async def get_projects_by_user_id_router(
     """
     projects = await asyncio.to_thread(ProjectService().read_by_user_id, user_id=user_id)
     return list_response([project.to_dict() for project in projects])
+
+
+@router.get("/get/project/find-for-invoice")
+def find_project_for_invoice_router(
+    address_hint: Optional[str] = None,
+    project_name_hint: Optional[str] = None,
+    current_user: dict = Depends(require_module_api(Modules.PROJECTS)),
+):
+    """Multi-strategy ranked Project lookup for invoice classification.
+
+    Mirrors `/get/vendor/find-for-invoice`. Used by the project_specialist
+    agent (delegated from bill_specialist) when an invoice's Ship To /
+    job-site address needs to be bound to an existing Project row.
+
+    Project.Name typically encodes the address ("TB3 - 917 Tyne Blvd"),
+    so substring-on-Name catches most invoice-driven lookups. Pass either
+    `address_hint` (preferred for invoice flows) or `project_name_hint`
+    (when the email already names the project explicitly), or both.
+
+    Strategies (descending confidence):
+      0.95  exact_name              — Project.Name == project_name_hint
+      0.90  exact_abbreviation      — Project.Abbreviation == project_name_hint
+      0.85  substring_address_full  — Project.Name CONTAINS address_hint
+      0.75  substring_address_part  — Project.Name CONTAINS first 2 tokens of address_hint
+      0.65  substring_first_token   — Project.Name CONTAINS first token (street number)
+    """
+    matches = ProjectService().find_for_invoice(
+        address_hint=address_hint, project_name_hint=project_name_hint,
+    )
+    return list_response(matches)
 
 
 @router.get("/get/project/search")

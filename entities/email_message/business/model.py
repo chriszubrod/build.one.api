@@ -30,6 +30,12 @@ class EmailMessage:
     agent_session_id: Optional[int] = None
     web_link: Optional[str] = None
     has_attachments: bool = False
+    # Agent classification stamp — set by mark_email_outcome. See
+    # email_specialist prompt for the controlled vocabulary.
+    agent_classification: Optional[str] = None
+    agent_classification_reason: Optional[str] = None
+    agent_decided_action: Optional[str] = None
+    agent_classification_confidence: Optional[Decimal] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

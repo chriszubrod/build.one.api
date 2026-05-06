@@ -76,6 +76,18 @@ async def create_bill_router(
             "intake_source_detail": intake_source_detail,
             "source_email_message_public_id": body.source_email_message_public_id,
             "attachment_public_id": body.attachment_public_id,
+            # Inline summary-line fields (all optional). When provided,
+            # the service populates the auto-created placeholder BillLineItem
+            # with these values so agent flows don't need a follow-up update.
+            "line_description": body.line_description,
+            "line_quantity": body.line_quantity,
+            "line_rate": Decimal(str(body.line_rate)) if body.line_rate is not None else None,
+            "line_amount": Decimal(str(body.line_amount)) if body.line_amount is not None else None,
+            "line_markup": Decimal(str(body.line_markup)) if body.line_markup is not None else None,
+            "line_price": Decimal(str(body.line_price)) if body.line_price is not None else None,
+            "line_is_billable": body.line_is_billable,
+            "line_sub_cost_code_id": body.line_sub_cost_code_id,
+            "line_project_public_id": body.line_project_public_id,
         },
         workflow_type="bill_create",
     )

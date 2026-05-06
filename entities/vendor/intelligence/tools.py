@@ -2,6 +2,7 @@
 
 Read tools (no approval):
   search_vendors                  → GET  /api/v1/get/vendor/search?q=...
+  find_vendor_for_invoice         → GET  /api/v1/get/vendor/find-for-invoice?vendor_name=...&sender_domain=...
   read_vendor_by_public_id        → GET  /api/v1/get/vendor/{public_id}
 
 Write tools (user approval required):
@@ -58,11 +59,66 @@ search_vendors = Tool(
     name="search_vendors",
     description=(
         "Find vendors by partial match against name or abbreviation. "
-        "This is the default — and only — read-many tool for vendors; "
-        "the full catalog is too large to list."
+        "Substring search; prefix matches rank first.\n\n"
+        "For invoice classification (binding a DI-extracted vendor name "
+        "to an existing Vendor), prefer `find_vendor_for_invoice` — it "
+        "runs a multi-strategy ranked lookup in one call instead of "
+        "retrying with progressively-shorter substrings."
     ),
     input_schema=input_schema_from(_SearchArgs),
     handler=_search_vendors,
+)
+
+
+class _FindVendorForInvoiceArgs(BaseModel):
+    vendor_name: str = Field(
+        description=(
+            "Vendor name to look up — typically the DI-extracted vendor "
+            "name from an invoice header (e.g. `\"WALKER LUMBER & SUPPLY\"`). "
+            "Real-world invoice vendor names rarely match DB Vendor.Name "
+            "exactly; this tool handles common variations (case, suffix "
+            "drift, prefix match) automatically."
+        ),
+    )
+    sender_domain: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional sender email domain (e.g. `walkerlumber.com`) — "
+            "raises confidence when a Vendor has a Contact row whose Email "
+            "ends in `@<domain>`. Pass when you have it; the tool still "
+            "works on vendor_name alone if you don't."
+        ),
+    )
+
+
+async def _find_vendor_for_invoice(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = _FindVendorForInvoiceArgs(**args)
+    qs = f"vendor_name={quote(parsed.vendor_name)}"
+    if parsed.sender_domain:
+        qs += f"&sender_domain={quote(parsed.sender_domain)}"
+    return await ctx.call_api("GET", f"/api/v1/get/vendor/find-for-invoice?{qs}")
+
+
+find_vendor_for_invoice = Tool(
+    name="find_vendor_for_invoice",
+    description=(
+        "Multi-strategy ranked vendor lookup for invoice classification. "
+        "Returns up to 5 candidates with `strategy` + `confidence` labels. "
+        "Use this — not `search_vendors` — when you're trying to bind a "
+        "fresh invoice's vendor name to an existing Vendor row.\n\n"
+        "Strategies (descending confidence):\n"
+        "  • 1.00  domain_contact       — Vendor has a Contact whose Email ends in @<sender_domain>\n"
+        "  • 0.95  exact_name           — case-insensitive Name match\n"
+        "  • 0.90  exact_abbreviation   — case-insensitive Abbreviation match\n"
+        "  • 0.85  prefix_name          — Name starts with first 2 words of vendor_name\n"
+        "  • 0.75  substring_two_words  — Name contains first 2 words of vendor_name\n"
+        "  • 0.65  substring_first_word — Name contains first word of vendor_name\n\n"
+        "Pick the highest-confidence match (typically index 0). If two "
+        "candidates have similar confidence and look like different "
+        "vendors, surface the ambiguity to the human (don't guess)."
+    ),
+    input_schema=input_schema_from(_FindVendorForInvoiceArgs),
+    handler=_find_vendor_for_invoice,
 )
 
 
@@ -237,6 +293,7 @@ delete_vendor = Tool(
 
 for _tool in (
     search_vendors,
+    find_vendor_for_invoice,
     read_vendor_by_public_id,
     create_vendor,
     update_vendor,

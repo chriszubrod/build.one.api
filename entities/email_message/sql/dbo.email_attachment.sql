@@ -217,6 +217,60 @@ GO
 
 GO
 
+-- ============================================================================
+-- UpdateEmailAttachmentExtractedFields — agent-driven typed-field overlay.
+-- Writes ONLY the Di* typed columns (vendor, invoice number, dates, totals,
+-- currency). Preserves ExtractionStatus, ExtractedAt, DiModel, DiResultJson,
+-- DiConfidence, LastError — those belong to the DI extraction step. The
+-- agent calls this after running DI to record its own interpretation of
+-- the document so search_email_sender_history can surface it for the next
+-- email from the same sender.
+-- ============================================================================
+
+CREATE OR ALTER PROCEDURE UpdateEmailAttachmentExtractedFields
+(
+    @Id BIGINT,
+    @DiVendorName NVARCHAR(255) = NULL,
+    @DiInvoiceNumber NVARCHAR(100) = NULL,
+    @DiInvoiceDate DATE = NULL,
+    @DiDueDate DATE = NULL,
+    @DiSubtotal DECIMAL(18,2) = NULL,
+    @DiTotalAmount DECIMAL(18,2) = NULL,
+    @DiCurrency NVARCHAR(10) = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    UPDATE dbo.[EmailAttachment]
+    SET
+        [ModifiedDatetime]  = @Now,
+        [DiVendorName]      = @DiVendorName,
+        [DiInvoiceNumber]   = @DiInvoiceNumber,
+        [DiInvoiceDate]     = @DiInvoiceDate,
+        [DiDueDate]         = @DiDueDate,
+        [DiSubtotal]        = @DiSubtotal,
+        [DiTotalAmount]     = @DiTotalAmount,
+        [DiCurrency]        = @DiCurrency
+    OUTPUT
+        INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[RowVersion],
+        INSERTED.[DiVendorName],
+        INSERTED.[DiInvoiceNumber],
+        INSERTED.[DiInvoiceDate],
+        INSERTED.[DiDueDate],
+        INSERTED.[DiSubtotal],
+        INSERTED.[DiTotalAmount],
+        INSERTED.[DiCurrency]
+    WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
 CREATE OR ALTER PROCEDURE UpdateEmailAttachmentExtraction
 (
     @Id BIGINT,

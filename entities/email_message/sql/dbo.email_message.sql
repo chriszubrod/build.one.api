@@ -44,8 +44,60 @@ CREATE TABLE [dbo].[EmailMessage]
     [AgentSessionId] BIGINT NULL,
     [WebLink] NVARCHAR(1024) NULL,
     [HasAttachments] BIT NOT NULL DEFAULT 0,
+    -- Agent classification stamp (set by mark_email_outcome). Captures
+    -- the email_specialist's *semantic* decision (what kind of doc this
+    -- was + what action it took) — independent of ProcessingStatus
+    -- (which tracks workflow). Powers search_email_sender_history so
+    -- prior emails inform the next classification.
+    [AgentClassification] NVARCHAR(50) NULL,
+    [AgentClassificationReason] NVARCHAR(1024) NULL,
+    [AgentDecidedAction] NVARCHAR(50) NULL,
+    [AgentClassificationConfidence] DECIMAL(5,4) NULL,
     CONSTRAINT [UQ_EmailMessage_GraphMessageId] UNIQUE ([GraphMessageId])
 );
+END
+GO
+
+-- Idempotent column adds for existing environments
+IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.columns WHERE Name = 'AgentClassification' AND Object_ID = OBJECT_ID('dbo.EmailMessage')
+)
+BEGIN
+    ALTER TABLE dbo.[EmailMessage] ADD [AgentClassification] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.columns WHERE Name = 'AgentClassificationReason' AND Object_ID = OBJECT_ID('dbo.EmailMessage')
+)
+BEGIN
+    ALTER TABLE dbo.[EmailMessage] ADD [AgentClassificationReason] NVARCHAR(1024) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.columns WHERE Name = 'AgentDecidedAction' AND Object_ID = OBJECT_ID('dbo.EmailMessage')
+)
+BEGIN
+    ALTER TABLE dbo.[EmailMessage] ADD [AgentDecidedAction] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.columns WHERE Name = 'AgentClassificationConfidence' AND Object_ID = OBJECT_ID('dbo.EmailMessage')
+)
+BEGIN
+    ALTER TABLE dbo.[EmailMessage] ADD [AgentClassificationConfidence] DECIMAL(5,4) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'IX_EmailMessage_FromAddress_Classification' AND object_id = OBJECT_ID('dbo.EmailMessage')
+)
+BEGIN
+    -- Powers search_email_sender_history's group-by-classification query.
+    CREATE INDEX IX_EmailMessage_FromAddress_Classification
+        ON dbo.[EmailMessage] ([FromAddress], [AgentClassification]);
 END
 GO
 
@@ -170,7 +222,11 @@ BEGIN
         [LastError],
         [AgentSessionId],
         [WebLink],
-        [HasAttachments]
+        [HasAttachments],
+        [AgentClassification],
+        [AgentClassificationReason],
+        [AgentDecidedAction],
+        [AgentClassificationConfidence]
     FROM dbo.[EmailMessage]
     WHERE [Id] = @Id;
 
@@ -209,7 +265,11 @@ BEGIN
         [LastError],
         [AgentSessionId],
         [WebLink],
-        [HasAttachments]
+        [HasAttachments],
+        [AgentClassification],
+        [AgentClassificationReason],
+        [AgentDecidedAction],
+        [AgentClassificationConfidence]
     FROM dbo.[EmailMessage]
     WHERE [PublicId] = @PublicId;
 
@@ -248,7 +308,11 @@ BEGIN
         [LastError],
         [AgentSessionId],
         [WebLink],
-        [HasAttachments]
+        [HasAttachments],
+        [AgentClassification],
+        [AgentClassificationReason],
+        [AgentDecidedAction],
+        [AgentClassificationConfidence]
     FROM dbo.[EmailMessage]
     WHERE [GraphMessageId] = @GraphMessageId;
 
@@ -263,7 +327,11 @@ CREATE OR ALTER PROCEDURE UpdateEmailMessageStatus
     @Id BIGINT,
     @ProcessingStatus NVARCHAR(50),
     @LastError NVARCHAR(MAX) = NULL,
-    @AgentSessionId BIGINT = NULL
+    @AgentSessionId BIGINT = NULL,
+    @AgentClassification NVARCHAR(50) = NULL,
+    @AgentClassificationReason NVARCHAR(1024) = NULL,
+    @AgentDecidedAction NVARCHAR(50) = NULL,
+    @AgentClassificationConfidence DECIMAL(5,4) = NULL
 )
 AS
 BEGIN
@@ -271,19 +339,35 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
+    -- All optional params use NULL-preserving CASE WHEN guards: passing
+    -- NULL leaves the existing column value alone, so a partial caller
+    -- (e.g. ClaimNextPending re-using this for status only) doesn't wipe
+    -- the agent's stamped classification.
     UPDATE dbo.[EmailMessage]
     SET
         [ModifiedDatetime] = @Now,
         [ProcessingStatus] = @ProcessingStatus,
         [LastError] = CASE WHEN @LastError IS NULL THEN [LastError] ELSE @LastError END,
-        [AgentSessionId] = CASE WHEN @AgentSessionId IS NULL THEN [AgentSessionId] ELSE @AgentSessionId END
+        [AgentSessionId] = CASE WHEN @AgentSessionId IS NULL THEN [AgentSessionId] ELSE @AgentSessionId END,
+        [AgentClassification] =
+            CASE WHEN @AgentClassification IS NULL THEN [AgentClassification] ELSE @AgentClassification END,
+        [AgentClassificationReason] =
+            CASE WHEN @AgentClassificationReason IS NULL THEN [AgentClassificationReason] ELSE @AgentClassificationReason END,
+        [AgentDecidedAction] =
+            CASE WHEN @AgentDecidedAction IS NULL THEN [AgentDecidedAction] ELSE @AgentDecidedAction END,
+        [AgentClassificationConfidence] =
+            CASE WHEN @AgentClassificationConfidence IS NULL THEN [AgentClassificationConfidence] ELSE @AgentClassificationConfidence END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
         INSERTED.[RowVersion],
         INSERTED.[ProcessingStatus],
         INSERTED.[LastError],
-        INSERTED.[AgentSessionId]
+        INSERTED.[AgentSessionId],
+        INSERTED.[AgentClassification],
+        INSERTED.[AgentClassificationReason],
+        INSERTED.[AgentDecidedAction],
+        INSERTED.[AgentClassificationConfidence]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
@@ -341,7 +425,11 @@ BEGIN
         [LastError],
         [AgentSessionId],
         [WebLink],
-        [HasAttachments]
+        [HasAttachments],
+        [AgentClassification],
+        [AgentClassificationReason],
+        [AgentDecidedAction],
+        [AgentClassificationConfidence]
     FROM dbo.[EmailMessage]
     WHERE [Id] = @ClaimedId;
 END;
@@ -398,7 +486,11 @@ BEGIN
         [LastError],
         [AgentSessionId],
         [WebLink],
-        [HasAttachments]
+        [HasAttachments],
+        [AgentClassification],
+        [AgentClassificationReason],
+        [AgentDecidedAction],
+        [AgentClassificationConfidence]
     FROM dbo.[EmailMessage]
     WHERE
         (@SearchTerm IS NULL OR
@@ -477,4 +569,97 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
+GO
+
+-- ============================================================================
+-- ReadEmailSenderHistory — sender-keyed prior-context lookup for the
+-- email_specialist agent. Returns two result sets:
+--
+--   1. Aggregate counts row: total emails from this sender + breakdowns
+--      by ProcessingStatus, AgentClassification, AgentDecidedAction,
+--      plus committed-Bill / -Expense / -BillCredit counts.
+--
+--   2. Distinct Vendor rows associated with prior committed Bills from
+--      this sender (one row per Vendor, with that vendor's bill count).
+--
+-- @ExcludePublicId optionally suppresses the current email from the
+-- counts (keyed on PublicId so the agent can pass the same identifier
+-- it received in its user_message — it doesn't know the internal Id).
+-- ============================================================================
+
+CREATE OR ALTER PROCEDURE ReadEmailSenderHistory
+(
+    @FromEmail NVARCHAR(320),
+    @ExcludePublicId UNIQUEIDENTIFIER = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Result set 1: aggregate counts
+    SELECT
+        COUNT(*)                                                                       AS PriorEmailsTotal,
+
+        -- Workflow status counts
+        SUM(CASE WHEN [ProcessingStatus] = 'pending'         THEN 1 ELSE 0 END)        AS StatusPending,
+        SUM(CASE WHEN [ProcessingStatus] = 'processing'      THEN 1 ELSE 0 END)        AS StatusProcessing,
+        SUM(CASE WHEN [ProcessingStatus] = 'extracted'       THEN 1 ELSE 0 END)        AS StatusExtracted,
+        SUM(CASE WHEN [ProcessingStatus] = 'awaiting_review' THEN 1 ELSE 0 END)        AS StatusAwaitingReview,
+        SUM(CASE WHEN [ProcessingStatus] = 'agent_complete'  THEN 1 ELSE 0 END)        AS StatusAgentComplete,
+        SUM(CASE WHEN [ProcessingStatus] = 'irrelevant'      THEN 1 ELSE 0 END)        AS StatusIrrelevant,
+        SUM(CASE WHEN [ProcessingStatus] = 'failed'          THEN 1 ELSE 0 END)        AS StatusFailed,
+
+        -- Agent classification counts (controlled vocabulary)
+        SUM(CASE WHEN [AgentClassification] = 'vendor_invoice'         THEN 1 ELSE 0 END) AS ClassVendorInvoice,
+        SUM(CASE WHEN [AgentClassification] = 'vendor_credit_memo'     THEN 1 ELSE 0 END) AS ClassVendorCreditMemo,
+        SUM(CASE WHEN [AgentClassification] = 'vendor_statement'       THEN 1 ELSE 0 END) AS ClassVendorStatement,
+        SUM(CASE WHEN [AgentClassification] = 'vendor_expense_receipt' THEN 1 ELSE 0 END) AS ClassVendorExpenseReceipt,
+        SUM(CASE WHEN [AgentClassification] = 'customer_payment'       THEN 1 ELSE 0 END) AS ClassCustomerPayment,
+        SUM(CASE WHEN [AgentClassification] = 'customer_question'      THEN 1 ELSE 0 END) AS ClassCustomerQuestion,
+        SUM(CASE WHEN [AgentClassification] = 'customer_dispute'       THEN 1 ELSE 0 END) AS ClassCustomerDispute,
+        SUM(CASE WHEN [AgentClassification] = 'internal_reply'         THEN 1 ELSE 0 END) AS ClassInternalReply,
+        SUM(CASE WHEN [AgentClassification] = 'internal_forward'       THEN 1 ELSE 0 END) AS ClassInternalForward,
+        SUM(CASE WHEN [AgentClassification] = 'vendor_newsletter'      THEN 1 ELSE 0 END) AS ClassVendorNewsletter,
+        SUM(CASE WHEN [AgentClassification] = 'non_actionable'         THEN 1 ELSE 0 END) AS ClassNonActionable,
+        SUM(CASE WHEN [AgentClassification] = 'unknown'                THEN 1 ELSE 0 END) AS ClassUnknown,
+        SUM(CASE WHEN [AgentClassification] IS NULL                    THEN 1 ELSE 0 END) AS ClassUnclassified,
+
+        -- Agent action counts
+        SUM(CASE WHEN [AgentDecidedAction] = 'delegated_to_bill_specialist'        THEN 1 ELSE 0 END) AS ActionDelegatedBill,
+        SUM(CASE WHEN [AgentDecidedAction] = 'delegated_to_bill_credit_specialist' THEN 1 ELSE 0 END) AS ActionDelegatedBillCredit,
+        SUM(CASE WHEN [AgentDecidedAction] = 'delegated_to_expense_specialist'     THEN 1 ELSE 0 END) AS ActionDelegatedExpense,
+        SUM(CASE WHEN [AgentDecidedAction] = 'flagged_needs_review'                THEN 1 ELSE 0 END) AS ActionFlaggedReview,
+        SUM(CASE WHEN [AgentDecidedAction] = 'marked_irrelevant'                   THEN 1 ELSE 0 END) AS ActionMarkedIrrelevant,
+        SUM(CASE WHEN [AgentDecidedAction] = 'marked_processed'                    THEN 1 ELSE 0 END) AS ActionMarkedProcessed,
+        SUM(CASE WHEN [AgentDecidedAction] IS NULL                                  THEN 1 ELSE 0 END) AS ActionUnset,
+
+        -- Committed-entity counts (cross joins via SourceEmailMessageId)
+        ISNULL((SELECT COUNT(*) FROM dbo.[Bill] b
+                INNER JOIN dbo.[EmailMessage] em ON em.[Id] = b.[SourceEmailMessageId]
+                WHERE em.[FromAddress] = @FromEmail), 0)         AS PriorBillsCommitted,
+        ISNULL((SELECT COUNT(*) FROM dbo.[Expense] e
+                INNER JOIN dbo.[EmailMessage] em ON em.[Id] = e.[SourceEmailMessageId]
+                WHERE em.[FromAddress] = @FromEmail), 0)         AS PriorExpensesCommitted,
+        ISNULL((SELECT COUNT(*) FROM dbo.[BillCredit] bc
+                INNER JOIN dbo.[EmailMessage] em ON em.[Id] = bc.[SourceEmailMessageId]
+                WHERE em.[FromAddress] = @FromEmail), 0)         AS PriorBillCreditsCommitted
+    FROM dbo.[EmailMessage]
+    WHERE [FromAddress] = @FromEmail
+      AND (@ExcludePublicId IS NULL OR [PublicId] <> @ExcludePublicId);
+
+    -- Result set 2: distinct Vendors associated with prior committed Bills
+    -- from this sender. Empty if no Bills have been committed yet.
+    SELECT
+        v.[Id]                                  AS VendorId,
+        CAST(v.[PublicId] AS NVARCHAR(36))      AS VendorPublicId,
+        v.[Name]                                AS VendorName,
+        COUNT(b.[Id])                           AS BillCount
+    FROM dbo.[Vendor] v
+    INNER JOIN dbo.[Bill] b           ON b.[VendorId]              = v.[Id]
+    INNER JOIN dbo.[EmailMessage] em  ON em.[Id]                   = b.[SourceEmailMessageId]
+    WHERE em.[FromAddress] = @FromEmail
+    GROUP BY v.[Id], v.[PublicId], v.[Name]
+    ORDER BY VendorName;
+END;
+GO
 GO

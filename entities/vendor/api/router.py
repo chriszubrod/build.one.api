@@ -1,8 +1,9 @@
 # Python Standard Library Imports
 import asyncio
+from typing import Optional
 
 # Third-party Imports
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 # Local Imports
 from entities.vendor.api.schemas import VendorCreate, VendorUpdate
@@ -54,6 +55,35 @@ async def get_vendors_router(current_user: dict = Depends(require_module_api(Mod
     """
     vendors = await asyncio.to_thread(service.read_all)
     return list_response([vendor.to_dict() for vendor in vendors])
+
+
+@router.get("/get/vendor/find-for-invoice")
+def find_vendor_for_invoice_router(
+    vendor_name: str = Query(..., description="Vendor name to look up (typically DI-extracted from the invoice header)."),
+    sender_domain: Optional[str] = Query(
+        default=None,
+        description="Sender email domain (e.g. 'walkerlumber.com') — used as a Contact-keyed match strategy.",
+    ),
+    current_user: dict = Depends(require_module_api(Modules.VENDORS)),
+):
+    """Multi-strategy ranked vendor lookup for invoice classification.
+
+    Returns up to 5 candidates with `strategy` + `confidence` labels so
+    the caller can pick the best match in one call instead of retrying
+    `search_vendors` with progressively-shorter substrings.
+
+    Strategies (descending confidence):
+      1.00  domain_contact       — Vendor has a Contact whose Email ends in @<sender_domain>
+      0.95  exact_name           — case-insensitive Name match
+      0.90  exact_abbreviation   — case-insensitive Abbreviation match
+      0.85  prefix_name          — Name starts with first 2 words of vendor_name
+      0.75  substring_two_words  — Name contains first 2 words of vendor_name
+      0.65  substring_first_word — Name contains first word of vendor_name
+    """
+    matches = service.find_for_invoice(
+        vendor_name=vendor_name, sender_domain=sender_domain,
+    )
+    return list_response(matches)
 
 
 @router.get("/get/vendor/search")

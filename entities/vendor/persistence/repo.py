@@ -166,6 +166,46 @@ class VendorRepository:
             logger.error(f"Error during read vendor by name: {error}")
             raise map_database_error(error)
 
+    def find_for_invoice(self, *, vendor_name: str,
+                         sender_domain: Optional[str] = None) -> list[dict]:
+        """Multi-strategy ranked vendor lookup for invoice classification.
+        Returns up to 5 candidates with their match strategy + confidence.
+        Each candidate is a dict (not a Vendor model) because the strategy
+        + confidence + matched_term metadata is invoice-specific."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="FindVendorForInvoice",
+                    params={
+                        "VendorName": vendor_name,
+                        "SenderDomain": sender_domain,
+                    },
+                )
+                out: list[dict] = []
+                for row in cursor.fetchall():
+                    out.append({
+                        "vendor": {
+                            "id": row.VendorId,
+                            "public_id": row.VendorPublicId,
+                            "name": row.VendorName,
+                            "abbreviation": row.Abbreviation,
+                            "is_draft": bool(row.IsDraft),
+                            # Per-vendor agent guidance — bill_specialist
+                            # reads this and applies any vendor-specific
+                            # rules (e.g. "trim /N suffix") to its create_bill.
+                            "intake_notes": getattr(row, "IntakeNotes", None),
+                        },
+                        "confidence": float(row.Confidence) if row.Confidence is not None else None,
+                        "strategy": row.Strategy,
+                        "matched_term": row.MatchedTerm,
+                    })
+                return out
+        except Exception as error:
+            logger.error(f"Error during find_vendor_for_invoice: {error}")
+            raise map_database_error(error)
+
     def update_by_id(self, vendor: Vendor) -> Optional[Vendor]:
         """
         Update a vendor by ID.

@@ -10,6 +10,7 @@ Two write endpoints back the email agent's tools:
 Both require can_update on EMAIL_MESSAGES.
 """
 import logging
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -89,13 +90,27 @@ def get_email_message_by_public_id_router(
     public_id: str,
     current_user: dict = Depends(require_module_api(Modules.EMAIL_MESSAGES)),
 ):
-    """One email by public_id, with its attachment rows attached."""
+    """One email by public_id, with its attachment rows attached.
+
+    Strips `di_result_json` from each attachment to keep the response
+    lean — the raw DI JSON is ~80% of the payload by volume and the
+    agent reads it via `extract_email_attachment` (which returns the
+    structured `content`/`key_value_pairs`/`tables` shape it actually
+    needs). The typed `Di*` columns stay so the agent still sees the
+    agent-recorded vendor/invoice/total fields here without paying the
+    100KB per turn.
+    """
     service = EmailMessageService()
     email = service.read_by_public_id(public_id=public_id)
     if not email:
         raise_not_found("Email message")
     payload = email.to_dict()
-    payload["attachments"] = [a.to_dict() for a in service.list_attachments(email_message_id=email.id)]
+    attachments = []
+    for a in service.list_attachments(email_message_id=email.id):
+        d = a.to_dict()
+        d.pop("di_result_json", None)
+        attachments.append(d)
+    payload["attachments"] = attachments
     return item_response(payload)
 
 
@@ -169,6 +184,41 @@ class _OutcomeBody(BaseModel):
         default=None,
         description="Optional AgentSession.Id linking this email to its run.",
     )
+    # Agent classification stamp — captures the email_specialist's
+    # *semantic* decision so search_email_sender_history can surface
+    # this email's classification to the next email from the same sender.
+    classification: Optional[str] = Field(
+        default=None,
+        description=(
+            "Controlled-vocabulary classification of what the email was. "
+            "Values: vendor_invoice | vendor_credit_memo | vendor_statement "
+            "| vendor_expense_receipt | customer_payment | customer_question "
+            "| customer_dispute | internal_reply | internal_forward "
+            "| vendor_newsletter | non_actionable | unknown."
+        ),
+    )
+    classification_reason: Optional[str] = Field(
+        default=None,
+        description="One-sentence narrative of why the agent classified this way.",
+    )
+    decided_action: Optional[str] = Field(
+        default=None,
+        description=(
+            "Controlled-vocabulary action the agent took. Values: "
+            "delegated_to_bill_specialist | delegated_to_bill_credit_specialist "
+            "| delegated_to_expense_specialist | flagged_needs_review "
+            "| marked_irrelevant | marked_processed."
+        ),
+    )
+    confidence: Optional[Decimal] = Field(
+        default=None,
+        ge=Decimal("0"), le=Decimal("1"),
+        description=(
+            "Agent's overall classification confidence in [0,1]. The "
+            "email_specialist's prompt routes per the classification when "
+            "this is >= 0.95, otherwise needs_review regardless of value."
+        ),
+    )
 
 
 @router.patch("/email-messages/{public_id}/outcome")
@@ -198,12 +248,16 @@ def set_email_outcome_router(
 
     new_status, outcome_category = _OUTCOME_MAP[body.outcome]
 
-    # 1. DB-side state transition.
+    # 1. DB-side state transition + agent classification stamp.
     service.update_status(
         id=email.id,
         processing_status=new_status,
         last_error=body.reason,
         agent_session_id=body.agent_session_id,
+        agent_classification=body.classification,
+        agent_classification_reason=body.classification_reason,
+        agent_decided_action=body.decided_action,
+        agent_classification_confidence=body.confidence,
     )
 
     # 2. Outlook category — append, don't replace, so the human's input
@@ -242,3 +296,75 @@ def _safe_categories_from_graph(graph_message_id: str, mailbox: str) -> list[str
     if full.get("status_code") != 200:
         return []
     return (full.get("email") or {}).get("categories") or []
+
+
+# ─── Agent-driven typed-field overlay on EmailAttachment ────────────────────
+
+
+class _ExtractedFieldsBody(BaseModel):
+    vendor_name: Optional[str] = Field(default=None, description="Vendor name as the agent read it.")
+    invoice_number: Optional[str] = Field(default=None, description="Invoice / DOC# / Bill #.")
+    invoice_date: Optional[str] = Field(default=None, description="ISO YYYY-MM-DD.")
+    due_date: Optional[str] = Field(default=None, description="ISO YYYY-MM-DD.")
+    subtotal: Optional[Decimal] = Field(default=None, description="Pre-tax subtotal.")
+    total_amount: Optional[Decimal] = Field(default=None, description="Final invoice total.")
+    currency: Optional[str] = Field(default=None, description="ISO currency code (USD default).")
+
+
+@router.patch("/email-attachments/{public_id}/extracted-fields")
+def set_email_attachment_extracted_fields_router(
+    public_id: str,
+    body: _ExtractedFieldsBody,
+    current_user: dict = Depends(require_module_api(Modules.EMAIL_MESSAGES, "can_update")),
+):
+    """Agent-driven overlay onto EmailAttachment.Di* typed columns.
+
+    Preserves the underlying DI extraction (status, raw JSON, model). The
+    agent reads DI's prebuilt-layout output and pulls out semantic fields,
+    then calls this endpoint to persist its own interpretation so
+    search_email_sender_history can surface those fields downstream.
+    """
+    return item_response(
+        EmailAttachmentExtractionService().record_extracted_fields_by_public_id(
+            public_id,
+            vendor_name=body.vendor_name,
+            invoice_number=body.invoice_number,
+            invoice_date=body.invoice_date,
+            due_date=body.due_date,
+            subtotal=body.subtotal,
+            total_amount=body.total_amount,
+            currency=body.currency,
+        )
+    )
+
+
+# ─── Sender-history lookup keyed on FromAddress ─────────────────────────────
+
+
+@router.get("/email-messages/sender-history")
+def get_email_sender_history_router(
+    from_email: str = Query(..., description="Sender SMTP address to look up."),
+    exclude_public_id: Optional[str] = Query(
+        default=None,
+        description=(
+            "Optional EmailMessage.PublicId to exclude from counts (used "
+            "by an in-flight agent run so it doesn't see its own row in "
+            "the prior totals — pass the same UUID the run was kicked "
+            "off with)."
+        ),
+    ),
+    current_user: dict = Depends(require_module_api(Modules.EMAIL_MESSAGES)),
+):
+    """Aggregate prior context for an email sender. Powers the
+    email_specialist agent's search_email_sender_history tool.
+
+    Returns: prior_emails counts (by status / classification / action),
+    counts of committed Bills/Expenses/BillCredits sourced from prior
+    emails by this sender, and the distinct Vendor rows transitively
+    associated via those committed Bills.
+    """
+    history = EmailMessageService().get_sender_history(
+        from_email=from_email,
+        exclude_public_id=exclude_public_id,
+    )
+    return item_response(history)

@@ -61,6 +61,15 @@ class ProjectService:
         """
         return self.repo.read_by_name(name)
 
+    def find_for_invoice(self, *, address_hint: Optional[str] = None,
+                         project_name_hint: Optional[str] = None) -> list[dict]:
+        """Multi-strategy ranked Project lookup for invoice classification.
+        Used by the project_specialist agent when an invoice's Ship To /
+        job-site address needs to be bound to an existing Project row."""
+        return self.repo.find_for_invoice(
+            address_hint=address_hint, project_name_hint=project_name_hint,
+        )
+
     def search_by_name(self, *, query: str, limit: int = 10):
         """
         Case-insensitive substring search against Name + Abbreviation.

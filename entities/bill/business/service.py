@@ -186,7 +186,13 @@ class BillService:
             self._attachable_attachment_connector = AttachableAttachmentConnector()
         return self._attachable_attachment_connector
 
-    def create(self, *, tenant_id: int = 1, user_id: Optional[int] = None, vendor_public_id: Optional[str] = None, payment_term_public_id: Optional[str] = None, bill_date: str, due_date: str, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, intake_source: Optional[str] = None, intake_source_detail: Optional[str] = None, source_email_message_public_id: Optional[str] = None, attachment_public_id: Optional[str] = None) -> Bill:
+    def create(self, *, tenant_id: int = 1, user_id: Optional[int] = None, vendor_public_id: Optional[str] = None, payment_term_public_id: Optional[str] = None, bill_date: str, due_date: str, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, intake_source: Optional[str] = None, intake_source_detail: Optional[str] = None, source_email_message_public_id: Optional[str] = None, attachment_public_id: Optional[str] = None,
+               line_description: Optional[str] = None, line_quantity: Optional[int] = None,
+               line_rate: Optional[Decimal] = None, line_amount: Optional[Decimal] = None,
+               line_markup: Optional[Decimal] = None, line_price: Optional[Decimal] = None,
+               line_is_billable: Optional[bool] = None,
+               line_sub_cost_code_id: Optional[int] = None,
+               line_project_public_id: Optional[str] = None) -> Bill:
         """
         Create a new bill.
 
@@ -295,11 +301,33 @@ class BillService:
         # we roll back the bill — having a Bill row without its required
         # attachment violates the invariant.
         try:
-            placeholder_line_item = self.bill_line_item_service.create(
-                tenant_id=tenant_id,
-                bill_public_id=bill.public_id,
-                is_billable=True,
-            )
+            # Resolve project_public_id → project_id (BillLineItemService
+            # may take either; we resolve here to keep the call explicit).
+            line_kwargs: dict = {
+                "tenant_id": tenant_id,
+                "bill_public_id": bill.public_id,
+                # is_billable defaults True for summary-line use; the
+                # caller can override by passing line_is_billable=False
+                # explicitly. None (omitted) → True.
+                "is_billable": True if line_is_billable is None else bool(line_is_billable),
+            }
+            if line_description is not None:
+                line_kwargs["description"] = line_description
+            if line_quantity is not None:
+                line_kwargs["quantity"] = line_quantity
+            if line_rate is not None:
+                line_kwargs["rate"] = line_rate
+            if line_amount is not None:
+                line_kwargs["amount"] = line_amount
+            if line_markup is not None:
+                line_kwargs["markup"] = line_markup
+            if line_price is not None:
+                line_kwargs["price"] = line_price
+            if line_sub_cost_code_id is not None:
+                line_kwargs["sub_cost_code_id"] = line_sub_cost_code_id
+            if line_project_public_id is not None:
+                line_kwargs["project_public_id"] = line_project_public_id
+            placeholder_line_item = self.bill_line_item_service.create(**line_kwargs)
             self.bill_line_item_attachment_service.create(
                 tenant_id=tenant_id,
                 bill_line_item_public_id=placeholder_line_item.public_id,

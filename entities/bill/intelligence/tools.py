@@ -219,6 +219,58 @@ class CreateBillArgs(BaseModel):
             "POST /api/v1/upload/attachment first to obtain a public_id."
         ),
     )
+    # ───── Inline summary line item ──────────────────────────────────────
+    # When provided, the server populates the placeholder BillLineItem
+    # (the one carrying the attachment) with these values directly. Use
+    # this for invoice-driven creates so you don't need a follow-up
+    # update_bill_line_item call. Standard pattern for invoice bills:
+    #   line_description = brief 6-word summary of what's on the invoice
+    #   line_quantity    = 1
+    #   line_rate        = total_amount  (DI-extracted)
+    #   line_amount      = quantity × rate
+    #   line_markup      = null  (no markup on a vendor bill we paid)
+    #   line_price       = amount × (1 + markup)  → equals amount when markup is null
+    #   line_is_billable = true  (default)
+    #   line_project_public_id = resolve via delegate_to_project_specialist
+    line_description: Optional[str] = Field(
+        default=None,
+        description="Summary description (~6 words) for the bill line.",
+    )
+    line_quantity: Optional[int] = Field(
+        default=None,
+        description="Quantity. Pass 1 for summary-line use.",
+    )
+    line_rate: Optional[float] = Field(
+        default=None,
+        description="Rate (typically equals total_amount on summary).",
+    )
+    line_amount: Optional[float] = Field(
+        default=None,
+        description="Amount = quantity × rate.",
+    )
+    line_markup: Optional[float] = Field(
+        default=None,
+        description="Markup decimal (0.10 = 10%). Null when no markup.",
+    )
+    line_price: Optional[float] = Field(
+        default=None,
+        description="Price = amount × (1 + markup). Equals amount when markup is null/0.",
+    )
+    line_is_billable: Optional[bool] = Field(
+        default=None,
+        description="Defaults to True server-side when omitted.",
+    )
+    line_sub_cost_code_id: Optional[int] = Field(
+        default=None,
+        description="BIGINT — resolve via SubCostCode read tools first.",
+    )
+    line_project_public_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "UUID of the Project for this line. Resolve via the "
+            "project_specialist delegation for invoice flows."
+        ),
+    )
 
 
 async def _create_bill(args: dict, ctx: ToolContext) -> ToolResult:
@@ -238,19 +290,24 @@ def _summarize_create_bill(args: dict) -> str:
 create_bill = Tool(
     name="create_bill",
     description=(
-        "Create a NEW DRAFT BILL with no line items. REQUIRES USER "
-        "APPROVAL. The bill becomes a draft (IsDraft=true) — line items "
-        "are added separately (via the UI today; via dedicated tools in "
-        "a future iteration). Once the lines are in, use `complete_bill` "
-        "to finalize and push to QBO + SharePoint + Excel. If the user "
-        "names a vendor, resolve via `search_vendors` first to get the "
-        "vendor's `public_id`. The server enforces (vendor, bill_number) "
+        "Create a NEW DRAFT BILL with no line items. NO APPROVAL GATE — "
+        "the bill commits as a draft (IsDraft=true) immediately so the "
+        "agent can keep moving. Drafts have no external side effects "
+        "(no QBO push, no SharePoint upload, no Excel write); only "
+        "`complete_bill` triggers those, and `complete_bill` IS still "
+        "approval-gated. A draft is fully reversible via `delete_bill` "
+        "if it was created in error.\n\n"
+        "Add line items separately via `add_bill_line_items` (also "
+        "non-blocking). Once lines are in, use `complete_bill` (gated) "
+        "to finalize and push to QBO + SharePoint + Excel.\n\n"
+        "If the user names a vendor, resolve via `find_vendor_for_invoice` "
+        "(preferred for invoice flows — handles fuzzy / domain matching) "
+        "or `search_vendors` (general queries) first to get the vendor's "
+        "`public_id`. The server enforces (vendor, bill_number) "
         "uniqueness — surface that error plainly if it fires."
     ),
     input_schema=input_schema_from(CreateBillArgs),
     handler=_create_bill,
-    requires_approval=True,
-    approval_summary=_summarize_create_bill,
 )
 
 
@@ -513,20 +570,22 @@ def _summarize_add_bill_line_items(args: dict) -> str:
 add_bill_line_items = Tool(
     name="add_bill_line_items",
     description=(
-        "Add line items to an existing bill in batch. REQUIRES USER "
-        "APPROVAL (one card per batch). Each line item needs a "
-        "`sub_cost_code_id` (BIGINT — resolve via "
-        "`read_sub_cost_code_by_number` or `search_sub_cost_codes` "
+        "Add line items to an existing bill in batch. NO APPROVAL GATE "
+        "— lines are added directly to the draft bill so the agent can "
+        "keep moving. The bill remains a draft until `complete_bill` "
+        "(which IS still approval-gated), so the human still reviews "
+        "the full bill + lines before any external push.\n\n"
+        "Each line item needs a `sub_cost_code_id` (BIGINT — resolve "
+        "via `read_sub_cost_code_by_number` or `search_sub_cost_codes` "
         "first) and an optional `project_public_id`. Server creates "
-        "each line as IsDraft=true; the bill itself remains a draft "
-        "until `complete_bill`. If some succeed and some fail, the "
+        "each line as IsDraft=true. If some succeed and some fail, the "
         "result includes `created` and `errors` arrays — retry only "
-        "the failed indices, do not re-submit the whole batch."
+        "the failed indices, do not re-submit the whole batch.\n\n"
+        "If a line is added in error it can be removed via "
+        "`remove_bill_line_item` (which IS approval-gated)."
     ),
     input_schema=input_schema_from(AddBillLineItemsArgs),
     handler=_add_bill_line_items,
-    requires_approval=True,
-    approval_summary=_summarize_add_bill_line_items,
 )
 
 

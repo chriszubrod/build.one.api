@@ -77,6 +77,18 @@ class VendorService:
         """
         return self.repo.read_by_name(name)
 
+    def find_for_invoice(self, *, vendor_name: str,
+                         sender_domain: Optional[str] = None) -> list[dict]:
+        """Multi-strategy ranked vendor lookup for invoice classification.
+        Use this when an agent or upstream is trying to bind a fresh
+        invoice's vendor name (often DI-extracted, often imperfect) to
+        an existing Vendor row. Returns up to 5 candidates with strategy
+        + confidence labels — caller picks the highest-confidence match
+        and surfaces ambiguity if multiple are close."""
+        return self.repo.find_for_invoice(
+            vendor_name=vendor_name, sender_domain=sender_domain,
+        )
+
     def search_by_name(self, *, query: str, limit: int = 10):
         """
         Case-insensitive substring search against Name + Abbreviation.

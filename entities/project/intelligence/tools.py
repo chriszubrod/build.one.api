@@ -3,6 +3,7 @@
 Read tools (no approval):
   list_projects                    → GET  /api/v1/get/projects
   search_projects                  → GET  /api/v1/get/project/search?q=...
+  find_project_for_invoice         → GET  /api/v1/get/project/find-for-invoice?address_hint=...
   read_project_by_public_id        → GET  /api/v1/get/project/{public_id}
   read_projects_by_customer_id     → GET  /api/v1/get/project/by-customer/{cid}
 
@@ -81,11 +82,69 @@ search_projects = Tool(
     name="search_projects",
     description=(
         "Find projects by partial match against name or abbreviation. "
-        "Default tool for any name-based lookup — prefer it over "
-        "`list_projects` whenever the user gives a hint."
+        "Default tool for any name-based lookup. For invoice-driven "
+        "lookups (binding a Ship To address from an invoice to a "
+        "Project), prefer `find_project_for_invoice` — it runs a "
+        "multi-strategy ranked match in one call."
     ),
     input_schema=input_schema_from(_SearchArgs),
     handler=_search_projects,
+)
+
+
+class _FindProjectForInvoiceArgs(BaseModel):
+    address_hint: Optional[str] = Field(
+        default=None,
+        description=(
+            "Job-site / Ship To address from the invoice (e.g. "
+            "`\"917 TYNE BLVD\"`). Project.Name typically encodes the "
+            "address (`\"TB3 - 917 Tyne Blvd\"`) so substring matches "
+            "tend to work — but pre-clean the input: strip city/state/"
+            "zip, phone numbers, and repeated lines if DI returned a "
+            "noisy multi-line value."
+        ),
+    )
+    project_name_hint: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional explicit project name when the email or sender "
+            "names it directly (e.g. `\"Phase 2 Renovation\"`). Pass "
+            "this when you have it; address_hint covers the "
+            "address-only case."
+        ),
+    )
+
+
+async def _find_project_for_invoice(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = _FindProjectForInvoiceArgs(**args)
+    parts: list[str] = []
+    if parsed.address_hint:
+        parts.append(f"address_hint={quote(parsed.address_hint)}")
+    if parsed.project_name_hint:
+        parts.append(f"project_name_hint={quote(parsed.project_name_hint)}")
+    qs = "&".join(parts)
+    return await ctx.call_api("GET", f"/api/v1/get/project/find-for-invoice?{qs}")
+
+
+find_project_for_invoice = Tool(
+    name="find_project_for_invoice",
+    description=(
+        "Multi-strategy ranked Project lookup for invoice classification. "
+        "Returns up to 5 candidates with `strategy` + `confidence` "
+        "labels. Use this — not `search_projects` — when binding a "
+        "fresh invoice's job-site address to an existing Project row.\n\n"
+        "Strategies (descending confidence):\n"
+        "  • 0.95  exact_name              — Project.Name == project_name_hint\n"
+        "  • 0.90  exact_abbreviation      — Project.Abbreviation == project_name_hint\n"
+        "  • 0.85  substring_address_full  — Project.Name CONTAINS the full address_hint\n"
+        "  • 0.75  substring_address_part  — Project.Name CONTAINS first 2 tokens of address_hint\n"
+        "  • 0.65  substring_first_token   — Project.Name CONTAINS first token (often the street number)\n\n"
+        "Pick the highest-confidence match. If two candidates have "
+        "similar confidence and look like genuinely different projects, "
+        "surface the ambiguity to the human (don't guess)."
+    ),
+    input_schema=input_schema_from(_FindProjectForInvoiceArgs),
+    handler=_find_project_for_invoice,
 )
 
 
@@ -259,6 +318,7 @@ delete_project = Tool(
 for _tool in (
     list_projects,
     search_projects,
+    find_project_for_invoice,
     read_project_by_public_id,
     read_projects_by_customer_id,
     create_project,

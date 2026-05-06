@@ -15,7 +15,9 @@ email_specialist = Agent(
     tools=(
         # Email-message-side tools — internal bookkeeping.
         "read_email_message",
+        "search_email_sender_history",
         "extract_email_attachment",
+        "record_extracted_fields",
         "bridge_email_attachment",
         "mark_email_outcome",
         # One delegation tool for v1. Add expense / bill_credit later.

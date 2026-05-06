@@ -180,6 +180,43 @@ class ProjectRepository:
             logger.error(f"Error during read project by name: {error}")
             raise map_database_error(error)
 
+    def find_for_invoice(self, *, address_hint: Optional[str] = None,
+                         project_name_hint: Optional[str] = None) -> list[dict]:
+        """Multi-strategy ranked Project lookup for invoice classification.
+        Mirrors VendorRepository.find_for_invoice — used by the
+        project_specialist agent (delegated from bill_specialist) when an
+        invoice's job-site address needs to be bound to an existing
+        Project row. Returns up to 5 candidates with strategy + confidence."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="FindProjectForInvoice",
+                    params={
+                        "AddressHint": address_hint,
+                        "ProjectNameHint": project_name_hint,
+                    },
+                )
+                out: list[dict] = []
+                for row in cursor.fetchall():
+                    out.append({
+                        "project": {
+                            "id": row.ProjectId,
+                            "public_id": row.ProjectPublicId,
+                            "name": row.ProjectName,
+                            "abbreviation": row.Abbreviation,
+                            "status": row.Status,
+                        },
+                        "confidence": float(row.Confidence) if row.Confidence is not None else None,
+                        "strategy": row.Strategy,
+                        "matched_term": row.MatchedTerm,
+                    })
+                return out
+        except Exception as error:
+            logger.error(f"Error during find_project_for_invoice: {error}")
+            raise map_database_error(error)
+
     def update_by_id(self, project: Project) -> Optional[Project]:
         """
         Update a project by ID.

@@ -231,6 +231,63 @@ class MsOutboxService:
             },
         )
 
+    def enqueue_send_mail(
+        self,
+        *,
+        entity_type: str,
+        entity_public_id: str,
+        to_addresses: list,
+        cc_addresses: Optional[list] = None,
+        bcc_addresses: Optional[list] = None,
+        subject: str,
+        body: str,
+        body_type: str = "HTML",
+        attachment: Optional[Dict[str, Any]] = None,
+        mode: str = "draft",
+        review_id: Optional[int] = None,
+        bill_id: Optional[int] = None,
+    ) -> Optional[MsOutbox]:
+        """
+        Queue an outbound mail send (or draft create) for background dispatch.
+
+        `to_addresses` / `cc_addresses` / `bcc_addresses` are lists of dicts
+        shaped `{"email": str, "name": Optional[str]}` matching the existing
+        mail-client `_build_recipient_list` contract — passing `address`
+        instead of `email` silently drops the destination, leaving only the
+        display name on the recipient line. `attachment`, when supplied,
+        carries `{"name": str, "content_type": str, "content_bytes": str}`
+        where `content_bytes` is **already base64-encoded** (Graph requires
+        base64; storing it pre-encoded keeps the JSON payload self-sufficient
+        and survives outbox retries without re-fetching the blob).
+
+        `mode` is "draft" (default) or "send" — the worker dispatches to
+        `create_draft` or `send_message` respectively. `review_id` /
+        `bill_id` are persisted on the row for audit-trail backtrack:
+        "which Review row triggered this email".
+        """
+        tenant_id = _resolve_tenant_id()
+        if not tenant_id:
+            logger.error("ms.outbox.enqueue_send_mail.no_tenant_id")
+            return None
+        return self.enqueue(
+            kind=KIND_SEND_MAIL,
+            entity_type=entity_type,
+            entity_public_id=entity_public_id,
+            tenant_id=tenant_id,
+            payload={
+                "to_addresses": to_addresses,
+                "cc_addresses": cc_addresses or [],
+                "bcc_addresses": bcc_addresses or [],
+                "subject": subject,
+                "body": body,
+                "body_type": body_type,
+                "attachment": attachment,
+                "mode": mode,
+                "review_id": review_id,
+                "bill_id": bill_id,
+            },
+        )
+
     def enqueue_sharepoint_upload(
         self,
         *,

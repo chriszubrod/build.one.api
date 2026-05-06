@@ -42,6 +42,8 @@ class UserProjectRepository:
                 modified_datetime=row.ModifiedDatetime,
                 user_id=row.UserId,
                 project_id=row.ProjectId,
+                role_id=getattr(row, "RoleId", None),
+                role_name=getattr(row, "RoleName", None),
                 created_by_user_id=getattr(row, "CreatedByUserId", None),
                 modified_by_user_id=getattr(row, "ModifiedByUserId", None),
             )
@@ -57,6 +59,7 @@ class UserProjectRepository:
         *,
         user_id: int,
         project_id: int,
+        role_id: Optional[int] = None,
         created_by_user_id: Optional[int] = None,
         modified_by_user_id: Optional[int] = None,
     ) -> UserProject:
@@ -72,6 +75,7 @@ class UserProjectRepository:
                     params={
                         "UserId": user_id,
                         "ProjectId": project_id,
+                        "RoleId": role_id,
                         "CreatedByUserId": created_by_user_id,
                         "ModifiedByUserId": modified_by_user_id,
                     },
@@ -190,6 +194,7 @@ class UserProjectRepository:
                         "RowVersion": user_project.row_version_bytes,
                         "UserId": user_project.user_id,
                         "ProjectId": user_project.project_id,
+                        "RoleId": user_project.role_id,
                         "ModifiedByUserId": user_project.modified_by_user_id,
                     },
                 )

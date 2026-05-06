@@ -1,9 +1,11 @@
 # Python Standard Library Imports
+from typing import Optional
 
 # Third-party Imports
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
+from entities.role.business.service import RoleService
 from entities.user_project.api.schemas import UserProjectCreate, UserProjectUpdate
 from entities.user_project.business.service import UserProjectService
 from shared.profile_events import publish_profile_changed
@@ -15,6 +17,18 @@ from shared.api.responses import list_response, item_response, raise_workflow_er
 router = APIRouter(prefix="/api/v1", tags=["api", "user_project"])
 
 
+def _resolve_role_id(role_public_id: Optional[str]) -> Optional[int]:
+    if role_public_id is None:
+        return None
+    role = RoleService().read_by_public_id(public_id=role_public_id)
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Role with public_id {role_public_id} not found.",
+        )
+    return role.id
+
+
 @router.post("/create/user_project")
 def create_user_project_router(body: UserProjectCreate, current_user: dict = Depends(require_module_api(Modules.PROJECTS, "can_create"))):
     """
@@ -22,6 +36,8 @@ def create_user_project_router(body: UserProjectCreate, current_user: dict = Dep
 
     Routes through the workflow engine for audit logging and state tracking.
     """
+    role_id = _resolve_role_id(body.role_public_id)
+
     context = TriggerContext(
         trigger_type=EventType.API_CALL,
         trigger_source=Channel.API,
@@ -30,6 +46,7 @@ def create_user_project_router(body: UserProjectCreate, current_user: dict = Dep
         payload={
             "user_id": body.user_id,
             "project_id": body.project_id,
+            "role_id": role_id,
         },
         workflow_type="user_project_create",
     )
@@ -84,6 +101,8 @@ def update_user_project_by_public_id_router(public_id: str, body: UserProjectUpd
     if body.user_id is not None:
         affected_user_ids.add(body.user_id)
 
+    role_id = _resolve_role_id(body.role_public_id)
+
     context = TriggerContext(
         trigger_type=EventType.API_CALL,
         trigger_source=Channel.API,
@@ -94,6 +113,7 @@ def update_user_project_by_public_id_router(public_id: str, body: UserProjectUpd
             "row_version": body.row_version,
             "user_id": body.user_id,
             "project_id": body.project_id,
+            "role_id": role_id,
         },
         workflow_type="user_project_update",
     )

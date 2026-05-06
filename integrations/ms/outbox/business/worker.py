@@ -18,6 +18,7 @@ from integrations.ms.outbox.business.model import MsOutbox
 from integrations.ms.outbox.business.service import (
     KIND_APPEND_EXCEL_ROW,
     KIND_INSERT_EXCEL_ROW,
+    KIND_SEND_MAIL,
     KIND_UPLOAD_SHAREPOINT_FILE,
 )
 from integrations.ms.outbox.persistence.repo import MsOutboxRepository
@@ -58,6 +59,7 @@ class MsOutboxWorker:
             KIND_UPLOAD_SHAREPOINT_FILE: self._handle_upload_sharepoint_file,
             KIND_APPEND_EXCEL_ROW: self._handle_append_excel_row,
             KIND_INSERT_EXCEL_ROW: self._handle_insert_excel_row,
+            KIND_SEND_MAIL: self._handle_send_mail,
         }
         self._retry_policy = RetryPolicy.for_writes()
 
@@ -271,6 +273,7 @@ class MsOutboxWorker:
             KIND_APPEND_EXCEL_ROW,
             KIND_INSERT_EXCEL_ROW,
             KIND_UPLOAD_SHAREPOINT_FILE,
+            KIND_SEND_MAIL,
         ):
             return
 
@@ -548,6 +551,101 @@ class MsOutboxWorker:
             session_id=payload.get("session_id"),
         )
         self._raise_if_external_error(row, result)
+
+    def _handle_send_mail(
+        self,
+        row: MsOutbox,
+        payload: Dict[str, Any],
+    ) -> None:
+        """
+        Send an email or create a draft, depending on payload.mode.
+
+        Payload shape:
+          {
+            "to_addresses":  [{"address": "...", "name": "..."}, ...],
+            "cc_addresses":  [...],
+            "bcc_addresses": [...],
+            "subject":       "...",
+            "body":          "<p>...</p>",
+            "body_type":     "HTML" | "Text",
+            "attachment":    {"name": ..., "content_type": ..., "content_bytes": "<base64>"} | None,
+            "mode":          "draft" | "send",
+            "review_id":     <int>,
+            "bill_id":       <int>
+          }
+
+        On success the worker stamps the resulting Graph message_id (for
+        drafts) back into the row's payload for audit traceability.
+        """
+        from integrations.ms.mail.external.client import (
+            create_draft,
+            send_message,
+        )
+
+        to_addresses = payload.get("to_addresses") or []
+        cc_addresses = payload.get("cc_addresses") or []
+        bcc_addresses = payload.get("bcc_addresses") or []
+        subject = payload.get("subject") or ""
+        body = payload.get("body") or ""
+        body_type = payload.get("body_type") or "HTML"
+        attachment = payload.get("attachment")
+        mode = (payload.get("mode") or "draft").lower()
+
+        if not to_addresses and not cc_addresses and not bcc_addresses:
+            raise ValueError("send_mail payload has no recipients on any line")
+
+        attachments = [attachment] if attachment else None
+
+        if mode == "send":
+            result = send_message(
+                to_recipients=to_addresses,
+                subject=subject,
+                body=body,
+                body_type=body_type,
+                cc_recipients=cc_addresses or None,
+                bcc_recipients=bcc_addresses or None,
+                attachments=attachments,
+            )
+        elif mode == "draft":
+            result = create_draft(
+                to_recipients=to_addresses,
+                subject=subject,
+                body=body,
+                body_type=body_type,
+                cc_recipients=cc_addresses or None,
+                bcc_recipients=bcc_addresses or None,
+                attachments=attachments,
+            )
+        else:
+            raise ValueError(f"send_mail payload has unknown mode: {mode!r}")
+
+        self._raise_if_external_error(row, result)
+
+        # Stamp the returned message id (drafts only — sendMail returns 202
+        # with no body) into the payload for audit traceability. The mail
+        # client formats the draft via _format_message which exposes the
+        # Graph id under "message_id".
+        draft = result.get("draft") if isinstance(result, dict) else None
+        message_id = (draft or {}).get("message_id") if isinstance(draft, dict) else None
+        if message_id:
+            payload["graph_message_id"] = message_id
+            try:
+                updated = self.repo.update_payload(
+                    id=row.id,
+                    row_version=row.row_version,
+                    payload=json.dumps(payload),
+                )
+                if updated and updated.row_version:
+                    row.row_version = updated.row_version
+            except Exception:
+                logger.exception(
+                    "ms.outbox.send_mail.payload_update_failed",
+                    extra={
+                        "event_name": "ms.outbox.send_mail.payload_update_failed",
+                        "outbox_public_id": row.public_id,
+                        "graph_message_id": message_id,
+                    },
+                )
 
     # ------------------------------------------------------------------ #
     # Helpers

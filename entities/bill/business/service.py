@@ -398,6 +398,7 @@ class BillService:
         # row is recoverable (manual /submit/review/bill/<id> works), a missing
         # bill is not.
         if is_draft and user_id is not None:
+            review = None
             try:
                 from entities.review.business.service import ReviewService
                 from entities.review_status.business.service import ReviewStatusService
@@ -410,7 +411,7 @@ class BillService:
                         bill.public_id,
                     )
                 else:
-                    ReviewService().create(
+                    review = ReviewService().create(
                         review_status_id=first_status.id,
                         user_id=user_id,
                         comments=None,
@@ -421,6 +422,27 @@ class BillService:
                     "Failed to auto-write Submitted Review row for bill %s: %s",
                     bill.public_id, review_error,
                 )
+
+            # Notify reviewers (PMs To:, Owners Cc:) per UserProject.RoleId.
+            # Wave 4 (May 2026). Failure-isolated — never propagates back to
+            # bill create. ReviewNotificationService swallows its own errors;
+            # we still wrap the import path in case the module fails to load.
+            if review is not None:
+                try:
+                    from entities.review.business.notification_service import (
+                        ReviewNotificationService,
+                    )
+                    ReviewNotificationService().enqueue_for_bill(
+                        bill=bill,
+                        review=review,
+                        exclude_user_id=user_id,
+                    )
+                except Exception as notify_error:
+                    logger.exception(
+                        "Unhandled review-notification error for bill %s: %s",
+                        bill.public_id,
+                        notify_error,
+                    )
 
         return bill
 

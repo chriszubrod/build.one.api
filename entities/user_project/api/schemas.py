@@ -14,6 +14,10 @@ class UserProjectCreate(BaseModel):
     project_id: int = Field(
         description="The ID of the project."
     )
+    role_public_id: Optional[str] = Field(
+        default=None,
+        description="The public ID of the Role (e.g., 'Project Manager', 'Owner') the user holds on this project. Optional; NULL = generic project membership.",
+    )
 
 
 class UserProjectUpdate(BaseModel):
@@ -25,4 +29,8 @@ class UserProjectUpdate(BaseModel):
     )
     project_id: int = Field(
         description="The ID of the project."
+    )
+    role_public_id: Optional[str] = Field(
+        default=None,
+        description="The public ID of the Role to qualify the user's project membership. Optional.",
     )

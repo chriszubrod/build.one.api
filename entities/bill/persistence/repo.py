@@ -206,7 +206,7 @@ class BillRepository:
             logger.error(f"Error during count bills: {error}")
             raise map_database_error(error)
 
-    def read_first_line_item_projects(self, bill_ids: list[int], *, conn: Optional[pyodbc.Connection] = None) -> dict[int, int | None]:
+    def read_first_line_item_projects(self, bill_ids: list[int], *, conn: Optional[pyodbc.Connection] = None) -> dict[int, Optional[int]]:
         """Return a mapping of BillId → ProjectId from the first line item of each bill."""
         if not bill_ids:
             return {}

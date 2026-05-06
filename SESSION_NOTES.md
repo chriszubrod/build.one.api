@@ -1,5 +1,132 @@
 # Session Notes
 
+## Session: Review-submit notifications — Bill v1 (May 6, 2026)
+
+### Overview
+Five-wave build adding email notifications when a draft Bill is submitted for review. Trigger lives in `BillService.create()`'s existing auto-Submit hook; resolves recipients off `UserProject.RoleId` (PM=To, Owner=Cc, `invoice@rogersbuild.com`=Bcc); enqueues a draft email through the MS outbox's new `KIND_SEND_MAIL` handler with the source-summary PDF attached. Mode is env-var-switchable (`REVIEW_NOTIFICATION_MODE=draft|send`); v1 ships in `draft` mode so a human reviews each notification in `invoice@rogersbuild.com`'s Drafts folder before sending. Failure-isolated end-to-end — a notification failure never rolls back the Bill or the Review row.
+
+### Working style
+Plan-first per CLAUDE.md. Five Q&A questions answered before any code (reviewer-assignment data model, channel choice, trigger semantics, audit linkage, deep-link CTA), then five implementation waves with a manual approval gate before every prod migration. Seven smoke tests against the MS Graph Drafts API confirmed the plumbing end-to-end, including a real run against Bill 18388 (Walker Lumber 202980) producing a draft addressed to chris@rogersbuild.com (TO, resolved via UserProject) + invoice@rogersbuild.com (BCC, auto-injected) with the source PDF attached.
+
+### Wave 1 — Schema: Role seed + UserProject role qualifier
+- Seeded `Project Manager` (Id=3) + `Owner` (Id=2) rows in `dbo.Role` (idempotent IF NOT EXISTS — coexists with Phase 2 of the access-control rebuild's seed list).
+- Added nullable `UserProject.RoleId BIGINT` column + `FK_UserProject_Role` + `IX_UserProject_RoleId`. Existing UserProject rows preserved as generic membership (RoleId=NULL).
+- Re-issued all 7 UserProject sprocs (`CreateUserProject`, `Read*`, `UpdateUserProjectById`, `DeleteUserProjectById`) with `@RoleId BIGINT = NULL` param + LEFT JOIN to `dbo.Role` for `RoleName` denormalization on reads.
+- Threaded `role_id` through model, repo, service. API accepts `role_public_id` on `POST /api/v1/create/user_project` + `PUT /api/v1/update/user_project/{public_id}`; new `_resolve_role_id` helper resolves public_id→id and 400s on unknown role.
+- **Why:** The recipient resolver needs a way to distinguish "PM on this project" from "Owner on this project" from generic membership. Independent of Phase 2 RBAC rebuild — both seeds use IF NOT EXISTS so they coexist.
+
+### Wave 2 — Recipient resolver
+- New sproc `dbo.ResolveReviewRecipientsByBillId @BillId BIGINT, @ExcludeUserId BIGINT = NULL`. Walks Bill → BillLineItem → distinct ProjectId → UserProject (filtered to PM/Owner) → User → Contact (first non-null Email per User, ROW_NUMBER PARTITION BY UserId ORDER BY Contact.Id ASC). Dedupes by UserId across multiple projects with PM > Owner precedence.
+- New `entities/review/business/recipient_service.py` (`ReviewRecipientService.resolve_for_bill`) returns `{"to": [...], "cc": [...]}` envelope.
+- New `entities/review/persistence/recipient_repo.py` + `recipient_model.py` (`ResolvedRecipient` dataclass with `display_name` property).
+- Smoke against Bill 18388 returned 0/0 — expected since no UserProject rows had RoleId populated yet. Pure read; no prod side effects.
+- **Why:** Centralizes "who needs to know about this review" so the same logic can extend to Expense / BillCredit / Invoice via parallel sprocs.
+
+### Wave 3 — MS outbox `send_mail` handler
+- Reused the long-declared-but-unimplemented `KIND_SEND_MAIL = "send_mail"` constant (Phase 4 plumbing in `integrations/ms/outbox/business/service.py`). Added entry-point method `MsOutboxService.enqueue_send_mail(...)` accepting `to/cc/bcc_addresses`, `subject`, `body`, `attachment`, `mode`, `review_id`, `bill_id`. Non-coalescing.
+- Registered handler `_handle_send_mail` in `MsOutboxWorker._dispatch_table` — dispatches to `create_draft` (mode=draft) or `send_message` (mode=send) from `mail/external/client.py`. On success, stamps the returned Graph `message_id` back into the row's Payload JSON for audit traceability. Added `KIND_SEND_MAIL` to the dead-letter escalation set (severity `high`).
+- New `Settings.review_notification_mode` (env var `REVIEW_NOTIFICATION_MODE`, default `"draft"`). Switchable to `send` without code redeploy.
+- **Two real bugs surfaced during smoke testing:**
+  - `_format_message` exposes the Graph id under `"message_id"`, not `"id"`. First smoke captured `MISSING` for `graph_message_id`; fixed in the handler.
+  - `_build_recipient_list` reads from `r["email"]`, NOT `r["address"]`. My initial smoke payload used `address` which silently dropped destinations and left only display names — Outlook rendered "Chris" with no email. Fixed the docstring + smoke payload; multi-recipient (2 in TO + 2 in CC + 2 in BCC) verified working.
+- **Smokes 1–4** validated end-to-end against `invoice@rogersbuild.com`'s Drafts folder (4 drafts produced).
+- **Why `KIND_SEND_MAIL` non-coalescing:** notification sends are not idempotent in the same way as Excel writes — losing one is a missed signal, double-sending is recoverable noise. Don't risk collapsing two notifications into one debounce window.
+
+### Wave 4 — Wire trigger into auto-Submit hook
+- New `entities/review/business/notification_service.py` (`ReviewNotificationService.enqueue_for_bill(bill, review, exclude_user_id)`):
+  1. Resolves recipients via `ReviewRecipientService`.
+  2. Filters out users without a Contact email; logs unreachable with `WARNING`.
+  3. Auto-injects `Settings.invoice_inbox_email` into BCC (`invoice@rogersbuild.com` archive line; logs `WARNING` if env var unset).
+  4. Walks the Bill's BillLineItems by Id ASC, takes the first one with a `BillLineItemAttachment` link, downloads the blob via `AzureBlobStorage.download_file`, base64-encodes into the outbox payload.
+  5. Builds subject + body per the user's frozen template (see below).
+  6. Enqueues `KIND_SEND_MAIL` row with `mode = settings.review_notification_mode`.
+  7. Outer try/except swallows everything — never propagates back to BillService.
+- Hooked into the existing auto-Submit code path in `entities/bill/business/service.py` at the end of the `is_draft and user_id is not None` block, after the Review row is created. Inner failure-isolation matches the existing pattern.
+- **Subject template (locked):** `{ProjectAbbreviation} - {Bill.Vendor} - {Bill.Number} - {Bill.Amount}`. Example: `BR-MAIN - Walker Lumber & Hardware - 202980 - $3,553.71`. ProjectAbbreviation falls back to `Project.Name` when `Project.Abbreviation` is NULL; multi-project bills comma-join.
+- **Body template (locked):** plain HTML, no table, no CTA button. Lines: `Project / Vendor / Number / Amount` block, then `Submitted By / Submitted Date` block (`mm/dd/yyyy`), then closing line `"When you have a moment, will you please reply for approval with Sub Cost Code and Description or non-approval?"` Reply-handling is out of scope for this session per user direction — replies route to `invoice@rogersbuild.com` where the email-agent classifies them as `internal_reply`.
+- **Recipient policy (locked):**
+  - **TO:** every user with `Role.Name='Project Manager'` on any project the bill spans, deduped by user_id (PM beats Owner when a user holds both).
+  - **CC:** every user with `Role.Name='Owner'`.
+  - **BCC:** always `Settings.invoice_inbox_email` (auto-injected by the service).
+  - Submitter excluded via `exclude_user_id`. Empty TO/CC is allowed (BCC archive still sends); fail-safe skip only fires if every line is empty.
+- **Smoke 5 (full pipeline):** inserted test `UserProject(User 17, Project 64, RoleId=PM)`, ran against Bill 18388. Resolver picked `chris@rogersbuild.com` (Contact.Id=1, lower than invoice@'s Contact.Id=2). Subject + body + attachment all rendered correctly. Cleaned up the test UserProject row.
+- **Smoke 6 (resolver-bypass):** direct `enqueue_send_mail` with both `chris@` AND `invoice@` in TO. Both rendered with full email addresses, Outlook auto-resolved display names against the directory.
+- **Smoke 7 (BCC injection):** re-ran Smoke 5 after adding the BCC auto-inject; confirmed BCC line populated with `invoice@rogersbuild.com`.
+- **Incidental fix:** `entities/bill/persistence/repo.py:209` had PEP 604 syntax (`dict[int, int | None]`) which prod (3.11) accepts but local (3.9) rejects. Replaced inner `int | None` with `Optional[int]` to match codebase style and unblock local imports for Wave 4 smoke testing. Identical behavior on 3.11.
+
+### Wave 5 — Operational + memory + TODOs
+- New runbook `docs/runbooks/review-notification-failed.md` — Symptom / Severity / Background / Diagnosis (5 numbered steps) / Common causes (6, ranked) / Recovery (per cause) / Verification / Prevention. Indexed in `docs/runbooks/README.md`.
+- New auto-memory `project_review_notifications.md` — design summary, recipient policy, subject/body template, failure semantics, v1 limits, related links.
+- New auto-memory `feedback_personal_email_off_limits.md` (saved during Wave 3 after I sent two smoke drafts to chris.zubrod@gmail.com) — never use that personal address for build.one work; default smoke recipient is the authenticated mailbox itself.
+- TODO.md gained 13 follow-up items in a "Review-submit notifications follow-ups" section: APNs sender, React in-app surface, deep-link CTA, React UI for UserProject.RoleId, resubmit-after-decline, coalescing, ReviewRecipient join table, mode=send smoke + send_message empty-toRecipients fix, multi-email-per-user resolver, HTML escape, daily missing-PM check, reply-handling, `Review.NotificationOutboxPublicId` (option b from audit-linkage).
+- CLAUDE.md gained one bullet under Project Conventions summarizing trigger / recipient policy / channel / template / failure semantics.
+
+### Audit linkage decision (option a, locked)
+- Outbox row's typed columns key on Bill: `[ms].[Outbox].EntityType='Bill'` + `EntityPublicId=bill.public_id`. Payload JSON additionally carries `review_id`, `bill_id`, `graph_message_id` (after success).
+- No `Review.NotificationOutboxId` back-link column. Querying "what email got sent for Review X?" requires JSON-grep on Payload — operational, not user-facing. Runbook uses this pattern.
+- Adding `Review.NotificationOutboxPublicId UUID NULL` later is non-breaking; captured as a TODO if a React surface ever needs the link.
+
+### Validated end-to-end
+Seven smokes against `invoice@rogersbuild.com`'s Drafts folder (1 dead-lettered + 6 drafts produced; smoke 1's dead-letter was caught by the prod scheduler racing my local drain before Wave 3's handler was deployed — confirmed via reset-and-drain that the new handler works):
+
+| # | Mode | Recipients | Notes |
+|---|---|---|---|
+| 1 | draft | chris.zubrod@gmail.com | First end-to-end. Dead-lettered initially (prod scheduler beat me to it); reset + drained locally; missing graph_message_id (bug). Personal email — should not have been used. |
+| 2 | draft | chris.zubrod@gmail.com | After fixing graph_message_id capture. Personal email — same issue as #1. |
+| 3 | draft | invoice@rogersbuild.com x2 (multi-recipient) | After fixing recipient field name `email` (was wrongly `address` in docstring). |
+| 4 | draft | invoice@ x2 in TO + x2 in CC + x2 in BCC | Validated all three recipient lines flow through correctly. |
+| 5 | draft | chris@rogersbuild.com (resolved by sproc) | First full-pipeline run via `ReviewNotificationService.enqueue_for_bill`. Subject + body + attachment correct. Test UserProject(17,64,3) inserted + cleaned up. |
+| 6 | draft | chris@ + invoice@ (resolver bypass) | Direct `enqueue_send_mail` to demonstrate multi-email recipient handling per user direction. |
+| 7 | draft | chris@ (TO) + invoice@ (BCC) | After adding BCC auto-injection from `Settings.invoice_inbox_email`. Confirmed final policy. |
+
+### Migrations applied
+1. `entities/role/sql/migrations/001_seed_review_roles.sql` — `Project Manager` + `Owner` Role rows (idempotent IF NOT EXISTS).
+2. `entities/user_project/sql/migrations/003_role_qualifier.sql` — `RoleId BIGINT NULL` + `FK_UserProject_Role` + `IX_UserProject_RoleId`.
+3. `entities/user_project/sql/migrations/004_role_qualifier_sprocs.sql` — re-issued 7 UserProject sprocs with `@RoleId` + RoleName JOIN.
+4. `entities/review/sql/migrations/001_resolve_review_recipients.sql` — new `dbo.ResolveReviewRecipientsByBillId` sproc.
+
+All applied clean against prod DB. No data side effects on existing rows (RoleId is NULL on all pre-existing UserProject rows).
+
+### Files created (9)
+- `entities/role/sql/migrations/001_seed_review_roles.sql`
+- `entities/user_project/sql/migrations/003_role_qualifier.sql`
+- `entities/user_project/sql/migrations/004_role_qualifier_sprocs.sql`
+- `entities/review/sql/migrations/001_resolve_review_recipients.sql`
+- `entities/review/business/recipient_model.py`
+- `entities/review/persistence/recipient_repo.py`
+- `entities/review/business/recipient_service.py`
+- `entities/review/business/notification_service.py`
+- `docs/runbooks/review-notification-failed.md`
+
+### Files edited (13)
+- `entities/user_project/business/model.py` — `role_id`, `role_name` fields
+- `entities/user_project/persistence/repo.py` — getattr for RoleId/RoleName, threading
+- `entities/user_project/business/service.py` — `role_id` in create/update_by_public_id
+- `entities/user_project/api/schemas.py` — `role_public_id` Optional on Create/Update
+- `entities/user_project/api/router.py` — `_resolve_role_id` helper
+- `entities/bill/business/service.py` — auto-Submit hook calls `ReviewNotificationService` after Review row write
+- `entities/bill/persistence/repo.py` — pre-existing PEP 604 fix (`int | None` → `Optional[int]`)
+- `integrations/ms/outbox/business/service.py` — `enqueue_send_mail` entry point + email-vs-address docstring fix
+- `integrations/ms/outbox/business/worker.py` — `_handle_send_mail` + `KIND_SEND_MAIL` dispatch + dead-letter escalation
+- `config.py` — `review_notification_mode` setting
+- `TODO.md` — 13-item follow-up section
+- `CLAUDE.md` — 1-bullet summary
+- `docs/runbooks/README.md` — runbook index entry
+
+### Lessons / non-obvious calls
+- **Five-question Q&A surfaced every real ambiguity** before code. Reviewer-assignment data model (UserProject role qualifier vs. global Role vs. broadcast), channel (email-first, defer APNs), trigger semantics (first-time only, suppress self, no coalescing), audit linkage (outbox payload only), CTA destination (no button until React deploys). Each answer locked a tradeoff.
+- **`_build_recipient_list` reads `email`, not `address`.** Two MS-Graph mail-client functions (`send_message`, `create_draft`) both pass through `r.get("email")` and `r.get("name")`. My docstring + smoke payload originally used `address`, which silently dropped destinations and left only display names. Subtle because the call returned 200/201 — failures only visible in the rendered draft. Fixed in the docstring AND added a runbook note. Future entry-points wrapping these functions should match the contract.
+- **MS outbox auto-drains every 30s.** First smoke hit the prod scheduler before my updated worker code was deployed, so the prod-deployed (old) worker dead-lettered the row with "Unknown outbox kind: send_mail". Subsequent smokes used `UPDATE ms.Outbox SET ReadyAfter = SYSUTCDATETIME() - 1` and immediate local drain to win the race. After deploy, this concern goes away.
+- **Personal vs. work email is a hard line.** Saved as feedback memory after I used chris.zubrod@gmail.com for two smoke drafts. Going forward: smoke recipients default to the authenticated mailbox (`invoice@` → `invoice@`); ask the user before any other external test address.
+- **PEP 604 syntax (`X | Y`) only works on 3.10+.** Prod runs 3.11; local Python 3.9 fails AST parse. The codebase otherwise consistently uses `Optional[X]`. Fixed one pre-existing instance in `bill/persistence/repo.py` to unblock local Wave 4 testing — cleaner long-term to standardize on `Optional[X]` across the board.
+- **The auto-Submit hook is the one true trigger surface.** It's the only code path that creates a Review row at first ReviewStatus. Resubmit-after-decline goes through a separate router (`/submit/review/bill/{id}`) that doesn't notify today — explicit follow-up if needed.
+
+### Next session
+- **Deploy the API.** `az acr build` + `az webapp restart`. ~90s end-to-end. After that, the auto-Submit hook is live and will fire on the next email-agent-driven Bill creation.
+- **Populate `UserProject.RoleId`** for projects where you want notifications to fire. Until the React UI lands (TODO), do this via SQL.
+- **Watch the next email-agent run** — produces a real draft notification within ~60s of a new Walker Lumber email arriving.
+- **Clean up smoke drafts** in `invoice@rogersbuild.com`'s Drafts folder (~6 leftover from this session).
+
 ## Session: Email-agent + bill_specialist pipeline tune-up (May 5–6, 2026)
 
 ### Overview

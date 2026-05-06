@@ -24,12 +24,14 @@ class UserProjectService:
         tenant_id: int = None,
         user_id: int,
         project_id: int,
+        role_id: Optional[int] = None,
         created_by_user_id: Optional[int] = None,
     ) -> UserProject:
         actor = created_by_user_id if created_by_user_id is not None else current_user_id.get()
         return self.repo.create(
             user_id=user_id,
             project_id=project_id,
+            role_id=role_id,
             created_by_user_id=actor,
             modified_by_user_id=actor,
         )
@@ -57,6 +59,7 @@ class UserProjectService:
         row_version: str,
         user_id: int = None,
         project_id: int = None,
+        role_id: Optional[int] = None,
         modified_by_user_id: Optional[int] = None,
     ) -> Optional[UserProject]:
         existing = self.read_by_public_id(public_id=public_id)
@@ -66,6 +69,8 @@ class UserProjectService:
                 existing.user_id = user_id
             if project_id is not None:
                 existing.project_id = project_id
+            if role_id is not None:
+                existing.role_id = role_id
             existing.modified_by_user_id = (
                 modified_by_user_id
                 if modified_by_user_id is not None

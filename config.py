@@ -81,6 +81,16 @@ class Settings(BaseSettings):
     # Leave blank to fall back to the primary authenticated user's own mailbox.
     invoice_inbox_email: Optional[str] = None
 
+    # Review-Submit Notification Mode
+    # Controls the behaviour of the MS outbox `send_mail` worker handler when a
+    # Bill is submitted for review:
+    #   - "draft": create a draft in invoice@rogersbuild.com's Drafts folder; a
+    #              human reviews + clicks Send manually. (v1 default — safer
+    #              while reviewer-resolution and recipient targeting are validated.)
+    #   - "send":  call /me/sendMail directly. Fully automatic.
+    # Switch via env var REVIEW_NOTIFICATION_MODE — no code redeploy needed.
+    review_notification_mode: str = "draft"
+
     # Azure AI Document Intelligence Configuration
     # Used by the email-agent pipeline to extract structured data from
     # vendor-invoice PDFs (deterministic — never hallucinates dollar amounts).

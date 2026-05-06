@@ -11,6 +11,7 @@ import pyodbc
 
 # Local Imports
 from core.workflow.business.models import WorkflowEvent
+from shared.authz import current_user_id
 from shared.database import (
     call_procedure,
     get_connection,
@@ -65,6 +66,7 @@ class WorkflowEventRepository:
                 created_datetime=str(getattr(row, "CreatedDatetime", None)) if getattr(row, "CreatedDatetime", None) else None,
                 modified_datetime=str(getattr(row, "ModifiedDatetime", None)) if getattr(row, "ModifiedDatetime", None) else None,
                 created_by=getattr(row, "CreatedBy", None),
+                created_by_user_id=getattr(row, "CreatedByUserId", None),
             )
         except Exception as error:
             logger.error("Error during WorkflowEvent mapping: %s", error)
@@ -80,10 +82,16 @@ class WorkflowEventRepository:
         step_name: Optional[str] = None,
         data: Optional[dict] = None,
         created_by: Optional[str] = None,
+        created_by_user_id: Optional[int] = None,
     ) -> WorkflowEvent:
         try:
             data_json = json.dumps(data, default=_json_serial) if data else None
-            
+            actor = (
+                created_by_user_id
+                if created_by_user_id is not None
+                else current_user_id.get()
+            )
+
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
@@ -97,6 +105,7 @@ class WorkflowEventRepository:
                         "StepName": step_name,
                         "Data": data_json,
                         "CreatedBy": created_by,
+                        "CreatedByUserId": actor,
                     },
                 )
                 row = cursor.fetchone()

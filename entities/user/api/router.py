@@ -42,11 +42,15 @@ def create_user_router(body: UserCreate, current_user: dict = Depends(require_mo
 
 
 @router.get("/get/users")
-def get_users_router(current_user: dict = Depends(require_module_api(Modules.USERS))):
+def get_users_router(
+    include_agents: bool = False,
+    current_user: dict = Depends(require_module_api(Modules.USERS)),
+):
     """
-    Read all users.
+    Read users. Agent users are hidden by default — pass
+    `?include_agents=true` to surface them.
     """
-    users = UserService().read_all()
+    users = UserService().read_all(include_agents=include_agents)
     return list_response([user.to_dict() for user in users])
 
 

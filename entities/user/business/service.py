@@ -39,11 +39,12 @@ class UserService:
             modified_by_user_id=actor,
         )
 
-    def read_all(self) -> list[User]:
+    def read_all(self, *, include_agents: bool = False) -> list[User]:
         """
-        Read all users.
+        Read users. By default agent users (IsAgent=1) are hidden;
+        pass include_agents=True for an admin Agents tab.
         """
-        return self.repo.read_all()
+        return self.repo.read_all(include_agents=include_agents)
 
     def read_by_id(self, id: str) -> Optional[User]:
         """

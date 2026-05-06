@@ -39,8 +39,9 @@ class Workflow:
     context: Optional[dict] = field(default_factory=dict)
     
     # Audit
-    created_by: Optional[str] = None
-    
+    created_by: Optional[str] = None  # free-text source/component tag (e.g. 'instant_workflow_handler')
+    created_by_user_id: Optional[int] = None  # user attribution (FK User.Id)
+
     # Timestamps
     created_datetime: Optional[str] = None
     modified_datetime: Optional[str] = None
@@ -104,7 +105,8 @@ class WorkflowEvent:
     modified_datetime: Optional[str] = None
     
     # Audit
-    created_by: Optional[str] = None  # 'system', user email, 'agent:email_triage'
+    created_by: Optional[str] = None  # free-text source/component tag
+    created_by_user_id: Optional[int] = None  # user attribution (FK User.Id)
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""

@@ -11,6 +11,7 @@ import pyodbc
 
 # Local Imports
 from core.workflow.business.models import Workflow
+from shared.authz import current_user_id
 from shared.database import (
     call_procedure,
     get_connection,
@@ -67,6 +68,7 @@ class WorkflowRepository:
                 bill_id=getattr(row, "BillId", None),
                 context=context,
                 created_by=getattr(row, "CreatedBy", None),
+                created_by_user_id=getattr(row, "CreatedByUserId", None),
                 created_datetime=str(getattr(row, "CreatedDatetime", None)) if getattr(row, "CreatedDatetime", None) else None,
                 modified_datetime=str(getattr(row, "ModifiedDatetime", None)) if getattr(row, "ModifiedDatetime", None) else None,
                 completed_datetime=str(getattr(row, "CompletedDatetime", None)) if getattr(row, "CompletedDatetime", None) else None,
@@ -88,10 +90,17 @@ class WorkflowRepository:
         project_id: Optional[int] = None,
         bill_id: Optional[int] = None,
         context: Optional[dict] = None,
+        created_by: Optional[str] = None,
+        created_by_user_id: Optional[int] = None,
     ) -> Workflow:
         try:
             context_json = json.dumps(context, default=_json_serial) if context else None
-            
+            actor = (
+                created_by_user_id
+                if created_by_user_id is not None
+                else current_user_id.get()
+            )
+
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
@@ -107,7 +116,9 @@ class WorkflowRepository:
                         "VendorId": vendor_id,
                         "ProjectId": project_id,
                         "BillId": bill_id,
+                        "CreatedBy": created_by,
                         "Context": context_json,
+                        "CreatedByUserId": actor,
                     },
                 )
                 row = cursor.fetchone()

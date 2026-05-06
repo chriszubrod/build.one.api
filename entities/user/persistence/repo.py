@@ -95,9 +95,11 @@ class UserRepository:
             logger.error(f"Error during create user: {error}")
             raise map_database_error(error)
 
-    def read_all(self) -> list[User]:
+    def read_all(self, *, include_agents: bool = False) -> list[User]:
         """
-        Read all users.
+        Read users. By default agent users (IsAgent=1) are hidden;
+        pass include_agents=True to surface them (e.g. for an admin
+        Agents tab).
         """
         try:
             with get_connection() as conn:
@@ -105,7 +107,7 @@ class UserRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadUsers",
-                    params={}
+                    params={"IncludeAgents": 1 if include_agents else 0},
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]

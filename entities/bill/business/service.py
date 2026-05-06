@@ -263,13 +263,10 @@ class BillService:
 
             payment_term_id = payment_term.id
 
-        # Duplicate check — only when both vendor and bill number are present
-        if vendor_id and bill_number:
-            existing = self.repo.read_by_bill_number_and_vendor_id(bill_number=bill_number, vendor_id=vendor_id, bill_date=bill_date)
-            if existing:
-                raise ValueError(f"A bill with BillNumber '{bill_number}' and this date already exists for this vendor. Please update the existing bill instead of creating a new one.")
-
         # Resolve source EmailMessage UUID → BIGINT for the FK column.
+        # We do this BEFORE the duplicate check so we can opportunistically
+        # backfill the link on an already-existing Bill that came in via a
+        # non-email intake path.
         source_email_message_id = None
         if source_email_message_public_id:
             from entities.email_message.business.service import EmailMessageService
@@ -277,6 +274,51 @@ class BillService:
             if not source_email:
                 raise ValueError(f"EmailMessage with public_id '{source_email_message_public_id}' not found.")
             source_email_message_id = source_email.id
+
+        # Duplicate check — only when both vendor and bill number are present
+        if vendor_id and bill_number:
+            existing = self.repo.read_by_bill_number_and_vendor_id(bill_number=bill_number, vendor_id=vendor_id, bill_date=bill_date)
+            if existing:
+                # Opportunistic source-email backfill: if this create_bill
+                # call carries an email source AND the existing Bill row
+                # has no source linked yet, stamp the link so the email
+                # dedup trail is preserved. The underlying sproc filters
+                # on SourceEmailMessageId IS NULL — won't overwrite a
+                # link to a different email.
+                link_msg = ""
+                if source_email_message_id is not None:
+                    try:
+                        linked = self.repo.link_source_email_message(
+                            bill_id=existing.id,
+                            source_email_message_id=source_email_message_id,
+                        )
+                        if linked:
+                            link_msg = (
+                                f" Linked this email source to existing "
+                                f"Bill (Bill.PublicId={existing.public_id}) "
+                                f"so the dedup trail is preserved."
+                            )
+                        else:
+                            link_msg = (
+                                f" Existing Bill already has a source email "
+                                f"linked — no change to that field."
+                            )
+                    except Exception as link_error:
+                        logger.exception(
+                            "Failed to backfill source email on existing Bill %s: %s",
+                            existing.public_id, link_error,
+                        )
+                        link_msg = (
+                            f" (also tried to link source email to existing "
+                            f"Bill but failed: {link_error})"
+                        )
+
+                raise ValueError(
+                    f"A bill with BillNumber '{bill_number}' and this date "
+                    f"already exists for this vendor "
+                    f"(Bill.PublicId={existing.public_id}, IsDraft={existing.is_draft}). "
+                    f"Please update the existing bill instead of creating a new one.{link_msg}"
+                )
 
         bill = self.repo.create(
             tenant_id=tenant_id,

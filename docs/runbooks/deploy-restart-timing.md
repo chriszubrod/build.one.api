@@ -192,6 +192,45 @@ If multiple agent runs hung during the window:
      --settings "AzureWebJobs.process_email_inbox.Disabled=false"
    ```
 
+   **⚠ Warning — Flex Consumption gotcha (2026-05-06 incident):** Setting
+   `AzureWebJobs.<funcName>.Disabled=true` on a Flex Consumption Function
+   App **de-registers the function from the host's discovery list**, and
+   setting it back to `false` (or deleting the app-setting) does NOT
+   cause the host to re-register it on its own — even after a stop+start
+   cycle. The other timers will keep firing; only the disabled-then-
+   re-enabled one stays missing. Symptoms: the function name vanishes
+   from `az functionapp function list` and from the host's "Found the
+   following functions" log message in App Insights traces.
+
+   **Recovery is a fresh code redeploy.** `func azure functionapp
+   publish <name>` republishes the source via OneDeploy and forces the
+   host to rediscover all `@app.timer_trigger` decorators:
+
+   ```bash
+   cd /Users/chris/Applications/build.one/build.one.scheduler
+   func azure functionapp publish build-one-scheduler --python
+   ```
+
+   After redeploy, verify with both:
+
+   ```bash
+   # 1. Function shows up in the registered list
+   az functionapp function list --name build-one-scheduler \
+     --resource-group buildone_group --query "[].name" -o tsv | grep <funcName>
+
+   # 2. App Insights confirms it's actually firing (within ~1 minute)
+   az monitor app-insights query --app <id> \
+     --analytics-query "requests | where timestamp > ago(5m) | where name == '<funcName>' | count" -o tsv
+   ```
+
+   **Prefer NOT using the `AzureWebJobs.<name>.Disabled` flag at all on
+   Flex Consumption.** When you need to pause a function for testing,
+   either: (a) deploy a code change with `disabled=True` in the
+   decorator, or (b) leave the function on but ignore its outputs
+   (often safer because the trigger keeps registering and you don't
+   end up in this stuck state). The classic Disabled flag works fine
+   on the older Consumption + Premium plans; Flex is the outlier.
+
 ### Recovery C — outbox / scheduled work
 
 QBO and MS outbox draining is naturally retry-friendly: failed rows

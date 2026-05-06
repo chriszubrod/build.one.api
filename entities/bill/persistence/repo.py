@@ -300,6 +300,35 @@ class BillRepository:
             logger.error(f"Error during read bill by bill number and vendor ID: {error}")
             raise map_database_error(error)
 
+    def link_source_email_message(self, *, bill_id: int, source_email_message_id: int) -> bool:
+        """Idempotent backfill of Bill.SourceEmailMessageId. Used by
+        BillService.create() when a duplicate is detected: if the
+        existing Bill came in via a non-email path (e.g. bill_folder)
+        and has no source email linked, this stamps the link so the
+        email-driven dedup audit trail is preserved.
+
+        Returns True when the update happened, False when the existing
+        Bill already had a source linked (or the Bill doesn't exist) —
+        the underlying sproc filters on SourceEmailMessageId IS NULL,
+        so it never overwrites a non-NULL link.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="LinkBillSourceEmailMessage",
+                    params={
+                        "Id": bill_id,
+                        "SourceEmailMessageId": source_email_message_id,
+                    },
+                )
+                row = cursor.fetchone()
+                return row is not None
+        except Exception as error:
+            logger.error(f"Error linking Bill.SourceEmailMessageId: {error}")
+            raise map_database_error(error)
+
     def update_by_id(self, bill: Bill) -> Optional[Bill]:
         """
         Update a bill by ID.

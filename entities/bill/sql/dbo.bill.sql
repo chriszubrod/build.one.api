@@ -591,3 +591,36 @@ BEGIN
     WHERE [BillPublicId] = @BillPublicId AND [ExpiresAt] > SYSUTCDATETIME();
 END;
 GO
+
+-- ============================================================================
+-- LinkBillSourceEmailMessage — idempotent backfill of Bill.SourceEmailMessageId.
+-- Used by BillService.create() when a duplicate is detected: if the existing
+-- Bill came in via a non-email path (e.g. bill_folder) and has no source
+-- email linked, this stamps the link so the email-driven dedup audit trail is
+-- preserved. Only updates when SourceEmailMessageId IS NULL (won't overwrite
+-- an existing link to a different email). Returns the row when it updated,
+-- empty when it didn't (already linked, or Bill doesn't exist).
+-- ============================================================================
+
+CREATE OR ALTER PROCEDURE LinkBillSourceEmailMessage
+(
+    @Id BIGINT,
+    @SourceEmailMessageId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRANSACTION;
+
+    UPDATE dbo.[Bill]
+    SET [SourceEmailMessageId] = @SourceEmailMessageId,
+        [ModifiedDatetime] = SYSUTCDATETIME()
+    OUTPUT
+        INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[SourceEmailMessageId]
+    WHERE [Id] = @Id AND [SourceEmailMessageId] IS NULL;
+
+    COMMIT TRANSACTION;
+END;
+GO

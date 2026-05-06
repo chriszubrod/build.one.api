@@ -109,6 +109,14 @@ class EmailMessageService:
     def claim_next_pending(self) -> Optional[EmailMessage]:
         return self.repo.claim_next_pending()
 
+    def recover_stuck_processing(
+        self, *, stale_after_minutes: int = 10, max_resets: int = 3
+    ) -> dict:
+        return self.repo.recover_stuck_processing(
+            stale_after_minutes=stale_after_minutes,
+            max_resets=max_resets,
+        )
+
     def delete_by_id(self, id: int) -> bool:
         return self.repo.delete_by_id(id)
 

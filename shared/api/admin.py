@@ -313,6 +313,42 @@ async def email_process_one_router():
     }
 
 
+# --- Email recovery: stuck-row + long-running session sweep --------------- #
+
+
+@router.post("/email/recover_stuck", dependencies=[Depends(_require_drain_secret)])
+async def email_recover_stuck_router():
+    """
+    Sweep for orphaned EmailMessage rows + long-running AgentSessions and
+    reset / dead-letter them so the queue keeps moving. Called on a 5-min
+    cadence by the scheduler Function App.
+
+    Two failure modes covered:
+    1. EmailMessage stuck in 'processing' with AgentSessionId IS NULL —
+       the claim sproc commits before the AgentSession row is inserted,
+       so any crash between those two steps orphans the email row.
+    2. AgentSession stuck in 'running' (e.g. worker recycled mid-run);
+       its linked EmailMessage is also reset back to 'pending' so the
+       next process_one tick can re-attempt.
+
+    Each row carries a ProcessingResetCount; once it hits MaxResets the
+    row dead-letters to 'failed' instead of looping forever.
+    """
+    def _run() -> dict[str, Any]:
+        from entities.email_message.business.service import EmailMessageService
+        from intelligence.persistence.session_repo import AgentSessionRepo
+
+        em_result = EmailMessageService().recover_stuck_processing(
+            stale_after_minutes=10, max_resets=3
+        )
+        ag_result = AgentSessionRepo().timeout_long_running(
+            stale_after_minutes=30, max_email_resets=3
+        )
+        return {**em_result, **ag_result}
+
+    return await _timed("email.recover_stuck", _run)
+
+
 # --- Bill folder processing -- one file per tick --------------------------- #
 
 

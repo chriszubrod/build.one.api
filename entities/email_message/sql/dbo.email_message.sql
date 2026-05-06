@@ -91,6 +91,17 @@ BEGIN
 END
 GO
 
+-- Retry counter for the recovery cron (see RecoverStuckProcessingEmailMessages).
+IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.columns WHERE Name = 'ProcessingResetCount' AND Object_ID = OBJECT_ID('dbo.EmailMessage')
+)
+BEGIN
+    ALTER TABLE dbo.[EmailMessage]
+        ADD [ProcessingResetCount] INT NOT NULL
+            CONSTRAINT [DF_EmailMessage_ProcessingResetCount] DEFAULT (0);
+END
+GO
+
 IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM sys.indexes WHERE name = 'IX_EmailMessage_FromAddress_Classification' AND object_id = OBJECT_ID('dbo.EmailMessage')
 )
@@ -123,6 +134,8 @@ CREATE OR ALTER PROCEDURE UpsertEmailMessage
     @MailboxAddress NVARCHAR(320),
     @FromAddress NVARCHAR(320) = NULL,
     @FromName NVARCHAR(255) = NULL,
+    @ToRecipients NVARCHAR(MAX) = NULL,
+    @CcRecipients NVARCHAR(MAX) = NULL,
     @Subject NVARCHAR(1024) = NULL,
     @BodyPreview NVARCHAR(1024) = NULL,
     @BodyContent NVARCHAR(MAX) = NULL,
@@ -148,6 +161,8 @@ BEGIN
             [MailboxAddress] = @MailboxAddress,
             [FromAddress] = @FromAddress,
             [FromName] = @FromName,
+            [ToRecipients] = @ToRecipients,
+            [CcRecipients] = @CcRecipients,
             [Subject] = @Subject,
             [BodyPreview] = @BodyPreview,
             [BodyContent] = @BodyContent,
@@ -158,12 +173,14 @@ BEGIN
     WHEN NOT MATCHED THEN
         INSERT
             ([CreatedDatetime], [ModifiedDatetime], [GraphMessageId], [InternetMessageId],
-             [ConversationId], [MailboxAddress], [FromAddress], [FromName], [Subject],
+             [ConversationId], [MailboxAddress], [FromAddress], [FromName],
+             [ToRecipients], [CcRecipients], [Subject],
              [BodyPreview], [BodyContent], [BodyContentType], [ReceivedDatetime],
              [ProcessingStatus], [WebLink], [HasAttachments])
         VALUES
             (@Now, @Now, @GraphMessageId, @InternetMessageId,
-             @ConversationId, @MailboxAddress, @FromAddress, @FromName, @Subject,
+             @ConversationId, @MailboxAddress, @FromAddress, @FromName,
+             @ToRecipients, @CcRecipients, @Subject,
              @BodyPreview, @BodyContent, @BodyContentType, @ReceivedDatetime,
              'pending', @WebLink, @HasAttachments)
     OUTPUT
@@ -662,4 +679,51 @@ BEGIN
     ORDER BY VendorName;
 END;
 GO
+GO
+
+-- Recovery sproc: resets EmailMessage rows that are stuck in 'processing'
+-- with no AgentSessionId stamped. See migrations/001_recovery_processing_reset.sql
+-- for the full background.
+CREATE OR ALTER PROCEDURE dbo.RecoverStuckProcessingEmailMessages
+    @StaleAfterMinutes INT = 10,
+    @MaxResets INT = 3
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+    DECLARE @Cutoff DATETIME2(3) = DATEADD(MINUTE, -@StaleAfterMinutes, @Now);
+    DECLARE @ResetCount INT = 0;
+    DECLARE @FailedCount INT = 0;
+
+    UPDATE dbo.[EmailMessage]
+    SET [ProcessingStatus] = 'pending',
+        [ProcessingResetCount] = [ProcessingResetCount] + 1,
+        [LastError] = CONCAT(
+            'auto-reset by recovery cron (reset #',
+            [ProcessingResetCount] + 1,
+            ', stale ', DATEDIFF(MINUTE, [ModifiedDatetime], @Now), ' min)'
+        ),
+        [ModifiedDatetime] = @Now
+    WHERE [ProcessingStatus] = 'processing'
+      AND [AgentSessionId] IS NULL
+      AND [ModifiedDatetime] < @Cutoff
+      AND [ProcessingResetCount] < @MaxResets;
+    SET @ResetCount = @@ROWCOUNT;
+
+    UPDATE dbo.[EmailMessage]
+    SET [ProcessingStatus] = 'failed',
+        [LastError] = CONCAT(
+            'auto-failed after ', [ProcessingResetCount], ' resets ',
+            '(stuck in processing without AgentSessionId)'
+        ),
+        [ModifiedDatetime] = @Now
+    WHERE [ProcessingStatus] = 'processing'
+      AND [AgentSessionId] IS NULL
+      AND [ModifiedDatetime] < @Cutoff
+      AND [ProcessingResetCount] >= @MaxResets;
+    SET @FailedCount = @@ROWCOUNT;
+
+    SELECT @ResetCount AS ResetCount, @FailedCount AS FailedCount;
+END;
 GO

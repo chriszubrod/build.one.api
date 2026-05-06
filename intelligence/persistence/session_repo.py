@@ -276,6 +276,38 @@ class AgentSessionRepo:
             logger.error(f"Error reading recent agent sessions: {error}")
             raise map_database_error(error)
 
+    def timeout_long_running(
+        self, *, stale_after_minutes: int = 30, max_email_resets: int = 3
+    ) -> dict:
+        """Time out AgentSession rows stuck in 'running' past the threshold.
+
+        Also resets any linked EmailMessage rows back to 'pending' (or
+        'failed' if their retry budget is exhausted) so the queue drainer
+        can re-attempt. Returns counts.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="TimeoutLongRunningAgentSessions",
+                    params={
+                        "StaleAfterMinutes": stale_after_minutes,
+                        "MaxEmailResets": max_email_resets,
+                    },
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return {"timed_out_session_count": 0, "linked_email_reset_count": 0, "linked_email_failed_count": 0}
+                return {
+                    "timed_out_session_count": int(row.TimedOutSessionCount or 0),
+                    "linked_email_reset_count": int(row.LinkedEmailResetCount or 0),
+                    "linked_email_failed_count": int(row.LinkedEmailFailedCount or 0),
+                }
+        except Exception as error:
+            logger.error(f"Error timing out long-running agent sessions: {error}")
+            raise map_database_error(error)
+
 
 # ─── Turn repo ───────────────────────────────────────────────────────────
 

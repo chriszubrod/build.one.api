@@ -278,6 +278,38 @@ class EmailMessageRepository:
             logger.error(f"Error claiming pending email message: {error}")
             raise map_database_error(error)
 
+    def recover_stuck_processing(
+        self, *, stale_after_minutes: int = 10, max_resets: int = 3
+    ) -> dict:
+        """Reset orphaned EmailMessage rows stuck in 'processing'.
+
+        An orphan is a row with ProcessingStatus='processing' and
+        AgentSessionId IS NULL whose ModifiedDatetime is older than
+        the threshold. Under the retry budget it goes back to 'pending';
+        over the budget it dead-letters to 'failed'. Returns counts.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="RecoverStuckProcessingEmailMessages",
+                    params={
+                        "StaleAfterMinutes": stale_after_minutes,
+                        "MaxResets": max_resets,
+                    },
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return {"reset_count": 0, "failed_count": 0}
+                return {
+                    "reset_count": int(row.ResetCount or 0),
+                    "failed_count": int(row.FailedCount or 0),
+                }
+        except Exception as error:
+            logger.error(f"Error recovering stuck-processing email messages: {error}")
+            raise map_database_error(error)
+
     def read_paginated(self, *, page_number: int = 1, page_size: int = 50,
                        search_term: Optional[str] = None,
                        processing_status: Optional[str] = None,

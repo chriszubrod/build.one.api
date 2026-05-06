@@ -1,5 +1,55 @@
 # Session Notes
 
+## Session: Function App scheduler reliability gaps — root-cause + fix (May 6, 2026)
+
+### Overview
+Three TODO bullets discovered during the morning's notification ship turned out to be two problems, not three. **Gaps #1 (App Insights silent) and #2 (timers don't fire on schedule) are the same root cause:** Flex Consumption with `alwaysReady=null` scales the host to zero, so timers silently miss ticks AND no telemetry emits. Gap #3 (orphan EmailMessage rows in `processing` status) was independent and got its own recovery cron. Two waves shipped end-to-end:
+
+- **Wave A* — telemetry + scaling.** Set `alwaysReady=1` keyed off `function:drain_outbox`; repointed `APPLICATIONINSIGHTS_CONNECTION_STRING` to the correct `build-one-scheduler` resource; pinned `host.json` `functionTimeout: "00:05:00"` and dialed sampling to exclude `Request;Exception;Trace`. All 17 timers firing on cadence within 10 min of deploy.
+- **Wave D — orphan recovery.** New `dbo.RecoverStuckProcessingEmailMessages` + `dbo.TimeoutLongRunningAgentSessions` sprocs + `POST /api/v1/admin/email/recover_stuck` admin endpoint + new `recover_stuck_email_processing` Function App timer (every 5m at :01,:06,:11,…). Each EmailMessage carries a `ProcessingResetCount`; over-budget rows dead-letter to `failed`. Manual smoke recovered the existing 7 stuck rows + timed out the long-running AgentSession Id=124 from 2026-04-25; first scheduled fire at 23:11:00 UTC.
+
+### Working style
+Plan-first per CLAUDE.md. Per-gap question pass before drafting any plan; user said "use your judgement" so I made defensible defaults (recovery cron over atomic claim+session-create, 10-min EmailMessage threshold + 30-min AgentSession threshold + retry budget of 3, dedicated cron over inline). Five approval gates: A.1 read-only diagnostic → A.2 prod config + redeploy → D.1 SQL migrations → D.2 API deploy → D.3 scheduler deploy.
+
+### Diagnostic findings that reshaped the plan
+- **CLAUDE.md vs auto-memory disagreement.** Auto-memory said "Consumption"; CLAUDE.md said "Flex". `az resource show` confirmed `sku: FlexConsumption`. Auto-memory updated.
+- **Two App Insights resources for one Function App.** The intended `build-one-scheduler` (key `cf3ef0f3…`) was getting zero ingest. The Function App's `APPLICATIONINSIGHTS_CONNECTION_STRING` actually pointed at an orphan resource `build-one-scheduler202604222226` (auto-created during a prior `func publish` when no connection string was pre-configured). Both resources had zero ingest in 48h, masking the misroute. Cleanup of the orphan deferred a few days for soak.
+- **Connection-string misroute alone wouldn't have explained Gap #1.** Both resources were silent — that pointed to "nothing's running to emit telemetry" rather than "telemetry is being routed wrong." The Flex deployment config (`scaleAndConcurrency.alwaysReady: null`) confirmed scale-to-zero as the root cause.
+- **`function_app=1` doesn't work as the always-ready name on Flex.** Azure rejects with `InvalidName` — only `$http`, `blob`, `durable`, or `function:<funcName>=N` are valid. Keying off `drain_outbox` (the 30s-cadence anchor) keeps the host warm continuously and all 18 timers in the app share that worker.
+- **The orphan-row mechanism is real and unrelated to scaling.** `ClaimNextPendingEmailMessage` commits `processing` in its own TX, then the FastAPI handler does an unrelated DB read for the agent user_id, then calls `start_run` which inserts the AgentSession. **`EmailMessage.AgentSessionId` is never stamped on the claim path** — only later by the agent's `mark_email_outcome` tool. Any failure between claim and `mark_email_outcome` (worker recycle, agent crash, transport error) orphans the row indefinitely.
+
+### Files touched (11)
+- `entities/email_message/sql/migrations/001_recovery_processing_reset.sql` (new)
+- `entities/email_message/sql/dbo.email_message.sql` — added `ProcessingResetCount` column + `RecoverStuckProcessingEmailMessages` sproc
+- `intelligence/persistence/sql/migrations/001_timeout_long_running_sessions.sql` (new)
+- `intelligence/persistence/sql/dbo.agent_session.sql` — added `TimeoutLongRunningAgentSessions` sproc
+- `entities/email_message/persistence/repo.py` — `recover_stuck_processing()`
+- `entities/email_message/business/service.py` — service shim
+- `intelligence/persistence/session_repo.py` — `timeout_long_running()`
+- `shared/api/admin.py` — `POST /api/v1/admin/email/recover_stuck`
+- `build.one.scheduler/host.json` — `functionTimeout` + sampling
+- `build.one.scheduler/function_app.py` — `recover_stuck_email_processing` timer
+- Auto-memory `reference_scheduler.md` — Consumption→Flex correction + alwaysReady discipline + 18 timers
+
+### Validated end-to-end
+1. Wave A* validation (10-min observation): `drain_outbox` 13/14 expected, `process_bill_folder` 12/14, `process_email_inbox` 6/7, `poll_email_inbox` 1/2, all 15-min QBO syncs hit, zero failures.
+2. Wave D smoke: `{reset_count: 7, failed_count: 0, timed_out_session_count: 1, linked_email_reset_count: 0, linked_email_failed_count: 0}` — exactly matched pre-deploy snapshot of 7 orphan rows + 1 long-running session (Id=124).
+3. Wave D ground truth: orphan-row count 7→0, recovered rows now `pending` with `ProcessingResetCount=1`, AgentSession 124 `Status=failed TerminationReason='auto-timeout (recovery cron)'`.
+4. New scheduled timer's first fire at 23:11:00 UTC: success=True in 1715 ms.
+
+### TODO impact
+- Closed: 3 reliability-gap items.
+- Added: orphan App Insights resource cleanup (after a few days of soak), runbook for the recovery cron, atomic claim+session-create transaction (defense-in-depth follow-up on top of the cron).
+
+### Lessons / non-obvious calls
+- **Symptom-side hypotheses can fold together.** The user's TODO listed "App Insights silent" and "timers misfire" as separate problems. They were the same problem with two visible faces. Diagnosing both *before* designing the fix collapsed two waves into one and made the validation pass simultaneous (timers firing IS telemetry flowing).
+- **Always run a read-only diagnostic snapshot before reaching for app-settings changes.** A 60-second `az` query batch (Function App kind/state, app settings, App Insights component show, KQL `union *` in 24h) surfaced the orphan App Insights resource AND the `alwaysReady: null` config in one pass. Without it I'd have shipped my original Wave A plan ("set the connection string"), which would have left the orphan resource silently misrouted AND not fixed the timer-misfire problem.
+- **Recovery cron over atomic claim+session-create as v1.** The atomic approach requires sproc cross-talk between `ClaimNextPendingEmailMessage` and the AgentSession insert path — non-trivial sproc choreography. The cron is cheaper, idempotent, and self-validating. Atomic stays as a future defense-in-depth follow-up; the cron does the load-bearing work today.
+- **`alwaysReady` keyed off the highest-frequency timer keeps the entire host warm.** All 18 timers share one Python worker process — there's no per-function isolation in Flex. So one always-ready instance pinned to `drain_outbox` (30s cadence) costs ~$5–15/mo and keeps every timer firing on schedule. Don't try to set always-ready per-function for each timer; the Flex docs are misleading on this.
+
+### Commits
+TBD — not yet committed.
+
 ## Session: Review-submit notifications — pivot to forward-of-original vendor email (May 6, 2026)
 
 ### Overview

@@ -96,3 +96,38 @@ BEGIN
     ORDER BY b.[CreatedDatetime] DESC;
 END;
 GO
+
+-- Find the Bill linked to an email conversation. The PM's reply lands
+-- in the same MS Graph conversation as the original vendor email. The
+-- agent calls this sproc with the reply's ConversationId to identify
+-- which Bill the reply is reviewing.
+--
+-- Path: ConversationId → EmailMessage → Bill.SourceEmailMessageId.
+-- Filtered to draft bills (IsDeleted is implicit on Bill via the
+-- standard ReadBill convention). Returns at most one row — most
+-- recently created Bill if multiple share a conversation.
+CREATE OR ALTER PROCEDURE ReadBillByConversationId
+(
+    @ConversationId NVARCHAR(255)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP 1
+        b.[Id]                                                    AS Id,
+        b.[PublicId]                                              AS PublicId,
+        b.[BillNumber]                                            AS BillNumber,
+        b.[TotalAmount]                                           AS TotalAmount,
+        b.[IsDraft]                                               AS IsDraft,
+        CONVERT(VARCHAR(19), b.[CreatedDatetime], 120)            AS CreatedDatetime,
+        v.[Name]                                                  AS VendorName,
+        em.[Id]                                                   AS SourceEmailMessageId,
+        em.[ConversationId]                                       AS ConversationId
+    FROM dbo.[Bill] b
+    INNER JOIN dbo.[EmailMessage] em ON em.[Id] = b.[SourceEmailMessageId]
+    LEFT JOIN dbo.[Vendor] v ON v.[Id] = b.[VendorId]
+    WHERE em.[ConversationId] = @ConversationId
+    ORDER BY b.[CreatedDatetime] DESC;
+END;
+GO

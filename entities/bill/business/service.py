@@ -973,6 +973,159 @@ class BillService:
         
         return updated_bill
 
+    def apply_reviewer_decision(
+        self,
+        *,
+        bill_public_id: str,
+        decision: str,
+        reviewer_email: str,
+        sub_cost_code_public_id: Optional[str] = None,
+        description: Optional[str] = None,
+        raw_reply_text: Optional[str] = None,
+    ) -> dict:
+        """Apply a Project Manager / Owner's emailed review decision to a Bill.
+
+        Wave 3 Phase A — orchestrates the three side-effects of a
+        reviewer's reply: update the summary BillLineItem (on approval),
+        transition the Review state, persist the raw reply text as the
+        Review's Comments column.
+
+        Authorization: `reviewer_email` must match a User with
+        `UserProject` → Role 'Project Manager' or 'Owner' on any project
+        the bill spans (same recipient set the notification went to).
+
+        Idempotency / safety: the bill must still be a draft. Once
+        `IsDraft=False` is set (via `complete_bill`), this method refuses
+        — the human has taken final responsibility.
+
+        decision ∈ {'approved', 'rejected'} — 'rejected' is also used for
+        "needs revision" / questions; the agent puts the human's text in
+        `raw_reply_text` and the AP reviewer reads it.
+
+        On approval the agent must supply `sub_cost_code_public_id`. The
+        summary line's `description` is updated when supplied; null leaves
+        the existing description in place.
+
+        Returns: dict with `decision_applied`, the new `review_status`
+        name, the matched `reviewer_user_id`, and the bill's `is_draft`
+        for the agent to compose its final outcome.
+        """
+        from entities.bill_line_item.business.service import BillLineItemService
+        from entities.review.business.service import ReviewService, ReviewTransitionError
+        from entities.review.business.recipient_service import ReviewRecipientService
+        from entities.review_status.business.service import ReviewStatusService
+        from entities.review.persistence.repo import ReviewRepository
+
+        if decision not in ("approved", "rejected"):
+            raise ValueError(
+                f"decision must be 'approved' or 'rejected'; got '{decision}'"
+            )
+
+        # 1. Find the bill.
+        bill = self.read_by_public_id(public_id=bill_public_id)
+        if bill is None or bill.id is None:
+            raise ValueError(f"Bill with public_id '{bill_public_id}' not found.")
+
+        # 2. Draft-only guard — once Completed, the human has the final word.
+        if not bool(bill.is_draft):
+            raise ValueError(
+                f"Bill {bill_public_id} is no longer a draft "
+                "(Complete already pressed); reviewer decisions cannot be "
+                "applied. The human must edit directly."
+            )
+
+        # 3. Authorization: reviewer_email must match a PM/Owner recipient.
+        envelope = ReviewRecipientService().resolve_for_bill(bill_id=bill.id)
+        all_recipients = envelope["to"] + envelope["cc"]
+        normalized_email = (reviewer_email or "").strip().lower()
+        match = next(
+            (
+                r for r in all_recipients
+                if r.email and r.email.strip().lower() == normalized_email
+            ),
+            None,
+        )
+        if match is None:
+            raise ValueError(
+                f"Sender '{reviewer_email}' is not an authorized reviewer for "
+                f"this bill (must be Project Manager or Owner on the project)."
+            )
+        reviewer_user_id = match.user_id
+
+        # 4. Approval → update the summary BillLineItem (SCC + description).
+        if decision == "approved":
+            if not sub_cost_code_public_id:
+                raise ValueError(
+                    "sub_cost_code_public_id is required when decision='approved'."
+                )
+            scc = SubCostCodeService().read_by_public_id(public_id=sub_cost_code_public_id)
+            if scc is None:
+                raise ValueError(
+                    f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
+                )
+
+            bli_service = BillLineItemService()
+            line_items = bli_service.read_by_bill_id(bill_id=bill.id)
+            if not line_items:
+                raise ValueError(
+                    f"Bill {bill_public_id} has no line items to apply the SCC to."
+                )
+            # Convention: the email-driven flow creates exactly one summary
+            # BillLineItem carrying the attachment. If multiple lines exist
+            # (rare, manual edits), apply to the first.
+            summary_line = line_items[0]
+            bli_service.update_by_public_id(
+                public_id=summary_line.public_id,
+                row_version=summary_line.row_version,
+                sub_cost_code_id=int(scc.id),
+                description=description if description is not None else None,
+            )
+
+        # 5. Transition the Review state. Approval → advance; rejection
+        # → decline. Both write a new Review row (insert-only audit
+        # trail) with the reviewer as the user_id and the raw reply text
+        # as comments.
+        review_service = ReviewService()
+        comments = (raw_reply_text or "").strip() or None
+        try:
+            if decision == "approved":
+                payload = review_service.build_advance_payload(
+                    parent_type="Bill",
+                    parent_public_id=bill_public_id,
+                    user_id=reviewer_user_id,
+                    comments=comments,
+                )
+            else:  # rejected
+                payload = review_service.build_decline_payload(
+                    parent_type="Bill",
+                    parent_public_id=bill_public_id,
+                    user_id=reviewer_user_id,
+                    comments=comments,
+                )
+        except ReviewTransitionError as error:
+            # Common case: review is already at a final status (e.g. PM
+            # approved, Owner now declines — first decision wins because
+            # advance/decline both refuse a final-state row). Re-raise as
+            # ValueError so the agent can handle.
+            raise ValueError(f"Review transition refused: {error}") from error
+
+        # Insert via repo directly (mirrors ReviewService.create's path
+        # but without the ProcessEngine wrapper — keeps this orchestrator
+        # synchronous; the agent stamps its own outcome on the email).
+        new_review = ReviewRepository().create(**payload)
+
+        # 6. Look up the new status name for the response payload.
+        rs = ReviewStatusService().read_by_id(id=new_review.review_status_id) if new_review.review_status_id else None
+        new_status_name = rs.name if rs else None
+
+        return {
+            "decision_applied": decision,
+            "review_status": new_status_name,
+            "reviewer_user_id": reviewer_user_id,
+            "is_draft": True,
+            "bill_public_id": bill_public_id,
+        }
+
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[Bill]:
         """
         Delete a bill by public ID with cascading deletes.

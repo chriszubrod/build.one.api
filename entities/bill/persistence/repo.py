@@ -318,6 +318,38 @@ class BillRepository:
             logger.error(f"Error during read bill by bill number and vendor ID: {error}")
             raise map_database_error(error)
 
+    def read_slim_by_conversation_id(self, conversation_id: str) -> Optional[dict]:
+        """Find the Bill linked to an email conversation. The PM's reply
+        carries the same MS Graph ConversationId as the original vendor
+        email; the agent uses this to identify which Bill it's reviewing.
+        Returns None if no Bill is linked or the conversation is unknown.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadBillByConversationId",
+                    params={"ConversationId": conversation_id},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row.Id,
+                    "public_id": str(row.PublicId),
+                    "bill_number": row.BillNumber,
+                    "total_amount": float(row.TotalAmount) if row.TotalAmount is not None else None,
+                    "is_draft": bool(row.IsDraft),
+                    "created_datetime": row.CreatedDatetime,
+                    "vendor_name": row.VendorName,
+                    "source_email_message_id": row.SourceEmailMessageId,
+                    "conversation_id": row.ConversationId,
+                }
+        except Exception as error:
+            logger.error(f"Error reading slim Bill by conversation_id: {error}")
+            raise map_database_error(error)
+
     def read_slim_by_source_email_message_id(self, source_email_message_id: int) -> Optional[dict]:
         """Slim Bill lookup keyed on SourceEmailMessageId. Returns a dict
         (not a Bill model) carrying just the fields the React Email-message

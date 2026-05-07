@@ -223,6 +223,117 @@ END;
 GO
 
 
+-- ============================================================================
+-- FindSubCostCodeForReply — single-call ranked SubCostCode lookup for
+-- reviewer-reply parsing. PMs reply with shorthand ("13.1") that doesn't
+-- always match Number exactly ("13.01"). Strategies:
+--
+--   1.00  exact_number             — Number = @Hint
+--   0.95  exact_number_normalized  — segment-pad each "."-delimited part
+--                                    to 2 digits (so "13.1" → "13.01")
+--   0.90  exact_alias              — pipe-delimited Alias matches @Hint
+--   0.80  substring_alias          — Aliases CONTAINS @Hint
+--   0.75  substring_name           — Name CONTAINS @Hint
+--
+-- Each SubCostCode row appears at most once at its highest-scoring
+-- strategy. Returns up to 3 candidates ordered by confidence desc.
+-- ============================================================================
+
+CREATE OR ALTER PROCEDURE FindSubCostCodeForReply
+(
+    @Hint NVARCHAR(255)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @HintNorm NVARCHAR(255) = LTRIM(RTRIM(ISNULL(@Hint, '')));
+
+    -- Segment-pad helper: split @HintNorm on '.', left-pad each segment
+    -- to 2 chars with '0'. "13.1" → "13.01"; "5.2" → "05.02"; "13.01"
+    -- stays "13.01". Limited to single dot (the convention).
+    DECLARE @PaddedHint NVARCHAR(255) = NULL;
+    IF @HintNorm <> '' AND CHARINDEX('.', @HintNorm) > 0
+    BEGIN
+        DECLARE @LeftPart NVARCHAR(50) = LEFT(@HintNorm, CHARINDEX('.', @HintNorm) - 1);
+        DECLARE @RightPart NVARCHAR(50) = SUBSTRING(@HintNorm, CHARINDEX('.', @HintNorm) + 1, 250);
+        IF LEN(@LeftPart) = 1 SET @LeftPart = '0' + @LeftPart;
+        IF LEN(@RightPart) = 1 SET @RightPart = '0' + @RightPart;
+        SET @PaddedHint = @LeftPart + '.' + @RightPart;
+    END
+
+    -- LIKE escapes
+    DECLARE @HintLike NVARCHAR(257) = REPLACE(REPLACE(LOWER(@HintNorm), '%', '[%]'), '_', '[_]');
+
+    ;WITH
+    exact_number AS (
+        SELECT [Id], CAST(1.00 AS DECIMAL(3,2)) AS Confidence,
+               CAST('exact_number' AS NVARCHAR(50)) AS Strategy,
+               [Number] AS MatchedTerm
+        FROM dbo.[SubCostCode]
+        WHERE @HintNorm <> '' AND [Number] = @HintNorm
+    ),
+    exact_normalized AS (
+        SELECT [Id], CAST(0.95 AS DECIMAL(3,2)) AS Confidence,
+               CAST('exact_number_normalized' AS NVARCHAR(50)) AS Strategy,
+               [Number] AS MatchedTerm
+        FROM dbo.[SubCostCode]
+        WHERE @PaddedHint IS NOT NULL AND [Number] = @PaddedHint
+    ),
+    exact_alias AS (
+        SELECT scc.[Id], CAST(0.90 AS DECIMAL(3,2)) AS Confidence,
+               CAST('exact_alias' AS NVARCHAR(50)) AS Strategy,
+               LTRIM(RTRIM(s.value)) AS MatchedTerm
+        FROM dbo.[SubCostCode] scc
+        CROSS APPLY STRING_SPLIT(ISNULL(scc.[Aliases], ''), '|') s
+        WHERE @HintNorm <> '' AND LTRIM(RTRIM(s.value)) = @HintNorm
+    ),
+    substring_alias AS (
+        SELECT [Id], CAST(0.80 AS DECIMAL(3,2)) AS Confidence,
+               CAST('substring_alias' AS NVARCHAR(50)) AS Strategy,
+               [Aliases] AS MatchedTerm
+        FROM dbo.[SubCostCode]
+        WHERE @HintNorm <> '' AND [Aliases] IS NOT NULL
+          AND LOWER([Aliases]) LIKE '%' + @HintLike + '%'
+    ),
+    substring_name AS (
+        SELECT [Id], CAST(0.75 AS DECIMAL(3,2)) AS Confidence,
+               CAST('substring_name' AS NVARCHAR(50)) AS Strategy,
+               [Name] AS MatchedTerm
+        FROM dbo.[SubCostCode]
+        WHERE @HintNorm <> ''
+          AND LOWER([Name]) LIKE '%' + @HintLike + '%'
+    ),
+    all_candidates AS (
+        SELECT * FROM exact_number
+        UNION ALL SELECT * FROM exact_normalized
+        UNION ALL SELECT * FROM exact_alias
+        UNION ALL SELECT * FROM substring_alias
+        UNION ALL SELECT * FROM substring_name
+    ),
+    ranked AS (
+        SELECT [Id], Confidence, Strategy, MatchedTerm,
+               ROW_NUMBER() OVER (PARTITION BY [Id] ORDER BY Confidence DESC) AS rn
+        FROM all_candidates
+    )
+    SELECT TOP 3
+        scc.[Id]                              AS SubCostCodeId,
+        CAST(scc.[PublicId] AS NVARCHAR(36))  AS SubCostCodePublicId,
+        scc.[Number]                          AS Number,
+        scc.[Name]                            AS Name,
+        scc.[CostCodeId]                      AS CostCodeId,
+        scc.[Aliases]                         AS Aliases,
+        r.Confidence                          AS Confidence,
+        r.Strategy                            AS Strategy,
+        r.MatchedTerm                         AS MatchedTerm
+    FROM ranked r
+    INNER JOIN dbo.[SubCostCode] scc ON scc.[Id] = r.[Id]
+    WHERE r.rn = 1
+    ORDER BY r.Confidence DESC, scc.[Number] ASC;
+END;
+GO
+
+
 -- Upsert by Number + CostCodeId (for import flows)
 CREATE OR ALTER PROCEDURE UpsertSubCostCode
 (

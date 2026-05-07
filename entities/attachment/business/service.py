@@ -9,6 +9,7 @@ from typing import Optional
 # Local Imports
 from entities.attachment.business.model import Attachment
 from entities.attachment.persistence.repo import AttachmentRepository
+from shared.authz import current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,7 @@ class AttachmentService:
             status=status,
             expiration_date=expiration_date,
             storage_tier=storage_tier,
+            created_by_user_id=current_user_id.get(),
         )
 
     def read_all(self) -> list[Attachment]:

@@ -48,7 +48,7 @@ class BillFolderRunRepository:
             completed_at=row.CompletedAt,
         )
 
-    def create(self, public_id: Optional[str] = None) -> BillFolderRun:
+    def create(self, public_id: Optional[str] = None, created_by_user_id: Optional[int] = None) -> BillFolderRun:
         """Insert a new run in status='processing'. Returns the stored row."""
         try:
             with get_connection() as conn:
@@ -56,7 +56,7 @@ class BillFolderRunRepository:
                 call_procedure(
                     cursor=cursor,
                     name="CreateBillFolderRun",
-                    params={"PublicId": public_id, "Status": "processing"},
+                    params={"PublicId": public_id, "Status": "processing", "CreatedByUserId": created_by_user_id},
                 )
                 row = cursor.fetchone()
                 run = self._from_db(row)
@@ -168,14 +168,14 @@ class BillFolderRunItemRepository:
         # the same dataclass since those columns aren't on the dataclass.
         return self._from_claim_row(row)
 
-    def create(self, run_id: int, filename: str, item_id: str) -> BillFolderRunItem:
+    def create(self, run_id: int, filename: str, item_id: str, created_by_user_id: Optional[int] = None) -> BillFolderRunItem:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="CreateBillFolderRunItem",
-                    params={"RunId": run_id, "Filename": filename, "ItemId": item_id},
+                    params={"RunId": run_id, "Filename": filename, "ItemId": item_id, "CreatedByUserId": created_by_user_id},
                 )
                 row = cursor.fetchone()
                 item = self._from_create_row(row)

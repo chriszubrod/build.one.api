@@ -50,7 +50,7 @@ class BillLineItemAttachmentRepository:
             logger.error(f"Unexpected error during bill line item attachment mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, bill_line_item_id: int, attachment_id: int) -> BillLineItemAttachment:
+    def create(self, *, bill_line_item_id: int, attachment_id: int, created_by_user_id: Optional[int] = None) -> BillLineItemAttachment:
         """
         Create a new bill line item attachment.
         """
@@ -64,6 +64,7 @@ class BillLineItemAttachmentRepository:
                         params={
                             "BillLineItemId": bill_line_item_id,
                             "AttachmentId": attachment_id,
+                            "CreatedByUserId": created_by_user_id,
                         },
                     )
                     row = cursor.fetchone()

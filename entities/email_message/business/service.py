@@ -50,6 +50,7 @@ from integrations.azure.document_intelligence.external.client import (
     DocumentIntelligenceError,
 )
 from integrations.ms.mail.external import client as mail_client
+from shared.authz import current_user_id
 from shared.storage import AzureBlobStorage
 
 logger = logging.getLogger(__name__)
@@ -224,6 +225,7 @@ class MailboxPollService:
                     received_datetime=_normalize_datetime(email.get("received_datetime")),
                     web_link=email.get("web_link"),
                     has_attachments=bool(email.get("has_attachments", False)),
+                    created_by_user_id=current_user_id.get(),
                 )
                 if not existing:
                     new_count += 1
@@ -241,6 +243,7 @@ class MailboxPollService:
                             size_bytes=att.get("size"),
                             is_inline=True,
                             blob_uri=None,
+                            created_by_user_id=current_user_id.get(),
                         )
                         continue
 
@@ -320,6 +323,7 @@ class MailboxPollService:
             size_bytes=len(content),
             is_inline=False,
             blob_uri=blob_uri,
+            created_by_user_id=current_user_id.get(),
         )
         return True
 

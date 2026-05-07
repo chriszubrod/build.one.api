@@ -71,6 +71,7 @@ class ReviewRepository:
         expense_id: Optional[int] = None,
         bill_credit_id: Optional[int] = None,
         invoice_id: Optional[int] = None,
+        created_by_user_id: Optional[int] = None,
     ) -> Review:
         try:
             with get_connection() as conn:
@@ -86,6 +87,7 @@ class ReviewRepository:
                         "ExpenseId": expense_id,
                         "BillCreditId": bill_credit_id,
                         "InvoiceId": invoice_id,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

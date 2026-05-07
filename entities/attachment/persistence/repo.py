@@ -104,6 +104,7 @@ class AttachmentRepository:
         status: Optional[str] = None,
         expiration_date: Optional[str] = None,
         storage_tier: str = "Hot",
+        created_by_user_id: Optional[int] = None,
     ) -> Attachment:
         """
         Create a new attachment.
@@ -127,6 +128,7 @@ class AttachmentRepository:
                         "Status": status,
                         "ExpirationDate": expiration_date,
                         "StorageTier": storage_tier,
+                        "CreatedByUserId": created_by_user_id,
                     }
                     call_procedure(
                         cursor=cursor,

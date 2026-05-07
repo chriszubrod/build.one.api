@@ -82,7 +82,8 @@ class EmailMessageRepository:
                body_content_type: Optional[str] = None,
                received_datetime: Optional[str] = None,
                web_link: Optional[str] = None,
-               has_attachments: bool = False) -> EmailMessage:
+               has_attachments: bool = False,
+               created_by_user_id: Optional[int] = None) -> EmailMessage:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -102,6 +103,7 @@ class EmailMessageRepository:
                     "ReceivedDatetime": received_datetime,
                     "WebLink": web_link,
                     "HasAttachments": 1 if has_attachments else 0,
+                    "CreatedByUserId": created_by_user_id,
                 })
                 row = cursor.fetchone()
                 if not row:
@@ -406,7 +408,8 @@ class EmailAttachmentRepository:
     def upsert(self, *, email_message_id: int, graph_attachment_id: str,
                filename: str, content_type: Optional[str] = None,
                size_bytes: Optional[int] = None, is_inline: bool = False,
-               blob_uri: Optional[str] = None) -> EmailAttachment:
+               blob_uri: Optional[str] = None,
+               created_by_user_id: Optional[int] = None) -> EmailAttachment:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -418,6 +421,7 @@ class EmailAttachmentRepository:
                     "SizeBytes": size_bytes,
                     "IsInline": 1 if is_inline else 0,
                     "BlobUri": blob_uri,
+                    "CreatedByUserId": created_by_user_id,
                 })
                 row = cursor.fetchone()
                 if not row:

@@ -7,6 +7,7 @@ from typing import Optional
 from entities.review.business.model import ParentType, Review
 from entities.review.persistence.repo import ReviewRepository
 from entities.review_status.business.service import ReviewStatusService
+from shared.authz import current_user_id
 
 
 class ReviewTransitionError(Exception):
@@ -76,6 +77,7 @@ class ReviewService:
             expense_id=expense_id,
             bill_credit_id=bill_credit_id,
             invoice_id=invoice_id,
+            created_by_user_id=current_user_id.get(),
         )
 
     # =========================================================================

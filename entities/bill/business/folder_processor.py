@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
+from shared.authz import current_user_id
 from entities.attachment.business.service import AttachmentService
 from entities.bill.business.service import BillService
 from entities.bill.persistence.folder_run_repo import (
@@ -64,9 +65,9 @@ def enqueue_bill_folder_run(dedup_active: bool = False) -> dict:
             pdfs = [p for p in pdfs if p["item_id"] not in active_ids]
         if not pdfs:
             return {"status": "noop", "files_queued": 0}
-        run = run_repo.create()
+        run = run_repo.create(created_by_user_id=current_user_id.get())
     else:
-        run = run_repo.create()
+        run = run_repo.create(created_by_user_id=current_user_id.get())
         try:
             pdfs = BillFolderProcessor().enumerate_source_folder(company_id=1)
         except Exception as error:
@@ -79,11 +80,13 @@ def enqueue_bill_folder_run(dedup_active: bool = False) -> dict:
             )
             raise BillFolderEnumerationError(str(error)) from error
 
+    actor_id = current_user_id.get()
     for pdf in pdfs:
         item_repo.create(
             run_id=run.id,
             filename=pdf["filename"],
             item_id=pdf["item_id"],
+            created_by_user_id=actor_id,
         )
 
     if not pdfs:

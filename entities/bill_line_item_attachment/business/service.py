@@ -8,6 +8,7 @@ from entities.bill_line_item_attachment.business.model import BillLineItemAttach
 from entities.bill_line_item_attachment.persistence.repo import BillLineItemAttachmentRepository
 from entities.bill_line_item.business.service import BillLineItemService
 from entities.attachment.business.service import AttachmentService
+from shared.authz import current_user_id
 
 
 class BillLineItemAttachmentService:
@@ -58,7 +59,7 @@ class BillLineItemAttachmentService:
             return existing
         
         # No existing attachment for this BillLineItem - safe to create
-        return self.repo.create(bill_line_item_id=bill_line_item_id, attachment_id=attachment_id)
+        return self.repo.create(bill_line_item_id=bill_line_item_id, attachment_id=attachment_id, created_by_user_id=current_user_id.get())
 
     def read_all(self) -> list[BillLineItemAttachment]:
         """

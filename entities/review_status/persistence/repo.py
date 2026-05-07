@@ -65,6 +65,7 @@ class ReviewStatusRepository:
         is_declined: bool = False,
         is_active: bool = True,
         color: Optional[str] = None,
+        created_by_user_id: Optional[int] = None,
     ) -> ReviewStatus:
         """
         Create a new review status.
@@ -83,6 +84,7 @@ class ReviewStatusRepository:
                         "IsDeclined": is_declined,
                         "IsActive": is_active,
                         "Color": color,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

@@ -6,6 +6,7 @@ from typing import Optional
 # Local Imports
 from entities.review_status.business.model import ReviewStatus
 from entities.review_status.persistence.repo import ReviewStatusRepository
+from shared.authz import current_user_id
 
 
 class ReviewStatusService:
@@ -40,6 +41,7 @@ class ReviewStatusService:
             is_declined=is_declined,
             is_active=is_active,
             color=color,
+            created_by_user_id=current_user_id.get(),
         )
 
     def read_all(self) -> list[ReviewStatus]:

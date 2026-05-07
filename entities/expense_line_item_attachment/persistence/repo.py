@@ -50,7 +50,7 @@ class ExpenseLineItemAttachmentRepository:
             logger.error(f"Unexpected error during expense line item attachment mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, expense_line_item_id: int, attachment_id: int) -> ExpenseLineItemAttachment:
+    def create(self, *, expense_line_item_id: int, attachment_id: int, created_by_user_id: Optional[int] = None) -> ExpenseLineItemAttachment:
         """
         Create a new expense line item attachment.
         """
@@ -64,6 +64,7 @@ class ExpenseLineItemAttachmentRepository:
                         params={
                             "ExpenseLineItemId": expense_line_item_id,
                             "AttachmentId": attachment_id,
+                            "CreatedByUserId": created_by_user_id,
                         },
                     )
                     row = cursor.fetchone()

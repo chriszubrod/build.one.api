@@ -43,7 +43,7 @@ class InvoiceLineItemAttachmentRepository:
             logger.error(f"Unexpected error during invoice line item attachment mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, invoice_line_item_id: int, attachment_id: int) -> InvoiceLineItemAttachment:
+    def create(self, *, invoice_line_item_id: int, attachment_id: int, created_by_user_id: Optional[int] = None) -> InvoiceLineItemAttachment:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -54,6 +54,7 @@ class InvoiceLineItemAttachmentRepository:
                         params={
                             "InvoiceLineItemId": invoice_line_item_id,
                             "AttachmentId": attachment_id,
+                            "CreatedByUserId": created_by_user_id,
                         },
                     )
                     row = cursor.fetchone()

@@ -8,6 +8,7 @@ from entities.expense_line_item_attachment.business.model import ExpenseLineItem
 from entities.expense_line_item_attachment.persistence.repo import ExpenseLineItemAttachmentRepository
 from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.attachment.business.service import AttachmentService
+from shared.authz import current_user_id
 
 
 class ExpenseLineItemAttachmentService:
@@ -58,7 +59,7 @@ class ExpenseLineItemAttachmentService:
             return existing
         
         # No existing attachment for this ExpenseLineItem - safe to create
-        return self.repo.create(expense_line_item_id=expense_line_item_id, attachment_id=attachment_id)
+        return self.repo.create(expense_line_item_id=expense_line_item_id, attachment_id=attachment_id, created_by_user_id=current_user_id.get())
 
     def read_all(self) -> list[ExpenseLineItemAttachment]:
         """

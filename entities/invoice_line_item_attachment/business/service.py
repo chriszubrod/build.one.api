@@ -8,6 +8,7 @@ from entities.invoice_line_item_attachment.business.model import InvoiceLineItem
 from entities.invoice_line_item_attachment.persistence.repo import InvoiceLineItemAttachmentRepository
 from entities.invoice_line_item.business.service import InvoiceLineItemService
 from entities.attachment.business.service import AttachmentService
+from shared.authz import current_user_id
 
 
 class InvoiceLineItemAttachmentService:
@@ -27,7 +28,7 @@ class InvoiceLineItemAttachmentService:
         invoice_line_item_id = int(invoice_line_item.id)
         attachment_id = int(attachment.id)
 
-        return self.repo.create(invoice_line_item_id=invoice_line_item_id, attachment_id=attachment_id)
+        return self.repo.create(invoice_line_item_id=invoice_line_item_id, attachment_id=attachment_id, created_by_user_id=current_user_id.get())
 
     def read_all(self) -> list[InvoiceLineItemAttachment]:
         return self.repo.read_all()

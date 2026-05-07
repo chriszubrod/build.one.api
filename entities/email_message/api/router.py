@@ -99,6 +99,11 @@ def get_email_message_by_public_id_router(
     needs). The typed `Di*` columns stay so the agent still sees the
     agent-recorded vendor/invoice/total fields here without paying the
     100KB per turn.
+
+    Also includes a slim `linked_bill` field (or null) — the Bill that
+    was created from this email via the agent pipeline. Lets the React
+    Inbox detail view render a one-click "View Bill" link without an
+    extra round-trip.
     """
     service = EmailMessageService()
     email = service.read_by_public_id(public_id=public_id)
@@ -111,6 +116,11 @@ def get_email_message_by_public_id_router(
         d.pop("di_result_json", None)
         attachments.append(d)
     payload["attachments"] = attachments
+    # Reverse lookup: any Bill carrying this email's id as its source.
+    # Lazy import to avoid pulling the Bill module into the email-message
+    # service's import graph at startup.
+    from entities.bill.persistence.repo import BillRepository
+    payload["linked_bill"] = BillRepository().read_slim_by_source_email_message_id(email.id)
     return item_response(payload)
 
 

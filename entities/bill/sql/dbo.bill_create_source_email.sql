@@ -17,7 +17,8 @@ CREATE OR ALTER PROCEDURE CreateBill
     @IsDraft BIT = 1,
     @IntakeSource NVARCHAR(20) = NULL,
     @IntakeSourceDetail NVARCHAR(100) = NULL,
-    @SourceEmailMessageId BIGINT = NULL
+    @SourceEmailMessageId BIGINT = NULL,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -28,7 +29,8 @@ BEGIN
     INSERT INTO dbo.[Bill]
         ([CreatedDatetime], [ModifiedDatetime], [VendorId], [PaymentTermId],
          [BillDate], [DueDate], [BillNumber], [TotalAmount], [Memo],
-         [IsDraft], [IntakeSource], [IntakeSourceDetail], [SourceEmailMessageId])
+         [IsDraft], [IntakeSource], [IntakeSourceDetail], [SourceEmailMessageId],
+         [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -48,8 +50,49 @@ BEGIN
         INSERTED.[SourceEmailMessageId]
     VALUES (@Now, @Now, @VendorId, @PaymentTermId, @BillDate, @DueDate,
             @BillNumber, @TotalAmount, @Memo, @IsDraft, @IntakeSource,
-            @IntakeSourceDetail, @SourceEmailMessageId);
+            @IntakeSourceDetail, @SourceEmailMessageId,
+            COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
+END;
+GO
+
+-- Filtered index for the email → bill reverse lookup. Tiny: only rows
+-- that actually carry a source-email FK are indexed.
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'IX_Bill_SourceEmailMessageId'
+      AND object_id = OBJECT_ID('dbo.Bill')
+)
+BEGIN
+    CREATE INDEX [IX_Bill_SourceEmailMessageId]
+        ON [dbo].[Bill] ([SourceEmailMessageId])
+        WHERE [SourceEmailMessageId] IS NOT NULL;
+END
+GO
+
+-- Slim lookup returning just the fields the React Email-message detail
+-- view needs to render a "Linked Bill" panel. Joins Vendor for the
+-- denormalized vendor_name. Returns 0 or 1 row — if a duplicate-source
+-- ever occurs, takes the most-recently-created Bill.
+CREATE OR ALTER PROCEDURE ReadBillSlimBySourceEmailMessageId
+(
+    @SourceEmailMessageId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP 1
+        b.[Id]                                                    AS Id,
+        b.[PublicId]                                              AS PublicId,
+        b.[BillNumber]                                            AS BillNumber,
+        b.[TotalAmount]                                           AS TotalAmount,
+        b.[IsDraft]                                               AS IsDraft,
+        CONVERT(VARCHAR(19), b.[CreatedDatetime], 120)            AS CreatedDatetime,
+        v.[Name]                                                  AS VendorName
+    FROM dbo.[Bill] b
+    LEFT JOIN dbo.[Vendor] v ON v.[Id] = b.[VendorId]
+    WHERE b.[SourceEmailMessageId] = @SourceEmailMessageId
+    ORDER BY b.[CreatedDatetime] DESC;
 END;
 GO

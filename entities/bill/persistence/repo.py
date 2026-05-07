@@ -318,6 +318,38 @@ class BillRepository:
             logger.error(f"Error during read bill by bill number and vendor ID: {error}")
             raise map_database_error(error)
 
+    def read_slim_by_source_email_message_id(self, source_email_message_id: int) -> Optional[dict]:
+        """Slim Bill lookup keyed on SourceEmailMessageId. Returns a dict
+        (not a Bill model) carrying just the fields the React Email-message
+        detail view needs to render the "Linked Bill" panel — joined with
+        Vendor for the denormalized vendor name. None when no Bill is
+        linked. Returns at most one row (most recently created if
+        somehow multiple exist).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadBillSlimBySourceEmailMessageId",
+                    params={"SourceEmailMessageId": source_email_message_id},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row.Id,
+                    "public_id": str(row.PublicId),
+                    "bill_number": row.BillNumber,
+                    "total_amount": float(row.TotalAmount) if row.TotalAmount is not None else None,
+                    "is_draft": bool(row.IsDraft),
+                    "created_datetime": row.CreatedDatetime,
+                    "vendor_name": row.VendorName,
+                }
+        except Exception as error:
+            logger.error(f"Error reading slim Bill by source_email_message_id: {error}")
+            raise map_database_error(error)
+
     def link_source_email_message(self, *, bill_id: int, source_email_message_id: int) -> bool:
         """Idempotent backfill of Bill.SourceEmailMessageId. Used by
         BillService.create() when a duplicate is detected: if the

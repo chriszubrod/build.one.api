@@ -266,3 +266,38 @@ BEGIN
     ORDER BY [CreatedDatetime] DESC, [Id] DESC;
 END;
 GO
+
+-- Batch lookup: latest Review per Bill in one call. Used by the Bill
+-- list endpoint (Wave 3 Phase D) to surface ReviewStatus alongside
+-- Draft state without a per-row N+1 query. Returns at most one row
+-- per BillId — the most recently created Review for that bill.
+CREATE OR ALTER PROCEDURE ReadCurrentReviewsByBillIds
+(
+    @BillIds NVARCHAR(MAX)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    ;WITH ranked AS (
+        SELECT
+            r.*,
+            ROW_NUMBER() OVER (
+                PARTITION BY r.[BillId]
+                ORDER BY r.[CreatedDatetime] DESC, r.[Id] DESC
+            ) AS rn
+        FROM dbo.[vw_Review] r
+        INNER JOIN STRING_SPLIT(ISNULL(@BillIds, ''), ',') s
+            ON s.value <> '' AND r.[BillId] = TRY_CAST(LTRIM(RTRIM(s.value)) AS BIGINT)
+        WHERE r.[BillId] IS NOT NULL
+    )
+    SELECT
+        [Id], [PublicId], [RowVersion], [CreatedDatetime], [ModifiedDatetime],
+        [ReviewStatusId], [UserId], [Comments],
+        [BillId], [ExpenseId], [BillCreditId], [InvoiceId],
+        [StatusName], [StatusSortOrder], [StatusIsFinal], [StatusIsDeclined], [StatusColor],
+        [UserFirstname], [UserLastname]
+    FROM ranked
+    WHERE rn = 1;
+END;
+GO

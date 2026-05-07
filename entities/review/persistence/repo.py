@@ -146,6 +146,33 @@ class ReviewRepository:
     def read_current_by_invoice_id(self, invoice_id: int) -> Optional[Review]:
         return self._read_current("ReadCurrentReviewByInvoiceId", {"InvoiceId": invoice_id})
 
+    def read_current_by_bill_ids(self, bill_ids: list[int]) -> dict[int, Review]:
+        """Batch lookup of the latest Review per Bill. Returns
+        {bill_id: Review}; bills with no Review row are absent from the
+        dict. Empty input → empty dict (no DB call).
+        """
+        if not bill_ids:
+            return {}
+        csv = ",".join(str(int(b)) for b in bill_ids if b is not None)
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadCurrentReviewsByBillIds",
+                    params={"BillIds": csv},
+                )
+                out: dict[int, Review] = {}
+                for row in cursor.fetchall():
+                    review = self._from_db(row)
+                    if review is None or review.bill_id is None:
+                        continue
+                    out[int(review.bill_id)] = review
+                return out
+        except Exception as error:
+            logger.error(f"Error during ReadCurrentReviewsByBillIds: {error}")
+            raise map_database_error(error)
+
     # ---------------------------------------------------------------------
     # Internals
     # ---------------------------------------------------------------------

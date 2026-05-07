@@ -124,8 +124,10 @@ async def get_bills_router(
     Read bills with pagination.
     """
     def _fetch():
+        from entities.review.persistence.repo import ReviewRepository
         service = BillService()
         repo = BillRepository()
+        review_repo = ReviewRepository()
         with get_connection() as conn:
             bills = service.read_paginated(
                 page_number=page,
@@ -143,12 +145,20 @@ async def get_bills_router(
             )
             bill_ids = [b.id for b in bills if b.id]
             project_map = repo.read_first_line_item_projects(bill_ids, conn=conn) if bill_ids else {}
-        return bills, total, project_map
+            # Latest Review per Bill (Wave 3 Phase D) — one batch sproc
+            # call instead of N+1, so AP can spot Draft × ReviewStatus
+            # combinations without extra round-trips from React.
+            review_map = review_repo.read_current_by_bill_ids(bill_ids) if bill_ids else {}
+        return bills, total, project_map, review_map
 
-    bills, total, project_map = await asyncio.to_thread(_fetch)
+    bills, total, project_map, review_map = await asyncio.to_thread(_fetch)
     bill_dicts = [bill.to_dict() for bill in bills]
     for bd in bill_dicts:
         bd["project_id"] = project_map.get(bd["id"])
+        review = review_map.get(bd["id"])
+        bd["review_status"] = review.status_name if review else None
+        bd["review_status_is_final"] = review.status_is_final if review else None
+        bd["review_status_is_declined"] = review.status_is_declined if review else None
 
     return {
         "data": bill_dicts,

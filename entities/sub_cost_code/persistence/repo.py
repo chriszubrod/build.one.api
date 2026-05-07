@@ -61,6 +61,7 @@ class SubCostCodeRepository:
         description: Optional[str] = None,
         cost_code_id: int,
         aliases: Optional[str] = None,
+        created_by_user_id: Optional[int] = None,
     ) -> SubCostCode:
         """
         Create a new sub cost code.
@@ -77,6 +78,7 @@ class SubCostCodeRepository:
                         "Description": description,
                         "CostCodeId": cost_code_id,
                         "Aliases": aliases,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

@@ -6,6 +6,7 @@ from typing import Optional
 # Local Imports
 from entities.project_address.business.model import ProjectAddress
 from entities.project_address.persistence.repo import ProjectAddressRepository
+from shared.authz import current_user_id
 
 
 class ProjectAddressService:
@@ -22,7 +23,7 @@ class ProjectAddressService:
         Create a new project address.
         """
         # TODO: In Phase 10, use tenant_id for tenant isolation
-        return self.repo.create(project_id=project_id, address_id=address_id, address_type_id=address_type_id)
+        return self.repo.create(project_id=project_id, address_id=address_id, address_type_id=address_type_id, created_by_user_id=current_user_id.get())
 
     def read_all(self) -> list[ProjectAddress]:
         """

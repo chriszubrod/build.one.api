@@ -6,6 +6,7 @@ from typing import Optional
 # Local Imports
 from entities.customer.business.model import Customer
 from entities.customer.persistence.repo import CustomerRepository
+from shared.authz import current_user_id
 
 
 class CustomerService:
@@ -34,7 +35,7 @@ class CustomerService:
             email: Optional customer email
             phone: Optional customer phone
         """
-        return self.repo.create(tenant_id=tenant_id, name=name, email=email, phone=phone)
+        return self.repo.create(tenant_id=tenant_id, name=name, email=email, phone=phone, created_by_user_id=current_user_id.get())
 
     def read_all(self) -> list[Customer]:
         """

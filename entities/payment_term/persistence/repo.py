@@ -62,23 +62,14 @@ class PaymentTermRepository:
         discount_percent: Optional[float] = None,
         discount_days: Optional[int] = None,
         due_days: Optional[int] = None,
+        created_by_user_id: Optional[int] = None,
     ) -> PaymentTerm:
         """
         Create a new payment term.
-        
-        Args:
-            tenant_id: Tenant ID for multi-tenant isolation (logged for audit, not yet used for filtering)
-            name: Payment term name
-            description: Payment term description
-            discount_percent: Discount percentage (optional)
-            discount_days: Discount days (optional)
-            due_days: Due days (optional)
         """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                # Note: tenant_id is accepted for audit trail purposes
-                # Future: Add TenantId param when stored procedure supports it
                 call_procedure(
                     cursor=cursor,
                     name="CreatePaymentTerm",
@@ -88,6 +79,7 @@ class PaymentTermRepository:
                         "DiscountPercent": discount_percent,
                         "DiscountDays": discount_days,
                         "DueDays": due_days,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

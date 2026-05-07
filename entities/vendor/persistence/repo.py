@@ -47,6 +47,7 @@ class VendorRepository:
                 is_draft=row.IsDraft,
                 is_deleted=row.IsDeleted,
                 is_contract_labor=row.IsContractLabor,
+                notes=getattr(row, "Notes", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during vendor mapping: {error}")
@@ -55,23 +56,13 @@ class VendorRepository:
             logger.error(f"Unexpected error during vendor mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, name: Optional[str], abbreviation: Optional[str], taxpayer_id: Optional[int] = None, vendor_type_id: Optional[int] = None, is_draft: bool = True, is_contract_labor: bool = False) -> Vendor:
+    def create(self, *, tenant_id: int = 1, name: Optional[str], abbreviation: Optional[str], taxpayer_id: Optional[int] = None, vendor_type_id: Optional[int] = None, is_draft: bool = True, is_contract_labor: bool = False, notes: Optional[str] = None, created_by_user_id: Optional[int] = None) -> Vendor:
         """
         Create a new vendor.
-        
-        Args:
-            tenant_id: Tenant ID for multi-tenant isolation (logged for audit, not yet used for filtering)
-            name: Vendor name
-            abbreviation: Vendor abbreviation
-            taxpayer_id: Optional taxpayer ID
-            vendor_type_id: Optional vendor type ID
-            is_draft: Whether vendor is in draft state
         """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                # Note: tenant_id is accepted for audit trail purposes
-                # Future: Add TenantId param when stored procedure supports it
                 params = {
                     "Name": name,
                     "Abbreviation": abbreviation,
@@ -79,6 +70,8 @@ class VendorRepository:
                     "TaxpayerId": taxpayer_id,
                     "IsDraft": is_draft,
                     "IsContractLabor": is_contract_labor,
+                    "Notes": notes,
+                    "CreatedByUserId": created_by_user_id,
                 }
                 call_procedure(
                     cursor=cursor,
@@ -192,10 +185,10 @@ class VendorRepository:
                             "name": row.VendorName,
                             "abbreviation": row.Abbreviation,
                             "is_draft": bool(row.IsDraft),
-                            # Per-vendor agent guidance — bill_specialist
-                            # reads this and applies any vendor-specific
-                            # rules (e.g. "trim /N suffix") to its create_bill.
-                            "intake_notes": getattr(row, "IntakeNotes", None),
+                            # Per-vendor notes — bill_specialist reads this
+                            # and applies any vendor-specific rules
+                            # (e.g. "trim /N suffix") to its create_bill.
+                            "notes": getattr(row, "Notes", None),
                         },
                         "confidence": float(row.Confidence) if row.Confidence is not None else None,
                         "strategy": row.Strategy,
@@ -220,6 +213,7 @@ class VendorRepository:
                     "Abbreviation": vendor.abbreviation,
                     "VendorTypeId": vendor.vendor_type_id,
                     "TaxpayerId": vendor.taxpayer_id,
+                    "Notes": vendor.notes,
                 }
                 # Only include IsDraft/IsContractLabor if explicitly set (not None)
                 if vendor.is_draft is not None:

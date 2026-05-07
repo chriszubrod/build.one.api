@@ -9,6 +9,7 @@ from entities.vendor.business.model import Vendor
 from entities.taxpayer.business.service import TaxpayerService
 from entities.vendor_type.business.service import VendorTypeService
 from entities.vendor.persistence.repo import VendorRepository
+from shared.authz import current_user_id
 
 
 class VendorService:
@@ -20,7 +21,7 @@ class VendorService:
         """Initialize the VendorService."""
         self.repo = repo or VendorRepository()
 
-    def create(self, *, tenant_id: int = 1, name: str, abbreviation: Optional[str] = None, taxpayer_public_id: Optional[str] = None, vendor_type_public_id: Optional[str] = None, is_draft: bool = True, is_contract_labor: bool = False) -> Vendor:
+    def create(self, *, tenant_id: int = 1, name: str, abbreviation: Optional[str] = None, taxpayer_public_id: Optional[str] = None, vendor_type_public_id: Optional[str] = None, is_draft: bool = True, is_contract_labor: bool = False, notes: Optional[str] = None) -> Vendor:
         """
         Create a new vendor.
 
@@ -51,7 +52,7 @@ class VendorService:
             if vendor_type:
                 vendor_type_id = vendor_type.id
 
-        return self.repo.create(tenant_id=tenant_id, name=name, abbreviation=abbreviation, taxpayer_id=taxpayer_id, vendor_type_id=vendor_type_id, is_draft=is_draft, is_contract_labor=is_contract_labor)
+        return self.repo.create(tenant_id=tenant_id, name=name, abbreviation=abbreviation, taxpayer_id=taxpayer_id, vendor_type_id=vendor_type_id, is_draft=is_draft, is_contract_labor=is_contract_labor, notes=notes, created_by_user_id=current_user_id.get())
 
     def read_all(self) -> list[Vendor]:
         """
@@ -134,6 +135,7 @@ class VendorService:
         vendor_type_public_id: str = None,
         is_draft: bool = None,
         is_contract_labor: bool = None,
+        notes: Optional[str] = None,
     ) -> Optional[Vendor]:
         """
         Update a vendor by public ID.
@@ -161,6 +163,11 @@ class VendorService:
             existing.is_draft = is_draft
         if is_contract_labor is not None:
             existing.is_contract_labor = is_contract_labor
+        # React form always sends `notes` on PUT (echoing current value
+        # if unedited). None means "field omitted entirely" → preserve.
+        # Empty string means user cleared the textarea → store NULL.
+        if notes is not None:
+            existing.notes = notes if notes != "" else None
 
         # Handle taxpayer FK — empty string clears, valid public_id sets
         if taxpayer_public_id is not None:

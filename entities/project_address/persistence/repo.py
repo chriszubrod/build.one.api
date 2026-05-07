@@ -51,7 +51,7 @@ class ProjectAddressRepository:
             logger.error(f"Unexpected error during project address mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, project_id: int, address_id: int, address_type_id: int) -> ProjectAddress:
+    def create(self, *, project_id: int, address_id: int, address_type_id: int, created_by_user_id: Optional[int] = None) -> ProjectAddress:
         """
         Create a new project address.
         """
@@ -65,6 +65,7 @@ class ProjectAddressRepository:
                         "ProjectId": project_id,
                         "AddressId": address_id,
                         "AddressTypeId": address_type_id,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

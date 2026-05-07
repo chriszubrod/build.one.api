@@ -58,21 +58,14 @@ class CustomerRepository:
         name: str,
         email: Optional[str] = None,
         phone: Optional[str] = None,
+        created_by_user_id: Optional[int] = None,
     ) -> Customer:
         """
         Create a new customer.
-
-        Args:
-            tenant_id: Tenant ID for multi-tenant isolation (logged for audit, not yet used for filtering)
-            name: Customer name (required)
-            email: Optional customer email
-            phone: Optional customer phone
         """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                # Note: tenant_id is accepted for audit trail purposes
-                # Future: Add TenantId param when stored procedure supports it
                 call_procedure(
                     cursor=cursor,
                     name="CreateCustomer",
@@ -80,6 +73,7 @@ class CustomerRepository:
                         "Name": name,
                         "Email": email,
                         "Phone": phone,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

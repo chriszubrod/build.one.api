@@ -6,6 +6,7 @@ from typing import Optional
 # Local Imports
 from entities.payment_term.business.model import PaymentTerm
 from entities.payment_term.persistence.repo import PaymentTermRepository
+from shared.authz import current_user_id
 
 
 class PaymentTermService:
@@ -45,6 +46,7 @@ class PaymentTermService:
             discount_percent=discount_percent,
             discount_days=discount_days,
             due_days=due_days,
+            created_by_user_id=current_user_id.get(),
         )
 
     def read_all(self) -> list[PaymentTerm]:

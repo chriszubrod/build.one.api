@@ -6,6 +6,7 @@ from typing import List, Optional
 # Local Imports
 from entities.sub_cost_code.persistence.repo import SubCostCodeRepository
 from entities.sub_cost_code.business.model import SubCostCode
+from shared.authz import current_user_id
 
 
 class SubCostCodeService:
@@ -21,7 +22,7 @@ class SubCostCodeService:
         """
         Create a new sub cost code.
         """
-        return self.repo.create(number=number, name=name, description=description, cost_code_id=cost_code_id, aliases=aliases)
+        return self.repo.create(number=number, name=name, description=description, cost_code_id=cost_code_id, aliases=aliases, created_by_user_id=current_user_id.get())
 
     def read_all(self) -> List[SubCostCode]:
         """

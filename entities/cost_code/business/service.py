@@ -6,6 +6,7 @@ from typing import Optional, List
 # Local Imports
 from entities.cost_code.persistence.repo import CostCodeRepository
 from entities.cost_code.business.model import CostCode
+from shared.authz import current_user_id
 
 
 class CostCodeService:
@@ -21,7 +22,7 @@ class CostCodeService:
         """
         Create a new cost code.
         """
-        return self.repo.create(number=number, name=name, description=description)
+        return self.repo.create(number=number, name=name, description=description, created_by_user_id=current_user_id.get())
 
     def read_all(self) -> List[CostCode]:
         """

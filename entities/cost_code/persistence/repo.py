@@ -51,7 +51,7 @@ class CostCodeRepository:
             logger.error(f"Internal error during from db: {error}")
             raise map_database_error(error)
 
-    def create(self, *, number: str, name: str, description: Optional[str] = None) -> CostCode:
+    def create(self, *, number: str, name: str, description: Optional[str] = None, created_by_user_id: Optional[int] = None) -> CostCode:
         """
         Create a new cost code.
         """
@@ -65,6 +65,7 @@ class CostCodeRepository:
                         "Number": number,
                         "Name": name,
                         "Description": description,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

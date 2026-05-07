@@ -335,6 +335,7 @@ class BillService:
             intake_source=intake_source,
             intake_source_detail=intake_source_detail,
             source_email_message_id=source_email_message_id,
+            created_by_user_id=current_user_id.get(),
         )
 
         # Universal-PDF rule: the Bill is meaningless without its attachment,

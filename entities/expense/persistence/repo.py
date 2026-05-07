@@ -63,7 +63,7 @@ class ExpenseRepository:
             logger.error(f"Unexpected error during expense mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, vendor_id: Optional[int] = None, expense_date: Optional[str] = None, reference_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, is_credit: bool = False) -> Expense:
+    def create(self, *, tenant_id: int = 1, vendor_id: Optional[int] = None, expense_date: Optional[str] = None, reference_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, is_credit: bool = False, created_by_user_id: Optional[int] = None) -> Expense:
         """
         Create a new expense.
         
@@ -90,6 +90,7 @@ class ExpenseRepository:
                         "Memo": memo,
                         "IsDraft": 1 if is_draft else 0,
                         "IsCredit": 1 if is_credit else 0,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

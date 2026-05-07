@@ -62,7 +62,7 @@ class BillCreditRepository:
             logger.error(f"Unexpected error during bill credit mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, vendor_id: Optional[int] = None, credit_date: Optional[str] = None, credit_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True) -> BillCredit:
+    def create(self, *, tenant_id: int = 1, vendor_id: Optional[int] = None, credit_date: Optional[str] = None, credit_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, created_by_user_id: Optional[int] = None) -> BillCredit:
         """
         Create a new bill credit.
         
@@ -88,6 +88,7 @@ class BillCreditRepository:
                         "TotalAmount": Decimal(str(total_amount)) if total_amount is not None else None,
                         "Memo": memo,
                         "IsDraft": 1 if is_draft else 0,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

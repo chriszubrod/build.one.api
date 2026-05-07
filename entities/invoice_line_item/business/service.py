@@ -9,6 +9,7 @@ from entities.invoice_line_item.business.model import InvoiceLineItem
 from entities.invoice_line_item.persistence.repo import InvoiceLineItemRepository
 from entities.invoice.persistence.repo import InvoiceRepository
 from shared.access import assert_can_access_project
+from shared.authz import current_user_id
 
 
 VALID_SOURCE_TYPES = {"BillLineItem", "ExpenseLineItem", "BillCreditLineItem", "ExpenseRefundLineItem", "Manual"}
@@ -74,6 +75,7 @@ class InvoiceLineItemService:
             markup=markup,
             price=price,
             is_draft=is_draft,
+            created_by_user_id=current_user_id.get(),
         )
 
     def read_all(self) -> list[InvoiceLineItem]:

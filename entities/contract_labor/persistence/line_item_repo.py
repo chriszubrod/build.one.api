@@ -75,6 +75,7 @@ class ContractLaborLineItemRepository:
         price: Optional[Decimal] = None,
         is_billable: bool = True,
         is_overhead: bool = False,
+        created_by_user_id: Optional[int] = None,
     ) -> ContractLaborLineItem:
         """
         Create a new contract labor line item.
@@ -97,6 +98,7 @@ class ContractLaborLineItemRepository:
                         "Price": Decimal(str(price)) if price is not None else None,
                         "IsBillable": is_billable,
                         "IsOverhead": is_overhead,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

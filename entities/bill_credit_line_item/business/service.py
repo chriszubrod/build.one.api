@@ -11,6 +11,7 @@ from entities.bill_credit_line_item.persistence.repo import BillCreditLineItemRe
 from entities.bill_credit.business.service import BillCreditService
 from entities.project.business.service import ProjectService
 from shared.access import assert_can_access_bill_credit
+from shared.authz import current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ class BillCreditLineItemService:
             is_billed=is_billed,
             billable_amount=billable_amount,
             is_draft=is_draft,
+            created_by_user_id=current_user_id.get(),
         )
 
     def read_all(self) -> list[BillCreditLineItem]:

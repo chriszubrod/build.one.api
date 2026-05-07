@@ -62,6 +62,7 @@ class BillCreditService:
             total_amount=total_amount,
             memo=memo,
             is_draft=is_draft,
+            created_by_user_id=current_user_id.get(),
         )
 
     def read_all(self) -> list[BillCredit]:

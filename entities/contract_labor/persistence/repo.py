@@ -107,6 +107,7 @@ class ContractLaborRepository:
         import_batch_id: Optional[str] = None,
         source_file: Optional[str] = None,
         source_row: Optional[int] = None,
+        created_by_user_id: Optional[int] = None,
     ) -> ContractLabor:
         """
         Create a new contract labor entry.
@@ -140,6 +141,7 @@ class ContractLaborRepository:
                         "ImportBatchId": import_batch_id,
                         "SourceFile": source_file,
                         "SourceRow": source_row,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

@@ -74,6 +74,7 @@ class BillCreditLineItemRepository:
         is_billed: Optional[bool] = None,
         billable_amount: Optional[Decimal] = None,
         is_draft: bool = True,
+        created_by_user_id: Optional[int] = None,
     ) -> BillCreditLineItem:
         """
         Create a new bill credit line item.
@@ -96,6 +97,7 @@ class BillCreditLineItemRepository:
                         "IsBilled": 1 if is_billed else (0 if is_billed is False else None),
                         "BillableAmount": Decimal(str(billable_amount)) if billable_amount is not None else None,
                         "IsDraft": 1 if is_draft else 0,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

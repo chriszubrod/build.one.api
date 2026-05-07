@@ -11,6 +11,7 @@ from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
 from entities.expense.business.service import ExpenseService
 from shared.access import assert_can_access_expense
+from shared.authz import current_user_id
 
 
 class ExpenseLineItemService:
@@ -59,6 +60,7 @@ class ExpenseLineItemService:
             markup=markup,
             price=price,
             is_draft=is_draft,
+            created_by_user_id=current_user_id.get(),
         )
 
     def read_all(self) -> list[ExpenseLineItem]:

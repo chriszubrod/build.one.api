@@ -12,6 +12,7 @@ from openpyxl import load_workbook
 import xlrd  # For .xls files
 
 # Local Imports
+from shared.authz import current_user_id
 from entities.contract_labor.business.model import ContractLabor
 from entities.contract_labor.persistence.repo import ContractLaborRepository
 from entities.vendor.business.service import VendorService
@@ -268,6 +269,7 @@ class ContractLaborImportService:
                         source_file=filename,
                         source_row=row_num + 1,  # Excel row number (1-based + header)
                         job_name=job_name,  # Raw job name from Excel
+                        created_by_user_id=current_user_id.get(),
                     )
                     
                     results["imported_count"] += 1

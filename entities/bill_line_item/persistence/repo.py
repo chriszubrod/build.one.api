@@ -62,7 +62,7 @@ class BillLineItemRepository:
             logger.error(f"Unexpected error during bill line item mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, bill_id: int, sub_cost_code_id: Optional[int] = None, project_id: Optional[int] = None, description: Optional[str] = None, quantity: Optional[int] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True) -> BillLineItem:
+    def create(self, *, bill_id: int, sub_cost_code_id: Optional[int] = None, project_id: Optional[int] = None, description: Optional[str] = None, quantity: Optional[int] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, created_by_user_id: Optional[int] = None) -> BillLineItem:
         """
         Create a new bill line item.
         """
@@ -85,6 +85,7 @@ class BillLineItemRepository:
                         "Markup": Decimal(str(markup)) if markup is not None else None,
                         "Price": Decimal(str(price)) if price is not None else None,
                         "IsDraft": 1 if is_draft else 0,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

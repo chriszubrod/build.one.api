@@ -6,6 +6,7 @@ from decimal import Decimal
 
 # Local Imports
 from shared.access import assert_can_access_bill, assert_can_access_project
+from shared.authz import current_user_id
 from entities.bill_line_item.business.model import BillLineItem
 from entities.bill_line_item.persistence.repo import BillLineItemRepository
 from entities.sub_cost_code.business.service import SubCostCodeService
@@ -60,6 +61,7 @@ class BillLineItemService:
             markup=markup,
             price=price,
             is_draft=is_draft,
+            created_by_user_id=current_user_id.get(),
         )
 
     def read_all(self) -> list[BillLineItem]:

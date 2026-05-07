@@ -154,6 +154,7 @@ class ExpenseService:
             memo=memo,
             is_draft=is_draft,
             is_credit=is_credit,
+            created_by_user_id=current_user_id.get(),
         )
 
     def read_all(self) -> list[Expense]:

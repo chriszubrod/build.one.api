@@ -53,23 +53,13 @@ class ProjectRepository:
             logger.error(f"Unexpected error during project mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None) -> Project:
+    def create(self, *, tenant_id: int = 1, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None, created_by_user_id: Optional[int] = None) -> Project:
         """
         Create a new project.
-        
-        Args:
-            tenant_id: Tenant ID for multi-tenant isolation (logged for audit, not yet used for filtering)
-            name: Project name
-            description: Project description
-            status: Project status
-            customer_id: Optional customer ID
-            abbreviation: Optional project abbreviation
         """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                # Note: tenant_id is accepted for audit trail purposes
-                # Future: Add TenantId param when stored procedure supports it
                 call_procedure(
                     cursor=cursor,
                     name="CreateProject",
@@ -79,6 +69,7 @@ class ProjectRepository:
                         "Status": status,
                         "CustomerId": customer_id,
                         "Abbreviation": abbreviation,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

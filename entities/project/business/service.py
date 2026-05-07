@@ -26,16 +26,16 @@ class ProjectService:
     def create(self, *, tenant_id: int = 1, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None) -> Project:
         """
         Create a new project.
-        
-        Args:
-            tenant_id: Tenant ID for multi-tenant isolation (default: 1)
-            name: Project name
-            description: Project description
-            status: Project status
-            customer_id: Optional customer ID
-            abbreviation: Optional project abbreviation
         """
-        return self.repo.create(tenant_id=tenant_id, name=name, description=description, status=status, customer_id=customer_id, abbreviation=abbreviation)
+        return self.repo.create(
+            tenant_id=tenant_id,
+            name=name,
+            description=description,
+            status=status,
+            customer_id=customer_id,
+            abbreviation=abbreviation,
+            created_by_user_id=current_user_id.get(),
+        )
 
     def read_all(self) -> list[Project]:
         """

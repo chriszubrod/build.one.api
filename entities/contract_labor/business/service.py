@@ -109,6 +109,7 @@ class ContractLaborService:
             import_batch_id=import_batch_id,
             source_file=source_file,
             source_row=source_row,
+            created_by_user_id=current_user_id.get(),
         )
 
     def read_all(self) -> list[ContractLabor]:

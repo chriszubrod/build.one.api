@@ -19,6 +19,7 @@ from entities.contract_labor.api.schemas import (
 )
 from entities.contract_labor.persistence.line_item_repo import ContractLaborLineItemRepository
 from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
+from shared.authz import current_user_id
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -338,6 +339,7 @@ def update_contract_labor_bill(public_id: str, bill_update: ContractLaborBillUpd
                     price=item_data.price,
                     is_billable=item_data.is_billable,
                     is_overhead=item_data.is_overhead,
+                    created_by_user_id=current_user_id.get(),
                 )
                 items_created += 1
 

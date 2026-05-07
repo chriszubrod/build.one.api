@@ -73,7 +73,7 @@ class BillRepository:
             logger.error(f"Unexpected error during bill mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, vendor_id: Optional[int] = None, payment_term_id: Optional[int] = None, bill_date: Optional[str] = None, due_date: Optional[str] = None, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, intake_source: Optional[str] = None, intake_source_detail: Optional[str] = None, source_email_message_id: Optional[int] = None) -> Bill:
+    def create(self, *, tenant_id: int = 1, vendor_id: Optional[int] = None, payment_term_id: Optional[int] = None, bill_date: Optional[str] = None, due_date: Optional[str] = None, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, intake_source: Optional[str] = None, intake_source_detail: Optional[str] = None, source_email_message_id: Optional[int] = None, created_by_user_id: Optional[int] = None) -> Bill:
         """
         Create a new bill.
 
@@ -110,6 +110,7 @@ class BillRepository:
                         "IntakeSource": intake_source,
                         "IntakeSourceDetail": intake_source_detail,
                         "SourceEmailMessageId": source_email_message_id,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

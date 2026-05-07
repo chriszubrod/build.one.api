@@ -74,6 +74,7 @@ class InvoiceLineItemRepository:
         markup: Optional[Decimal] = None,
         price: Optional[Decimal] = None,
         is_draft: bool = True,
+        created_by_user_id: Optional[int] = None,
     ) -> InvoiceLineItem:
         try:
             with get_connection() as conn:
@@ -95,6 +96,7 @@ class InvoiceLineItemRepository:
                         "Markup": Decimal(str(markup)) if markup is not None else None,
                         "Price": Decimal(str(price)) if price is not None else None,
                         "IsDraft": 1 if is_draft else 0,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

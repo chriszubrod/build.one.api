@@ -60,7 +60,7 @@ class InvoiceRepository:
             logger.error(f"Unexpected error during invoice mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, project_id: Optional[int] = None, payment_term_id: Optional[int] = None, invoice_date: Optional[str] = None, due_date: Optional[str] = None, invoice_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True) -> Invoice:
+    def create(self, *, tenant_id: int = 1, project_id: Optional[int] = None, payment_term_id: Optional[int] = None, invoice_date: Optional[str] = None, due_date: Optional[str] = None, invoice_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, created_by_user_id: Optional[int] = None) -> Invoice:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -76,6 +76,7 @@ class InvoiceRepository:
                         "TotalAmount": Decimal(str(total_amount)) if total_amount is not None else None,
                         "Memo": memo,
                         "IsDraft": 1 if is_draft else 0,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

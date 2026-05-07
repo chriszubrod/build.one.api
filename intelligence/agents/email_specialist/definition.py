@@ -23,7 +23,7 @@ email_specialist = Agent(
         # One delegation tool for v1. Add expense / bill_credit later.
         "delegate_to_bill_specialist",
     ),
-    model="claude-sonnet-4-6",
+    model="claude-haiku-4-5-20251001",
     provider="anthropic",
     credentials_key="email_agent",
     # Bigger budget than other specialists — a multi-attachment email

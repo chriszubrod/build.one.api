@@ -1,5 +1,68 @@
 # Session Notes
 
+## Session: Gap 2 service-layer CreatedByUserId threading — full rollout (May 7, 2026)
+
+### Overview
+Closed Gap 2 from the multi-user RBAC review: today every new row stamps `CreatedByUserId=17` (Christopher) via the `DEFAULT (17)` constraint shipped 2026-05-06 (`commit 361d248`), regardless of who actually created it. Threaded `current_user_id` ContextVar through ~30 entities × 3 layers (sproc + repo + service) so attribution is accurate going forward.
+
+Driver: imminent iOS time-tracking relaunch with 10-12 new users for record entry + review/approval. Without threading, all their TimeEntry / TimeLog / Bill / etc. rows would credit Christopher.
+
+### Approach
+**Per-sproc threading** (Approach A, preferred over the centralized SESSION_CONTEXT alternative). Reason: with iOS multi-user about to land, explicit `@CreatedByUserId` kwargs at every layer make the threading path auditable; centralized session-context tricks have subtle race conditions in long-lived offline-sync replays.
+
+Pattern:
+1. Sproc: add `@CreatedByUserId BIGINT = NULL` param; INSERT uses `COALESCE(@CreatedByUserId, 17)` preserving DEFAULT-trick fallback for scheduler / system context (no actor) — explicit > implicit, but back-compat preserved.
+2. Repo: `create()` accepts `created_by_user_id: Optional[int] = None` kwarg.
+3. Service: `create()` reads from `current_user_id.get()` ContextVar.
+4. Migration files only — never re-run `entities/<x>/sql/<entity>.sql` base files (stale snapshots that roll back later migrations; bit me on Phase Gap2-T).
+
+### Phased rollout (4 commits, 4 deploys)
+
+| Phase | Commit | Entities | Sprocs |
+|---|---|---|---|
+| Gap2-T | `a80cff3` | TimeEntry, TimeLog | 2 |
+| Gap2-Core | `8bb79c4` | Project, Bill, BillCredit, Expense, Invoice, ContractLabor + 5 line-item children | 11 |
+| Gap2-Adjacent | `f059ddc` | Attachment + 3 line-item-attachments, EmailMessage/Attachment (upsert), Review, ReviewStatus, BillFolderRun/Item | 10 |
+| Gap2-Reference | `465e9bd` | Vendor, Customer, SubCostCode, CostCode, PaymentTerm, ProjectAddress | 6 |
+
+**Total:** 30 entities, 29 Create + Upsert sprocs threaded.
+
+Migrations: `scripts/migrations/gap2_{core,adjacent,reference}_threading.sql`.
+
+### Bonus delivered: Gap 1 empty-bill edge case closed
+While smoke-testing Phase Gap2-Core, Cassidy creating a Bill triggered the auto-line-item-attach flow which re-reads the bill before any line item exists. `UserCanAccessBill` returned 0 (no line items, no UserProject anchor) and the create rolled back. Updated `dbo.UserCanAccess{Bill, BillCredit, Expense, Project}` UDFs to add a "creator can access their own row" clause matching the Gap 1 v3 list-path filter shape (`scripts/migrations/gap2_user_can_access_creator_clause.sql`). Empty drafts created by a user remain visible to that user. TODO.md item for the empty-bill edge case is now closed.
+
+### Smoke validation (against prod, as Cassidy uid=18)
+Each phase smoke-tested before deploy. Representative entities per phase verified `CreatedByUserId=18`:
+- **Gap2-T**: TimeEntry, TimeLog, admin-on-behalf, NULL-actor → DEFAULT (17)
+- **Gap2-Core**: Project, Bill, BillLineItem, BillCredit, BillCreditLineItem, Expense, ExpenseLineItem, Invoice, InvoiceLineItem, ContractLabor (10/10)
+- **Gap2-Adjacent**: Attachment, BillLineItemAttachment, ReviewStatus, Review, BillFolderRun, BillFolderRunItem (6/6); EmailMessage threading verified via direct repo call (production path is MailboxPollService which threads from ContextVar).
+- **Gap2-Reference**: Vendor, Customer, CostCode, SubCostCode, PaymentTerm (5/5); ProjectAddress threaded identically by code review.
+
+### Workflow lesson learned
+Re-running `entities/<x>/sql/<entity>.sql` whole-file base files rolls back later migrations targeting the same sprocs (caught me on Phase Gap2-T — re-applying `dbo.time_entry.sql` rolled back Phase 3's actor-param scoping on `ReadTimeEntryByPublicId`). Each individual file is idempotent (`CREATE OR ALTER`) but multi-file migration shape is not commutative. **Going forward: migration-only files under `scripts/migrations/`, base files stay frozen at v1.** TODO.md captures a follow-up to "rebake" stale base files into fresh consolidated snapshots.
+
+### Skipped
+- `ReviewEntry` — table exists (carries `CompanyId` + `CreatedByUserId` from Phase 5 + Gap 2 column-add migrations) but no Create sproc and no service code references it. Decommissioned alongside email-intake. Falls away when the table is dropped.
+
+### Closes
+- Gap 2 (TODO bullet — completed)
+- Gap 1 empty-bill edge case (TODO bullet — closed via UDF migration)
+
+### Files touched (~70)
+- 1 helper migration (`gap2_user_can_access_creator_clause.sql`)
+- 3 sproc threading migrations (`gap2_{core,adjacent,reference}_threading.sql`)
+- 30 entity sproc migrations (rolled into the 3 phase migrations + 1 base file edit for TimeEntry/TimeLog)
+- ~25 repo files (`create()` kwarg threading)
+- ~25 service files (`current_user_id.get()` plumbing)
+- `entities/contract_labor/api/router.py`, `entities/bill/business/folder_processor.py`, `entities/contract_labor/business/import_service.py` — direct-repo callers threaded
+- `TODO.md`, `CLAUDE.md`, `SESSION_NOTES.md` (this entry), `project_access_control_rebuild.md` (memory)
+
+### Where Gap 2 stands now
+Every transactional + reference entity row created from now on carries accurate `CreatedByUserId` attribution. The `DEFAULT (17)` constraint remains as a back-compat safety net for scheduler / system / null-actor paths — drop it later once we're confident every code path threads explicitly. Combined with Gap 1 (UserProject row scoping) and Gap 3 (self-service password change), the multi-user RBAC surface is now ready for the iOS field-worker rollout.
+
+---
+
 ## Session: Gap 1 tightening — by-id direct-URL scoping (May 7, 2026)
 
 ### Overview

@@ -10,6 +10,7 @@ from entities.bill_credit_line_item.business.model import BillCreditLineItem
 from entities.bill_credit_line_item.persistence.repo import BillCreditLineItemRepository
 from entities.bill_credit.business.service import BillCreditService
 from entities.project.business.service import ProjectService
+from shared.access import assert_can_access_bill_credit
 
 logger = logging.getLogger(__name__)
 
@@ -82,18 +83,27 @@ class BillCreditLineItemService:
         """
         Read a bill credit line item by ID.
         """
-        return self.repo.read_by_id(id)
+        line_item = self.repo.read_by_id(id)
+        if line_item is None:
+            return None
+        assert_can_access_bill_credit(line_item.bill_credit_id)
+        return line_item
 
     def read_by_public_id(self, public_id: str) -> Optional[BillCreditLineItem]:
         """
         Read a bill credit line item by public ID.
         """
-        return self.repo.read_by_public_id(public_id)
+        line_item = self.repo.read_by_public_id(public_id)
+        if line_item is None:
+            return None
+        assert_can_access_bill_credit(line_item.bill_credit_id)
+        return line_item
 
     def read_by_bill_credit_id(self, bill_credit_id: int) -> list[BillCreditLineItem]:
         """
         Read all bill credit line items for a specific bill credit.
         """
+        assert_can_access_bill_credit(bill_credit_id)
         return self.repo.read_by_bill_credit_id(bill_credit_id)
 
     def update_by_public_id(

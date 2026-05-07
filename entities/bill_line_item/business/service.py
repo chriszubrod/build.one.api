@@ -5,6 +5,7 @@ from decimal import Decimal
 # Third-party Imports
 
 # Local Imports
+from shared.access import assert_can_access_bill, assert_can_access_project
 from entities.bill_line_item.business.model import BillLineItem
 from entities.bill_line_item.persistence.repo import BillLineItemRepository
 from entities.sub_cost_code.business.service import SubCostCodeService
@@ -71,24 +72,34 @@ class BillLineItemService:
         """
         Read a bill line item by ID.
         """
-        return self.repo.read_by_id(id)
+        line_item = self.repo.read_by_id(id)
+        if line_item is None:
+            return None
+        assert_can_access_bill(line_item.bill_id)
+        return line_item
 
     def read_by_public_id(self, public_id: str) -> Optional[BillLineItem]:
         """
         Read a bill line item by public ID.
         """
-        return self.repo.read_by_public_id(public_id)
+        line_item = self.repo.read_by_public_id(public_id)
+        if line_item is None:
+            return None
+        assert_can_access_bill(line_item.bill_id)
+        return line_item
 
     def read_by_bill_id(self, bill_id: int) -> list[BillLineItem]:
         """
         Read all bill line items for a specific bill.
         """
+        assert_can_access_bill(bill_id)
         return self.repo.read_by_bill_id(bill_id=bill_id)
 
     def read_by_project_id(self, project_id: int) -> list[BillLineItem]:
         """
         Read all bill line items for a specific project.
         """
+        assert_can_access_project(project_id)
         return self.repo.read_by_project_id(project_id=project_id)
 
     def update_by_public_id(

@@ -106,6 +106,17 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 
+from shared.access import EntityNotAccessibleError
+from fastapi.responses import JSONResponse
+
+
+@app.exception_handler(EntityNotAccessibleError)
+async def _entity_not_accessible_handler(request: Request, exc: EntityNotAccessibleError):
+    """Map per-row access denial to 404 (not 403) so the URL doesn't confirm
+    the entity exists to a caller without UserProject access."""
+    return JSONResponse(status_code=404, content={"detail": "Not found"})
+
+
 class ProxyHeadersMiddleware(BaseHTTPMiddleware):
     """Fix request URL scheme when behind a reverse proxy (Azure App Service)."""
     async def dispatch(self, request: Request, call_next):

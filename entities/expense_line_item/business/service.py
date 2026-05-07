@@ -10,6 +10,7 @@ from entities.expense_line_item.persistence.repo import ExpenseLineItemRepositor
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
 from entities.expense.business.service import ExpenseService
+from shared.access import assert_can_access_expense
 
 
 class ExpenseLineItemService:
@@ -70,18 +71,27 @@ class ExpenseLineItemService:
         """
         Read an expense line item by ID.
         """
-        return self.repo.read_by_id(id)
+        line_item = self.repo.read_by_id(id)
+        if line_item is None:
+            return None
+        assert_can_access_expense(line_item.expense_id)
+        return line_item
 
     def read_by_public_id(self, public_id: str) -> Optional[ExpenseLineItem]:
         """
         Read an expense line item by public ID.
         """
-        return self.repo.read_by_public_id(public_id)
+        line_item = self.repo.read_by_public_id(public_id)
+        if line_item is None:
+            return None
+        assert_can_access_expense(line_item.expense_id)
+        return line_item
 
     def read_by_expense_id(self, expense_id: int) -> list[ExpenseLineItem]:
         """
         Read all expense line items for a specific expense.
         """
+        assert_can_access_expense(expense_id)
         return self.repo.read_by_expense_id(expense_id=expense_id)
 
     def update_by_public_id(

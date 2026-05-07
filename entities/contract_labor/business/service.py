@@ -11,6 +11,10 @@ from entities.contract_labor.persistence.repo import ContractLaborRepository
 from entities.vendor.business.service import VendorService
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
+from shared.access import (
+    EntityNotAccessibleError,
+    assert_can_access_project,
+)
 from shared.authz import current_user_id, current_is_system_admin
 
 logger = logging.getLogger(__name__)
@@ -114,23 +118,55 @@ class ContractLaborService:
             actor_is_system_admin=current_is_system_admin.get(),
         )
 
+    def _filter_accessible(self, rows: list[ContractLabor]) -> list[ContractLabor]:
+        """Drop rows whose project is not accessible to the current actor.
+
+        Admins / unauthenticated callers bypass via assert_can_access_project's
+        own short-circuit; for non-admin users this filters per-row by project
+        membership. Rows with no project_id (un-matched job column) are kept —
+        they don't leak project data.
+        """
+        if current_is_system_admin.get() or current_user_id.get() is None:
+            return rows
+        accessible: list[ContractLabor] = []
+        for row in rows:
+            if row.project_id is None:
+                accessible.append(row)
+                continue
+            try:
+                assert_can_access_project(row.project_id)
+                accessible.append(row)
+            except EntityNotAccessibleError:
+                continue
+        return accessible
+
     def read_by_id(self, id: int) -> Optional[ContractLabor]:
         """
         Read a contract labor entry by ID.
         """
-        return self.repo.read_by_id(id)
+        cl = self.repo.read_by_id(id)
+        if cl is None:
+            return None
+        if cl.project_id is not None:
+            assert_can_access_project(cl.project_id)
+        return cl
 
     def read_by_public_id(self, public_id: str) -> Optional[ContractLabor]:
         """
         Read a contract labor entry by public ID.
         """
-        return self.repo.read_by_public_id(public_id)
+        cl = self.repo.read_by_public_id(public_id)
+        if cl is None:
+            return None
+        if cl.project_id is not None:
+            assert_can_access_project(cl.project_id)
+        return cl
 
     def read_by_vendor_id(self, vendor_id: int) -> list[ContractLabor]:
         """
         Read all contract labor entries for a specific vendor.
         """
-        return self.repo.read_by_vendor_id(vendor_id)
+        return self._filter_accessible(self.repo.read_by_vendor_id(vendor_id))
 
     def read_by_vendor_public_id(self, vendor_public_id: str) -> list[ContractLabor]:
         """
@@ -139,25 +175,27 @@ class ContractLaborService:
         vendor = VendorService().read_by_public_id(public_id=vendor_public_id)
         if not vendor or not vendor.id:
             return []
-        return self.repo.read_by_vendor_id(vendor_id=vendor.id)
+        return self._filter_accessible(self.repo.read_by_vendor_id(vendor_id=vendor.id))
 
     def read_by_billing_period(self, billing_period_start: str) -> list[ContractLabor]:
         """
         Read all contract labor entries for a specific billing period.
         """
-        return self.repo.read_by_billing_period(billing_period_start)
+        return self._filter_accessible(self.repo.read_by_billing_period(billing_period_start))
 
     def read_by_status(self, status: str, billing_period_start: Optional[str] = None) -> list[ContractLabor]:
         """
         Read all contract labor entries with a specific status, optionally filtered by billing period.
         """
-        return self.repo.read_by_status(status, billing_period_start=billing_period_start)
+        return self._filter_accessible(
+            self.repo.read_by_status(status, billing_period_start=billing_period_start)
+        )
 
     def read_by_import_batch_id(self, import_batch_id: str) -> list[ContractLabor]:
         """
         Read all contract labor entries from a specific import batch.
         """
-        return self.repo.read_by_import_batch_id(import_batch_id)
+        return self._filter_accessible(self.repo.read_by_import_batch_id(import_batch_id))
 
     def read_paginated(
         self,

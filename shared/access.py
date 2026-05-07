@@ -1,0 +1,92 @@
+"""
+Per-row access helpers for Gap 1 by-id direct-URL scoping.
+
+Closes the leak where a non-admin who knows an entity's id / public_id can
+fetch it directly even when no UserProject membership grants access. List
+paths were scoped at the sproc layer (commit e2d3afb); these helpers extend
+the same model to direct lookups by post-fetch checking via the existing
+`dbo.UserCanAccess*` UDFs.
+
+Single-row UDF calls are cheap (microseconds) — the 113s perf issue from
+Gap 1 v1 only applied to list-path scans where the UDF was evaluated per
+row across tens of thousands of rows.
+
+Service-layer pattern:
+
+    bill = self.bill_repository.read_by_public_id(public_id)
+    if bill is None:
+        return None
+    assert_can_access_bill(bill.id)
+    return bill
+
+Admins (`current_is_system_admin == True`) and unauthenticated callers
+(`current_user_id is None`) bypass — matching the Phase 3 NULL-bypass
+behavior on the list-path filters.
+"""
+from typing import Optional
+
+from shared.authz import current_user_id, current_is_system_admin
+from shared.database import get_connection
+
+
+class EntityNotAccessibleError(Exception):
+    """The current actor lacks UserProject access to the requested entity.
+
+    Mapped to HTTP 404 (not 403) so the URL doesn't confirm the entity exists
+    to a user without access.
+    """
+
+    def __init__(self, entity: str, entity_id: int):
+        self.entity = entity
+        self.entity_id = entity_id
+        super().__init__(f"{entity} {entity_id} is not accessible to the current actor")
+
+
+def _should_bypass() -> bool:
+    if current_is_system_admin.get():
+        return True
+    if current_user_id.get() is None:
+        return True
+    return False
+
+
+def _check(udf_name: str, entity_id: int) -> bool:
+    """Run SELECT dbo.<UDF>(@uid, 0, @id) and return True if accessible."""
+    actor_user_id = current_user_id.get()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT dbo.{udf_name}(?, 0, ?)",
+            (actor_user_id, entity_id),
+        )
+        row = cursor.fetchone()
+        return bool(row[0]) if row and row[0] is not None else False
+
+
+def assert_can_access_bill(bill_id: Optional[int]) -> None:
+    if bill_id is None or _should_bypass():
+        return
+    if not _check("UserCanAccessBill", bill_id):
+        raise EntityNotAccessibleError("Bill", bill_id)
+
+
+def assert_can_access_bill_credit(bill_credit_id: Optional[int]) -> None:
+    if bill_credit_id is None or _should_bypass():
+        return
+    if not _check("UserCanAccessBillCredit", bill_credit_id):
+        raise EntityNotAccessibleError("BillCredit", bill_credit_id)
+
+
+def assert_can_access_expense(expense_id: Optional[int]) -> None:
+    if expense_id is None or _should_bypass():
+        return
+    if not _check("UserCanAccessExpense", expense_id):
+        raise EntityNotAccessibleError("Expense", expense_id)
+
+
+def assert_can_access_project(project_id: Optional[int]) -> None:
+    """Used directly for Project/Invoice/ContractLabor (which carry ProjectId)."""
+    if project_id is None or _should_bypass():
+        return
+    if not _check("UserCanAccessProject", project_id):
+        raise EntityNotAccessibleError("Project", project_id)

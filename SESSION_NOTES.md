@@ -1,5 +1,64 @@
 # Session Notes
 
+## Session: Gap 1 tightening — by-id direct-URL scoping (May 7, 2026)
+
+### Overview
+Closed the leak from Gap 1's "list-only first" agreement: a non-admin who knew an entity's `public_id` could still hit `GET /api/v1/get/bill/{public_id}` (and similar) and view rows outside their `UserProject` set. Today's pass extends the same UserProject access model to direct-lookup paths across Bill / BillCredit / Expense / Invoice / ContractLabor + the four corresponding line-item child entities.
+
+### Approach
+Service-layer post-fetch check using the existing `dbo.UserCanAccess*` UDFs that shipped with Gap 1 v1. The 113-second perf issue from v1 was list-path-specific (per-row UDF evaluation across tens of thousands of rows); single-row by-id calls are microseconds, so the UDFs are perf-safe here. Zero sproc edits — the entire fix is Python.
+
+New `shared/access.py`:
+- `EntityNotAccessibleError` exception
+- `assert_can_access_{bill, bill_credit, expense, project}(entity_id)` — admin / null-actor short-circuits, else `SELECT dbo.UserCanAccess<X>(@uid, 0, @id)`, raises on 0
+- Mapped to HTTP 404 (not 403) via global FastAPI exception handler in `app.py` so the URL doesn't confirm the entity exists
+
+### Surface gated (9 services)
+- `BillService` — read_by_{id, public_id, bill_number, bill_number_and_vendor_public_id}
+- `BillLineItemService` — read_by_{id, public_id, bill_id, project_id}
+- `BillCreditService` — read_by_{id, public_id, credit_number_and_vendor_public_id}
+- `BillCreditLineItemService` — read_by_{id, public_id, bill_credit_id}
+- `ExpenseService` — read_by_{id, public_id, reference_number_and_vendor_public_id}
+- `ExpenseLineItemService` — read_by_{id, public_id, expense_id}
+- `InvoiceService` — read_by_{id, public_id, invoice_number} (gated via parent project_id)
+- `InvoiceLineItemService` — read_by_{id, public_id, invoice_id} (loads parent invoice via `InvoiceRepository` directly to avoid recursive access checks)
+- `ContractLaborService` — read_by_{id, public_id} raise; read_by_{vendor_id, vendor_public_id, billing_period, status, import_batch_id} filter list to accessible-only via `_filter_accessible()`
+
+Mutations (update / delete / complete) inherit gating because they all call `read_by_public_id` first.
+
+### Smoke validation (against prod)
+As Cassidy (uid=18, 1 UserProject row, IsSystemAdmin=False):
+- Bill 2910 (in-set) → 200
+- Bill 17 (out-of-set) → `EntityNotAccessibleError(Bill 17)` → 404
+- BillService end-to-end via `read_by_public_id` — same outcomes
+
+As admin: 200 on out-of-set Bill. Null-actor (system context): bypass works.
+
+### Design notes / non-obvious calls
+- **InvoiceLineItem gating loads parent via `InvoiceRepository` not `InvoiceService`** — using the service would recurse through its own `assert_can_access_project` and double-charge per-line.
+- **ContractLabor list-returning methods filter post-fetch in Python** rather than at sproc layer. Acceptable because most CL queries are scoped to a small vendor / billing-period set; the alternative (extending each sproc with `@ActorUserId` + WHERE clause) wasn't worth it for this scope.
+- **By-vendor / by-billing-period / by-status / by-import-batch on ContractLabor were not on the original Gap 1 list-path filter** — so this pass closed a real leak, not just hardened by-id.
+- Used the existing UDFs (`dbo.UserCanAccessBill` etc.) rather than writing new ones because they're correct for single-row checks; v1's perf issue was query shape, not the UDFs themselves.
+
+### Files touched (11)
+- `shared/access.py` (new, ~85 lines)
+- `app.py` (added `EntityNotAccessibleError` exception handler)
+- `entities/bill/business/service.py`
+- `entities/bill_line_item/business/service.py`
+- `entities/bill_credit/business/service.py`
+- `entities/bill_credit_line_item/business/service.py`
+- `entities/expense/business/service.py`
+- `entities/expense_line_item/business/service.py`
+- `entities/invoice/business/service.py`
+- `entities/invoice_line_item/business/service.py`
+- `entities/contract_labor/business/service.py`
+
+### TODO impact
+- Mark "Gap 1 tightening pass — direct-URL scoping" complete
+- Empty-bill edge case still acceptable per the model
+
+---
+
 ## Session: Function App scheduler reliability gaps — root-cause + fix (May 6, 2026)
 
 ### Overview

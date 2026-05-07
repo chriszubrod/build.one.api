@@ -9,6 +9,7 @@ from typing import Any, List, Optional
 # Third-party Imports
 
 # Local Imports
+from shared.access import assert_can_access_bill
 from shared.authz import current_user_id, current_is_system_admin
 from entities.attachment.business.service import AttachmentService
 from entities.bill.api.schemas import BillUpdate
@@ -516,30 +517,46 @@ class BillService:
         """
         Read a bill by ID.
         """
-        return self.repo.read_by_id(id)
+        bill = self.repo.read_by_id(id)
+        if bill is None:
+            return None
+        assert_can_access_bill(bill.id)
+        return bill
 
     def read_by_public_id(self, public_id: str) -> Optional[Bill]:
         """
         Read a bill by public ID.
         """
-        return self.repo.read_by_public_id(public_id)
+        bill = self.repo.read_by_public_id(public_id)
+        if bill is None:
+            return None
+        assert_can_access_bill(bill.id)
+        return bill
 
     def read_by_bill_number(self, bill_number: str) -> Optional[Bill]:
         """
         Read a bill by bill number.
         """
-        return self.repo.read_by_bill_number(bill_number)
+        bill = self.repo.read_by_bill_number(bill_number)
+        if bill is None:
+            return None
+        assert_can_access_bill(bill.id)
+        return bill
 
     def read_by_bill_number_and_vendor_public_id(self, bill_number: str, vendor_public_id: str) -> Optional[Bill]:
         """
         Read a bill by bill number and vendor public ID.
         """
         vendor = VendorService().read_by_public_id(public_id=vendor_public_id)
-        
+
         if not vendor:
             return None
-        
-        return self.repo.read_by_bill_number_and_vendor_id(bill_number=bill_number, vendor_id=vendor.id)
+
+        bill = self.repo.read_by_bill_number_and_vendor_id(bill_number=bill_number, vendor_id=vendor.id)
+        if bill is None:
+            return None
+        assert_can_access_bill(bill.id)
+        return bill
 
     def sync_attachments_to_sharepoint(self, bill_public_id: str) -> dict:
         """

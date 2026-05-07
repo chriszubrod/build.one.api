@@ -7,9 +7,22 @@ from decimal import Decimal
 # Local Imports
 from entities.invoice_line_item.business.model import InvoiceLineItem
 from entities.invoice_line_item.persistence.repo import InvoiceLineItemRepository
+from entities.invoice.persistence.repo import InvoiceRepository
+from shared.access import assert_can_access_project
 
 
 VALID_SOURCE_TYPES = {"BillLineItem", "ExpenseLineItem", "BillCreditLineItem", "ExpenseRefundLineItem", "Manual"}
+
+
+def _assert_can_access_invoice(invoice_id: Optional[int]) -> None:
+    """Gate by the parent Invoice's project_id. Loads via repo to avoid recursive
+    access checks through InvoiceService."""
+    if invoice_id is None:
+        return
+    invoice = InvoiceRepository().read_by_id(invoice_id)
+    if invoice is None:
+        return
+    assert_can_access_project(invoice.project_id)
 
 
 class InvoiceLineItemService:
@@ -67,12 +80,21 @@ class InvoiceLineItemService:
         return self.repo.read_all()
 
     def read_by_id(self, id: int) -> Optional[InvoiceLineItem]:
-        return self.repo.read_by_id(id)
+        line_item = self.repo.read_by_id(id)
+        if line_item is None:
+            return None
+        _assert_can_access_invoice(line_item.invoice_id)
+        return line_item
 
     def read_by_public_id(self, public_id: str) -> Optional[InvoiceLineItem]:
-        return self.repo.read_by_public_id(public_id)
+        line_item = self.repo.read_by_public_id(public_id)
+        if line_item is None:
+            return None
+        _assert_can_access_invoice(line_item.invoice_id)
+        return line_item
 
     def read_by_invoice_id(self, invoice_id: int) -> list[InvoiceLineItem]:
+        _assert_can_access_invoice(invoice_id)
         return self.repo.read_by_invoice_id(invoice_id=invoice_id)
 
     def update_by_public_id(

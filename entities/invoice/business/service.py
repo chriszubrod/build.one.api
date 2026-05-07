@@ -9,6 +9,7 @@ from typing import Any, Optional
 # Local Imports
 from entities.invoice.business.model import Invoice
 from entities.invoice.persistence.repo import InvoiceRepository
+from shared.access import assert_can_access_project
 from shared.authz import current_user_id, current_is_system_admin
 from entities.payment_term.business.service import PaymentTermService
 from entities.project.business.service import ProjectService
@@ -173,13 +174,25 @@ class InvoiceService:
         )
 
     def read_by_id(self, id: int) -> Optional[Invoice]:
-        return self.repo.read_by_id(id)
+        invoice = self.repo.read_by_id(id)
+        if invoice is None:
+            return None
+        assert_can_access_project(invoice.project_id)
+        return invoice
 
     def read_by_public_id(self, public_id: str) -> Optional[Invoice]:
-        return self.repo.read_by_public_id(public_id)
+        invoice = self.repo.read_by_public_id(public_id)
+        if invoice is None:
+            return None
+        assert_can_access_project(invoice.project_id)
+        return invoice
 
     def read_by_invoice_number(self, invoice_number: str) -> Optional[Invoice]:
-        return self.repo.read_by_invoice_number(invoice_number)
+        invoice = self.repo.read_by_invoice_number(invoice_number)
+        if invoice is None:
+            return None
+        assert_can_access_project(invoice.project_id)
+        return invoice
 
     def update_by_public_id(
         self,

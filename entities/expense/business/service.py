@@ -13,6 +13,7 @@ from entities.expense.business.model import Expense
 from entities.expense.persistence.repo import ExpenseRepository
 from entities.attachment.business.service import AttachmentService
 from entities.project.business.service import ProjectService
+from shared.access import assert_can_access_expense
 from shared.authz import current_user_id, current_is_system_admin
 from entities.vendor.business.service import VendorService
 from entities.sub_cost_code.business.service import SubCostCodeService
@@ -214,13 +215,21 @@ class ExpenseService:
         """
         Read an expense by ID.
         """
-        return self.repo.read_by_id(id)
+        expense = self.repo.read_by_id(id)
+        if expense is None:
+            return None
+        assert_can_access_expense(expense.id)
+        return expense
 
     def read_by_public_id(self, public_id: str) -> Optional[Expense]:
         """
         Read an expense by public ID.
         """
-        return self.repo.read_by_public_id(public_id)
+        expense = self.repo.read_by_public_id(public_id)
+        if expense is None:
+            return None
+        assert_can_access_expense(expense.id)
+        return expense
 
     def read_by_reference_number_and_vendor_public_id(self, reference_number: str, vendor_public_id: str) -> Optional[Expense]:
         """
@@ -229,7 +238,11 @@ class ExpenseService:
         vendor = VendorService().read_by_public_id(public_id=vendor_public_id)
         if not vendor:
             return None
-        return self.repo.read_by_reference_number_and_vendor_id(reference_number=reference_number, vendor_id=vendor.id)
+        expense = self.repo.read_by_reference_number_and_vendor_id(reference_number=reference_number, vendor_id=vendor.id)
+        if expense is None:
+            return None
+        assert_can_access_expense(expense.id)
+        return expense
 
     def update_by_public_id(
         self,

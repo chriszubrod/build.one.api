@@ -9,6 +9,7 @@ from decimal import Decimal
 from entities.bill_credit.business.model import BillCredit
 from entities.bill_credit.persistence.repo import BillCreditRepository
 from entities.vendor.business.service import VendorService
+from shared.access import assert_can_access_bill_credit
 from shared.authz import current_user_id, current_is_system_admin
 
 logger = logging.getLogger(__name__)
@@ -122,13 +123,21 @@ class BillCreditService:
         """
         Read a bill credit by ID.
         """
-        return self.repo.read_by_id(id)
+        bill_credit = self.repo.read_by_id(id)
+        if bill_credit is None:
+            return None
+        assert_can_access_bill_credit(bill_credit.id)
+        return bill_credit
 
     def read_by_public_id(self, public_id: str) -> Optional[BillCredit]:
         """
         Read a bill credit by public ID.
         """
-        return self.repo.read_by_public_id(public_id)
+        bill_credit = self.repo.read_by_public_id(public_id)
+        if bill_credit is None:
+            return None
+        assert_can_access_bill_credit(bill_credit.id)
+        return bill_credit
 
     def read_by_credit_number_and_vendor_public_id(self, credit_number: str, vendor_public_id: str) -> Optional[BillCredit]:
         """
@@ -137,7 +146,11 @@ class BillCreditService:
         vendor = VendorService().read_by_public_id(public_id=vendor_public_id)
         if not vendor:
             return None
-        return self.repo.read_by_credit_number_and_vendor_id(credit_number=credit_number, vendor_id=vendor.id)
+        bill_credit = self.repo.read_by_credit_number_and_vendor_id(credit_number=credit_number, vendor_id=vendor.id)
+        if bill_credit is None:
+            return None
+        assert_can_access_bill_credit(bill_credit.id)
+        return bill_credit
 
     def update_by_public_id(
         self,

@@ -25,6 +25,11 @@ bill_specialist = Agent(
         "add_bill_line_items",
         "update_bill_line_item",
         "remove_bill_line_item",
+        # Reviewer-reply path (Wave 3): find the linked Bill from a PM's
+        # reply conversation, then apply their decision (approval +
+        # SCC + description, or rejection with comments).
+        "find_bill_by_conversation_id",
+        "apply_reviewer_decision",
         # Vendor read tools — for parent name resolution and lookup-by-name
         "search_vendors",
         "find_vendor_for_invoice",
@@ -33,6 +38,7 @@ bill_specialist = Agent(
         "search_sub_cost_codes",
         "read_sub_cost_code_by_number",
         "read_sub_cost_code_by_public_id",
+        "find_sub_cost_code_for_reply",
         # Project reads — required to resolve project_public_id for line items
         "search_projects",
         "read_project_by_public_id",

@@ -35,6 +35,44 @@ When you create a bill from an invoice email, the line item needs a `project_pub
 
 Don't call `find_project_for_invoice` directly — delegation keeps Project work in its specialist where it can be extended (project create/update flows) without bloating bill_specialist's surface.
 
+# Reviewer-reply flow (Wave 3)
+
+Separate from invoice-driven creation: when the email_specialist delegates a Project Manager / Owner reply to a forwarded review notification, you apply their decision to the existing draft Bill instead of creating a new one. The task description from email_specialist will tell you which path you're on.
+
+**Inputs from email_specialist:**
+- `bill_public_id` — already resolved via `find_bill_by_conversation_id`
+- `decision` — `"approved"` or `"rejected"` (PM's interpreted intent; "rejected" also covers "needs revision" / questions)
+- `reviewer_email` — the from-address of the reply (used by the server for authorization)
+- `sub_cost_code_text` — verbatim shorthand the PM typed (`"13.1"`, `"Lumber & Hardware"`, etc.) — only on approval
+- `description_text` — optional; PM's free-text describing the work scope — only on approval
+- `raw_reply_text` — the full reply body (post-quote-stripping)
+
+**Three-tool flow:**
+
+```
+1. (approval only) find_sub_cost_code_for_reply(hint=sub_cost_code_text)
+       → ranked SubCostCode candidates with confidence
+2. apply_reviewer_decision(bill_public_id, decision, reviewer_email,
+                            sub_cost_code_public_id?, description?, raw_reply_text)
+       → server orchestrates: BillLineItem.SubCostCodeId update +
+         Review state transition + Review.Comments persistence
+3. final text
+       → "Applied {decision} on Bill #{number} ({reviewer_user}) — review
+          status now {advance/decline}. {summary of any errors / fallbacks}"
+```
+
+**SubCostCode resolution rules:**
+- Pick the highest-confidence candidate (typically index 0).
+- If two candidates score similarly AND look like different cost codes → surface ambiguity to email_specialist; do NOT call `apply_reviewer_decision`. Email_specialist will stamp `flagged_needs_review` so a human picks.
+- **NEVER assign a CostCode** — every BillLineItem hangs off a SubCostCode. The parent CostCode is reachable via the SubCostCode.
+
+**Common error responses from `apply_reviewer_decision` (HTTP 400):**
+- `"Bill ... is no longer a draft"` — the human already pressed Complete; reviewer decisions are no longer applicable. Tell email_specialist to classify as `internal_reply` (the decision arrived too late).
+- `"Sender ... is not an authorized reviewer"` — the from-address doesn't match a PM/Owner on the bill's project. Tell email_specialist to classify as `internal_reply` (out-of-band sender).
+- `"Review transition refused"` — the Review state machine refused (e.g., already at a final status). The first reviewer's decision wins; tell email_specialist this is a duplicate that doesn't change state.
+
+In all error cases, do NOT retry — return the error context so email_specialist can stamp the right outcome on the EmailMessage.
+
 # Invoice-number normalization
 
 Many vendors append a page suffix to their invoice numbers (e.g. Walker Lumber's `"DOC#: 202980/1"` where `/1` means "page 1 of 1"). The Bill should record `bill_number = "202980"`, not `"202980/1"`.

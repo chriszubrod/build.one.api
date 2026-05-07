@@ -28,7 +28,11 @@ vendor_expense_receipt    — point-of-sale / retail receipt
 customer_payment          — customer paying us
 customer_question         — customer asking about an invoice
 customer_dispute          — customer disputing a charge
-internal_reply            — reply within our own org on an existing thread
+reviewer_reply            — internal reply that is a PM/Owner approval
+                            or rejection on a forwarded review
+                            notification (tracked conversation)
+internal_reply            — reply within our own org on an existing
+                            thread that is NOT a reviewer decision
 internal_forward          — forward from our own org
 vendor_newsletter         — marketing / FYI / non-transactional
 non_actionable            — no actionable content (packing slip, certificate, …)
@@ -41,6 +45,8 @@ unknown                   — you can't tell with confidence
 delegated_to_bill_specialist          — bridged + delegated for draft Bill
 delegated_to_bill_credit_specialist   — (v2; not in your toolbox today)
 delegated_to_expense_specialist       — (v2; not in your toolbox today)
+applied_reviewer_decision             — reviewer-reply path: bill_specialist
+                                        applied the PM's approval/rejection
 flagged_needs_review                  — flagged for human triage
 marked_irrelevant                     — no action; categorized irrelevant
 marked_processed                      — fully done (rare under approval gates)
@@ -65,6 +71,67 @@ Run these in order, top to bottom. Skip downstream steps when an early step shor
 - `subject`, `body_preview`, `body_content` — the prose context
 - `conversation_id` — non-null + subject starts with `Re:` / `Fwd:` means this is a reply on an existing thread (relevant context)
 - `attachments[]` — each has `filename`, `content_type`, `size_bytes`, `is_inline`, `extraction_status`, `blob_uri`
+
+### 1b. Reviewer-reply branch (Wave 3)
+
+**Before** running steps 2–9, check if this email is a Project Manager / Owner reply on a tracked review conversation. If so, branch to the reviewer-reply flow and skip the standard invoice path.
+
+**Detection criteria (all must hold):**
+
+- `from_address` is from our own domain (`@rogersbuild.com` and similar — internal-domain match), AND
+- subject starts with `Re:` (case-insensitive) or `body_content` is clearly a reply (quoted "From:" header, threaded body), AND
+- `conversation_id` is non-null AND **`find_bill_by_conversation_id(conversation_id)` returns a Bill** (i.e. a Bill exists whose source email shares this conversation — that's the tracked-thread test).
+
+If `find_bill_by_conversation_id` returns null → this is not a tracked review thread. Skip this branch and proceed to step 2.
+
+**When the branch fires:**
+
+1. **Parse the reply body for intent.** Look at the *new* text (above the quoted-original separator — typically `From:` / `On … wrote:` / `>` quotes). Match on meaning, not exact words:
+   - **Approval signal** — `"approved"`, `"approve"`, `"OK"`, `"ok"`, `"good"`, `"go ahead"`, `"proceed"`, `"yes"`, `"ship it"`, `"thumbs up"` — pick `decision="approved"`.
+   - **Rejection signal** — `"reject"`, `"no"`, `"not approved"`, `"hold"`, `"don't pay"`, `"declined"`, `"this is wrong"` — pick `decision="rejected"`. Also use `"rejected"` for "needs revision" / questions ("what's this for?", "needs more detail") — the AP reviewer reads `Review.Comments` and re-submits.
+   - **Mixed / ambiguous** — fall back to `flagged_needs_review` (don't apply).
+
+2. **(Approval only) Parse SubCostCode hint and description.** PMs commonly reply with shorthand like:
+   - `"Approved. SCC 13.1 — Lumber & Hardware"` → hint `"13.1"` (or `"Lumber & Hardware"`), description `"Lumber & Hardware"`
+   - `"OK. Site prep — driveway grading. 13.01"` → hint `"13.01"`, description `"Site prep — driveway grading"`
+   - `"Approved 13.1"` → hint `"13.1"`, description `null`
+   - `"Approved"` (no SCC) → fall back to `flagged_needs_review` — the agent must not guess an SCC.
+
+   The bill_specialist will resolve the hint via `find_sub_cost_code_for_reply` so you don't need to normalize (`"13.1"` will match `"13.01"` server-side).
+
+3. **Delegate to bill_specialist.** Call `delegate_to_bill_specialist(task=…)` with this self-contained markdown:
+
+   ````markdown
+   Apply a Project Manager's emailed review decision to a draft Bill.
+
+   **Bill (already located):**
+   - bill_public_id: <uuid from find_bill_by_conversation_id>
+   - bill_number:    202980
+   - vendor_name:    Walker Lumber & Hardware
+   - is_draft:       true
+
+   **Reviewer's decision:**
+   - decision:           approved | rejected
+   - reviewer_email:     zach@rogersbuild.com
+   - sub_cost_code_text: "13.1"   ← only on approval; verbatim PM shorthand
+   - description_text:   "Lumber & Hardware"   ← only on approval; null when PM didn't supply
+   - raw_reply_text:     <full new-text portion of the reply, post-quote-stripping>
+
+   Flow: find_sub_cost_code_for_reply (approval only) → apply_reviewer_decision.
+   Pick the highest-confidence SCC candidate; surface ambiguity if multiple score similarly.
+   Errors are returned as 400 — relay them so I can stamp the right outcome.
+   ````
+
+4. **Stamp the outcome based on bill_specialist's response:**
+   - Success → `mark_email_outcome(outcome="processed", classification="reviewer_reply", decided_action="applied_reviewer_decision", classification_reason="…", confidence=0.95+)`.
+   - bill_specialist returned an error citing "no longer a draft" → `internal_reply` + `marked_irrelevant` (the human already pressed Complete; the decision arrived too late).
+   - bill_specialist returned "not an authorized reviewer" → `internal_reply` + `marked_irrelevant` (sender isn't on the recipient list — out-of-band).
+   - bill_specialist returned "Review transition refused" (final state already) → `internal_reply` + `marked_irrelevant` (a prior reviewer's decision already won).
+   - SCC ambiguity / unparseable body → `flagged_needs_review`.
+
+5. **Skip steps 2–9.** The reviewer-reply branch is terminal.
+
+If detection fails (not a reply, or no tracked Bill) → continue to step 2.
 
 ### 2. Look up sender history
 

@@ -269,6 +269,42 @@ class SubCostCodeRepository:
             logger.error(f"Error during upsert sub cost code: {error}")
             raise map_database_error(error)
 
+    def find_for_reply(self, *, hint: str) -> list:
+        """Multi-strategy ranked SubCostCode lookup tolerant of PM-typed
+        shorthand. Wraps the `FindSubCostCodeForReply` sproc.
+
+        Each row includes confidence + strategy + matched_term so the
+        agent can pick the best match and surface ambiguity if multiple
+        candidates score similarly.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="FindSubCostCodeForReply",
+                    params={"Hint": hint},
+                )
+                out = []
+                for row in cursor.fetchall():
+                    out.append({
+                        "sub_cost_code": {
+                            "id": row.SubCostCodeId,
+                            "public_id": row.SubCostCodePublicId,
+                            "number": row.Number,
+                            "name": row.Name,
+                            "cost_code_id": row.CostCodeId,
+                            "aliases": row.Aliases,
+                        },
+                        "confidence": float(row.Confidence) if row.Confidence is not None else None,
+                        "strategy": row.Strategy,
+                        "matched_term": row.MatchedTerm,
+                    })
+                return out
+        except Exception as error:
+            logger.error(f"Error during find_sub_cost_code_for_reply: {error}")
+            raise map_database_error(error)
+
     def delete_by_id(self, id: int) -> Optional[SubCostCode]:
         """
         Delete sub cost code by ID.

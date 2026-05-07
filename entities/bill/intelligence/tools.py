@@ -670,12 +670,144 @@ remove_bill_line_item = Tool(
 )
 
 
+# ─── Reviewer-reply tools (Wave 3) ───────────────────────────────────────
+
+
+class _FindBillByConversationIdArgs(BaseModel):
+    conversation_id: str = Field(
+        description=(
+            "MS Graph ConversationId from an inbound email. The reviewer-"
+            "reply path uses this to identify which Bill the PM is "
+            "reviewing — replies inherit the original vendor email's "
+            "ConversationId, and the linked Bill stamps "
+            "SourceEmailMessageId on the EmailMessage from that thread."
+        ),
+    )
+
+
+async def _find_bill_by_conversation_id(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = _FindBillByConversationIdArgs(**args)
+    from urllib.parse import quote
+    return await ctx.call_api(
+        "GET",
+        f"/api/v1/get/bill/find-by-conversation-id?conversation_id={quote(parsed.conversation_id)}",
+    )
+
+
+find_bill_by_conversation_id = Tool(
+    name="find_bill_by_conversation_id",
+    description=(
+        "Find the Bill linked to an email conversation. Use during the "
+        "reviewer-reply flow: when an inbound email is identified as a "
+        "reply on a tracked conversation, call this with the email's "
+        "`conversation_id` to learn which Bill the PM is reviewing.\n\n"
+        "Returns null when no Bill is linked (the conversation isn't a "
+        "tracked review thread). Returns a slim payload — `public_id`, "
+        "`bill_number`, `vendor_name`, `total_amount`, `is_draft` — "
+        "when one exists."
+    ),
+    input_schema=input_schema_from(_FindBillByConversationIdArgs),
+    handler=_find_bill_by_conversation_id,
+)
+
+
+class ApplyReviewerDecisionArgs(BaseModel):
+    bill_public_id: str = Field(
+        description="The Bill's public_id (UUID). Get this from `find_bill_by_conversation_id`.",
+    )
+    decision: str = Field(
+        description=(
+            "Either 'approved' or 'rejected'. 'rejected' is also used "
+            "for 'needs revision' / questions — put the human's text in "
+            "`raw_reply_text` and the AP reviewer reads it. The decision "
+            "comes from interpreting the PM's reply body."
+        ),
+    )
+    reviewer_email: str = Field(
+        description=(
+            "The from-address of the reviewer's reply. The server "
+            "authorizes this against the Bill's recipient set (PM or "
+            "Owner via UserProject + Role). Replies from unauthorized "
+            "addresses are refused — fall back to `flagged_needs_review`."
+        ),
+    )
+    sub_cost_code_public_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Required when decision='approved'. Resolve via "
+            "`find_sub_cost_code_for_reply` first; pass the highest-"
+            "confidence candidate's public_id. Omit on rejection."
+        ),
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional. When the PM's reply spells out a description for "
+            "the work ('site prep — driveway grading'), pass it here so "
+            "the summary BillLineItem.description gets updated. Omit "
+            "when the PM only stamped approval without a description."
+        ),
+    )
+    raw_reply_text: Optional[str] = Field(
+        default=None,
+        description=(
+            "The PM's reply body verbatim (post-quote-stripping). "
+            "Persisted as Review.Comments for the audit trail and "
+            "shown to AP on rejection / needs-review."
+        ),
+    )
+
+
+async def _apply_reviewer_decision(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = ApplyReviewerDecisionArgs(**args)
+    body = {
+        "decision": parsed.decision,
+        "reviewer_email": parsed.reviewer_email,
+        "sub_cost_code_public_id": parsed.sub_cost_code_public_id,
+        "description": parsed.description,
+        "raw_reply_text": parsed.raw_reply_text,
+    }
+    return await ctx.call_api(
+        "POST",
+        f"/api/v1/bill/{parsed.bill_public_id}/apply-reviewer-decision",
+        body=body,
+    )
+
+
+apply_reviewer_decision = Tool(
+    name="apply_reviewer_decision",
+    description=(
+        "Apply a Project Manager's emailed approval or rejection to a "
+        "draft Bill. The server orchestrates: validates the Bill is "
+        "still draft, authorizes the sender against the recipient set, "
+        "updates the summary BillLineItem (sub_cost_code + description) "
+        "on approval, and transitions the Review state with "
+        "`raw_reply_text` persisted in Review.Comments.\n\n"
+        "Required flow:\n"
+        "  1. find_bill_by_conversation_id → get bill_public_id\n"
+        "  2. (approval only) find_sub_cost_code_for_reply → resolve SCC\n"
+        "  3. apply_reviewer_decision → applies the change\n\n"
+        "ALWAYS assign `sub_cost_code_public_id` — never `cost_code_id`. "
+        "The convention is: every BillLineItem hangs off a SubCostCode; "
+        "the parent CostCode is reachable via the SubCostCode.\n\n"
+        "Errors are returned as 400 with descriptive text — read the "
+        "message and decide: retry with a corrected SCC, fall back to "
+        "`flagged_needs_review`, or classify the email as "
+        "`internal_reply` if the bill is already Completed (the human "
+        "has the final word once `complete_bill` runs)."
+    ),
+    input_schema=input_schema_from(ApplyReviewerDecisionArgs),
+    handler=_apply_reviewer_decision,
+)
+
+
 # ─── Self-register ───────────────────────────────────────────────────────
 
 for _tool in (
     search_bills,
     read_bill_by_public_id,
     read_bill_by_number_and_vendor,
+    find_bill_by_conversation_id,
     create_bill,
     update_bill,
     delete_bill,
@@ -683,5 +815,6 @@ for _tool in (
     add_bill_line_items,
     update_bill_line_item,
     remove_bill_line_item,
+    apply_reviewer_decision,
 ):
     register(_tool)

@@ -113,6 +113,14 @@ class SubCostCodeService:
         """
         return self.repo.upsert(number=number, name=name, description=description, cost_code_id=cost_code_id, aliases=aliases)
 
+    def find_for_reply(self, *, hint: str) -> List[dict]:
+        """Multi-strategy ranked lookup for reviewer-reply parsing.
+        Wraps `FindSubCostCodeForReply` sproc. Returns up to 3 dicts
+        (not SubCostCode dataclasses, since the strategy + confidence +
+        matched_term metadata is reply-specific).
+        """
+        return self.repo.find_for_reply(hint=hint)
+
     def update_by_public_id(
         self,
         public_id: str,

@@ -387,6 +387,50 @@ delete_sub_cost_code = Tool(
 )
 
 
+class FindForReplyArgs(BaseModel):
+    hint: str = Field(
+        description=(
+            "The PM-typed shorthand from the reply body (e.g. `13.1`, "
+            "`13.01`, `Lumber & Hardware`, `materials`). The server runs "
+            "a multi-strategy ranked lookup: exact number → segment-"
+            "padded number (so `13.1` matches `13.01`) → exact alias → "
+            "substring on aliases / name. Pass the PM's text verbatim — "
+            "do NOT pre-normalize."
+        ),
+    )
+
+
+async def _find_sub_cost_code_for_reply(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = FindForReplyArgs(**args)
+    return await ctx.call_api(
+        "GET",
+        f"/api/v1/get/sub-cost-code/find-for-reply?hint={quote(parsed.hint)}",
+    )
+
+
+find_sub_cost_code_for_reply = Tool(
+    name="find_sub_cost_code_for_reply",
+    description=(
+        "Multi-strategy ranked SubCostCode lookup tolerant of the "
+        "shorthand a Project Manager types in an emailed approval. "
+        "Use this — not `search_sub_cost_codes` — when applying a "
+        "reviewer-reply decision.\n\n"
+        "Strategies (descending confidence):\n"
+        "  • 1.00  exact_number             — Number = hint\n"
+        "  • 0.95  exact_number_normalized  — pads `13.1` → `13.01`\n"
+        "  • 0.90  exact_alias              — Aliases pipe-segment match\n"
+        "  • 0.80  substring_alias          — Aliases contains hint\n"
+        "  • 0.75  substring_name           — Name contains hint\n\n"
+        "Returns up to 3 candidates. Pick the highest-confidence match. "
+        "If two candidates have similar confidence and look like "
+        "different cost codes, surface the ambiguity (do NOT guess) — "
+        "fall back to `flagged_needs_review` so a human can decide."
+    ),
+    input_schema=input_schema_from(FindForReplyArgs),
+    handler=_find_sub_cost_code_for_reply,
+)
+
+
 # ─── Self-register ───────────────────────────────────────────────────────
 
 for _tool in (
@@ -395,6 +439,7 @@ for _tool in (
     read_sub_cost_code_by_public_id,
     read_sub_cost_code_by_number,
     read_sub_cost_code_by_alias,
+    find_sub_cost_code_for_reply,
     create_sub_cost_code,
     update_sub_cost_code,
     delete_sub_cost_code,

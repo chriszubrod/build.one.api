@@ -184,6 +184,66 @@ def get_bill_completion_result_router(public_id: str, current_user: dict = Depen
     return item_response(result)
 
 
+@router.get("/get/bill/find-by-conversation-id")
+def find_bill_by_conversation_id_router(
+    conversation_id: str = Query(..., description="MS Graph ConversationId from a polled email."),
+    current_user: dict = Depends(require_module_api(Modules.BILLS)),
+):
+    """Find the Bill linked to an email conversation.
+
+    Used by the email_specialist agent during reviewer-reply processing:
+    a PM's reply lands in the same MS Graph conversation as the original
+    vendor email; this lookup returns the Bill that was created from
+    that thread (via Bill.SourceEmailMessageId → EmailMessage.ConversationId).
+
+    Returns null when no Bill is linked to the conversation, or a slim
+    payload (public_id, bill_number, total_amount, is_draft, vendor_name,
+    source_email_message_id, conversation_id) when one exists.
+    """
+    result = BillRepository().read_slim_by_conversation_id(conversation_id)
+    return item_response(result)
+
+
+@router.post("/bill/{public_id}/apply-reviewer-decision")
+def apply_reviewer_decision_router(
+    public_id: str,
+    body: dict,
+    current_user: dict = Depends(require_module_api(Modules.BILLS, "can_update")),
+):
+    """Apply an emailed Project Manager / Owner review decision to a Bill.
+
+    Wave 3 — invoked by the bill_specialist agent when delegated from
+    email_specialist for a `reviewer_reply`. The orchestrator validates
+    the bill is still draft, authorizes the sender against the same
+    recipient set the notification targeted, updates the summary
+    BillLineItem on approval (sub_cost_code + description), and
+    transitions the Review state (advance for approval, decline for
+    rejection) with `raw_reply_text` persisted in `Review.Comments`.
+
+    Body:
+      decision:                'approved' | 'rejected'
+      reviewer_email:          string (must match a PM/Owner on the bill's project)
+      sub_cost_code_public_id: string  (required when decision='approved')
+      description:             string  (optional; updates the summary line's description)
+      raw_reply_text:          string  (the PM's reply body, for audit)
+
+    Errors are returned as ValueError → HTTP 400 with a descriptive
+    message the agent can read and recover from.
+    """
+    try:
+        result = BillService().apply_reviewer_decision(
+            bill_public_id=public_id,
+            decision=body.get("decision"),
+            reviewer_email=body.get("reviewer_email"),
+            sub_cost_code_public_id=body.get("sub_cost_code_public_id"),
+            description=body.get("description"),
+            raw_reply_text=body.get("raw_reply_text"),
+        )
+        return item_response(result)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
+
+
 @router.get("/get/bill/{public_id}")
 async def get_bill_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS))):
     """

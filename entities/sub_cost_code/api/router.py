@@ -95,6 +95,32 @@ def search_sub_cost_codes_router(
     return list_response([scc.to_dict() for scc in matches])
 
 
+@router.get("/get/sub-cost-code/find-for-reply")
+def find_sub_cost_code_for_reply_router(
+    hint: str,
+    current_user: dict = Depends(require_module_api(Modules.COST_CODES)),
+):
+    """Multi-strategy ranked SubCostCode lookup for reviewer-reply parsing.
+
+    Used by the bill_specialist agent when applying an emailed Project
+    Manager approval. PMs reply with shorthand ("13.1") that doesn't
+    always match the canonical Number ("13.01"); this sproc normalizes
+    + falls back through aliases + name substring.
+
+    Strategies (descending confidence):
+      1.00  exact_number             — Number = hint
+      0.95  exact_number_normalized  — segment-pad to 2 digits ("13.1" → "13.01")
+      0.90  exact_alias              — pipe-delimited Aliases value matches
+      0.80  substring_alias          — Aliases CONTAINS hint
+      0.75  substring_name           — Name CONTAINS hint
+
+    Returns up to 3 candidates. Pick the highest-confidence match;
+    surface ambiguity if multiple are close.
+    """
+    matches = service.find_for_reply(hint=hint)
+    return list_response(matches)
+
+
 @router.get("/get/sub-cost-code/{public_id}")
 def get_sub_cost_code_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.COST_CODES))):
     """

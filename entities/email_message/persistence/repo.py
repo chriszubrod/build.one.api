@@ -17,6 +17,7 @@ EmailAttachmentRepository:
 """
 import base64
 import logging
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
@@ -142,6 +143,30 @@ class EmailMessageRepository:
                 return self._from_db(cursor.fetchone())
         except Exception as error:
             logger.error(f"Error reading email message by graph_message_id: {error}")
+            raise map_database_error(error)
+
+    def read_active_conversation_ids(
+        self,
+        *,
+        since_utc: datetime,
+        max_rows: int = 50,
+    ) -> list[str]:
+        """Return DISTINCT non-null ConversationIds from EmailMessage rows
+        created since `since_utc`, up to `max_rows`. Used by the poll
+        service (Wave 3 Phase C) to expand the inbox filter beyond
+        Blue-tagged messages so PM replies on tracked conversations get
+        ingested automatically without a manual category tag."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadActiveConversationIds",
+                    params={"SinceUtc": since_utc, "MaxRows": max_rows},
+                )
+                return [row.ConversationId for row in cursor.fetchall() if row.ConversationId]
+        except Exception as error:
+            logger.error(f"Error reading active conversation ids: {error}")
             raise map_database_error(error)
 
     def update_status(self, *, id: int, processing_status: str,

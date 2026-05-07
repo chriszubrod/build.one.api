@@ -126,6 +126,38 @@ GO
 
 GO
 
+-- Active conversation IDs from recent EmailMessage rows. Used by the
+-- poll service (Wave 3 Phase C) to expand the inbox filter beyond
+-- "Blue category" to also include any conversation we are already
+-- tracking — so PM replies on a forwarded review notification get
+-- ingested automatically without a manual category tag.
+--
+-- Returns DISTINCT non-null ConversationId values, ordered by the most
+-- recent CreatedDatetime per conversation. TOP-bounded to keep the
+-- generated $filter URL within reasonable length limits (each Graph
+-- ConversationId is ~150 chars).
+CREATE OR ALTER PROCEDURE ReadActiveConversationIds
+(
+    @SinceUtc DATETIME2(3),
+    @MaxRows INT = 50
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP (@MaxRows)
+        [ConversationId]
+    FROM (
+        SELECT [ConversationId], MAX([CreatedDatetime]) AS LastSeen
+        FROM dbo.[EmailMessage]
+        WHERE [ConversationId] IS NOT NULL
+          AND [CreatedDatetime] >= @SinceUtc
+        GROUP BY [ConversationId]
+    ) g
+    ORDER BY g.LastSeen DESC;
+END;
+GO
+
 CREATE OR ALTER PROCEDURE UpsertEmailMessage
 (
     @GraphMessageId NVARCHAR(255),

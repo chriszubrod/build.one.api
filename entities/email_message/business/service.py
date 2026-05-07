@@ -146,11 +146,32 @@ class MailboxPollService:
                 "errors": [],
             }
 
-        # Filter: messages categorized 'Agent: Process'. We page through
-        # the result and skip any that already carry an outcome category
-        # (re-tagged after a previous run) — categories aren't mutually
-        # exclusive in Graph, so client-side filtering keeps this honest.
-        filter_query = f"categories/any(c:c eq '{AGENT_PROCESS}')"
+        # Filter: messages categorized 'Blue category' (the human's
+        # explicit submit signal) PLUS messages on conversations we
+        # already track (Wave 3 Phase C — auto-track replies on
+        # forwarded review threads so PM/Owner replies enter the
+        # pipeline without a manual category tag).
+        #
+        # Tracked = recent EmailMessage rows (default 14 days) with
+        # non-null ConversationId. Capped to 50 most recent conversations
+        # to keep the generated $filter URL within Graph's length limits
+        # (~150 chars per ConversationId × 50 ≈ 7.5KB filter body).
+        # Beyond the cap, the manual Blue-tag fallback still works.
+        from datetime import datetime, timedelta, timezone
+        since_utc = datetime.now(timezone.utc) - timedelta(days=14)
+        tracked_conv_ids = self.message_repo.read_active_conversation_ids(
+            since_utc=since_utc, max_rows=50,
+        )
+        category_clause = f"categories/any(c:c eq '{AGENT_PROCESS}')"
+        if tracked_conv_ids:
+            # Escape any single quotes inside ConversationId values
+            # (rare but defensive — base64url alphabet doesn't include
+            # `'`, but better to be safe than sorry).
+            escaped = [c.replace("'", "''") for c in tracked_conv_ids]
+            in_clause = ",".join(f"'{c}'" for c in escaped)
+            filter_query = f"({category_clause}) or conversationId in ({in_clause})"
+        else:
+            filter_query = category_clause
 
         list_result = mail_client.list_messages(
             folder="inbox",

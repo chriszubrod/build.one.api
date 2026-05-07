@@ -32,6 +32,10 @@ class ProjectCreate(BaseModel):
         max_length=20,
         description="The abbreviation of the project."
     )
+    notes: Optional[str] = Field(
+        default=None,
+        description="Free-text notes — visible in the UI and read by the bill_specialist / project_specialist agents for project-specific guidance (e.g. address aliases)."
+    )
 
 
 class ProjectUpdate(BaseModel):
@@ -61,4 +65,8 @@ class ProjectUpdate(BaseModel):
         default=None,
         max_length=20,
         description="The abbreviation of the project."
+    )
+    notes: Optional[str] = Field(
+        default=None,
+        description="Free-text notes — visible in the UI and read by the bill_specialist / project_specialist agents for project-specific guidance (e.g. address aliases)."
     )

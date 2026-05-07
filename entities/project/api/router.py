@@ -52,6 +52,7 @@ def create_project_router(body: ProjectCreate, current_user: dict = Depends(requ
             "status": body.status,
             "customer_id": customer_id,
             "abbreviation": body.abbreviation,
+            "notes": body.notes,
         },
         workflow_type="project_create",
     )
@@ -187,6 +188,7 @@ def update_project_by_public_id_router(public_id: str, body: ProjectUpdate, curr
             "status": body.status,
             "customer_id": customer_id,
             "abbreviation": body.abbreviation,
+            "notes": body.notes,
         },
         workflow_type="project_update",
     )

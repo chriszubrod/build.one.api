@@ -16,24 +16,36 @@ CREATE TABLE [dbo].[Vendor]
     [IsDraft] BIT NOT NULL DEFAULT 1,
     [IsDeleted] BIT NOT NULL DEFAULT 0,
     [IsContractLabor] BIT NOT NULL DEFAULT 0,
-    -- Free-text per-vendor notes for the bill_specialist agent. Populate
-    -- this with vendor-specific quirks the agent should apply when
-    -- creating bills — e.g. "trim /N suffix from invoice numbers" for
-    -- Walker Lumber, or "default cost code 13.1 for materials". The
-    -- agent reads this via FindVendorForInvoice and applies the
-    -- guidance in its create_bill payload. Free-text on purpose;
-    -- structured rules can come later when patterns stabilize.
-    [IntakeNotes] NVARCHAR(MAX) NULL
+    -- Free-text per-vendor notes — visible in the React Vendor edit
+    -- page and surfaced to the bill_specialist agent via
+    -- FindVendorForInvoice. Use for vendor-specific quirks the agent
+    -- should apply when creating bills — e.g. "trim /N suffix from
+    -- invoice numbers" for Walker Lumber, or context like "ar@…
+    -- forwards from concept@…". Free-text on purpose; structured rules
+    -- can come later when patterns stabilize.
+    [Notes] NVARCHAR(MAX) NULL
 );
 END
 GO
 
--- Idempotent column add for existing environments.
-IF OBJECT_ID('dbo.Vendor', 'U') IS NOT NULL AND NOT EXISTS (
+-- Idempotent column add for existing environments. Renames the
+-- legacy 'IntakeNotes' column when present so the data + UX label
+-- stay aligned ('Notes' is the user-facing name).
+IF OBJECT_ID('dbo.Vendor', 'U') IS NOT NULL AND EXISTS (
     SELECT 1 FROM sys.columns WHERE Name = 'IntakeNotes' AND Object_ID = OBJECT_ID('dbo.Vendor')
+) AND NOT EXISTS (
+    SELECT 1 FROM sys.columns WHERE Name = 'Notes' AND Object_ID = OBJECT_ID('dbo.Vendor')
 )
 BEGIN
-    ALTER TABLE dbo.[Vendor] ADD [IntakeNotes] NVARCHAR(MAX) NULL;
+    EXEC sp_rename 'dbo.Vendor.IntakeNotes', 'Notes', 'COLUMN';
+END
+GO
+
+IF OBJECT_ID('dbo.Vendor', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.columns WHERE Name = 'Notes' AND Object_ID = OBJECT_ID('dbo.Vendor')
+)
+BEGIN
+    ALTER TABLE dbo.[Vendor] ADD [Notes] NVARCHAR(MAX) NULL;
 END
 GO
 
@@ -94,7 +106,9 @@ CREATE OR ALTER PROCEDURE CreateVendor
     @VendorTypeId BIGINT NULL,
     @TaxpayerId BIGINT NULL,
     @IsDraft BIT = 1,
-    @IsContractLabor BIT = 0
+    @IsContractLabor BIT = 0,
+    @Notes NVARCHAR(MAX) = NULL,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -102,7 +116,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Vendor] ([CreatedDatetime], [ModifiedDatetime], [Name], [Abbreviation], [VendorTypeId], [TaxpayerId], [IsDraft], [IsDeleted], [IsContractLabor])
+    INSERT INTO dbo.[Vendor] ([CreatedDatetime], [ModifiedDatetime], [Name], [Abbreviation], [VendorTypeId], [TaxpayerId], [IsDraft], [IsDeleted], [IsContractLabor], [Notes], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -115,8 +129,9 @@ BEGIN
         INSERTED.[TaxpayerId],
         INSERTED.[IsDraft],
         INSERTED.[IsDeleted],
-        INSERTED.[IsContractLabor]
-    VALUES (@Now, @Now, @Name, @Abbreviation, @VendorTypeId, @TaxpayerId, @IsDraft, 0, @IsContractLabor);
+        INSERTED.[IsContractLabor],
+        INSERTED.[Notes]
+    VALUES (@Now, @Now, @Name, @Abbreviation, @VendorTypeId, @TaxpayerId, @IsDraft, 0, @IsContractLabor, @Notes, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;
@@ -140,7 +155,8 @@ BEGIN
         [TaxpayerId],
         [IsDraft],
         [IsDeleted],
-        [IsContractLabor]
+        [IsContractLabor],
+        [Notes]
     FROM dbo.[Vendor]
     WHERE [IsDeleted] = 0
     ORDER BY [Name] ASC;
@@ -168,7 +184,8 @@ BEGIN
         [TaxpayerId],
         [IsDraft],
         [IsDeleted],
-        [IsContractLabor]
+        [IsContractLabor],
+        [Notes]
     FROM dbo.[Vendor]
     WHERE [Id] = @Id AND [IsDeleted] = 0;
 END;
@@ -195,7 +212,8 @@ BEGIN
         [TaxpayerId],
         [IsDraft],
         [IsDeleted],
-        [IsContractLabor]
+        [IsContractLabor],
+        [Notes]
     FROM dbo.[Vendor]
     WHERE [PublicId] = @PublicId AND [IsDeleted] = 0;
 END;
@@ -222,7 +240,8 @@ BEGIN
         [TaxpayerId],
         [IsDraft],
         [IsDeleted],
-        [IsContractLabor]
+        [IsContractLabor],
+        [Notes]
     FROM dbo.[Vendor]
     WHERE [Name] = @Name AND [IsDeleted] = 0;
 END;
@@ -240,7 +259,8 @@ CREATE OR ALTER PROCEDURE UpdateVendorById
     @VendorTypeId BIGINT NULL,
     @TaxpayerId BIGINT NULL,
     @IsDraft BIT = NULL,
-    @IsContractLabor BIT = NULL
+    @IsContractLabor BIT = NULL,
+    @Notes NVARCHAR(MAX) = NULL
 )
 AS
 BEGIN
@@ -272,7 +292,8 @@ BEGIN
         [VendorTypeId] = CASE WHEN @VendorTypeId IS NULL THEN [VendorTypeId] ELSE @VendorTypeId END,
         [TaxpayerId] = CASE WHEN @TaxpayerId IS NULL THEN [TaxpayerId] ELSE @TaxpayerId END,
         [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END,
-        [IsContractLabor] = CASE WHEN @IsContractLabor IS NULL THEN [IsContractLabor] ELSE @IsContractLabor END
+        [IsContractLabor] = CASE WHEN @IsContractLabor IS NULL THEN [IsContractLabor] ELSE @IsContractLabor END,
+        [Notes] = @Notes
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -285,7 +306,8 @@ BEGIN
         INSERTED.[TaxpayerId],
         INSERTED.[IsDraft],
         INSERTED.[IsDeleted],
-        INSERTED.[IsContractLabor]
+        INSERTED.[IsContractLabor],
+        INSERTED.[Notes]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -328,7 +350,8 @@ BEGIN
         INSERTED.[TaxpayerId],
         INSERTED.[IsDraft],
         INSERTED.[IsDeleted],
-        INSERTED.[IsContractLabor]
+        INSERTED.[IsContractLabor],
+        INSERTED.[Notes]
     WHERE [PublicId] = @PublicId AND [IsDeleted] = 0;
 
     COMMIT TRANSACTION;
@@ -459,7 +482,7 @@ BEGIN
         v.[Name]                            AS VendorName,
         v.[Abbreviation]                    AS Abbreviation,
         v.[IsDraft]                         AS IsDraft,
-        v.[IntakeNotes]                     AS IntakeNotes,
+        v.[Notes]                           AS Notes,
         r.Confidence                        AS Confidence,
         r.Strategy                          AS Strategy,
         r.MatchedTerm                       AS MatchedTerm

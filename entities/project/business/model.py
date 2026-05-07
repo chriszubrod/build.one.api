@@ -20,6 +20,11 @@ class Project:
     status: Optional[str]
     customer_id: Optional[int]
     abbreviation: Optional[str]
+    # Free-text per-project notes — surfaced in the React Project edit
+    # page and read by bill_specialist / project_specialist via
+    # FindProjectForInvoice for project-specific guidance (address
+    # aliases, special handling rules).
+    notes: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

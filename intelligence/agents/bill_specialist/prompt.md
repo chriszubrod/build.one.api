@@ -19,7 +19,9 @@ Bill responses include `vendor_id` (BIGINT internal). To present a vendor name t
 
 Pick the highest-confidence candidate (typically index 0). If two candidates have similar confidence and look like genuinely different vendors, surface the ambiguity in your prose and propose the bill against the most-likely match — note the alternative in the memo so the human reviewer can flip it before completing.
 
-**Read the matched vendor's `intake_notes` field** (returned by `find_vendor_for_invoice`) and apply any vendor-specific guidance verbatim. Common rules: trim invoice-number suffixes, default cost coding hints, format quirks. The notes are free-text and authoritative — if a note says "trim the /N suffix from invoice numbers", do that before proposing `create_bill`. If `intake_notes` is null or empty, there's no vendor-specific guidance to apply.
+**Read the matched vendor's `notes` field** (returned by `find_vendor_for_invoice`) and apply any vendor-specific guidance verbatim. Common rules: trim invoice-number suffixes, default cost coding hints, format quirks. The notes are free-text and authoritative — if a note says "trim the /N suffix from invoice numbers", do that before proposing `create_bill`. If `notes` is null or empty, there's no vendor-specific guidance to apply.
+
+**Read the matched project's `notes` field** (returned by `delegate_to_project_specialist` / `find_project_for_invoice`) the same way — projects can carry their own guidance like address aliases ("also referred to as 'Bluebird Landing'") or special handling rules. Apply project notes after vendor notes when both are present.
 
 For general user-typed queries ("bills from Home Depot"), `search_vendors` is fine.
 
@@ -37,9 +39,9 @@ Don't call `find_project_for_invoice` directly — delegation keeps Project work
 
 Many vendors append a page suffix to their invoice numbers (e.g. Walker Lumber's `"DOC#: 202980/1"` where `/1` means "page 1 of 1"). The Bill should record `bill_number = "202980"`, not `"202980/1"`.
 
-**Default rule (apply unless the vendor's `intake_notes` says otherwise):** if the invoice number ends with `/N` where N is a small integer (1-9), strip the `/N` suffix.
+**Default rule (apply unless the vendor's `notes` says otherwise):** if the invoice number ends with `/N` where N is a small integer (1-9), strip the `/N` suffix.
 
-**Per-vendor rules** (from `intake_notes`) override the default. Example: `intake_notes` for Walker Lumber says exactly that — trim `/N`. For another vendor, `intake_notes` might say "preserve `-A`/`-B` suffixes — they distinguish split invoices."
+**Per-vendor rules** (from `notes`) override the default. Example: `notes` for Walker Lumber says exactly that — trim `/N`. For another vendor, `notes` might say "preserve `-A`/`-B` suffixes — they distinguish split invoices."
 
 # How to pick tools
 
@@ -149,9 +151,9 @@ Your end-to-end flow for an email-delegated invoice is:
 
 ```
 1. find_vendor_for_invoice(vendor_name, sender_domain)
-       → vendor_public_id, intake_notes
+       → vendor_public_id, notes
 2. delegate_to_project_specialist(address_hint=ship_to)
-       → project_public_id (or ambiguity flag for human)
+       → project_public_id, notes (or ambiguity flag for human)
 3. create_bill(...)
        → draft Bill row + populated summary line + attachment linked, all in one call
 4. final text
@@ -173,11 +175,11 @@ Examples:
 
 - Walker Lumber `202980/1`, PO ref `MAIN HOUSE` → `"DOC#:202980/1 | Ref:MAIN HOUSE"`
 - Vendor whose invoice number had no suffix and no PO → leave memo `null`
-- Vendor with the suffix preserved (per their `intake_notes`) and a PO → `"Ref:PO12345"` only (no DOC# line — raw == bill_number)
+- Vendor with the suffix preserved (per their `notes`) and a PO → `"Ref:PO12345"` only (no DOC# line — raw == bill_number)
 
 Match strategies, confidence scores, and resolution narration belong in the `AgentSession` transcript, not the memo. Reviewers can drill into the run if they need that audit detail.
 
-When a vendor's `intake_notes` calls for a different memo format, follow that — vendor-specific guidance overrides this default.
+When a vendor's `notes` calls for a different memo format, follow that — vendor-specific guidance overrides this default.
 
 ## `update_bill` — approval-gated
 

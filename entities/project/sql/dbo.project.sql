@@ -17,8 +17,23 @@ CREATE TABLE [dbo].[Project]
     [Status] NVARCHAR(50) NULL,
     [CustomerId] BIGINT NULL,
     [Abbreviation] NVARCHAR(20) NULL,
+    -- Free-text per-project notes — visible in the React Project edit
+    -- page and surfaced to the bill_specialist / project_specialist
+    -- agents via FindProjectForInvoice. Use for project-specific
+    -- guidance like address aliases ("also referred to as 'Bluebird
+    -- Landing'") or special handling rules. Free-text on purpose.
+    [Notes] NVARCHAR(MAX) NULL,
     CONSTRAINT [FK_Project_Customer] FOREIGN KEY ([CustomerId]) REFERENCES [dbo].[Customer]([Id])
 );
+END
+GO
+
+-- Idempotent column add for existing environments.
+IF OBJECT_ID('dbo.Project', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.columns WHERE Name = 'Notes' AND Object_ID = OBJECT_ID('dbo.Project')
+)
+BEGIN
+    ALTER TABLE dbo.[Project] ADD [Notes] NVARCHAR(MAX) NULL;
 END
 GO
 
@@ -31,7 +46,9 @@ CREATE OR ALTER PROCEDURE CreateProject
     @Description NVARCHAR(500),
     @Status NVARCHAR(50),
     @CustomerId BIGINT NULL,
-    @Abbreviation NVARCHAR(20) NULL
+    @Abbreviation NVARCHAR(20) NULL,
+    @Notes NVARCHAR(MAX) = NULL,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -39,7 +56,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Project] ([CreatedDatetime], [ModifiedDatetime], [Name], [Description], [Status], [CustomerId], [Abbreviation])
+    INSERT INTO dbo.[Project] ([CreatedDatetime], [ModifiedDatetime], [Name], [Description], [Status], [CustomerId], [Abbreviation], [Notes], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -50,8 +67,9 @@ BEGIN
         INSERTED.[Description],
         INSERTED.[Status],
         INSERTED.[CustomerId],
-        INSERTED.[Abbreviation]
-    VALUES (@Now, @Now, @Name, @Description, @Status, @CustomerId, @Abbreviation);
+        INSERTED.[Abbreviation],
+        INSERTED.[Notes]
+    VALUES (@Now, @Now, @Name, @Description, @Status, @CustomerId, @Abbreviation, @Notes, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;
@@ -60,7 +78,15 @@ END;
 
 GO
 
+-- RBAC Gap 1: Project list scoped by UserProject membership.
+-- Non-admin users see only Projects they have a UserProject row for.
+-- System admins (@ActorIsSystemAdmin = 1) bypass.
+-- NULL @ActorUserId also bypasses (back-compat during deploy).
 CREATE OR ALTER PROCEDURE ReadProjects
+(
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
+)
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -75,8 +101,16 @@ BEGIN
         [Description],
         [Status],
         [CustomerId],
-        [Abbreviation]
-    FROM dbo.[Project]
+        [Abbreviation],
+        [Notes]
+    FROM dbo.[Project] p
+    WHERE
+        @ActorIsSystemAdmin = 1
+        OR @ActorUserId IS NULL
+        OR EXISTS (
+            SELECT 1 FROM dbo.[UserProject] up
+            WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]
+        )
     ORDER BY [Name] ASC;
 
     COMMIT TRANSACTION;
@@ -88,7 +122,9 @@ GO
 
 CREATE OR ALTER PROCEDURE ReadProjectById
 (
-    @Id BIGINT
+    @Id BIGINT,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
@@ -104,9 +140,18 @@ BEGIN
         [Description],
         [Status],
         [CustomerId],
-        [Abbreviation]
-    FROM dbo.[Project]
-    WHERE [Id] = @Id;
+        [Abbreviation],
+        [Notes]
+    FROM dbo.[Project] p
+    WHERE [Id] = @Id
+      AND (
+            @ActorIsSystemAdmin = 1
+            OR @ActorUserId IS NULL
+            OR EXISTS (
+                SELECT 1 FROM dbo.[UserProject] up
+                WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]
+            )
+      );
 
     COMMIT TRANSACTION;
 END;
@@ -117,7 +162,9 @@ GO
 
 CREATE OR ALTER PROCEDURE ReadProjectByPublicId
 (
-    @PublicId UNIQUEIDENTIFIER
+    @PublicId UNIQUEIDENTIFIER,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
@@ -133,9 +180,18 @@ BEGIN
         [Description],
         [Status],
         [CustomerId],
-        [Abbreviation]
-    FROM dbo.[Project]
-    WHERE [PublicId] = @PublicId;
+        [Abbreviation],
+        [Notes]
+    FROM dbo.[Project] p
+    WHERE [PublicId] = @PublicId
+      AND (
+            @ActorIsSystemAdmin = 1
+            OR @ActorUserId IS NULL
+            OR EXISTS (
+                SELECT 1 FROM dbo.[UserProject] up
+                WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]
+            )
+      );
 
     COMMIT TRANSACTION;
 END;
@@ -146,7 +202,9 @@ GO
 
 CREATE OR ALTER PROCEDURE ReadProjectByName
 (
-    @Name NVARCHAR(50)
+    @Name NVARCHAR(50),
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
@@ -162,9 +220,18 @@ BEGIN
         [Description],
         [Status],
         [CustomerId],
-        [Abbreviation]
-    FROM dbo.[Project]
-    WHERE [Name] = @Name;
+        [Abbreviation],
+        [Notes]
+    FROM dbo.[Project] p
+    WHERE [Name] = @Name
+      AND (
+            @ActorIsSystemAdmin = 1
+            OR @ActorUserId IS NULL
+            OR EXISTS (
+                SELECT 1 FROM dbo.[UserProject] up
+                WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]
+            )
+      );
 
     COMMIT TRANSACTION;
 END;
@@ -181,7 +248,8 @@ CREATE OR ALTER PROCEDURE UpdateProjectById
     @Description NVARCHAR(500),
     @Status NVARCHAR(50),
     @CustomerId BIGINT NULL,
-    @Abbreviation NVARCHAR(20) NULL
+    @Abbreviation NVARCHAR(20) NULL,
+    @Notes NVARCHAR(MAX) = NULL
 )
 AS
 BEGIN
@@ -196,7 +264,8 @@ BEGIN
         [Description] = @Description,
         [Status] = @Status,
         [CustomerId] = CASE WHEN @CustomerId IS NULL THEN [CustomerId] ELSE @CustomerId END,
-        [Abbreviation] = @Abbreviation
+        [Abbreviation] = @Abbreviation,
+        [Notes] = @Notes
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -207,7 +276,8 @@ BEGIN
         INSERTED.[Description],
         INSERTED.[Status],
         INSERTED.[CustomerId],
-        INSERTED.[Abbreviation]
+        INSERTED.[Abbreviation],
+        INSERTED.[Notes]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -236,7 +306,8 @@ BEGIN
         DELETED.[Description],
         DELETED.[Status],
         DELETED.[CustomerId],
-        DELETED.[Abbreviation]
+        DELETED.[Abbreviation],
+        DELETED.[Notes]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
@@ -276,7 +347,8 @@ BEGIN
         p.[Description],
         p.[Status],
         p.[CustomerId],
-        p.[Abbreviation]
+        p.[Abbreviation],
+        p.[Notes]
     FROM dbo.[Project] p
     INNER JOIN dbo.[UserProject] up ON up.[ProjectId] = p.[Id]
     WHERE up.[UserId] = @UserId
@@ -400,6 +472,7 @@ BEGIN
         p.[Name]                            AS ProjectName,
         p.[Abbreviation]                    AS Abbreviation,
         p.[Status]                          AS Status,
+        p.[Notes]                           AS Notes,
         r.Confidence                        AS Confidence,
         r.Strategy                          AS Strategy,
         r.MatchedTerm                       AS MatchedTerm

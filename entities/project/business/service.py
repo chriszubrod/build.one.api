@@ -23,7 +23,7 @@ class ProjectService:
         """Initialize the ProjectService."""
         self.repo = repo or ProjectRepository()
 
-    def create(self, *, tenant_id: int = 1, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None) -> Project:
+    def create(self, *, tenant_id: int = 1, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None, notes: Optional[str] = None) -> Project:
         """
         Create a new project.
         """
@@ -34,6 +34,7 @@ class ProjectService:
             status=status,
             customer_id=customer_id,
             abbreviation=abbreviation,
+            notes=notes,
             created_by_user_id=current_user_id.get(),
         )
 
@@ -139,6 +140,7 @@ class ProjectService:
         status: str = None,
         customer_id: int = None,
         abbreviation: str = None,
+        notes: Optional[str] = None,
     ) -> Optional[Project]:
         """
         Update a project by public ID.
@@ -157,6 +159,11 @@ class ProjectService:
                 existing.customer_id = customer_id
             if abbreviation is not None:
                 existing.abbreviation = abbreviation
+            # React form always sends `notes` on PUT (echoing current
+            # value if unedited). None means field omitted → preserve.
+            # Empty string means user cleared the textarea → store NULL.
+            if notes is not None:
+                existing.notes = notes if notes != "" else None
         return self.repo.update_by_id(existing)
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[Project]:

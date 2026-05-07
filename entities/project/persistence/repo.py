@@ -45,6 +45,7 @@ class ProjectRepository:
                 status=row.Status,
                 customer_id=row.CustomerId,
                 abbreviation=row.Abbreviation,
+                notes=getattr(row, "Notes", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during project mapping: {error}")
@@ -53,7 +54,7 @@ class ProjectRepository:
             logger.error(f"Unexpected error during project mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None, created_by_user_id: Optional[int] = None) -> Project:
+    def create(self, *, tenant_id: int = 1, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None, notes: Optional[str] = None, created_by_user_id: Optional[int] = None) -> Project:
         """
         Create a new project.
         """
@@ -69,6 +70,7 @@ class ProjectRepository:
                         "Status": status,
                         "CustomerId": customer_id,
                         "Abbreviation": abbreviation,
+                        "Notes": notes,
                         "CreatedByUserId": created_by_user_id,
                     },
                 )
@@ -209,13 +211,6 @@ class ProjectRepository:
             logger.error(f"Error during read project by name: {error}")
             raise map_database_error(error)
 
-
-def _bit(flag: Optional[bool]) -> Optional[int]:
-    """SQL Server BIT params take 0/1, not Python bool."""
-    if flag is None:
-        return None
-    return 1 if flag else 0
-
     def find_for_invoice(self, *, address_hint: Optional[str] = None,
                          project_name_hint: Optional[str] = None) -> list[dict]:
         """Multi-strategy ranked Project lookup for invoice classification.
@@ -243,6 +238,10 @@ def _bit(flag: Optional[bool]) -> Optional[int]:
                             "name": row.ProjectName,
                             "abbreviation": row.Abbreviation,
                             "status": row.Status,
+                            # Per-project notes — bill_specialist /
+                            # project_specialist read this for project-
+                            # specific guidance (address aliases, etc.).
+                            "notes": getattr(row, "Notes", None),
                         },
                         "confidence": float(row.Confidence) if row.Confidence is not None else None,
                         "strategy": row.Strategy,
@@ -271,6 +270,7 @@ def _bit(flag: Optional[bool]) -> Optional[int]:
                         "Status": project.status,
                         "CustomerId": project.customer_id,
                         "Abbreviation": project.abbreviation,
+                        "Notes": project.notes,
                     },
                 )
                 row = cursor.fetchone()
@@ -296,3 +296,10 @@ def _bit(flag: Optional[bool]) -> Optional[int]:
         except Exception as error:
             logger.error(f"Error during delete project by ID: {error}")
             raise map_database_error(error)
+
+
+def _bit(flag: Optional[bool]) -> Optional[int]:
+    """SQL Server BIT params take 0/1, not Python bool."""
+    if flag is None:
+        return None
+    return 1 if flag else 0

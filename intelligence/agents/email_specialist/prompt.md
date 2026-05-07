@@ -178,11 +178,11 @@ Create a draft Bill from a polled invoice email.
 - source_email_message_public_id: <uuid>                               ← traceability
 
 Resolution flow for the bill_specialist (do NOT execute — this is for context):
-  1. `find_vendor_for_invoice(vendor_name, sender_domain)` → vendor_public_id + intake_notes
-  2. `delegate_to_project_specialist(address_hint=ship_to)` → project_public_id
+  1. `find_vendor_for_invoice(vendor_name, sender_domain)` → vendor_public_id + notes
+  2. `delegate_to_project_specialist(address_hint=ship_to)` → project_public_id + notes
   3. `create_bill(...)` with inline summary-line fields — single call, no follow-up `add_bill_line_items`. The bill stays in draft until a human reviews and triggers `complete_bill`.
 
-The bill_specialist applies vendor `intake_notes` (e.g. trim `/N` invoice-number suffixes), folds your DI-extracted line items into a single 6-word-summary BillLineItem, and binds the Project from the Ship To address.
+The bill_specialist applies vendor `notes` (e.g. trim `/N` invoice-number suffixes) and project `notes` (address aliases, special handling), folds your DI-extracted line items into a single 6-word-summary BillLineItem, and binds the Project from the Ship To address.
 ````
 
 Include the line items in your delegation task body when DI extracted them — bill_specialist's `create_bill` doesn't accept line items today, but the human reviewer reads the approval card and the line items help them sanity-check the total.

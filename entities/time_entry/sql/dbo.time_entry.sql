@@ -198,7 +198,8 @@ CREATE OR ALTER PROCEDURE CreateTimeEntry
 (
     @UserId BIGINT,
     @WorkDate DATE,
-    @Note NVARCHAR(MAX) NULL
+    @Note NVARCHAR(MAX) NULL,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -207,7 +208,7 @@ BEGIN
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
     INSERT INTO dbo.[TimeEntry] (
-        [CreatedDatetime], [ModifiedDatetime], [UserId], [WorkDate], [Note]
+        [CreatedDatetime], [ModifiedDatetime], [UserId], [WorkDate], [Note], [CreatedByUserId]
     )
     OUTPUT
         INSERTED.[Id],
@@ -219,7 +220,7 @@ BEGIN
         CONVERT(VARCHAR(10), INSERTED.[WorkDate], 120) AS [WorkDate],
         INSERTED.[Note]
     VALUES (
-        @Now, @Now, @UserId, @WorkDate, @Note
+        @Now, @Now, @UserId, @WorkDate, @Note, COALESCE(@CreatedByUserId, 17)
     );
 
     COMMIT TRANSACTION;
@@ -552,7 +553,8 @@ CREATE OR ALTER PROCEDURE CreateTimeLog
     @Latitude DECIMAL(9,6) NULL,
     @Longitude DECIMAL(9,6) NULL,
     @ProjectId BIGINT NULL,
-    @Note NVARCHAR(MAX) NULL
+    @Note NVARCHAR(MAX) NULL,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -561,7 +563,7 @@ BEGIN
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
     INSERT INTO dbo.[TimeLog] (
-        [CreatedDatetime], [ModifiedDatetime], [TimeEntryId], [ClockIn], [ClockOut], [LogType], [Duration], [Latitude], [Longitude], [ProjectId], [Note]
+        [CreatedDatetime], [ModifiedDatetime], [TimeEntryId], [ClockIn], [ClockOut], [LogType], [Duration], [Latitude], [Longitude], [ProjectId], [Note], [CreatedByUserId]
     )
     OUTPUT
         INSERTED.[Id],
@@ -579,7 +581,7 @@ BEGIN
         INSERTED.[ProjectId],
         INSERTED.[Note]
     VALUES (
-        @Now, @Now, @TimeEntryId, @ClockIn, @ClockOut, @LogType, @Duration, @Latitude, @Longitude, @ProjectId, @Note
+        @Now, @Now, @TimeEntryId, @ClockIn, @ClockOut, @LogType, @Duration, @Latitude, @Longitude, @ProjectId, @Note, COALESCE(@CreatedByUserId, 17)
     );
 
     COMMIT TRANSACTION;

@@ -75,6 +75,7 @@ class TimeLogRepository:
         longitude: Optional[Decimal] = None,
         project_id: Optional[int] = None,
         note: Optional[str] = None,
+        created_by_user_id: Optional[int] = None,
     ) -> TimeLog:
         """
         Create a new time log. Create paths are unscoped — the
@@ -96,6 +97,7 @@ class TimeLogRepository:
                         "Longitude": Decimal(str(longitude)) if longitude is not None else None,
                         "ProjectId": project_id,
                         "Note": note,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

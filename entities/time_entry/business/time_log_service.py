@@ -78,6 +78,7 @@ class TimeLogService:
             longitude=longitude,
             project_id=project_id,
             note=note,
+            created_by_user_id=actor_user_id,
         )
 
     def read_by_time_entry_public_id(self, time_entry_public_id: str) -> list[TimeLog]:

@@ -62,6 +62,7 @@ class TimeEntryRepository:
         user_id: int,
         work_date: str,
         note: Optional[str] = None,
+        created_by_user_id: Optional[int] = None,
     ) -> TimeEntry:
         """
         Create a new time entry. Create paths are unscoped — the
@@ -77,6 +78,7 @@ class TimeEntryRepository:
                         "UserId": user_id,
                         "WorkDate": work_date,
                         "Note": note,
+                        "CreatedByUserId": created_by_user_id,
                     },
                 )
                 row = cursor.fetchone()

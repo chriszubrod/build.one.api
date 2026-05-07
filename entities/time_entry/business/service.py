@@ -67,15 +67,22 @@ class TimeEntryService:
             raise ValueError(f"User with public_id '{user_public_id}' not found.")
         user_id = user.id
 
+        # Resolve actor for CreatedByUserId attribution. Caller may pass
+        # explicitly (e.g. clerk-on-behalf-of-worker); else fall back to the
+        # current request's actor; else null lets the sproc DEFAULT (17) fire
+        # for system/scheduler context.
+        actor_user_id = created_by_user_id if created_by_user_id is not None else current_user_id.get()
+
         # Create the time entry
         time_entry = self.repo.create(
             user_id=user_id,
             work_date=work_date,
             note=note,
+            created_by_user_id=actor_user_id,
         )
 
         # Create initial 'draft' status
-        status_user_id = created_by_user_id or user_id
+        status_user_id = actor_user_id or user_id
         TimeEntryStatusRepository().create(
             time_entry_id=time_entry.id,
             status="draft",

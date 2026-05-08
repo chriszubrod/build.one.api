@@ -22,6 +22,7 @@ Tools:
 
 Tools self-register on import.
 """
+import json
 from decimal import Decimal
 from typing import Optional
 
@@ -32,11 +33,42 @@ from intelligence.tools.registry import register
 from intelligence.tools.schema import input_schema_from
 
 
+# Body-content cap on `read_email_message`. Trims the most expensive
+# tool-call output the email_specialist accumulates per turn — vendor
+# statements / marketing emails / threaded reply quotes can run to
+# 200K+ chars, all of which would re-ride every subsequent turn's
+# messages array. 4000 chars covers BodyPreview-equivalent for
+# classification AND the new-text portion of a typical reviewer reply
+# (which sits before quoted history / "On <date>...wrote:" markers).
+# Override per-call with `full_body=true`.
+BODY_CONTENT_TRUNCATE_AT = 4000
+
+
 # ─── Arg shapes ──────────────────────────────────────────────────────────
 
 
 class _PublicIdArgs(BaseModel):
     public_id: str = Field(description="UUID of the EmailMessage or EmailAttachment.")
+
+
+class _ReadEmailMessageArgs(BaseModel):
+    public_id: str = Field(description="UUID of the EmailMessage.")
+    full_body: bool = Field(
+        default=False,
+        description=(
+            f"Optional escape hatch. By default `body_content` is "
+            f"truncated to {BODY_CONTENT_TRUNCATE_AT} chars and a "
+            f"`body_content_truncated_at` field is added so you know "
+            f"the cap fired. The truncated form is sufficient for "
+            f"classification (use body_preview + the leading body) "
+            f"and for parsing reviewer replies (the new-text portion "
+            f"is at the top, before quoted history). Set this to true "
+            f"ONLY when you genuinely need the rest of the body — e.g. "
+            f"the truncation flag fired AND the new-text portion of a "
+            f"reviewer reply spills past the cap. Most calls should "
+            f"omit this."
+        ),
+    )
 
 
 class _SenderHistoryArgs(BaseModel):
@@ -128,10 +160,32 @@ class _OutcomeArgs(BaseModel):
 
 
 async def _read_email_message(args: dict, ctx: ToolContext) -> ToolResult:
-    parsed = _PublicIdArgs(**args)
-    return await ctx.call_api(
+    parsed = _ReadEmailMessageArgs(**args)
+    result = await ctx.call_api(
         "GET", f"/api/v1/get/email-message/{parsed.public_id}"
     )
+    if result.is_error or parsed.full_body:
+        return result
+    # Truncate body_content to keep tool-result re-ride cheap on multi-turn
+    # sessions. Best-effort: if the response shape is unexpected, return
+    # the original unchanged — the agent must never break over a tweaked
+    # envelope.
+    try:
+        if not isinstance(result.content, str):
+            return result
+        payload = json.loads(result.content)
+        inner = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(inner, dict):
+            return result
+        body = inner.get("body_content")
+        if not isinstance(body, str) or len(body) <= BODY_CONTENT_TRUNCATE_AT:
+            return result
+        inner["body_content_full_length"] = len(body)
+        inner["body_content_truncated_at"] = BODY_CONTENT_TRUNCATE_AT
+        inner["body_content"] = body[:BODY_CONTENT_TRUNCATE_AT]
+        return ToolResult(content=json.dumps(payload))
+    except (ValueError, TypeError, KeyError):
+        return result
 
 
 read_email_message = Tool(
@@ -141,8 +195,16 @@ read_email_message = Tool(
         "(from, subject, body, recipients, etc.) PLUS the list of "
         "attachments with their extraction status. Use this as your "
         "first call after picking up a pending email."
+        "\n\n"
+        f"By default `body_content` is truncated to "
+        f"{BODY_CONTENT_TRUNCATE_AT} chars and the response carries "
+        f"`body_content_truncated_at` + `body_content_full_length` "
+        f"fields when the cap fires. The truncated form covers "
+        f"classification + the new-text portion of reviewer replies "
+        f"(which sits at the top, before quoted history). Pass "
+        f"`full_body=true` only when you need the rest — rare."
     ),
-    input_schema=input_schema_from(_PublicIdArgs),
+    input_schema=input_schema_from(_ReadEmailMessageArgs),
     handler=_read_email_message,
 )
 

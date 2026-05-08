@@ -249,15 +249,17 @@ BEGIN
 
     DECLARE @HintNorm NVARCHAR(255) = LTRIM(RTRIM(ISNULL(@Hint, '')));
 
-    -- Segment-pad helper: split @HintNorm on '.', left-pad each segment
-    -- to 2 chars with '0'. "13.1" → "13.01"; "5.2" → "05.02"; "13.01"
-    -- stays "13.01". Limited to single dot (the convention).
+    -- Right-segment pad helper: SubCostCode.Number format is
+    -- "<variable-left>.<2-digit-right>" (e.g. "1.00", "13.01",
+    -- "10.05"). PMs commonly drop trailing zeros ("13.1" instead of
+    -- "13.01", "6.0" instead of "6.00"). Pad the right segment to 2
+    -- chars with leading zeros; leave the left segment as-is. Single
+    -- dot only (the convention).
     DECLARE @PaddedHint NVARCHAR(255) = NULL;
     IF @HintNorm <> '' AND CHARINDEX('.', @HintNorm) > 0
     BEGIN
         DECLARE @LeftPart NVARCHAR(50) = LEFT(@HintNorm, CHARINDEX('.', @HintNorm) - 1);
         DECLARE @RightPart NVARCHAR(50) = SUBSTRING(@HintNorm, CHARINDEX('.', @HintNorm) + 1, 250);
-        IF LEN(@LeftPart) = 1 SET @LeftPart = '0' + @LeftPart;
         IF LEN(@RightPart) = 1 SET @RightPart = '0' + @RightPart;
         SET @PaddedHint = @LeftPart + '.' + @RightPart;
     END

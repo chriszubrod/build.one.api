@@ -1085,19 +1085,20 @@ class BillService:
         # → decline. Both write a new Review row (insert-only audit
         # trail) with the reviewer as the user_id and the raw reply text
         # as comments.
+        from entities.review.business.model import ParentType
         review_service = ReviewService()
         comments = (raw_reply_text or "").strip() or None
         try:
             if decision == "approved":
                 payload = review_service.build_advance_payload(
-                    parent_type="Bill",
+                    parent_type=ParentType.BILL,
                     parent_public_id=bill_public_id,
                     user_id=reviewer_user_id,
                     comments=comments,
                 )
             else:  # rejected
                 payload = review_service.build_decline_payload(
-                    parent_type="Bill",
+                    parent_type=ParentType.BILL,
                     parent_public_id=bill_public_id,
                     user_id=reviewer_user_id,
                     comments=comments,

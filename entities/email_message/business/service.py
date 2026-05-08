@@ -216,6 +216,72 @@ class MailboxPollService:
             "errors": errors,
         }
 
+    def poll_invoice_sent(self, top: int = 50) -> dict:
+        """Poll the Sent Items folder of the configured mailbox so our
+        own outbound forwards (review notifications) get captured as
+        EmailMessage rows. Audit-only — these rows never reach the agent
+        runner because their ProcessingStatus is set to 'outbound', and
+        ClaimNextPendingEmailMessage filters on 'pending'.
+
+        Watermark is independent of the inbox poll's watermark. Folder
+        is 'sentitems'. Attachments are not re-downloaded (the forward
+        inherits the original vendor PDF, already in our blob store).
+        """
+        from datetime import datetime, timedelta, timezone
+        FOLDER = "sentitems"
+        INITIAL_BACKFILL_DAYS = 7
+        settings = config.Settings()
+        mailbox = settings.invoice_inbox_email
+        if not mailbox:
+            return {
+                "status_code": 503,
+                "message": "invoice_inbox_email is not configured",
+                "polled": 0, "new_messages": 0,
+                "attachments_uploaded": 0, "errors": [],
+            }
+
+        watermark_dt = self.message_repo.read_max_received_datetime_for_mailbox(
+            mailbox_address=mailbox, folder=FOLDER,
+        )
+        if watermark_dt is None:
+            watermark_dt = datetime.now(timezone.utc) - timedelta(
+                days=INITIAL_BACKFILL_DAYS,
+            )
+        watermark_iso = watermark_dt.strftime("%Y-%m-%dT%H:%M:%S.") \
+            + f"{watermark_dt.microsecond // 1000:03d}Z"
+        filter_query = f"receivedDateTime ge {watermark_iso}"
+
+        list_result = mail_client.list_messages(
+            folder=FOLDER, top=top, filter_query=filter_query,
+            order_by="receivedDateTime asc", mailbox=mailbox,
+        )
+        if list_result.get("status_code") != 200:
+            logger.error(
+                "mailbox_poll_sent.list_failed status=%s mailbox=%s filter=%r message=%s",
+                list_result.get("status_code"), mailbox,
+                filter_query, list_result.get("message"),
+            )
+            return {
+                "status_code": list_result.get("status_code", 500),
+                "message": list_result.get("message", "list_messages failed"),
+                "polled": 0, "new_messages": 0,
+                "attachments_uploaded": 0,
+                "errors": [list_result.get("message")],
+            }
+
+        messages = list_result.get("messages", [])
+        new_count, attach_count, errors = self._ingest_messages(
+            messages=messages, mailbox=mailbox, folder=FOLDER,
+        )
+        return {
+            "status_code": 200,
+            "message": f"Polled {len(messages)} sent message(s); persisted {new_count} new",
+            "polled": len(messages),
+            "new_messages": new_count,
+            "attachments_uploaded": attach_count,
+            "errors": errors,
+        }
+
     def backfill_day(self, *, target_date_utc, top: int = 250) -> dict:
         """Pull every inbox message with `receivedDateTime` in the
         24-hour window starting at midnight UTC of `target_date_utc`.
@@ -282,12 +348,98 @@ class MailboxPollService:
             "errors": errors,
         }
 
-    def _ingest_messages(self, *, messages: list[dict], mailbox: str
+    def backfill_sent_day(self, *, target_date_utc, top: int = 250) -> dict:
+        """Sister of `backfill_day` against the Sent Items folder. Pulls
+        every outbound forward `receivedDateTime` in the 24-hour window
+        starting at midnight UTC. Idempotent on GraphMessageId."""
+        from datetime import datetime, timedelta, timezone
+        FOLDER = "sentitems"
+        settings = config.Settings()
+        mailbox = settings.invoice_inbox_email
+        if not mailbox:
+            return {
+                "status_code": 503,
+                "message": "invoice_inbox_email is not configured",
+                "polled": 0, "new_messages": 0,
+                "attachments_uploaded": 0, "errors": [],
+            }
+
+        start = datetime(
+            target_date_utc.year, target_date_utc.month, target_date_utc.day,
+            0, 0, 0, tzinfo=timezone.utc,
+        )
+        end = start + timedelta(days=1)
+        start_iso = start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        end_iso = end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        filter_query = (
+            f"receivedDateTime ge {start_iso} and "
+            f"receivedDateTime lt {end_iso}"
+        )
+
+        list_result = mail_client.list_messages(
+            folder=FOLDER, top=top, filter_query=filter_query,
+            order_by="receivedDateTime asc", mailbox=mailbox,
+        )
+        if list_result.get("status_code") != 200:
+            logger.error(
+                "mailbox_backfill_sent.list_failed status=%s mailbox=%s window=%s/%s message=%s",
+                list_result.get("status_code"), mailbox,
+                start_iso, end_iso, list_result.get("message"),
+            )
+            return {
+                "status_code": list_result.get("status_code", 500),
+                "message": list_result.get("message", "list_messages failed"),
+                "polled": 0, "new_messages": 0,
+                "attachments_uploaded": 0,
+                "errors": [list_result.get("message")],
+            }
+
+        messages = list_result.get("messages", [])
+        new_count, attach_count, errors = self._ingest_messages(
+            messages=messages, mailbox=mailbox, folder=FOLDER,
+        )
+        return {
+            "status_code": 200,
+            "message": (
+                f"Backfilled sent {target_date_utc.isoformat()} "
+                f"({len(messages)} msg, {new_count} new)"
+            ),
+            "target_date": target_date_utc.isoformat(),
+            "polled": len(messages),
+            "new_messages": new_count,
+            "attachments_uploaded": attach_count,
+            "errors": errors,
+        }
+
+    def reconcile_review_email_message_links(self) -> int:
+        """Wrapper around the `ReconcileReviewEmailMessageLinks` sproc.
+        Run after each Sent poll / backfill to backfill
+        Review.EmailMessageId on auto-advanced rows whose forward
+        EmailMessage row arrived after the Review was created."""
+        return self.message_repo.reconcile_review_email_message_links()
+
+    def _ingest_messages(self, *, messages: list[dict], mailbox: str,
+                         folder: str = "inbox"
                          ) -> tuple[int, int, list[dict]]:
-        """Inner ingestion loop shared by `poll_invoice_inbox` (forward
-        watermark) and `backfill_day` (historical 24h window). Returns
+        """Inner ingestion loop shared by `poll_invoice_inbox` /
+        `backfill_day` (folder=inbox) and `poll_invoice_sent` /
+        `backfill_sent_day` (folder=sentitems). Returns
         `(new_count, attach_count, errors)`. Idempotent on
-        `GraphMessageId` — re-runs do not duplicate."""
+        `GraphMessageId` — re-runs do not duplicate.
+
+        Sent-folder semantics:
+          - The `from_email == mailbox` defensive filter is *off*
+            (we expect outbound).
+          - Attachments are not re-downloaded; the forward inherits the
+            original vendor PDF which is already in our blob store from
+            the inbound side.
+          - Rows are persisted with `ProcessingStatus='outbound'` so
+            `ClaimNextPendingEmailMessage` (keyed on 'pending') does not
+            hand them to the email_specialist agent.
+        """
+        is_sent = (folder == "sentitems")
+        default_status = "outbound" if is_sent else "pending"
+
         new_count = 0
         attach_count = 0
         errors: list[dict] = []
@@ -303,16 +455,20 @@ class MailboxPollService:
             if has_outcome(msg_summary.get("categories") or []):
                 continue
 
-            # Defensive: if a tenant rule routes outbound mail back into
-            # the polled folder, skip messages we ourselves sent so they
-            # don't end up looking like vendor invoices.
-            from_email = (msg_summary.get("from_email") or "").strip().lower()
-            if from_email and from_email == mailbox.strip().lower():
-                continue
+            # Defensive (inbox only): if a tenant rule routes outbound
+            # mail back into the polled folder, skip messages we
+            # ourselves sent so they don't end up looking like vendor
+            # invoices. Sent-folder ingestion bypasses this by design.
+            if not is_sent:
+                from_email = (msg_summary.get("from_email") or "").strip().lower()
+                if from_email and from_email == mailbox.strip().lower():
+                    continue
 
             # Skip if we already have it in the DB and it's past 'pending'
             # state (in flight or already done — agent runner will redrive
-            # if needed).
+            # if needed). For sent-folder rows, the existing row is most
+            # likely 'outbound' already (idempotent re-run), so this also
+            # skips appropriately.
             existing = self.message_repo.read_by_graph_message_id(graph_message_id)
             if existing and existing.processing_status not in (None, "pending", "failed"):
                 continue
@@ -352,9 +508,18 @@ class MailboxPollService:
                     web_link=email.get("web_link"),
                     has_attachments=bool(email.get("has_attachments", False)),
                     created_by_user_id=current_user_id.get(),
+                    folder=folder,
+                    default_processing_status=default_status,
                 )
                 if not existing:
                     new_count += 1
+
+                # Sent-folder rows: skip attachment download. The forward
+                # carries the original vendor PDF, which is already in
+                # our blob store from the inbound side; re-downloading
+                # would duplicate without value.
+                if is_sent:
+                    continue
 
                 # Walk attachments — download each, push to blob, persist row.
                 for att in (email.get("attachments") or []):

@@ -190,36 +190,67 @@ async def reconcile_ms_router():
 @router.post("/email/poll", dependencies=[Depends(_require_drain_secret)])
 async def email_poll_router():
     """
-    Poll the configured shared invoice inbox for new messages and
-    persist them (with attachments) for the email agent to pick up.
-    Returns a summary of what was polled.
+    Poll the configured shared invoice mailbox in three stages:
+      1. Inbox  — new inbound mail for the agent to pick up.
+      2. Sent   — our own outbound forwards (audit trail). Stored with
+                  ProcessingStatus='outbound' so the agent runner skips
+                  them.
+      3. Reconcile Review.EmailMessageId on auto-advanced "In Review"
+                  rows whose forward only became an EmailMessage row in
+                  step 2.
 
-    Idempotent: messages already in the DB are skipped; attachments
-    already pushed to blob are not re-uploaded.
+    Returns a combined summary. Each stage is idempotent.
 
-    Failure mode is load-bearing: when the underlying poll returns a
-    non-2xx `status_code`, this handler raises HTTPException(502) so the
-    caller (Function App, App Insights, ad-hoc curl) sees a non-success
-    response. Wrapping a Graph 4xx inside an HTTP 200 envelope was the
-    root cause of the 19h "silent poll" outage on 2026-05-08 — never
-    reintroduce that.
+    Failure mode is load-bearing: when the inbox or sent stage returns
+    a non-2xx `status_code`, this handler raises HTTPException(502) so
+    the caller (Function App, App Insights, ad-hoc curl) sees a
+    non-success response. Wrapping a Graph 4xx inside an HTTP 200
+    envelope was the root cause of the 19h "silent poll" outage on
+    2026-05-08 — never reintroduce that.
     """
     def _run() -> dict[str, Any]:
         from entities.email_message.business.service import MailboxPollService
-        return MailboxPollService().poll_invoice_inbox(top=50)
+        svc = MailboxPollService()
+        inbox_result = svc.poll_invoice_inbox(top=50)
+        sent_result = svc.poll_invoice_sent(top=50)
+        reconciled = 0
+        # Skip reconcile if either stage hit Graph errors — we'd be
+        # operating on stale Sent state and could mis-bind reviews.
+        if inbox_result.get("status_code") == 200 and sent_result.get("status_code") == 200:
+            try:
+                reconciled = svc.reconcile_review_email_message_links()
+            except Exception as e:
+                # Reconcile failure is recoverable on the next tick;
+                # don't fail the whole poll over it.
+                logger.exception("email.poll.reconcile_failed: %s", e)
+        return {"inbox": inbox_result, "sent": sent_result, "reconciled_reviews": reconciled}
 
     envelope = await _timed("email.poll", _run)
     inner = envelope.get("result") or {}
-    inner_status = inner.get("status_code") if isinstance(inner, dict) else None
-    if isinstance(inner_status, int) and inner_status >= 400:
+    inbox = inner.get("inbox") if isinstance(inner, dict) else None
+    sent = inner.get("sent") if isinstance(inner, dict) else None
+    inbox_status = inbox.get("status_code") if isinstance(inbox, dict) else None
+    sent_status = sent.get("status_code") if isinstance(sent, dict) else None
+    bad = []
+    if isinstance(inbox_status, int) and inbox_status >= 400:
+        bad.append(("inbox", inbox))
+    if isinstance(sent_status, int) and sent_status >= 400:
+        bad.append(("sent", sent))
+    if bad:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
                 "job": "email.poll",
                 "duration_ms": envelope.get("duration_ms"),
-                "upstream_status": inner_status,
-                "message": inner.get("message"),
-                "errors": inner.get("errors") or [],
+                "failures": [
+                    {
+                        "stage": stage,
+                        "upstream_status": part.get("status_code"),
+                        "message": part.get("message"),
+                        "errors": part.get("errors") or [],
+                    }
+                    for stage, part in bad
+                ],
             },
         )
     return envelope

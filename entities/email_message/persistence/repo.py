@@ -84,7 +84,9 @@ class EmailMessageRepository:
                received_datetime: Optional[str] = None,
                web_link: Optional[str] = None,
                has_attachments: bool = False,
-               created_by_user_id: Optional[int] = None) -> EmailMessage:
+               created_by_user_id: Optional[int] = None,
+               folder: str = "inbox",
+               default_processing_status: str = "pending") -> EmailMessage:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -105,6 +107,8 @@ class EmailMessageRepository:
                     "WebLink": web_link,
                     "HasAttachments": 1 if has_attachments else 0,
                     "CreatedByUserId": created_by_user_id,
+                    "Folder": folder,
+                    "DefaultProcessingStatus": default_processing_status,
                 })
                 row = cursor.fetchone()
                 if not row:
@@ -146,20 +150,24 @@ class EmailMessageRepository:
             raise map_database_error(error)
 
     def read_max_received_datetime_for_mailbox(
-        self, *, mailbox_address: str,
+        self, *, mailbox_address: str, folder: str = "inbox",
     ) -> Optional[datetime]:
-        """Return MAX(ReceivedDatetime) for the given mailbox, or None if
-        no EmailMessage rows exist for it. Drives the polling watermark
-        — the caller plugs the value into Graph's
+        """Return MAX(ReceivedDatetime) for the given (mailbox, folder),
+        or None if no EmailMessage rows exist. Drives the polling
+        watermark — the caller plugs the value into Graph's
         `$filter=receivedDateTime ge <ts>` clause so each poll picks up
-        only messages newer than what we have already ingested."""
+        only messages newer than what we have already ingested for that
+        folder. Inbox and Sent advance independently."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="ReadMaxReceivedDatetimeByMailbox",
-                    params={"MailboxAddress": mailbox_address},
+                    params={
+                        "MailboxAddress": mailbox_address,
+                        "Folder": folder,
+                    },
                 )
                 row = cursor.fetchone()
                 if row is None:
@@ -167,6 +175,28 @@ class EmailMessageRepository:
                 return getattr(row, "MaxReceivedDatetime", None)
         except Exception as error:
             logger.error(f"Error reading max received datetime: {error}")
+            raise map_database_error(error)
+
+    def reconcile_review_email_message_links(self) -> int:
+        """Run the ReconcileReviewEmailMessageLinks sproc to backfill
+        Review.EmailMessageId on "In Review" rows whose forward forward
+        only became an EmailMessage row after the Review was written
+        (the auto-advance fires before the Sent-folder poll ingests).
+        Returns count of rows updated. Idempotent — safe to re-run."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReconcileReviewEmailMessageLinks",
+                    params={},
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return 0
+                return int(getattr(row, "UpdatedRows", 0) or 0)
+        except Exception as error:
+            logger.error(f"Error reconciling review email links: {error}")
             raise map_database_error(error)
 
     def read_active_conversation_ids(

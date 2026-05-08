@@ -53,6 +53,7 @@ CREATE TABLE [dbo].[EmailMessage]
     [AgentClassificationReason] NVARCHAR(1024) NULL,
     [AgentDecidedAction] NVARCHAR(50) NULL,
     [AgentClassificationConfidence] DECIMAL(5,4) NULL,
+    [Folder] NVARCHAR(50) NOT NULL DEFAULT 'inbox',
     CONSTRAINT [UQ_EmailMessage_GraphMessageId] UNIQUE ([GraphMessageId])
 );
 END
@@ -102,6 +103,19 @@ BEGIN
 END
 GO
 
+-- Folder discriminator. 'inbox' for inbound mail (the original poll path),
+-- 'sentitems' for outbound forwards / replies we send (audit trail). The
+-- DEFAULT applies to existing rows on add — no manual backfill needed.
+IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.columns WHERE Name = 'Folder' AND Object_ID = OBJECT_ID('dbo.EmailMessage')
+)
+BEGIN
+    ALTER TABLE dbo.[EmailMessage]
+        ADD [Folder] NVARCHAR(50) NOT NULL
+            CONSTRAINT [DF_EmailMessage_Folder] DEFAULT ('inbox');
+END
+GO
+
 IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM sys.indexes WHERE name = 'IX_EmailMessage_FromAddress_Classification' AND object_id = OBJECT_ID('dbo.EmailMessage')
 )
@@ -121,6 +135,16 @@ GO
 IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_EmailMessage_ReceivedDatetime' AND object_id = OBJECT_ID('dbo.EmailMessage'))
 BEGIN
 CREATE INDEX IX_EmailMessage_ReceivedDatetime ON [dbo].[EmailMessage] ([ReceivedDatetime] DESC);
+END
+GO
+
+-- Watermark lookup support. ReadMaxReceivedDatetimeByMailbox computes
+-- MAX(ReceivedDatetime) per (MailboxAddress, Folder); this index lets it
+-- be a single seek per mailbox/folder.
+IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_EmailMessage_MailboxFolder_ReceivedDatetime' AND object_id = OBJECT_ID('dbo.EmailMessage'))
+BEGIN
+CREATE INDEX IX_EmailMessage_MailboxFolder_ReceivedDatetime
+    ON [dbo].[EmailMessage] ([MailboxAddress], [Folder], [ReceivedDatetime] DESC);
 END
 GO
 
@@ -158,22 +182,72 @@ BEGIN
 END;
 GO
 
+-- Reconcile Review.EmailMessageId on "In Review" rows that don't yet
+-- carry an explicit forward link. Two scenarios produce these:
+--
+--   (a) Forward-going: notification_service writes the Review at
+--       "In Review" the moment the MS outbox row is enqueued; the
+--       forward only becomes an EmailMessage row when the next Sent
+--       poll ingests it (~5 min later).
+--   (b) Backfill: the forward was sent days/weeks ago via the prior
+--       (unlinked) flow; the auto-advance to "In Review" only fires
+--       now. Forward.ReceivedDatetime predates Review.CreatedDatetime
+--       by a wide margin — the inverse of (a).
+--
+-- Matching strategy: pick the LATEST outbound forward on the Bill's
+-- source ConversationId. Single-cycle Bills (the common case) have
+-- exactly one forward, so this is unambiguous. Multi-cycle Bills
+-- (declined+resubmitted) get bound to their most recent forward — the
+-- one tied to the latest "In Review" row. If older "In Review" rows
+-- need to point at older forwards, that's a v2 chronological-pairing
+-- pass; v1 picks "latest" and accepts the rare mis-bind.
+--
+-- Idempotent: the WHERE EmailMessageId IS NULL clause skips already-
+-- linked rows.
+CREATE OR ALTER PROCEDURE ReconcileReviewEmailMessageLinks
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE r
+       SET [EmailMessageId] = m.MatchedEmailMessageId
+      FROM dbo.[Review] r
+      INNER JOIN dbo.[ReviewStatus] rs ON rs.Id = r.[ReviewStatusId]
+      INNER JOIN dbo.[Bill] b ON b.Id = r.[BillId]
+      INNER JOIN dbo.[EmailMessage] src ON src.Id = b.[SourceEmailMessageId]
+      CROSS APPLY (
+          SELECT TOP 1 em.Id AS MatchedEmailMessageId
+          FROM dbo.[EmailMessage] em
+          WHERE em.[ConversationId] = src.[ConversationId]
+            AND em.[Folder] = 'sentitems'
+          ORDER BY em.[ReceivedDatetime] DESC
+      ) m
+      WHERE r.[EmailMessageId] IS NULL
+        AND rs.[Name] = 'In Review';
+
+    SELECT @@ROWCOUNT AS UpdatedRows;
+END;
+GO
+
 -- Watermark for the polling loop. Returns MAX(ReceivedDatetime) for the
--- given mailbox, or NULL if no rows exist for it. Used to construct the
--- next Graph $filter clause `receivedDateTime ge <watermark>` so we
+-- given (mailbox, folder), or NULL if no rows exist. Used to construct
+-- the next Graph $filter clause `receivedDateTime ge <watermark>` so we
 -- pick up only messages newer than what we have already ingested.
 -- Comparison is case-insensitive on MailboxAddress to defend against
--- inconsistent casing on the configured value.
+-- inconsistent casing on the configured value. Folder discriminates
+-- inbox vs sentitems; each advances independently.
 CREATE OR ALTER PROCEDURE ReadMaxReceivedDatetimeByMailbox
 (
-    @MailboxAddress NVARCHAR(320)
+    @MailboxAddress NVARCHAR(320),
+    @Folder NVARCHAR(50) = 'inbox'
 )
 AS
 BEGIN
     SET NOCOUNT ON;
     SELECT MAX([ReceivedDatetime]) AS MaxReceivedDatetime
     FROM dbo.[EmailMessage]
-    WHERE LOWER([MailboxAddress]) = LOWER(@MailboxAddress);
+    WHERE LOWER([MailboxAddress]) = LOWER(@MailboxAddress)
+      AND [Folder] = @Folder;
 END;
 GO
 
@@ -194,7 +268,9 @@ CREATE OR ALTER PROCEDURE UpsertEmailMessage
     @ReceivedDatetime DATETIME2(3) = NULL,
     @WebLink NVARCHAR(1024) = NULL,
     @HasAttachments BIT = 0,
-    @CreatedByUserId BIGINT = NULL
+    @CreatedByUserId BIGINT = NULL,
+    @Folder NVARCHAR(50) = 'inbox',
+    @DefaultProcessingStatus NVARCHAR(50) = 'pending'
 )
 AS
 BEGIN
@@ -222,19 +298,22 @@ BEGIN
             [ReceivedDatetime] = @ReceivedDatetime,
             [WebLink] = @WebLink,
             [HasAttachments] = @HasAttachments
+            -- Folder + ProcessingStatus deliberately not updated on
+            -- match: folder is immutable per row, status is owned by
+            -- the agent claim/process workflow.
     WHEN NOT MATCHED THEN
         INSERT
             ([CreatedDatetime], [ModifiedDatetime], [GraphMessageId], [InternetMessageId],
              [ConversationId], [MailboxAddress], [FromAddress], [FromName],
              [ToRecipients], [CcRecipients], [Subject],
              [BodyPreview], [BodyContent], [BodyContentType], [ReceivedDatetime],
-             [ProcessingStatus], [WebLink], [HasAttachments], [CreatedByUserId])
+             [ProcessingStatus], [WebLink], [HasAttachments], [CreatedByUserId], [Folder])
         VALUES
             (@Now, @Now, @GraphMessageId, @InternetMessageId,
              @ConversationId, @MailboxAddress, @FromAddress, @FromName,
              @ToRecipients, @CcRecipients, @Subject,
              @BodyPreview, @BodyContent, @BodyContentType, @ReceivedDatetime,
-             'pending', @WebLink, @HasAttachments, COALESCE(@CreatedByUserId, 17))
+             @DefaultProcessingStatus, @WebLink, @HasAttachments, COALESCE(@CreatedByUserId, 17), @Folder)
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],

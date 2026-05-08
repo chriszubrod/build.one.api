@@ -679,7 +679,6 @@ Then re-ran with the correct `dbo.Bill.Id` values (`17621/17622/17836/17943`). O
 - **Memory: `feedback_qbo_dbo_id_keyspaces.md`** — never alias `qb.Id AS BillId` / `qp.Id AS PurchaseId` in `qbo.*` joins; only `BillLineItemId` / `ExpenseLineItemId` cross cleanly to dbo. Re-derive `dbo.Bill.Id` via `dbo.BillLineItem.BillId` when needed.
 - **MS outbox auto-drain leaves no human-cancel window.** With the scheduler Function App live, *enqueue is effectively final* — pause-and-verify must happen *before* the enqueue call. Reflected in `CLAUDE.md` "Common Bug Patterns."
 - **InvoiceAgent playbook (`project_invoice_agent.md`) updated**: Step 4 now requires `QboBillId` aliases and warns on the keyspace; Step 7 now requires a sanity-check SELECT against `dbo.{Entity}` before any `sync_to_excel_workbook` call, and documents the `clear_excel_range` recovery.
-- **OHR2-GUEST-09** appended to "Invoices Completed" with incident note.
 
 ### Final prod state
 - 8 ILIs linked to BillLineItem sources (29591–29598 → 21522/21523/21890/22025/21783/22043/22024/22026).
@@ -768,7 +767,7 @@ First end-to-end run of the customer-invoice completion process for an invoice *
 
 ### Memory (auto-memory at `~/.claude/projects/.../memory/`)
 
-- **`project_invoice_agent.md`** — replaced procedural notes with the canonical 9-step InvoiceAgent playbook, preserving "Invoices Completed" history. Added BR-MAIN-22 entry.
+- **`project_invoice_agent.md`** — replaced procedural notes with the canonical 9-step InvoiceAgent playbook.
 - **`MEMORY.md`** — index renamed "Invoice Packet Creation Process" → "InvoiceAgent Playbook" with new description.
 
 ### Key takeaways for future agent work

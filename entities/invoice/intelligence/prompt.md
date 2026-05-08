@@ -137,7 +137,7 @@ The connector creates a fresh `dbo.Invoice` with `IsDraft=False` and all `qbo.In
 
 ### Step 3b — Onboard a new `dbo.Bill` from QBO that the standard sync didn't propagate
 
-If a `qbo.InvoiceLine` references a Bill that exists in `qbo.Bill` staging but has no `qbo.BillBill` mapping (so no `dbo.Bill` row), `BillBillConnector.sync_from_qbo_bill` will fail with `ValueError("Attachment is required. Upload a PDF first and pass attachment_public_id.")` because the connector doesn't pass `attachment_public_id` to `BillService.create` — and the universal Bill-attachment rule (CLAUDE.md) requires it. The standard `sync_qbo_bill.py` flow is broken for *new* bills under this rule (it works for updates because they go through `update_by_public_id`, not `create`). Workaround pattern (used for OHR2-33 re-run, 2026-04-27, qbo.Bill 18374 / Siteworks 26-0116):
+If a `qbo.InvoiceLine` references a Bill that exists in `qbo.Bill` staging but has no `qbo.BillBill` mapping (so no `dbo.Bill` row), `BillBillConnector.sync_from_qbo_bill` will fail with `ValueError("Attachment is required. Upload a PDF first and pass attachment_public_id.")` because the connector doesn't pass `attachment_public_id` to `BillService.create` — and the universal Bill-attachment rule (CLAUDE.md) requires it. The standard `sync_qbo_bill.py` flow is broken for *new* bills under this rule (it works for updates because they go through `update_by_public_id`, not `create`). **This applies equally to brand-new bills AND to new monthly installments of recurring bills** (e.g., Cincinnati Insurance, monthly Builders Risk) — from the connector's POV each monthly QBO Bill is a fresh `dbo.Bill` create, so it hits the same blocker. Workaround pattern (used for OHR2-33 re-run, 2026-04-27, qbo.Bill 18374 / Siteworks 26-0116; reused for BR-MAIN-23, 2026-05-08, qbo.Bill 18392 / Cincinnati Insurance 0746569 monthly installment):
 
 ```python
 # 1. Pull the QBO attachable for this bill — it creates a dbo.Attachment row.
@@ -191,6 +191,68 @@ for bli_pid in real_bli_pids:
 After Step 3b, every real BLI has the attachment, the placeholder is gone, and Step 4 fingerprint matching will resolve the new invoice lines to these real BLIs.
 
 If `QboAttachableService` returns 0 attachables for the bill (i.e. QBO has no attachment), you cannot proceed — the universal Bill-attachment rule blocks `BillService.create` either way. Halt and surface to user; they need to upload the supporting PDF in QBO first, then re-run.
+
+### Step 3c — Heal split-staging duplicates (situational, NOT every-run)
+
+**Diagnostic signature**: a `qbo.InvoiceLine` matches by description+amount+date but has no source mapping in `qbo.BillLineItemBillLine` / `qbo.PurchaseLineExpenseLineItem`, AND multiple `qbo.Purchase` (or `qbo.Bill`) rows exist for the same `QboApi`, each carrying a different `LineNum`. Confirm with:
+
+```sql
+-- For Purchase
+SELECT qp.Id, qp.QboId, qp.EntityRefName, qp.TxnDate, qp.TotalAmt, qp.ModifiedDatetime,
+       pe.ExpenseId AS DboExpenseId
+FROM qbo.Purchase qp
+LEFT JOIN qbo.PurchaseExpense pe ON pe.QboPurchaseId = qp.Id
+WHERE qp.RealmId = ? AND qp.QboId = ?;
+-- 2+ rows for the same QboId == split-staging corruption.
+```
+
+This indicates a past-sync bug split a single QBO transaction into multiple staging rows in our local cache, each holding only a subset of the original lines. **NOT a recurring runtime pattern** — this recipe applies only when the diagnostic shape is encountered. First seen on BR-MAIN-23 (2026-05-08, QBO Purchase 69340 / Artistic Tile / $45,484.04 — Line 1 NotBillable on one staging row, Line 2 Billable on the orphan row).
+
+```python
+# 1. Re-parent orphan line(s) onto the kept qbo.Purchase row (the one with qbo.PurchaseExpense mapping).
+#    All lines from the orphan row(s) get moved onto the kept row.
+KEPT_QP_ID = ...      # qbo.Purchase row that already has a dbo.Expense mapping
+ORPHAN_QP_ID = ...    # qbo.Purchase row to be deleted
+ORPHAN_LINE_ID = ...  # qbo.PurchaseLine row(s) currently parented under ORPHAN_QP_ID
+
+with get_connection() as conn:
+    cur = conn.cursor()
+    cur.execute("UPDATE qbo.PurchaseLine SET QboPurchaseId = ? WHERE Id = ?", KEPT_QP_ID, ORPHAN_LINE_ID)
+    # Verify ORPHAN_QP_ID now has 0 lines and 0 mappings:
+    cur.execute("SELECT COUNT(*) FROM qbo.PurchaseLine WHERE QboPurchaseId = ?", ORPHAN_QP_ID)
+    assert cur.fetchone()[0] == 0
+    cur.execute("SELECT COUNT(*) FROM qbo.PurchaseExpense WHERE QboPurchaseId = ?", ORPHAN_QP_ID)
+    assert cur.fetchone()[0] == 0
+    cur.execute("DELETE FROM qbo.Purchase WHERE Id = ?", ORPHAN_QP_ID)
+    conn.commit()
+
+# 2. Re-run the connector against the kept qbo.Purchase row to refresh its dbo.Expense.
+#    NOTE: PurchaseExpenseConnector.sync_from_qbo_purchase signature is positional and the
+#    second parameter is named `qbo_purchase_lines` (NOT `qbo_lines`).
+from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
+from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseLineRepository
+from integrations.intuit.qbo.purchase.connector.expense.business.service import (
+    PurchaseExpenseConnector,
+    sync_purchase_attachments_to_expense_line_items,
+)
+qp = QboPurchaseService().read_by_id(id=KEPT_QP_ID)
+lines = QboPurchaseLineRepository().read_by_qbo_purchase_id(qbo_purchase_id=KEPT_QP_ID)
+expense = PurchaseExpenseConnector().sync_from_qbo_purchase(qp, lines)  # positional!
+
+# 3. Link attachables to the new ExpenseLineItem rows.
+#    sync_purchase_attachments_to_expense_line_items walks qbo.Attachable for the QboApi and
+#    creates dbo.ExpenseLineItemAttachment rows. ExpenseLineItemAttachment is 1:1 on
+#    ExpenseLineItemId, BUT a single Attachment.Id can be linked to multiple ELIs on the
+#    same Expense (e.g., when a credit-card receipt covers both an account-charge line
+#    AND a billable allocation line — the same PDF is supporting evidence for both).
+from integrations.intuit.qbo.attachable.persistence.repo import QboAttachableRepository
+attachables = [...]  # filter QboAttachableRepository to the relevant attachable(s) for this purchase
+sync_purchase_attachments_to_expense_line_items(expense_id=expense.id, qbo_attachables=attachables)
+```
+
+**Bill-side analog**: same recipe applies if you ever see split-staging on `qbo.Bill` — re-parent `qbo.BillLine` rows onto the kept `qbo.Bill` row, delete the orphan, re-run `BillBillConnector.sync_from_qbo_bill` (subject to the Step 3b attachment-required workaround if the bill is brand-new). Not yet observed; documented as a precaution.
+
+**Open audit question**: how many other split-staging cases exist in `qbo.Purchase` / `qbo.Bill` that haven't been triggered by an invoice yet? Worth a one-time audit query before this bites again on a future invoice — see `TODO.md` "Invoice pull-sync follow-ups".
 
 ## Step 4 — Link each `Manual` line to its source BillLineItem or ExpenseLineItem
 

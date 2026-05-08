@@ -1011,7 +1011,6 @@ class BillService:
         for the agent to compose its final outcome.
         """
         from entities.bill_line_item.business.service import BillLineItemService
-        from entities.review.business.service import ReviewService, ReviewTransitionError
         from entities.review.business.recipient_service import ReviewRecipientService
         from entities.review_status.business.service import ReviewStatusService
         from entities.review.persistence.repo import ReviewRepository
@@ -1085,35 +1084,50 @@ class BillService:
         # → decline. Both write a new Review row (insert-only audit
         # trail) with the reviewer as the user_id and the raw reply text
         # as comments.
-        from entities.review.business.model import ParentType
-        review_service = ReviewService()
+        # Resolve the target ReviewStatus directly. Per the locked
+        # multi-reviewer semantics: every authorized reply is
+        # independently authoritative; latest reply wins; the only gate
+        # is `Bill.IsDraft` (above). An approval jumps straight to the
+        # terminal non-declined status ("Approved"); a rejection jumps
+        # to the declined status. We bypass build_advance_payload's
+        # one-step-per-reply chain because a PM approval IS the
+        # approval, not "moved to in-review".
         comments = (raw_reply_text or "").strip() or None
-        try:
-            if decision == "approved":
-                payload = review_service.build_advance_payload(
-                    parent_type=ParentType.BILL,
-                    parent_public_id=bill_public_id,
-                    user_id=reviewer_user_id,
-                    comments=comments,
+        review_statuses = ReviewStatusService().read_all()
+        if decision == "approved":
+            target = next(
+                (s for s in review_statuses if s.is_final and not s.is_declined),
+                None,
+            )
+            if target is None:
+                raise ValueError(
+                    "No terminal non-declined ReviewStatus configured "
+                    "(expected one with IsFinal=true AND IsDeclined=false)."
                 )
-            else:  # rejected
-                payload = review_service.build_decline_payload(
-                    parent_type=ParentType.BILL,
-                    parent_public_id=bill_public_id,
-                    user_id=reviewer_user_id,
-                    comments=comments,
+        else:  # rejected
+            target = next(
+                (s for s in review_statuses if s.is_declined),
+                None,
+            )
+            if target is None:
+                raise ValueError(
+                    "No declined ReviewStatus configured (expected one with IsDeclined=true)."
                 )
-        except ReviewTransitionError as error:
-            # Common case: review is already at a final status (e.g. PM
-            # approved, Owner now declines — first decision wins because
-            # advance/decline both refuse a final-state row). Re-raise as
-            # ValueError so the agent can handle.
-            raise ValueError(f"Review transition refused: {error}") from error
 
-        # Insert via repo directly (mirrors ReviewService.create's path
-        # but without the ProcessEngine wrapper — keeps this orchestrator
-        # synchronous; the agent stamps its own outcome on the email).
-        new_review = ReviewRepository().create(**payload)
+        # Insert a new Review row directly. Insert-only audit trail —
+        # repeat replies at the same status are captured as duplicate
+        # audit rows, not no-ops. This matches the locked semantic
+        # ("interpret every reply") and gives us a per-reply trail.
+        new_review = ReviewRepository().create(
+            review_status_id=target.id,
+            user_id=reviewer_user_id,
+            comments=comments,
+            bill_id=bill.id,
+            expense_id=None,
+            bill_credit_id=None,
+            invoice_id=None,
+            created_by_user_id=reviewer_user_id,
+        )
 
         # 6. Look up the new status name for the response payload.
         rs = ReviewStatusService().read_by_id(id=new_review.review_status_id) if new_review.review_status_id else None

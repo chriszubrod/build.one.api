@@ -105,13 +105,14 @@ GO
 
 CREATE OR ALTER PROCEDURE CreateReview
 (
-    @ReviewStatusId BIGINT,
-    @UserId         BIGINT,
-    @Comments       NVARCHAR(MAX) = NULL,
-    @BillId         BIGINT = NULL,
-    @ExpenseId      BIGINT = NULL,
-    @BillCreditId   BIGINT = NULL,
-    @InvoiceId      BIGINT = NULL
+    @ReviewStatusId  BIGINT,
+    @UserId          BIGINT,
+    @Comments        NVARCHAR(MAX) = NULL,
+    @BillId          BIGINT = NULL,
+    @ExpenseId       BIGINT = NULL,
+    @BillCreditId    BIGINT = NULL,
+    @InvoiceId       BIGINT = NULL,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -123,12 +124,14 @@ BEGIN
     INSERT INTO dbo.[Review] (
         [CreatedDatetime], [ModifiedDatetime],
         [ReviewStatusId], [UserId], [Comments],
-        [BillId], [ExpenseId], [BillCreditId], [InvoiceId]
+        [BillId], [ExpenseId], [BillCreditId], [InvoiceId],
+        [CreatedByUserId]
     )
     VALUES (
         @Now, @Now,
         @ReviewStatusId, @UserId, @Comments,
-        @BillId, @ExpenseId, @BillCreditId, @InvoiceId
+        @BillId, @ExpenseId, @BillCreditId, @InvoiceId,
+        COALESCE(@CreatedByUserId, 17)
     );
 
     SELECT * FROM dbo.[vw_Review] WHERE [Id] = SCOPE_IDENTITY();

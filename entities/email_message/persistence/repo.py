@@ -145,6 +145,30 @@ class EmailMessageRepository:
             logger.error(f"Error reading email message by graph_message_id: {error}")
             raise map_database_error(error)
 
+    def read_max_received_datetime_for_mailbox(
+        self, *, mailbox_address: str,
+    ) -> Optional[datetime]:
+        """Return MAX(ReceivedDatetime) for the given mailbox, or None if
+        no EmailMessage rows exist for it. Drives the polling watermark
+        — the caller plugs the value into Graph's
+        `$filter=receivedDateTime ge <ts>` clause so each poll picks up
+        only messages newer than what we have already ingested."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadMaxReceivedDatetimeByMailbox",
+                    params={"MailboxAddress": mailbox_address},
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                return getattr(row, "MaxReceivedDatetime", None)
+        except Exception as error:
+            logger.error(f"Error reading max received datetime: {error}")
+            raise map_database_error(error)
+
     def read_active_conversation_ids(
         self,
         *,

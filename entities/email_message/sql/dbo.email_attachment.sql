@@ -80,7 +80,8 @@ CREATE OR ALTER PROCEDURE UpsertEmailAttachment
     @ContentType NVARCHAR(128) = NULL,
     @SizeBytes BIGINT = NULL,
     @IsInline BIT = 0,
-    @BlobUri NVARCHAR(1024) = NULL
+    @BlobUri NVARCHAR(1024) = NULL,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -104,11 +105,11 @@ BEGIN
         INSERT
             ([CreatedDatetime], [ModifiedDatetime], [EmailMessageId], [GraphAttachmentId],
              [Filename], [ContentType], [SizeBytes], [IsInline], [BlobUri],
-             [ExtractionStatus])
+             [ExtractionStatus], [CreatedByUserId])
         VALUES
             (@Now, @Now, @EmailMessageId, @GraphAttachmentId,
              @Filename, @ContentType, @SizeBytes, @IsInline, @BlobUri,
-             'pending')
+             'pending', COALESCE(@CreatedByUserId, 17))
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],

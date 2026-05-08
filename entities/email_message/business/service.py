@@ -33,10 +33,7 @@ from decimal import Decimal
 from typing import Optional
 
 import config
-from entities.email_message.business.categories import (
-    AGENT_PROCESS,
-    has_outcome,
-)
+from entities.email_message.business.categories import has_outcome
 from entities.email_message.business.model import EmailAttachment, EmailMessage
 from entities.email_message.persistence.repo import (
     EmailAttachmentRepository,
@@ -146,40 +143,57 @@ class MailboxPollService:
                 "errors": [],
             }
 
-        # Filter: messages categorized 'Blue category' (the human's
-        # explicit submit signal) PLUS messages on conversations we
-        # already track (Wave 3 Phase C — auto-track replies on
-        # forwarded review threads so PM/Owner replies enter the
-        # pipeline without a manual category tag).
+        # Filter: pull every inbox message newer than the last one we
+        # already ingested. The agent decides relevance downstream
+        # (vendor_invoice / internal_reply / non_actionable / etc.) — we
+        # no longer rely on Outlook category as a pre-filter.
         #
-        # Tracked = recent EmailMessage rows (default 14 days) with
-        # non-null ConversationId. Capped to 50 most recent conversations
-        # to keep the generated $filter URL within Graph's length limits
-        # (~150 chars per ConversationId × 50 ≈ 7.5KB filter body).
-        # Beyond the cap, the manual Blue-tag fallback still works.
+        # Watermark = MAX(ReceivedDatetime) for this mailbox. On a fresh
+        # mailbox we look back `INITIAL_BACKFILL_DAYS` (7d) to bound the
+        # initial ingestion. `ge` (not `gt`) handles same-millisecond
+        # ties at the boundary; the GraphMessageId upsert deduplicates
+        # the boundary row.
+        #
+        # `$orderby=receivedDateTime asc` is load-bearing: combined with
+        # `$top` truncation and per-message commits, it guarantees that
+        # any messages dropped by a partial-batch crash are strictly
+        # newer than `MAX(ReceivedDatetime)` and so get picked up on the
+        # next poll. With `desc` we'd watermark to the newest of the
+        # batch and skip the older tail forever.
+        #
+        # Backdated `receivedDateTime` (quarantine release, deferred-
+        # delivery rules) is the residual gap; the eventual fix is
+        # `/me/messages/delta`. See TODO.md.
         from datetime import datetime, timedelta, timezone
-        since_utc = datetime.now(timezone.utc) - timedelta(days=14)
-        tracked_conv_ids = self.message_repo.read_active_conversation_ids(
-            since_utc=since_utc, max_rows=50,
+        INITIAL_BACKFILL_DAYS = 7
+        watermark_dt = self.message_repo.read_max_received_datetime_for_mailbox(
+            mailbox_address=mailbox,
         )
-        category_clause = f"categories/any(c:c eq '{AGENT_PROCESS}')"
-        if tracked_conv_ids:
-            # Escape any single quotes inside ConversationId values
-            # (rare but defensive — base64url alphabet doesn't include
-            # `'`, but better to be safe than sorry).
-            escaped = [c.replace("'", "''") for c in tracked_conv_ids]
-            in_clause = ",".join(f"'{c}'" for c in escaped)
-            filter_query = f"({category_clause}) or conversationId in ({in_clause})"
-        else:
-            filter_query = category_clause
+        if watermark_dt is None:
+            watermark_dt = datetime.now(timezone.utc) - timedelta(
+                days=INITIAL_BACKFILL_DAYS,
+            )
+        # Graph wants ISO 8601 with `Z`. SQL Server returns naive
+        # DATETIME2; treat it as UTC (we store UTC consistently).
+        watermark_iso = watermark_dt.strftime("%Y-%m-%dT%H:%M:%S.") \
+            + f"{watermark_dt.microsecond // 1000:03d}Z"
+        filter_query = f"receivedDateTime ge {watermark_iso}"
 
         list_result = mail_client.list_messages(
             folder="inbox",
             top=top,
             filter_query=filter_query,
+            order_by="receivedDateTime asc",
             mailbox=mailbox,
         )
         if list_result.get("status_code") != 200:
+            logger.error(
+                "mailbox_poll.list_failed status=%s mailbox=%s filter=%r message=%s",
+                list_result.get("status_code"),
+                mailbox,
+                filter_query,
+                list_result.get("message"),
+            )
             return {
                 "status_code": list_result.get("status_code", 500),
                 "message": list_result.get("message", "list_messages failed"),
@@ -203,6 +217,13 @@ class MailboxPollService:
             # have been processed before (or during a prior partial run)
             # and the poll doesn't re-touch them.
             if has_outcome(msg_summary.get("categories") or []):
+                continue
+
+            # Defensive: if a tenant rule routes outbound mail back into
+            # the polled folder, skip messages we ourselves sent so they
+            # don't end up looking like vendor invoices.
+            from_email = (msg_summary.get("from_email") or "").strip().lower()
+            if from_email and from_email == mailbox.strip().lower():
                 continue
 
             # Skip if we already have it in the DB and it's past 'pending'

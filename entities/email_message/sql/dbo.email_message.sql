@@ -158,6 +158,25 @@ BEGIN
 END;
 GO
 
+-- Watermark for the polling loop. Returns MAX(ReceivedDatetime) for the
+-- given mailbox, or NULL if no rows exist for it. Used to construct the
+-- next Graph $filter clause `receivedDateTime ge <watermark>` so we
+-- pick up only messages newer than what we have already ingested.
+-- Comparison is case-insensitive on MailboxAddress to defend against
+-- inconsistent casing on the configured value.
+CREATE OR ALTER PROCEDURE ReadMaxReceivedDatetimeByMailbox
+(
+    @MailboxAddress NVARCHAR(320)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT MAX([ReceivedDatetime]) AS MaxReceivedDatetime
+    FROM dbo.[EmailMessage]
+    WHERE LOWER([MailboxAddress]) = LOWER(@MailboxAddress);
+END;
+GO
+
 CREATE OR ALTER PROCEDURE UpsertEmailMessage
 (
     @GraphMessageId NVARCHAR(255),
@@ -174,7 +193,8 @@ CREATE OR ALTER PROCEDURE UpsertEmailMessage
     @BodyContentType NVARCHAR(20) = NULL,
     @ReceivedDatetime DATETIME2(3) = NULL,
     @WebLink NVARCHAR(1024) = NULL,
-    @HasAttachments BIT = 0
+    @HasAttachments BIT = 0,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -208,13 +228,13 @@ BEGIN
              [ConversationId], [MailboxAddress], [FromAddress], [FromName],
              [ToRecipients], [CcRecipients], [Subject],
              [BodyPreview], [BodyContent], [BodyContentType], [ReceivedDatetime],
-             [ProcessingStatus], [WebLink], [HasAttachments])
+             [ProcessingStatus], [WebLink], [HasAttachments], [CreatedByUserId])
         VALUES
             (@Now, @Now, @GraphMessageId, @InternetMessageId,
              @ConversationId, @MailboxAddress, @FromAddress, @FromName,
              @ToRecipients, @CcRecipients, @Subject,
              @BodyPreview, @BodyContent, @BodyContentType, @ReceivedDatetime,
-             'pending', @WebLink, @HasAttachments)
+             'pending', @WebLink, @HasAttachments, COALESCE(@CreatedByUserId, 17))
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],

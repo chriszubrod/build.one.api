@@ -190,18 +190,39 @@ async def reconcile_ms_router():
 @router.post("/email/poll", dependencies=[Depends(_require_drain_secret)])
 async def email_poll_router():
     """
-    Poll the configured shared invoice inbox for messages tagged
-    `Agent: Process` and persist them (with attachments) for the email
-    agent to pick up. Returns a summary of what was polled.
+    Poll the configured shared invoice inbox for new messages and
+    persist them (with attachments) for the email agent to pick up.
+    Returns a summary of what was polled.
 
     Idempotent: messages already in the DB are skipped; attachments
     already pushed to blob are not re-uploaded.
+
+    Failure mode is load-bearing: when the underlying poll returns a
+    non-2xx `status_code`, this handler raises HTTPException(502) so the
+    caller (Function App, App Insights, ad-hoc curl) sees a non-success
+    response. Wrapping a Graph 4xx inside an HTTP 200 envelope was the
+    root cause of the 19h "silent poll" outage on 2026-05-08 — never
+    reintroduce that.
     """
     def _run() -> dict[str, Any]:
         from entities.email_message.business.service import MailboxPollService
         return MailboxPollService().poll_invoice_inbox(top=50)
 
-    return await _timed("email.poll", _run)
+    envelope = await _timed("email.poll", _run)
+    inner = envelope.get("result") or {}
+    inner_status = inner.get("status_code") if isinstance(inner, dict) else None
+    if isinstance(inner_status, int) and inner_status >= 400:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "job": "email.poll",
+                "duration_ms": envelope.get("duration_ms"),
+                "upstream_status": inner_status,
+                "message": inner.get("message"),
+                "errors": inner.get("errors") or [],
+            },
+        )
+    return envelope
 
 
 @router.post("/email/extract/{attachment_public_id}", dependencies=[Depends(_require_drain_secret)])

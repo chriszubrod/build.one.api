@@ -204,6 +204,90 @@ class MailboxPollService:
             }
 
         messages = list_result.get("messages", [])
+        new_count, attach_count, errors = self._ingest_messages(
+            messages=messages, mailbox=mailbox,
+        )
+        return {
+            "status_code": 200,
+            "message": f"Polled {len(messages)} message(s); persisted {new_count} new",
+            "polled": len(messages),
+            "new_messages": new_count,
+            "attachments_uploaded": attach_count,
+            "errors": errors,
+        }
+
+    def backfill_day(self, *, target_date_utc, top: int = 250) -> dict:
+        """Pull every inbox message with `receivedDateTime` in the
+        24-hour window starting at midnight UTC of `target_date_utc`.
+        Idempotent — re-runs are safe because `GraphMessageId` is the
+        upsert key. Used to walk historical mail backwards day-by-day
+        without disturbing the forward poll's watermark (older rows
+        don't change `MAX(ReceivedDatetime)`).
+        """
+        from datetime import datetime, timedelta, timezone
+        settings = config.Settings()
+        mailbox = settings.invoice_inbox_email
+        if not mailbox:
+            return {
+                "status_code": 503,
+                "message": "invoice_inbox_email is not configured",
+                "polled": 0, "new_messages": 0,
+                "attachments_uploaded": 0, "errors": [],
+            }
+
+        start = datetime(
+            target_date_utc.year, target_date_utc.month, target_date_utc.day,
+            0, 0, 0, tzinfo=timezone.utc,
+        )
+        end = start + timedelta(days=1)
+        start_iso = start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        end_iso = end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        filter_query = (
+            f"receivedDateTime ge {start_iso} and "
+            f"receivedDateTime lt {end_iso}"
+        )
+
+        list_result = mail_client.list_messages(
+            folder="inbox", top=top, filter_query=filter_query,
+            order_by="receivedDateTime asc", mailbox=mailbox,
+        )
+        if list_result.get("status_code") != 200:
+            logger.error(
+                "mailbox_backfill.list_failed status=%s mailbox=%s window=%s/%s message=%s",
+                list_result.get("status_code"), mailbox,
+                start_iso, end_iso, list_result.get("message"),
+            )
+            return {
+                "status_code": list_result.get("status_code", 500),
+                "message": list_result.get("message", "list_messages failed"),
+                "polled": 0, "new_messages": 0,
+                "attachments_uploaded": 0,
+                "errors": [list_result.get("message")],
+            }
+
+        messages = list_result.get("messages", [])
+        new_count, attach_count, errors = self._ingest_messages(
+            messages=messages, mailbox=mailbox,
+        )
+        return {
+            "status_code": 200,
+            "message": (
+                f"Backfilled {target_date_utc.isoformat()} "
+                f"({len(messages)} msg, {new_count} new)"
+            ),
+            "target_date": target_date_utc.isoformat(),
+            "polled": len(messages),
+            "new_messages": new_count,
+            "attachments_uploaded": attach_count,
+            "errors": errors,
+        }
+
+    def _ingest_messages(self, *, messages: list[dict], mailbox: str
+                         ) -> tuple[int, int, list[dict]]:
+        """Inner ingestion loop shared by `poll_invoice_inbox` (forward
+        watermark) and `backfill_day` (historical 24h window). Returns
+        `(new_count, attach_count, errors)`. Idempotent on
+        `GraphMessageId` — re-runs do not duplicate."""
         new_count = 0
         attach_count = 0
         errors: list[dict] = []
@@ -308,14 +392,7 @@ class MailboxPollService:
                 logger.exception(f"Error processing message {graph_message_id}: {e}")
                 errors.append({"graph_message_id": graph_message_id, "error": str(e)})
 
-        return {
-            "status_code": 200,
-            "message": f"Polled {len(messages)} message(s); persisted {new_count} new",
-            "polled": len(messages),
-            "new_messages": new_count,
-            "attachments_uploaded": attach_count,
-            "errors": errors,
-        }
+        return new_count, attach_count, errors
 
     def _persist_attachment(self, *, email_message_id: int, graph_message_id: str,
                             attachment: dict, mailbox: str) -> bool:

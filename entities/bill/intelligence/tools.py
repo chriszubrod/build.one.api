@@ -756,6 +756,17 @@ class ApplyReviewerDecisionArgs(BaseModel):
             "shown to AP on rejection / needs-review."
         ),
     )
+    reviewer_email_message_public_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Public_id of the EmailMessage row for the PM's reply (the "
+            "same UUID email_specialist passed to you). Persisted on the "
+            "new Review row so the Web UI's final-review surface can "
+            "link directly to the reply email. If omitted the Review "
+            "row's EmailMessageId is left NULL (degraded but still "
+            "valid)."
+        ),
+    )
 
 
 async def _apply_reviewer_decision(args: dict, ctx: ToolContext) -> ToolResult:
@@ -766,6 +777,7 @@ async def _apply_reviewer_decision(args: dict, ctx: ToolContext) -> ToolResult:
         "sub_cost_code_public_id": parsed.sub_cost_code_public_id,
         "description": parsed.description,
         "raw_reply_text": parsed.raw_reply_text,
+        "reviewer_email_message_public_id": parsed.reviewer_email_message_public_id,
     }
     return await ctx.call_api(
         "POST",

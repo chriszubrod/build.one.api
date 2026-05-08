@@ -53,6 +53,7 @@ class ReviewRepository:
                 status_color=row.StatusColor,
                 user_firstname=row.UserFirstname,
                 user_lastname=row.UserLastname,
+                email_message_id=getattr(row, "EmailMessageId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during review mapping: {error}")
@@ -71,6 +72,7 @@ class ReviewRepository:
         expense_id: Optional[int] = None,
         bill_credit_id: Optional[int] = None,
         invoice_id: Optional[int] = None,
+        email_message_id: Optional[int] = None,
         created_by_user_id: Optional[int] = None,
     ) -> Review:
         try:
@@ -87,6 +89,7 @@ class ReviewRepository:
                         "ExpenseId": expense_id,
                         "BillCreditId": bill_credit_id,
                         "InvoiceId": invoice_id,
+                        "EmailMessageId": email_message_id,
                         "CreatedByUserId": created_by_user_id,
                     },
                 )

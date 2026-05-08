@@ -248,6 +248,7 @@ def apply_reviewer_decision_router(
             sub_cost_code_public_id=body.get("sub_cost_code_public_id"),
             description=body.get("description"),
             raw_reply_text=body.get("raw_reply_text"),
+            reviewer_email_message_public_id=body.get("reviewer_email_message_public_id"),
         )
         return item_response(result)
     except ValueError as error:

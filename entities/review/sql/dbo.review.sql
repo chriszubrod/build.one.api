@@ -65,6 +65,32 @@ BEGIN
 END
 GO
 
+-- EmailMessageId: optional FK back to the EmailMessage that triggered
+-- this Review state transition. Used by the Web UI's "final review"
+-- surface to navigate from a state row to the source email (vendor
+-- invoice / forwarded notification / PM reply).
+IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE name='EmailMessageId' AND object_id = OBJECT_ID('dbo.Review'))
+BEGIN
+    ALTER TABLE [dbo].[Review] ADD [EmailMessageId] BIGINT NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name='FK_Review_EmailMessage')
+BEGIN
+    ALTER TABLE [dbo].[Review]
+    ADD CONSTRAINT [FK_Review_EmailMessage] FOREIGN KEY ([EmailMessageId]) REFERENCES [dbo].[EmailMessage]([Id]);
+END
+GO
+
+IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Review_EmailMessageId' AND object_id = OBJECT_ID('dbo.Review'))
+BEGIN
+    CREATE INDEX [IX_Review_EmailMessageId] ON [dbo].[Review]([EmailMessageId]) WHERE [EmailMessageId] IS NOT NULL;
+END
+GO
+
 
 -- =========================================================================
 -- View — denormalized JOIN to ReviewStatus + User
@@ -86,6 +112,7 @@ AS
         r.[ExpenseId],
         r.[BillCreditId],
         r.[InvoiceId],
+        r.[EmailMessageId],
         rs.[Name]       AS [StatusName],
         rs.[SortOrder]  AS [StatusSortOrder],
         rs.[IsFinal]    AS [StatusIsFinal],
@@ -112,6 +139,7 @@ CREATE OR ALTER PROCEDURE CreateReview
     @ExpenseId       BIGINT = NULL,
     @BillCreditId    BIGINT = NULL,
     @InvoiceId       BIGINT = NULL,
+    @EmailMessageId  BIGINT = NULL,
     @CreatedByUserId BIGINT = NULL
 )
 AS
@@ -125,12 +153,14 @@ BEGIN
         [CreatedDatetime], [ModifiedDatetime],
         [ReviewStatusId], [UserId], [Comments],
         [BillId], [ExpenseId], [BillCreditId], [InvoiceId],
+        [EmailMessageId],
         [CreatedByUserId]
     )
     VALUES (
         @Now, @Now,
         @ReviewStatusId, @UserId, @Comments,
         @BillId, @ExpenseId, @BillCreditId, @InvoiceId,
+        @EmailMessageId,
         COALESCE(@CreatedByUserId, 17)
     );
 

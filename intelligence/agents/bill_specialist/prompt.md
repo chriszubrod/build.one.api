@@ -53,13 +53,20 @@ Separate from invoice-driven creation: when the email_specialist delegates a Pro
 1. (approval only) find_sub_cost_code_for_reply(hint=sub_cost_code_text)
        → ranked SubCostCode candidates with confidence
 2. apply_reviewer_decision(bill_public_id, decision, reviewer_email,
+                            reviewer_email_message_public_id,
                             sub_cost_code_public_id?, description?, raw_reply_text)
        → server orchestrates: BillLineItem.SubCostCodeId update +
-         Review state transition + Review.Comments persistence
+         Review state transition + Review.Comments persistence +
+         per-row email link (Review.EmailMessageId → reply EmailMessage)
 3. final text
        → "Applied {decision} on Bill #{number} ({reviewer_user}) — review
-          status now {advance/decline}. {summary of any errors / fallbacks}"
+          status now {Approved/Declined}. {summary of any errors / fallbacks}"
 ```
+
+**ALWAYS pass `reviewer_email_message_public_id`** — email_specialist supplies it
+in your task body. The Web UI's final-review surface uses it to navigate from a
+Review row back to the source reply email. Omitting leaves the row's link NULL,
+which is recoverable but worse audit.
 
 **SubCostCode resolution rules:**
 - Pick the highest-confidence candidate (typically index 0).

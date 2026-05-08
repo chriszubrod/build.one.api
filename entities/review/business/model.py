@@ -46,6 +46,10 @@ class Review:
     status_color: Optional[str]
     user_firstname: Optional[str]
     user_lastname: Optional[str]
+    # FK back to the EmailMessage that triggered this Review state
+    # transition (vendor invoice / forward archive / PM reply). NULL
+    # when the transition was triggered by a non-email path (manual UI).
+    email_message_id: Optional[int] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

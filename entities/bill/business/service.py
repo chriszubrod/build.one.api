@@ -419,6 +419,11 @@ class BillService:
                         user_id=user_id,
                         comments=None,
                         bill_id=bill.id,
+                        # Wave 3 Phase E: link the Submitted row back to
+                        # the source vendor email for the Web UI's final-
+                        # review surface. NULL when the bill came from a
+                        # non-email path (manual UI / bill_folder).
+                        email_message_id=source_email_message_id,
                     )
             except Exception as review_error:
                 logger.exception(
@@ -982,6 +987,7 @@ class BillService:
         sub_cost_code_public_id: Optional[str] = None,
         description: Optional[str] = None,
         raw_reply_text: Optional[str] = None,
+        reviewer_email_message_public_id: Optional[str] = None,
     ) -> dict:
         """Apply a Project Manager / Owner's emailed review decision to a Bill.
 
@@ -1114,6 +1120,17 @@ class BillService:
                     "No declined ReviewStatus configured (expected one with IsDeclined=true)."
                 )
 
+        # Resolve the reviewer's reply EmailMessage so the new Review
+        # row references it (Wave 3 Phase E: per-row email link for the
+        # Web UI's final-review surface). NULL when caller didn't pass
+        # one (e.g., manual web-UI invocation rather than email-driven).
+        email_message_id: Optional[int] = None
+        if reviewer_email_message_public_id:
+            from entities.email_message.business.service import EmailMessageService
+            em = EmailMessageService().read_by_public_id(public_id=reviewer_email_message_public_id)
+            if em is not None:
+                email_message_id = em.id
+
         # Insert a new Review row directly. Insert-only audit trail —
         # repeat replies at the same status are captured as duplicate
         # audit rows, not no-ops. This matches the locked semantic
@@ -1126,6 +1143,7 @@ class BillService:
             expense_id=None,
             bill_credit_id=None,
             invoice_id=None,
+            email_message_id=email_message_id,
             created_by_user_id=reviewer_user_id,
         )
 

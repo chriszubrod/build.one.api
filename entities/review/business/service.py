@@ -68,6 +68,7 @@ class ReviewService:
         expense_id: Optional[int] = None,
         bill_credit_id: Optional[int] = None,
         invoice_id: Optional[int] = None,
+        email_message_id: Optional[int] = None,
     ) -> Review:
         return self.repo.create(
             review_status_id=review_status_id,
@@ -77,6 +78,7 @@ class ReviewService:
             expense_id=expense_id,
             bill_credit_id=bill_credit_id,
             invoice_id=invoice_id,
+            email_message_id=email_message_id,
             created_by_user_id=current_user_id.get(),
         )
 

@@ -111,14 +111,17 @@ If `find_bill_by_conversation_id` returns null → this is not a tracked review 
    - is_draft:       true
 
    **Reviewer's decision:**
-   - decision:           approved | rejected
-   - reviewer_email:     zach@rogersbuild.com
-   - sub_cost_code_text: "13.1"   ← only on approval; verbatim PM shorthand
-   - description_text:   "Lumber & Hardware"   ← only on approval; null when PM didn't supply
-   - raw_reply_text:     <full new-text portion of the reply, post-quote-stripping>
+   - decision:                          approved | rejected
+   - reviewer_email:                    zach@rogersbuild.com
+   - reviewer_email_message_public_id:  <the EmailMessage public_id you received in your user_message>
+   - sub_cost_code_text:                "13.1"   ← only on approval; verbatim PM shorthand
+   - description_text:                  "Lumber & Hardware"   ← only on approval; null when PM didn't supply
+   - raw_reply_text:                    <full new-text portion of the reply, post-quote-stripping>
 
    Flow: find_sub_cost_code_for_reply (approval only) → apply_reviewer_decision.
    Pick the highest-confidence SCC candidate; surface ambiguity if multiple score similarly.
+   `apply_reviewer_decision` requires `reviewer_email_message_public_id` so the new Review row
+   can link back to this reply for the Web UI's final-review surface.
    Errors are returned as 400 — relay them so I can stamp the right outcome.
    ````
 

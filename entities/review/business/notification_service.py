@@ -250,6 +250,49 @@ class ReviewNotificationService:
             forward_message_id[:24] + "..." if len(forward_message_id) > 24 else forward_message_id,
         )
 
+        # Wave 3 Phase E: advance the Review state to "In Review" once
+        # the notification has been enqueued to at least one PM/Owner
+        # (TO or CC populated — BCC-only doesn't count, since no human
+        # is reviewing). Best-effort; on failure the bill stays at
+        # "Submitted" and no other side effects fire.
+        if not (to_with_email or cc_with_email):
+            return
+        try:
+            from entities.review.business.service import ReviewService
+            from entities.review_status.business.service import ReviewStatusService
+            statuses = ReviewStatusService().read_all()
+            in_review = next(
+                (s for s in statuses if s.sort_order > 10 and not s.is_final and not s.is_declined),
+                None,
+            )
+            if in_review is None:
+                logger.info(
+                    "review_notification.in_review_status_missing bill_public_id=%s "
+                    "no non-final non-declined sort>10 ReviewStatus configured",
+                    bill.public_id,
+                )
+                return
+            ReviewService().create(
+                review_status_id=in_review.id,
+                user_id=review.user_id,  # same actor as the Submitted row (Bill Agent etc.)
+                comments=None,
+                bill_id=bill.id,
+                # The forward's BCC archive (sent back into invoice@) lands
+                # via the next poll cycle — we don't have its EmailMessage
+                # row at enqueue time. A follow-up backfill job links the
+                # archive to this Review row by ConversationId match.
+                email_message_id=None,
+            )
+            logger.info(
+                "review_notification.in_review_advanced bill_public_id=%s",
+                bill.public_id,
+            )
+        except Exception as in_review_error:
+            logger.exception(
+                "review_notification.in_review_advance_failed bill_public_id=%s: %s",
+                bill.public_id, in_review_error,
+            )
+
     @staticmethod
     def _format_amount(total_amount) -> str:
         # Use Decimal(str(...)) per project convention; never float() on currency.

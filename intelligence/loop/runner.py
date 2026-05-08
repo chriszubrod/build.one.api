@@ -11,8 +11,10 @@ Orchestrates one turn at a time:
 Termination caps (BudgetPolicy) are checked after each turn.
 """
 import asyncio
+import hashlib
+import json as _json
 import logging
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 from intelligence.loop import approval as approval_coordinator
 from intelligence.loop.events import (
@@ -42,6 +44,62 @@ from intelligence.transport.base import Transport, Usage
 
 
 logger = logging.getLogger(__name__)
+
+
+def _short_hash(data: str) -> str:
+    """First 16 hex chars of sha256 — enough to diff cache prefixes
+    across requests without bloating the log line."""
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()[:16]
+
+
+def _log_cache_prefix_fingerprint(
+    *,
+    session_id: Optional[int],
+    session_public_id: Optional[str],
+    turn: int,
+    model: str,
+    system: Optional[str],
+    tool_schemas: list[dict[str, Any]],
+) -> None:
+    """Log the size + hash of the cache-marked blocks for one transport
+    request. Diagnostic for the question "why does cache_create average
+    8K per session even when 95% of sessions start within the cache
+    TTL?" — if hashes are identical across consecutive sessions but
+    cache_create still fires on first turn, the drift is somewhere
+    Anthropic's caching key cares about that we don't see (e.g. their
+    internal versioning, concurrent-write race). If hashes drift, it's
+    something on our side — variable substring in system, tool schema
+    serialization order, etc.
+
+    Costs ~one extra log line per transport call. Hashes computed
+    cheaply on the same strings we'd otherwise serialize anyway.
+    """
+    system_text = system or ""
+    last_tool = tool_schemas[-1] if tool_schemas else None
+    last_tool_json = (
+        _json.dumps(last_tool, sort_keys=True, ensure_ascii=False)
+        if last_tool else ""
+    )
+    # Concatenated cache-prefix fingerprint = system + the LAST tool.
+    # Anthropic caches everything from start of request up to and
+    # including the last cache_control marker, which here is system +
+    # all tools — but the last tool is the breakpoint, so its content
+    # plus everything before it (system) is what matters for the second
+    # cache key.
+    prefix_concat = system_text + "\n" + last_tool_json
+    logger.info(
+        "loop.cache_fingerprint session_id=%s session_public_id=%s turn=%s "
+        "model=%s system_chars=%d system_hash=%s last_tool_name=%s "
+        "last_tool_chars=%d last_tool_hash=%s prefix_chars=%d prefix_hash=%s "
+        "tools_count=%d",
+        session_id, session_public_id, turn,
+        model,
+        len(system_text), _short_hash(system_text),
+        last_tool.get("name") if last_tool else None,
+        len(last_tool_json), _short_hash(last_tool_json),
+        len(prefix_concat), _short_hash(prefix_concat),
+        len(tool_schemas),
+    )
 
 
 async def run(
@@ -93,6 +151,18 @@ async def run(
         stop_reason: Optional[str] = None
         turn_usage = Usage()
         errored = False
+
+        # Diagnostic: log a fingerprint of the cache-marked blocks so we
+        # can correlate cache_create / cache_read patterns across turns
+        # and sessions. Cheap (one log line, hashes computed in-memory).
+        _log_cache_prefix_fingerprint(
+            session_id=session_id,
+            session_public_id=session_public_id,
+            turn=turn,
+            model=model,
+            system=system,
+            tool_schemas=tool_schemas or [],
+        )
 
         async for ev in transport.stream(
             messages=history,

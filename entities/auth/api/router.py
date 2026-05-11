@@ -484,6 +484,28 @@ def mobile_logout_router(body: MobileRefreshRequest, current_user: dict = Depend
     return item_response({"message": "Logged out."})
 
 
+@router.post("/mobile/auth/logout-all-devices")
+def mobile_logout_all_devices_router(current_user: dict = Depends(get_current_user_api)):
+    """
+    Mobile sign-out-of-all-devices. Bulk-revokes every non-revoked refresh
+    token for the caller's Auth row, so any session on any device (including
+    this one) loses the ability to refresh. The current access token stays
+    valid until natural expiry (~15 min cap), but the client is expected to
+    discard it immediately and re-route to login.
+
+    Returns the number of tokens revoked so the client can show "Signed out
+    of N devices." if desired.
+    """
+    user_sub = current_user.get("sub")
+    if not user_sub:
+        raise HTTPException(status_code=401, detail="Invalid session.")
+    auth = service.read_by_public_id(public_id=user_sub)
+    if auth is None:
+        raise HTTPException(status_code=401, detail="Invalid session.")
+    revoked = service.revoke_all_refresh_tokens_for_auth(auth_id=auth.id)
+    return item_response({"message": "Signed out of all devices.", "revoked": revoked})
+
+
 # ---------------------------------------------------------------------------
 # Profile: /me + /me/changes SSE
 # ---------------------------------------------------------------------------

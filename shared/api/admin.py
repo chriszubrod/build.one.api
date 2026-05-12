@@ -2,6 +2,7 @@
 import asyncio
 import hmac
 import logging
+import os
 import time
 from typing import Any, Optional
 
@@ -282,10 +283,28 @@ async def email_process_one_router():
     scheduler's inner-drain loop knows to stop. Idempotent — the
     underlying claim sproc uses UPDLOCK + READPAST so concurrent ticks
     can't claim the same row.
+
+    Operator pause: set env var `PAUSE_EMAIL_AGENT=true` on App Service
+    and restart. While set, this endpoint returns `{processed: false,
+    paused: true}` immediately — the Function App tick keeps firing
+    harmlessly (50ms HTTP round-trip) and the scheduler's inner-drain
+    loop exits cleanly. Avoids touching the Function App's Disabled
+    flag, which is a one-way trip on Flex Consumption (see
+    docs/runbooks/deploy-restart-timing.md). Reverse by clearing the
+    env var + restart.
     """
     import asyncio as _asyncio
 
     started = time.monotonic()
+
+    pause_flag = (os.environ.get("PAUSE_EMAIL_AGENT") or "").strip().lower()
+    if pause_flag in ("true", "1", "yes"):
+        return {
+            "status": "ok",
+            "job": "email.process_one",
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "result": {"processed": False, "paused": True},
+        }
 
     # Lazy imports — avoid pulling the agent registry into the FastAPI
     # boot path unnecessarily.

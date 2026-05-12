@@ -19,9 +19,13 @@ Service-layer pattern:
     assert_can_access_bill(bill.id)
     return bill
 
-Admins (`current_is_system_admin == True`) and unauthenticated callers
-(`current_user_id is None`) bypass — matching the Phase 3 NULL-bypass
-behavior on the list-path filters.
+Admins (`current_is_system_admin == True`) bypass. Unauthenticated callers
+(`current_user_id is None`) **fail closed** as of 2026-05-12 — the prior
+`current_user_id is None → bypass` mirrored the SQL-side
+`@ActorUserId IS NULL` clause we just removed, and was the same shape of
+silent leak. Scheduler / system callers reach the admin bypass via the
+`set_authz_context(is_system_admin=True)` call in
+`shared/api/admin.py::_require_drain_secret`.
 """
 from typing import Optional
 
@@ -43,11 +47,17 @@ class EntityNotAccessibleError(Exception):
 
 
 def _should_bypass() -> bool:
-    if current_is_system_admin.get():
-        return True
-    if current_user_id.get() is None:
-        return True
-    return False
+    """True iff the request explicitly carries system-admin authz context.
+
+    Removed (2026-05-12) the prior `current_user_id is None → bypass` branch.
+    A missing actor used to silently allow direct-URL by-id reads, mirroring
+    the SQL-side legacy bypass. Both were closed in the same sweep.
+
+    Drain-secret callers (outbox drain, QBO sync, reconciliation) reach this
+    bypass via `set_authz_context(is_system_admin=True)` at the dependency
+    layer — `current_is_system_admin.get()` is True for them.
+    """
+    return current_is_system_admin.get()
 
 
 def _check(udf_name: str, entity_id: int) -> bool:

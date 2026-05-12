@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, status
 
 # Local Imports
 import config
+from shared.authz import set_authz_context
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,16 @@ def _require_drain_secret(x_drain_secret: Optional[str] = Header(default=None, a
     to-machine calls from the scheduler Function App. Fails closed when the
     server has no secret configured, so a missing env var can't silently
     open the admin surface.
+
+    Side effect (2026-05-12): on successful auth, populates the per-request
+    `current_is_system_admin = True` so Phase 3+ entity sprocs allow the
+    `@ActorIsSystemAdmin = 1` bypass and return all rows. This is what
+    drain-secret callers (outbox drain, QBO sync, reconciliation, etc.)
+    need — they read across all users by design. The previous `OR @ActorUserId
+    IS NULL` sproc-level bypass was removed (migration `002_remove_legacy_actor_bypass`)
+    after a leak was found where a regressed auth path silently fell through
+    to "no actor → show everything" for user-facing requests. Drain-secret
+    callers explicitly declare system intent here instead.
     """
     configured = (config.Settings().drain_secret or "").strip()
     if not configured:
@@ -44,6 +55,14 @@ def _require_drain_secret(x_drain_secret: Optional[str] = Header(default=None, a
     provided = (x_drain_secret or "").strip()
     if not provided or not hmac.compare_digest(provided, configured):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing X-Drain-Secret")
+
+    # Authenticated as scheduler. Mark this request as system-level so
+    # downstream entity sprocs bypass row-level user scoping via the
+    # @ActorIsSystemAdmin = 1 clause. We never want the no-actor leak path
+    # to be reachable post-002 migration — every legitimate cross-user
+    # read either runs as a system admin user (JWT with isa=true), an
+    # actual admin (also isa=true), or as a drain-secret call (this path).
+    set_authz_context(user_id=None, company_id=None, is_system_admin=True)
 
 
 async def _timed(job_name: str, sync_fn) -> dict[str, Any]:

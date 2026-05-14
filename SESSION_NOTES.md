@@ -1,5 +1,28 @@
 # Session Notes
 
+## Session: Contract Labor list page — React rebuild to Jinja parity (May 14, 2026)
+
+### Overview
+The React `/contract-labor/list` page was a thin `DataTable` shell that fetched `GET /api/v1/contract-labor` with no params — silent 50-row cap, no server-side filters, no bulk actions, no pagination. Rebuilt to feature parity with the retired Jinja list (deleted in `c6e20b4`, Wave E3, 2026-04-24).
+
+### Backend
+- New `GET /api/v1/contract-labor/billing-periods` endpoint + `ReadContractLaborDistinctBillingPeriods` sproc + repo/service wiring. Powers the React list-page Billing Period filter dropdown (the Jinja controller used to provide `billing_periods` in template context; that pathway died with the controller).
+- API commit `17bff25` → master. Sproc applied via `python3 scripts/run_sql.py …`.
+
+### Frontend (`build.one.web` commit `4bb7b7a` → main)
+- Full rewrite of `src/pages/contract-labor/ContractLaborList.tsx`. URL-as-truth via `useSearchParams` (deep-linkable, no `sessionStorage` round-trip). Three parallel React Query reads (list / count / billing-periods) plus vendors via existing `useEntityList`. Dynamic title by status (`Pending Review` / `Ready for Billing` / `Billed` / `Contract Labor`). Debounced 500ms search → URL. Filter bar (Status / Billing Period / Vendor / Clear). Bulk toolbar (Mark Ready / Delete / View PDF via blob → `window.open`). Numbered pagination + results summary. Inline `<table className="data-table">` (Date / Vendor (employee fallback) / Job / Hours `HH:MM` / Status badge / Edit), row click → edit. Empty state copy branches on whether filters are active.
+- Column set mirrors the Jinja list exactly per Chris — dropped the React extras (Employee / Rate / Amount).
+- Added `job_name: string | null` to the `ContractLabor` TS type.
+- Added `.cl-filters` / `.cl-bulk-actions` / `.cl-pagination` / `.cl-empty-state` styles in `src/index.css`.
+
+### Deploy
+`az acr build` ID `ca3b` (~65s) → `buildone:17bff25` + `:latest`; `az webapp restart`; `/docs` 200 post-restart.
+
+### Out-of-scope (worth flagging if it comes up later)
+- The decision to forgo `sessionStorage` scroll/filter restoration on this page is deliberate (URL params only). The Edit page may still use `clScrollY` — not audited.
+- Server-side sort headers on the list table — endpoint accepts `sort_by` / `sort_direction` but list defaults to `WorkDate DESC` with no clickable column sort, matching the Jinja shape.
+- Contract Labor Edit / Bills / Import React pages were not touched. If a future audit finds drift versus the Jinja originals, repeat the same plan-before-coding gap-analysis pattern.
+
 ## Session: Gap 2 service-layer CreatedByUserId threading — full rollout (May 7, 2026)
 
 ### Overview

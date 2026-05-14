@@ -147,6 +147,19 @@ def read_contract_labors_by_status(status: str, current_user: dict = Depends(req
     return list_response([r.to_dict() for r in results])
 
 
+@router.get("/billing-periods")
+def read_contract_labor_billing_periods(
+    current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR)),
+):
+    """
+    Distinct BillingPeriodStart values (YYYY-MM-DD), most-recent first.
+
+    Powers the React list-page billing-period filter dropdown.
+    """
+    service = ContractLaborService()
+    return list_response(service.read_distinct_billing_periods())
+
+
 @router.get("/bills-summary")
 def read_contract_labor_bills_summary(
     billing_period: Optional[str] = None,

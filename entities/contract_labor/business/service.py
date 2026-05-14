@@ -357,6 +357,10 @@ class ContractLaborService:
             return self.repo.delete_by_id(existing.id)
         return None
 
+    def read_distinct_billing_periods(self) -> list[str]:
+        """Return distinct BillingPeriodStart values (YYYY-MM-DD), most-recent first."""
+        return self.repo.read_distinct_billing_periods()
+
     def get_last_rate_for_vendor(self, vendor_public_id: str) -> Tuple[Optional[Decimal], Optional[Decimal]]:
         """
         Get the last used hourly rate and markup for a vendor (for carry-forward).

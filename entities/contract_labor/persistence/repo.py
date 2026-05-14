@@ -641,6 +641,26 @@ class ContractLaborRepository:
             logger.error(f"Error during read by bill line item ID: {error}")
             raise map_database_error(error)
 
+    def read_distinct_billing_periods(self) -> list[str]:
+        """
+        Return distinct non-null BillingPeriodStart values, most-recent first.
+
+        Used to populate the React list-page filter dropdown.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadContractLaborDistinctBillingPeriods",
+                    params={},
+                )
+                rows = cursor.fetchall()
+                return [row.BillingPeriodStart for row in rows if row and row.BillingPeriodStart]
+        except Exception as error:
+            logger.error(f"Error during read distinct billing periods: {error}")
+            raise map_database_error(error)
+
     def get_daily_summary(
         self,
         *,

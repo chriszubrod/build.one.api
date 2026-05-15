@@ -1,5 +1,41 @@
 # Session Notes
 
+## Session: Contract Labor Edit page — React rebuild to bill-prep workflow (May 15, 2026)
+
+### Overview
+The React `/contract-labor/:id/edit` page was a flat field editor; the Jinja original (deleted in `c6e20b4`, Wave E3, 2026-04-24) was the entire bill-prep workflow titled "Create Bill from Time Entry" — line items with SubCostCode / Project / Hours, vendor selection, bill header (number / date / due date), 8-hour daily allocation widget, and a "Save & Mark Ready" path that drives the downstream Generate Bills flow. Rebuilt to parity.
+
+### Backend (API commit `a84fd4f` → master)
+Three GET endpoints added to [entities/contract_labor/api/router.py](entities/contract_labor/api/router.py):
+- `GET /api/v1/contract-labor/{public_id}/line-items` — child line items for a parent entry.
+- `GET /api/v1/contract-labor/{public_id}/daily-summary` — per-employee per-day allocation summary (total_imported_hours / entry_count / allocated_other_entries / allocated_this_entry / remaining_to_allocate).
+- `GET /api/v1/contract-labor/vendor-config` — `VENDOR_CONFIG` dict from `business/bill_service.py` (rate + markup keyed by vendor name), exposed so the React page can auto-fill new line items without duplicating the config in TypeScript.
+
+Also patched a latent bug: `ReadContractLaborDailySummary` was missing `SET NOCOUNT ON`, which trips pyodbc's first-result `fetchone()` because each `SELECT @var = ...` assignment emits an empty result-set marker under `SET NOCOUNT OFF`. Latent because the Jinja controller that called it was deleted with the rest of the contract_labor web package; the new endpoint is the first prod caller since. Sproc patched via migration file [sql/ReadContractLaborDailySummary.sql](entities/contract_labor/sql/ReadContractLaborDailySummary.sql); the base [sql/dbo.contract_labor.sql](entities/contract_labor/sql/dbo.contract_labor.sql) snapshot still carries the stale version — follow the May 7 lesson learned and migration files take precedence over base files going forward.
+
+### Frontend (`build.one.web` commit `5546d7e` → main)
+Full rewrite of [src/pages/contract-labor/ContractLaborEdit.tsx](src/pages/contract-labor/ContractLaborEdit.tsx). Sections: status badge + Back-to-List header; source-info strip; read-only "Time Entry Details" grid (work_date / employee / job / time_in / time_out / break / regular / OT / total hours with HH:MM); "Bill Information" (vendor select, bill number, bill date, due date with `Imported as: "..."` hint); "Daily Hours Summary" widget with allocation warnings; "Line Items" repeater per-line (Date / Project / SubCostCode / Hours / Rate / Markup% / live Price / Billable / Overhead / Description); totals footer showing both `Total Hours: X.XX (HH:MM)` and `Total Price: $X.XX`; actions row (Save Changes / Save & Mark Ready / Cancel / Delete).
+
+Per-row formula `(hours / 8) × rate × (1 + markup)` matches the Jinja calc verbatim. Auto-fill rules:
+- Vendor change → fill rate + markup on lines where those fields are empty (preserves edited values).
+- Project abbreviation starting with `MR2` → set that line's markup to 5%.
+- Overhead checkbox disables the Project select and sends `project_id=null` on save.
+- One empty line auto-added when an entry has none.
+
+`Save & Mark Ready` validates Vendor / Bill Date / Bill Number / ≥1 line, then issues `PUT /{public_id}/bill` with `status='ready'`. On success, re-fetches line items so newly-created rows pick up their server-assigned `id` + `row_version` (matches the Jinja `setTimeout reload`). All controls disabled when status='billed'.
+
+### Deploy
+`az acr build` ID `ca3d` (~74s) → `buildone:a84fd4f` + `:latest`; `az webapp restart`; `/docs` 200 post-restart.
+
+### Out-of-scope (worth flagging if it comes up later)
+- `EMPLOYEE_VENDOR_MAP` (hardcoded employee-name → vendor-name auto-pick from the Jinja JS) was deliberately dropped. The "Imported as: ..." hint under the vendor dropdown is enough; if the same workflow needs the auto-pick later, a `Vendor.NameAliases` column is the right place (similar to the SubCostCode aliases we already have).
+- TypeScript types added: `ContractLaborLineItem`, `ContractLaborDailySummary`, `ContractLaborVendorConfig`. Also filled in the missing `bill_vendor_id` / `bill_date` / `due_date` / `bill_number` fields on `ContractLabor` itself.
+- Auto-save deliberately not used — the Jinja Edit page was explicit Save, and the `PUT /{public_id}/bill` endpoint isn't built for partial PATCH the way Bill is.
+- View page (`/contract-labor/:id`) untouched. It's React-only (Jinja had no separate view) and remains accessible via direct URL only — the list page row click routes to edit.
+
+### TODO from this session
+- Rebake [entities/contract_labor/sql/dbo.contract_labor.sql](entities/contract_labor/sql/dbo.contract_labor.sql) as a consolidated snapshot of all post-migration sproc states (including `SET NOCOUNT ON` on `ReadContractLaborDailySummary` and the new `ReadContractLaborDistinctBillingPeriods`). Same pattern noted on May 7 — base files rot, migration files are authoritative.
+
 ## Session: Contract Labor list page — React rebuild to Jinja parity (May 14, 2026)
 
 ### Overview

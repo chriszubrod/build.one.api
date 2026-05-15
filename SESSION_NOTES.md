@@ -1,5 +1,35 @@
 # Session Notes
 
+## Session: HP2-09 InvoiceAgent run + re-run for Q44862 (May 14–15, 2026)
+
+### Overview
+Ran the InvoiceAgent playbook for HP2 invoice HP2-09 (37 lines, $404,494.30 final). First pass on 2026-05-14 completed with 36 lines / $394k; second pass on 2026-05-15 added Bill Q44862 ($10,426.25) and uncovered five distinct recovery patterns now documented in the playbook (Known Issues #17–#20 + #19's Project-duplicate case).
+
+### Standard playbook patterns exercised
+- **Step 3a connector-direct invocation**: sync_qbo_invoice didn't propagate qbo.Invoice 959 to dbo on initial pull (cause unknown — no error in sync output). Invoked `InvoiceInvoiceConnector.sync_from_qbo_invoice` directly with `set_authz_context(is_system_admin=True)` to create dbo.Invoice 1040.
+- **Step 3b workaround for 3 new bills**: Walker 185394 / Walker 190134 / Guzman 463768 all needed the attachment-monkey-patch dance. Walker 190134 initially had no QBO attachment — user uploaded mid-session, then we synced + onboarded.
+- **Per-line attachment-coverage halt rule (CRITICAL #4)** kept us honest — would have generated a packet with a silently-skipped line without the pre-flight check.
+
+### New patterns / bugs discovered
+1. **Re-run UNIQUE-constraint failure (Known Issue #20)**: Second InvoiceInvoiceConnector invocation on the same invoice failed per-line with `UQ_InvoiceLineItemInvoiceLine_QboInvoiceLineId` violations, leaving 35 orphan ILI rows. Recovery: delete ILIs with no qbo mapping, then re-fingerprint all 37 lines.
+2. **Duplicate BLI on same Bill (Known Issue #18)**: Q44862 had two `dbo.BillLineItem` rows for the same line — one qbo-mapped (referenced by HP2-09) and one orphan with the attachment. Linked the same Attachment row to both BLIs via a new `BillLineItemAttachment`; left the orphan BLI for separate cleanup.
+3. **BLI.Price → column N (Known Issue #17)**: `BillService.sync_to_excel_workbook` writes column N from `Price` not `Amount`. The kept BLI 21218 had `Price=NULL` so its DETAILS row inserted with N=0. Set `Price=Amount` on the BLI; user manually cleaned the 0-amount row in DETAILS.
+4. **Duplicate Project re-pointed customer mapping (Known Issue #19)**: A second `dbo.Project` ("HP2 - 4406 Harding Pike", no Abbreviation, id=137) was created out-of-band on 2026-05-14 16:10 (after our prior session ended), and `qbo.CustomerProject` was re-pointed from project 13 → 137. The re-run dragged `dbo.Invoice.ProjectId` to 137, breaking SharePoint upload (folder configured for 13). Recovery: repoint mapping back, fix invoice's ProjectId, delete project 137 (only 2 refs to fix).
+5. **Re-categorizations propagated to dbo manually**: User re-coded 4 Liaison bills (#9041–9044) from SCC 28.0 → 29.0 in QBO and 2 Home Depot expenses from "NEED TO CATEGORIZE" → 08.a10 in QBO. Verified live via `QboBillClient.get_bill()` / `QboPurchaseClient.get_purchase()` (qbo staging was stale); updated `dbo.BillLineItem.SubCostCodeId` / `dbo.ExpenseLineItem.SubCostCodeId` directly. DETAILS rows for the relocated SCCs stay physically in the wrong Cost Code section until manual relocate (Known Issue #16 family).
+6. **HD Expense fingerprint workaround**: 2 Home Depot ExpenseLineItems matched HP2-09 lines by description+amount+date but the underlying `qbo.PurchaseLine` carried `CustomerRefValue=NULL` so the customer-scoped fingerprint missed them. Hard-coded the link via an explicit override mapping.
+
+### Final state
+- dbo.Invoice 1040 HP2-09 — 37 lines / $404,494.30 / ProjectId=13 (fixed from 137)
+- 33 BLI billed + 4 ELI billed, 0 Manual; coverage check clean
+- Packet `Invoice-HP2-09-Packet.pdf`, 45 pages, attachment pid `5A6DF1DC-4A22-4DE2-9257-C496845F054E`
+- SharePoint: 38 files uploaded (1 packet + 37 line attachments)
+- DETAILS: 37 H=HP2-09 rows, Direction A/B both zero
+
+### Outstanding items
+- Orphan dbo.BillLineItem 21018 (duplicate of 21218 on Bill 17320) still in dbo; user will clean up separately.
+- Liaison Low Volt rows + HD Surface Protection rows + new appended bottom rows (per Issue #16) still physically in the wrong Cost Code section of DETAILS; user will manually relocate.
+- Root cause of Project 137 duplicate creation unknown. See TODO.
+
 ## Session: QBO outbox + pull-sync authz boundary fix (May 14–15, 2026)
 
 ### Overview

@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # Third-party Imports
 
 # Local Imports
-from scripts.sync_helper import _normalize_last_sync
+from scripts.sync_helper import _normalize_last_sync, assert_cli_system_admin
 from integrations.sync.business.service import SyncService
 from integrations.intuit.qbo.company_info.business.service import QboCompanyInfoService
 from integrations.intuit.qbo.company_info.connector.business.service import CompanyInfoCompanyConnector
@@ -197,5 +197,6 @@ def sync_qbo_company_info() -> dict:
 
 
 if __name__ == "__main__":
+    assert_cli_system_admin()
     result = sync_qbo_company_info()
     print(result)

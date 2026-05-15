@@ -208,13 +208,18 @@ def _enrich_payload_with_authz(payload: dict) -> dict:
     return payload
 
 
-def get_current_user_api(
+async def get_current_user_api(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ):
     """
     Dependency to get the current user from the token.
     Accepts either Authorization header (Bearer) or HttpOnly cookie.
+
+    Must be `async def`: `_enrich_payload_with_authz` mutates per-request
+    ContextVars via `set_authz_context`. Sync dependencies run in a
+    threadpool with a copied context, so mutations would be discarded
+    before the route handler reads them.
     """
     token = None
     errors = []

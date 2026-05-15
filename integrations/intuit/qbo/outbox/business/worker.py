@@ -14,6 +14,12 @@ from integrations.intuit.qbo.base.locking import qbo_app_lock
 from integrations.intuit.qbo.base.retry import RetryPolicy, compute_backoff_seconds
 from integrations.intuit.qbo.outbox.business.model import QboOutbox
 from integrations.intuit.qbo.outbox.persistence.repo import QboOutboxRepository
+from shared.authz.context import (
+    current_user_id,
+    current_company_id,
+    current_is_system_admin,
+    set_authz_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +111,23 @@ class QboOutboxWorker:
         Dispatch a single claimed row. Installs correlation and idempotency
         context so downstream QBO calls log/tag with the row's IDs and use
         the stable RequestId as the requestid query param.
+
+        Drain workers process rows that span all users by design — assert
+        system intent at the boundary so callers (HTTP endpoint, in-process
+        scheduler, REPL) don't have to remember `set_authz_context`. The
+        prior context is restored on exit so we don't leak system-admin
+        into whatever ran us.
         """
+        prior_uid = current_user_id.get()
+        prior_cid = current_company_id.get()
+        prior_isa = current_is_system_admin.get()
+        set_authz_context(user_id=None, company_id=None, is_system_admin=True)
+        try:
+            self._process_inner(row)
+        finally:
+            set_authz_context(user_id=prior_uid, company_id=prior_cid, is_system_admin=prior_isa)
+
+    def _process_inner(self, row: QboOutbox) -> None:
         # Install correlation context from the row (if present) so all
         # downstream logs stitch together with the original request.
         if row.correlation_id:

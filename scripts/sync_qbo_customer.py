@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # Third-party Imports
 
 # Local Imports
-from scripts.sync_helper import _normalize_last_sync
+from scripts.sync_helper import _normalize_last_sync, assert_cli_system_admin
 from shared.database import with_retry, is_transient_error
 from integrations.sync.business.service import SyncService
 from integrations.sync.business.model import Sync
@@ -369,5 +369,6 @@ def sync_qbo_customer() -> dict:
 
 
 if __name__ == "__main__":
+    assert_cli_system_admin()
     result = sync_qbo_customer()
     print(result)

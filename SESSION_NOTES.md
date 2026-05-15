@@ -1,5 +1,33 @@
 # Session Notes
 
+## Session: QBO outbox + pull-sync authz boundary fix (May 14–15, 2026)
+
+### Overview
+Diagnosed and fixed a class of `EntityNotAccessibleError` failures introduced by the 2026-05-12 Gap 1 access-guard tightening (`shared/access.py` — removed `current_user_id is None → bypass`). Symptom: bills marked Complete on May 13–14 dead-lettered with `Bill <id> is not accessible to the current actor`, status `dead_letter`, attempts=1. Two distinct entry-point classes were broken: outbox workers (background drain) and CLI sync scripts (terminal invocation). HTTP admin drain endpoint was already correct via `_require_drain_secret`.
+
+### Outbox workers (May 14)
+- Wrapped `QboOutboxWorker._process` and `MsOutboxWorker._process` with `set_authz_context(is_system_admin=True)` save-set-restore. Original body extracted to `_process_inner`.
+- Worker is now self-defending — caller doesn't need to remember (HTTP drain, in-process APScheduler if `ENABLE_SCHEDULER=true`, REPL all behave correctly).
+- Verified `asyncio.to_thread` propagates ContextVars from the request task to the worker thread via a quick REPL probe.
+- Deployed via `az acr build --registry buildone --image buildone:latest --image buildone:9b23366-authz-hotfix --file Dockerfile .` (1m14s) → `az webapp restart --name buildone --resource-group buildone_group`.
+- Replayed 7 dead-lettered Bill outbox rows (`UPDATE qbo.Outbox SET Status='pending' …`); all 7 transitioned `pending → in_progress → done` within ~3 minutes, attempts=0, no errors.
+
+### CLI sync scripts (May 15)
+- Audit found 3 critical scripts (`sync_qbo_bill.py`, `sync_qbo_purchase.py`, `sync_qbo_vendorcredit.py`) that call guarded service reads through their connectors; the other 7 sync scripts touch only currently-unguarded entities (Customer/Project/Vendor/Item/Account/Term/CompanyInfo).
+- Added `assert_cli_system_admin()` helper to `scripts/sync_helper.py` (single-line wrapper around `set_authz_context(user_id=None, company_id=None, is_system_admin=True)`).
+- Wired into all 10 `scripts/sync_qbo_*.py` `if __name__ == "__main__":` blocks — required for the 3 critical, defense-in-depth for the other 7.
+- HTTP admin endpoint path unchanged — when `sync_qbo_*()` is called via `/api/v1/admin/sync/qbo/{entity}`, the request already runs under `is_system_admin=True` via `_require_drain_secret`. The CLI guard only fires under `__main__`.
+
+### Side work — SQL deploys (May 15)
+- Deployed 22 QBO SQL files via `python scripts/run_sql.py …`. Two had pre-existing bugs that surfaced during the chained run:
+  - `qbo.auth.sql` — orphan `IF OBJECT_ID('qbo.Auth', 'U') IS NOT NULL` followed by `GO` with no body (line 1); orphan `@RealmId = '1234567890';` fragment at end of file (line 288). Removed both.
+  - `qbo.client.sql` — schema-existence check tested for `'buildone'` but created `'qbo'`; orphan `IF OBJECT_ID(…) IS NOT NULL\nGO` (line 8); orphan `@App = 'build.one';` at end. Fixed schema-name + removed both orphans.
+
+### Key insight (added to memory)
+`feedback_outbox_authz_boundary.md` — Any code path that calls service-layer reads from outside an authenticated HTTP request must declare system intent. The HTTP-side dependency layer doesn't reach background tasks or CLI entry points; those need their own boundary.
+
+---
+
 ## Session: Contract Labor Edit page — React rebuild to bill-prep workflow (May 15, 2026)
 
 ### Overview

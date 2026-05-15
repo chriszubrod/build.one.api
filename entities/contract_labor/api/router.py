@@ -160,6 +160,30 @@ def read_contract_labor_billing_periods(
     return list_response(service.read_distinct_billing_periods())
 
 
+@router.get("/vendor-config")
+def read_contract_labor_vendor_config(
+    current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR)),
+):
+    """
+    VENDOR_CONFIG dict (rate + markup + address) keyed by vendor name.
+
+    Single source of truth lives in bill_service.py. Exposed here so the
+    React Edit page can auto-fill rate + markup on new line items without
+    duplicating the config in TypeScript.
+    """
+    from entities.contract_labor.business.bill_service import VENDOR_CONFIG
+    payload = {
+        name: {
+            "address": cfg.get("address"),
+            "city_state_zip": cfg.get("city_state_zip"),
+            "rate": str(cfg["rate"]) if cfg.get("rate") is not None else None,
+            "markup": str(cfg["markup"]) if cfg.get("markup") is not None else None,
+        }
+        for name, cfg in VENDOR_CONFIG.items()
+    }
+    return item_response(payload)
+
+
 @router.get("/bills-summary")
 def read_contract_labor_bills_summary(
     billing_period: Optional[str] = None,
@@ -273,6 +297,49 @@ def delete_contract_labor(public_id: str, current_user: dict = Depends(require_m
         raise_workflow_error(result.get("error", ""), "Failed to delete contract labor")
 
     return item_response(result.get("data"))
+
+
+@router.get("/{public_id}/line-items")
+def read_contract_labor_line_items(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR)),
+):
+    """
+    Read all line items for a contract labor entry.
+
+    Powers the React Edit page line-items repeater.
+    """
+    service = ContractLaborService()
+    entry = service.read_by_public_id(public_id=public_id)
+    if not entry:
+        raise_not_found("Contract labor entry")
+    line_item_repo = ContractLaborLineItemRepository()
+    rows = line_item_repo.read_by_contract_labor_id(contract_labor_id=entry.id)
+    return list_response([r.to_dict() for r in rows])
+
+
+@router.get("/{public_id}/daily-summary")
+def read_contract_labor_daily_summary(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR)),
+):
+    """
+    Per-employee per-day hours allocation summary for a contract labor entry.
+
+    Returns total_imported_hours / entry_count / allocated_other_entries /
+    allocated_this_entry / remaining_to_allocate. Powers the React Edit
+    page's "Daily Hours Summary" widget.
+    """
+    service = ContractLaborService()
+    entry = service.read_by_public_id(public_id=public_id)
+    if not entry:
+        raise_not_found("Contract labor entry")
+    summary = service.repo.get_daily_summary(
+        employee_name=entry.employee_name or "",
+        work_date=entry.work_date,
+        exclude_entry_id=entry.id,
+    )
+    return item_response(summary)
 
 
 @router.put("/{public_id}/bill")

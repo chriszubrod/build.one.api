@@ -111,7 +111,20 @@ class BillCreditLineItemService:
     def update_by_public_id(
         self,
         public_id: str,
-        bill_credit_line_item,  # BillCreditLineItemUpdate schema
+        *,
+        tenant_id: int = None,
+        row_version: str,
+        bill_credit_public_id: str = None,
+        sub_cost_code_id: int = None,
+        project_public_id: str = None,
+        description: str = None,
+        quantity: float = None,
+        unit_price: float = None,
+        amount: float = None,
+        is_billable: bool = None,
+        is_billed: bool = None,
+        billable_amount: float = None,
+        is_draft: bool = None,
     ) -> Optional[BillCreditLineItem]:
         """
         Update a bill credit line item by public ID.
@@ -119,45 +132,43 @@ class BillCreditLineItemService:
         existing = self.read_by_public_id(public_id=public_id)
         if not existing:
             return None
-        
-        existing.row_version = bill_credit_line_item.row_version
-        
-        # Resolve bill_credit_public_id if provided
-        if bill_credit_line_item.bill_credit_public_id:
-            bill_credit = BillCreditService().read_by_public_id(public_id=bill_credit_line_item.bill_credit_public_id)
+
+        existing.row_version = row_version
+
+        if bill_credit_public_id:
+            bill_credit = BillCreditService().read_by_public_id(public_id=bill_credit_public_id)
             if not bill_credit:
-                raise ValueError(f"Bill credit with public_id '{bill_credit_line_item.bill_credit_public_id}' not found.")
+                raise ValueError(f"Bill credit with public_id '{bill_credit_public_id}' not found.")
             existing.bill_credit_id = bill_credit.id
-        
-        # Resolve project_public_id if provided
-        if bill_credit_line_item.project_public_id is not None:
-            if bill_credit_line_item.project_public_id:
-                project = ProjectService().read_by_public_id(public_id=bill_credit_line_item.project_public_id)
+
+        if project_public_id is not None:
+            if project_public_id:
+                project = ProjectService().read_by_public_id(public_id=project_public_id)
                 if not project:
-                    raise ValueError(f"Project with public_id '{bill_credit_line_item.project_public_id}' not found.")
+                    raise ValueError(f"Project with public_id '{project_public_id}' not found.")
                 existing.project_id = project.id
             else:
                 existing.project_id = None
-        
-        if bill_credit_line_item.sub_cost_code_id is not None:
-            existing.sub_cost_code_id = bill_credit_line_item.sub_cost_code_id
-        if bill_credit_line_item.description is not None:
-            existing.description = bill_credit_line_item.description
-        if bill_credit_line_item.quantity is not None:
-            existing.quantity = Decimal(str(bill_credit_line_item.quantity))
-        if bill_credit_line_item.unit_price is not None:
-            existing.unit_price = Decimal(str(bill_credit_line_item.unit_price))
-        if bill_credit_line_item.amount is not None:
-            existing.amount = Decimal(str(bill_credit_line_item.amount))
-        if bill_credit_line_item.is_billable is not None:
-            existing.is_billable = bill_credit_line_item.is_billable
-        if hasattr(bill_credit_line_item, 'is_billed') and bill_credit_line_item.is_billed is not None:
-            existing.is_billed = bill_credit_line_item.is_billed
-        if bill_credit_line_item.billable_amount is not None:
-            existing.billable_amount = Decimal(str(bill_credit_line_item.billable_amount))
-        if bill_credit_line_item.is_draft is not None:
-            existing.is_draft = bill_credit_line_item.is_draft
-        
+
+        if sub_cost_code_id is not None:
+            existing.sub_cost_code_id = sub_cost_code_id
+        if description is not None:
+            existing.description = description
+        if quantity is not None:
+            existing.quantity = Decimal(str(quantity))
+        if unit_price is not None:
+            existing.unit_price = Decimal(str(unit_price))
+        if amount is not None:
+            existing.amount = Decimal(str(amount))
+        if is_billable is not None:
+            existing.is_billable = is_billable
+        if is_billed is not None:
+            existing.is_billed = is_billed
+        if billable_amount is not None:
+            existing.billable_amount = Decimal(str(billable_amount))
+        if is_draft is not None:
+            existing.is_draft = is_draft
+
         return self.repo.update_by_id(existing)
 
     def delete_by_public_id(self, public_id: str) -> Optional[BillCreditLineItem]:

@@ -165,23 +165,19 @@ class BillCreditCompleteService:
                         if project:
                             project_public_id = project.public_id
                     
-                    from entities.bill_credit_line_item.api.schemas import BillCreditLineItemUpdate
-                    line_item_update = BillCreditLineItemUpdate(
+                    self.bill_credit_line_item_service.update_by_public_id(
+                        public_id=line_item.public_id,
                         row_version=line_item.row_version,
                         bill_credit_public_id=public_id,
                         sub_cost_code_id=line_item.sub_cost_code_id,
                         project_public_id=project_public_id,
                         description=line_item.description,
-                        quantity=line_item.quantity,
-                        unit_price=line_item.unit_price,
-                        amount=line_item.amount,
+                        quantity=float(line_item.quantity) if line_item.quantity is not None else None,
+                        unit_price=float(line_item.unit_price) if line_item.unit_price is not None else None,
+                        amount=float(line_item.amount) if line_item.amount is not None else None,
                         is_billable=line_item.is_billable,
-                        billable_amount=line_item.billable_amount,
-                        is_draft=False
-                    )
-                    self.bill_credit_line_item_service.update_by_public_id(
-                        public_id=line_item.public_id,
-                        bill_credit_line_item=line_item_update
+                        billable_amount=float(line_item.billable_amount) if line_item.billable_amount is not None else None,
+                        is_draft=False,
                     )
                 except Exception as e:
                     logger.error(f"Error finalizing line item {line_item.id}: {e}")

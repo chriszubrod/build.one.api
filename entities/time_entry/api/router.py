@@ -38,13 +38,23 @@ def _entry_dict_with_current_status(entry) -> dict:
     """
     Inject `current_status` into a TimeEntry's serialized dict by reading
     the latest TimeEntryStatus row. The column doesn't exist on the
-    TimeEntry table itself — status lives in TimeEntryStatus history. Use
-    this everywhere a route returns a TimeEntry, otherwise iOS / web see
-    a null status and fall back to "draft", which silently strips the UI's
-    knowledge of the entry's actual lifecycle position.
+    TimeEntry table itself — status lives in TimeEntryStatus history.
+
+    The status sproc enforces Phase-3 scope: with NULL ActorUserId AND
+    NULL ActorIsSystemAdmin it returns zero rows, which would silently
+    default current_status to "draft" for every entry — exactly the bug
+    that made the list page show "Draft" for already-submitted entries.
+
+    The parent entry was already access-scoped by the caller (list query
+    forwards the actor; submit/approve/reject sproc already proved the
+    caller is authorized). So we bypass scope on the status lookup the
+    same way TimeEntryService.submit/approve/reject already do.
     """
     d = entry.to_dict()
-    current = TimeEntryStatusService().repo.read_current(time_entry_id=entry.id)
+    current = TimeEntryStatusService().repo.read_current(
+        time_entry_id=entry.id,
+        actor_is_system_admin=True,
+    )
     d["current_status"] = current.status if current else "draft"
     return d
 

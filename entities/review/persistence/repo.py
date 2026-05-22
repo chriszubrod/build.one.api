@@ -124,6 +124,24 @@ class ReviewRepository:
     def read_by_bill_id(self, bill_id: int) -> list[Review]:
         return self._read_list("ReadReviewsByBillId", {"BillId": bill_id})
 
+    def delete_by_bill_id(self, bill_id: int) -> None:
+        """Delete all Review (and legacy ReviewEntry) rows for a Bill.
+
+        Reviews are otherwise insert-only audit records; this exists ONLY so
+        the parent Bill can be hard-deleted without tripping FK_Review_Bill.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="DeleteReviewsByBillId",
+                    params={"BillId": bill_id},
+                )
+        except Exception as error:
+            logger.error(f"Error during delete reviews by bill id {bill_id}: {error}")
+            raise map_database_error(error)
+
     def read_by_expense_id(self, expense_id: int) -> list[Review]:
         return self._read_list("ReadReviewsByExpenseId", {"ExpenseId": expense_id})
 

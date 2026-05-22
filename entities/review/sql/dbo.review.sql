@@ -334,3 +334,27 @@ BEGIN
     WHERE rn = 1;
 END;
 GO
+
+-- Delete all Review rows for a Bill. Called by BillService.delete_by_public_id
+-- so a bill can be hard-deleted without tripping FK_Review_Bill. Reviews are
+-- otherwise insert-only (audit history); this delete path exists ONLY for the
+-- cascade when the parent Bill is itself being deleted. Also clears legacy
+-- dbo.ReviewEntry rows (decommissioned table that still carries an FK to Bill);
+-- guarded by an OBJECT_ID check so it's safe once that table is dropped.
+CREATE OR ALTER PROCEDURE DeleteReviewsByBillId
+(
+    @BillId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRANSACTION;
+
+    DELETE FROM dbo.[Review] WHERE [BillId] = @BillId;
+
+    IF OBJECT_ID('dbo.ReviewEntry', 'U') IS NOT NULL
+        DELETE FROM dbo.[ReviewEntry] WHERE [BillId] = @BillId;
+
+    COMMIT TRANSACTION;
+END;
+GO

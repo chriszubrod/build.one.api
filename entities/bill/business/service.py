@@ -1236,6 +1236,30 @@ class BillService:
                 logger.error(f"Failed to delete bill line item {line_item.id}: {e}")
                 raise ValueError(f"Cannot delete bill: failed to delete line item {line_item.id}") from e
 
+        # Step 3.5: Clear remaining child rows that FK to Bill, otherwise the
+        # final DELETE trips a REFERENCE constraint (e.g. FK_Review_Bill).
+        # Review rows are insert-only audit history everywhere else; this is
+        # the one path that removes them — when the parent Bill is deleted.
+        try:
+            from entities.review.persistence.repo import ReviewRepository
+            ReviewRepository().delete_by_bill_id(bill_id)
+            logger.info(f"Deleted Review rows for bill {bill_id}")
+        except Exception as e:
+            logger.error(f"Failed to delete Review rows for bill {bill_id}: {e}")
+            raise ValueError(f"Cannot delete bill: failed to delete Review rows for bill {bill_id}") from e
+
+        # MsMessageBill links (email-message ↔ bill) also FK to Bill.
+        try:
+            from integrations.ms.mail.message.connector.bill.persistence.repo import MsMessageBillRepository
+            ms_message_bill_repo = MsMessageBillRepository()
+            for link in ms_message_bill_repo.read_by_bill_id(bill_id):
+                if link.public_id:
+                    ms_message_bill_repo.delete_by_public_id(public_id=link.public_id)
+            logger.info(f"Deleted MsMessageBill links for bill {bill_id}")
+        except Exception as e:
+            logger.error(f"Failed to delete MsMessageBill links for bill {bill_id}: {e}")
+            raise ValueError(f"Cannot delete bill: failed to delete MsMessageBill links for bill {bill_id}") from e
+
         return self.repo.delete_by_id(existing.id)
 
 

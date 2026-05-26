@@ -131,3 +131,91 @@ BEGIN
     ORDER BY b.[CreatedDatetime] DESC;
 END;
 GO
+
+
+-- FindBillForReviewerReply — superset of ReadBillByConversationId with a
+-- fuzzy fallback for the Wave 3 Phase 1 reviewer-reply gap (TODO.md line
+-- 203). Strict conv_id match path returns first; if conv_id missed and
+-- both hint params are supplied, run a deterministic fuzzy lookup on
+-- (IsDraft=1 AND BillNumber exact match AND any BillLineItem on a Project
+-- whose Name contains the hint). Returns nothing on 0 or 2+ fuzzy hits —
+-- ambiguous cases stay in the `flagged_needs_review` queue rather than
+-- risk applying a PM decision to the wrong Bill.
+--
+-- Single-result-set design — resolves @MatchedBillId across the two
+-- branches, then emits ONE final SELECT (possibly zero rows). Avoids
+-- pyodbc's fetchone() consuming an empty conv-match result set and
+-- masking a later fuzzy hit.
+CREATE OR ALTER PROCEDURE FindBillForReviewerReply
+(
+    @ConversationId NVARCHAR(255) = NULL,
+    @BillNumberHint NVARCHAR(50) = NULL,
+    @ProjectHint    NVARCHAR(255) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @MatchedBillId BIGINT       = NULL;
+    DECLARE @MatchKind     NVARCHAR(20) = NULL;
+
+    IF @ConversationId IS NOT NULL AND LTRIM(RTRIM(@ConversationId)) <> ''
+    BEGIN
+        SELECT TOP 1
+               @MatchedBillId = b.[Id],
+               @MatchKind     = 'conversation'
+        FROM dbo.[Bill] b
+        INNER JOIN dbo.[EmailMessage] em ON em.[Id] = b.[SourceEmailMessageId]
+        WHERE em.[ConversationId] = @ConversationId
+        ORDER BY b.[CreatedDatetime] DESC;
+    END
+
+    IF @MatchedBillId IS NULL
+       AND @BillNumberHint IS NOT NULL AND LTRIM(RTRIM(@BillNumberHint)) <> ''
+       AND @ProjectHint    IS NOT NULL AND LTRIM(RTRIM(@ProjectHint))    <> ''
+    BEGIN
+        DECLARE @BillNumberNorm  NVARCHAR(50)  = LTRIM(RTRIM(@BillNumberHint));
+        DECLARE @ProjectHintLike NVARCHAR(257) =
+            '%' + REPLACE(REPLACE(LOWER(LTRIM(RTRIM(@ProjectHint))), '%', '[%]'), '_', '[_]') + '%';
+
+        DECLARE @CandidateIds TABLE (Id BIGINT);
+
+        INSERT INTO @CandidateIds
+        SELECT TOP 2 b.[Id]
+        FROM dbo.[Bill] b
+        WHERE b.[IsDraft] = 1
+          AND b.[BillNumber] = @BillNumberNorm
+          AND EXISTS (
+              SELECT 1
+              FROM dbo.[BillLineItem] bli
+              INNER JOIN dbo.[Project] p ON p.[Id] = bli.[ProjectId]
+              WHERE bli.[BillId] = b.[Id]
+                AND LOWER(p.[Name]) LIKE @ProjectHintLike
+          )
+        ORDER BY b.[CreatedDatetime] DESC;
+
+        IF (SELECT COUNT(*) FROM @CandidateIds) = 1
+        BEGIN
+            SELECT @MatchedBillId = Id FROM @CandidateIds;
+            SET @MatchKind = 'fuzzy';
+        END
+    END
+
+    SELECT
+        b.[Id]                                          AS Id,
+        b.[PublicId]                                    AS PublicId,
+        b.[BillNumber]                                  AS BillNumber,
+        b.[TotalAmount]                                 AS TotalAmount,
+        b.[IsDraft]                                     AS IsDraft,
+        CONVERT(VARCHAR(19), b.[CreatedDatetime], 120)  AS CreatedDatetime,
+        v.[Name]                                        AS VendorName,
+        b.[SourceEmailMessageId]                        AS SourceEmailMessageId,
+        CASE WHEN @MatchKind = 'conversation' THEN em.[ConversationId] ELSE NULL END
+                                                        AS ConversationId,
+        @MatchKind                                      AS MatchKind
+    FROM dbo.[Bill] b
+    LEFT JOIN dbo.[Vendor] v        ON v.[Id]  = b.[VendorId]
+    LEFT JOIN dbo.[EmailMessage] em ON em.[Id] = b.[SourceEmailMessageId]
+    WHERE b.[Id] = @MatchedBillId;
+END;
+GO

@@ -683,14 +683,44 @@ class _FindBillByConversationIdArgs(BaseModel):
             "SourceEmailMessageId on the EmailMessage from that thread."
         ),
     )
+    bill_number_hint: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional bill number extracted from the reply's subject line "
+            "(e.g. `'Re: Invoice 206640'` → `'206640'`). When supplied "
+            "alongside `project_hint`, enables a fuzzy fallback: if the "
+            "conversation_id misses, the server looks up draft Bills "
+            "where `BillNumber` matches exactly AND the line item is on "
+            "a Project whose name contains `project_hint`. Pass both "
+            "hints opportunistically — the agent doesn't see the fallback "
+            "mechanism, just gets back a Bill (or null) as usual. "
+            "Returns null on 0 or 2+ fuzzy hits to avoid wrong-bill "
+            "auto-apply."
+        ),
+    )
+    project_hint: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional project hint extracted from the reply body (e.g. "
+            "`'7550 Buffalo'`, `'Bluebird Landing'` — typically a job-site "
+            "address or project name fragment the PM mentions). Used "
+            "together with `bill_number_hint` for the fuzzy fallback. "
+            "Matched as a case-insensitive substring against `Project.Name`."
+        ),
+    )
 
 
 async def _find_bill_by_conversation_id(args: dict, ctx: ToolContext) -> ToolResult:
     parsed = _FindBillByConversationIdArgs(**args)
-    from urllib.parse import quote
+    from urllib.parse import quote, urlencode
+    query: dict[str, str] = {"conversation_id": parsed.conversation_id}
+    if parsed.bill_number_hint:
+        query["bill_number_hint"] = parsed.bill_number_hint
+    if parsed.project_hint:
+        query["project_hint"] = parsed.project_hint
     return await ctx.call_api(
         "GET",
-        f"/api/v1/get/bill/find-by-conversation-id?conversation_id={quote(parsed.conversation_id)}",
+        f"/api/v1/get/bill/find-by-conversation-id?{urlencode(query, quote_via=quote)}",
     )
 
 
@@ -701,10 +731,20 @@ find_bill_by_conversation_id = Tool(
         "reviewer-reply flow: when an inbound email is identified as a "
         "reply on a tracked conversation, call this with the email's "
         "`conversation_id` to learn which Bill the PM is reviewing.\n\n"
-        "Returns null when no Bill is linked (the conversation isn't a "
-        "tracked review thread). Returns a slim payload — `public_id`, "
-        "`bill_number`, `vendor_name`, `total_amount`, `is_draft` — "
-        "when one exists."
+        "**Always pass `bill_number_hint` and `project_hint` when you "
+        "can extract them** — `bill_number_hint` from the reply's "
+        "subject (e.g. `'Re: Invoice 206640'` → `'206640'`), "
+        "`project_hint` from the body (e.g. job-site address or project "
+        "name fragment the PM mentions). The server uses them as a "
+        "fuzzy-fallback lookup when the conversation_id alone doesn't "
+        "match (PMs replying from non-Outlook clients can lose the "
+        "ConversationId during the round trip). Single-result fallback "
+        "only — 0 or 2+ fuzzy hits return null so ambiguous replies "
+        "still flow through `flagged_needs_review`.\n\n"
+        "Returns null when no Bill is linked. Returns a slim payload — "
+        "`public_id`, `bill_number`, `vendor_name`, `total_amount`, "
+        "`is_draft`, `match_kind` (`'conversation'` or `'fuzzy'`) — "
+        "when one is found."
     ),
     input_schema=input_schema_from(_FindBillByConversationIdArgs),
     handler=_find_bill_by_conversation_id,

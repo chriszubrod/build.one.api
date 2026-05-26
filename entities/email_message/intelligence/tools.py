@@ -125,9 +125,12 @@ class _OutcomeArgs(BaseModel):
             "`vendor_statement` | `vendor_expense_receipt` | "
             "`customer_payment` | `customer_question` | `customer_dispute` "
             "| `internal_reply` | `internal_forward` | `vendor_newsletter` "
-            "| `non_actionable` | `unknown`. Persisted to "
-            "`EmailMessage.AgentClassification` so future emails from the "
-            "same sender can be informed by this decision."
+            "| `contract_labor_timesheet` | `non_actionable` | `unknown`. "
+            "`contract_labor_timesheet` = internal worker forwarded a "
+            "timesheet (clock in/out + address + work description) — no "
+            "invoice attached; flag for human routing into time tracking. "
+            "Persisted to `EmailMessage.AgentClassification` so future "
+            "emails from the same sender can be informed by this decision."
         ),
     )
     classification_reason: Optional[str] = Field(

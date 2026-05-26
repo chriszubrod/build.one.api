@@ -228,7 +228,24 @@ class BillService:
             raise ValueError("Attachment is required. Upload a PDF first and pass attachment_public_id.")
         attachment = self.attachment_service.read_by_public_id(public_id=attachment_public_id)
         if not attachment:
-            raise ValueError(f"Attachment with public_id '{attachment_public_id}' not found.")
+            # Auto-bridge fallback: if the public_id points at an
+            # EmailAttachment instead of an Attachment, bridge it on the fly
+            # and continue. Saves the agent one round-trip and the human a
+            # confusing "not found" when the wrong UUID type is passed.
+            from entities.email_message.business.service import EmailAttachmentBridgeService
+            from entities.email_message.persistence.repo import EmailAttachmentRepository
+            ea = EmailAttachmentRepository().read_by_public_id(attachment_public_id)
+            if not ea:
+                raise ValueError(f"Attachment with public_id '{attachment_public_id}' not found.")
+            bridged = EmailAttachmentBridgeService().bridge(
+                email_attachment_public_id=attachment_public_id
+            )
+            logger.info(
+                "BillService.create auto-bridged EmailAttachment %s → Attachment %s",
+                attachment_public_id, bridged.public_id,
+            )
+            attachment_public_id = str(bridged.public_id)
+            attachment = bridged
         if attachment.content_type != "application/pdf":
             raise ValueError(
                 f"Attachment must be application/pdf; got '{attachment.content_type}'."

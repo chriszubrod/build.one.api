@@ -350,6 +350,53 @@ class BillRepository:
             logger.error(f"Error reading slim Bill by conversation_id: {error}")
             raise map_database_error(error)
 
+    def find_for_reviewer_reply(
+        self,
+        conversation_id: Optional[str] = None,
+        bill_number_hint: Optional[str] = None,
+        project_hint: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Find the Bill that a PM/Owner reply is reviewing — strict
+        ConversationId match first, with a fuzzy fallback on
+        (BillNumber exact, Project name contains hint) when conversation_id
+        misses AND both hints are supplied.
+
+        Returns the slim dict shape used by `read_slim_by_conversation_id`
+        plus a `match_kind` field (`'conversation'` | `'fuzzy'`) for
+        telemetry. Returns None on 0 or 2+ fuzzy candidates — ambiguous
+        cases stay in `flagged_needs_review`.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="FindBillForReviewerReply",
+                    params={
+                        "ConversationId": conversation_id,
+                        "BillNumberHint": bill_number_hint,
+                        "ProjectHint": project_hint,
+                    },
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row.Id,
+                    "public_id": str(row.PublicId),
+                    "bill_number": row.BillNumber,
+                    "total_amount": float(row.TotalAmount) if row.TotalAmount is not None else None,
+                    "is_draft": bool(row.IsDraft),
+                    "created_datetime": row.CreatedDatetime,
+                    "vendor_name": row.VendorName,
+                    "source_email_message_id": row.SourceEmailMessageId,
+                    "conversation_id": row.ConversationId,
+                    "match_kind": row.MatchKind,
+                }
+        except Exception as error:
+            logger.error(f"Error in find_for_reviewer_reply: {error}")
+            raise map_database_error(error)
+
     def read_slim_by_source_email_message_id(self, source_email_message_id: int) -> Optional[dict]:
         """Slim Bill lookup keyed on SourceEmailMessageId. Returns a dict
         (not a Bill model) carrying just the fields the React Email-message

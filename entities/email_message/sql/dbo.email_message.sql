@@ -767,8 +767,9 @@ BEGIN
         SUM(CASE WHEN [AgentClassification] = 'customer_dispute'       THEN 1 ELSE 0 END) AS ClassCustomerDispute,
         SUM(CASE WHEN [AgentClassification] = 'internal_reply'         THEN 1 ELSE 0 END) AS ClassInternalReply,
         SUM(CASE WHEN [AgentClassification] = 'internal_forward'       THEN 1 ELSE 0 END) AS ClassInternalForward,
-        SUM(CASE WHEN [AgentClassification] = 'vendor_newsletter'      THEN 1 ELSE 0 END) AS ClassVendorNewsletter,
-        SUM(CASE WHEN [AgentClassification] = 'non_actionable'         THEN 1 ELSE 0 END) AS ClassNonActionable,
+        SUM(CASE WHEN [AgentClassification] = 'vendor_newsletter'        THEN 1 ELSE 0 END) AS ClassVendorNewsletter,
+        SUM(CASE WHEN [AgentClassification] = 'contract_labor_timesheet' THEN 1 ELSE 0 END) AS ClassContractLaborTimesheet,
+        SUM(CASE WHEN [AgentClassification] = 'non_actionable'           THEN 1 ELSE 0 END) AS ClassNonActionable,
         SUM(CASE WHEN [AgentClassification] = 'unknown'                THEN 1 ELSE 0 END) AS ClassUnknown,
         SUM(CASE WHEN [AgentClassification] IS NULL                    THEN 1 ELSE 0 END) AS ClassUnclassified,
 

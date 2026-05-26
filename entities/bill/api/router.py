@@ -197,6 +197,20 @@ def get_bill_completion_result_router(public_id: str, current_user: dict = Depen
 @router.get("/get/bill/find-by-conversation-id")
 def find_bill_by_conversation_id_router(
     conversation_id: str = Query(..., description="MS Graph ConversationId from a polled email."),
+    bill_number_hint: Optional[str] = Query(
+        default=None,
+        description=(
+            "Optional bill number parsed from the reply subject. With "
+            "project_hint, enables fuzzy fallback when conversation_id misses."
+        ),
+    ),
+    project_hint: Optional[str] = Query(
+        default=None,
+        description=(
+            "Optional project name / address fragment parsed from the reply "
+            "body. Substring-matched against Project.Name."
+        ),
+    ),
     current_user: dict = Depends(require_module_api(Modules.BILLS)),
 ):
     """Find the Bill linked to an email conversation.
@@ -206,11 +220,24 @@ def find_bill_by_conversation_id_router(
     vendor email; this lookup returns the Bill that was created from
     that thread (via Bill.SourceEmailMessageId → EmailMessage.ConversationId).
 
-    Returns null when no Bill is linked to the conversation, or a slim
-    payload (public_id, bill_number, total_amount, is_draft, vendor_name,
-    source_email_message_id, conversation_id) when one exists.
+    **Fuzzy fallback (Wave 3 Phase 1, 2026-05-26).** When `conversation_id`
+    misses AND both `bill_number_hint` and `project_hint` are supplied,
+    falls back to a deterministic lookup on draft Bills where
+    `BillNumber` matches exactly AND any line item is on a Project whose
+    name contains the hint. Single-result requirement — 0 or 2+ hits
+    return null so ambiguous replies still flow through
+    `flagged_needs_review`.
+
+    Returns null when no Bill is found, or a slim payload (public_id,
+    bill_number, total_amount, is_draft, vendor_name, source_email_message_id,
+    conversation_id, match_kind) when one is. `match_kind` is
+    `'conversation'` for strict matches, `'fuzzy'` for fallback hits.
     """
-    result = BillRepository().read_slim_by_conversation_id(conversation_id)
+    result = BillRepository().find_for_reviewer_reply(
+        conversation_id=conversation_id,
+        bill_number_hint=bill_number_hint,
+        project_hint=project_hint,
+    )
     return item_response(result)
 
 

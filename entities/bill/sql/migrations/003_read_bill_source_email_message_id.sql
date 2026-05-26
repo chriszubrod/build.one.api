@@ -1,135 +1,26 @@
-IF OBJECT_ID('dbo.Bill', 'U') IS NULL
-BEGIN
-CREATE TABLE [dbo].[Bill]
-(
-    [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
-    [PublicId] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
-    [RowVersion] ROWVERSION NOT NULL,
-    [CreatedDatetime] DATETIME2(3) NOT NULL,
-    [ModifiedDatetime] DATETIME2(3) NULL,
-    [VendorId] BIGINT NULL,
-    [PaymentTermId] BIGINT NULL,
-    [BillDate] DATETIME2(3) NOT NULL,
-    [DueDate] DATETIME2(3) NOT NULL,
-    [BillNumber] NVARCHAR(50) NULL,
-    [TotalAmount] DECIMAL(18,2) NULL,
-    [Memo] NVARCHAR(MAX) NULL,
-    [IsDraft] BIT NOT NULL DEFAULT 1,
-    [IntakeSource] NVARCHAR(20) NULL,
-    [IntakeSourceDetail] NVARCHAR(100) NULL,
-    CONSTRAINT [FK_Bill_Vendor] FOREIGN KEY ([VendorId]) REFERENCES [dbo].[Vendor]([Id]),
-    CONSTRAINT [FK_Bill_PaymentTerm] FOREIGN KEY ([PaymentTermId]) REFERENCES [dbo].[PaymentTerm]([Id])
-);
-END
-GO
-
--- Additive: IntakeSource + IntakeSourceDetail capture how a bill arrived
--- (manual UI / agent / script). Set-once at create. Pre-existing rows
--- stay NULL.
-IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
-   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'IntakeSource')
-BEGIN
-    ALTER TABLE [dbo].[Bill] ADD [IntakeSource] NVARCHAR(20) NULL;
-END
-GO
-
-IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
-   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'IntakeSourceDetail')
-BEGIN
-    ALTER TABLE [dbo].[Bill] ADD [IntakeSourceDetail] NVARCHAR(100) NULL;
-END
-GO
-
-IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Bill_VendorId' AND object_id = OBJECT_ID('dbo.Bill'))
-BEGIN
-CREATE INDEX IX_Bill_VendorId ON [dbo].[Bill] ([VendorId]);
-END
-GO
-
-IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Bill_BillDate' AND object_id = OBJECT_ID('dbo.Bill'))
-BEGIN
-CREATE INDEX IX_Bill_BillDate ON [dbo].[Bill] ([BillDate]);
-END
-GO
-
-IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Bill_BillNumber' AND object_id = OBJECT_ID('dbo.Bill'))
-BEGIN
-CREATE INDEX IX_Bill_BillNumber ON [dbo].[Bill] ([BillNumber]);
-END
-GO
-
-IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Bill_PaymentTermId' AND object_id = OBJECT_ID('dbo.Bill'))
-BEGIN
-CREATE INDEX IX_Bill_PaymentTermId ON [dbo].[Bill] ([PaymentTermId]);
-END
-GO
-
--- Unique filtered index on Vendor + BillNumber + BillDate — prevents duplicates
--- Filtered to non-NULL VendorId and BillNumber so drafts without these fields are not constrained
-IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Bill_VendorId_BillDate_BillNumber' AND object_id = OBJECT_ID('dbo.Bill'))
-BEGIN
-    DROP INDEX [IX_Bill_VendorId_BillDate_BillNumber] ON [dbo].[Bill];
-END
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_Bill_VendorId_BillNumber_BillDate' AND object_id = OBJECT_ID('dbo.Bill'))
-BEGIN
-CREATE UNIQUE INDEX [UQ_Bill_VendorId_BillNumber_BillDate]
-    ON [dbo].[Bill] ([VendorId], [BillNumber], [BillDate])
-    WHERE [VendorId] IS NOT NULL AND [BillNumber] IS NOT NULL;
-END
+-- Migration 003 — add `SourceEmailMessageId` to Bill Read/Update/Delete sproc
+-- projections.
+--
+-- Context: 2026-05-19 manual backlog walk surfaced that
+-- BillRepository.read_by_id returned `source_email_message_id=None` for
+-- Bill 18545 even though the underlying row had `SourceEmailMessageId=752`
+-- (just-written by CreateBill seconds earlier). Root cause: ReadBillById
+-- — and by extension every sibling Read* / OUTPUT projection — never
+-- included the column. CreateBill wrote it; nothing else read it back.
+-- Bill dataclass had the field (with a comment acknowledging the gap);
+-- _from_db used getattr defensively. Pure additive fix:
+-- include the column in 8 sproc projections in entities/bill/sql/dbo.bill.sql.
+--
+-- Why a migration file: dbo.bill.sql has a pre-existing
+-- BillCompletionResult.ExpiresAt sproc breakage (TODO.md line 196) that
+-- blocks re-running the canonical file. Same workaround as the
+-- LinkBillSourceEmailMessage migration (dbo.bill_create_source_email.sql).
+--
+-- Idempotent: CREATE OR ALTER on each sproc. Re-applying is safe.
 GO
 
 
--- Create Bill Stored Procedures
-CREATE OR ALTER PROCEDURE CreateBill
-(
-    @VendorId BIGINT = NULL,
-    @PaymentTermId BIGINT = NULL,
-    @BillDate DATETIME2(3),
-    @DueDate DATETIME2(3),
-    @BillNumber NVARCHAR(50) = NULL,
-    @TotalAmount DECIMAL(18,2) = NULL,
-    @Memo NVARCHAR(MAX) = NULL,
-    @IsDraft BIT = 1,
-    @IntakeSource NVARCHAR(20) = NULL,
-    @IntakeSourceDetail NVARCHAR(100) = NULL,
-    @SourceEmailMessageId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[Bill] ([CreatedDatetime], [ModifiedDatetime], [VendorId], [PaymentTermId], [BillDate], [DueDate], [BillNumber], [TotalAmount], [Memo], [IsDraft], [IntakeSource], [IntakeSourceDetail], [SourceEmailMessageId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[VendorId],
-        INSERTED.[PaymentTermId],
-        CONVERT(VARCHAR(19), INSERTED.[BillDate], 120) AS [BillDate],
-        CONVERT(VARCHAR(19), INSERTED.[DueDate], 120) AS [DueDate],
-        INSERTED.[BillNumber],
-        INSERTED.[TotalAmount],
-        INSERTED.[Memo],
-        INSERTED.[IsDraft],
-        INSERTED.[IntakeSource],
-        INSERTED.[IntakeSourceDetail],
-        INSERTED.[SourceEmailMessageId]
-    VALUES (@Now, @Now, @VendorId, @PaymentTermId, @BillDate, @DueDate, @BillNumber, @TotalAmount, @Memo, @IsDraft, @IntakeSource, @IntakeSourceDetail, @SourceEmailMessageId);
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-
-
--- Read Bills Stored Procedures
+-- ─── ReadBills ─────────────────────────────────────────────────────────
 CREATE OR ALTER PROCEDURE ReadBills
 AS
 BEGIN
@@ -160,12 +51,7 @@ END;
 GO
 
 
-
-
-
-
-
--- Read Bill By Id Stored Procedures
+-- ─── ReadBillById ──────────────────────────────────────────────────────
 CREATE OR ALTER PROCEDURE ReadBillById
 (
     @Id BIGINT
@@ -199,10 +85,7 @@ END;
 GO
 
 
-
-
-
--- Read Bill By Public Id Stored Procedures
+-- ─── ReadBillByPublicId ────────────────────────────────────────────────
 CREATE OR ALTER PROCEDURE ReadBillByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
@@ -236,8 +119,7 @@ END;
 GO
 
 
-
--- Read Bill By Bill Number Stored Procedures
+-- ─── ReadBillByBillNumber ──────────────────────────────────────────────
 CREATE OR ALTER PROCEDURE ReadBillByBillNumber
 (
     @BillNumber NVARCHAR(50)
@@ -271,13 +153,7 @@ END;
 GO
 
 
-
-
-
-
-
-
--- Read Bill By Bill Number And Vendor Id Stored Procedures
+-- ─── ReadBillByBillNumberAndVendorId ───────────────────────────────────
 CREATE OR ALTER PROCEDURE ReadBillByBillNumberAndVendorId
 (
     @BillNumber NVARCHAR(50),
@@ -315,11 +191,7 @@ END;
 GO
 
 
-
-
-
--- Update Bill By Id Stored Procedures
-
+-- ─── UpdateBillById (OUTPUT) ───────────────────────────────────────────
 CREATE OR ALTER PROCEDURE UpdateBillById
 (
     @Id BIGINT,
@@ -376,10 +248,7 @@ END;
 GO
 
 
-
-
-
--- Delete Bill By Id Stored Procedures
+-- ─── DeleteBillById (OUTPUT) ───────────────────────────────────────────
 CREATE OR ALTER PROCEDURE DeleteBillById
 (
     @Id BIGINT
@@ -413,11 +282,7 @@ END;
 GO
 
 
-
-
-
-
--- Pagination and filtering procedures
+-- ─── ReadBillsPaginated ────────────────────────────────────────────────
 CREATE OR ALTER PROCEDURE ReadBillsPaginated
 (
     @PageNumber INT = 1,
@@ -433,10 +298,9 @@ CREATE OR ALTER PROCEDURE ReadBillsPaginated
 AS
 BEGIN
     BEGIN TRANSACTION;
-    
+
     DECLARE @Offset INT = (@PageNumber - 1) * @PageSize;
-    
-    -- Validate sort column to prevent SQL injection
+
     DECLARE @SortColumn NVARCHAR(50);
     SET @SortColumn = CASE @SortBy
         WHEN 'BillNumber' THEN 'BillNumber'
@@ -446,11 +310,10 @@ BEGIN
         WHEN 'VendorId' THEN 'VendorId'
         ELSE 'BillDate'
     END;
-    
-    -- Validate sort direction
+
     DECLARE @SortDir NVARCHAR(4);
     SET @SortDir = CASE WHEN UPPER(@SortDirection) = 'ASC' THEN 'ASC' ELSE 'DESC' END;
-    
+
     SELECT
         b.[Id],
         b.[PublicId],
@@ -482,7 +345,7 @@ BEGIN
         AND (@StartDate IS NULL OR b.[BillDate] >= @StartDate)
         AND (@EndDate IS NULL OR b.[BillDate] <= @EndDate)
         AND (@IsDraft IS NULL OR b.[IsDraft] = @IsDraft)
-    ORDER BY 
+    ORDER BY
         CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'BillNumber' THEN b.[BillNumber] END ASC,
         CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'BillNumber' THEN b.[BillNumber] END DESC,
         CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'BillDate' THEN b.[BillDate] END ASC,
@@ -495,139 +358,6 @@ BEGIN
         CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'VendorId' THEN b.[VendorId] END DESC
     OFFSET @Offset ROWS
     FETCH NEXT @PageSize ROWS ONLY;
-    
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-CREATE OR ALTER PROCEDURE CountBills
-(
-    @SearchTerm NVARCHAR(255) = NULL,
-    @VendorId BIGINT = NULL,
-    @StartDate DATETIME2(3) = NULL,
-    @EndDate DATETIME2(3) = NULL,
-    @IsDraft BIT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    
-    SELECT COUNT(*) AS [TotalCount]
-    FROM dbo.[Bill] b
-    LEFT JOIN dbo.[Vendor] v ON b.[VendorId] = v.[Id]
-    WHERE
-        (@SearchTerm IS NULL OR 
-         b.[BillNumber] LIKE '%' + @SearchTerm + '%' OR
-         b.[Memo] LIKE '%' + @SearchTerm + '%' OR
-         v.[Name] LIKE '%' + @SearchTerm + '%' OR
-         CONVERT(VARCHAR(10), b.[BillDate], 120) LIKE '%' + @SearchTerm + '%' OR
-         CONVERT(VARCHAR(10), b.[DueDate], 120) LIKE '%' + @SearchTerm + '%' OR
-         CONVERT(VARCHAR(50), b.[TotalAmount]) LIKE '%' + @SearchTerm + '%')
-        AND (@VendorId IS NULL OR b.[VendorId] = @VendorId)
-        AND (@StartDate IS NULL OR b.[BillDate] >= @StartDate)
-        AND (@EndDate IS NULL OR b.[BillDate] <= @EndDate)
-        AND (@IsDraft IS NULL OR b.[IsDraft] = @IsDraft);
-    
-    COMMIT TRANSACTION;
-END;
-GO
-
-
--- Get first line item's ProjectId for a batch of bills
-CREATE OR ALTER PROCEDURE ReadBillFirstLineItemProjects
-(
-    @BillIds NVARCHAR(MAX)  -- comma-separated bill IDs
-)
-AS
-BEGIN
-    SELECT bli.BillId, bli.ProjectId
-    FROM dbo.BillLineItem bli
-    INNER JOIN (
-        SELECT BillId, MIN(Id) AS FirstId
-        FROM dbo.BillLineItem
-        WHERE BillId IN (SELECT CAST(value AS BIGINT) FROM STRING_SPLIT(@BillIds, ','))
-        GROUP BY BillId
-    ) first ON bli.Id = first.FirstId;
-END;
-GO
-
-
--- Bill completion result cache (shared across workers; TTL 1 hour)
-IF OBJECT_ID('dbo.BillCompletionResult', 'U') IS NULL
-BEGIN
-CREATE TABLE [dbo].[BillCompletionResult]
-(
-    [BillPublicId] UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-    [ResultJson] NVARCHAR(MAX) NOT NULL,
-    [ExpiresAt] DATETIME2(3) NOT NULL
-);
-END
-GO
-
-CREATE OR ALTER PROCEDURE UpsertBillCompletionResult
-(
-    @BillPublicId UNIQUEIDENTIFIER,
-    @ResultJson NVARCHAR(MAX),
-    @ExpiresAt DATETIME2(3) = NULL
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    DECLARE @Expiry DATETIME2(3) = COALESCE(@ExpiresAt, DATEADD(HOUR, 1, SYSUTCDATETIME()));
-
-    MERGE dbo.[BillCompletionResult] AS t
-    USING (SELECT @BillPublicId AS BillPublicId) AS s ON t.[BillPublicId] = s.BillPublicId
-    WHEN MATCHED THEN
-        UPDATE SET [ResultJson] = @ResultJson, [ExpiresAt] = @Expiry
-    WHEN NOT MATCHED THEN
-        INSERT ([BillPublicId], [ResultJson], [ExpiresAt])
-        VALUES (@BillPublicId, @ResultJson, @Expiry);
-END;
-GO
-
-CREATE OR ALTER PROCEDURE GetBillCompletionResult
-(
-    @BillPublicId UNIQUEIDENTIFIER
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-    SELECT [ResultJson], [ExpiresAt]
-    FROM dbo.[BillCompletionResult]
-    WHERE [BillPublicId] = @BillPublicId AND [ExpiresAt] > SYSUTCDATETIME();
-END;
-GO
-
--- ============================================================================
--- LinkBillSourceEmailMessage — idempotent backfill of Bill.SourceEmailMessageId.
--- Used by BillService.create() when a duplicate is detected: if the existing
--- Bill came in via a non-email path (e.g. bill_folder) and has no source
--- email linked, this stamps the link so the email-driven dedup audit trail is
--- preserved. Only updates when SourceEmailMessageId IS NULL (won't overwrite
--- an existing link to a different email). Returns the row when it updated,
--- empty when it didn't (already linked, or Bill doesn't exist).
--- ============================================================================
-
-CREATE OR ALTER PROCEDURE LinkBillSourceEmailMessage
-(
-    @Id BIGINT,
-    @SourceEmailMessageId BIGINT
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-    BEGIN TRANSACTION;
-
-    UPDATE dbo.[Bill]
-    SET [SourceEmailMessageId] = @SourceEmailMessageId,
-        [ModifiedDatetime] = SYSUTCDATETIME()
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[SourceEmailMessageId]
-    WHERE [Id] = @Id AND [SourceEmailMessageId] IS NULL;
 
     COMMIT TRANSACTION;
 END;

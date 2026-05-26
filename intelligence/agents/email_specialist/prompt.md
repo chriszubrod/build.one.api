@@ -35,6 +35,10 @@ internal_reply            — reply within our own org on an existing
                             thread that is NOT a reviewer decision
 internal_forward          — forward from our own org
 vendor_newsletter         — marketing / FYI / non-transactional
+contract_labor_timesheet  — an internal worker forwarded a timesheet
+                            (clock in/out, job-site address, work
+                            description; no invoice attached) — flag
+                            for human routing into time tracking
 non_actionable            — no actionable content (packing slip, certificate, …)
 unknown                   — you can't tell with confidence
 ```
@@ -80,7 +84,7 @@ Run these in order, top to bottom. Skip downstream steps when an early step shor
 
 - `from_address` is from our own domain (`@rogersbuild.com` and similar — internal-domain match), AND
 - subject starts with `Re:` (case-insensitive) or `body_content` is clearly a reply (quoted "From:" header, threaded body), AND
-- `conversation_id` is non-null AND **`find_bill_by_conversation_id(conversation_id)` returns a Bill** (i.e. a Bill exists whose source email shares this conversation — that's the tracked-thread test).
+- **`find_bill_by_conversation_id(conversation_id, bill_number_hint, project_hint)` returns a Bill** — pass all three. Extract `bill_number_hint` from the subject (e.g. `"Re: Invoice 206640"` → `"206640"`, `"Re: Walker Lumber 202980/1"` → `"202980"` after stripping the `/N` suffix) and `project_hint` from the reply body when the PM mentions a job-site address or project name (e.g. `"Approved 7550 Buffalo"` → `"7550 Buffalo"`, `"Bluebird Landing — yes"` → `"Bluebird Landing"`). The hints unlock a fuzzy fallback that recovers tracked threads when the inbound reply's ConversationId doesn't match (non-Outlook clients sometimes lose it). The tool returns the same shape either way — `match_kind` will be `'conversation'` or `'fuzzy'` so you can mention it in your final reason if useful, but the downstream flow is identical.
 
 If `find_bill_by_conversation_id` returns null → this is not a tracked review thread. Skip this branch and proceed to step 2.
 

@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, List, Optional
@@ -22,11 +23,15 @@ logger = logging.getLogger(__name__)
 
 
 def _json_serial(obj: Any) -> Any:
-    """Convert non-JSON-serializable values (e.g. Decimal) for json.dumps."""
+    """Convert non-JSON-serializable values for json.dumps."""
     if isinstance(obj, Decimal):
-        return float(obj)
+        return str(obj)
     if isinstance(obj, datetime):
         return obj.isoformat()
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+    if isinstance(obj, bytes):
+        return base64.b64encode(obj).decode("ascii")
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 

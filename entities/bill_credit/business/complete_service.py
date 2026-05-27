@@ -1,6 +1,8 @@
 # Python Standard Library Imports
 import logging
 import re
+import time
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from collections import defaultdict
 
@@ -84,7 +86,6 @@ class BillCreditCompleteService:
         # Use retry logic to handle race conditions with auto-save
         try:
             from entities.bill_credit.api.schemas import BillCreditUpdate
-            import time
             
             finalized_bill_credit = None
             max_retries = 3
@@ -121,7 +122,7 @@ class BillCreditCompleteService:
                     vendor_public_id=vendor.public_id,
                     credit_date=bill_credit.credit_date,
                     credit_number=bill_credit.credit_number,
-                    total_amount=float(bill_credit.total_amount) if bill_credit.total_amount else None,
+                    total_amount=Decimal(str(bill_credit.total_amount)) if bill_credit.total_amount else None,
                     memo=bill_credit.memo,
                     is_draft=False
                 )
@@ -172,11 +173,11 @@ class BillCreditCompleteService:
                         sub_cost_code_id=line_item.sub_cost_code_id,
                         project_public_id=project_public_id,
                         description=line_item.description,
-                        quantity=float(line_item.quantity) if line_item.quantity is not None else None,
-                        unit_price=float(line_item.unit_price) if line_item.unit_price is not None else None,
-                        amount=float(line_item.amount) if line_item.amount is not None else None,
+                        quantity=Decimal(str(line_item.quantity)) if line_item.quantity is not None else None,
+                        unit_price=Decimal(str(line_item.unit_price)) if line_item.unit_price is not None else None,
+                        amount=Decimal(str(line_item.amount)) if line_item.amount is not None else None,
                         is_billable=line_item.is_billable,
-                        billable_amount=float(line_item.billable_amount) if line_item.billable_amount is not None else None,
+                        billable_amount=Decimal(str(line_item.billable_amount)) if line_item.billable_amount is not None else None,
                         is_draft=False,
                     )
                 except Exception as e:
@@ -419,7 +420,7 @@ class BillCreditCompleteService:
                     amount_str = ""
                     if line_item.amount is not None:
                         try:
-                            amount_val = float(line_item.amount)
+                            amount_val = Decimal(str(line_item.amount))
                             amount_str = f"${amount_val:,.2f}"
                         except (ValueError, TypeError):
                             amount_str = f"${line_item.amount}"
@@ -693,7 +694,7 @@ class BillCreditCompleteService:
                         vendor_name = vendor.name or ""
                         credit_number = bill_credit.credit_number or ""
                         description = line_item.description or ""
-                        amount = float(line_item.amount) if line_item.amount is not None else 0.0
+                        amount = Decimal(str(line_item.amount)) if line_item.amount is not None else Decimal("0")
 
                         row = [
                             "",                   # A: Empty

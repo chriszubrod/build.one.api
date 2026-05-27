@@ -60,8 +60,18 @@ def _should_bypass() -> bool:
     return current_is_system_admin.get()
 
 
+_ALLOWED_UDFS = frozenset({
+    "UserCanAccessBill",
+    "UserCanAccessBillCredit",
+    "UserCanAccessExpense",
+    "UserCanAccessProject",
+})
+
+
 def _check(udf_name: str, entity_id: int) -> bool:
     """Run SELECT dbo.<UDF>(@uid, 0, @id) and return True if accessible."""
+    if udf_name not in _ALLOWED_UDFS:
+        raise ValueError(f"UDF '{udf_name}' is not in the access-check whitelist")
     actor_user_id = current_user_id.get()
     with get_connection() as conn:
         cursor = conn.cursor()

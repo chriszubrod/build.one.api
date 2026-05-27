@@ -430,7 +430,7 @@ class ProcessEngine:
         # EMAIL_RECEIVED covers both new inbound emails and replies;
         # is_reply (from email headers) determines the branch.
         if context.trigger_type == EventType.EMAIL_RECEIVED:
-            if context.metadata.get("is_reply"):
+            if context.payload.get("is_reply"):
                 return "approval_response_workflow"
             return "new_email_workflow"
 

@@ -227,7 +227,25 @@ async def email_poll_router():
     non-success response. Wrapping a Graph 4xx inside an HTTP 200
     envelope was the root cause of the 19h "silent poll" outage on
     2026-05-08 — never reintroduce that.
+
+    Operator pause: set env var `PAUSE_EMAIL_POLL=true` on App Service
+    and restart. While set, this endpoint returns `{paused: true}`
+    without contacting Graph or upserting any EmailMessage / EmailAttachment
+    rows. Used to halt ingestion during data-corruption investigations
+    (Phase 0 of the 2026-05-27 reconciliation work) without restarting
+    the Function App (which has Flex Consumption re-enable gotchas).
     """
+    started = time.monotonic()
+
+    pause_flag = (os.environ.get("PAUSE_EMAIL_POLL") or "").strip().lower()
+    if pause_flag in ("true", "1", "yes"):
+        return {
+            "status": "ok",
+            "job": "email.poll",
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "result": {"paused": True},
+        }
+
     def _run() -> dict[str, Any]:
         from entities.email_message.business.service import MailboxPollService
         svc = MailboxPollService()

@@ -23,7 +23,7 @@ Full multi-repo audit memory: `~/.claude/projects/-Users-chris-Applications-buil
 - [ ] **JWT validation missing `aud` + `iss` checks.** [entities/auth/business/service.py:92-115](entities/auth/business/service.py). `jwt.decode` validates signature + exp + `token_type` only. Add `audience="build.one.api"` + `issuer="build.one"` to settings and to `jwt.encode`/`jwt.decode`.
 - [ ] **`POST /admin/auth/set-credentials/{user_public_id}` missing `_require_csrf`.** [entities/auth/api/router.py:188-214](entities/auth/api/router.py). Compare with `/auth/refresh` which does call `_require_csrf` when cookie auth is present. Cookie-authed admin visiting attacker site = CSRF'd password reset on any user.
 - [ ] **No web logout endpoint** — only `/mobile/auth/logout` exists. Web clients clear localStorage but can't revoke the refresh token server-side. Add `POST /api/v1/auth/logout` that revokes the refresh cookie + clears cookies, requires CSRF.
-- [ ] **`shared/access.py::_check()` doesn't explicitly close the cursor** — under list-page scans (cursor-per-row), pyodbc cursor handles leak. Wrap in try/finally + `cursor.close()`.
+- [x] ~~**`shared/access.py::_check()` doesn't explicitly close the cursor** — under list-page scans (cursor-per-row), pyodbc cursor handles leak. Wrap in try/finally + `cursor.close()`.~~
 - [ ] **MS mail draft 2-step PATCH has no rollback on PATCH failure.** [integrations/ms/mail/external/client.py:904-965](integrations/ms/mail/external/client.py) — `createForward` succeeds, PATCH preamble fails, reviewer sees vendor email forwarded with no bill context. Fix: on PATCH failure, DELETE the orphan draft and re-raise as retryable.
 - [ ] **Excel 423 (Locked) treated as non-retryable in MS base client.** [integrations/ms/base/client.py:853-869](integrations/ms/base/client.py). Concurrent Excel writes dead-letter immediately instead of waiting. Add `MsLockedError(MsGraphError, is_retryable=True)` and map 423 to it.
 - [ ] **`decrypt_if_encrypted` masquerades ciphertext as plaintext on EncryptionError.** [shared/encryption.py:123-140](shared/encryption.py). After key rotation, bearer token = base64 ciphertext sent to Graph → 401 → refresh attempt with another ciphertext → silent cascading fail with no "key mismatch" indicator. Fix: log warning identifying the field name + treat as fatal auth error (force full re-auth) rather than passing through.
@@ -52,12 +52,12 @@ Full multi-repo audit memory: `~/.claude/projects/-Users-chris-Applications-buil
 ### Low
 - [ ] Workflow event has no retention/TTL policy → unbounded growth. Define retention + add a cleanup job.
 - [ ] PII redaction in workflow event payloads — workflow rows persist user input verbatim in JSON.
-- [ ] `print()` debug statements in [core/workflow/api/process_engine.py:389,401](core/workflow/api/process_engine.py) — replace with `logger.debug`.
-- [ ] Signup endpoint leaks username existence ("Username already exists" vs "Invalid registration code"). Use generic error.
+- [x] ~~`print()` debug statements in [core/workflow/api/process_engine.py:389,401](core/workflow/api/process_engine.py) — replace with `logger.debug`.~~
+- [x] ~~Signup endpoint leaks username existence ("Username already exists" vs "Invalid registration code"). Use generic error.~~
 - [ ] TimeEntry approve/reject route gates on `can_update`, should gate on `can_approve`. [entities/time_entry/api/router.py:267-308](entities/time_entry/api/router.py).
 - [ ] `orchestrator.create_workflow()` returns a tuple but type hint says `Workflow` — fix type hint or use NamedTuple.
 - [ ] Missing entries in `SYNCHRONOUS_TASKS` registry fail at request time, not startup. Add startup validation check.
-- [ ] `DRAIN_SECRET` timing-leak (missing vs wrong-secret takes different code paths). Always perform HMAC compare.
+- [x] ~~`DRAIN_SECRET` timing-leak (missing vs wrong-secret takes different code paths). Always perform HMAC compare.~~
 
 ---
 

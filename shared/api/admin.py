@@ -53,7 +53,7 @@ def _require_drain_secret(x_drain_secret: Optional[str] = Header(default=None, a
     if not configured:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Drain secret not configured on server")
     provided = (x_drain_secret or "").strip()
-    if not provided or not hmac.compare_digest(provided, configured):
+    if not hmac.compare_digest(provided, configured):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing X-Drain-Secret")
 
     # Authenticated as scheduler. Mark this request as system-level so
@@ -416,6 +416,150 @@ async def email_process_one_router():
         "result": {
             "processed": True,
             "email_public_id": email.public_id,
+            "agent_session_public_id": session_public_id,
+        },
+    }
+
+
+# --- Time Tracking agent ---------------------------------------------------- #
+
+
+@router.post("/time-tracking/process_one", dependencies=[Depends(_require_drain_secret)])
+async def time_tracking_process_one_router():
+    """
+    Claim the oldest pending TimeTrackingOutbox row and kick off a
+    `time_tracking_specialist` agent run. Returns immediately — the agent
+    runs in the background and stamps ReviewPriority + ReviewReasons on
+    the TimeEntry via flag_time_entry_for_human_review when it finishes.
+
+    Returns `{processed: false}` when the queue is empty so the scheduler's
+    inner-drain loop knows to stop. Idempotent — `ClaimNextPendingTimeTrackingOutbox`
+    uses UPDLOCK + READPAST so concurrent ticks can't claim the same row.
+
+    Operator pause: set env var `PAUSE_TIME_TRACKING_AGENT=true` on App Service
+    and restart. While set, this endpoint returns `{processed: false, paused: true}`
+    immediately. The submit-path keeps enqueueing rows; they accumulate as
+    `pending` until the pause is lifted, then drain in submission order.
+    No iOS data is lost.
+    """
+    import asyncio as _asyncio
+    from datetime import datetime, timedelta, timezone
+
+    started = time.monotonic()
+
+    pause_flag = (os.environ.get("PAUSE_TIME_TRACKING_AGENT") or "").strip().lower()
+    if pause_flag in ("true", "1", "yes"):
+        return {
+            "status": "ok",
+            "job": "time_tracking.process_one",
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "result": {"processed": False, "paused": True},
+        }
+
+    # Lazy imports — keep the agent registry off the FastAPI boot path.
+    from intelligence.outbox.business.service import TimeTrackingOutboxService
+    from intelligence.api.background import start_run
+    from shared.database import get_connection
+
+    # 1. Atomically claim the next pending row.
+    svc = TimeTrackingOutboxService()
+    claimed = await _asyncio.to_thread(svc.claim_next_pending)
+    if not claimed:
+        return {
+            "status": "ok",
+            "job": "time_tracking.process_one",
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "result": {"processed": False},
+        }
+
+    # 2. Resolve the time_tracking_agent User.Id so the AgentSession is
+    #    owned by the correct agent identity.
+    def _resolve_agent_user_id() -> Optional[int]:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT u.Id FROM dbo.[User] u "
+                "JOIN dbo.Auth a ON a.UserId = u.Id "
+                "WHERE a.Username = 'time_tracking_agent'"
+            )
+            row = cur.fetchone()
+            return row.Id if row else None
+
+    agent_user_id = await _asyncio.to_thread(_resolve_agent_user_id)
+    if agent_user_id is None:
+        # Failback the row so the next tick can retry once the seed is run.
+        next_retry = datetime.now(timezone.utc) + timedelta(seconds=60)
+        await _asyncio.to_thread(
+            svc.mark_failed,
+            id=claimed.id,
+            row_version=claimed.row_version,
+            next_retry_at=next_retry,
+            last_error="time_tracking_agent user not provisioned",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="time_tracking_agent user not provisioned — run seed.time_tracking_agent.sql",
+        )
+
+    # 3. Build the user_message and kick off the run. The prompt teaches
+    #    the agent to take the public_id from this seed message, validate,
+    #    map to a ReviewPriority bucket, and stamp.
+    user_message = (
+        "Review iOS-submitted TimeEntry for completeness.\n\n"
+        f"**TimeEntry public_id**: {claimed.entity_public_id}\n"
+    )
+
+    try:
+        session_public_id = await start_run(
+            agent_name="time_tracking_specialist",
+            user_message=user_message,
+            requesting_user_id=agent_user_id,
+        )
+    except Exception as error:
+        # start_run failed (e.g. AgentSession insert blocked, registry miss,
+        # Anthropic key missing). Failback the row so the next tick retries.
+        next_retry = datetime.now(timezone.utc) + timedelta(seconds=60)
+        await _asyncio.to_thread(
+            svc.mark_failed,
+            id=claimed.id,
+            row_version=claimed.row_version,
+            next_retry_at=next_retry,
+            last_error=f"start_run failed: {str(error)[:400]}",
+        )
+        logger.exception(
+            "admin.time_tracking.process_one.start_run_failed outbox_id=%s entity=%s",
+            claimed.id, claimed.entity_public_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"start_run failed: {error}",
+        )
+
+    # 4. start_run returned successfully — the AgentSession row exists and
+    #    the loop is dispatched. From the outbox's perspective, "kicked off"
+    #    is the success state; the agent's own outcome (flag stamped /
+    #    failed mid-run) is tracked on AgentSession + TimeEntry.ReviewPriority,
+    #    not here.
+    await _asyncio.to_thread(
+        svc.mark_done,
+        id=claimed.id,
+        row_version=claimed.row_version,
+    )
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+    logger.info(
+        "admin.time_tracking.process_one.kicked_off outbox_id=%s entity=%s session=%s duration_ms=%d",
+        claimed.id, claimed.entity_public_id, session_public_id, duration_ms,
+    )
+
+    return {
+        "status": "ok",
+        "job": "time_tracking.process_one",
+        "duration_ms": duration_ms,
+        "result": {
+            "processed": True,
+            "time_entry_public_id": claimed.entity_public_id,
+            "outbox_public_id": claimed.public_id,
             "agent_session_public_id": session_public_id,
         },
     }

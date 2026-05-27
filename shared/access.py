@@ -75,12 +75,15 @@ def _check(udf_name: str, entity_id: int) -> bool:
     actor_user_id = current_user_id.get()
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            f"SELECT dbo.{udf_name}(?, 0, ?)",
-            (actor_user_id, entity_id),
-        )
-        row = cursor.fetchone()
-        return bool(row[0]) if row and row[0] is not None else False
+        try:
+            cursor.execute(
+                f"SELECT dbo.{udf_name}(?, 0, ?)",
+                (actor_user_id, entity_id),
+            )
+            row = cursor.fetchone()
+            return bool(row[0]) if row and row[0] is not None else False
+        finally:
+            cursor.close()
 
 
 def assert_can_access_bill(bill_id: Optional[int]) -> None:

@@ -252,8 +252,8 @@ def signup_auth_router(body: AuthSignup, response: Response):
             "auth": auth.to_dict(),
             "token": access_token.to_dict(),
         })
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Registration failed. Please check your inputs and try again.")
 
 
 @router.post("/auth/refresh")

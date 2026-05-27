@@ -386,7 +386,7 @@ class ProcessEngine:
             For async (expects_response=False): {"workflow_id": "...", "status": "started"}
         """
         workflow_type = context.workflow_type or self._infer_workflow_type(context)
-        print(f"[ProcessEngine] route trigger_type={context.trigger_type.value} workflow_type={workflow_type} correlation_id={context.correlation_id}")
+        logger.debug("route trigger_type=%s workflow_type=%s correlation_id=%s", context.trigger_type.value, workflow_type, context.correlation_id)
         logger.info(
             f"Routing trigger: type={context.trigger_type.value}, "
             f"source={context.trigger_source.value}, "
@@ -398,7 +398,7 @@ class ProcessEngine:
         handler = self._get_handler(workflow_type)
         
         if handler is None:
-            print(f"[ProcessEngine] no handler for workflow_type={workflow_type}")
+            logger.debug("no handler for workflow_type=%s", workflow_type)
             logger.warning(f"No handler for workflow type: {workflow_type}")
             return {
                 "success": False,

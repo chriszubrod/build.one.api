@@ -159,6 +159,31 @@ class VendorRepository:
             logger.error(f"Error during read vendor by name: {error}")
             raise map_database_error(error)
 
+    def find_contract_labor_by_email(self, email: str) -> Optional[Vendor]:
+        """Bind a sender's email back to the contract-labor Vendor.
+
+        Returns the matching Vendor (IsContractLabor=1, not soft-deleted)
+        when a Contact row carries the given email (case-insensitive), or
+        None when no match. Single Vendor per call — defensive TOP 1 in
+        the sproc handles the edge case of duplicate Contact rows.
+
+        Used by the contract_labor_specialist agent to route a forwarded
+        timesheet email back to the worker's Vendor row.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="FindContractLaborVendorByEmail",
+                    params={"SenderEmail": email},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during find_contract_labor_by_email: {error}")
+            raise map_database_error(error)
+
     def find_for_invoice(self, *, vendor_name: str,
                          sender_domain: Optional[str] = None) -> list[dict]:
         """Multi-strategy ranked vendor lookup for invoice classification.

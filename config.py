@@ -137,6 +137,8 @@ class Settings(BaseSettings):
     invoice_agent_password: Optional[str] = None
     email_agent_username: Optional[str] = None
     email_agent_password: Optional[str] = None
+    contract_labor_agent_username: Optional[str] = None
+    contract_labor_agent_password: Optional[str] = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

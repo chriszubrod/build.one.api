@@ -48,6 +48,7 @@ def create_contract_labor(contract_labor: ContractLaborCreate, current_user: dic
             "vendor_public_id": contract_labor.vendor_public_id,
             "project_public_id": contract_labor.project_public_id,
             "employee_name": contract_labor.employee_name,
+            "job_name": contract_labor.job_name,
             "work_date": contract_labor.work_date,
             "time_in": contract_labor.time_in,
             "time_out": contract_labor.time_out,

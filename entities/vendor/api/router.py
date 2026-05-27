@@ -58,6 +58,22 @@ async def get_vendors_router(current_user: dict = Depends(require_module_api(Mod
     return list_response([vendor.to_dict() for vendor in vendors])
 
 
+@router.get("/get/vendor/contract-labor-by-email")
+def find_contract_labor_vendor_by_email_router(
+    email: str = Query(..., description="Sender email address to bind back to a contract-labor Vendor."),
+    current_user: dict = Depends(require_module_api(Modules.VENDORS)),
+):
+    """Bind a sender's email back to the contract-labor Vendor row.
+
+    Returns the matching Vendor (IsContractLabor=1, not soft-deleted)
+    whose Contact row carries the given email (case-insensitive), or
+    null when no match. Used by the contract_labor_specialist agent to
+    route a forwarded timesheet email back to the worker's Vendor.
+    """
+    vendor = service.find_contract_labor_by_email(email)
+    return item_response(vendor.to_dict() if vendor else None)
+
+
 @router.get("/get/vendor/find-for-invoice")
 def find_vendor_for_invoice_router(
     vendor_name: str = Query(..., description="Vendor name to look up (typically DI-extracted from the invoice header)."),

@@ -25,18 +25,21 @@ registration.
 # Email-message-side tools (read, extract, bridge, mark outcome)
 import entities.email_message.intelligence.tools  # noqa: F401
 
-# bill_specialist registers its own tools; we only need its agent
-# definition to be in the registry so the delegation tool can find it.
+# Specialists register their own tools; we only need their agent
+# definitions to be in the registry so the delegation tools can find
+# them.
 import intelligence.agents.bill_specialist  # noqa: F401
+import intelligence.agents.contract_labor_specialist  # noqa: F401
 
 from intelligence.composition.delegation import make_delegation_tool
 from intelligence.tools.registry import register as _register_tool
 
-# One delegation primitive for v1. Phase 2 only routes to
-# bill_specialist; expense / bill_credit can be added later by:
-#   1. Importing the specialist package above.
-#   2. Adding another make_delegation_tool() call here.
-#   3. Adding the tool name to email_specialist.tools in definition.py.
+# Delegation primitives. Each one points at a downstream specialist
+# that knows how to materialize a specific entity from the email's
+# extracted signals. Adding another specialist: import its package
+# above + register another delegation tool here + add the tool name
+# to email_specialist.tools in definition.py.
+
 _register_tool(make_delegation_tool(
     name="delegate_to_bill_specialist",
     target_agent="bill_specialist",
@@ -65,6 +68,34 @@ _register_tool(make_delegation_tool(
         "commits. Your delegation returns the specialist's final "
         "answer (markdown), which you can quote in your own final "
         "message back to the runner."
+    ),
+))
+
+_register_tool(make_delegation_tool(
+    name="delegate_to_contract_labor_specialist",
+    target_agent="contract_labor_specialist",
+    description=(
+        "Hand a forwarded worker timesheet email off to the Contract "
+        "Labor specialist agent. Use this when you've detected the "
+        "email is a worker-submitted timesheet (no invoice "
+        "attachments + body has clock-in/clock-out + a job-site "
+        "address) — see Step 1c.\n\n"
+        "Pass a self-contained task description in markdown that "
+        "carries:\n"
+        "  • Sender email address (the worker's from_address — used "
+        "    to bind back to a contract-labor Vendor)\n"
+        "  • Subject line (carries the work date in `M/D` form)\n"
+        "  • Received year (so the specialist can resolve a bare "
+        "    `M/D` to a full date)\n"
+        "  • Body content (the worker's timesheet text: address, "
+        "    times, work description, signature)\n\n"
+        "The specialist binds the sender to a Vendor, resolves the "
+        "address to a Project (via project_specialist), parses the "
+        "times, and creates a draft `pending_review` ContractLabor "
+        "row. No approval gate — the row is a draft awaiting human "
+        "review for rate / markup / SubCostCode. The specialist "
+        "returns its final markdown answer; quote the gist in your "
+        "own final message."
     ),
 ))
 

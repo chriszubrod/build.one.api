@@ -21,6 +21,11 @@ class ContractLaborCreate(BaseModel):
         max_length=255,
         description="The name of the worker/vendor from the Name column."
     )
+    job_name: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description="Raw Job-column value from the source (Excel cell or agent-parsed worker address). Preserved verbatim for audit even when project_public_id resolves cleanly."
+    )
     work_date: str = Field(
         description="The date of work (YYYY-MM-DD format)."
     )

@@ -78,6 +78,17 @@ class VendorService:
         """
         return self.repo.read_by_name(name)
 
+    def find_contract_labor_by_email(self, email: str) -> Optional[Vendor]:
+        """Bind a sender's email back to the contract-labor Vendor row.
+
+        Returns the matching Vendor (IsContractLabor=1, not soft-deleted)
+        whose Contact row carries the given email (case-insensitive), or
+        None when no match. Used by the contract_labor_specialist agent
+        to route a forwarded timesheet email back to the worker's
+        Vendor row.
+        """
+        return self.repo.find_contract_labor_by_email(email)
+
     def find_for_invoice(self, *, vendor_name: str,
                          sender_domain: Optional[str] = None) -> list[dict]:
         """Multi-strategy ranked vendor lookup for invoice classification.

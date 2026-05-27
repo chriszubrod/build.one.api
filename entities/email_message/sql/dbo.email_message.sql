@@ -774,13 +774,14 @@ BEGIN
         SUM(CASE WHEN [AgentClassification] IS NULL                    THEN 1 ELSE 0 END) AS ClassUnclassified,
 
         -- Agent action counts
-        SUM(CASE WHEN [AgentDecidedAction] = 'delegated_to_bill_specialist'        THEN 1 ELSE 0 END) AS ActionDelegatedBill,
-        SUM(CASE WHEN [AgentDecidedAction] = 'delegated_to_bill_credit_specialist' THEN 1 ELSE 0 END) AS ActionDelegatedBillCredit,
-        SUM(CASE WHEN [AgentDecidedAction] = 'delegated_to_expense_specialist'     THEN 1 ELSE 0 END) AS ActionDelegatedExpense,
-        SUM(CASE WHEN [AgentDecidedAction] = 'flagged_needs_review'                THEN 1 ELSE 0 END) AS ActionFlaggedReview,
-        SUM(CASE WHEN [AgentDecidedAction] = 'marked_irrelevant'                   THEN 1 ELSE 0 END) AS ActionMarkedIrrelevant,
-        SUM(CASE WHEN [AgentDecidedAction] = 'marked_processed'                    THEN 1 ELSE 0 END) AS ActionMarkedProcessed,
-        SUM(CASE WHEN [AgentDecidedAction] IS NULL                                  THEN 1 ELSE 0 END) AS ActionUnset,
+        SUM(CASE WHEN [AgentDecidedAction] = 'delegated_to_bill_specialist'              THEN 1 ELSE 0 END) AS ActionDelegatedBill,
+        SUM(CASE WHEN [AgentDecidedAction] = 'delegated_to_bill_credit_specialist'       THEN 1 ELSE 0 END) AS ActionDelegatedBillCredit,
+        SUM(CASE WHEN [AgentDecidedAction] = 'delegated_to_expense_specialist'           THEN 1 ELSE 0 END) AS ActionDelegatedExpense,
+        SUM(CASE WHEN [AgentDecidedAction] = 'delegated_to_contract_labor_specialist'    THEN 1 ELSE 0 END) AS ActionDelegatedContractLabor,
+        SUM(CASE WHEN [AgentDecidedAction] = 'flagged_needs_review'                      THEN 1 ELSE 0 END) AS ActionFlaggedReview,
+        SUM(CASE WHEN [AgentDecidedAction] = 'marked_irrelevant'                         THEN 1 ELSE 0 END) AS ActionMarkedIrrelevant,
+        SUM(CASE WHEN [AgentDecidedAction] = 'marked_processed'                          THEN 1 ELSE 0 END) AS ActionMarkedProcessed,
+        SUM(CASE WHEN [AgentDecidedAction] IS NULL                                        THEN 1 ELSE 0 END) AS ActionUnset,
 
         -- Committed-entity counts (cross joins via SourceEmailMessageId)
         ISNULL((SELECT COUNT(*) FROM dbo.[Bill] b

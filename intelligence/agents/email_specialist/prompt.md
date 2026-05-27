@@ -46,14 +46,17 @@ unknown                   — you can't tell with confidence
 …and exactly one **decided_action** value (what did you do?):
 
 ```
-delegated_to_bill_specialist          — bridged + delegated for draft Bill
-delegated_to_bill_credit_specialist   — (v2; not in your toolbox today)
-delegated_to_expense_specialist       — (v2; not in your toolbox today)
-applied_reviewer_decision             — reviewer-reply path: bill_specialist
-                                        applied the PM's approval/rejection
-flagged_needs_review                  — flagged for human triage
-marked_irrelevant                     — no action; categorized irrelevant
-marked_processed                      — fully done (rare under approval gates)
+delegated_to_bill_specialist            — bridged + delegated for draft Bill
+delegated_to_bill_credit_specialist     — (v2; not in your toolbox today)
+delegated_to_expense_specialist         — (v2; not in your toolbox today)
+delegated_to_contract_labor_specialist  — forwarded-timesheet path: handed
+                                          to contract_labor_specialist for
+                                          ContractLabor row creation
+applied_reviewer_decision               — reviewer-reply path: bill_specialist
+                                          applied the PM's approval/rejection
+flagged_needs_review                    — flagged for human triage
+marked_irrelevant                       — no action; categorized irrelevant
+marked_processed                        — fully done (rare under approval gates)
 ```
 
 Both values are persisted on `EmailMessage.AgentClassification` / `AgentDecidedAction` and are read by future agent runs via `search_email_sender_history`. Keep the vocabulary stable — free-text values are not allowed.
@@ -138,7 +141,58 @@ If `find_bill_by_conversation_id` returns null → this is not a tracked review 
 
 5. **Skip steps 2–9.** The reviewer-reply branch is terminal.
 
-If detection fails (not a reply, or no tracked Bill) → continue to step 2.
+If detection fails (not a reply, or no tracked Bill) → continue to step 1c.
+
+### 1c. Contract-labor-timesheet branch
+
+**Before** running steps 2–9, check if this email is a forwarded worker timesheet. If so, branch to the contract-labor-timesheet flow and skip the standard invoice path.
+
+**Detection criteria (all must hold):**
+
+- The email has no substantive attachments (only inline signatures / footer logos, or no attachments at all — invoice PDFs DO disqualify), AND
+- The body opens with an address-ish first non-empty line (a few words that look like a street address — `<NN> <street name> <Ave|St|Rd|Blvd|...>`), AND
+- The body contains BOTH a clock-in marker (`Clock in`, `Time in`, `In:`, `Start`, or similar) AND a corresponding clock-out marker (`Clock out`, `Time out`, `Out:`, `End`, or similar).
+
+If only some of these hit → skip this branch and fall through to step 2. The standard classification flow may still stamp `contract_labor_timesheet` + `flagged_needs_review` at step 10, but the specialist isn't being delegated to in that case.
+
+**When the branch fires:**
+
+1. **Delegate immediately.** Call `delegate_to_contract_labor_specialist(task=…)` with this self-contained markdown:
+
+   ````markdown
+   Process a forwarded worker timesheet email into a draft ContractLabor row.
+
+   **Sender:**        jrscruggs07@gmail.com
+   **Subject:**       Work Hours 5/11
+   **Received year:** 2026   ← use for resolving bare `M/D` work dates
+
+   **Body (verbatim):**
+   ```
+   206 Haverford Ave
+   Clock in: 3:55
+   Clock out: 5:00
+   Installed door hardware.
+   JR Scruggs
+   ```
+
+   Bind the sender to a contract-labor Vendor, resolve the address to
+   a Project, parse the work_date / times / total_hours / description,
+   and create a draft `pending_review` ContractLabor row.
+
+   Return a one-line summary on success, or report back any blocker
+   (no Vendor match, ambiguous shifts, etc.) so I can stamp
+   `flagged_needs_review`.
+   ````
+
+   Strip any obvious email-signature footer (the part below the worker's name signature) before pasting the body. The specialist parses the body literally.
+
+2. **Stamp the outcome based on the sub-agent's response:**
+   - The sub-agent reports successful row creation → `mark_email_outcome(outcome="processed", classification="contract_labor_timesheet", decided_action="delegated_to_contract_labor_specialist", classification_reason="<one-sentence>", confidence=0.95)`.
+   - The sub-agent reports a blocker (no Vendor match, ambiguous times, unparseable date, etc.) → `mark_email_outcome(outcome="needs_review", classification="contract_labor_timesheet", decided_action="flagged_needs_review", reason="<the underlying issue>", confidence=0.85)`. Quote the blocker into `reason` so the human reviewer knows why.
+
+3. **Skip steps 2–9.** The contract-labor-timesheet branch is terminal.
+
+If detection fails (not a timesheet) → continue to step 2.
 
 ### 2. Look up sender history
 

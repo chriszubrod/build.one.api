@@ -1,9 +1,10 @@
 """Agent-facing tools for the Vendor entity.
 
 Read tools (no approval):
-  search_vendors                  → GET  /api/v1/get/vendor/search?q=...
-  find_vendor_for_invoice         → GET  /api/v1/get/vendor/find-for-invoice?vendor_name=...&sender_domain=...
-  read_vendor_by_public_id        → GET  /api/v1/get/vendor/{public_id}
+  search_vendors                          → GET  /api/v1/get/vendor/search?q=...
+  find_vendor_for_invoice                 → GET  /api/v1/get/vendor/find-for-invoice?vendor_name=...&sender_domain=...
+  find_contract_labor_vendor_by_email     → GET  /api/v1/get/vendor/contract-labor-by-email?email=...
+  read_vendor_by_public_id                → GET  /api/v1/get/vendor/{public_id}
 
 Write tools (user approval required):
   create_vendor                   → POST   /api/v1/create/vendor
@@ -119,6 +120,48 @@ find_vendor_for_invoice = Tool(
     ),
     input_schema=input_schema_from(_FindVendorForInvoiceArgs),
     handler=_find_vendor_for_invoice,
+)
+
+
+class _FindContractLaborVendorByEmailArgs(BaseModel):
+    email: str = Field(
+        description=(
+            "Sender email address to bind back to a contract-labor "
+            "Vendor (case-insensitive, e.g. `jrscruggs07@gmail.com`). "
+            "Typically the `from_address` of a forwarded timesheet "
+            "email — pass it verbatim from the EmailMessage."
+        ),
+    )
+
+
+async def _find_contract_labor_vendor_by_email(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = _FindContractLaborVendorByEmailArgs(**args)
+    return await ctx.call_api(
+        "GET",
+        f"/api/v1/get/vendor/contract-labor-by-email?email={quote(parsed.email)}",
+    )
+
+
+find_contract_labor_vendor_by_email = Tool(
+    name="find_contract_labor_vendor_by_email",
+    description=(
+        "Bind a worker's email address back to their contract-labor "
+        "Vendor row. Use this as the first step when processing a "
+        "forwarded timesheet email: pass the EmailMessage's "
+        "`from_address` verbatim and the tool returns the matching "
+        "Vendor (or null when no Contact row carries that email).\n\n"
+        "Match rule (locked 2026-05-26): `Vendor INNER JOIN Contact` "
+        "where `Vendor.IsContractLabor=1` AND `Vendor.IsDeleted=0` AND "
+        "`LOWER(Contact.Email)=LOWER(@email)`. Single Vendor returned "
+        "(defensive TOP 1) — a worker may have multiple Contact rows "
+        "but they all bind back to one Vendor.\n\n"
+        "Null result → the sender isn't a known contract-labor worker "
+        "(either not in the system, or the Contact email hasn't been "
+        "backfilled yet). Report back to the parent agent; do NOT "
+        "guess or fall through to a different lookup."
+    ),
+    input_schema=input_schema_from(_FindContractLaborVendorByEmailArgs),
+    handler=_find_contract_labor_vendor_by_email,
 )
 
 
@@ -294,6 +337,7 @@ delete_vendor = Tool(
 for _tool in (
     search_vendors,
     find_vendor_for_invoice,
+    find_contract_labor_vendor_by_email,
     read_vendor_by_public_id,
     create_vendor,
     update_vendor,

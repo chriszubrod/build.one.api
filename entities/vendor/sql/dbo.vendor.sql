@@ -491,3 +491,45 @@ BEGIN
     WHERE r.rn = 1
     ORDER BY r.Confidence DESC, v.[Name] ASC;
 END;
+GO
+
+
+-- ─────────────────────────────────────────────────────────────────────
+-- FindContractLaborVendorByEmail — sender-keyed lookup for the
+-- contract_labor_specialist agent. Binds a worker's email address back
+-- to the Vendor row carrying their IsContractLabor flag.
+--
+-- Migration counterpart: entities/vendor/sql/migrations/001_find_contract_labor_vendor_by_email.sql
+-- (keep these in sync — re-running the canonical file must match the
+-- migration's body).
+-- ─────────────────────────────────────────────────────────────────────
+
+CREATE OR ALTER PROCEDURE FindContractLaborVendorByEmail
+(
+    @SenderEmail NVARCHAR(320)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP 1
+        v.[Id],
+        v.[PublicId],
+        v.[RowVersion],
+        CONVERT(VARCHAR(19), v.[CreatedDatetime], 120)  AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), v.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        v.[Name],
+        v.[Abbreviation],
+        v.[VendorTypeId],
+        v.[TaxpayerId],
+        v.[IsDraft],
+        v.[IsDeleted],
+        v.[IsContractLabor],
+        v.[Notes]
+    FROM dbo.[Vendor] v
+    INNER JOIN dbo.[Contact] c ON c.[VendorId] = v.[Id]
+    WHERE v.[IsContractLabor] = 1
+      AND v.[IsDeleted]       = 0
+      AND LOWER(c.[Email])    = LOWER(@SenderEmail)
+    ORDER BY v.[Id];
+END;

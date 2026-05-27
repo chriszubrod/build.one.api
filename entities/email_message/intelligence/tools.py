@@ -143,8 +143,14 @@ class _OutcomeArgs(BaseModel):
             "Controlled-vocabulary action you took. Pick exactly one: "
             "`delegated_to_bill_specialist` | "
             "`delegated_to_bill_credit_specialist` | "
-            "`delegated_to_expense_specialist` | `flagged_needs_review` | "
-            "`marked_irrelevant` | `marked_processed`."
+            "`delegated_to_expense_specialist` | "
+            "`delegated_to_contract_labor_specialist` | "
+            "`flagged_needs_review` | `marked_irrelevant` | "
+            "`marked_processed`. "
+            "`delegated_to_contract_labor_specialist` = handed a forwarded "
+            "timesheet email (classification `contract_labor_timesheet`) "
+            "off to the contract_labor_specialist agent for ContractLabor "
+            "row creation."
         ),
     )
     confidence: Optional[Decimal] = Field(

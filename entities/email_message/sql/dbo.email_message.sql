@@ -53,8 +53,13 @@ CREATE TABLE [dbo].[EmailMessage]
     [AgentClassificationReason] NVARCHAR(1024) NULL,
     [AgentDecidedAction] NVARCHAR(50) NULL,
     [AgentClassificationConfidence] DECIMAL(5,4) NULL,
-    [Folder] NVARCHAR(50) NOT NULL DEFAULT 'inbox',
-    CONSTRAINT [UQ_EmailMessage_GraphMessageId] UNIQUE ([GraphMessageId])
+    [Folder] NVARCHAR(50) NOT NULL DEFAULT 'inbox'
+    -- No UNIQUE constraint on GraphMessageId. MS Graph recycles these
+    -- ids in shared mailboxes (delete-then-restore cycles), so
+    -- GraphMessageId is treated as a mutable secondary identifier.
+    -- The stable identity is (InternetMessageId, Folder); see the
+    -- filtered unique index below. Migrations 004 + 005 made this
+    -- change in prod (2026-05-27 data-corruption investigation).
 );
 END
 GO
@@ -145,6 +150,29 @@ IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM 
 BEGIN
 CREATE INDEX IX_EmailMessage_MailboxFolder_ReceivedDatetime
     ON [dbo].[EmailMessage] ([MailboxAddress], [Folder], [ReceivedDatetime] DESC);
+END
+GO
+
+-- (Migration 004, 2026-05-27) Filtered unique index on the new primary
+-- identity (InternetMessageId, Folder). InternetMessageId is the
+-- RFC 5322 Message-ID header — globally unique + immutable, unlike
+-- GraphMessageId which Microsoft recycles in shared mailboxes on
+-- soft-delete + restore cycles.
+IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_EmailMessage_InternetMessageId_Folder' AND object_id = OBJECT_ID('dbo.EmailMessage'))
+BEGIN
+CREATE UNIQUE NONCLUSTERED INDEX UQ_EmailMessage_InternetMessageId_Folder
+    ON dbo.[EmailMessage] ([InternetMessageId], [Folder])
+    WHERE [InternetMessageId] IS NOT NULL;
+END
+GO
+
+-- (Migration 005, 2026-05-27) Non-unique lookup index on GraphMessageId.
+-- The original UNIQUE CONSTRAINT was dropped because Graph recycles ids
+-- in shared mailboxes; the index stays for read-by-graph-id performance.
+IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_EmailMessage_GraphMessageId' AND object_id = OBJECT_ID('dbo.EmailMessage'))
+BEGIN
+CREATE NONCLUSTERED INDEX IX_EmailMessage_GraphMessageId
+    ON dbo.[EmailMessage] ([GraphMessageId]);
 END
 GO
 
@@ -274,17 +302,38 @@ CREATE OR ALTER PROCEDURE UpsertEmailMessage
 )
 AS
 BEGIN
+    -- (Migration 004, 2026-05-27) Identity invariant: InternetMessageId
+    -- (RFC 5322 Message-ID) is the stable primary key, not GraphMessageId.
+    -- Microsoft Graph recycles GraphMessageId values in shared mailboxes
+    -- (delete-restore cycles), so keying MERGE on it overwrites unrelated
+    -- rows. Phase 1 of the 2026-05-27 data-corruption investigation
+    -- traced 160 wrong-vendor Bills back to this. Hard-fail on missing
+    -- IMID — every standard SMTP server stamps one and we have 0 NULL
+    -- IMIDs in prod today.
+    IF @InternetMessageId IS NULL OR LTRIM(RTRIM(@InternetMessageId)) = ''
+    BEGIN
+        RAISERROR(
+            'UpsertEmailMessage requires @InternetMessageId (RFC 5322 Message-ID). GraphMessageId is not stable enough to use as a primary key in this mailbox. Caller should log + skip.',
+            16, 1
+        );
+        RETURN;
+    END
+
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
     MERGE dbo.[EmailMessage] AS target
-    USING (SELECT @GraphMessageId AS GraphMessageId) AS source
-    ON target.[GraphMessageId] = source.GraphMessageId
+    USING (SELECT @InternetMessageId AS InternetMessageId, @Folder AS Folder) AS source
+    ON target.[InternetMessageId] = source.InternetMessageId
+       AND target.[Folder] = source.Folder
     WHEN MATCHED THEN
         UPDATE SET
             [ModifiedDatetime] = @Now,
-            [InternetMessageId] = @InternetMessageId,
+            -- GraphMessageId is a MUTABLE secondary — Graph can recycle
+            -- these and a later poll might see the same IMID under a
+            -- different GraphMessageId. Always update to the latest.
+            [GraphMessageId] = @GraphMessageId,
             [ConversationId] = @ConversationId,
             [MailboxAddress] = @MailboxAddress,
             [FromAddress] = @FromAddress,
@@ -299,8 +348,8 @@ BEGIN
             [WebLink] = @WebLink,
             [HasAttachments] = @HasAttachments
             -- Folder + ProcessingStatus deliberately not updated on
-            -- match: folder is immutable per row, status is owned by
-            -- the agent claim/process workflow.
+            -- match: folder is part of the match key (immutable per
+            -- row); status is owned by the agent claim/process workflow.
     WHEN NOT MATCHED THEN
         INSERT
             ([CreatedDatetime], [ModifiedDatetime], [GraphMessageId], [InternetMessageId],

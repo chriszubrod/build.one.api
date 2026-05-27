@@ -100,6 +100,8 @@ def verify_token(*, token: str, expected_token_type: Optional[str] = None, allow
             settings.secret_key,
             algorithms=[settings.algorithm],
             leeway=JWT_EXP_LEEWAY_SECONDS,
+            audience="build.one.api",
+            issuer="build.one",
         )
         if expected_token_type:
             token_type = payload.get("token_type")
@@ -475,6 +477,8 @@ class AuthService:
             "exp": exp,
             "jti": jti,
             "token_type": token_type,
+            "aud": "build.one.api",
+            "iss": "build.one",
         }
         # New access-control claims (Phase 0). Tokens issued before the
         # rebuild won't carry these — the auth dependency falls back via

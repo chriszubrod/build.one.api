@@ -14,6 +14,7 @@ from integrations.ms.base.errors import (
     MsAuthError,
     MsClientError,
     MsConflictError,
+    MsLockedError,
     MsNotFoundError,
     MsRateLimitError,
     MsServerError,
@@ -858,6 +859,8 @@ class MsGraphClient:
             raise MsNotFoundError(message, **common)
         if status == 409:
             raise MsConflictError(message, **common)
+        if status == 423:
+            raise MsLockedError(message, **common)
         if status == 429:
             raise MsRateLimitError(message, retry_after_seconds=retry_after_seconds, **common)
         if status == 503:

@@ -132,6 +132,16 @@ class MsNotFoundError(MsClientError):
     """
 
 
+class MsLockedError(MsClientError):
+    """
+    Raised for HTTP 423 (Locked). Concurrent Excel writes return this when
+    another session holds an edit lock. Safe to retry with backoff — the lock
+    is transient and will release once the other write completes.
+    """
+
+    is_retryable = True
+
+
 class MsWriteRefusedError(MsClientError):
     """
     Raised by the shared client when a write (POST/PUT/PATCH/DELETE) is

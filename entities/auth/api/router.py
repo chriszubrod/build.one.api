@@ -187,6 +187,7 @@ def admin_get_auth_by_user_public_id_router(
 
 @router.post("/admin/auth/set-credentials/{user_public_id}")
 def admin_set_credentials_router(
+    request: Request,
     user_public_id: str,
     body: AdminSetCredentials,
     current_user: dict = Depends(require_module_api(Modules.USERS, "can_update")),
@@ -194,6 +195,8 @@ def admin_set_credentials_router(
     """
     Admin: create-or-update the Auth row (username + password) for a user.
     """
+    if request.cookies.get(REFRESH_COOKIE_NAME):
+        _require_csrf(request)
     try:
         auth = service.set_credentials_for_user(
             user_public_id=user_public_id,
@@ -472,6 +475,20 @@ def mobile_refresh_router(body: MobileRefreshRequest):
         raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail="Token refresh failed.")
+
+
+@router.post("/auth/logout")
+def web_logout_router(request: Request, response: Response, current_user: dict = Depends(get_current_user_api)):
+    """
+    Web logout. Revokes the refresh token from the cookie, clears all
+    auth cookies, and returns 200. CSRF-protected since the refresh
+    token lives in an httpOnly cookie.
+    """
+    if request.cookies.get(REFRESH_COOKIE_NAME):
+        _require_csrf(request)
+        service.revoke_refresh_token(refresh_token=request.cookies[REFRESH_COOKIE_NAME])
+    _clear_auth_cookies(response=response)
+    return item_response({"message": "Logged out."})
 
 
 @router.post("/mobile/auth/logout")

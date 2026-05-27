@@ -119,6 +119,9 @@ def get_expense_completion_result_router(public_id: str, current_user: dict = De
     Used by the list page to show step status after an expense completes in the background.
     In-memory cache only (1 hour TTL). Returns 404 if no result or expired.
     """
+    expense = ExpenseService().read_by_public_id(public_id=public_id)
+    if not expense:
+        raise_not_found("Expense")
     _clean_expense_completion_cache()
     entry = _EXPENSE_COMPLETION_RESULT_CACHE.get(public_id)
     if not entry or entry.get("expires_at", 0) < time.time():
@@ -199,6 +202,10 @@ def delete_expense_by_public_id_router(public_id: str, current_user: dict = Depe
 def _run_complete_expense(public_id: str) -> None:
     """Background task: run expense completion (finalize, SharePoint)."""
     try:
+        expense = ExpenseService().read_by_public_id(public_id=public_id)
+        if not expense or not getattr(expense, "is_draft", True):
+            logger.info("Complete expense skipped (already completed or missing): public_id=%s", public_id)
+            return
         result = ExpenseService().complete_expense(public_id=public_id)
         logger.info(
             "Complete expense background result: public_id=%s, status_code=%s, expense_finalized=%s",

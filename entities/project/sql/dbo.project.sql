@@ -329,30 +329,52 @@ GO
 -- User-scoped read: returns Project records the user has access to,
 -- joined through dbo.UserProject. Used by iOS so the client doesn't
 -- have to fetch all projects and filter client-side.
+-- When @ActorIsSystemAdmin = 1, returns all projects (no UserProject join).
 CREATE OR ALTER PROCEDURE ReadProjectsByUserId
 (
-    @UserId BIGINT
+    @UserId BIGINT,
+    @ActorIsSystemAdmin BIT = 0
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
 
-    SELECT DISTINCT
-        p.[Id],
-        p.[PublicId],
-        p.[RowVersion],
-        CONVERT(VARCHAR(19), p.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), p.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        p.[Name],
-        p.[Description],
-        p.[Status],
-        p.[CustomerId],
-        p.[Abbreviation],
-        p.[Notes]
-    FROM dbo.[Project] p
-    INNER JOIN dbo.[UserProject] up ON up.[ProjectId] = p.[Id]
-    WHERE up.[UserId] = @UserId
-    ORDER BY p.[Name] ASC;
+    IF @ActorIsSystemAdmin = 1
+    BEGIN
+        SELECT
+            p.[Id],
+            p.[PublicId],
+            p.[RowVersion],
+            CONVERT(VARCHAR(19), p.[CreatedDatetime], 120) AS [CreatedDatetime],
+            CONVERT(VARCHAR(19), p.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+            p.[Name],
+            p.[Description],
+            p.[Status],
+            p.[CustomerId],
+            p.[Abbreviation],
+            p.[Notes]
+        FROM dbo.[Project] p
+        ORDER BY p.[Name] ASC;
+    END
+    ELSE
+    BEGIN
+        SELECT DISTINCT
+            p.[Id],
+            p.[PublicId],
+            p.[RowVersion],
+            CONVERT(VARCHAR(19), p.[CreatedDatetime], 120) AS [CreatedDatetime],
+            CONVERT(VARCHAR(19), p.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+            p.[Name],
+            p.[Description],
+            p.[Status],
+            p.[CustomerId],
+            p.[Abbreviation],
+            p.[Notes]
+        FROM dbo.[Project] p
+        INNER JOIN dbo.[UserProject] up ON up.[ProjectId] = p.[Id]
+        WHERE up.[UserId] = @UserId
+        ORDER BY p.[Name] ASC;
+    END
 
     COMMIT TRANSACTION;
 END;

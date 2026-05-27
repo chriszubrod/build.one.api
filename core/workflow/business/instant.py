@@ -15,6 +15,7 @@ from core.workflow.business.definitions.instant import (
 from core.workflow.business.models import Workflow
 from core.workflow.business.orchestrator import WorkflowOrchestrator
 from core.workflow.api.process_engine import TriggerContext
+from shared.authz import current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,8 @@ PROCESS_REGISTRY: Dict[str, str] = {
     "vendor": "entities.vendor.business.service.VendorService",
     "vendor_address": "entities.vendor_address.business.service.VendorAddressService",
     "vendor_type": "entities.vendor_type.business.service.VendorTypeService",
+    "vendor_project_rate": "entities.vendor_project_rate.business.service.VendorProjectRateService",
+    "employee_project_rate": "entities.employee_project_rate.business.service.EmployeeProjectRateService",
     
     # Project entities
     "project": "entities.project.business.service.ProjectService",
@@ -63,6 +66,7 @@ PROCESS_REGISTRY: Dict[str, str] = {
     
     # User management
     "user": "entities.user.business.service.UserService",
+    "employee": "entities.employee.business.service.EmployeeService",
     "role": "entities.role.business.service.RoleService",
     "user_role": "entities.user_role.business.service.UserRoleService",
     "user_project": "entities.user_project.business.service.UserProjectService",
@@ -87,6 +91,10 @@ PROCESS_REGISTRY: Dict[str, str] = {
     # Other
     "integration": "entities.integration.business.service.IntegrationService",
     "contract_labor": "entities.contract_labor.business.service.ContractLaborService",
+
+    # Employee labor (internal — feeds Invoice directly, no Bill).
+    "employee_labor": "entities.employee_labor.business.service.EmployeeLaborService",
+    "employee_labor_line_item": "entities.employee_labor_line_item.business.service.EmployeeLaborLineItemService",
 
     # Time tracking
     "time_entry": "entities.time_entry.business.service.TimeEntryService",
@@ -326,15 +334,18 @@ class InstantWorkflowHandler:
             )
         
         # Execute the service call
+        token = None
+        if context.user_id is not None:
+            token = current_user_id.set(context.user_id)
         try:
             service = self._get_service(entity)
             method_name = self._get_method_name(operation)
             method = getattr(service, method_name)
-            
+
             # Inject tenant_id from context into kwargs for tenant isolation
             # Services should accept tenant_id as a keyword argument
             kwargs_with_tenant = {"tenant_id": context.tenant_id, **kwargs}
-            
+
             # Call the service method
             result = method(**kwargs_with_tenant)
             
@@ -392,7 +403,10 @@ class InstantWorkflowHandler:
                 workflow_id=workflow.public_id,
                 error=str(e),
             )
-    
+        finally:
+            if token is not None:
+                current_user_id.reset(token)
+
     def execute_from_workflow_type(
         self,
         context: TriggerContext,

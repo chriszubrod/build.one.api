@@ -51,8 +51,13 @@ class ProjectService:
     def read_by_user_id(self, user_id: int) -> list[Project]:
         """
         Read projects the user has access to (joined through dbo.UserProject).
+        System admins bypass the join and see all projects.
         """
-        return self.repo.read_by_user_id(user_id=user_id)
+        _, actor_is_system_admin = _actor_scope()
+        return self.repo.read_by_user_id(
+            user_id=user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
     def read_by_id(self, id: int) -> Optional[Project]:
         actor_user_id, actor_is_system_admin = _actor_scope()

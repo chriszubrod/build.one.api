@@ -109,9 +109,15 @@ class ProjectRepository:
             logger.error(f"Error during read all projects: {error}")
             raise map_database_error(error)
 
-    def read_by_user_id(self, user_id: int) -> list[Project]:
+    def read_by_user_id(
+        self,
+        user_id: int,
+        *,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[Project]:
         """
         Read projects the user has access to (joined through dbo.UserProject).
+        System admins bypass the join and see all projects.
         """
         try:
             with get_connection() as conn:
@@ -119,7 +125,10 @@ class ProjectRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadProjectsByUserId",
-                    params={"UserId": user_id},
+                    params={
+                        "UserId": user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]

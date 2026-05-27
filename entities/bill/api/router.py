@@ -188,6 +188,9 @@ def get_bill_completion_result_router(public_id: str, current_user: dict = Depen
     """
     Return the completion result for a bill (Build One, SharePoint, Excel, QBO).
     """
+    bill = BillService().read_by_public_id(public_id=public_id)
+    if not bill:
+        raise_not_found("Bill")
     result = BillRepository().get_completion_result(public_id)
     if result is None:
         raise_not_found("Completion result")
@@ -392,6 +395,10 @@ async def delete_bill_by_public_id_router(public_id: str, current_user: dict = D
 def _run_complete_bill(public_id: str) -> None:
     """Background task: run full bill completion (Build One, SharePoint, Excel, QBO)."""
     try:
+        bill = BillService().read_by_public_id(public_id=public_id)
+        if not bill or not getattr(bill, "is_draft", True):
+            logger.info("Complete bill skipped (already completed or missing): public_id=%s", public_id)
+            return
         result = BillService().complete_bill(public_id=public_id)
         logger.info(
             "Complete bill background result: public_id=%s, status_code=%s, bill_finalized=%s",

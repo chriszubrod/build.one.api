@@ -21,14 +21,17 @@ class InvoiceLineItem:
     bill_line_item_id: Optional[int]
     expense_line_item_id: Optional[int]
     bill_credit_line_item_id: Optional[int]
-    sub_cost_code_id: Optional[int]
-    description: Optional[str]
-    quantity: Optional[Decimal]
-    rate: Optional[Decimal]
-    amount: Optional[Decimal]
-    markup: Optional[Decimal]
-    price: Optional[Decimal]
-    is_draft: Optional[bool]
+    # Phase 3 — EmployeeLabor source for invoice lines that came from
+    # internal-employee time aggregation (no Bill in the chain).
+    employee_labor_line_item_id: Optional[int] = None
+    sub_cost_code_id: Optional[int] = None
+    description: Optional[str] = None
+    quantity: Optional[Decimal] = None
+    rate: Optional[Decimal] = None
+    amount: Optional[Decimal] = None
+    markup: Optional[Decimal] = None
+    price: Optional[Decimal] = None
+    is_draft: Optional[bool] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

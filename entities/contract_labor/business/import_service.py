@@ -289,6 +289,170 @@ class ContractLaborImportService:
         
         return results
 
+    def import_excel_via_timetracking(
+        self,
+        file_content: bytes,
+        filename: str,
+        import_batch_id: Optional[str] = None,
+    ) -> dict:
+        """Phase 6b — alternative import path that routes Excel rows through
+        TimeEntryBulkImportService instead of writing ContractLabor directly.
+
+        For each parsed Excel row:
+          - Split EmployeeName "Firstname Lastname [Middle]" into a User lookup.
+          - Resolve JobName → Project by name (best-effort; falls back to NULL).
+          - Build a bulk-import dict and hand off to TimeEntryBulkImportService.
+
+        The bulk service creates TimeEntry+TimeLog rows and submits them,
+        which fires Phase 4 aggregation → ContractLabor (vendor path) or
+        EmployeeLabor (employee path).
+
+        This method is OPT-IN — `import_excel()` still writes ContractLabor
+        directly for back-compat. Callers (React Import page, agent flow,
+        etc.) choose the path explicitly. Recommended: run the new path on
+        a small batch first, eyeball the resulting ContractLabor rows, then
+        switch the React button over.
+
+        Returns a dict with the same shape as `import_excel()` plus a
+        `bulk_results` field carrying per-row outcomes from the bulk
+        service.
+        """
+        from entities.time_entry.business.bulk_import_service import (
+            TimeEntryBulkImportService,
+        )
+
+        if not import_batch_id:
+            import_batch_id = str(uuid.uuid4())[:8]
+
+        results = {
+            "import_batch_id": import_batch_id,
+            "total_rows": 0,
+            "imported_count": 0,
+            "skipped_count": 0,
+            "error_count": 0,
+            "errors": [],
+            "skipped": [],
+            "via_timetracking": True,
+            "bulk_results": [],
+        }
+
+        try:
+            rows_iterator = self._load_excel_rows(file_content, filename)
+            if rows_iterator is None:
+                results["errors"].append({"row": 0, "error": "Could not load Excel file"})
+                return results
+
+            # Build the bulk-import payload first, then fire one bulk call.
+            # That gives consistent error handling + per-row reporting from
+            # the bulk service.
+            bulk_rows: list[dict] = []
+            row_to_bulk_idx: dict[int, int] = {}  # row_num → index in bulk_rows
+            project_cache: dict[str, Optional[str]] = {}
+
+            row_num = 0
+            for row in rows_iterator:
+                row_num += 1
+                results["total_rows"] += 1
+
+                try:
+                    if not row or not any(row):
+                        results["skipped_count"] += 1
+                        results["skipped"].append({"row": row_num + 1, "reason": "Empty row"})
+                        continue
+
+                    parsed, skip_reason = self._parse_row(row, row_num)
+                    if not parsed:
+                        results["skipped_count"] += 1
+                        results["skipped"].append({"row": row_num + 1, "reason": skip_reason or "Invalid data"})
+                        continue
+
+                    employee_name = (parsed.get("vendor_name") or "").strip()
+                    job_name = (parsed.get("job_name") or "").strip()
+                    work_date = parsed.get("work_date")
+                    total_hours = parsed.get("total_hours")
+
+                    if not employee_name:
+                        results["skipped_count"] += 1
+                        results["skipped"].append({"row": row_num + 1, "reason": "Missing employee name"})
+                        continue
+                    if not work_date or total_hours is None or total_hours <= 0:
+                        results["skipped_count"] += 1
+                        results["skipped"].append({"row": row_num + 1, "reason": "Missing work_date or hours"})
+                        continue
+
+                    # Simple firstname/lastname split — first word vs the rest.
+                    # Bulk service uses LIKE-ish exact match, so this needs to
+                    # line up with the User row's actual Firstname/Lastname.
+                    parts = employee_name.split(None, 1)
+                    firstname = parts[0]
+                    lastname = parts[1] if len(parts) > 1 else ""
+
+                    # Project resolution — cache by name to avoid redundant lookups.
+                    project_public_id: Optional[str] = None
+                    if job_name:
+                        if job_name in project_cache:
+                            project_public_id = project_cache[job_name]
+                        else:
+                            try:
+                                from entities.project.business.service import ProjectService
+                                # No "search by exact name" method; fall back to read_all + filter.
+                                # Performance concern only matters if Excel rows reference >10 distinct
+                                # projects in one import — cheap enough for realistic batches.
+                                projects = ProjectService().read_all()
+                                match = next(
+                                    (p for p in projects if (p.name or "").strip().lower() == job_name.lower()),
+                                    None,
+                                )
+                                project_public_id = match.public_id if match else None
+                            except Exception as exc:
+                                logger.warning(
+                                    "import.tt.project_resolve.failed",
+                                    extra={"row_num": row_num, "job_name": job_name, "error": str(exc)},
+                                )
+                                project_public_id = None
+                            project_cache[job_name] = project_public_id
+
+                    row_to_bulk_idx[row_num + 1] = len(bulk_rows)
+                    bulk_rows.append({
+                        "worker_firstname": firstname,
+                        "worker_lastname": lastname,
+                        "project_public_id": project_public_id,
+                        "work_date": work_date,
+                        "hours": str(total_hours),
+                        "note": parsed.get("notes"),
+                        "submit": True,
+                    })
+
+                except Exception as e:
+                    logger.error(f"Error preparing row {row_num + 1} for TT bulk import: {e}")
+                    results["errors"].append({"row": row_num + 1, "error": str(e)})
+                    results["error_count"] += 1
+
+            # One bulk call processes the assembled rows. Per-row failures
+            # come back tagged so we can map them to the Excel row numbers.
+            if bulk_rows:
+                bulk_results = TimeEntryBulkImportService().import_rows(bulk_rows)
+                results["bulk_results"] = bulk_results
+
+                # Aggregate counts from the bulk results
+                for br in bulk_results:
+                    if br["status"] == "failed":
+                        results["error_count"] += 1
+                        excel_row = next(
+                            (k for k, v in row_to_bulk_idx.items() if v == br["row_index"]),
+                            None,
+                        )
+                        results["errors"].append({"row": excel_row, "error": br.get("error", "Bulk import failed")})
+                    else:
+                        results["imported_count"] += 1
+
+        except Exception as e:
+            logger.exception(f"Error in import_excel_via_timetracking: {e}")
+            results["errors"].append({"row": 0, "error": f"Failed to process Excel file: {str(e)}"})
+            results["error_count"] += 1
+
+        return results
+
     def _parse_row(self, row: tuple, row_num: int) -> Tuple[Optional[dict], Optional[str]]:
         """
         Parse a row from the Excel file.
@@ -542,15 +706,42 @@ class ContractLaborImportService:
 
     def _get_rate_for_vendor(self, vendor_id: int, vendor_name: Optional[str] = None) -> Tuple[Optional[Decimal], Optional[Decimal]]:
         """
-        Get the carry-forward rate and markup for a vendor.
-        First checks cache, then database, then falls back to VENDOR_CONFIG.
+        Get the rate and markup for a vendor.
+
+        Resolution order (Phase 2 — rates moved into the Vendor table):
+          1. In-process cache.
+          2. dbo.Vendor.HourlyRate / Vendor.Markup (the new default columns).
+          3. ContractLabor.get_last_rate_for_vendor — historical carry-forward
+             for vendors that don't have defaults yet (transition safety).
+          4. VENDOR_CONFIG[vendor_name] — final fallback during the cut-over
+             window. Will be removed once every active contract-labor vendor
+             has Vendor.HourlyRate populated (tracked in Phase 2f backfill).
         """
         if vendor_id in self._rate_cache:
             return self._rate_cache[vendor_id]
 
-        hourly_rate, markup = self.repo.get_last_rate_for_vendor(vendor_id)
+        hourly_rate: Optional[Decimal] = None
+        markup: Optional[Decimal] = None
 
-        # Fall back to VENDOR_CONFIG if no historical rate found
+        # 1. Vendor table default (Phase 2 — primary source going forward)
+        try:
+            vendor = VendorService().read_by_id(vendor_id)
+            if vendor is not None:
+                hourly_rate = getattr(vendor, "hourly_rate", None)
+                markup = getattr(vendor, "markup", None)
+        except Exception as exc:
+            logger.warning(
+                f"Failed reading Vendor.HourlyRate for vendor_id={vendor_id}: {exc}"
+            )
+
+        # 2. Historical carry-forward — only if Vendor table doesn't have it.
+        if hourly_rate is None:
+            hist_rate, hist_markup = self.repo.get_last_rate_for_vendor(vendor_id)
+            if hist_rate is not None:
+                hourly_rate = hist_rate
+                markup = hist_markup
+
+        # 3. VENDOR_CONFIG fallback (deprecated; transition safety only).
         if hourly_rate is None and vendor_name:
             config = VENDOR_CONFIG.get(vendor_name)
             if config:

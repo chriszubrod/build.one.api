@@ -102,7 +102,9 @@ class AnthropicTransport:
         # index -> {"id": str, "name": str, "json_buf": str} for in-flight tool_use blocks
         active_tool_blocks: dict[int, dict[str, Any]] = {}
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(
+            connect=10.0, read=self._timeout, write=30.0, pool=10.0,
+        )) as client:
             resp_ctx = None
             for attempt in range(_MAX_RETRIES + 1):
                 resp_ctx = client.stream(

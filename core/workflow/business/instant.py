@@ -100,6 +100,13 @@ PROCESS_REGISTRY: Dict[str, str] = {
     "time_entry": "entities.time_entry.business.service.TimeEntryService",
 }
 
+_missing = set(SYNCHRONOUS_TASKS) - set(PROCESS_REGISTRY)
+if _missing:
+    raise RuntimeError(
+        f"SYNCHRONOUS_TASKS entries missing from PROCESS_REGISTRY: {sorted(_missing)}. "
+        f"Add a service mapping for each entity."
+    )
+
 
 # =============================================================================
 # Method Name Mapping

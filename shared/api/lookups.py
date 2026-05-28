@@ -17,6 +17,8 @@ router = APIRouter(prefix="/api/v1", tags=["api", "lookups"])
 # Valid lookup keys
 VALID_LOOKUPS = {
     "vendors",
+    "contract_labor_vendors",
+    "employees",
     "projects",
     "sub_cost_codes",
     "cost_codes",
@@ -43,11 +45,54 @@ def _get_vendors() -> list[dict]:
     ]
 
 
+def _get_contract_labor_vendors() -> list[dict]:
+    """Vendors flagged IsContractLabor=1 only — small subset of the full
+    ~1100-row vendor catalog. Used by the UserProfile worker-link picker.
+
+    Includes `id` so the React side can resolve `User.vendor_id` (internal
+    BIGINT) back to a `public_id` for the picker's selected-state init.
+    """
+    from entities.vendor.business.service import VendorService
+    vendors = VendorService().read_all()
+    return [
+        {
+            "id": v.id,
+            "public_id": v.public_id,
+            "name": v.name,
+            "abbreviation": v.abbreviation,
+        }
+        for v in vendors
+        if getattr(v, "is_contract_labor", False) and not getattr(v, "is_deleted", False)
+    ]
+
+
+def _get_employees() -> list[dict]:
+    """Active Employees — slim list for picker dropdowns.
+
+    Includes `id` so the React side can resolve `User.employee_id` (internal
+    BIGINT) back to a `public_id` for the picker's selected-state init.
+    """
+    from entities.employee.business.service import EmployeeService
+    employees = EmployeeService().read_all()
+    return [
+        {
+            "id": e.id,
+            "public_id": e.public_id,
+            "firstname": e.firstname,
+            "lastname": e.lastname,
+            "label": f"{e.firstname} {e.lastname}".strip(),
+        }
+        for e in employees
+        if getattr(e, "is_active", True) and not getattr(e, "is_deleted", False)
+    ]
+
+
 def _get_projects() -> list[dict]:
     from entities.project.business.service import ProjectService
     projects = ProjectService().read_all()
     return [
         {
+            "id": p.id,
             "public_id": p.public_id,
             "name": p.name,
             "abbreviation": p.abbreviation,
@@ -61,6 +106,7 @@ def _get_sub_cost_codes() -> list[dict]:
     sccs = SubCostCodeService().read_all()
     return [
         {
+            "id": s.id,
             "public_id": s.public_id,
             "number": s.number,
             "name": s.name,
@@ -160,6 +206,8 @@ def _get_modules() -> list[dict]:
 
 LOOKUP_FETCHERS = {
     "vendors": _get_vendors,
+    "contract_labor_vendors": _get_contract_labor_vendors,
+    "employees": _get_employees,
     "projects": _get_projects,
     "sub_cost_codes": _get_sub_cost_codes,
     "cost_codes": _get_cost_codes,
@@ -174,7 +222,7 @@ LOOKUP_FETCHERS = {
 
 @router.get("/lookups")
 async def get_lookups(
-    include: str = Query(..., description="Comma-separated lookup keys: vendors,projects,sub_cost_codes,cost_codes,payment_terms,customers,vendor_types,address_types,roles,modules"),
+    include: str = Query(..., description="Comma-separated lookup keys: vendors,contract_labor_vendors,employees,projects,sub_cost_codes,cost_codes,payment_terms,customers,vendor_types,address_types,roles,modules"),
     current_user: dict = Depends(require_module_api(Modules.DASHBOARD)),
 ):
     """

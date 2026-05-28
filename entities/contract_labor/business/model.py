@@ -61,6 +61,11 @@ class ContractLabor:
     source_file: Optional[str]         # Original Excel filename
     source_row: Optional[int]          # Row number in Excel
 
+    # TimeTracking lineage — set by Phase 4 aggregation (NULL for legacy
+    # Excel-imported rows). Lets the React UI distinguish "From TimeTracking"
+    # vs "From Excel" via a single column.
+    source_time_entry_id: Optional[int] = None
+
     @property
     def row_version_bytes(self) -> Optional[bytes]:
         """Decode base64 row version to bytes."""

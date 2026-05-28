@@ -3,7 +3,7 @@ import logging
 from typing import Optional
 
 # Third-party Imports
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 
 # Local Imports
 from entities.time_entry.business.service import TimeEntryService
@@ -401,6 +401,69 @@ def read_time_entry_statuses(
         )
     except ValueError as e:
         raise_workflow_error(str(e), "Failed to read time entry statuses")
+
+
+@router.get("/{public_id}/billed-lineage")
+def read_time_entry_billed_lineage(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING)),
+):
+    """Downstream lineage — which ContractLabor/EmployeeLabor rows came from
+    this TimeEntry, and whether those rows are linked to a Bill/Invoice yet.
+
+    Returns 0..N rows. Empty list means the entry hasn't been aggregated yet
+    (still draft, or aggregation failed and the entry is flagged).
+    """
+    from entities.time_entry.persistence.repo import TimeEntryRepository
+
+    entry = TimeEntryService().read_by_public_id(public_id=public_id)
+    if not entry:
+        raise_not_found("TimeEntry")
+    rows = TimeEntryRepository().read_billed_lineage(time_entry_id=int(entry.id))
+    return list_response(rows)
+
+
+@router.post("/import/external-csv")
+async def import_external_timesheet_csv(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_approve")),
+):
+    """Phase 6c — bulk-import a third-party timesheet CSV.
+
+    See `scripts/samples/README.md` for the column contract + expected
+    behavior. Internally:
+      1. Parses + validates headers (BOM-tolerant).
+      2. Pre-aggregates per (Worker × Project × Day) — required because
+         the Phase 4 aggregation sproc overwrites on natural key per
+         TimeEntry, not across multiple TimeEntries.
+      3. Resolves project names → public_ids in a single lookup pass.
+      4. Hands the rows to TimeEntryBulkImportService, which creates
+         TimeEntry + TimeLog rows and submits — Phase 4 aggregation
+         fires automatically, routing to ContractLabor (vendor path)
+         or EmployeeLabor (employee path) based on the worker's
+         User.VendorId vs User.EmployeeId link.
+
+    Gated on `Time Tracking can_approve` — same gate as the approve
+    endpoint, only Tenant Admin / Controller / PM / Reviewer roles.
+    """
+    from entities.time_entry.business.external_timesheet_import_service import (
+        ExternalTimesheetImportService,
+    )
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required.")
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a .csv.")
+
+    file_content = await file.read()
+    if not file_content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    result = ExternalTimesheetImportService().import_csv(
+        file_content=file_content,
+        filename=file.filename,
+    )
+    return item_response(result)
 
 
 # ============================================

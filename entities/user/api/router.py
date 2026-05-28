@@ -4,12 +4,12 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
-from entities.user.api.schemas import UserCreate, UserUpdate
+from entities.user.api.schemas import UserCreate, UserUpdate, UserWorkerLinkUpdate
 from entities.user.business.service import UserService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
-from shared.api.responses import list_response, item_response, raise_workflow_error
+from shared.api.responses import list_response, item_response, raise_not_found, raise_workflow_error
 
 router = APIRouter(prefix="/api/v1", tags=["api", "user"])
 
@@ -90,6 +90,33 @@ def update_user_by_public_id_router(public_id: str, body: UserUpdate, current_us
         raise_workflow_error(result.get("error", ""), "Failed to update user")
     
     return item_response(result.get("data"))
+
+
+@router.put("/update/user/{public_id}/worker-link")
+def update_user_worker_link_router(
+    public_id: str,
+    body: UserWorkerLinkUpdate,
+    current_user: dict = Depends(require_module_api(Modules.USERS, "can_update")),
+):
+    """Set or clear the User's worker (Employee XOR Vendor) linkage.
+
+    Doesn't route through ProcessEngine — narrow scoped mutation with its own
+    audit (User.ModifiedDatetime). Service-layer XOR + sproc-level defense
+    catch double-link attempts.
+    """
+    try:
+        updated = UserService().set_worker_link(
+            public_id=public_id,
+            row_version=body.row_version,
+            worker_type=body.worker_type,
+            worker_public_id=body.worker_public_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    if not updated:
+        raise_not_found("User")
+    return item_response(updated.to_dict())
 
 
 @router.delete("/delete/user/{public_id}")

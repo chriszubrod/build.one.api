@@ -41,7 +41,12 @@ from entities.user_project.api.router import router as user_project_api_router
 from entities.user_organization.api.router import router as user_organization_api_router
 from entities.user_company.api.router import router as user_company_api_router
 from entities.organization_company.api.router import router as organization_company_api_router
+from entities.employee.api.router import router as employee_api_router
+from entities.employee_labor.api.router import router as employee_labor_api_router
+from entities.employee_labor_line_item.api.router import router as employee_labor_line_item_api_router
+from entities.employee_project_rate.api.router import router as employee_project_rate_api_router
 from entities.vendor.api.router import router as vendor_api_router
+from entities.vendor_project_rate.api.router import router as vendor_project_rate_api_router
 from entities.vendor_address.api.router import router as vendor_address_api_router
 from entities.vendor_type.api.router import router as vendor_type_api_router
 from entities.taxpayer.api.router import router as taxpayer_api_router
@@ -71,6 +76,7 @@ from entities.invoice_attachment.api.router import router as invoice_attachment_
 from entities.invoice_line_item_attachment.api.router import router as invoice_line_item_attachment_api_router
 from entities.review_status.api.router import router as review_status_api_router
 from entities.review.api.router import router as review_api_router
+from entities.task.api.router import router as task_api_router
 from entities.email_message.api.router import router as email_message_api_router
 from shared.api.lookups import router as lookups_api_router
 from shared.api.admin import router as scheduler_admin_api_router
@@ -181,7 +187,12 @@ app.include_router(user_company_api_router)
 app.include_router(organization_company_api_router)
 app.include_router(contact_api_router)
 app.include_router(device_token_api_router)
+app.include_router(employee_api_router)
+app.include_router(employee_labor_api_router)
+app.include_router(employee_labor_line_item_api_router)
+app.include_router(employee_project_rate_api_router)
 app.include_router(vendor_api_router)
+app.include_router(vendor_project_rate_api_router)
 app.include_router(vendor_address_api_router)
 app.include_router(intuit_qbo_auth_api_router)
 app.include_router(intuit_qbo_company_info_api_router)
@@ -225,6 +236,7 @@ app.include_router(invoice_attachment_api_router)
 app.include_router(invoice_line_item_attachment_api_router)
 app.include_router(review_status_api_router)
 app.include_router(review_api_router)
+app.include_router(task_api_router)
 app.include_router(email_message_api_router)
 app.include_router(lookups_api_router)
 app.include_router(scheduler_admin_api_router)
@@ -245,6 +257,13 @@ async def startup_event():
     # dispatch profile-change events into the SSE subscriber queues.
     from shared.profile_events import register_event_loop
     register_event_loop()
+
+    # Register Task feeds. Each feed surfaces a different work-queue type
+    # (Review today; future: punch-list, signature requests, etc.) under
+    # the unified /api/v1/get/tasks/inbox endpoint.
+    from entities.task.business import feed_registry
+    from entities.review.business.task_feed import ReviewTaskFeed
+    feed_registry.register(ReviewTaskFeed())
 
     # Start the recurring-jobs scheduler (QBO outbox drain, etc.). Gated on
     # ENABLE_SCHEDULER=true so local dev runs silently by default; prod App

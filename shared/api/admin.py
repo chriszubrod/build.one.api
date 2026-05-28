@@ -627,7 +627,8 @@ async def bill_folder_tick_router():
         try:
             item_repo.auto_fail_stale(stale_after_minutes=30)
         except Exception:
-            logger.exception("auto_fail_stale swallowed")
+            logger.exception("auto_fail_stale failed — aborting tick")
+            raise
 
         item = item_repo.claim_next(reclaim_after_seconds=180, max_attempts=3)
         if item is None:

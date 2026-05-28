@@ -37,6 +37,8 @@ def create_vendor_router(body: VendorCreate, current_user: dict = Depends(requir
             "is_draft": body.is_draft,
             "is_contract_labor": body.is_contract_labor,
             "notes": body.notes,
+            "hourly_rate": str(body.hourly_rate) if body.hourly_rate is not None else None,
+            "markup": str(body.markup) if body.markup is not None else None,
         },
         workflow_type="vendor_create",
     )
@@ -156,6 +158,8 @@ def update_vendor_by_public_id_router(public_id: str, body: VendorUpdate, curren
             "is_draft": body.is_draft,
             "is_contract_labor": body.is_contract_labor,
             "notes": body.notes,
+            "hourly_rate": str(body.hourly_rate) if body.hourly_rate is not None else None,
+            "markup": str(body.markup) if body.markup is not None else None,
         },
         workflow_type="vendor_update",
     )

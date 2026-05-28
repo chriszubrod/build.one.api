@@ -155,6 +155,9 @@ def analyze_document_url(blob_url: str, *, model_id: str = "prebuilt-layout",
     return _await_result(operation_location, key)
 
 
+_MAX_DOCUMENT_BYTES = 50 * 1024 * 1024  # 50 MB — Azure DI hard limit
+
+
 def analyze_document_bytes(content: bytes, content_type: str,
                            *, model_id: str = "prebuilt-layout",
                            features: Optional[str] = "keyValuePairs") -> dict:
@@ -164,6 +167,10 @@ def analyze_document_bytes(content: bytes, content_type: str,
     `features` defaults to `"keyValuePairs"` for prebuilt-layout. Pass
     `None` when calling another model that doesn't support add-ons.
     """
+    if len(content) > _MAX_DOCUMENT_BYTES:
+        raise DocumentIntelligenceError(
+            f"Document size {len(content)} bytes exceeds {_MAX_DOCUMENT_BYTES // (1024*1024)} MB limit"
+        )
     endpoint, key, api_version = _settings()
     url = f"{endpoint}/documentintelligence/documentModels/{model_id}:analyze?api-version={api_version}"
     if features:

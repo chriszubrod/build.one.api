@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+from decimal import Decimal
 from typing import Optional
 import re
 
@@ -49,6 +50,14 @@ class VendorCreate(BaseModel):
         default=None,
         description="Free-text notes — visible in the UI and read by the bill_specialist agent for vendor-specific guidance.",
     )
+    hourly_rate: Optional[Decimal] = Field(
+        default=None,
+        description="Default contract-labor hourly rate. Per-project overrides live in VendorProjectRate.",
+    )
+    markup: Optional[Decimal] = Field(
+        default=None,
+        description="Default contract-labor markup (e.g. 0.50 for 50%). Per-project overrides live in VendorProjectRate.",
+    )
 
     @field_validator('name', mode='before')
     @classmethod
@@ -96,6 +105,8 @@ class VendorUpdate(BaseModel):
         default=None,
         description="Free-text notes — visible in the UI and read by the bill_specialist agent for vendor-specific guidance.",
     )
+    hourly_rate: Optional[Decimal] = Field(default=None)
+    markup: Optional[Decimal] = Field(default=None)
 
     @field_validator('name', mode='before')
     @classmethod

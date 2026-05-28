@@ -221,10 +221,10 @@ class WorkflowOrchestrator:
         project_id: Optional[int] = None,
         context: Optional[dict] = None,
         created_by: str = "system",
-    ) -> Workflow:
+    ) -> tuple[Workflow, bool]:
         """
         Create a new workflow instance.
-        
+
         Args:
             tenant_id: Tenant ID for multi-tenancy
             workflow_type: Type of workflow (must be registered)
@@ -235,9 +235,9 @@ class WorkflowOrchestrator:
             project_id: Associated project ID
             context: Initial context data
             created_by: Who created the workflow
-            
+
         Returns:
-            Created workflow instance
+            Tuple of (workflow, created) — created is False when a duplicate was found
         """
         # Validate workflow type
         definition = self.get_definition(workflow_type)

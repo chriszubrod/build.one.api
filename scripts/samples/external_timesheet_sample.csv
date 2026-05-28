@@ -1,0 +1,17 @@
+worker_firstname,worker_lastname,project_name,work_date,hours,note
+Selvin,Cordova,HP - 6135 Hillsboro Pike,2026-05-04,8.00,Framing - second floor walls
+Selvin,Cordova,HP - 6135 Hillsboro Pike,2026-05-05,8.00,Framing continued
+Selvin,Cordova,HP - 6135 Hillsboro Pike,2026-05-06,7.50,
+Selvin,Cordova,TB3 - 917 Tyne Blvd,2026-05-07,8.00,Switched to Tyne for delivery day
+Selvin,Cordova,HP - 6135 Hillsboro Pike,2026-05-08,8.00,
+Wilmer,Diaz,HP - 6135 Hillsboro Pike,2026-05-04,8.00,Demo / haul out
+Wilmer,Diaz,HP - 6135 Hillsboro Pike,2026-05-05,8.00,
+Wilmer,Diaz,HP - 6135 Hillsboro Pike,2026-05-18,8.00,Second-half period start
+Wilmer,Diaz,HP - 6135 Hillsboro Pike,2026-05-19,7.00,
+Elmer,Cordova,TB3 - 917 Tyne Blvd,2026-05-04,8.00,
+Elmer,Cordova,TB3 - 917 Tyne Blvd,2026-05-05,8.00,
+Emilson O.,Cordova Tercero,TB3 - 917 Tyne Blvd,2026-05-15,8.00,Last day of first-half period
+Emilson O.,Cordova Tercero,TB3 - 917 Tyne Blvd,2026-05-16,8.00,First day of second-half period
+Michael,Jacobson,,2026-05-06,4.50,Office work — no project assigned
+Brayan Rafael,Marcia Salina,HP - 6135 Hillsboro Pike,2026-05-20,8.00,Multi-word lastname test
+Brayan Rafael,Marcia Salina,HP - 6135 Hillsboro Pike,2026-05-21,8.00,

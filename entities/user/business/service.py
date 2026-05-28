@@ -98,6 +98,70 @@ class UserService:
             )
         return self.repo.update_by_id(existing)
 
+    def set_worker_link(
+        self,
+        public_id: str,
+        *,
+        row_version: str,
+        worker_type: Optional[str],
+        worker_public_id: Optional[str],
+    ) -> Optional[User]:
+        """Set the User's worker linkage.
+
+        worker_type ∈ {'employee', 'vendor', None}:
+            - 'employee' — resolves worker_public_id via EmployeeService, sets User.EmployeeId, clears VendorId.
+            - 'vendor'   — resolves worker_public_id via VendorService, sets User.VendorId, clears EmployeeId.
+            - None / '' — clears both (User is no longer a billable worker).
+
+        Service-layer XOR is the primary guard; the sproc has a defense-in-depth
+        check too. ValueError on bad inputs propagates to a 400.
+        """
+        existing = self.read_by_public_id(public_id=public_id)
+        if not existing:
+            return None
+
+        wt = (worker_type or "").strip().lower() or None
+        if wt not in (None, "employee", "vendor"):
+            raise ValueError(
+                f"worker_type must be 'employee', 'vendor', or null — got {worker_type!r}."
+            )
+
+        employee_id: Optional[int] = None
+        vendor_id: Optional[int] = None
+
+        if wt is None:
+            pass  # both stay None — clears link
+        elif wt == "employee":
+            if not worker_public_id:
+                raise ValueError("worker_public_id is required when worker_type='employee'.")
+            # Lazy import to avoid pulling Employee/Vendor entity packages at module
+            # import time — keeps test startup + cold start lighter.
+            from entities.employee.business.service import EmployeeService
+            employee = EmployeeService().read_by_public_id(public_id=worker_public_id)
+            if not employee:
+                raise ValueError(f"Employee with public_id {worker_public_id!r} not found.")
+            employee_id = int(employee.id)
+        else:  # 'vendor'
+            if not worker_public_id:
+                raise ValueError("worker_public_id is required when worker_type='vendor'.")
+            from entities.vendor.business.service import VendorService
+            vendor = VendorService().read_by_public_id(public_id=worker_public_id)
+            if not vendor:
+                raise ValueError(f"Vendor with public_id {worker_public_id!r} not found.")
+            vendor_id = int(vendor.id)
+
+        # Use caller-provided row_version (optimistic concurrency); fall back
+        # to the existing row's version so a stale React state doesn't 409.
+        if row_version is not None:
+            existing.row_version = row_version
+
+        return self.repo.update_worker_link(
+            id=existing.id,
+            row_version_bytes=existing.row_version_bytes,
+            employee_id=employee_id,
+            vendor_id=vendor_id,
+        )
+
     def set_last_company_id(self, *, user_id: int, last_company_id: int) -> None:
         """
         Persist the active Company a user last switched to so their next

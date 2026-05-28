@@ -56,6 +56,8 @@ SYNCHRONOUS_TASKS = [
     "vendor",
     "vendor_address",
     "vendor_type",
+    "vendor_project_rate",
+    "employee_project_rate",
     
     # Project entities
     "project",
@@ -74,6 +76,7 @@ SYNCHRONOUS_TASKS = [
     
     # User management
     "user",
+    "employee",
     "role",
     "user_role",
     "user_project",
@@ -98,6 +101,10 @@ SYNCHRONOUS_TASKS = [
     # Other
     "integration",
     "contract_labor",
+
+    # Employee labor (internal — feeds Invoice directly, no Bill).
+    "employee_labor",
+    "employee_labor_line_item",
 
     # Time tracking
     "time_entry",

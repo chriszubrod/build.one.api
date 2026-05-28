@@ -22,6 +22,10 @@ class User:
     last_company_id: Optional[int] = None
     created_by_user_id: Optional[int] = None
     modified_by_user_id: Optional[int] = None
+    # Worker linkage — at most one of these is non-NULL per User. XOR enforced
+    # in UserService.set_worker_link (+ defense-in-depth check in the sproc).
+    employee_id: Optional[int] = None
+    vendor_id: Optional[int] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

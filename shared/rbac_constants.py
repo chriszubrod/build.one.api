@@ -23,6 +23,7 @@ class Modules:
     EXPENSES        = "Expenses"
     INVOICES        = "Invoices"
     CONTRACT_LABOR  = "Contract Labor"
+    EMPLOYEE_LABOR  = "Employee Labor"
 
     # Reference data
     VENDORS         = "Vendors"
@@ -34,6 +35,7 @@ class Modules:
 
     USERS           = "Users"
     ROLES           = "Roles"
+    EMPLOYEES       = "Employees"
     ORGANIZATIONS   = "Organizations"
     COMPANIES       = "Companies"
 
@@ -44,8 +46,8 @@ class Modules:
 
     REVIEW_STATUSES = "Review Statuses"
 
-    # Pending actions
-    PENDING_ACTIONS = "Pending Actions"
+    # Reviewer task inbox (cross-entity worklist)
+    TASKS           = "Tasks"
 
     # Time tracking
     TIME_TRACKING   = "Time Tracking"

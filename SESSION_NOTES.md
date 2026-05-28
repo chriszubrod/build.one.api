@@ -1,5 +1,45 @@
 # Session Notes
 
+## Session: Multi-repo bug audit — API findings (2026-05-20)
+
+Ran a comprehensive read-only SRE-style audit across all 5 sub-repos using 10 parallel Explore agents. No code modified, no commits. Findings recorded:
+- Centralized audit memory: `~/.claude/projects/-Users-chris-Applications-build-one/memory/project_audit_2026_05_20.md` (cross-repo patterns, root causes, Tier-1 fix list, what NOT to change yet).
+- API-specific findings appended to top of this repo's `TODO.md` under "Audit 2026-05-20 — API findings" — ~40 items grouped by Critical / High / Medium / Low.
+
+### Highest-severity API findings (full list in TODO.md)
+- **CRIT:** VendorCredit `float()` corrupts currency on every QBO round-trip (Bill/Purchase repos use `Decimal(str(...))` correctly; VendorCredit regressed). Same bug in BillCredit complete service.
+- **CRIT:** `ProcessEngine._infer_workflow_type` references nonexistent `context.metadata` — latent AttributeError on next email-intake rewire.
+- **CRIT:** Latent SQL injection in `shared/access.py::_check()` via f-string UDF name — exploitable the first refactor that lets the value come from request data.
+- **HIGH:** OAuth refresh race (QBO + MS) — `sp_getapplock` acquired AFTER the read; concurrent callers can each POST the pre-lock refresh_token.
+- **HIGH:** `_run_complete_bill` and peers are fire-and-forget BackgroundTasks with no watchdog — crash post-finalize / pre-outbox leaves bill stuck `IsDraft=False`.
+- **HIGH:** Completion-result endpoints leak across tenants (`Modules.BILLS` gate only, no `assert_can_access_bill()`).
+- **HIGH:** Workflow row + WorkflowEvent write not atomic; workflow JSON serializer missing UUID + bytes handlers.
+- **HIGH:** JWT missing `aud`/`iss` validation; `/admin/auth/set-credentials/{user_public_id}` missing CSRF; no web logout endpoint.
+- **HIGH:** `decrypt_if_encrypted` masquerades ciphertext as plaintext on EncryptionError (silent fail on key rotation).
+- **HIGH:** Mail draft 2-step PATCH has no rollback; Excel 423 (Locked) treated as non-retryable.
+
+### Validation results
+- `python3 -m py_compile` across all 6,497 .py files: **PASS** (no syntax errors).
+- `python3 -m py_compile function_app.py` (scheduler): **PASS**.
+- `python3 -m py_compile` (build.one.mcp src + tests): **PASS**.
+
+### Out of scope this session
+- No fixes applied.
+- Stored-procedure source under `entities/*/sql/` not exhaustively walked for the SP NULL-overwrite anti-pattern — relied on the memory's stated invariant. Future task: grep `Update*.sql` for missing `CASE WHEN` guards.
+- `integrations/sync/` reconciliation drivers were touched lightly.
+
+### Followups expected next session
+User prioritized iOS first (see `build.one.ios/SESSION_NOTES.md`). API Tier-1 fixes from the audit memory remain to be picked up in priority order:
+1. VendorCredit + BillCredit `float()` → `Decimal(str())`.
+2. Add `assert_can_access_*()` to completion-result endpoints.
+3. Add `_require_csrf` to admin set-credentials.
+4. Extend workflow `_json_serial` with UUID + bytes.
+5. Fix `process_engine.py` `context.metadata` → `context.payload`.
+6. Whitelist UDF names in `shared/access.py::_check()`.
+7. Add `try/finally cursor.close()` in `_check()`.
+
+---
+
 ## Session: HP2-09 InvoiceAgent run + re-run for Q44862 (May 14–15, 2026)
 
 ### Overview

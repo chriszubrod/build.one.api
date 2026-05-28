@@ -1,6 +1,7 @@
 # Python Standard Library Imports
 import base64
 import logging
+from decimal import Decimal
 from typing import Optional
 
 # Third-party Imports
@@ -48,6 +49,8 @@ class VendorRepository:
                 is_deleted=row.IsDeleted,
                 is_contract_labor=row.IsContractLabor,
                 notes=getattr(row, "Notes", None),
+                hourly_rate=getattr(row, "HourlyRate", None),
+                markup=getattr(row, "Markup", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during vendor mapping: {error}")
@@ -56,7 +59,7 @@ class VendorRepository:
             logger.error(f"Unexpected error during vendor mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, name: Optional[str], abbreviation: Optional[str], taxpayer_id: Optional[int] = None, vendor_type_id: Optional[int] = None, is_draft: bool = True, is_contract_labor: bool = False, notes: Optional[str] = None, created_by_user_id: Optional[int] = None) -> Vendor:
+    def create(self, *, tenant_id: int = 1, name: Optional[str], abbreviation: Optional[str], taxpayer_id: Optional[int] = None, vendor_type_id: Optional[int] = None, is_draft: bool = True, is_contract_labor: bool = False, notes: Optional[str] = None, hourly_rate: Optional[Decimal] = None, markup: Optional[Decimal] = None, created_by_user_id: Optional[int] = None) -> Vendor:
         """
         Create a new vendor.
         """
@@ -72,6 +75,8 @@ class VendorRepository:
                     "IsContractLabor": is_contract_labor,
                     "Notes": notes,
                     "CreatedByUserId": created_by_user_id,
+                    "HourlyRate": hourly_rate,
+                    "Markup": markup,
                 }
                 call_procedure(
                     cursor=cursor,
@@ -239,6 +244,8 @@ class VendorRepository:
                     "VendorTypeId": vendor.vendor_type_id,
                     "TaxpayerId": vendor.taxpayer_id,
                     "Notes": vendor.notes,
+                    "HourlyRate": vendor.hourly_rate,
+                    "Markup": vendor.markup,
                 }
                 # Only include IsDraft/IsContractLabor if explicitly set (not None)
                 if vendor.is_draft is not None:

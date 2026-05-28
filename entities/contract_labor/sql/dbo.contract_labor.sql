@@ -279,7 +279,8 @@ BEGIN
         [BillNumber],
         [ImportBatchId],
         [SourceFile],
-        [SourceRow]
+        [SourceRow],
+        [SourceTimeEntryId]
     FROM dbo.[ContractLabor]
     ORDER BY [WorkDate] DESC, [EmployeeName] ASC, [JobName] ASC;
 
@@ -329,7 +330,8 @@ BEGIN
         [BillNumber],
         [ImportBatchId],
         [SourceFile],
-        [SourceRow]
+        [SourceRow],
+        [SourceTimeEntryId]
     FROM dbo.[ContractLabor]
     WHERE [Id] = @Id;
 
@@ -379,7 +381,8 @@ BEGIN
         [BillNumber],
         [ImportBatchId],
         [SourceFile],
-        [SourceRow]
+        [SourceRow],
+        [SourceTimeEntryId]
     FROM dbo.[ContractLabor]
     WHERE [PublicId] = @PublicId;
 
@@ -429,7 +432,8 @@ BEGIN
         [BillNumber],
         [ImportBatchId],
         [SourceFile],
-        [SourceRow]
+        [SourceRow],
+        [SourceTimeEntryId]
     FROM dbo.[ContractLabor]
     WHERE [VendorId] = @VendorId
     ORDER BY [WorkDate] DESC, [EmployeeName] ASC, [JobName] ASC;
@@ -586,7 +590,8 @@ BEGIN
         [BillNumber],
         [ImportBatchId],
         [SourceFile],
-        [SourceRow]
+        [SourceRow],
+        [SourceTimeEntryId]
     FROM dbo.[ContractLabor]
     WHERE [ImportBatchId] = @ImportBatchId
     ORDER BY [SourceRow];
@@ -920,7 +925,8 @@ BEGIN
         [BillNumber],
         [ImportBatchId],
         [SourceFile],
-        [SourceRow]
+        [SourceRow],
+        [SourceTimeEntryId]
     FROM dbo.[ContractLabor]
     WHERE [EmployeeName] = @EmployeeName
         AND [WorkDate] = @WorkDate
@@ -1433,7 +1439,8 @@ BEGIN
         [BillNumber],
         [ImportBatchId],
         [SourceFile],
-        [SourceRow]
+        [SourceRow],
+        [SourceTimeEntryId]
     FROM dbo.[ContractLabor]
     WHERE [PublicId] = @PublicId;
 
@@ -1483,7 +1490,8 @@ BEGIN
         [BillNumber],
         [ImportBatchId],
         [SourceFile],
-        [SourceRow]
+        [SourceRow],
+        [SourceTimeEntryId]
     FROM dbo.[ContractLabor]
     WHERE [BillLineItemId] = @BillLineItemId
     ORDER BY [WorkDate], [EmployeeName];

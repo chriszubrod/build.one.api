@@ -23,6 +23,43 @@ router = APIRouter(prefix="/api/v1", tags=["api", "invoice"])
 
 # ── TOC helpers ─────────────────────────────────────────────────────────────
 
+def _toc_signed_amount(row: dict) -> Optional[float]:
+    """
+    Return the row's display amount as a float, with the correct sign for credits.
+
+    The InvoiceInvoiceConnector stores `dbo.InvoiceLineItem.Price` as a positive
+    magnitude even for BillCreditLineItem-sourced lines, while `Amount` retains
+    the negative QBO sign. Prefer Price for non-credit lines (it carries markup
+    when applicable), but negate it for credit lines so the TOC + subtotals
+    reflect the customer-facing reduction.
+    """
+    p = row.get("price")
+    if p is None:
+        p = row.get("amount")
+    if p is None:
+        return None
+    try:
+        v = float(p)
+    except (TypeError, ValueError):
+        return None
+    if row.get("source_type") == "BillCreditLineItem" and v > 0:
+        v = -v
+    return v
+
+
+def _toc_format_money(value: Optional[float]) -> str:
+    """Format a number as accounting-style money: $1,234.56 or ($1,234.56) for negatives."""
+    if value is None:
+        return "—"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if v < 0:
+        return f"(${abs(v):,.2f})"
+    return f"${v:,.2f}"
+
+
 def _toc_source_label(source_type: str) -> str:
     return {"BillLineItem": "Bill", "BillCreditLineItem": "Credit", "ExpenseLineItem": "Expense"}.get(source_type, "")
 
@@ -56,7 +93,7 @@ def _consolidate_basic_toc_rows(rows: list[dict]) -> list[dict]:
             for r in group:
                 consolidated.append(dict(r, type_label=_toc_source_label(r.get("source_type", ""))))
         else:
-            total_price = sum(float(r.get("price") or 0) for r in group)
+            total_price = sum((_toc_signed_amount(r) or 0) for r in group)
             first = group[0]
             consolidated.append({
                 "source_date": first.get("source_date", ""),
@@ -113,11 +150,7 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
 
     table_data = [headers]
     for r in consolidated:
-        price = r.get("price") if r.get("price") is not None else r.get("amount")
-        try:
-            amt_str = f"${float(price):,.2f}" if price is not None else "\u2014"
-        except (TypeError, ValueError):
-            amt_str = "\u2014"
+        amt_str = _toc_format_money(_toc_signed_amount(r))
         table_data.append([
             r.get("source_date", ""),
             W(r.get("vendor_name", "")),
@@ -127,8 +160,8 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
             amt_str,
         ])
 
-    grand_total = sum(float(r.get("price") if r.get("price") is not None else r.get("amount") or 0) for r in consolidated)
-    table_data.append(["", "", "", "", Paragraph("Total", bold_right), Paragraph(f"${grand_total:,.2f}", bold_right)])
+    grand_total = sum((_toc_signed_amount(r) or 0) for r in consolidated)
+    table_data.append(["", "", "", "", Paragraph("Total", bold_right), Paragraph(_toc_format_money(grand_total), bold_right)])
     n = len(table_data)
 
     table = Table(table_data, colWidths=col_widths)
@@ -219,11 +252,7 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
     for cc, group_iter in groupby(rows, key=lambda r: r.get("cost_code_number") or ""):
         group_items = list(group_iter)
         for r in group_items:
-            price = r.get("price") if r.get("price") is not None else r.get("amount")
-            try:
-                amt_str = f"${float(price):,.2f}" if price is not None else "\u2014"
-            except (TypeError, ValueError):
-                amt_str = "\u2014"
+            amt_str = _toc_format_money(_toc_signed_amount(r))
             table_data.append([
                 cc,
                 r.get("source_date", ""),
@@ -233,8 +262,8 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
                 _toc_source_label(r.get("source_type", "")),
                 amt_str,
             ])
-        subtotal = sum(float(r.get("price") if r.get("price") is not None else r.get("amount") or 0) for r in group_items)
-        table_data.append(["", "", "", "", "", Paragraph("Subtotal", bold_right), Paragraph(f"${subtotal:,.2f}", bold_right)])
+        subtotal = sum((_toc_signed_amount(r) or 0) for r in group_items)
+        table_data.append(["", "", "", "", "", Paragraph("Subtotal", bold_right), Paragraph(_toc_format_money(subtotal), bold_right)])
         subtotal_indices.append(len(table_data) - 1)
         # Blank spacer row between groups
         table_data.append(["", "", "", "", "", "", ""])
@@ -245,8 +274,8 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
         table_data.pop()
         spacer_indices.pop()
 
-    grand_total = sum(float(r.get("price") if r.get("price") is not None else r.get("amount") or 0) for r in rows)
-    table_data.append(["", "", "", "", "", Paragraph("Total", bold_right), Paragraph(f"${grand_total:,.2f}", bold_right)])
+    grand_total = sum((_toc_signed_amount(r) or 0) for r in rows)
+    table_data.append(["", "", "", "", "", Paragraph("Total", bold_right), Paragraph(_toc_format_money(grand_total), bold_right)])
     total_idx = len(table_data) - 1
     n = len(table_data)
 

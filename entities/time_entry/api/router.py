@@ -167,7 +167,7 @@ def count_time_entries(
         start_date=start_date,
         end_date=end_date,
     )
-    return {"count": total_count}
+    return item_response({"count": total_count})
 
 
 @router.get("/{public_id}")

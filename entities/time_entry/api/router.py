@@ -12,6 +12,7 @@ from entities.time_entry.business.time_entry_status_service import TimeEntryStat
 from entities.time_entry.api.schemas import (
     TimeEntryCreate,
     TimeEntryUpdate,
+    TimeEntryReviewFlag,
     TimeLogCreate,
     TimeLogUpdate,
     TimeEntryApprove,
@@ -167,7 +168,7 @@ def count_time_entries(
         start_date=start_date,
         end_date=end_date,
     )
-    return {"count": total_count}
+    return item_response({"count": total_count})
 
 
 @router.get("/{public_id}")
@@ -193,6 +194,67 @@ def read_time_entry(
     result["current_status"] = status_history[-1].status if status_history else None
 
     return item_response(result)
+
+
+@router.post("/{public_id}/review-flag")
+def flag_time_entry_for_human_review(
+    public_id: str,
+    body: TimeEntryReviewFlag,
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_update")),
+):
+    """
+    Stamp ReviewPriority + ReviewReasons on a TimeEntry. Used by the
+    time_tracking_specialist agent to record its bucketing decision after
+    running validate-completeness. Does NOT transition CurrentStatus.
+
+    Returns the stamped state for confirmation.
+    """
+    service = TimeEntryService()
+    try:
+        result = service.stamp_review(
+            public_id=public_id,
+            priority=body.priority,
+            reasons=body.reasons,
+        )
+        return item_response(result)
+    except ValueError as e:
+        raise_workflow_error(str(e), "Failed to stamp review flag")
+
+
+@router.get("/{public_id}/validate-completeness")
+def validate_time_entry_completeness(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING)),
+):
+    """
+    Run the deterministic completeness + anomaly checklist against this
+    time entry. Read-only — no mutation, no status transition.
+
+    Used by the time_tracking_specialist agent to inform its
+    ReviewPriority decision; also safe to call from human review UI.
+
+    Row-scope bypass: this endpoint reviews TimeEntries the caller did NOT
+    submit (the agent / Approver acts on other users' entries). Mirrors the
+    submit/approve/reject pattern which also bypasses UserId scope at the
+    service layer. Authorization is the endpoint's `can_read` gate above.
+    """
+    from entities.time_entry.business.validation import validate_completeness
+    from entities.time_entry.persistence.repo import TimeEntryRepository
+    from entities.time_entry.persistence.time_log_repo import TimeLogRepository
+
+    entry = TimeEntryRepository().read_by_public_id(
+        public_id=public_id,
+        actor_is_system_admin=True,
+    )
+    if not entry:
+        raise_not_found("Time entry")
+
+    logs = TimeLogRepository().read_by_time_entry_id(
+        time_entry_id=entry.id,
+        actor_is_system_admin=True,
+    )
+    report = validate_completeness(entry=entry, logs=logs)
+    return item_response(report)
 
 
 @router.put("/{public_id}")
@@ -278,7 +340,7 @@ def submit_time_entry(
 def approve_time_entry(
     public_id: str,
     body: TimeEntryApprove = None,
-    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_approve")),
 ):
     """
     Approve a submitted time entry. Transitions from 'submitted' to 'approved'.
@@ -300,7 +362,7 @@ def approve_time_entry(
 def reject_time_entry(
     public_id: str,
     body: TimeEntryReject = None,
-    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_approve")),
 ):
     """
     Reject a submitted time entry. Transitions from 'submitted' back to 'draft'.

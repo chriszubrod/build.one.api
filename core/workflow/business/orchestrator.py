@@ -15,6 +15,7 @@ from core.workflow.business.exceptions import (
 from core.workflow.business.models import Workflow, WorkflowEvent
 from core.workflow.persistence.repo import WorkflowRepository
 from core.workflow_event.persistence.repo import WorkflowEventRepository
+from shared.database import get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +58,9 @@ class WorkflowStateMachine:
     
     @state.setter
     def state(self, value: str) -> None:
-        """Set the workflow state (used by transitions library)."""
+        """Set the workflow state (used by transitions library).
+        In-memory only — transition_to() persists atomically with the event."""
         self.workflow.state = value
-        # Persist to database
-        self.workflow_repo.update_state(self.workflow.public_id, value)
     
     def _log_transition(
         self,
@@ -69,6 +69,7 @@ class WorkflowStateMachine:
         trigger: str,
         data: Optional[dict] = None,
         created_by: str = "system",
+        conn=None,
     ) -> WorkflowEvent:
         """Log a state transition event."""
         return self.event_repo.create(
@@ -79,6 +80,7 @@ class WorkflowStateMachine:
             step_name=trigger,
             data=data,
             created_by=created_by,
+            conn=conn,
         )
     
     def transition_to(
@@ -126,26 +128,28 @@ class WorkflowStateMachine:
         new_context["history"] = history
         
         try:
-            # Execute the transition (updates self.state via transitions library)
+            # Execute the transition (updates self.state in-memory via transitions library)
             trigger_method()
             to_state = self.workflow.state
-            
-            # Persist the state change
-            updated = self.workflow_repo.update_state(
-                public_id=self.workflow.public_id,
-                state=to_state,
-                context=new_context,
-            )
-            
-            # Log the transition event
-            self._log_transition(
-                from_state=from_state,
-                to_state=to_state,
-                trigger=trigger,
-                data=context_updates,
-                created_by=created_by,
-            )
-            
+
+            # Persist state change + event atomically
+            with get_connection() as conn:
+                updated = self.workflow_repo.update_state(
+                    public_id=self.workflow.public_id,
+                    state=to_state,
+                    context=new_context,
+                    conn=conn,
+                )
+
+                self._log_transition(
+                    from_state=from_state,
+                    to_state=to_state,
+                    trigger=trigger,
+                    data=context_updates,
+                    created_by=created_by,
+                    conn=conn,
+                )
+
             self.workflow = updated
             # Keep Task in sync: update status/title on every transition; close when terminal
             try:
@@ -250,31 +254,33 @@ class WorkflowOrchestrator:
                 )
                 return (existing, False)  # (workflow, created=False)
         
-        # Create the workflow
-        workflow = self.workflow_repo.create(
-            tenant_id=tenant_id,
-            workflow_type=workflow_type,
-            state=definition.initial_state,
-            parent_workflow_id=parent_workflow_id,
-            conversation_id=conversation_id,
-            trigger_message_id=trigger_message_id,
-            vendor_id=vendor_id,
-            project_id=project_id,
-            context=context or {},
-        )
-        
-        # Log creation event
-        self.event_repo.create(
-            workflow_id=workflow.id,
-            event_type="workflow_created",
-            to_state=definition.initial_state,
-            data={
-                "workflow_type": workflow_type,
-                "trigger_message_id": trigger_message_id,
-                "conversation_id": conversation_id,
-            },
-            created_by=created_by,
-        )
+        # Create the workflow + creation event atomically
+        with get_connection() as conn:
+            workflow = self.workflow_repo.create(
+                tenant_id=tenant_id,
+                workflow_type=workflow_type,
+                state=definition.initial_state,
+                parent_workflow_id=parent_workflow_id,
+                conversation_id=conversation_id,
+                trigger_message_id=trigger_message_id,
+                vendor_id=vendor_id,
+                project_id=project_id,
+                context=context or {},
+                conn=conn,
+            )
+
+            self.event_repo.create(
+                workflow_id=workflow.id,
+                event_type="workflow_created",
+                to_state=definition.initial_state,
+                data={
+                    "workflow_type": workflow_type,
+                    "trigger_message_id": trigger_message_id,
+                    "conversation_id": conversation_id,
+                },
+                created_by=created_by,
+                conn=conn,
+            )
         
         logger.info(
             f"Created workflow {workflow.public_id} of type {workflow_type} "

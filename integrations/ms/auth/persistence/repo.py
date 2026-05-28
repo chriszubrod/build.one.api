@@ -43,9 +43,9 @@ class MsAuthRepository:
                 code=getattr(row, "Code", None),
                 state=getattr(row, "State", None),
                 token_type=getattr(row, "TokenType", None),
-                access_token=decrypt_if_encrypted(getattr(row, "AccessToken", None)),
+                access_token=decrypt_if_encrypted(getattr(row, "AccessToken", None), field_name="ms.Auth.AccessToken"),
                 expires_in=getattr(row, "ExpiresIn", None),
-                refresh_token=decrypt_if_encrypted(getattr(row, "RefreshToken", None)),
+                refresh_token=decrypt_if_encrypted(getattr(row, "RefreshToken", None), field_name="ms.Auth.RefreshToken"),
                 scope=getattr(row, "Scope", None),
                 tenant_id=getattr(row, "TenantId", None),
                 user_id=getattr(row, "UserId", None)

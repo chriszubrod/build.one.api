@@ -40,7 +40,7 @@ class QboClientRepository:
             return QboClient(
                 app=getattr(row, "App", None),
                 client_id=getattr(row, "ClientId", None),
-                client_secret=decrypt_if_encrypted(getattr(row, "ClientSecret", None)),
+                client_secret=decrypt_if_encrypted(getattr(row, "ClientSecret", None), field_name="qbo.Client.ClientSecret"),
             )
         except AttributeError as error:
             logger.error("Attribute error during qbo client mapping: %s", error)

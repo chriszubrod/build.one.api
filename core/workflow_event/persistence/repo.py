@@ -88,6 +88,7 @@ class WorkflowEventRepository:
         data: Optional[dict] = None,
         created_by: Optional[str] = None,
         created_by_user_id: Optional[int] = None,
+        conn: Optional[pyodbc.Connection] = None,
     ) -> WorkflowEvent:
         try:
             data_json = json.dumps(data, default=_json_serial) if data else None
@@ -97,8 +98,8 @@ class WorkflowEventRepository:
                 else current_user_id.get()
             )
 
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            def _exec(c: pyodbc.Connection) -> WorkflowEvent:
+                cursor = c.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="CreateWorkflowEvent",
@@ -117,6 +118,11 @@ class WorkflowEventRepository:
                 if not row:
                     raise map_database_error(Exception("create WorkflowEvent failed"))
                 return self._from_db(row)
+
+            if conn is not None:
+                return _exec(conn)
+            with get_connection() as new_conn:
+                return _exec(new_conn)
         except Exception as error:
             logger.error("Error during create WorkflowEvent: %s", error)
             raise map_database_error(error)

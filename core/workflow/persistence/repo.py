@@ -97,6 +97,7 @@ class WorkflowRepository:
         context: Optional[dict] = None,
         created_by: Optional[str] = None,
         created_by_user_id: Optional[int] = None,
+        conn: Optional[pyodbc.Connection] = None,
     ) -> Workflow:
         try:
             context_json = json.dumps(context, default=_json_serial) if context else None
@@ -106,8 +107,8 @@ class WorkflowRepository:
                 else current_user_id.get()
             )
 
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            def _exec(c: pyodbc.Connection) -> Workflow:
+                cursor = c.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="CreateWorkflow",
@@ -130,6 +131,11 @@ class WorkflowRepository:
                 if not row:
                     raise map_database_error(Exception("create Workflow failed"))
                 return self._from_db(row)
+
+            if conn is not None:
+                return _exec(conn)
+            with get_connection() as new_conn:
+                return _exec(new_conn)
         except Exception as error:
             logger.error("Error during create Workflow: %s", error)
             raise map_database_error(error)
@@ -320,12 +326,13 @@ class WorkflowRepository:
         public_id: str,
         state: str,
         context: Optional[dict] = None,
+        conn: Optional[pyodbc.Connection] = None,
     ) -> Optional[Workflow]:
         try:
             context_json = json.dumps(context, default=_json_serial) if context else None
-            
-            with get_connection() as conn:
-                cursor = conn.cursor()
+
+            def _exec(c: pyodbc.Connection) -> Optional[Workflow]:
+                cursor = c.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="UpdateWorkflowState",
@@ -337,6 +344,11 @@ class WorkflowRepository:
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
+
+            if conn is not None:
+                return _exec(conn)
+            with get_connection() as new_conn:
+                return _exec(new_conn)
         except Exception as error:
             logger.error("Error during update Workflow state: %s", error)
             raise map_database_error(error)

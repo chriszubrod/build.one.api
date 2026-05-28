@@ -46,10 +46,10 @@ class QboAuthRepository:
                 realm_id=getattr(row, "RealmId", None),
                 state=getattr(row, "State", None),
                 token_type=getattr(row, "TokenType", None),
-                id_token=decrypt_if_encrypted(getattr(row, "IdToken", None)),
-                access_token=decrypt_if_encrypted(getattr(row, "AccessToken", None)),
+                id_token=decrypt_if_encrypted(getattr(row, "IdToken", None), field_name="qbo.Auth.IdToken"),
+                access_token=decrypt_if_encrypted(getattr(row, "AccessToken", None), field_name="qbo.Auth.AccessToken"),
                 expires_in=getattr(row, "ExpiresIn", None),
-                refresh_token=decrypt_if_encrypted(getattr(row, "RefreshToken", None)),
+                refresh_token=decrypt_if_encrypted(getattr(row, "RefreshToken", None), field_name="qbo.Auth.RefreshToken"),
                 x_refresh_token_expires_in=getattr(row, "XRefreshTokenExpiresIn", None)
             )
         except AttributeError as error:

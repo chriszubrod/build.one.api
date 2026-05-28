@@ -946,17 +946,37 @@ def create_forward_draft(
                         # Fallback: no <body> tag → simple prepend.
                         new_body = html_preamble + existing_body
 
-                client.patch(
-                    f"me/messages/{draft_id}",
-                    json={
-                        "body": {
-                            "contentType": "HTML",
-                            "content": new_body,
-                        }
-                    },
-                    timeout_tier="B",
-                    operation_name="mail.create_forward_draft.patch_body",
-                )
+                try:
+                    client.patch(
+                        f"me/messages/{draft_id}",
+                        json={
+                            "body": {
+                                "contentType": "HTML",
+                                "content": new_body,
+                            }
+                        },
+                        timeout_tier="B",
+                        operation_name="mail.create_forward_draft.patch_body",
+                    )
+                except MsGraphError:
+                    # PATCH failed — delete the orphan draft so the reviewer
+                    # doesn't see a forwarded email with no bill context.
+                    try:
+                        client.delete(
+                            f"me/messages/{draft_id}",
+                            operation_name="mail.create_forward_draft.rollback_orphan",
+                        )
+                        logger.warning(
+                            "Rolled back orphan forward draft %s after PATCH failure",
+                            draft_id,
+                        )
+                    except MsGraphError as del_err:
+                        logger.error(
+                            "Failed to delete orphan forward draft %s: %s",
+                            draft_id,
+                            del_err,
+                        )
+                    raise
                 # Re-fetch for the return shape so callers see the
                 # updated body.
                 draft = client.get(

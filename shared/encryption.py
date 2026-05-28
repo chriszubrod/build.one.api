@@ -120,7 +120,16 @@ def decrypt_sensitive_data(encrypted_data: str) -> Optional[str]:
         raise EncryptionError("Failed to decrypt sensitive data.") from exc
 
 
-def decrypt_if_encrypted(value: Optional[str]) -> Optional[str]:
+def _looks_like_fernet(value: str) -> bool:
+    """Check whether a string is structurally a Fernet token (base64, correct prefix byte)."""
+    try:
+        raw = base64.urlsafe_b64decode(value)
+        return len(raw) >= 73 and raw[0:1] == b"\x80"
+    except Exception:
+        return False
+
+
+def decrypt_if_encrypted(value: Optional[str], *, field_name: str = "unknown") -> Optional[str]:
     """
     Decrypt a value if it is a Fernet ciphertext; otherwise return it as-is.
 
@@ -129,12 +138,23 @@ def decrypt_if_encrypted(value: Optional[str]) -> Optional[str]:
     row is rewritten (e.g., next token refresh), it becomes ciphertext and
     future reads decrypt it. Over the natural rotation window, the entire
     table self-heals to encrypted-at-rest without requiring a migration.
+
+    If decryption fails on something that structurally looks like a Fernet
+    token, this is likely a key mismatch — raise instead of silently
+    returning the ciphertext (which would be sent to an external API as a
+    bearer token, causing cascading auth failures).
     """
     if not value:
         return value
     try:
         return decrypt_sensitive_data(value)
     except EncryptionError:
-        # Not a valid Fernet token — assume legacy plaintext and pass through.
-        # Next write for this row will encrypt it.
+        if _looks_like_fernet(value):
+            logger.error(
+                "decrypt_if_encrypted: field '%s' looks like Fernet ciphertext "
+                "but decryption failed — probable key mismatch. Refusing to "
+                "pass ciphertext through as plaintext.",
+                field_name,
+            )
+            raise
         return value

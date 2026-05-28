@@ -1208,7 +1208,6 @@ class InvoiceService:
 
         elif line_item.source_type == "BillCreditLineItem" and line_item.bill_credit_line_item_id:
             from entities.bill_credit_line_item.business.service import BillCreditLineItemService
-            from entities.bill_credit_line_item.api.schemas import BillCreditLineItemUpdate
             svc = BillCreditLineItemService()
             source = svc.read_by_id(id=line_item.bill_credit_line_item_id)
             if source and not source.is_billed:
@@ -1216,14 +1215,11 @@ class InvoiceService:
                 credit = BillCreditService().read_by_id(id=source.bill_credit_id) if source.bill_credit_id else None
                 credit_public_id = credit.public_id if credit else None
                 if credit_public_id:
-                    update_schema = BillCreditLineItemUpdate(
+                    svc.update_by_public_id(
+                        public_id=source.public_id,
                         row_version=source.row_version,
                         bill_credit_public_id=credit_public_id,
                         is_billed=True,
-                    )
-                    svc.update_by_public_id(
-                        public_id=source.public_id,
-                        bill_credit_line_item=update_schema,
                     )
 
     def _reset_source_as_unbilled(self, line_item) -> None:

@@ -278,7 +278,7 @@ def submit_time_entry(
 def approve_time_entry(
     public_id: str,
     body: TimeEntryApprove = None,
-    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_approve")),
 ):
     """
     Approve a submitted time entry. Transitions from 'submitted' to 'approved'.
@@ -300,7 +300,7 @@ def approve_time_entry(
 def reject_time_entry(
     public_id: str,
     body: TimeEntryReject = None,
-    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_approve")),
 ):
     """
     Reject a submitted time entry. Transitions from 'submitted' back to 'draft'.

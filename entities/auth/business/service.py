@@ -743,7 +743,7 @@ class AuthService:
             stored = self.token_repo.read_by_hash(token_hash)
             now = datetime.now(timezone.utc)
             # Grace period for revoked token: another tab may have just rotated; allow this token once
-            REVOKED_GRACE_SECONDS = 60
+            REVOKED_GRACE_SECONDS = 15
             revoked_in_grace = False
 
             if stored:
@@ -871,8 +871,8 @@ class AuthService:
                 error,
             )
 
-        # Drop any cached permission map keyed under this user — the next
-        # request resolves under the new Company.
+        # Invalidate BEFORE minting so the first request with the new
+        # token resolves a fresh permission map for the new Company.
         try:
             from shared.rbac import invalidate_user_cache
             invalidate_user_cache(user_sub)

@@ -1,6 +1,11 @@
+import logging
 from decimal import Decimal
 
 from shared.database import get_connection
+
+logger = logging.getLogger(__name__)
+
+_KNOWN_SOURCE_TYPES = {"BillLineItem", "ExpenseLineItem", "BillCreditLineItem", "Manual"}
 
 
 def enrich_line_items(line_items) -> list[dict]:
@@ -12,6 +17,12 @@ def enrich_line_items(line_items) -> list[dict]:
     expense_ids = []
     credit_ids = []
     for li in line_items:
+        if li.source_type and li.source_type not in _KNOWN_SOURCE_TYPES:
+            logger.warning(
+                "enrich_line_items: unknown source_type '%s' on InvoiceLineItem id=%s — line will be dropped from PDF packet",
+                li.source_type,
+                getattr(li, "id", "?"),
+            )
         if li.source_type == "BillLineItem" and li.bill_line_item_id:
             bill_ids.append(li.bill_line_item_id)
         elif li.source_type == "ExpenseLineItem" and li.expense_line_item_id:

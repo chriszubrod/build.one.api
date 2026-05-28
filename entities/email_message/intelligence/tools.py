@@ -173,12 +173,8 @@ async def _read_email_message(args: dict, ctx: ToolContext) -> ToolResult:
     result = await ctx.call_api(
         "GET", f"/api/v1/get/email-message/{parsed.public_id}"
     )
-    if result.is_error or parsed.full_body:
+    if result.is_error:
         return result
-    # Truncate body_content to keep tool-result re-ride cheap on multi-turn
-    # sessions. Best-effort: if the response shape is unexpected, return
-    # the original unchanged — the agent must never break over a tweaked
-    # envelope.
     try:
         if not isinstance(result.content, str):
             return result
@@ -187,11 +183,16 @@ async def _read_email_message(args: dict, ctx: ToolContext) -> ToolResult:
         if not isinstance(inner, dict):
             return result
         body = inner.get("body_content")
-        if not isinstance(body, str) or len(body) <= BODY_CONTENT_TRUNCATE_AT:
-            return result
-        inner["body_content_full_length"] = len(body)
-        inner["body_content_truncated_at"] = BODY_CONTENT_TRUNCATE_AT
-        inner["body_content"] = body[:BODY_CONTENT_TRUNCATE_AT]
+        if isinstance(body, str) and body:
+            if not parsed.full_body and len(body) > BODY_CONTENT_TRUNCATE_AT:
+                inner["body_content_full_length"] = len(body)
+                inner["body_content_truncated_at"] = BODY_CONTENT_TRUNCATE_AT
+                body = body[:BODY_CONTENT_TRUNCATE_AT]
+            inner["body_content"] = (
+                "[EXTERNAL EMAIL CONTENT START]\n"
+                + body
+                + "\n[EXTERNAL EMAIL CONTENT END]"
+            )
         return ToolResult(content=json.dumps(payload))
     except (ValueError, TypeError, KeyError):
         return result

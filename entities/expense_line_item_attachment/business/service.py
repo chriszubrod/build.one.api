@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import logging
 from typing import Optional
 
 # Third-party Imports
@@ -9,6 +10,8 @@ from entities.expense_line_item_attachment.persistence.repo import ExpenseLineIt
 from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.attachment.business.service import AttachmentService
 from shared.authz import current_user_id
+
+logger = logging.getLogger(__name__)
 
 
 class ExpenseLineItemAttachmentService:
@@ -54,8 +57,14 @@ class ExpenseLineItemAttachmentService:
         # Check if an ExpenseLineItemAttachment already exists for this ExpenseLineItem (1-1 relationship)
         existing = self.repo.read_by_expense_line_item_id(expense_line_item_id=expense_line_item_id)
         if existing:
-            # A record already exists for this ExpenseLineItem
-            # Return the existing record instead of creating a duplicate
+            if existing.attachment_id != attachment_id:
+                logger.warning(
+                    "ExpenseLineItemAttachment already exists for ELI %s pointing to attachment %s, "
+                    "but caller requested attachment %s — returning existing (stale blob risk)",
+                    expense_line_item_public_id,
+                    existing.attachment_id,
+                    attachment_id,
+                )
             return existing
         
         # No existing attachment for this ExpenseLineItem - safe to create

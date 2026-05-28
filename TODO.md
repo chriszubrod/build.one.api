@@ -2,6 +2,33 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## TimeTracking integration follow-ups (Phases 4 / 5 / 6 / 8 / 10 — deferred from 2026-05-28 session)
+
+Phases 0–3 + 9 of the [Phase 1–3 schema sketch](docs/integration-timetracking-contractlabor-bill-phase-1-3-schema.md) shipped 2026-05-28. End-to-end aggregation proven against Brayan's TimeEntry id=24 → ContractLabor 513 / line 366 / $410.85. See SESSION_NOTES.md "TimeTracking → ContractLabor / EmployeeLabor end-to-end (2026-05-28)" for the full log. Remaining work:
+
+- [ ] **Phase 4 — VENDOR_CONFIG dict cleanup.** `entities/contract_labor/business/bill_service.py:33-76` still hardcodes per-vendor rate + markup + address. Rewrite `_get_rate_for_vendor()` (and any caller) to read from `Vendor.HourlyRate` + `Vendor.Markup` (default) + `VendorProjectRate` (override) via `dbo.ReadEffectiveRateForVendorProject`. Keep the dict as a temporary fallback during the rewrite if cutover risk is high; delete in Phase 10.
+- [ ] **Phase 5 — Invoice EmployeeLabor support.** When an Invoice completes, EmployeeLabor rows don't get marked `invoiced`. Two missing pieces in `entities/invoice/business/service.py`:
+  1. `_mark_source_as_billed()` needs a `SourceType='EmployeeLabor'` branch: resolve `InvoiceLineItem.EmployeeLaborLineItemId → EmployeeLaborLineItem.EmployeeLaborId → set EmployeeLabor.Status='invoiced'`.
+  2. New `InvoiceService.create_lines_from_employee_labor(invoice_id, period_start)` to pull `EmployeeLabor` rows where `Status='ready'` and emit InvoiceLineItems with `EmployeeLaborLineItemId` set. (Mirror of how Bill/Expense lines are added today.)
+  3. `entities/invoice/business/enrichment.py::enrich_line_items()` needs an `employee_labor` source branch fetching Employee.Firstname/Lastname + Project + SubCostCode + EmployeeLabor.WorkDate. No attachment (EmployeeLabor has no PDF source).
+- [ ] **Phase 6 — time_tracking_specialist agent tools + scheduler timer.** The agent definition exists at `intelligence/agents/time_tracking_specialist/`; the tools `validate_time_entry_completeness` + `flag_time_entry_for_human_review` need implementation under `entities/time_entry/intelligence/tools.py`. The `flag_*` tool should call `dbo.StampTimeEntryReview` (already live). Also verify the `process_time_tracking` Function App timer in `build.one.scheduler/function_app.py:210-220` has an actual cadence and is enabled in Azure.
+- [ ] **Phase 8 — React UI work.**
+  - **`/user/:id` Profile**: new "Worker linkage" section. Two radio options (Employee vs Vendor) with picker; XOR enforced client-side; backend FK is `User.EmployeeId` XOR `User.VendorId`; calls `UpdateUserWorkerLink` sproc via a new admin endpoint.
+  - **Vendor edit page**: add `HourlyRate` + `Markup` fields. Add a `VendorProjectRate` overrides table (list / inline add+edit / delete) — schema + sprocs already live.
+  - **Employee CRUD pages**: list / view / edit / create. None exist yet (entity is brand new).
+  - **`/contract-labor/:id` review page**: when `SourceTimeEntryId IS NOT NULL`, hide the Excel-only fields (EmployeeName / JobName / TimeIn / TimeOut / BreakTime / RegularHours / OvertimeHours / ImportBatchId / SourceFile / SourceRow) and surface a "Source TimeLogs" subsection showing clock-in/out + per-log note (reverse-lookup `ContractLaborLineItem.SourceTimeEntryId → TimeEntry → TimeLogs`).
+  - **`/employee-labor/:id` page** (new): mirror of ContractLabor edit but for the W2 path.
+  - **`/time-entry/:id` view**: surface "Aggregated into ContractLabor #X" or "EmployeeLabor #Y" link when `dbo.ReadTimeEntryBilledLineage` returns rows.
+- [ ] **Phase 10 — Final cleanup.** After Phase 4 ships, delete the VENDOR_CONFIG dict from `bill_service.py` entirely (no fallback needed once DB rates are proven for at least one billing cycle). Audit `bill_service.py` for the dict's `BILL_TO` constant — that's separate (company-side bill-from address) and should stay or move to Settings.
+
+Open items / minor cleanups discovered in 2026-05-28 session:
+- [ ] `entities/time_entry/persistence/repo.py:506-508` uses `float(r.TotalHours)` / `float(r.HourlyRate)` / `float(r.Markup)` in `aggregate_for_billing` return dict — Decimal precision regression. Used only for log messages today (not DB writes), low priority, but worth fixing to `str(...)` or returning Decimals.
+- [ ] The aggregation sproc body is `cursor`-based (FAST_FORWARD LOCAL). Works for ≤ ~10 buckets per TimeEntry; could be set-based via OUTPUT clauses if performance becomes a concern. Not blocking.
+- [ ] `dbo.AggregateTimeEntryOnSubmit` has `SET XACT_ABORT ON` but no explicit `BEGIN TRANSACTION` — per-statement auto-commit means a partial failure mid-cursor could leave some buckets committed and others not. Low risk in practice; wrap in transaction if you ever see drift.
+- [ ] Brayan's TimeEntry A4F5FA03 is now `approved` but the aggregated ContractLabor 513 is in `pending_review` with no SCC. PM needs to open it and assign `SubCostCodeId` to flip it to `ready`. UI work to make this easy lands in Phase 8.
+
+---
+
 ## Audit 2026-05-20 — API findings
 
 Full multi-repo audit memory: `~/.claude/projects/-Users-chris-Applications-build-one/memory/project_audit_2026_05_20.md`. The items below are the API-side findings extracted from it. Order is rough severity; pair with that memory for context, cross-repo patterns, and rationale on what NOT to change yet.

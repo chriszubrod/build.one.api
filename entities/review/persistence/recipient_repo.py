@@ -34,14 +34,42 @@ class ReviewRecipientRepository:
         bill_id: int,
         exclude_user_id: Optional[int] = None,
     ) -> list[ResolvedRecipient]:
+        return self._resolve(
+            sproc="ResolveReviewRecipientsByBillId",
+            id_key="BillId",
+            parent_id=bill_id,
+            exclude_user_id=exclude_user_id,
+        )
+
+    def resolve_for_contract_labor(
+        self,
+        *,
+        contract_labor_id: int,
+        exclude_user_id: Optional[int] = None,
+    ) -> list[ResolvedRecipient]:
+        return self._resolve(
+            sproc="ResolveReviewRecipientsByContractLaborId",
+            id_key="ContractLaborId",
+            parent_id=contract_labor_id,
+            exclude_user_id=exclude_user_id,
+        )
+
+    def _resolve(
+        self,
+        *,
+        sproc: str,
+        id_key: str,
+        parent_id: int,
+        exclude_user_id: Optional[int],
+    ) -> list[ResolvedRecipient]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="ResolveReviewRecipientsByBillId",
+                    name=sproc,
                     params={
-                        "BillId": bill_id,
+                        id_key: parent_id,
                         "ExcludeUserId": exclude_user_id,
                     },
                 )
@@ -49,6 +77,6 @@ class ReviewRecipientRepository:
                 return [self._from_db(r) for r in rows if r]
         except Exception as error:
             logger.error(
-                f"Error resolving review recipients for bill {bill_id}: {error}"
+                f"Error resolving review recipients via {sproc} for parent {parent_id}: {error}"
             )
             raise map_database_error(error)

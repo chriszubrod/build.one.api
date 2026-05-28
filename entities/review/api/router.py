@@ -334,3 +334,64 @@ def get_reviews_invoice_router(
     current_user: dict = Depends(require_module_api(Modules.INVOICES)),
 ):
     return _do_list(ParentType.INVOICE, public_id)
+
+
+# =============================================================================
+# Contract Labor
+#
+# Gated on Modules.TIME_TRACKING (the role that handles TimeTracking-sourced
+# ContractLabor rows) — distinct from Modules.CONTRACT_LABOR which gates the
+# CRUD pages. Same actor-gate as TimeEntry submit/approve/reject.
+# =============================================================================
+
+@router.post("/submit/review/contract-labor/{public_id}")
+def submit_review_contract_labor_router(
+    public_id: str,
+    body: ReviewSubmitRequest,
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_update")),
+):
+    return _do_action(
+        action="submit",
+        parent_type=ParentType.CONTRACT_LABOR,
+        parent_public_id=public_id,
+        current_user=current_user,
+        body=body,
+    )
+
+
+@router.post("/advance/review/contract-labor/{public_id}")
+def advance_review_contract_labor_router(
+    public_id: str,
+    body: ReviewAdvanceRequest,
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_update")),
+):
+    return _do_action(
+        action="advance",
+        parent_type=ParentType.CONTRACT_LABOR,
+        parent_public_id=public_id,
+        current_user=current_user,
+        body=body,
+    )
+
+
+@router.post("/decline/review/contract-labor/{public_id}")
+def decline_review_contract_labor_router(
+    public_id: str,
+    body: ReviewDeclineRequest,
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_update")),
+):
+    return _do_action(
+        action="decline",
+        parent_type=ParentType.CONTRACT_LABOR,
+        parent_public_id=public_id,
+        current_user=current_user,
+        body=body,
+    )
+
+
+@router.get("/get/reviews/contract-labor/{public_id}")
+def get_reviews_contract_labor_router(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING)),
+):
+    return _do_list(ParentType.CONTRACT_LABOR, public_id)

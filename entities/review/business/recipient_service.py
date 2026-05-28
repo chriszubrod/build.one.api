@@ -39,6 +39,27 @@ class ReviewRecipientService:
             bill_id=bill_id,
             exclude_user_id=exclude_user_id,
         )
+        return self._bucket(rows)
+
+    def resolve_for_contract_labor(
+        self,
+        *,
+        contract_labor_id: int,
+        exclude_user_id: Optional[int] = None,
+    ) -> dict[str, list[ResolvedRecipient]]:
+        """
+        Resolve recipients to notify for a ContractLabor review. Walks
+        ContractLaborLineItem.ProjectId via the sproc; same {to,cc} envelope
+        as the Bill resolver.
+        """
+        rows = self.repo.resolve_for_contract_labor(
+            contract_labor_id=contract_labor_id,
+            exclude_user_id=exclude_user_id,
+        )
+        return self._bucket(rows)
+
+    @staticmethod
+    def _bucket(rows: list[ResolvedRecipient]) -> dict[str, list[ResolvedRecipient]]:
         to_list = [r for r in rows if r.role_name == "Project Manager"]
         cc_list = [r for r in rows if r.role_name == "Owner"]
         return {"to": to_list, "cc": cc_list}

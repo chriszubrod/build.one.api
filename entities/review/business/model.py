@@ -16,12 +16,13 @@ class ParentType:
     accepts/returns the lowercase form directly.
     """
 
-    BILL        = "bill"
-    EXPENSE     = "expense"
-    BILL_CREDIT = "bill_credit"
-    INVOICE     = "invoice"
+    BILL           = "bill"
+    EXPENSE        = "expense"
+    BILL_CREDIT    = "bill_credit"
+    INVOICE        = "invoice"
+    CONTRACT_LABOR = "contract_labor"
 
-    ALL = (BILL, EXPENSE, BILL_CREDIT, INVOICE)
+    ALL = (BILL, EXPENSE, BILL_CREDIT, INVOICE, CONTRACT_LABOR)
 
 
 @dataclass
@@ -38,6 +39,7 @@ class Review:
     expense_id: Optional[int]
     bill_credit_id: Optional[int]
     invoice_id: Optional[int]
+    contract_labor_id: Optional[int] = None
     # Denormalized JOINs (vw_Review)
     status_name: Optional[str]
     status_sort_order: Optional[int]

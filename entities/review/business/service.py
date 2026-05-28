@@ -21,7 +21,8 @@ class ReviewTransitionError(Exception):
 class ParentNotFoundError(Exception):
     """
     Raised when a referenced parent entity (Bill / Expense / BillCredit /
-    Invoice) cannot be resolved. Routers map this to HTTP 404 Not Found.
+    Invoice / ContractLabor) cannot be resolved. Routers map this to HTTP 404
+    Not Found.
     """
     pass
 
@@ -68,9 +69,10 @@ class ReviewService:
         expense_id: Optional[int] = None,
         bill_credit_id: Optional[int] = None,
         invoice_id: Optional[int] = None,
+        contract_labor_id: Optional[int] = None,
         email_message_id: Optional[int] = None,
     ) -> Review:
-        return self.repo.create(
+        review = self.repo.create(
             review_status_id=review_status_id,
             user_id=user_id,
             comments=comments,
@@ -78,9 +80,35 @@ class ReviewService:
             expense_id=expense_id,
             bill_credit_id=bill_credit_id,
             invoice_id=invoice_id,
+            contract_labor_id=contract_labor_id,
             email_message_id=email_message_id,
             created_by_user_id=current_user_id.get(),
         )
+
+        # Auto-mirror: when a ContractLabor review hits an approved final
+        # state, advance the parent ContractLabor.status pending_review →
+        # ready so Generate Bills can pick it up. Failure-isolated (log,
+        # don't roll back the Review row).
+        if (
+            contract_labor_id is not None
+            and review.status_is_final
+            and not review.status_is_declined
+        ):
+            try:
+                from entities.contract_labor.business.service import ContractLaborService
+                ContractLaborService().mark_as_ready_via_review_approval(
+                    contract_labor_id=contract_labor_id,
+                )
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Failed to mirror ContractLabor.status after Review approval "
+                    "(contract_labor_id=%s, review_id=%s)",
+                    contract_labor_id,
+                    review.id,
+                )
+
+        return review
 
     # =========================================================================
     # Read helpers — parent-keyed
@@ -99,6 +127,8 @@ class ReviewService:
             return self.repo.read_by_bill_credit_id(parent_id)
         if parent_type == ParentType.INVOICE:
             return self.repo.read_by_invoice_id(parent_id)
+        if parent_type == ParentType.CONTRACT_LABOR:
+            return self.repo.read_by_contract_labor_id(parent_id)
         raise ValueError(f"Unknown parent_type: {parent_type}")
 
     def get_current(self, parent_type: str, parent_public_id: str) -> Optional[Review]:
@@ -244,6 +274,9 @@ class ReviewService:
         elif parent_type == ParentType.INVOICE:
             from entities.invoice.business.service import InvoiceService
             existing = InvoiceService().read_by_public_id(public_id=parent_public_id)
+        elif parent_type == ParentType.CONTRACT_LABOR:
+            from entities.contract_labor.business.service import ContractLaborService
+            existing = ContractLaborService().read_by_public_id(public_id=parent_public_id)
         else:
             raise ValueError(f"Unknown parent_type: {parent_type}")
 
@@ -262,6 +295,8 @@ class ReviewService:
             return self.repo.read_current_by_bill_credit_id(parent_id)
         if parent_type == ParentType.INVOICE:
             return self.repo.read_current_by_invoice_id(parent_id)
+        if parent_type == ParentType.CONTRACT_LABOR:
+            return self.repo.read_current_by_contract_labor_id(parent_id)
         raise ValueError(f"Unknown parent_type: {parent_type}")
 
     def _build_payload(
@@ -281,12 +316,14 @@ class ReviewService:
             "expense_id": None,
             "bill_credit_id": None,
             "invoice_id": None,
+            "contract_labor_id": None,
         }
         fk_field = {
-            ParentType.BILL:        "bill_id",
-            ParentType.EXPENSE:     "expense_id",
-            ParentType.BILL_CREDIT: "bill_credit_id",
-            ParentType.INVOICE:     "invoice_id",
+            ParentType.BILL:           "bill_id",
+            ParentType.EXPENSE:        "expense_id",
+            ParentType.BILL_CREDIT:    "bill_credit_id",
+            ParentType.INVOICE:        "invoice_id",
+            ParentType.CONTRACT_LABOR: "contract_labor_id",
         }[parent_type]
         payload[fk_field] = parent_id
         return payload

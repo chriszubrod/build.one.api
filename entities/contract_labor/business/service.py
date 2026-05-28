@@ -386,7 +386,7 @@ class ContractLaborService:
         existing = self.read_by_public_id(public_id=public_id)
         if not existing:
             return None
-        
+
         # Validate required fields
         if not existing.vendor_id:
             raise ValueError("Vendor is required before marking as ready.")
@@ -396,7 +396,24 @@ class ContractLaborService:
             raise ValueError("Hourly rate is required before marking as ready.")
         if not existing.total_hours:
             raise ValueError("Total hours is required before marking as ready.")
-        
+
+        existing.status = "ready"
+        return self.repo.update_by_id(existing)
+
+    def mark_as_ready_via_review_approval(self, *, contract_labor_id: int) -> Optional[ContractLabor]:
+        """
+        Flip status to 'ready' after Review reaches an approved (IsFinal=1,
+        IsDeclined=0) state. Bypasses the legacy mark_as_ready validation —
+        in the Review workflow, the reviewer's approval IS the validation.
+        Parent-row fields like sub_cost_code_id/hourly_rate are no longer
+        populated (line items carry those now). Looks up by internal id
+        since the caller is ReviewService which has the FK at hand.
+        """
+        existing = self.repo.read_by_id(contract_labor_id)
+        if not existing:
+            return None
+        if existing.status == "ready" or existing.status == "billed":
+            return existing  # idempotent; no-op if already advanced
         existing.status = "ready"
         return self.repo.update_by_id(existing)
 

@@ -28,8 +28,11 @@ CREATE TABLE [dbo].[EmailMessage]
     [RowVersion] ROWVERSION NOT NULL,
     [CreatedDatetime] DATETIME2(3) NOT NULL,
     [ModifiedDatetime] DATETIME2(3) NULL,
-    [GraphMessageId] NVARCHAR(255) NOT NULL,
-    [InternetMessageId] NVARCHAR(255) NULL,
+    -- Graph identifiers use binary collation so case matters when
+    -- comparing them. Default DB collation is case-insensitive and
+    -- would treat case-twin base64 IDs as equal — see migration 006.
+    [GraphMessageId] NVARCHAR(255) COLLATE Latin1_General_BIN NOT NULL,
+    [InternetMessageId] NVARCHAR(255) COLLATE Latin1_General_BIN NULL,
     [ConversationId] NVARCHAR(255) NULL,
     [MailboxAddress] NVARCHAR(320) NOT NULL,
     [FromAddress] NVARCHAR(320) NULL,

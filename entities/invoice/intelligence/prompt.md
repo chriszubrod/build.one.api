@@ -107,6 +107,10 @@ Capture `dbo.Invoice.Id` and `dbo.Invoice.PublicId`.
 If you find duplicate or stale `dbo.Invoice` rows for the same QBO invoice (e.g. an orphan local-only `OHR2-33` plus a stale `OHR2-33-2` mapped to QBO), the cleanest recovery is to delete both and re-invoke the connector directly. **Get explicit user authorization before destructive deletes.** This pattern was used for OHR2-33 on 2026-04-27 — see `project_invoice_agent.md` history.
 
 ```python
+# 0. Declare system-admin context — required for all direct connector/service calls
+from shared.authz import set_authz_context
+set_authz_context(user_id=None, company_id=None, is_system_admin=True)
+
 # 1. Clean qbo mappings for the stale dbo.Invoice (InvoiceService.delete doesn't touch them)
 from shared.database import get_connection
 with get_connection() as conn:
@@ -191,6 +195,26 @@ for bli_pid in real_bli_pids:
 After Step 3b, every real BLI has the attachment, the placeholder is gone, and Step 4 fingerprint matching will resolve the new invoice lines to these real BLIs.
 
 If `QboAttachableService` returns 0 attachables for the bill (i.e. QBO has no attachment), you cannot proceed — the universal Bill-attachment rule blocks `BillService.create` either way. Halt and surface to user; they need to upload the supporting PDF in QBO first, then re-run.
+
+**Sub-case: draft-collision blocker.** If `BillBillConnector.sync_from_qbo_bill` fails with `"A bill with BillNumber '...' and this date already exists for this vendor"`, a pre-existing local draft `dbo.Bill` is blocking the connector. Recovery: (a) promote the draft — `UPDATE dbo.Bill SET IsDraft = 0 WHERE Id = ?`; (b) set `Price = Amount` on its line items (prevents Known Issue #17 $0 row in DETAILS); (c) manually insert the `qbo.BillBill` + `qbo.BillLineItemBillLine` mapping rows so future syncs don't re-duplicate. Verify with `SELECT * FROM qbo.BillBill WHERE BillId = ?` after insert.
+
+### Step 3d — Onboard a new `dbo.BillCredit` from QBO (VendorCredit source)
+
+If a `qbo.InvoiceLine` references a VendorCredit that exists in `qbo.VendorCredit` staging but has no `qbo.VendorCreditBillCredit` mapping (so no `dbo.BillCredit` row), onboard it using the VendorCredit connector:
+
+```python
+from integrations.intuit.qbo.vendorcredit.connector.vendorcredit.business.service import VendorCreditBillCreditConnector
+from integrations.intuit.qbo.vendorcredit.business.service import QboVendorCreditService
+from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditLineRepository
+qbo_vc = QboVendorCreditService().read_by_id(id=qbo_vendor_credit_row_id)
+qbo_vc_lines = QboVendorCreditLineRepository().read_by_qbo_vendor_credit_id(qbo_vendor_credit_id=qbo_vendor_credit_row_id)
+new_bc = VendorCreditBillCreditConnector().sync_from_qbo_vendor_credit(qbo_vc, qbo_vc_lines)
+```
+
+After onboarding, the new `dbo.BillCredit` + `dbo.BillCreditLineItem` rows exist with `qbo.VendorCreditLineBillCreditLineItem` mappings. Then:
+1. Upload the VendorCredit attachment via `QboAttachableService().sync_attachables_for_vendor_credit(...)` (or manual `BillCreditLineItemAttachmentService().create(...)` if `sync_attachables` returns 0 — see Known Issue #22 on Attachable duplicates).
+2. Fingerprint-match in Step 4 using the VendorCredit branch query.
+3. **Note:** `BillCreditService.sync_to_excel_workbook` does not exist yet. BillCredit-sourced invoice lines cannot be auto-written to DETAILS in Step 7. They must be added manually to the Excel workbook. See Known Issue #23.
 
 ### Step 3c — Heal split-staging duplicates (situational, NOT every-run)
 
@@ -296,6 +320,16 @@ WHERE qp.RealmId = ? AND pl.CustomerRefValue = ?
   AND ABS(pl.Amount - ?) < 0.01
   AND COALESCE(pl.Description, N'') = COALESCE(?, N'')
   AND CAST(qp.TxnDate AS DATE) = ?;
+
+-- If no match on Bill or Purchase, try VendorCredit (BillCredit)
+SELECT map.BillCreditLineItemId
+FROM qbo.VendorCreditLine vcl
+JOIN qbo.VendorCredit qvc ON qvc.Id = vcl.QboVendorCreditId
+JOIN qbo.VendorCreditLineBillCreditLineItem map ON map.QboVendorCreditLineId = vcl.Id
+WHERE qvc.RealmId = ? AND vcl.CustomerRefValue = ?
+  AND ABS(vcl.Amount - ?) < 0.01
+  AND COALESCE(vcl.Description, N'') = COALESCE(?, N'')
+  AND CAST(qvc.TxnDate AS DATE) = ?;
 ```
 
 For ambiguous descriptions (e.g. multiple "Stone Materials"), align by `LineNum` order — `qbo.InvoiceLine.LineNum` and `dbo.InvoiceLineItem.Id` are both insertion-ordered, so qil[i] ↔ ili[i].
@@ -311,6 +345,11 @@ WHERE Id = ?;
 UPDATE dbo.InvoiceLineItem
 SET ExpenseLineItemId = ?, BillLineItemId = NULL, BillCreditLineItemId = NULL,
     SourceType = 'ExpenseLineItem', ModifiedDatetime = SYSUTCDATETIME()
+WHERE Id = ?;
+-- or (BillCredit — credit memo line)
+UPDATE dbo.InvoiceLineItem
+SET BillCreditLineItemId = ?, BillLineItemId = NULL, ExpenseLineItemId = NULL,
+    SourceType = 'BillCreditLineItem', ModifiedDatetime = SYSUTCDATETIME()
 WHERE Id = ?;
 ```
 
@@ -592,6 +631,9 @@ Stop and surface to the user before proceeding when:
 18. **Duplicate BLIs on the same `dbo.Bill`** — re-encountered on HP2-09 / Q44862 (dbo.Bill 17320), 2026-05-15. Two `dbo.BillLineItem` rows with identical `Amount` + `Description` + `SubCostCodeId` on the same parent Bill. One carries the `qbo.BillLineItemBillLine` mapping (the "official" one); the other is an orphan with no qbo mapping. Typically the qbo-mapped one is missing fields the orphan has (Price, BillLineItemAttachment), because at some past sync the connector created a fresh BLI instead of reusing the existing one. Fingerprint match picks the qbo-mapped BLI (correct) but its missing fields surface downstream (Step 7 writes $0, Step 5 fails coverage check). Recovery: (a) link the orphan's Attachment to the kept BLI via a new `BillLineItemAttachment` row pointing the same `Attachment.Id` (the `BillLineItemAttachment` UNIQUE is per-BLI, not per-Attachment); (b) copy `Price` from the orphan to the kept BLI; (c) leave the orphan BLI in dbo (it has no qbo mapping and no ILI references — destructive delete deferred until a separate cleanup pass).
 19. **Duplicate `dbo.Project` rows with the same `Name` but no `Abbreviation`** — re-encountered for HP2 on 2026-05-15. A second `dbo.Project` ("HP2 - 4406 Harding Pike", `Abbreviation=NULL`, id=137) was created out-of-band (2026-05-14 16:10, source unknown — not from this session) and `qbo.CustomerProject` was re-pointed away from the original project (id=13) to the new one. On the next InvoiceAgent re-run, the InvoiceInvoiceConnector dragged `dbo.Invoice.ProjectId` along to the new project, and SharePoint upload failed because `ms.DriveItemProjectModule` is configured for the original. Symptom: `_upload_to_sharepoint` returns `"Invoices module folder not configured for this project"`. Recovery: repoint `qbo.CustomerProject.ProjectId` back to the original, `UPDATE dbo.Invoice SET ProjectId=<original>`, then `DELETE FROM dbo.Project WHERE Id=<duplicate>` after auditing references (only 2 references existed: the invoice and the customer mapping). Audit before delete: `dbo.Invoice.ProjectId`, `qbo.CustomerProject.ProjectId`, `ms.DriveItemProjectModule.ProjectId`, `ms.DriveItemProjectExcel.ProjectId`, `dbo.UserProject.ProjectId`, `dbo.ProjectAddress.ProjectId`, `dbo.BillLineItem.ProjectId`, `dbo.ExpenseLineItem.ProjectId`, `dbo.BillCreditLineItem.ProjectId`, `dbo.ContractLaborLineItem.ProjectId` (the Bill/Expense/BillCredit parent tables have no ProjectId column). **Root cause is unknown** — likely a misfire from a project_specialist agent or an ad-hoc Customer-rename in QBO that the connector treated as a new entity. Worth a one-time audit of `dbo.Project` for same-Name duplicates.
 20. **`InvoiceInvoiceConnector` re-run UNIQUE-constraint failure mode** — re-encountered on HP2-09 / Q44862, 2026-05-15. When invoked a second time on an existing invoice (e.g., to pick up a new line added in QBO), the per-line `InvoiceLineItemConnector.sync_from_qbo_invoice_line` can fail with `Violation of UNIQUE KEY constraint 'UQ_InvoiceLineItemInvoiceLine_QboInvoiceLineId'`. The connector thinks the existing ILI is "not found" and tries to CREATE a new ILI + a new mapping row — the new ILI creation succeeds but the mapping INSERT collides with the existing mapping. Result: N new orphan ILI rows in `dbo.InvoiceLineItem` with no `qbo.InvoiceLineItemInvoiceLine` mapping. `dbo.Invoice.TotalAmount` is correctly updated, but `SUM(dbo.InvoiceLineItem.Amount)` is roughly double. Cleanup (do this BEFORE re-fingerprinting in Step 4): `DELETE FROM dbo.InvoiceLineItem WHERE InvoiceId = ? AND Id NOT IN (SELECT InvoiceLineItemId FROM qbo.InvoiceLineItemInvoiceLine map JOIN qbo.InvoiceLine il ON il.Id = map.QboInvoiceLineId WHERE il.QboInvoiceId = ?)`. Verify `dbo.InvoiceLineItem` count and sum now match `qbo.Invoice` (line count + total). Then re-fingerprint EVERY line per CRITICAL #4. Long-term fix: connector should either UPDATE the existing mapping or handle the unique-constraint collision gracefully.
+21. **Duplicate `dbo.Project` recurrence on BR-MAIN** — Known Issue #19 recurred on BR-MAIN-24 (2026-05-28). Duplicate `dbo.Project` Id=142 (Abbreviation=NULL, Name="BR-MAIN - 7550C Buffalo Road", created 2026-05-18 20:10) with `qbo.CustomerProject` re-pointed away from the original (Id=64). Same root cause as HP2; still firing. Guard (project_specialist `create_project` refusing same-Name duplicates) not yet shipped.
+22. **Attachable duplicates defeat `sync_purchase_attachments_to_expense_line_items`** — surfaced on BR-MAIN-24 (2026-05-28). When two `qbo.Attachable` rows exist for the same Graph attachable id, `sync_purchase_attachments_to_expense_line_items` returns 0 linked. Manual fallback: `ExpenseLineItemAttachmentService().create(expense_line_item_public_id=..., attachment_public_id=...)`. Same pattern applies to `BillCreditLineItemAttachmentService` for VendorCredit sources.
+23. **`BillCreditService.sync_to_excel_workbook` does not exist** — BillCredit-sourced invoice lines cannot be auto-written to DETAILS in Step 7. On BR-MAIN-24, 18/19 DETAILS rows were synced; the one BillCredit line ($-21,000 Visual Comfort credit) had to be added manually. The method is an analog of `BillService.sync_to_excel_workbook` and `ExpenseService.sync_to_excel_workbook`.
 
 ## Side effects (full enumeration)
 

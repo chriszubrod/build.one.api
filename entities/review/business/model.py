@@ -39,7 +39,6 @@ class Review:
     expense_id: Optional[int]
     bill_credit_id: Optional[int]
     invoice_id: Optional[int]
-    contract_labor_id: Optional[int] = None
     # Denormalized JOINs (vw_Review)
     status_name: Optional[str]
     status_sort_order: Optional[int]
@@ -48,6 +47,7 @@ class Review:
     status_color: Optional[str]
     user_firstname: Optional[str]
     user_lastname: Optional[str]
+    contract_labor_id: Optional[int] = None
     # FK back to the EmailMessage that triggered this Review state
     # transition (vendor invoice / forward archive / PM reply). NULL
     # when the transition was triggered by a non-email path (manual UI).

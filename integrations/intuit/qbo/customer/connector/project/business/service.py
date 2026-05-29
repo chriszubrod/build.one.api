@@ -11,6 +11,7 @@ from integrations.intuit.qbo.customer.connector.customer.persistence.repo import
 from integrations.intuit.qbo.customer.business.model import QboCustomer
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
+from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.project.business.service import ProjectService
 from entities.project.business.model import Project
 from entities.project_address.business.service import ProjectAddressService
@@ -37,6 +38,7 @@ class CustomerProjectConnector:
         project_address_service: Optional[ProjectAddressService] = None,
         address_connector: Optional[PhysicalAddressAddressConnector] = None,
         customer_mapping_repo: Optional[CustomerCustomerRepository] = None,
+        reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
     ):
         """Initialize the CustomerProjectConnector."""
         self.mapping_repo = mapping_repo or CustomerProjectRepository()
@@ -44,6 +46,7 @@ class CustomerProjectConnector:
         self.project_address_service = project_address_service or ProjectAddressService()
         self.address_connector = address_connector or PhysicalAddressAddressConnector()
         self.customer_mapping_repo = customer_mapping_repo or CustomerCustomerRepository()
+        self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
 
     def sync_from_qbo_customer(self, qbo_customer: QboCustomer) -> Project:
         """
@@ -85,7 +88,7 @@ class CustomerProjectConnector:
         
         # Check for existing mapping
         mapping = self.mapping_repo.read_by_qbo_customer_id(qbo_customer.id)
-        
+
         if mapping:
             # Found existing mapping - update the Project
             project = self.project_service.read_by_id(mapping.project_id)
@@ -96,18 +99,48 @@ class CustomerProjectConnector:
                 project.status = project_status
                 project.customer_id = customer_id
                 project = self.project_service.repo.update_by_id(project)
-                
+
                 # Sync addresses for existing project
                 self._sync_addresses(qbo_customer, project.id)
-                
+
                 return project
             else:
                 # Mapping exists but Project not found - recreate Project
                 logger.warning(f"Mapping exists but Project {mapping.project_id} not found. Creating new Project.")
                 self.mapping_repo.delete_by_id(mapping.id)
                 mapping = None
-        
-        # Create new Project
+
+        # No mapping. Before creating a fresh Project, look for a matching local row
+        # by exact (case-insensitive — SQL Server default collation) Name. This
+        # catches the original-import-time gap where dbo.Project rows exist with
+        # no qbo.CustomerProject paired row (e.g. 10 of 11 known dup-set names
+        # as of 2026-05-28). See docs/dedupe-project-rows.md.
+        existing_local = self.project_service.read_by_name(project_name)
+        if existing_local:
+            existing_mapping_for_local = self.mapping_repo.read_by_project_id(existing_local.id)
+            if existing_mapping_for_local:
+                # Local Project is already bound to a different QboCustomer. This
+                # is a genuine QBO-side duplicate sub-customer — do not create a
+                # new local row and do not auto-rebind. Raise a reconciliation
+                # issue so a human can resolve it (typically by merging the
+                # duplicate in QBO).
+                self._raise_duplicate_qbo_customer_issue(
+                    qbo_customer=qbo_customer,
+                    local_project=existing_local,
+                    existing_mapping=existing_mapping_for_local,
+                )
+                return existing_local
+
+            # Local Project exists with no QBO mapping — bind it.
+            logger.info(
+                f"Binding existing local Project {existing_local.id} ({project_name}) "
+                f"to QboCustomer {qbo_customer.id} by name match"
+            )
+            self.create_mapping(project_id=existing_local.id, qbo_customer_id=qbo_customer.id)
+            self._sync_addresses(qbo_customer, existing_local.id)
+            return existing_local
+
+        # No existing local Project — create one and pair it with a mapping.
         logger.info(f"Creating new Project from QboCustomer {qbo_customer.id}: name={project_name}")
         project = self.project_service.create(
             name=project_name,
@@ -115,19 +148,66 @@ class CustomerProjectConnector:
             status=project_status,
             customer_id=customer_id
         )
-        
-        # Create mapping
+
         project_id = int(project.id) if isinstance(project.id, str) else project.id
+        # The mapping MUST land for the Project to be reachable on the next sync.
+        # Previously this swallowed ValueError and left the Project orphaned,
+        # producing a fresh duplicate on every subsequent run. Now we surface
+        # the failure so the caller's per-item handler logs + skips and the
+        # row can be retried next tick (with the orphaned Project now visible
+        # to the name-match branch above).
         try:
             mapping = self.create_mapping(project_id=project_id, qbo_customer_id=qbo_customer.id)
             logger.info(f"Created mapping: Project {project_id} <-> QboCustomer {qbo_customer.id}")
         except ValueError as e:
-            logger.warning(f"Could not create mapping: {e}")
-        
-        # Sync addresses for new project
+            logger.error(
+                f"Mapping creation failed after Project {project_id} create "
+                f"(QboCustomer {qbo_customer.id}): {e}. Leaving Project for "
+                f"name-match rebind on next sync."
+            )
+            raise
+
         self._sync_addresses(qbo_customer, project_id)
-        
+
         return project
+
+    def _raise_duplicate_qbo_customer_issue(
+        self,
+        *,
+        qbo_customer: QboCustomer,
+        local_project: Project,
+        existing_mapping: CustomerProject,
+    ) -> None:
+        """
+        Record a duplicate-sub-customer detection on qbo.ReconciliationIssue.
+
+        Triggered when a fresh QboCustomer pull finds an existing local Project
+        by exact name match but that Project is already bound to a different
+        QboCustomer. Treated as critical because every subsequent sync will
+        re-detect it until resolved upstream in QBO.
+        """
+        details = (
+            f"Duplicate QBO sub-customer detected. QboCustomer {qbo_customer.id} "
+            f"(QboId={qbo_customer.qbo_id}, DisplayName='{qbo_customer.display_name}') "
+            f"name-matches local Project {local_project.id} which is already bound to "
+            f"QboCustomer {existing_mapping.qbo_customer_id}. Resolve by merging or "
+            f"renaming one of the QBO sub-customers."
+        )
+        try:
+            self.reconciliation_repo.create(
+                drift_type="duplicate_qbo_customer",
+                severity="critical",
+                action="manual_review",
+                entity_type="Project",
+                entity_public_id=str(local_project.public_id) if local_project.public_id else None,
+                qbo_id=str(qbo_customer.qbo_id) if qbo_customer.qbo_id else None,
+                realm_id=qbo_customer.realm_id or "",
+                details=details,
+            )
+            logger.warning(details)
+        except Exception as exc:
+            # Don't break the sync because reconciliation insert failed. Log loud.
+            logger.error(f"Failed to record reconciliation issue: {exc}. Details: {details}")
 
     def _sync_addresses(self, qbo_customer: QboCustomer, project_id: int) -> None:
         """

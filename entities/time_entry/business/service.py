@@ -217,6 +217,16 @@ class TimeEntryService:
         if current_status and current_status.status != "draft":
             raise ValueError(f"Cannot update time entry in '{current_status.status}' status. Only 'draft' entries can be edited.")
 
+        # Phase 5 edit-lock — even if current_status == 'draft' (e.g. after a
+        # reject), a previously-aggregated row may already be billed/invoiced.
+        # In that case the aggregated row is frozen and further TimeEntry edits
+        # would silently diverge from what was billed. Block.
+        if self.repo.is_downstream_locked(time_entry_id=existing.id):
+            raise ValueError(
+                "Cannot edit this time entry — it has already been billed or invoiced. "
+                "An admin must reverse the downstream Bill/Invoice before edits resume."
+            )
+
         if user_public_id is not None:
             user = UserService().read_by_public_id(public_id=user_public_id)
             if not user:
@@ -300,6 +310,48 @@ class TimeEntryService:
             user_id=user_id,
         )
 
+        # Sidecar: aggregate this entry into ContractLabor or EmployeeLabor for
+        # billing. Best-effort — aggregation failure (e.g. worker has no
+        # EmployeeId/VendorId linkage) logs + flags but does NOT roll back the
+        # submitted-status transition. The worker still submits cleanly; the
+        # office sees a flagged row on the bills page.
+        try:
+            results = self.repo.aggregate_for_billing(time_entry_id=existing.id)
+            for r in results:
+                if r.get("rate_source") == "none":
+                    logger.warning(
+                        "time_entry.aggregate.rate_missing",
+                        extra={
+                            "time_entry_public_id": existing.public_id,
+                            "target_table": r.get("target_table"),
+                            "project_id": r.get("project_id"),
+                            "note": r.get("note"),
+                        },
+                    )
+        except Exception:
+            logger.exception(
+                "time_entry.aggregate.failed",
+                extra={"time_entry_public_id": existing.public_id},
+            )
+
+        # Sidecar: enqueue a time_tracking_specialist review pass. Best-effort
+        # — outbox failure must NOT roll back the status transition. The
+        # scheduler tick will pick up the queued row and run the agent; if
+        # this enqueue fails, the reviewer simply loses the agent flag on
+        # this entry and reviews by hand.
+        try:
+            from intelligence.outbox.business.service import (
+                TimeTrackingOutboxService,
+            )
+            TimeTrackingOutboxService().enqueue_review_submitted_time_entry(
+                time_entry_public_id=existing.public_id,
+            )
+        except Exception:
+            logger.exception(
+                "time_tracking.outbox.enqueue.failed",
+                extra={"time_entry_public_id": existing.public_id},
+            )
+
         return existing
 
     def approve(self, public_id: str, *, user_id: int, note: Optional[str] = None) -> TimeEntry:
@@ -341,6 +393,17 @@ class TimeEntryService:
 
         self._validate_transition(existing.id, "rejected")
 
+        # Phase 5 edit-lock — block reject if the aggregated row is already
+        # billed/invoiced. Rejecting would push the entry back to 'draft' so
+        # the worker could edit it, but the downstream bill/invoice is frozen
+        # and any new edits would desync. Reviewer must reverse downstream
+        # before reject.
+        if self.repo.is_downstream_locked(time_entry_id=existing.id):
+            raise ValueError(
+                "Cannot reject this time entry — it has already been billed or invoiced. "
+                "Reverse the downstream Bill/Invoice first."
+            )
+
         status_repo = TimeEntryStatusRepository()
 
         status_repo.create(
@@ -358,6 +421,73 @@ class TimeEntryService:
         )
 
         return existing
+
+    # ------------------------------------------------------------------ #
+    # Agent review flag stamping
+    # ------------------------------------------------------------------ #
+
+    # Allowed ReviewPriority bucket vocabulary. Order is not significant.
+    _ALLOWED_PRIORITIES = ("high", "medium", "low", "clean")
+
+    def stamp_review(
+        self,
+        *,
+        public_id: str,
+        priority: str,
+        reasons: list,
+    ) -> dict:
+        """
+        Stamp ReviewPriority + ReviewReasons on a TimeEntry. Used by the
+        time_tracking_specialist agent after it runs validate + applies
+        its priority mapping. Does NOT transition CurrentStatus.
+
+        `priority` ∈ {'high', 'medium', 'low', 'clean'}.
+        `reasons` is a list of short reason-code strings; validated against
+        entities.time_entry.business.validation.ALL_REASON_CODES — unknown
+        codes raise ValueError.
+
+        Returns the stamped state for confirmation:
+            {priority, reasons, affected_row_count}
+        """
+        # Lazy import to keep the validation module out of the time_entry
+        # service import graph by default.
+        from entities.time_entry.business.validation import ALL_REASON_CODES
+
+        if priority not in self._ALLOWED_PRIORITIES:
+            raise ValueError(
+                f"Invalid ReviewPriority {priority!r}; "
+                f"must be one of {self._ALLOWED_PRIORITIES}."
+            )
+
+        if not isinstance(reasons, list) or not all(isinstance(r, str) for r in reasons):
+            raise ValueError("reasons must be a list of strings.")
+
+        unknown = [r for r in reasons if r not in ALL_REASON_CODES]
+        if unknown:
+            raise ValueError(
+                f"Unknown reason code(s): {unknown}. "
+                f"Allowed codes: {sorted(ALL_REASON_CODES)}."
+            )
+
+        import json
+        reasons_json = json.dumps(reasons)
+
+        affected = self.repo.stamp_review(
+            public_id=public_id,
+            priority=priority,
+            reasons_json=reasons_json,
+        )
+        if affected == 0:
+            raise ValueError(
+                f"TimeEntry with public_id '{public_id}' not found."
+            )
+
+        return {
+            "time_entry_public_id": public_id,
+            "priority": priority,
+            "reasons": reasons,
+            "affected_row_count": affected,
+        }
 
     def _validate_transition(self, time_entry_id: int, target_status: str) -> None:
         """

@@ -3,7 +3,7 @@ import logging
 from typing import Optional
 
 # Third-party Imports
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 
 # Local Imports
 from entities.time_entry.business.service import TimeEntryService
@@ -12,6 +12,7 @@ from entities.time_entry.business.time_entry_status_service import TimeEntryStat
 from entities.time_entry.api.schemas import (
     TimeEntryCreate,
     TimeEntryUpdate,
+    TimeEntryReviewFlag,
     TimeLogCreate,
     TimeLogUpdate,
     TimeEntryApprove,
@@ -195,6 +196,67 @@ def read_time_entry(
     return item_response(result)
 
 
+@router.post("/{public_id}/review-flag")
+def flag_time_entry_for_human_review(
+    public_id: str,
+    body: TimeEntryReviewFlag,
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_update")),
+):
+    """
+    Stamp ReviewPriority + ReviewReasons on a TimeEntry. Used by the
+    time_tracking_specialist agent to record its bucketing decision after
+    running validate-completeness. Does NOT transition CurrentStatus.
+
+    Returns the stamped state for confirmation.
+    """
+    service = TimeEntryService()
+    try:
+        result = service.stamp_review(
+            public_id=public_id,
+            priority=body.priority,
+            reasons=body.reasons,
+        )
+        return item_response(result)
+    except ValueError as e:
+        raise_workflow_error(str(e), "Failed to stamp review flag")
+
+
+@router.get("/{public_id}/validate-completeness")
+def validate_time_entry_completeness(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING)),
+):
+    """
+    Run the deterministic completeness + anomaly checklist against this
+    time entry. Read-only — no mutation, no status transition.
+
+    Used by the time_tracking_specialist agent to inform its
+    ReviewPriority decision; also safe to call from human review UI.
+
+    Row-scope bypass: this endpoint reviews TimeEntries the caller did NOT
+    submit (the agent / Approver acts on other users' entries). Mirrors the
+    submit/approve/reject pattern which also bypasses UserId scope at the
+    service layer. Authorization is the endpoint's `can_read` gate above.
+    """
+    from entities.time_entry.business.validation import validate_completeness
+    from entities.time_entry.persistence.repo import TimeEntryRepository
+    from entities.time_entry.persistence.time_log_repo import TimeLogRepository
+
+    entry = TimeEntryRepository().read_by_public_id(
+        public_id=public_id,
+        actor_is_system_admin=True,
+    )
+    if not entry:
+        raise_not_found("Time entry")
+
+    logs = TimeLogRepository().read_by_time_entry_id(
+        time_entry_id=entry.id,
+        actor_is_system_admin=True,
+    )
+    report = validate_completeness(entry=entry, logs=logs)
+    return item_response(report)
+
+
 @router.put("/{public_id}")
 def update_time_entry(
     public_id: str,
@@ -339,6 +401,69 @@ def read_time_entry_statuses(
         )
     except ValueError as e:
         raise_workflow_error(str(e), "Failed to read time entry statuses")
+
+
+@router.get("/{public_id}/billed-lineage")
+def read_time_entry_billed_lineage(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING)),
+):
+    """Downstream lineage — which ContractLabor/EmployeeLabor rows came from
+    this TimeEntry, and whether those rows are linked to a Bill/Invoice yet.
+
+    Returns 0..N rows. Empty list means the entry hasn't been aggregated yet
+    (still draft, or aggregation failed and the entry is flagged).
+    """
+    from entities.time_entry.persistence.repo import TimeEntryRepository
+
+    entry = TimeEntryService().read_by_public_id(public_id=public_id)
+    if not entry:
+        raise_not_found("TimeEntry")
+    rows = TimeEntryRepository().read_billed_lineage(time_entry_id=int(entry.id))
+    return list_response(rows)
+
+
+@router.post("/import/external-csv")
+async def import_external_timesheet_csv(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_approve")),
+):
+    """Phase 6c — bulk-import a third-party timesheet CSV.
+
+    See `scripts/samples/README.md` for the column contract + expected
+    behavior. Internally:
+      1. Parses + validates headers (BOM-tolerant).
+      2. Pre-aggregates per (Worker × Project × Day) — required because
+         the Phase 4 aggregation sproc overwrites on natural key per
+         TimeEntry, not across multiple TimeEntries.
+      3. Resolves project names → public_ids in a single lookup pass.
+      4. Hands the rows to TimeEntryBulkImportService, which creates
+         TimeEntry + TimeLog rows and submits — Phase 4 aggregation
+         fires automatically, routing to ContractLabor (vendor path)
+         or EmployeeLabor (employee path) based on the worker's
+         User.VendorId vs User.EmployeeId link.
+
+    Gated on `Time Tracking can_approve` — same gate as the approve
+    endpoint, only Tenant Admin / Controller / PM / Reviewer roles.
+    """
+    from entities.time_entry.business.external_timesheet_import_service import (
+        ExternalTimesheetImportService,
+    )
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required.")
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a .csv.")
+
+    file_content = await file.read()
+    if not file_content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    result = ExternalTimesheetImportService().import_csv(
+        file_content=file_content,
+        filename=file.filename,
+    )
+    return item_response(result)
 
 
 # ============================================

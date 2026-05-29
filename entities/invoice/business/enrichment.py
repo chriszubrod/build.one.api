@@ -5,7 +5,7 @@ from shared.database import get_connection
 
 logger = logging.getLogger(__name__)
 
-_KNOWN_SOURCE_TYPES = {"BillLineItem", "ExpenseLineItem", "BillCreditLineItem", "Manual"}
+_KNOWN_SOURCE_TYPES = {"BillLineItem", "ExpenseLineItem", "BillCreditLineItem", "EmployeeLaborLineItem", "Manual"}
 
 
 def enrich_line_items(line_items) -> list[dict]:
@@ -16,6 +16,7 @@ def enrich_line_items(line_items) -> list[dict]:
     bill_ids = []
     expense_ids = []
     credit_ids = []
+    employee_labor_ids = []
     for li in line_items:
         if li.source_type and li.source_type not in _KNOWN_SOURCE_TYPES:
             logger.warning(
@@ -29,10 +30,16 @@ def enrich_line_items(line_items) -> list[dict]:
             expense_ids.append(li.expense_line_item_id)
         elif li.source_type == "BillCreditLineItem" and li.bill_credit_line_item_id:
             credit_ids.append(li.bill_credit_line_item_id)
+        elif (
+            li.source_type == "EmployeeLaborLineItem"
+            and getattr(li, "employee_labor_line_item_id", None)
+        ):
+            employee_labor_ids.append(li.employee_labor_line_item_id)
 
     bill_map = {}
     expense_map = {}
     credit_map = {}
+    employee_labor_map = {}
 
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -151,6 +158,41 @@ def enrich_line_items(line_items) -> list[dict]:
                     "attachment_public_id": str(row.AttachmentPublicId) if row.AttachmentPublicId else "",
                 }
 
+        if employee_labor_ids:
+            # EmployeeLabor source — no Vendor (Employee is the "party providing the
+            # labor"), no Attachment (EmployeeLabor has no source PDF — invoice
+            # packet renders it via the TOC only, no detail page).
+            placeholders = ",".join("?" * len(employee_labor_ids))
+            cursor.execute(f"""
+                SELECT elli.Id,
+                       el.PublicId AS ParentPublicId,
+                       el.WorkDate AS SourceDate,
+                       e.Firstname + ' ' + e.Lastname AS VendorName,
+                       scc.Number AS SccNumber, scc.Name AS SccName,
+                       cc.Number AS CcNumber, cc.Name AS CcName
+                FROM dbo.EmployeeLaborLineItem elli
+                JOIN dbo.EmployeeLabor el ON el.Id = elli.EmployeeLaborId
+                LEFT JOIN dbo.Employee e ON e.Id = el.EmployeeId
+                LEFT JOIN dbo.SubCostCode scc ON scc.Id = elli.SubCostCodeId
+                LEFT JOIN dbo.CostCode cc ON cc.Id = scc.CostCodeId
+                WHERE elli.Id IN ({placeholders})
+            """, employee_labor_ids)
+            for row in cursor.fetchall():
+                employee_labor_map[row.Id] = {
+                    # No parent_number — EmployeeLabor doesn't have a human-facing
+                    # ID like Bill.BillNumber. Falls back to "" so the TOC renders
+                    # a blank cell rather than failing.
+                    "parent_number": "",
+                    "parent_public_id": str(row.ParentPublicId) if row.ParentPublicId else "",
+                    "source_date": row.SourceDate.strftime("%m-%d-%Y") if row.SourceDate else "",
+                    "vendor_name": row.VendorName or "",
+                    "sub_cost_code_number": row.SccNumber or "",
+                    "sub_cost_code_name": row.SccName or "",
+                    "cost_code_number": row.CcNumber or "",
+                    "cost_code_name": row.CcName or "",
+                    "attachment_public_id": "",
+                }
+
         cursor.close()
 
     results = []
@@ -167,9 +209,16 @@ def enrich_line_items(line_items) -> list[dict]:
             enrichment = expense_map.get(li.expense_line_item_id, {})
         elif li.source_type == "BillCreditLineItem" and li.bill_credit_line_item_id:
             enrichment = credit_map.get(li.bill_credit_line_item_id, {})
+        elif li.source_type == "EmployeeLaborLineItem" and getattr(li, "employee_labor_line_item_id", None):
+            enrichment = employee_labor_map.get(li.employee_labor_line_item_id, {})
 
         if li.source_type != "Manual" and li.source_type is not None:
-            has_fk = li.bill_line_item_id or li.expense_line_item_id or li.bill_credit_line_item_id
+            has_fk = (
+                li.bill_line_item_id
+                or li.expense_line_item_id
+                or li.bill_credit_line_item_id
+                or getattr(li, "employee_labor_line_item_id", None)
+            )
             if not has_fk or not enrichment:
                 continue
 

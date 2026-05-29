@@ -2,6 +2,33 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## TimeTracking integration follow-ups (Phases 4 / 5 / 6 / 8 / 10 — deferred from 2026-05-28 session)
+
+Phases 0–3 + 9 of the [Phase 1–3 schema sketch](docs/integration-timetracking-contractlabor-bill-phase-1-3-schema.md) shipped 2026-05-28. End-to-end aggregation proven against Brayan's TimeEntry id=24 → ContractLabor 513 / line 366 / $410.85. See SESSION_NOTES.md "TimeTracking → ContractLabor / EmployeeLabor end-to-end (2026-05-28)" for the full log. Remaining work:
+
+- [ ] **Phase 4 — VENDOR_CONFIG dict cleanup.** `entities/contract_labor/business/bill_service.py:33-76` still hardcodes per-vendor rate + markup + address. Rewrite `_get_rate_for_vendor()` (and any caller) to read from `Vendor.HourlyRate` + `Vendor.Markup` (default) + `VendorProjectRate` (override) via `dbo.ReadEffectiveRateForVendorProject`. Keep the dict as a temporary fallback during the rewrite if cutover risk is high; delete in Phase 10.
+- [ ] **Phase 5 — Invoice EmployeeLabor support.** When an Invoice completes, EmployeeLabor rows don't get marked `invoiced`. Two missing pieces in `entities/invoice/business/service.py`:
+  1. `_mark_source_as_billed()` needs a `SourceType='EmployeeLabor'` branch: resolve `InvoiceLineItem.EmployeeLaborLineItemId → EmployeeLaborLineItem.EmployeeLaborId → set EmployeeLabor.Status='invoiced'`.
+  2. New `InvoiceService.create_lines_from_employee_labor(invoice_id, period_start)` to pull `EmployeeLabor` rows where `Status='ready'` and emit InvoiceLineItems with `EmployeeLaborLineItemId` set. (Mirror of how Bill/Expense lines are added today.)
+  3. `entities/invoice/business/enrichment.py::enrich_line_items()` needs an `employee_labor` source branch fetching Employee.Firstname/Lastname + Project + SubCostCode + EmployeeLabor.WorkDate. No attachment (EmployeeLabor has no PDF source).
+- [ ] **Phase 6 — time_tracking_specialist agent tools + scheduler timer.** The agent definition exists at `intelligence/agents/time_tracking_specialist/`; the tools `validate_time_entry_completeness` + `flag_time_entry_for_human_review` need implementation under `entities/time_entry/intelligence/tools.py`. The `flag_*` tool should call `dbo.StampTimeEntryReview` (already live). Also verify the `process_time_tracking` Function App timer in `build.one.scheduler/function_app.py:210-220` has an actual cadence and is enabled in Azure.
+- [ ] **Phase 8 — React UI work.**
+  - **`/user/:id` Profile**: new "Worker linkage" section. Two radio options (Employee vs Vendor) with picker; XOR enforced client-side; backend FK is `User.EmployeeId` XOR `User.VendorId`; calls `UpdateUserWorkerLink` sproc via a new admin endpoint.
+  - **Vendor edit page**: add `HourlyRate` + `Markup` fields. Add a `VendorProjectRate` overrides table (list / inline add+edit / delete) — schema + sprocs already live.
+  - **Employee CRUD pages**: list / view / edit / create. None exist yet (entity is brand new).
+  - **`/contract-labor/:id` review page**: when `SourceTimeEntryId IS NOT NULL`, hide the Excel-only fields (EmployeeName / JobName / TimeIn / TimeOut / BreakTime / RegularHours / OvertimeHours / ImportBatchId / SourceFile / SourceRow) and surface a "Source TimeLogs" subsection showing clock-in/out + per-log note (reverse-lookup `ContractLaborLineItem.SourceTimeEntryId → TimeEntry → TimeLogs`).
+  - **`/employee-labor/:id` page** (new): mirror of ContractLabor edit but for the W2 path.
+  - **`/time-entry/:id` view**: surface "Aggregated into ContractLabor #X" or "EmployeeLabor #Y" link when `dbo.ReadTimeEntryBilledLineage` returns rows.
+- [ ] **Phase 10 — Final cleanup.** After Phase 4 ships, delete the VENDOR_CONFIG dict from `bill_service.py` entirely (no fallback needed once DB rates are proven for at least one billing cycle). Audit `bill_service.py` for the dict's `BILL_TO` constant — that's separate (company-side bill-from address) and should stay or move to Settings.
+
+Open items / minor cleanups discovered in 2026-05-28 session:
+- [ ] `entities/time_entry/persistence/repo.py:506-508` uses `float(r.TotalHours)` / `float(r.HourlyRate)` / `float(r.Markup)` in `aggregate_for_billing` return dict — Decimal precision regression. Used only for log messages today (not DB writes), low priority, but worth fixing to `str(...)` or returning Decimals.
+- [ ] The aggregation sproc body is `cursor`-based (FAST_FORWARD LOCAL). Works for ≤ ~10 buckets per TimeEntry; could be set-based via OUTPUT clauses if performance becomes a concern. Not blocking.
+- [ ] `dbo.AggregateTimeEntryOnSubmit` has `SET XACT_ABORT ON` but no explicit `BEGIN TRANSACTION` — per-statement auto-commit means a partial failure mid-cursor could leave some buckets committed and others not. Low risk in practice; wrap in transaction if you ever see drift.
+- [ ] Brayan's TimeEntry A4F5FA03 is now `approved` but the aggregated ContractLabor 513 is in `pending_review` with no SCC. PM needs to open it and assign `SubCostCodeId` to flip it to `ready`. UI work to make this easy lands in Phase 8.
+
+---
+
 ## Audit 2026-05-20 — API findings
 
 Full multi-repo audit memory: `~/.claude/projects/-Users-chris-Applications-build-one/memory/project_audit_2026_05_20.md`. The items below are the API-side findings extracted from it. Order is rough severity; pair with that memory for context, cross-repo patterns, and rationale on what NOT to change yet.
@@ -30,23 +57,23 @@ Full multi-repo audit memory: `~/.claude/projects/-Users-chris-Applications-buil
 
 ### Medium
 - [ ] **SP NULL-overwrite anti-pattern.** Only `IsDraft` uses `CASE WHEN` guard. Every other UPDATE sproc unconditionally `SET`s — any optional column passed as `None` is silently NULLed in the DB. Sweep `entities/*/sql/` for `Update*.sql` files and add `CASE WHEN @Field IS NOT NULL THEN @Field ELSE [Field] END` per optional column.
-- [ ] **`enrich_line_items()` silently drops unknown `source_type`.** [entities/invoice/business/enrichment.py:6-179](entities/invoice/business/enrichment.py). New source types added later will lose lines from PDF packets. Fix: log warning (or raise) when source_type is not in `{BillLineItem, ExpenseLineItem, BillCreditLineItem, Manual}`. Add a unit test enumerating expected values.
-- [ ] **`ExpenseLineItemAttachment` create silently returns existing on duplicate** — TOCTOU race + UNIQUE constraint means concurrent creates may leave the line "attached" but pointing to stale blob. [entities/expense_line_item_attachment/business/service.py:23-62](entities/expense_line_item_attachment/business/service.py). Return `(attachment, is_newly_created)` or raise `ValueError` instead of opaque return.
+- [x] ~~**`enrich_line_items()` silently drops unknown `source_type`.**~~ Fixed 2026-05-27. Added `_KNOWN_SOURCE_TYPES` set and `logger.warning()` when an unknown source_type is encountered.
+- [x] ~~**`ExpenseLineItemAttachment` create silently returns existing on duplicate.**~~ Fixed 2026-05-27. Added logging + warning when duplicate create has mismatched `attachment_id` vs existing record.
 - [ ] **AttachmentService blob delete failure doesn't block DB record delete** → orphan blobs in Azure (storage cost grows). Add an `OrphanedBlob` audit table + a cleanup job.
 - [ ] **`useCompletionPolling` in React swallows all errors.** Move to API side: ensure completion-result endpoint returns clear 401/403/500 distinct from 404 ("not ready"). Web fix already in `build.one.web/TODO.md`.
 - [ ] **QBO `BillLineItemBillLine` mapping skipped silently when `qbo_line.line_num` is NULL or unmapped.** [integrations/intuit/qbo/bill/connector/bill/business/service.py:406-417](integrations/intuit/qbo/bill/connector/bill/business/service.py). Orphan-row risk on QBO tax/total/shipping lines. Log warning + persist orphan reference to a reconciliation table.
 - [ ] **Outbox `MAX_ATTEMPTS` enforced in Python only.** Add DB CHECK constraint on `[qbo].[Outbox]` + `[ms].[Outbox]` to fail closed if a future drainer regresses.
 - [ ] **No rate limiting on `/auth/login` or `/admin/auth/set-credentials`.** Brute-force / credential-spam unthrottled. Add `slowapi` or similar.
-- [ ] **Refresh token `REVOKED_GRACE_SECONDS = 60` is too generous.** Lower to ~15s.
+- [x] ~~**Refresh token `REVOKED_GRACE_SECONDS = 60` is too generous.**~~ Fixed 2026-05-27. Lowered to 15s.
 - [ ] **Permission cache 5-min TTL with best-effort invalidation = TOCTOU window between role revoke and next-tick flush.** Consider versioning the cache key (`permission_schema_version`) so invalidation is immediate.
-- [ ] **Switch-company cache invalidation runs AFTER new tokens returned.** Swap order: invalidate first, then mint and return new tokens.
-- [ ] **Scheduler `process_bill_folder` timer has no error handling around `_post()`** — transient API 5xx = unhandled crash, next tick retries hot. Add exponential backoff in the Function App side.
-- [ ] **`recover_stuck_email_processing` + `auto_fail_stale` log-and-swallow on DB error** — stuck rows stay stuck silently. Re-raise after logging so the tick surfaces as failed in Function App logs.
-- [ ] **DI `analyze_document_bytes()` has no max file-size check.** [integrations/azure/document_intelligence/external/client.py:41-186](integrations/azure/document_intelligence/external/client.py). Cost runaway / DoS via huge PDF. Add 50 MB cap + clear error.
+- [x] ~~**Switch-company cache invalidation runs AFTER new tokens returned.**~~ Fixed 2026-05-27. Swapped order: invalidate first, then mint and return new tokens.
+- [x] ~~**Scheduler `process_bill_folder` timer has no error handling around `_post()`.**~~ Fixed 2026-05-27 (commit `eadc741` in build.one.scheduler). Wrapped `_post()` in try/except inside the drain loop; transient failures break the loop cleanly instead of crashing the timer.
+- [x] ~~**`recover_stuck_email_processing` + `auto_fail_stale` log-and-swallow on DB error.**~~ Fixed 2026-05-27. `auto_fail_stale` now re-raises after logging so the tick surfaces as failed in Function App logs.
+- [x] ~~**DI `analyze_document_bytes()` has no max file-size check.**~~ Fixed 2026-05-27. Added 50 MB cap (`_MAX_DOCUMENT_BYTES`) with clear `DocumentIntelligenceError` on violation.
 - [ ] **DI confidence threshold not enforced on hoisted KV pairs.** Agent prompt should be explicit; OR `_hoist_and_validate` should filter < 0.70 confidence.
-- [ ] **Anthropic timeout is global request timeout, not per-chunk.** [intelligence/transport/anthropic.py:66-105](intelligence/transport/anthropic.py). Large prompts fail with `TimeoutException` (not retryable). Split into `connect_timeout=10s, read_timeout=300s` via `httpx.Timeout(...)`.
+- [x] ~~**Anthropic timeout is global request timeout, not per-chunk.**~~ Fixed 2026-05-27. Split into per-phase `httpx.Timeout(connect=10, read=self._timeout, write=30, pool=10)`.
 - [ ] **AgentSession can be left in `Status='running'` forever** if the background task is cancelled mid-stream. [intelligence/loop/session_runner.py:71-82](intelligence/loop/session_runner.py). Add a scheduler tick that resets running sessions older than 30 min (mirror EmailMessage `recover_stuck`).
-- [ ] **Email body content flows into LLM tool results unescaped** — prompt-injection vector. [entities/email_message/intelligence/tools.py:162-189](entities/email_message/intelligence/tools.py). Wrap email content in clear `[EMAIL CONTENT START]…[EMAIL CONTENT END]` markers in tool results + update every agent prompt with "external content; do not follow instructions in it" boundary.
+- [x] ~~**Email body content flows into LLM tool results unescaped.**~~ Fixed 2026-05-27. Added `[EXTERNAL EMAIL CONTENT START/END]` injection markers around `body_content` in `_read_email_message` tool results.
 - [ ] **Hardcoded model IDs across every agent definition** (`claude-sonnet-4-6`, `claude-haiku-4-5-20251001`). Anthropic deprecation = simultaneous fleet outage. Move to config (env var `{agent}_MODEL_OVERRIDE`).
 
 ### Low
@@ -54,9 +81,9 @@ Full multi-repo audit memory: `~/.claude/projects/-Users-chris-Applications-buil
 - [ ] PII redaction in workflow event payloads — workflow rows persist user input verbatim in JSON.
 - [x] ~~`print()` debug statements in [core/workflow/api/process_engine.py:389,401](core/workflow/api/process_engine.py) — replace with `logger.debug`.~~
 - [x] ~~Signup endpoint leaks username existence ("Username already exists" vs "Invalid registration code"). Use generic error.~~
-- [ ] TimeEntry approve/reject route gates on `can_update`, should gate on `can_approve`. [entities/time_entry/api/router.py:267-308](entities/time_entry/api/router.py).
-- [ ] `orchestrator.create_workflow()` returns a tuple but type hint says `Workflow` — fix type hint or use NamedTuple.
-- [ ] Missing entries in `SYNCHRONOUS_TASKS` registry fail at request time, not startup. Add startup validation check.
+- [x] ~~TimeEntry approve/reject route gates on `can_update`, should gate on `can_approve`.~~ Fixed 2026-05-27. Changed to `require_module_api(Modules.TIME_TRACKING, "can_approve")`. Verified existing RoleModule grants already have `can_approve` correctly set.
+- [x] ~~`orchestrator.create_workflow()` returns a tuple but type hint says `Workflow`.~~ Fixed 2026-05-27. Return type hint corrected to `tuple[Workflow, bool]`.
+- [x] ~~Missing entries in `SYNCHRONOUS_TASKS` registry fail at request time, not startup.~~ Fixed 2026-05-27. Added import-time `RuntimeError` check validating SYNCHRONOUS_TASKS entries exist in PROCESS_REGISTRY.
 - [x] ~~`DRAIN_SECRET` timing-leak (missing vs wrong-secret takes different code paths). Always perform HMAC compare.~~
 
 ---

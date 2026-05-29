@@ -67,6 +67,12 @@ class ContractLaborRepository:
                 billing_period_start=getattr(row, "BillingPeriodStart", None),
                 status=getattr(row, "Status", None),
                 bill_line_item_id=getattr(row, "BillLineItemId", None),
+                source_time_entry_id=getattr(row, "SourceTimeEntryId", None),
+                source_time_entry_public_id=(
+                    str(getattr(row, "SourceTimeEntryPublicId"))
+                    if getattr(row, "SourceTimeEntryPublicId", None) is not None
+                    else None
+                ),
                 bill_vendor_id=getattr(row, "BillVendorId", None),
                 bill_date=getattr(row, "BillDate", None),
                 due_date=getattr(row, "DueDate", None),

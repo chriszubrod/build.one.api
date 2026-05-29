@@ -49,6 +49,7 @@ def _import_agent_modules() -> None:
     import intelligence.agents.invoice_specialist     # noqa: F401
     import intelligence.agents.email_specialist       # noqa: F401
     import intelligence.agents.contract_labor_specialist  # noqa: F401
+    import intelligence.agents.time_tracking_specialist   # noqa: F401
 
 
 def verify(agent_name: str) -> int:

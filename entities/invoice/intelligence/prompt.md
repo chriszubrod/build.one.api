@@ -53,6 +53,31 @@ A line item cannot be billed on an invoice without an attachment for support. Th
 - Verify this **before Step 5** (packet generation). The packet generator silently skips lines without attachments — that's the wrong signal to act on; treat the absence at the source as the blocker.
 - If QBO is the only place the document exists, run `QboAttachableService.sync_attachables_for_bill` / `sync_attachables_for_purchase` for the source's QBO id before halting — it may just be a sync gap. If QBO genuinely has nothing, halt; the user must attach.
 
+### 6. Every billable line item MUST have a SubCostCode on its source
+
+A line item cannot be billed on an invoice without a SubCostCode assigned to its source `BillLineItem` / `ExpenseLineItem` / `BillCreditLineItem`. The SubCostCode is what flows into the project's DETAILS worksheet (Cost Code section + the SubCostCode column) and what drives the budget reconciliation in Step 6 — a NULL SubCostCode produces a blank/uncategorized entry. Same severity as a missing attachment.
+
+- Verify this **before Step 5** (packet generation) alongside the attachment coverage check. The Step 5 pre-flight coverage query MUST also check `BillLineItem.SubCostCodeId` / `ExpenseLineItem.SubCostCodeId` / `BillCreditLineItem.SubCostCodeId`.
+- If any source line has `SubCostCodeId IS NULL`, **halt** and surface the offending source (vendor / number / amount / description). The user must categorize the source in QBO (assign an Item on the Bill / Purchase / VendorCredit line) and re-sync before this run can continue.
+- Context: in QBO, Bill / Purchase lines fall into the `Cost of construction:NEED TO CATEGORIZE` account when the user hasn't assigned an Item. That's what surfaces as `SubCostCodeId=NULL` in our staging — the sync faithfully carries forward what QBO has.
+- Recovery loop after the user assigns the Item in QBO (the standard `sync_qbo_*.py` incremental scripts may not pick up a recent edit if the watermark already advanced past it — force-pull is more reliable):
+  1. Force-pull the live state of the affected QboPurchase / QboBill via the appropriate external client (e.g., `QboPurchaseClient(realm_id=...).get_purchase('<qbo_id>')` — note the client init takes `realm_id`, not `access_token`).
+  2. Call `QboPurchaseService.upsert_from_external(...)` / `QboBillService.upsert_from_external(...)` to refresh staging.
+  3. Re-run the corresponding connector (`PurchaseExpenseConnector.sync_from_qbo_purchase` / `BillBillConnector.sync_from_qbo_bill`) to propagate the new ItemRef.
+  4. **Heads up — upsert side effect**: when staging refreshes, the `qbo.PurchaseLine` PK changes (a new row replaces the old one) and the connector creates a NEW `dbo.ExpenseLineItem` rather than updating the existing one. It then tries to delete the old ELI, which fails on `FK_InvoiceLineItem_ExpenseLineItem` because the current invoice still points at the old ELI. The old ELA (ExpenseLineItemAttachment) is also destroyed in the attempt. Recovery:
+     ```sql
+     -- Patch the old ELI in-place
+     UPDATE dbo.ExpenseLineItem SET SubCostCodeId = <new_scc_id>, ModifiedDatetime = SYSUTCDATETIME() WHERE Id = <old_eli_id>;
+     -- Re-create the dropped attachment link (find the original Attachment via qbo.AttachableAttachment for the qbo.Attachable.EntityRefValue = <qbo_purchase_id>)
+     INSERT INTO dbo.ExpenseLineItemAttachment (PublicId, ExpenseLineItemId, AttachmentId, CreatedDatetime, ModifiedDatetime)
+     VALUES (NEWID(), <old_eli_id>, <attachment_id>, SYSUTCDATETIME(), SYSUTCDATETIME());
+     -- Re-point the new line→ELI mapping back to the old ELI so qbo staging stays consistent
+     UPDATE qbo.PurchaseLineExpenseLineItem SET ExpenseLineItemId = <old_eli_id>, ModifiedDatetime = SYSUTCDATETIME() WHERE Id = <new_mapping_id>;
+     -- Delete the orphan new ELI
+     DELETE FROM dbo.ExpenseLineItem WHERE Id = <new_eli_id>;
+     ```
+  5. Same recipe applies on the Bill side if a BillLineItem upsert produces an orphan — the FK that blocks is `FK_InvoiceLineItem_BillLineItem`.
+
 ---
 
 ## Step 1 — Resolve project + QBO mapping
@@ -369,20 +394,25 @@ If a line has zero matches in both Bill and Purchase staging, it was likely type
 
 ## Step 5 — Generate the PDF packet
 
-**Pre-flight — verify every line has an attachment.** Per CRITICAL #4, every source-linked line must resolve to at least one attachment, and every `Manual` line must be user-classified. Run a coverage check before generating the packet:
+**Pre-flight — verify every line has both an attachment AND a SubCostCode.** Per CRITICAL #5 every source-linked line must resolve to at least one attachment, and per CRITICAL #6 every source-linked line must have `SubCostCodeId IS NOT NULL`. Every `Manual` line must also be user-classified. Run the combined coverage check before generating the packet:
 
 ```sql
 SELECT ili.Id AS IliId, ili.SourceType, ili.Description, ili.Amount,
-       (SELECT COUNT(*) FROM dbo.BillLineItemAttachment WHERE BillLineItemId = ili.BillLineItemId) AS BliAtts,
-       (SELECT COUNT(*) FROM dbo.ExpenseLineItemAttachment WHERE ExpenseLineItemId = ili.ExpenseLineItemId) AS EliAtts,
-       (SELECT COUNT(*) FROM dbo.BillCreditLineItemAttachment WHERE BillCreditLineItemId = ili.BillCreditLineItemId) AS BcliAtts
+       (SELECT COUNT(*) FROM dbo.BillLineItemAttachment       WHERE BillLineItemId       = ili.BillLineItemId)       AS BliAtts,
+       (SELECT COUNT(*) FROM dbo.ExpenseLineItemAttachment    WHERE ExpenseLineItemId    = ili.ExpenseLineItemId)    AS EliAtts,
+       (SELECT COUNT(*) FROM dbo.BillCreditLineItemAttachment WHERE BillCreditLineItemId = ili.BillCreditLineItemId) AS BcliAtts,
+       (SELECT bli.SubCostCodeId  FROM dbo.BillLineItem       bli  WHERE bli.Id  = ili.BillLineItemId)       AS BliScc,
+       (SELECT eli.SubCostCodeId  FROM dbo.ExpenseLineItem    eli  WHERE eli.Id  = ili.ExpenseLineItemId)    AS EliScc,
+       (SELECT bcli.SubCostCodeId FROM dbo.BillCreditLineItem bcli WHERE bcli.Id = ili.BillCreditLineItemId) AS BcliScc
 FROM dbo.InvoiceLineItem ili
 WHERE ili.InvoiceId = ?;
 ```
 
-If any source-linked row returns zero attachments, **halt** and surface the offending lines (ili / source type / vendor / amount / description). For each gap, first run `QboAttachableService.sync_attachables_for_bill` (or `_for_purchase`) against the source's QBO id — it may just be a staging gap. If QBO has none, the user must attach the document upstream before this run can continue.
+Halt on either gap:
+- If any source-linked row returns zero attachments, **halt** and surface the offending lines (ili / source type / vendor / amount / description). For each gap, first run `QboAttachableService.sync_attachables_for_bill` (or `_for_purchase`) against the source's QBO id — it may just be a staging gap. If QBO has none, the user must attach the document upstream before this run can continue (CRITICAL #5).
+- If any source-linked row returns `*Scc` = NULL (no SubCostCode), **halt** and surface the offending lines. The user must assign an Item to the underlying Bill / Purchase / VendorCredit line in QBO and re-sync via the force-pull + upsert recovery loop in CRITICAL #6.
 
-Only after the coverage check passes:
+Only after the combined coverage check passes:
 
 ```python
 from entities.invoice.api.router import _generate_invoice_packet
@@ -598,7 +628,8 @@ Stop and surface to the user before proceeding when:
 - A sanity check before `sync_to_excel_workbook` reveals the dbo entity doesn't match the invoice line you intended (vendor / number / amount mismatch).
 - `_upload_to_sharepoint` returns errors for any file.
 - Step 8 verification shows any source line still has `IsBilled=False` after the loop ran.
-- Any source-linked line on the invoice has zero attachments after running the Step 5 coverage check (and after a fresh `sync_attachables_for_*` confirmed QBO has none either) — see CRITICAL #4. The line cannot be billed without supporting documentation; the user must attach upstream and re-run.
+- Any source-linked line on the invoice has zero attachments after running the Step 5 coverage check (and after a fresh `sync_attachables_for_*` confirmed QBO has none either) — see CRITICAL #5. The line cannot be billed without supporting documentation; the user must attach upstream and re-run.
+- Any source-linked line on the invoice has `SubCostCodeId IS NULL` after running the Step 5 coverage check — see CRITICAL #6. The line cannot be billed without categorization; the user must assign an Item to the source in QBO and run the force-pull + upsert recovery loop.
 - Any `Manual` line on the invoice has not been explicitly classified by the user as either (a) a derivative of another billed line on the same invoice, or (b) needs to be removed / replaced with a sourced line.
 
 ## Why we don't just call `complete_invoice`
@@ -631,9 +662,11 @@ Stop and surface to the user before proceeding when:
 18. **Duplicate BLIs on the same `dbo.Bill`** — re-encountered on HP2-09 / Q44862 (dbo.Bill 17320), 2026-05-15. Two `dbo.BillLineItem` rows with identical `Amount` + `Description` + `SubCostCodeId` on the same parent Bill. One carries the `qbo.BillLineItemBillLine` mapping (the "official" one); the other is an orphan with no qbo mapping. Typically the qbo-mapped one is missing fields the orphan has (Price, BillLineItemAttachment), because at some past sync the connector created a fresh BLI instead of reusing the existing one. Fingerprint match picks the qbo-mapped BLI (correct) but its missing fields surface downstream (Step 7 writes $0, Step 5 fails coverage check). Recovery: (a) link the orphan's Attachment to the kept BLI via a new `BillLineItemAttachment` row pointing the same `Attachment.Id` (the `BillLineItemAttachment` UNIQUE is per-BLI, not per-Attachment); (b) copy `Price` from the orphan to the kept BLI; (c) leave the orphan BLI in dbo (it has no qbo mapping and no ILI references — destructive delete deferred until a separate cleanup pass).
 19. **Duplicate `dbo.Project` rows with the same `Name` but no `Abbreviation`** — re-encountered for HP2 on 2026-05-15. A second `dbo.Project` ("HP2 - 4406 Harding Pike", `Abbreviation=NULL`, id=137) was created out-of-band (2026-05-14 16:10, source unknown — not from this session) and `qbo.CustomerProject` was re-pointed away from the original project (id=13) to the new one. On the next InvoiceAgent re-run, the InvoiceInvoiceConnector dragged `dbo.Invoice.ProjectId` along to the new project, and SharePoint upload failed because `ms.DriveItemProjectModule` is configured for the original. Symptom: `_upload_to_sharepoint` returns `"Invoices module folder not configured for this project"`. Recovery: repoint `qbo.CustomerProject.ProjectId` back to the original, `UPDATE dbo.Invoice SET ProjectId=<original>`, then `DELETE FROM dbo.Project WHERE Id=<duplicate>` after auditing references (only 2 references existed: the invoice and the customer mapping). Audit before delete: `dbo.Invoice.ProjectId`, `qbo.CustomerProject.ProjectId`, `ms.DriveItemProjectModule.ProjectId`, `ms.DriveItemProjectExcel.ProjectId`, `dbo.UserProject.ProjectId`, `dbo.ProjectAddress.ProjectId`, `dbo.BillLineItem.ProjectId`, `dbo.ExpenseLineItem.ProjectId`, `dbo.BillCreditLineItem.ProjectId`, `dbo.ContractLaborLineItem.ProjectId` (the Bill/Expense/BillCredit parent tables have no ProjectId column). **Root cause is unknown** — likely a misfire from a project_specialist agent or an ad-hoc Customer-rename in QBO that the connector treated as a new entity. Worth a one-time audit of `dbo.Project` for same-Name duplicates.
 20. **`InvoiceInvoiceConnector` re-run UNIQUE-constraint failure mode** — re-encountered on HP2-09 / Q44862, 2026-05-15. When invoked a second time on an existing invoice (e.g., to pick up a new line added in QBO), the per-line `InvoiceLineItemConnector.sync_from_qbo_invoice_line` can fail with `Violation of UNIQUE KEY constraint 'UQ_InvoiceLineItemInvoiceLine_QboInvoiceLineId'`. The connector thinks the existing ILI is "not found" and tries to CREATE a new ILI + a new mapping row — the new ILI creation succeeds but the mapping INSERT collides with the existing mapping. Result: N new orphan ILI rows in `dbo.InvoiceLineItem` with no `qbo.InvoiceLineItemInvoiceLine` mapping. `dbo.Invoice.TotalAmount` is correctly updated, but `SUM(dbo.InvoiceLineItem.Amount)` is roughly double. Cleanup (do this BEFORE re-fingerprinting in Step 4): `DELETE FROM dbo.InvoiceLineItem WHERE InvoiceId = ? AND Id NOT IN (SELECT InvoiceLineItemId FROM qbo.InvoiceLineItemInvoiceLine map JOIN qbo.InvoiceLine il ON il.Id = map.QboInvoiceLineId WHERE il.QboInvoiceId = ?)`. Verify `dbo.InvoiceLineItem` count and sum now match `qbo.Invoice` (line count + total). Then re-fingerprint EVERY line per CRITICAL #4. Long-term fix: connector should either UPDATE the existing mapping or handle the unique-constraint collision gracefully.
-21. **Duplicate `dbo.Project` recurrence on BR-MAIN** — Known Issue #19 recurred on BR-MAIN-24 (2026-05-28). Duplicate `dbo.Project` Id=142 (Abbreviation=NULL, Name="BR-MAIN - 7550C Buffalo Road", created 2026-05-18 20:10) with `qbo.CustomerProject` re-pointed away from the original (Id=64). Same root cause as HP2; still firing. Guard (project_specialist `create_project` refusing same-Name duplicates) not yet shipped.
-22. **Attachable duplicates defeat `sync_purchase_attachments_to_expense_line_items`** — surfaced on BR-MAIN-24 (2026-05-28). When two `qbo.Attachable` rows exist for the same Graph attachable id, `sync_purchase_attachments_to_expense_line_items` returns 0 linked. Manual fallback: `ExpenseLineItemAttachmentService().create(expense_line_item_public_id=..., attachment_public_id=...)`. Same pattern applies to `BillCreditLineItemAttachmentService` for VendorCredit sources.
-23. **`BillCreditService.sync_to_excel_workbook` does not exist** — BillCredit-sourced invoice lines cannot be auto-written to DETAILS in Step 7. On BR-MAIN-24, 18/19 DETAILS rows were synced; the one BillCredit line ($-21,000 Visual Comfort credit) had to be added manually. The method is an analog of `BillService.sync_to_excel_workbook` and `ExpenseService.sync_to_excel_workbook`.
+21. **`PurchaseExpenseConnector` orphans the prior ELI on a mid-cycle re-sync** — first seen on MR2-MAIN-07 / Home Depot Purchase 67915, 2026-05-19. When the user assigns an Item to a previously-uncategorized line in QBO and the playbook force-pulls + upserts that purchase, `qbo.PurchaseLine` gets a fresh PK (the staging row is replaced rather than updated). `PurchaseExpenseConnector` then creates a NEW `dbo.ExpenseLineItem` (with the new SubCostCodeId populated) and attempts to DELETE the old ELI — which fails on `FK_InvoiceLineItem_ExpenseLineItem` because the current invoice's ILI still points at the old ELI. The connector also drops the original `dbo.ExpenseLineItemAttachment` row in the cleanup attempt. Net state: two ELIs with the same Amount on the same parent Expense — old one (referenced by invoice, no SCC, no attachment) and new one (orphan from invoice's POV, has SCC, no attachment). Recovery via the patch-in-place recipe in CRITICAL #6 (Step 4). Same shape applies to the Bill side via `FK_InvoiceLineItem_BillLineItem`. Long-term fix: connector should UPDATE the existing ELI in-place when the qbo.PurchaseLine semantically corresponds to it.
+22. **`Cost of construction:NEED TO CATEGORIZE` is the QBO bucket for uncategorized Purchase / Bill lines** — symptom in our cache: `qbo.PurchaseLine.ItemRefValue IS NULL` AND `qbo.PurchaseLine.AccountRefName = 'Cost of construction:NEED TO CATEGORIZE'`. The Step 5 pre-flight SubCostCode check (CRITICAL #6) will flag the resulting `dbo.ExpenseLineItem.SubCostCodeId = NULL`. Pre-empt this by running a `dbo.ExpenseLineItem.SubCostCodeId IS NULL` audit before invoicing whenever a Home Depot / Lowe's / Amazon-style credit-card receipt is on the invoice — those are the most common offenders.
+23. **Duplicate `dbo.Project` recurrence on BR-MAIN** — Known Issue #19 recurred on BR-MAIN-24 (2026-05-28). Duplicate `dbo.Project` Id=142 (Abbreviation=NULL, Name="BR-MAIN - 7550C Buffalo Road", created 2026-05-18 20:10) with `qbo.CustomerProject` re-pointed away from the original (Id=64). Same root cause as HP2; still firing. Guard (project_specialist `create_project` refusing same-Name duplicates) not yet shipped.
+24. **Attachable duplicates defeat `sync_purchase_attachments_to_expense_line_items`** — surfaced on BR-MAIN-24 (2026-05-28). When two `qbo.Attachable` rows exist for the same Graph attachable id, `sync_purchase_attachments_to_expense_line_items` returns 0 linked. Manual fallback: `ExpenseLineItemAttachmentService().create(expense_line_item_public_id=..., attachment_public_id=...)`. Same pattern applies to `BillCreditLineItemAttachmentService` for VendorCredit sources.
+25. **`BillCreditService.sync_to_excel_workbook` does not exist** — BillCredit-sourced invoice lines cannot be auto-written to DETAILS in Step 7. On BR-MAIN-24, 18/19 DETAILS rows were synced; the one BillCredit line ($-21,000 Visual Comfort credit) had to be added manually. The method is an analog of `BillService.sync_to_excel_workbook` and `ExpenseService.sync_to_excel_workbook`.
 
 ## Side effects (full enumeration)
 

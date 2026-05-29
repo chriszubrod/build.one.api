@@ -41,6 +41,8 @@ class UserRepository:
             last_company_id = getattr(row, "LastCompanyId", None)
             created_by_user_id = getattr(row, "CreatedByUserId", None)
             modified_by_user_id = getattr(row, "ModifiedByUserId", None)
+            employee_id = getattr(row, "EmployeeId", None)
+            vendor_id = getattr(row, "VendorId", None)
             return User(
                 id=row.Id,
                 public_id=row.PublicId,
@@ -54,6 +56,8 @@ class UserRepository:
                 last_company_id=last_company_id,
                 created_by_user_id=created_by_user_id,
                 modified_by_user_id=modified_by_user_id,
+                employee_id=employee_id,
+                vendor_id=vendor_id,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during user mapping: {error}")
@@ -229,6 +233,38 @@ class UserRepository:
                 )
         except Exception as error:
             logger.error(f"Error during set last company id: {error}")
+            raise map_database_error(error)
+
+    def update_worker_link(
+        self,
+        *,
+        id: int,
+        row_version_bytes: bytes,
+        employee_id: Optional[int],
+        vendor_id: Optional[int],
+    ) -> Optional[User]:
+        """Set the User's EmployeeId / VendorId worker linkage.
+
+        XOR is enforced inside the sproc — passing both as non-NULL raises.
+        Pass both as NULL to clear the link.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="UpdateUserWorkerLink",
+                    params={
+                        "Id": id,
+                        "RowVersion": row_version_bytes,
+                        "EmployeeId": employee_id,
+                        "VendorId": vendor_id,
+                    },
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during update user worker link: {error}")
             raise map_database_error(error)
 
     def delete_by_id(self, id: int) -> Optional[User]:

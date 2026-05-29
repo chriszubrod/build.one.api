@@ -61,7 +61,12 @@ def _toc_format_money(value: Optional[float]) -> str:
 
 
 def _toc_source_label(source_type: str) -> str:
-    return {"BillLineItem": "Bill", "BillCreditLineItem": "Credit", "ExpenseLineItem": "Expense"}.get(source_type, "")
+    return {
+        "BillLineItem": "Bill",
+        "BillCreditLineItem": "Credit",
+        "ExpenseLineItem": "Expense",
+        "EmployeeLaborLineItem": "EmpLabor",
+    }.get(source_type, "")
 
 
 def _consolidate_basic_toc_rows(rows: list[dict]) -> list[dict]:
@@ -452,9 +457,16 @@ def _generate_invoice_packet(public_id: str):
     logger.info(f"Packet [{public_id}]: enriching {len(line_items)} line items")
     enriched_items = enrich_line_items(line_items)
 
-    _type_order_map = {"BillLineItem": 0, "BillCreditLineItem": 1, "ExpenseLineItem": 2}
+    # Manual lines (typed directly into the QBO invoice tray with no underlying transaction)
+    # are excluded from the customer-facing TOC. They're internal accounting adjustments
+    # (offsets, reversals, $0-net pairs) — the customer reads the TOC to verify each charge
+    # against a source document, and a Manual line has no source. The lines remain on the
+    # invoice in QBO and dbo for accounting integrity; they just don't surface here.
+    toc_items = [r for r in enriched_items if r.get("source_type") != "Manual"]
 
-    basic_toc_rows = sorted(enriched_items, key=lambda r: (
+    _type_order_map = {"BillLineItem": 0, "BillCreditLineItem": 1, "ExpenseLineItem": 2, "EmployeeLaborLineItem": 3}
+
+    basic_toc_rows = sorted(toc_items, key=lambda r: (
         _type_order_map.get(r.get("source_type", ""), 9),
         (r.get("vendor_name") or "").lower(),
         (r.get("parent_number") or "").lower(),
@@ -469,7 +481,7 @@ def _generate_invoice_packet(public_id: str):
             cc_num = float("inf")
         return (cc_num, cc.lower(), _type_order_map.get(r.get("source_type", ""), 9), (r.get("vendor_name") or "").lower())
 
-    expanded_toc_rows = sorted(enriched_items, key=_expanded_sort_key)
+    expanded_toc_rows = sorted(toc_items, key=_expanded_sort_key)
     expanded_toc_bytes = _build_toc_expanded_pdf(expanded_toc_rows)
 
     bill_ids = []

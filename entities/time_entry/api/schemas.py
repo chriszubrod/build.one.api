@@ -22,6 +22,26 @@ class TimeEntryCreate(BaseModel):
     )
 
 
+class TimeEntryReviewFlag(BaseModel):
+    """Schema for stamping agent review priority + reasons on a TimeEntry."""
+    priority: str = Field(
+        description=(
+            "ReviewPriority bucket — one of: 'high', 'medium', 'low', 'clean'. "
+            "Drives sort/color on the human review page; does NOT transition "
+            "CurrentStatus."
+        ),
+    )
+    reasons: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Short reason codes documenting why the agent bucketed this entry. "
+            "Must come from the canonical vocabulary "
+            "(entities.time_entry.business.validation.ALL_REASON_CODES). "
+            "Empty list for clean entries."
+        ),
+    )
+
+
 class TimeEntryUpdate(BaseModel):
     """Schema for updating a time entry."""
     row_version: str = Field(

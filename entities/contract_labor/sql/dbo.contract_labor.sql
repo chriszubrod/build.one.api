@@ -279,7 +279,8 @@ BEGIN
         [BillNumber],
         [ImportBatchId],
         [SourceFile],
-        [SourceRow]
+        [SourceRow],
+        [SourceTimeEntryId]
     FROM dbo.[ContractLabor]
     ORDER BY [WorkDate] DESC, [EmployeeName] ASC, [JobName] ASC;
 
@@ -329,7 +330,8 @@ BEGIN
         [BillNumber],
         [ImportBatchId],
         [SourceFile],
-        [SourceRow]
+        [SourceRow],
+        [SourceTimeEntryId]
     FROM dbo.[ContractLabor]
     WHERE [Id] = @Id;
 
@@ -349,39 +351,42 @@ BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [VendorId],
-        [ProjectId],
-        [EmployeeName],
-        [JobName],
-        CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
-        [TimeIn],
-        [TimeOut],
-        [BreakTime],
-        [RegularHours],
-        [OvertimeHours],
-        [TotalHours],
-        [HourlyRate],
-        [Markup],
-        [TotalAmount],
-        [SubCostCodeId],
-        [Description],
-        CONVERT(VARCHAR(10), [BillingPeriodStart], 120) AS [BillingPeriodStart],
-        [Status],
-        [BillLineItemId],
-        [BillVendorId],
-        CONVERT(VARCHAR(10), [BillDate], 120) AS [BillDate],
-        CONVERT(VARCHAR(10), [DueDate], 120) AS [DueDate],
-        [BillNumber],
-        [ImportBatchId],
-        [SourceFile],
-        [SourceRow]
-    FROM dbo.[ContractLabor]
-    WHERE [PublicId] = @PublicId;
+        cl.[Id],
+        cl.[PublicId],
+        cl.[RowVersion],
+        CONVERT(VARCHAR(19), cl.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), cl.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        cl.[VendorId],
+        cl.[ProjectId],
+        cl.[EmployeeName],
+        cl.[JobName],
+        CONVERT(VARCHAR(10), cl.[WorkDate], 120) AS [WorkDate],
+        cl.[TimeIn],
+        cl.[TimeOut],
+        cl.[BreakTime],
+        cl.[RegularHours],
+        cl.[OvertimeHours],
+        cl.[TotalHours],
+        cl.[HourlyRate],
+        cl.[Markup],
+        cl.[TotalAmount],
+        cl.[SubCostCodeId],
+        cl.[Description],
+        CONVERT(VARCHAR(10), cl.[BillingPeriodStart], 120) AS [BillingPeriodStart],
+        cl.[Status],
+        cl.[BillLineItemId],
+        cl.[BillVendorId],
+        CONVERT(VARCHAR(10), cl.[BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), cl.[DueDate], 120) AS [DueDate],
+        cl.[BillNumber],
+        cl.[ImportBatchId],
+        cl.[SourceFile],
+        cl.[SourceRow],
+        cl.[SourceTimeEntryId],
+        te.[PublicId] AS [SourceTimeEntryPublicId]
+    FROM dbo.[ContractLabor] cl
+    LEFT JOIN dbo.[TimeEntry] te ON te.[Id] = cl.[SourceTimeEntryId]
+    WHERE cl.[PublicId] = @PublicId;
 
     COMMIT TRANSACTION;
 END;
@@ -429,7 +434,8 @@ BEGIN
         [BillNumber],
         [ImportBatchId],
         [SourceFile],
-        [SourceRow]
+        [SourceRow],
+        [SourceTimeEntryId]
     FROM dbo.[ContractLabor]
     WHERE [VendorId] = @VendorId
     ORDER BY [WorkDate] DESC, [EmployeeName] ASC, [JobName] ASC;
@@ -586,7 +592,8 @@ BEGIN
         [BillNumber],
         [ImportBatchId],
         [SourceFile],
-        [SourceRow]
+        [SourceRow],
+        [SourceTimeEntryId]
     FROM dbo.[ContractLabor]
     WHERE [ImportBatchId] = @ImportBatchId
     ORDER BY [SourceRow];
@@ -920,7 +927,8 @@ BEGIN
         [BillNumber],
         [ImportBatchId],
         [SourceFile],
-        [SourceRow]
+        [SourceRow],
+        [SourceTimeEntryId]
     FROM dbo.[ContractLabor]
     WHERE [EmployeeName] = @EmployeeName
         AND [WorkDate] = @WorkDate
@@ -1403,39 +1411,42 @@ BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [VendorId],
-        [ProjectId],
-        [EmployeeName],
-        [JobName],
-        CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
-        [TimeIn],
-        [TimeOut],
-        [BreakTime],
-        [RegularHours],
-        [OvertimeHours],
-        [TotalHours],
-        [HourlyRate],
-        [Markup],
-        [TotalAmount],
-        [SubCostCodeId],
-        [Description],
-        CONVERT(VARCHAR(10), [BillingPeriodStart], 120) AS [BillingPeriodStart],
-        [Status],
-        [BillLineItemId],
-        [BillVendorId],
-        CONVERT(VARCHAR(10), [BillDate], 120) AS [BillDate],
-        CONVERT(VARCHAR(10), [DueDate], 120) AS [DueDate],
-        [BillNumber],
-        [ImportBatchId],
-        [SourceFile],
-        [SourceRow]
-    FROM dbo.[ContractLabor]
-    WHERE [PublicId] = @PublicId;
+        cl.[Id],
+        cl.[PublicId],
+        cl.[RowVersion],
+        CONVERT(VARCHAR(19), cl.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), cl.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        cl.[VendorId],
+        cl.[ProjectId],
+        cl.[EmployeeName],
+        cl.[JobName],
+        CONVERT(VARCHAR(10), cl.[WorkDate], 120) AS [WorkDate],
+        cl.[TimeIn],
+        cl.[TimeOut],
+        cl.[BreakTime],
+        cl.[RegularHours],
+        cl.[OvertimeHours],
+        cl.[TotalHours],
+        cl.[HourlyRate],
+        cl.[Markup],
+        cl.[TotalAmount],
+        cl.[SubCostCodeId],
+        cl.[Description],
+        CONVERT(VARCHAR(10), cl.[BillingPeriodStart], 120) AS [BillingPeriodStart],
+        cl.[Status],
+        cl.[BillLineItemId],
+        cl.[BillVendorId],
+        CONVERT(VARCHAR(10), cl.[BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(10), cl.[DueDate], 120) AS [DueDate],
+        cl.[BillNumber],
+        cl.[ImportBatchId],
+        cl.[SourceFile],
+        cl.[SourceRow],
+        cl.[SourceTimeEntryId],
+        te.[PublicId] AS [SourceTimeEntryPublicId]
+    FROM dbo.[ContractLabor] cl
+    LEFT JOIN dbo.[TimeEntry] te ON te.[Id] = cl.[SourceTimeEntryId]
+    WHERE cl.[PublicId] = @PublicId;
 
     COMMIT TRANSACTION;
 END;
@@ -1483,7 +1494,8 @@ BEGIN
         [BillNumber],
         [ImportBatchId],
         [SourceFile],
-        [SourceRow]
+        [SourceRow],
+        [SourceTimeEntryId]
     FROM dbo.[ContractLabor]
     WHERE [BillLineItemId] = @BillLineItemId
     ORDER BY [WorkDate], [EmployeeName];

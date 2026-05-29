@@ -16,12 +16,13 @@ class ParentType:
     accepts/returns the lowercase form directly.
     """
 
-    BILL        = "bill"
-    EXPENSE     = "expense"
-    BILL_CREDIT = "bill_credit"
-    INVOICE     = "invoice"
+    BILL           = "bill"
+    EXPENSE        = "expense"
+    BILL_CREDIT    = "bill_credit"
+    INVOICE        = "invoice"
+    CONTRACT_LABOR = "contract_labor"
 
-    ALL = (BILL, EXPENSE, BILL_CREDIT, INVOICE)
+    ALL = (BILL, EXPENSE, BILL_CREDIT, INVOICE, CONTRACT_LABOR)
 
 
 @dataclass
@@ -46,6 +47,7 @@ class Review:
     status_color: Optional[str]
     user_firstname: Optional[str]
     user_lastname: Optional[str]
+    contract_labor_id: Optional[int] = None
     # FK back to the EmailMessage that triggered this Review state
     # transition (vendor invoice / forward archive / PM reply). NULL
     # when the transition was triggered by a non-email path (manual UI).

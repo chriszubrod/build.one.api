@@ -61,6 +61,15 @@ class ContractLabor:
     source_file: Optional[str]         # Original Excel filename
     source_row: Optional[int]          # Row number in Excel
 
+    # TimeTracking lineage — set by Phase 4 aggregation (NULL for legacy
+    # Excel-imported rows). Lets the React UI distinguish "From TimeTracking"
+    # vs "From Excel" via a single column.
+    source_time_entry_id: Optional[int] = None
+    # Public_id of the source TimeEntry — surfaced by ReadContractLaborByPublicId
+    # via a LEFT JOIN. Lets the React Edit page link to / fetch the source
+    # TimeEntry's TimeLog rows for the "Time Log Details" section.
+    source_time_entry_public_id: Optional[str] = None
+
     @property
     def row_version_bytes(self) -> Optional[bytes]:
         """Decode base64 row version to bytes."""

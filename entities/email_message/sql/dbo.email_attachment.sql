@@ -27,7 +27,10 @@ CREATE TABLE [dbo].[EmailAttachment]
     [CreatedDatetime] DATETIME2(3) NOT NULL,
     [ModifiedDatetime] DATETIME2(3) NULL,
     [EmailMessageId] BIGINT NOT NULL,
-    [GraphAttachmentId] NVARCHAR(255) NOT NULL,
+    -- Graph identifier uses binary collation so case matters when
+    -- comparing it. Default DB collation is case-insensitive and would
+    -- treat case-twin base64 IDs as equal — see migration 006.
+    [GraphAttachmentId] NVARCHAR(255) COLLATE Latin1_General_BIN NOT NULL,
     [Filename] NVARCHAR(512) NOT NULL,
     [ContentType] NVARCHAR(128) NULL,
     [SizeBytes] BIGINT NULL,

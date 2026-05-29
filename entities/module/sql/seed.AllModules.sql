@@ -134,8 +134,32 @@ IF NOT EXISTS (SELECT 1 FROM dbo.[Module] WHERE [Name] = 'Classification Overrid
     VALUES (SYSUTCDATETIME(), SYSUTCDATETIME(), 'Classification Overrides', '/admin/overrides');
 GO
 
--- Pending actions
-IF NOT EXISTS (SELECT 1 FROM dbo.[Module] WHERE [Name] = 'Pending Actions')
+-- Tasks (reviewer inbox — supersedes the legacy 'Pending Actions' Module which
+-- was seeded but never wired to a router or React page. Rename in-place so the
+-- existing Controller-role grant carries over.)
+IF EXISTS (SELECT 1 FROM dbo.[Module] WHERE [Name] = 'Pending Actions')
+    UPDATE dbo.[Module]
+       SET [Name] = 'Tasks',
+           [Route] = '/tasks',
+           [ModifiedDatetime] = SYSUTCDATETIME()
+     WHERE [Name] = 'Pending Actions';
+GO
+
+IF NOT EXISTS (SELECT 1 FROM dbo.[Module] WHERE [Name] = 'Tasks')
     INSERT INTO dbo.[Module] ([CreatedDatetime], [ModifiedDatetime], [Name], [Route])
-    VALUES (SYSUTCDATETIME(), SYSUTCDATETIME(), 'Pending Actions', '/pending-actions');
+    VALUES (SYSUTCDATETIME(), SYSUTCDATETIME(), 'Tasks', '/tasks');
+GO
+
+-- Employees (internal billable identity — paired with Vendor for the
+-- TimeTracking → ContractLabor → Bill / EmployeeLabor → Invoice flow).
+IF NOT EXISTS (SELECT 1 FROM dbo.[Module] WHERE [Name] = 'Employees')
+    INSERT INTO dbo.[Module] ([CreatedDatetime], [ModifiedDatetime], [Name], [Route])
+    VALUES (SYSUTCDATETIME(), SYSUTCDATETIME(), 'Employees', '/employee/list');
+GO
+
+-- Employee Labor (the internal labor aggregation that flows directly to
+-- Invoice, no Bill in between).
+IF NOT EXISTS (SELECT 1 FROM dbo.[Module] WHERE [Name] = 'Employee Labor')
+    INSERT INTO dbo.[Module] ([CreatedDatetime], [ModifiedDatetime], [Name], [Route])
+    VALUES (SYSUTCDATETIME(), SYSUTCDATETIME(), 'Employee Labor', '/employee-labor/list');
 GO

@@ -204,7 +204,11 @@ class _OutcomeBody(BaseModel):
             "Values: vendor_invoice | vendor_credit_memo | vendor_statement "
             "| vendor_expense_receipt | customer_payment | customer_question "
             "| customer_dispute | internal_reply | internal_forward "
-            "| vendor_newsletter | non_actionable | unknown."
+            "| vendor_newsletter | contract_labor_timesheet | non_actionable "
+            "| unknown. `contract_labor_timesheet` covers forwarded worker "
+            "timesheets (clock-in/out + address + work description) that the "
+            "contract_labor_specialist agent handles — distinct from "
+            "`non_actionable` so sender-history can route future emails."
         ),
     )
     classification_reason: Optional[str] = Field(
@@ -216,8 +220,11 @@ class _OutcomeBody(BaseModel):
         description=(
             "Controlled-vocabulary action the agent took. Values: "
             "delegated_to_bill_specialist | delegated_to_bill_credit_specialist "
-            "| delegated_to_expense_specialist | flagged_needs_review "
-            "| marked_irrelevant | marked_processed."
+            "| delegated_to_expense_specialist | delegated_to_contract_labor_specialist "
+            "| flagged_needs_review | marked_irrelevant | marked_processed. "
+            "`delegated_to_contract_labor_specialist` pairs with classification "
+            "`contract_labor_timesheet` — the email gets routed to the "
+            "contract_labor_specialist agent for ContractLabor row creation."
         ),
     )
     confidence: Optional[Decimal] = Field(

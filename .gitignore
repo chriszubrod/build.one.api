@@ -164,6 +164,7 @@ cython_debug/
 *.pyo
 
 .vscode/
+.claude/
 
 .DS_Store
 **/.DS_Store

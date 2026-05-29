@@ -1,5 +1,110 @@
 # Session Notes
 
+## Session: TimeTracking → ContractLabor / EmployeeLabor end-to-end (2026-05-28)
+
+Picked up the WIP commit `cb2bc33` ("wip: TimeTracking Phase 1 — employee labor, vendor rates, task inbox, audit fixes") and pushed it through to working end-to-end aggregation for Brayan's TimeEntry A4F5FA03 (id=24).
+
+### What shipped this session
+
+**Phase 0 — sproc review + bug fix.** Read `AggregateTimeEntryOnSubmit` (migrations 001+002) end-to-end. Found that v1+v2 created only **parent** ContractLabor / EmployeeLabor rows, no child line items — `bill_service.generate_bills_for_vendor` walks line items, so TT-sourced aggregation would silently produce unbillable rows. Authored two fix migrations:
+- `entities/time_entry/sql/migrations/007_2026_05_28_add_source_time_entry_id_to_line_items.sql` — adds `SourceTimeEntryId BIGINT NULL FK` + filtered indexes to `ContractLaborLineItem` and `EmployeeLaborLineItem`
+- `entities/time_entry/sql/migrations/008_2026_05_28_aggregate_with_line_items.sql` — re-issues `AggregateTimeEntryOnSubmit` with per-bucket line-item upsert (STRING_AGG of TimeLog notes for Description on INSERT; UPDATE only touches Hours/Rate/Markup/Price/LineDate so PM edits to SubCostCodeId / Description / IsBillable / BillLineItemId / InvoiceLineItemId are preserved across reject→edit→resubmit)
+
+**Phase 1 — schema migration to live DB.** Applied 10 SQL files in dependency order:
+1. `entities/employee/sql/dbo.employee.sql` (Employee table + 7 sprocs)
+2. `entities/user/sql/migrations/005_2026_05_27_worker_links.sql` (User.EmployeeId/VendorId + 2 FKs + 2 filtered uniques + UpdateUserWorkerLink)
+3. `entities/vendor/sql/migrations/002_2026_05_27_rate_columns.sql` (Vendor.HourlyRate + Markup + re-issued Vendor sprocs)
+4. `entities/vendor_project_rate/sql/dbo.vendor_project_rate.sql`
+5. `entities/employee_project_rate/sql/dbo.employee_project_rate.sql`
+6. `entities/employee_labor/sql/dbo.employee_labor.sql` (EmployeeLabor + EmployeeLaborLineItem + 12 sprocs)
+7. `entities/contract_labor/sql/migrations/2026_05_27_source_time_entry_id.sql` + re-issued `dbo.contract_labor.sql`
+8. `entities/time_entry/sql/migrations/003_2026_05_27_downstream_lock_check.sql` (`IsTimeEntryDownstreamLocked`)
+9. `entities/time_entry/sql/migrations/004_2026_05_28_billed_lineage.sql` (`ReadTimeEntryBilledLineage`)
+10. The two Phase 0 fix migrations (007 + 008)
+
+Verified all green via `INFORMATION_SCHEMA` + `sys.procedures` checks: 10 tables, 9 added columns, 6 new FKs, 12 new sprocs.
+
+**Phase 2 — backfill (Vendor rates + User→Vendor links).** Applied `scripts/backfill_vendor_rates_and_user_links.sql`. All 7 VENDOR_CONFIG names matched exactly to existing Vendor rows; rates set as `daily ÷ 8`. 6 of 7 workers had matching User rows; Denis Samuel Marcia Izaguirre has no User (Excel-only worker, no iOS) and was skipped.
+
+| Vendor | hourly | markup | User |
+|---|---|---|---|
+| Denis Samuel Marcia Izaguirre (256) | $30.00 | 50% | (none) |
+| Wilmer Diaz (1056) | $32.50 | 50% | id=41 |
+| Elmer Cordova (293) | $32.50 | 50% | id=37 |
+| Emilson O. Cordova Tercero (300) | $46.25 | 50% | id=38 |
+| Selvin Humberto Cordova Tercero (816) | $62.50 | 35% | id=40 |
+| Michael Jacobson (618) | $30.00 | 50% | id=39 |
+| Brayan Rafael Marcia Salina (1106) | $30.00 | 50% | id=36 |
+
+**Phase 3 — already wired in WIP.** `TimeEntryService.submit()` already calls `aggregate_for_billing()` (best-effort sidecar) and enqueues a `TimeTrackingOutbox` row for the time_tracking_specialist agent. No new sproc needed — labor row's status flips independently as PM completes review. The user's original "trigger on Approve" decision was superseded when they adopted the WIP design (aggregate on Submit).
+
+**Phase 9 — end-to-end test with Brayan's A4F5FA03 (TimeEntry id=24).** Invoked `dbo.AggregateTimeEntryOnSubmit @TimeEntryId = 24` directly (the entry was approved before this code shipped, so submit-time aggregation never fired). Result:
+- ContractLabor 513: VendorId=1106, ProjectId=93 (MR2-MAIN), WorkDate=2026-05-18, BillingPeriodStart=2026-05-16, TotalHours=9.13, HourlyRate=$30, Markup=0.50, **TotalAmount=$410.85**, Status=`pending_review`, EmployeeName='Brayan Marcia Salina'
+- ContractLaborLineItem 366: ContractLaborId=513, Hours=9.13, Rate=$30, Markup=0.50, Price=$410.85, SubCostCodeId=NULL (PM assigns), Description = concat of the 2 work-log notes via STRING_AGG, IsBillable=true, SourceTimeEntryId=24
+- Break log (TimeLog 52, LogType='break', 0.89h, no project) correctly excluded
+- **Idempotency confirmed**: 2nd invocation produces no duplicates (still 1 parent + 1 line)
+- **PM-edit preservation confirmed**: set SubCostCodeId=459 + custom Description on the line, re-ran aggregation, both were preserved (sproc only updates auto-recomputable fields on UPDATE)
+
+Reset the test line item back to fresh-aggregation state (SCC=NULL, original concat Description) so the PM sees a clean row in the existing ContractLabor review UI.
+
+### Deferred to follow-up sessions
+
+Phases 4, 5, 6, 8, 10 of the revised plan — tracked in TODO.md under "TimeTracking integration follow-ups":
+- **Phase 4** — VENDOR_CONFIG dict cleanup: rewrite `bill_service.py::_get_rate_for_vendor()` to read from `Vendor.HourlyRate` + `VendorProjectRate` via `ReadEffectiveRateForVendorProject`; delete the hardcoded dict
+- **Phase 5** — Invoice EmployeeLabor support: add `SourceType='EmployeeLabor'` branch to `InvoiceService._mark_source_as_billed()`; create Invoice lines from EmployeeLabor rows; extend `enrich_line_items()`
+- **Phase 6** — `time_tracking_specialist` agent tools: implement `validate_time_entry_completeness` + `flag_time_entry_for_human_review`; verify `process_time_tracking` Function App timer cadence in Azure
+- **Phase 8** — React UI: Worker section on `/user/:id`, HourlyRate+Markup on Vendor / Employee edit pages, per-(worker,project) rate overrides UI, EmployeeLabor CRUD pages
+- **Phase 10** — VENDOR_CONFIG dict deletion + final cleanup (post-Phase 4)
+
+### Key insights
+
+1. **The handoff doc was stale.** It described the project as if Phase 0 had not been done. In reality, the user had committed cb2bc33 in a prior session (Employee/EmployeeLabor split + per-project rates + TimeTrackingOutbox + aggregation sproc), but migrations had not run. Re-survey before implementing is the right move whenever a doc and a recent WIP disagree.
+2. **The WIP aggregation sproc had a real bug** — created parents but no children, so `bill_service.generate_bills_for_vendor` would silently no-op. Fixed inline before applying any migrations. Without this fix, Phase 9's end-to-end test would have produced an unbillable row.
+3. **The Employee/Vendor split + per-project rate overrides design is strictly more capable** than the flat-rate single-table design originally locked in this session's first 8 decisions. User chose to adopt the WIP design; subsequent steps walked the upgrade path cleanly with no data loss.
+4. **Aggregation runs on Submit, not Approve.** The PM workflow is two-stage: office reviews+approves the TimeEntry (validates hours); PM separately reviews+completes the ContractLabor (assigns SubCostCodeId). The user's initial "on Approve" mental model conflated the two stages.
+
+---
+
+## Session: Multi-repo bug audit — API findings (2026-05-20)
+
+Ran a comprehensive read-only SRE-style audit across all 5 sub-repos using 10 parallel Explore agents. No code modified, no commits. Findings recorded:
+- Centralized audit memory: `~/.claude/projects/-Users-chris-Applications-build-one/memory/project_audit_2026_05_20.md` (cross-repo patterns, root causes, Tier-1 fix list, what NOT to change yet).
+- API-specific findings appended to top of this repo's `TODO.md` under "Audit 2026-05-20 — API findings" — ~40 items grouped by Critical / High / Medium / Low.
+
+### Highest-severity API findings (full list in TODO.md)
+- **CRIT:** VendorCredit `float()` corrupts currency on every QBO round-trip (Bill/Purchase repos use `Decimal(str(...))` correctly; VendorCredit regressed). Same bug in BillCredit complete service.
+- **CRIT:** `ProcessEngine._infer_workflow_type` references nonexistent `context.metadata` — latent AttributeError on next email-intake rewire.
+- **CRIT:** Latent SQL injection in `shared/access.py::_check()` via f-string UDF name — exploitable the first refactor that lets the value come from request data.
+- **HIGH:** OAuth refresh race (QBO + MS) — `sp_getapplock` acquired AFTER the read; concurrent callers can each POST the pre-lock refresh_token.
+- **HIGH:** `_run_complete_bill` and peers are fire-and-forget BackgroundTasks with no watchdog — crash post-finalize / pre-outbox leaves bill stuck `IsDraft=False`.
+- **HIGH:** Completion-result endpoints leak across tenants (`Modules.BILLS` gate only, no `assert_can_access_bill()`).
+- **HIGH:** Workflow row + WorkflowEvent write not atomic; workflow JSON serializer missing UUID + bytes handlers.
+- **HIGH:** JWT missing `aud`/`iss` validation; `/admin/auth/set-credentials/{user_public_id}` missing CSRF; no web logout endpoint.
+- **HIGH:** `decrypt_if_encrypted` masquerades ciphertext as plaintext on EncryptionError (silent fail on key rotation).
+- **HIGH:** Mail draft 2-step PATCH has no rollback; Excel 423 (Locked) treated as non-retryable.
+
+### Validation results
+- `python3 -m py_compile` across all 6,497 .py files: **PASS** (no syntax errors).
+- `python3 -m py_compile function_app.py` (scheduler): **PASS**.
+- `python3 -m py_compile` (build.one.mcp src + tests): **PASS**.
+
+### Out of scope this session
+- No fixes applied.
+- Stored-procedure source under `entities/*/sql/` not exhaustively walked for the SP NULL-overwrite anti-pattern — relied on the memory's stated invariant. Future task: grep `Update*.sql` for missing `CASE WHEN` guards.
+- `integrations/sync/` reconciliation drivers were touched lightly.
+
+### Followups expected next session
+User prioritized iOS first (see `build.one.ios/SESSION_NOTES.md`). API Tier-1 fixes from the audit memory remain to be picked up in priority order:
+1. VendorCredit + BillCredit `float()` → `Decimal(str())`.
+2. Add `assert_can_access_*()` to completion-result endpoints.
+3. Add `_require_csrf` to admin set-credentials.
+4. Extend workflow `_json_serial` with UUID + bytes.
+5. Fix `process_engine.py` `context.metadata` → `context.payload`.
+6. Whitelist UDF names in `shared/access.py::_check()`.
+7. Add `try/finally cursor.close()` in `_check()`.
+
+---
+
 ## Session: HP2-09 InvoiceAgent run + re-run for Q44862 (May 14–15, 2026)
 
 ### Overview

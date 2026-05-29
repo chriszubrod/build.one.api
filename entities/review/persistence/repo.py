@@ -46,6 +46,7 @@ class ReviewRepository:
                 expense_id=row.ExpenseId,
                 bill_credit_id=row.BillCreditId,
                 invoice_id=row.InvoiceId,
+                contract_labor_id=getattr(row, "ContractLaborId", None),
                 status_name=row.StatusName,
                 status_sort_order=row.StatusSortOrder,
                 status_is_final=bool(row.StatusIsFinal),
@@ -72,6 +73,7 @@ class ReviewRepository:
         expense_id: Optional[int] = None,
         bill_credit_id: Optional[int] = None,
         invoice_id: Optional[int] = None,
+        contract_labor_id: Optional[int] = None,
         email_message_id: Optional[int] = None,
         created_by_user_id: Optional[int] = None,
     ) -> Review:
@@ -89,6 +91,7 @@ class ReviewRepository:
                         "ExpenseId": expense_id,
                         "BillCreditId": bill_credit_id,
                         "InvoiceId": invoice_id,
+                        "ContractLaborId": contract_labor_id,
                         "EmailMessageId": email_message_id,
                         "CreatedByUserId": created_by_user_id,
                     },
@@ -151,6 +154,30 @@ class ReviewRepository:
     def read_by_invoice_id(self, invoice_id: int) -> list[Review]:
         return self._read_list("ReadReviewsByInvoiceId", {"InvoiceId": invoice_id})
 
+    def read_by_contract_labor_id(self, contract_labor_id: int) -> list[Review]:
+        return self._read_list(
+            "ReadReviewsByContractLaborId",
+            {"ContractLaborId": contract_labor_id},
+        )
+
+    def delete_by_contract_labor_id(self, contract_labor_id: int) -> None:
+        """Delete all Review rows for a ContractLabor parent.
+
+        Insert-only audit otherwise; this exists so ContractLabor hard-delete
+        doesn't trip FK_Review_ContractLabor.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="DeleteReviewsByContractLaborId",
+                    params={"ContractLaborId": contract_labor_id},
+                )
+        except Exception as error:
+            logger.error(f"Error during delete reviews by contract_labor id {contract_labor_id}: {error}")
+            raise map_database_error(error)
+
     # ---------------------------------------------------------------------
     # Per-parent current (latest) reads
     # ---------------------------------------------------------------------
@@ -166,6 +193,12 @@ class ReviewRepository:
 
     def read_current_by_invoice_id(self, invoice_id: int) -> Optional[Review]:
         return self._read_current("ReadCurrentReviewByInvoiceId", {"InvoiceId": invoice_id})
+
+    def read_current_by_contract_labor_id(self, contract_labor_id: int) -> Optional[Review]:
+        return self._read_current(
+            "ReadCurrentReviewByContractLaborId",
+            {"ContractLaborId": contract_labor_id},
+        )
 
     def read_current_by_bill_ids(self, bill_ids: list[int]) -> dict[int, Review]:
         """Batch lookup of the latest Review per Bill. Returns

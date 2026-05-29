@@ -165,23 +165,29 @@ def read_contract_labor_billing_periods(
 def read_contract_labor_vendor_config(
     current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR)),
 ):
-    """
-    VENDOR_CONFIG dict (rate + markup + address) keyed by vendor name.
+    """Per-vendor rate/markup/address — used by the React Contract Labor edit
+    page to auto-fill new line items.
 
-    Single source of truth lives in bill_service.py. Exposed here so the
-    React Edit page can auto-fill rate + markup on new line items without
-    duplicating the config in TypeScript.
+    Rate + markup are read from dbo.Vendor.HourlyRate/Markup (Phase 2). Address
+    is still merged from the in-process VENDOR_CONFIG dict — the address fields
+    will move to VendorAddress in a follow-on; for now they coexist.
+
+    Returned shape is unchanged so existing React callers keep working.
     """
+    from entities.vendor.business.service import VendorService
     from entities.contract_labor.business.bill_service import VENDOR_CONFIG
-    payload = {
-        name: {
+
+    payload: dict = {}
+    for v in VendorService().read_all():
+        if not getattr(v, "is_contract_labor", False) or getattr(v, "is_deleted", False):
+            continue
+        cfg = VENDOR_CONFIG.get(v.name, {})
+        payload[v.name] = {
             "address": cfg.get("address"),
             "city_state_zip": cfg.get("city_state_zip"),
-            "rate": str(cfg["rate"]) if cfg.get("rate") is not None else None,
-            "markup": str(cfg["markup"]) if cfg.get("markup") is not None else None,
+            "rate": str(v.hourly_rate) if getattr(v, "hourly_rate", None) is not None else None,
+            "markup": str(v.markup) if getattr(v, "markup", None) is not None else None,
         }
-        for name, cfg in VENDOR_CONFIG.items()
-    }
     return item_response(payload)
 
 
@@ -556,6 +562,41 @@ async def import_contract_labor_excel(
         "unmatched_vendors": result["unmatched_vendors"],
         "unmatched_projects": result["unmatched_projects"],
     })
+
+
+@router.post("/import/via-timetracking")
+async def import_contract_labor_excel_via_timetracking(
+    file: UploadFile = File(...),
+    import_batch_id: Optional[str] = Form(None),
+    current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_create")),
+):
+    """Phase 6b — opt-in import path that routes Excel rows through
+    TimeEntry + TimeLog → Phase 4 aggregation, instead of writing
+    ContractLabor rows directly.
+
+    Use this once Workers are properly linked via UserProfile (Phase 1g
+    backfill). The legacy `/import` endpoint stays in place — switch the
+    React Import page over to this URL when you're ready.
+
+    Requires the Excel `EmployeeName` cell to match an existing User by
+    "Firstname Lastname" exactly (first word vs the rest).
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required")
+
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="File must be an Excel file (.xlsx or .xls)")
+
+    file_content = await file.read()
+
+    import_service = ContractLaborImportService()
+    result = import_service.import_excel_via_timetracking(
+        file_content=file_content,
+        filename=file.filename,
+        import_batch_id=import_batch_id,
+    )
+
+    return item_response(result)
 
 
 @router.post("/import/preview")

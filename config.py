@@ -139,6 +139,8 @@ class Settings(BaseSettings):
     email_agent_password: Optional[str] = None
     contract_labor_agent_username: Optional[str] = None
     contract_labor_agent_password: Optional[str] = None
+    time_tracking_agent_username: Optional[str] = None
+    time_tracking_agent_password: Optional[str] = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

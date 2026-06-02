@@ -105,6 +105,7 @@ from integrations.intuit.qbo.purchase.api.router import router as qbo_purchase_a
 from integrations.intuit.qbo.vendorcredit.api.router import router as qbo_vendorcredit_api_router
 from integrations.intuit.qbo.bill.api.router import router as qbo_bill_api_router
 from integrations.intuit.qbo.invoice.api.router import router as qbo_invoice_api_router
+from integrations.intuit.qbo.report.api.router import router as qbo_report_api_router
 
 
 logger = logging.getLogger(__name__)
@@ -205,6 +206,7 @@ app.include_router(qbo_purchase_api_router)
 app.include_router(qbo_vendorcredit_api_router)
 app.include_router(qbo_bill_api_router)
 app.include_router(qbo_invoice_api_router)
+app.include_router(qbo_report_api_router)
 app.include_router(ms_auth_api_router)
 app.include_router(ms_sharepoint_site_api_router)
 app.include_router(ms_sharepoint_drive_api_router)

@@ -415,7 +415,8 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
-    SELECT COUNT(*) AS [Count]
+    -- alias MUST be [TotalCount] — TimeEntryRepository.count() reads row.TotalCount
+    SELECT COUNT(*) AS [TotalCount]
     FROM dbo.[TimeEntry] te
     LEFT JOIN dbo.[User] u ON te.[UserId] = u.[Id]
     OUTER APPLY (

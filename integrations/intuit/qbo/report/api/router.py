@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 # Local Imports
 from integrations.intuit.qbo.auth.business.service import QboAuthService
+from integrations.intuit.qbo.base.errors import QboValidationError
 from integrations.intuit.qbo.report.external.client import QboReportClient
 from shared.api.responses import item_response
 from shared.rbac import require_module_api
@@ -57,8 +58,11 @@ def get_qbo_report_router(
     }
     params = {k: v for k, v in params.items() if v is not None}
 
-    with QboReportClient(realm_id=resolved_realm_id) as client:
-        data = client.get_report(report_name, params=params)
+    try:
+        with QboReportClient(realm_id=resolved_realm_id) as client:
+            data = client.get_report(report_name, params=params)
+    except QboValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     return item_response({
         "report_name": report_name,

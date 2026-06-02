@@ -75,6 +75,7 @@ SYSTEM_ADMIN_GRANT = _SystemAdminGrant()
 VALID_PERMISSIONS = frozenset({
     "can_create", "can_read", "can_update", "can_delete",
     "can_submit", "can_approve", "can_complete",
+    "can_view_team",
 })
 
 # ---------------------------------------------------------------------------
@@ -112,6 +113,10 @@ def _get_user_permissions(current_user: dict) -> Optional[object]:
         SYSTEM_ADMIN_GRANT             — if `current_user["is_system_admin"]`
         { module_name: SimpleNamespace } — for normal users with permissions
         None                           — if the user has no access
+
+    Side effect: publishes the set of modules with `can_view_team=1` to the
+    `current_can_view_team_modules` ContextVar so service-layer code can
+    consult it without re-hitting the cache.
     """
     user_sub = current_user.get("sub")
     if not user_sub:
@@ -130,6 +135,7 @@ def _get_user_permissions(current_user: dict) -> Optional[object]:
         if cache_key in _permission_cache:
             cached_time, cached_perms = _permission_cache[cache_key]
             if now - cached_time < CACHE_TTL_SECONDS:
+                _publish_can_view_team_to_contextvar(cached_perms)
                 return cached_perms
 
     perms = _resolve_permissions_from_db(
@@ -141,7 +147,32 @@ def _get_user_permissions(current_user: dict) -> Optional[object]:
     with _cache_lock:
         _permission_cache[cache_key] = (time.time(), perms)
 
+    _publish_can_view_team_to_contextvar(perms)
     return perms
+
+
+def _publish_can_view_team_to_contextvar(perms: Optional[object]) -> None:
+    """
+    Sync the resolved permission map's `can_view_team` flags into the
+    `current_can_view_team_modules` ContextVar. System admins skip this
+    (they bypass via `current_is_system_admin` directly); unauthenticated
+    or empty-perm requests clear the var to the empty set.
+    """
+    from shared.authz import current_can_view_team_modules  # local import — avoid cycle at module load
+
+    if perms is SYSTEM_ADMIN_GRANT or perms is None:
+        current_can_view_team_modules.set(frozenset())
+        return
+
+    if isinstance(perms, dict):
+        modules = frozenset(
+            name for name, rm in perms.items()
+            if getattr(rm, "can_view_team", False)
+        )
+        current_can_view_team_modules.set(modules)
+        return
+
+    current_can_view_team_modules.set(frozenset())
 
 
 def _resolve_permissions_from_db(
@@ -191,6 +222,7 @@ def _resolve_permissions_from_db(
                         can_submit=bool(rm.can_submit),
                         can_approve=bool(rm.can_approve),
                         can_complete=bool(rm.can_complete),
+                        can_view_team=bool(getattr(rm, "can_view_team", False)),
                     )
                 else:
                     existing.can_create = existing.can_create or bool(rm.can_create)
@@ -200,6 +232,7 @@ def _resolve_permissions_from_db(
                     existing.can_submit = existing.can_submit or bool(rm.can_submit)
                     existing.can_approve = existing.can_approve or bool(rm.can_approve)
                     existing.can_complete = existing.can_complete or bool(rm.can_complete)
+                    existing.can_view_team = existing.can_view_team or bool(getattr(rm, "can_view_team", False))
 
     # Layer in additive UserModule grants — read-only, never downgrades a
     # role-granted module.
@@ -222,6 +255,7 @@ def _resolve_permissions_from_db(
                 can_submit=False,
                 can_approve=False,
                 can_complete=False,
+                can_view_team=False,
             )
 
     if not perms:

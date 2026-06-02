@@ -10,9 +10,12 @@ from entities.time_entry.persistence.repo import TimeEntryRepository
 from entities.time_entry.persistence.time_entry_status_repo import TimeEntryStatusRepository
 from entities.time_entry.persistence.time_log_repo import TimeLogRepository
 from entities.user.business.service import UserService
-from shared.authz import current_user_id, current_is_system_admin
+from shared.authz import current_user_id, current_is_system_admin, current_can_view_team
 
 logger = logging.getLogger(__name__)
+
+# Time Tracking module name — matches the row in `dbo.Module`.
+_TIME_TRACKING_MODULE = "Time Tracking"
 
 # Valid status transitions
 VALID_TRANSITIONS = {
@@ -24,9 +27,20 @@ VALID_TRANSITIONS = {
 }
 
 
-def _actor_scope() -> Tuple[Optional[int], Optional[bool]]:
-    """Read the current request actor from ContextVars."""
-    return current_user_id.get(), current_is_system_admin.get()
+def _actor_scope() -> Tuple[Optional[int], Optional[bool], bool]:
+    """
+    Read the current request actor from ContextVars.
+
+    Returns `(user_id, is_system_admin, can_view_team)` where
+    `can_view_team` is True if the actor's role grants `can_view_team` on the
+    Time Tracking module — opens row visibility to TimeEntries on any project
+    in the actor's UserProject set, in addition to their own rows.
+    """
+    return (
+        current_user_id.get(),
+        current_is_system_admin.get(),
+        current_can_view_team(_TIME_TRACKING_MODULE),
+    )
 
 
 class TimeEntryService:
@@ -95,42 +109,47 @@ class TimeEntryService:
         """
         Read all time entries the current actor can access.
         """
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
         return self.repo.read_all(
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
 
     def read_by_id(self, id: int) -> Optional[TimeEntry]:
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
         return self.repo.read_by_id(
             id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
 
     def read_by_public_id(self, public_id: str) -> Optional[TimeEntry]:
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
         return self.repo.read_by_public_id(
             public_id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
 
     def read_by_user_id(self, user_id: int) -> list[TimeEntry]:
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
         return self.repo.read_by_user_id(
             user_id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
 
     def read_by_project_id(self, project_id: int) -> list[TimeEntry]:
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
         return self.repo.read_by_project_id(
             project_id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
 
     def read_paginated(
@@ -147,7 +166,7 @@ class TimeEntryService:
         sort_by: str = "WorkDate",
         sort_direction: str = "DESC",
     ) -> list[TimeEntry]:
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
         return self.repo.read_paginated(
             page_number=page_number,
             page_size=page_size,
@@ -161,6 +180,7 @@ class TimeEntryService:
             sort_direction=sort_direction,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
 
     def count(
@@ -173,7 +193,7 @@ class TimeEntryService:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
     ) -> int:
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
         return self.repo.count(
             search_term=search_term,
             user_id=user_id,
@@ -183,6 +203,7 @@ class TimeEntryService:
             end_date=end_date,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
 
     def update_by_public_id(
@@ -198,12 +219,13 @@ class TimeEntryService:
         """
         Update a time entry by public ID. Only allowed when status is 'draft'.
         """
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
 
         existing = self.repo.read_by_public_id(
             public_id=public_id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
         if not existing:
             raise ValueError(f"TimeEntry with public_id '{public_id}' not found.")
@@ -244,6 +266,7 @@ class TimeEntryService:
             existing,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
 
     def delete_by_public_id(
@@ -256,12 +279,13 @@ class TimeEntryService:
         """
         Delete a time entry by public ID. Only allowed when status is 'draft'.
         """
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
 
         existing = self.repo.read_by_public_id(
             public_id=public_id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
         if not existing:
             raise ValueError(f"TimeEntry with public_id '{public_id}' not found.")
@@ -277,6 +301,7 @@ class TimeEntryService:
             id=existing.id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
 
     def submit(self, public_id: str, *, user_id: int) -> TimeEntry:
@@ -284,11 +309,12 @@ class TimeEntryService:
         Submit a time entry for review. Transitions from 'draft' to 'submitted'.
         Caller must be the entry owner (enforced by row-scope at read).
         """
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
         existing = self.repo.read_by_public_id(
             public_id=public_id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
         if not existing:
             raise ValueError(f"TimeEntry with public_id '{public_id}' not found.")

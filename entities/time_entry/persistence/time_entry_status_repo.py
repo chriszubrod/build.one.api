@@ -96,7 +96,8 @@ class TimeEntryStatusRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> list[TimeEntryStatus]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->list[TimeEntryStatus]:
         """
         Read all status records for a specific time entry, scoped to the actor.
         """
@@ -110,6 +111,7 @@ class TimeEntryStatusRepository:
                         "TimeEntryId": time_entry_id,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 rows = cursor.fetchall()
@@ -124,7 +126,8 @@ class TimeEntryStatusRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> Optional[TimeEntryStatus]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->Optional[TimeEntryStatus]:
         """
         Read the current (most recent) status for a time entry, scoped to the actor.
         """
@@ -138,6 +141,7 @@ class TimeEntryStatusRepository:
                         "TimeEntryId": time_entry_id,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 row = cursor.fetchone()

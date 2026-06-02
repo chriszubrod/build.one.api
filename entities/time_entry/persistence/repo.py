@@ -95,7 +95,8 @@ class TimeEntryRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> list[TimeEntry]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->list[TimeEntry]:
         """
         Read time entries, scoped to the actor.
         """
@@ -108,6 +109,7 @@ class TimeEntryRepository:
                     params={
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 rows = cursor.fetchall()
@@ -122,7 +124,8 @@ class TimeEntryRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> Optional[TimeEntry]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->Optional[TimeEntry]:
         """
         Read a time entry by ID, scoped to the actor.
         """
@@ -136,6 +139,7 @@ class TimeEntryRepository:
                         "Id": id,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 row = cursor.fetchone()
@@ -150,7 +154,8 @@ class TimeEntryRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> Optional[TimeEntry]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->Optional[TimeEntry]:
         """
         Read a time entry by public ID, scoped to the actor.
         """
@@ -164,6 +169,7 @@ class TimeEntryRepository:
                         "PublicId": public_id,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 row = cursor.fetchone()
@@ -178,7 +184,8 @@ class TimeEntryRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> list[TimeEntry]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->list[TimeEntry]:
         """
         Read all time entries for a specific user, scoped to the actor.
         """
@@ -192,6 +199,7 @@ class TimeEntryRepository:
                         "UserId": user_id,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 rows = cursor.fetchall()
@@ -206,7 +214,8 @@ class TimeEntryRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> list[TimeEntry]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->list[TimeEntry]:
         """
         Read all time entries for a specific project, scoped to the actor.
         """
@@ -220,6 +229,7 @@ class TimeEntryRepository:
                         "ProjectId": project_id,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 rows = cursor.fetchall()
@@ -243,7 +253,8 @@ class TimeEntryRepository:
         sort_direction: str = "DESC",
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> list[TimeEntry]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->list[TimeEntry]:
         """
         Read time entries with pagination and filtering, scoped to the actor.
         """
@@ -266,6 +277,7 @@ class TimeEntryRepository:
                         "SortDirection": sort_direction,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 rows = cursor.fetchall()
@@ -285,7 +297,8 @@ class TimeEntryRepository:
         end_date: Optional[str] = None,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> int:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->int:
         """
         Count time entries matching the filter criteria, scoped to the actor.
         """
@@ -304,6 +317,7 @@ class TimeEntryRepository:
                         "EndDate": end_date,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 row = cursor.fetchone()
@@ -318,7 +332,8 @@ class TimeEntryRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> Optional[TimeEntry]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->Optional[TimeEntry]:
         """
         Update a time entry by ID, scoped to the actor.
         """
@@ -336,6 +351,7 @@ class TimeEntryRepository:
                         "Note": time_entry.note,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 row = cursor.fetchone()
@@ -360,7 +376,8 @@ class TimeEntryRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> Optional[TimeEntry]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->Optional[TimeEntry]:
         """
         Delete a time entry by ID, scoped to the actor.
         """
@@ -374,6 +391,7 @@ class TimeEntryRepository:
                         "Id": id,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 row = cursor.fetchone()
@@ -388,7 +406,8 @@ class TimeEntryRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> Optional[TimeEntry]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->Optional[TimeEntry]:
         """
         Delete a time entry by public ID, scoped to the actor.
         """

@@ -24,6 +24,7 @@ class RoleModule:
     can_submit: Optional[bool] = False
     can_approve: Optional[bool] = False
     can_complete: Optional[bool] = False
+    can_view_team: Optional[bool] = False
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

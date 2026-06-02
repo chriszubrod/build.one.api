@@ -35,6 +35,15 @@ current_is_system_admin: ContextVar[bool] = ContextVar(
     "current_is_system_admin", default=False
 )
 
+# Module names where the active subject holds the `can_view_team` RoleModule
+# flag (cross-user row visibility within their UserProject set). Populated by
+# `shared/rbac.py::_get_user_permissions` after the cache resolves. Empty for
+# unauthenticated callers and for system admins (admins bypass via
+# `current_is_system_admin` instead — no need to enumerate modules).
+current_can_view_team_modules: ContextVar[frozenset] = ContextVar(
+    "current_can_view_team_modules", default=frozenset()
+)
+
 
 def set_authz_context(
     *,
@@ -46,10 +55,16 @@ def set_authz_context(
     Populate the per-request ContextVars. Called by the auth dependency
     after a JWT is verified. Safe to call multiple times within a request
     (e.g. after a switch-company refresh).
+
+    Resets `current_can_view_team_modules` to empty — `shared/rbac.py`
+    repopulates it after the permission cache resolves. The reset matters
+    on calls that bypass the RBAC dependency (drain-secret admin routes,
+    outbox workers) so a stale set from a prior request can't leak.
     """
     current_user_id.set(user_id)
     current_company_id.set(company_id)
     current_is_system_admin.set(bool(is_system_admin))
+    current_can_view_team_modules.set(frozenset())
 
 
 def clear_authz_context() -> None:
@@ -57,3 +72,14 @@ def clear_authz_context() -> None:
     current_user_id.set(None)
     current_company_id.set(None)
     current_is_system_admin.set(False)
+    current_can_view_team_modules.set(frozenset())
+
+
+def current_can_view_team(module_name: str) -> bool:
+    """
+    True if the current actor can see other users' rows in the given module
+    via UserProject overlap. System admins always return True (sweep bypass).
+    """
+    if current_is_system_admin.get():
+        return True
+    return module_name in current_can_view_team_modules.get()

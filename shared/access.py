@@ -29,7 +29,7 @@ silent leak. Scheduler / system callers reach the admin bypass via the
 """
 from typing import Optional
 
-from shared.authz import current_user_id, current_is_system_admin
+from shared.authz import current_user_id, current_is_system_admin, current_can_view_team
 from shared.database import get_connection
 
 
@@ -86,6 +86,28 @@ def _check(udf_name: str, entity_id: int) -> bool:
             cursor.close()
 
 
+def _check_time_entry(time_entry_id: int) -> bool:
+    """
+    Run `SELECT dbo.UserCanAccessTimeEntry(@uid, 0, @can_view_team, @id)`.
+    Distinct from `_check` because the TimeEntry UDF takes a 4th parameter
+    (`@ActorCanViewTeam`) — the project-scope branch that opens visibility
+    on rows whose TimeLogs touch the actor's UserProject set.
+    """
+    actor_user_id = current_user_id.get()
+    can_view_team = current_can_view_team("Time Tracking")
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT dbo.UserCanAccessTimeEntry(?, 0, ?, ?)",
+                (actor_user_id, 1 if can_view_team else 0, time_entry_id),
+            )
+            row = cursor.fetchone()
+            return bool(row[0]) if row and row[0] is not None else False
+        finally:
+            cursor.close()
+
+
 def assert_can_access_bill(bill_id: Optional[int]) -> None:
     if bill_id is None or _should_bypass():
         return
@@ -113,3 +135,19 @@ def assert_can_access_project(project_id: Optional[int]) -> None:
         return
     if not _check("UserCanAccessProject", project_id):
         raise EntityNotAccessibleError("Project", project_id)
+
+
+def assert_can_access_time_entry(time_entry_id: Optional[int]) -> None:
+    """
+    Gate direct-id reads/mutations of a TimeEntry.
+
+    Visibility rules (mirrors `dbo.UserCanAccessTimeEntry`):
+      - System admins bypass (handled by `_should_bypass`).
+      - Owners (TimeEntry.UserId == actor) always pass.
+      - Actors holding `can_view_team` on Time Tracking pass when any of the
+        entry's TimeLogs has a ProjectId in their UserProject set.
+    """
+    if time_entry_id is None or _should_bypass():
+        return
+    if not _check_time_entry(time_entry_id):
+        raise EntityNotAccessibleError("TimeEntry", time_entry_id)

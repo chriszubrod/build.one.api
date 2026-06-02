@@ -49,6 +49,7 @@ class RoleModuleRepository:
                 can_submit=row.CanSubmit,
                 can_approve=row.CanApprove,
                 can_complete=row.CanComplete,
+                can_view_team=bool(getattr(row, "CanViewTeam", False)),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during role module mapping: {error}")
@@ -69,6 +70,7 @@ class RoleModuleRepository:
         can_submit: bool = False,
         can_approve: bool = False,
         can_complete: bool = False,
+        can_view_team: bool = False,
     ) -> RoleModule:
         """
         Create a new role module.
@@ -89,6 +91,7 @@ class RoleModuleRepository:
                         "CanSubmit": can_submit,
                         "CanApprove": can_approve,
                         "CanComplete": can_complete,
+                        "CanViewTeam": can_view_team,
                     },
                 )
                 row = cursor.fetchone()
@@ -230,6 +233,7 @@ class RoleModuleRepository:
                         "CanSubmit": role_module.can_submit,
                         "CanApprove": role_module.can_approve,
                         "CanComplete": role_module.can_complete,
+                        "CanViewTeam": bool(role_module.can_view_team),
                     },
                 )
                 row = cursor.fetchone()

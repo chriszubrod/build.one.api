@@ -115,7 +115,8 @@ class TimeLogRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> list[TimeLog]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->list[TimeLog]:
         """
         Read all time logs for a specific time entry, scoped to the actor.
         """
@@ -129,6 +130,7 @@ class TimeLogRepository:
                         "TimeEntryId": time_entry_id,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 rows = cursor.fetchall()
@@ -143,7 +145,8 @@ class TimeLogRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> Optional[TimeLog]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->Optional[TimeLog]:
         """
         Read a time log by ID, scoped to the actor.
         """
@@ -157,6 +160,7 @@ class TimeLogRepository:
                         "Id": id,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 row = cursor.fetchone()
@@ -171,7 +175,8 @@ class TimeLogRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> Optional[TimeLog]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->Optional[TimeLog]:
         """
         Read a time log by public ID, scoped to the actor.
         """
@@ -185,6 +190,7 @@ class TimeLogRepository:
                         "PublicId": public_id,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 row = cursor.fetchone()
@@ -199,7 +205,8 @@ class TimeLogRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> Optional[TimeLog]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->Optional[TimeLog]:
         """
         Update a time log by ID, scoped to the actor.
         """
@@ -222,6 +229,7 @@ class TimeLogRepository:
                         "Note": time_log.note,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 row = cursor.fetchone()
@@ -246,7 +254,8 @@ class TimeLogRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> Optional[TimeLog]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->Optional[TimeLog]:
         """
         Delete a time log by ID, scoped to the actor.
         """
@@ -260,6 +269,7 @@ class TimeLogRepository:
                         "Id": id,
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        "ActorCanViewTeam": _bit(actor_can_view_team),
                     },
                 )
                 row = cursor.fetchone()
@@ -274,7 +284,8 @@ class TimeLogRepository:
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> Optional[TimeLog]:
+        actor_can_view_team: Optional[bool] = False,
+    ) ->Optional[TimeLog]:
         """
         Delete a time log by public ID, scoped to the actor.
         """

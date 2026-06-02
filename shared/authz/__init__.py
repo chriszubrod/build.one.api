@@ -9,6 +9,8 @@ from shared.authz.context import (
     current_user_id,
     current_company_id,
     current_is_system_admin,
+    current_can_view_team_modules,
+    current_can_view_team,
     set_authz_context,
     clear_authz_context,
 )
@@ -22,6 +24,8 @@ __all__ = [
     "current_user_id",
     "current_company_id",
     "current_is_system_admin",
+    "current_can_view_team_modules",
+    "current_can_view_team",
     "set_authz_context",
     "clear_authz_context",
     "ROW_SCOPE_RULES",

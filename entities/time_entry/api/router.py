@@ -35,7 +35,7 @@ def _resolve_user_id(current_user: dict) -> int:
     return auth.user_id
 
 
-def _entry_dict_with_current_status(entry) -> dict:
+def _entry_dict_with_current_status(entry, *, project_ids: Optional[list[int]] = None) -> dict:
     """
     Inject `current_status` into a TimeEntry's serialized dict by reading
     the latest TimeEntryStatus row. The column doesn't exist on the
@@ -50,6 +50,10 @@ def _entry_dict_with_current_status(entry) -> dict:
     forwards the actor; submit/approve/reject sproc already proved the
     caller is authorized). So we bypass scope on the status lookup the
     same way TimeEntryService.submit/approve/reject already do.
+
+    `project_ids` — when supplied (list endpoints), populates
+    `distinct_project_ids` for the Project column on the React list page.
+    Single-entry endpoints can omit it; the field stays absent.
     """
     d = entry.to_dict()
     current = TimeEntryStatusService().repo.read_current(
@@ -57,6 +61,8 @@ def _entry_dict_with_current_status(entry) -> dict:
         actor_is_system_admin=True,
     )
     d["current_status"] = current.status if current else "draft"
+    if project_ids is not None:
+        d["distinct_project_ids"] = project_ids
     return d
 
 router = APIRouter(
@@ -140,8 +146,20 @@ def read_time_entries(
     # Inject current_status into every entry — see _entry_dict_with_current_status
     # for the why. N+1 lookup is acceptable at typical list sizes; bump to a
     # batched fetch if the list ever grows materially.
+    # Batch-fetch distinct ProjectIds per entry for the list-page Project
+    # column (replaces an N+1 TimeLog read; backed by sproc
+    # ReadDistinctProjectIdsByTimeEntryIds).
+    project_ids_by_entry = service.repo.read_distinct_project_ids_for(
+        time_entry_ids=[e.id for e in results],
+    )
     return list_response(
-        data=[_entry_dict_with_current_status(entry) for entry in results],
+        data=[
+            _entry_dict_with_current_status(
+                entry,
+                project_ids=project_ids_by_entry.get(entry.id, []),
+            )
+            for entry in results
+        ],
         count=total_count,
     )
 

@@ -463,6 +463,41 @@ class TimeEntryRepository:
             logger.error(f"Error during ReadTimeEntryBilledLineage (TimeEntryId={time_entry_id}): {error}")
             raise map_database_error(error)
 
+    def read_distinct_project_ids_for(self, *, time_entry_ids: list[int]) -> dict[int, list[int]]:
+        """Batch-read distinct non-NULL ProjectIds per TimeEntry.
+
+        Returns `{time_entry_id: [project_id, ...]}` for the input ids.
+        NULL ProjectId rows (break logs / unassigned work) are filtered
+        out. Powers the React TimeEntry list page's Project column;
+        avoids the N+1 that would otherwise read TimeLogs per entry.
+        """
+        if not time_entry_ids:
+            return {}
+        try:
+            csv = ",".join(str(int(i)) for i in time_entry_ids)
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadDistinctProjectIdsByTimeEntryIds",
+                    params={"TimeEntryIds": csv},
+                )
+                rows = cursor.fetchall()
+            out: dict[int, list[int]] = {int(i): [] for i in time_entry_ids}
+            for r in rows:
+                if r.ProjectId is None:
+                    continue
+                bucket = out.setdefault(int(r.TimeEntryId), [])
+                pid = int(r.ProjectId)
+                if pid not in bucket:
+                    bucket.append(pid)
+            return out
+        except Exception as error:
+            logger.error(
+                f"Error during read distinct project ids for time entries: {error}"
+            )
+            raise map_database_error(error)
+
     def is_downstream_locked(self, *, time_entry_id: int) -> bool:
         """True if any downstream aggregated row has hit a terminal state
         (ContractLabor.Status='billed' or EmployeeLabor.Status='invoiced')

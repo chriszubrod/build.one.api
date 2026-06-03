@@ -91,7 +91,7 @@ class ContractLaborReviewNotificationService:
 
             to_addresses = self._build_recipient_addresses(pms)
             cc_addresses = self._build_recipient_addresses(owners)
-            subject = f"Review: {worker_name} – {project_label} – {work_date}"
+            subject = f"Contract Labor - {worker_name} - {project_label} - {work_date}"
             body = self._build_body(
                 worker_name=worker_name,
                 work_date=str(work_date),
@@ -273,10 +273,12 @@ class ContractLaborReviewNotificationService:
         Date/Project/Hours/Billable/Overhead/Description block per line
         separated by a blank line. When no PM is resolved, the salutation
         falls back to 'Hi,'."""
+        # Greeting only rendered when PMs resolve. No PMs → start straight
+        # at the body, no salutation. (Owners and BCC still receive the
+        # email; they just don't get a personalized greeting since they're
+        # not the addressees in TO.)
         names = self._greeting_names(pms)
-        greeting = (
-            f"<p>{html.escape(names)},</p>" if names else "<p>Hi,</p>"
-        )
+        greeting = f"<p>{html.escape(names)},</p>" if names else ""
 
         ask = (
             "<p>The following Contract Labor record has been submitted "

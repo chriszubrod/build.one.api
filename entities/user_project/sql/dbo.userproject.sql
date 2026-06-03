@@ -13,6 +13,22 @@ CREATE TABLE [dbo].[UserProject]
 END
 GO
 
+-- UNIQUE(UserId, ProjectId) — fail-loud against accidental duplicate
+-- grants from backfill scripts. Added 2026-06-04 after the 2026-05-27
+-- mass-backfill produced silent duplicate UP rows on (17, 64) and
+-- (33, 64). See scripts/migrations/add_uq_userproject_user_project.sql
+-- for the dedup migration that paired with this constraint.
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE name = 'UQ_UserProject_UserId_ProjectId'
+      AND object_id = OBJECT_ID('dbo.UserProject')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_UserProject_UserId_ProjectId
+        ON dbo.UserProject(UserId, ProjectId);
+END
+GO
+
 
 GO
 

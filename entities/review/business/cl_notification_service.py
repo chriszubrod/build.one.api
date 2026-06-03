@@ -59,34 +59,38 @@ class ContractLaborReviewNotificationService:
         lines_by_project: dict[int, list] = {}
         for li in line_items:
             if li.project_id is None:
-                continue  # overhead lines have no PM owner
+                continue  # overhead lines have no project anchor
             lines_by_project.setdefault(li.project_id, []).append(li)
 
         recipients_by_project = self._fetch_recipients(cl_id)
 
         # Union of project ids from BOTH sources — recipients sproc
-        # surfaces every distinct project even when no PM exists.
+        # surfaces every distinct project even when no PM exists, AND
+        # we ALWAYS create a draft per project that has at least one
+        # line item (even if no PM is configured for that project).
         project_ids = set(lines_by_project.keys()) | set(recipients_by_project.keys())
 
         outbox = MsOutboxService()
         enqueued = 0
+        empty_bucket = {"name": "", "abbreviation": "", "pms": []}
         for project_id in sorted(project_ids):
             lines = lines_by_project.get(project_id, [])
             if not lines:
                 # Project surfaced by sproc but no current line items —
                 # nothing to ask about. Skip.
                 continue
-            recip_rows = recipients_by_project.get(project_id, [])
-            project_label = self._format_project_label(recip_rows, lines, project_id)
+            bucket = recipients_by_project.get(project_id, empty_bucket)
+            pms = bucket.get("pms", [])
+            project_label = self._format_project_label(bucket, project_id)
 
-            to_addresses = self._build_to_addresses(recip_rows)
+            to_addresses = self._build_to_addresses(pms)
             subject = f"Review: {worker_name} – {project_label} – {work_date}"
             body = self._build_body(
                 worker_name=worker_name,
                 work_date=str(work_date),
                 project_label=project_label,
                 lines=lines,
-                pm_first_name=self._first_pm_firstname(recip_rows),
+                pms=pms,
             )
 
             try:
@@ -120,10 +124,15 @@ class ContractLaborReviewNotificationService:
     # Internals
     # =========================================================================
 
-    def _fetch_recipients(self, contract_labor_id: int) -> dict[int, list[dict]]:
-        """Return {project_id: [{user_id, firstname, lastname, email}, ...]}.
+    def _fetch_recipients(self, contract_labor_id: int) -> dict[int, dict]:
+        """Return {project_id: {'name': str, 'abbreviation': Optional[str],
+        'pms': [{user_id, firstname, lastname, email}, ...]}}.
 
-        Projects with NO PM still appear with an empty list."""
+        Every project on the CL's line items appears, even when no PM is
+        configured — `'pms'` is an empty list in that case. Project name
+        and abbreviation come from the sproc's LEFT JOIN on dbo.Project
+        so this avoids the access-guarded service path (which would
+        return None in a no-actor context like the outbox worker)."""
         try:
             with get_connection() as conn:
                 cur = conn.cursor()
@@ -141,37 +150,37 @@ class ContractLaborReviewNotificationService:
             )
             raise map_database_error(error)
 
-        out: dict[int, list[dict]] = {}
+        out: dict[int, dict] = {}
         for r in rows:
-            bucket = out.setdefault(r.ProjectId, [])
-            # NULL user columns mark "project has no PM" — surface the
-            # ProjectId by inserting an empty bucket; do NOT push a fake
-            # recipient row.
+            bucket = out.setdefault(
+                r.ProjectId,
+                {
+                    "name": getattr(r, "ProjectName", None) or "",
+                    "abbreviation": getattr(r, "ProjectAbbreviation", None) or "",
+                    "pms": [],
+                },
+            )
+            # Each sproc row corresponds to one PM (or to one NULL-PM
+            # placeholder row when the project has no PM). Skip NULL-PM
+            # rows — the bucket already exists.
             if r.UserId is None:
                 continue
-            bucket.append(
+            bucket["pms"].append(
                 {
                     "user_id": r.UserId,
                     "firstname": r.Firstname or "",
                     "lastname": r.Lastname or "",
                     "email": r.Email,
-                    "project_name": getattr(r, "ProjectName", None),
-                    "project_abbreviation": getattr(r, "ProjectAbbreviation", None),
                 }
             )
-            # Ensure the bucket exists even if no PM
-            out.setdefault(r.ProjectId, bucket)
-        # Make sure every ProjectId from the sproc shows up, even with no PMs
-        for r in rows:
-            out.setdefault(r.ProjectId, [])
         return out
 
-    def _build_to_addresses(self, recip_rows: list[dict]) -> list[dict]:
-        """Convert recipient dicts into the MS-outbox shape. Email-less
+    def _build_to_addresses(self, pms: list[dict]) -> list[dict]:
+        """Convert PM dicts into the MS-outbox recipient shape. Email-less
         rows are dropped. Empty list is valid per the relaxed draft-mode
         guard in the outbox worker."""
         addrs: list[dict] = []
-        for r in recip_rows:
+        for r in pms:
             email = (r.get("email") or "").strip()
             if not email:
                 continue
@@ -179,38 +188,28 @@ class ContractLaborReviewNotificationService:
             addrs.append({"email": email, "name": name})
         return addrs
 
-    def _format_project_label(
-        self,
-        recip_rows: list[dict],
-        lines: list,
-        project_id: int,
-    ) -> str:
-        # Prefer abbreviation when set; fall back to project name; then to
-        # "#<id>" so the subject is always populated.
-        for r in recip_rows:
-            abbr = (r.get("project_abbreviation") or "").strip()
-            if abbr:
-                return abbr
-            name = (r.get("project_name") or "").strip()
-            if name:
-                return name
-        # No recipient rows: try a Project lookup as a last resort.
-        try:
-            from entities.project.business.service import ProjectService
-
-            p = ProjectService().read_by_id(id=project_id)
-            if p:
-                return (p.abbreviation or p.name or f"#{project_id}").strip()
-        except Exception:
-            pass
+    def _format_project_label(self, bucket: dict, project_id: int) -> str:
+        """Prefer abbreviation when set; fall back to project name; then to
+        '#<id>' so the subject is always populated. Bucket carries the
+        project metadata from the recipients sproc — bypasses the
+        access-guarded ProjectService path."""
+        abbr = (bucket.get("abbreviation") or "").strip()
+        if abbr:
+            return abbr
+        name = (bucket.get("name") or "").strip()
+        if name:
+            return name
         return f"#{project_id}"
 
-    def _first_pm_firstname(self, recip_rows: list[dict]) -> Optional[str]:
-        for r in recip_rows:
+    def _greeting_names(self, pms: list[dict]) -> str:
+        """Slash-join first names: ['Cassidy', 'Zach'] → 'Cassidy/Zach'.
+        Returns empty string when no recipients — caller renders 'Hi,'."""
+        firsts: list[str] = []
+        for r in pms:
             fn = (r.get("firstname") or "").strip()
-            if fn:
-                return fn
-        return None
+            if fn and fn not in firsts:
+                firsts.append(fn)
+        return "/".join(firsts)
 
     def _build_body(
         self,
@@ -219,43 +218,67 @@ class ContractLaborReviewNotificationService:
         work_date: str,
         project_label: str,
         lines: list,
-        pm_first_name: Optional[str],
+        pms: list[dict],
     ) -> str:
-        """Free-form HTML body — one paragraph per line item; ends with a
-        plain request for the SubCostCode(s). Per Chris' product call:
-        no structured fields, no table, just a written ask."""
+        """HTML body matching Chris' template (2026-06-03):
+
+            {name(s)},
+
+            The following Contract Labor record has been submitted for
+            review. When you have a moment, please review and reply with
+            an approval with sub cost code and description or not
+            approved.
+
+            Date: {date}
+            Project: {project}
+            Hours: {hours}
+            Is Billable: {billable}
+            Is Overhead: {overhead}
+            Description: {description}
+
+        When the project has multiple line items, repeat the
+        Date/Project/Hours/Billable/Overhead/Description block per line
+        separated by a blank line. When no PM is resolved, the salutation
+        falls back to 'Hi,'."""
+        names = self._greeting_names(pms)
         greeting = (
-            f"<p>Hi {html.escape(pm_first_name)},</p>"
-            if pm_first_name
-            else "<p>Hi,</p>"
+            f"<p>{html.escape(names)},</p>" if names else "<p>Hi,</p>"
         )
 
-        intro = (
-            f"<p>{html.escape(worker_name)} worked on "
-            f"<strong>{html.escape(project_label)}</strong> on "
-            f"<strong>{html.escape(str(work_date))}</strong>. Please reply with "
-            f"the SubCostCode(s) so we can mark the work ready for billing.</p>"
+        ask = (
+            "<p>The following Contract Labor record has been submitted "
+            "for review. When you have a moment, please review and reply "
+            "with an approval with sub cost code and description or not "
+            "approved.</p>"
         )
 
-        parts: list[str] = [greeting, intro]
-        if len(lines) == 1:
-            li = lines[0]
-            hours = self._fmt_hours(li.hours)
-            desc = (li.description or "").strip() or "(no description)"
-            parts.append(
-                f"<p><strong>{hours} hours</strong> — {html.escape(desc)}</p>"
-            )
-        else:
-            for i, li in enumerate(lines, start=1):
-                hours = self._fmt_hours(li.hours)
-                desc = (li.description or "").strip() or "(no description)"
-                parts.append(
-                    f"<p><strong>Line {i} ({hours} hours)</strong> — "
-                    f"{html.escape(desc)}</p>"
-                )
-
-        parts.append("<p>Thanks!</p>")
+        parts: list[str] = [greeting, ask]
+        for li in lines:
+            parts.append(self._format_line_block(
+                work_date=work_date,
+                project_label=project_label,
+                line=li,
+            ))
         return "".join(parts)
+
+    def _format_line_block(self, *, work_date: str, project_label: str, line) -> str:
+        hours = self._fmt_hours(line.hours)
+        billable = self._fmt_yes_no(line.is_billable, default_true=True)
+        overhead = self._fmt_yes_no(line.is_overhead, default_true=False)
+        desc = (line.description or "").strip() or "(no description)"
+        # Use <br> within a <p> so the block renders as one paragraph
+        # with line breaks — matches the plain-text feel of the template
+        # while staying HTML-valid.
+        return (
+            "<p>"
+            f"Date: {html.escape(work_date)}<br>"
+            f"Project: {html.escape(project_label)}<br>"
+            f"Hours: {html.escape(hours)}<br>"
+            f"Is Billable: {html.escape(billable)}<br>"
+            f"Is Overhead: {html.escape(overhead)}<br>"
+            f"Description: {html.escape(desc)}"
+            "</p>"
+        )
 
     @staticmethod
     def _fmt_hours(value) -> str:
@@ -265,3 +288,12 @@ class ContractLaborReviewNotificationService:
             return f"{float(value):.2f}"
         except (TypeError, ValueError):
             return str(value)
+
+    @staticmethod
+    def _fmt_yes_no(value, *, default_true: bool) -> str:
+        """ContractLaborLineItem.IsBillable / IsOverhead are bool with
+        None defaults — treat None as default_true. Mirrors the Jinja
+        template's `is_billable is not False` convention."""
+        if value is None:
+            return "Yes" if default_true else "No"
+        return "Yes" if value else "No"

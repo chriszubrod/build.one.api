@@ -1,5 +1,45 @@
 # Session Notes
 
+## Session: Project dedupe sweep + App Service tag-pin discovery (2026-06-03)
+
+### Overview
+Cleaned up six new dup `dbo.Project` rows (160, 162, 164, 165, 166, 167) created post-deploy by the recurring 4-hourly QBO Customer sync. **The connector fix shipped 2026-05-29 (a70dea8) never actually went live in prod** — App Service's `DOCKER_CUSTOM_IMAGE_NAME` had been pinned to a specific tag (`:0d63b19`), so every `az webapp restart` after the build silently relaunched the old image and `:latest` pushes were ignored. The deploy looked successful (200 OK, exit 0) while the running container never changed.
+
+### Root cause: App Service tag pin
+- `az acr build --image buildone:latest --image buildone:a70dea8` (2026-05-29) pushed both tags correctly to ACR.
+- `az webapp restart` relaunched whatever `DOCKER_CUSTOM_IMAGE_NAME` was set to — which was `:0d63b19`, the deliberate pin from a prior session.
+- The connector fix sat in the registry for 5 days. Every 4hr sync at HH:10 UTC kept creating new dups via the unpatched code path (160 HA on 5/29, 162 OL + 164 LR on 5/30, 165 HP + 166 WVA on 6/01, 167 MR2-MAIN on 6/02).
+- New runbook: [docs/runbooks/deploy-tag-pinned.md](docs/runbooks/deploy-tag-pinned.md). CLAUDE.md "Deploy path" section now mandates the `az webapp config container show` verification step.
+
+### Repointed App Service to `:latest`
+```sh
+az webapp config container set --name buildone --resource-group buildone_group \
+  --container-image-name buildone-esgaducjg4d3eucf.azurecr.io/buildone:latest
+az webapp restart --name buildone --resource-group buildone_group
+```
+Manifest serving traffic is now `d3a2889` (tagged `:latest` + `:d2158f5`), which contains a70dea8 in its ancestry (verified via `git merge-base --is-ancestor a70dea8 master`). Future `az acr build --image buildone:latest ...` + `az webapp restart` will pick up new code as the docs always intended.
+
+### Cleaned 6 phantoms
+[intelligence/persistence/sql/cleanup.project_duplicates.sql](intelligence/persistence/sql/cleanup.project_duplicates.sql) — idempotent; expanded `@Map` from 2 (HA, WVA per initial spec) to all 6. Refined the pre-flight so it only flags a keeper-mapping conflict when the dup is still alive, letting re-runs across partially-cleaned states succeed. For each pair: repoint `qbo.CustomerProject` from dup → keeper (so the keeper inherits the QBO link instead of being left mappingless), then `DELETE` the dup `Project` row. Re-verifies zero references across every column literally named `ProjectId` (21 tables / schemas) before the delete; `RAISERROR + ROLLBACK` on any non-zero ref.
+
+Post-state: all 13 canonical keepers now hold their proper `qbo.CustomerProject` mapping. Zero duplicate-name groups in `dbo.Project`.
+
+### Added `UQ_Project_Name_CustomerId_Active`
+- New migration: [scripts/migrations/add_uq_project_name_customerid_active.sql](scripts/migrations/add_uq_project_name_customerid_active.sql) — idempotent `CREATE UNIQUE INDEX ... WHERE Status='active'`.
+- Same `IF NOT EXISTS` guard mirrored into [entities/project/sql/dbo.project.sql](entities/project/sql/dbo.project.sql) so fresh-DB bootstraps pick it up.
+- Smoke-tested in prod: attempted `INSERT` of `("OL - 925 Overton Lea", CustomerId=12)` (which collides with keeper Id 23) — rejected with `IntegrityError: Cannot insert duplicate key row ... unique index 'UQ_Project_Name_CustomerId_Active'`. Belt-and-suspenders against a future regression of `CustomerProjectConnector`.
+
+### TODO closures
+Two prior-session items closed: TODO.md line 397 ("Audit dbo.Project for duplicate same-Name rows") and line 501 ("QBO customer/project sync is creating DUPLICATE dbo.Project rows"). Both root causes addressed (connector fix + unique index), all known dups merged.
+
+### Files touched
+- [integrations/intuit/qbo/customer/connector/project/business/service.py](integrations/intuit/qbo/customer/connector/project/business/service.py) — already in prod via a70dea8 (now actually running).
+- [intelligence/persistence/sql/cleanup.project_duplicates.sql](intelligence/persistence/sql/cleanup.project_duplicates.sql) — expanded to 6 phantoms with refined pre-flight.
+- [scripts/migrations/add_uq_project_name_customerid_active.sql](scripts/migrations/add_uq_project_name_customerid_active.sql) — new.
+- [entities/project/sql/dbo.project.sql](entities/project/sql/dbo.project.sql) — unique index added with `IF NOT EXISTS`.
+- [docs/runbooks/deploy-tag-pinned.md](docs/runbooks/deploy-tag-pinned.md) — new runbook.
+- [CLAUDE.md](CLAUDE.md) — Deploy paragraph extended with tag-pin verification.
+
 ## Session: Contract Labor review-submit per-project email drafts (2026-06-03)
 
 ### Overview

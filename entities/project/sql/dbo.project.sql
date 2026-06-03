@@ -37,6 +37,23 @@ BEGIN
 END
 GO
 
+-- UNIQUE(Name, CustomerId) filtered to active. Belt-and-suspenders
+-- against same-name-Project regression by the QBO Customer sync. Pairs
+-- with the CustomerProjectConnector name-match-before-create discipline
+-- (a70dea8). Filtered to Status='active' so archived projects can free
+-- the name. SQL Server's default collation is case-insensitive.
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE name = 'UQ_Project_Name_CustomerId_Active'
+      AND object_id = OBJECT_ID('dbo.Project')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_Project_Name_CustomerId_Active
+        ON dbo.Project(Name, CustomerId)
+        WHERE Status = 'active';
+END
+GO
+
 
 GO
 

@@ -115,26 +115,11 @@ class ReviewService:
         # the FIRST configured ReviewStatus (sort_order = first) so
         # Advance transitions don't re-enqueue.
         if contract_labor_id is not None:
-            import logging as _log
-            _hook_logger = _log.getLogger(__name__)
-            _hook_logger.info(
-                "cl_review_notification.hook_entered "
-                "contract_labor_id=%s review_id=%s review_status_id=%s",
-                contract_labor_id,
-                review.id,
-                review.review_status_id,
-            )
             try:
                 first_status = self.review_status_service.get_first_status()
                 is_initial_submit = (
                     first_status is not None
                     and review.review_status_id == first_status.id
-                )
-                _hook_logger.info(
-                    "cl_review_notification.hook_gate "
-                    "is_initial_submit=%s first_status_id=%s",
-                    is_initial_submit,
-                    first_status.id if first_status else None,
                 )
                 if is_initial_submit:
                     from entities.contract_labor.business.service import ContractLaborService
@@ -143,23 +128,13 @@ class ReviewService:
                     )
 
                     cl = ContractLaborService().repo.read_by_id(contract_labor_id)
-                    _hook_logger.info(
-                        "cl_review_notification.hook_cl_loaded "
-                        "cl_loaded=%s cl_public_id=%s",
-                        cl is not None,
-                        getattr(cl, "public_id", None),
-                    )
                     if cl is not None:
                         ContractLaborReviewNotificationService().enqueue_drafts(
                             contract_labor=cl,
                         )
-                        _hook_logger.info(
-                            "cl_review_notification.hook_completed "
-                            "cl_public_id=%s",
-                            cl.public_id,
-                        )
             except Exception:
-                _hook_logger.exception(
+                import logging
+                logging.getLogger(__name__).exception(
                     "Failed to enqueue ContractLabor review-submit drafts "
                     "(contract_labor_id=%s, review_id=%s)",
                     contract_labor_id,

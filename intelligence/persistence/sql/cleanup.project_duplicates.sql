@@ -5,17 +5,23 @@
 -- aborts (RAISERROR + RETURN) on any non-zero reference so we never
 -- orphan child data.
 --
--- Phantoms handled here (one pair, already audited):
---   Id 160 "HA - 206 Haverford Ave"      (keep Id 128, abbr=HA)
---   Id 166 "WVA - 424 Westview Avenue"   (keep Id 46,  abbr=WVA)
+-- Phantoms handled here (6 total, all created post-deploy by the
+-- recurring 4-hourly QBO Customer sync running against the old
+-- CustomerProjectConnector logic that pre-dated the a70dea8 fix):
 --
--- Both were created post-deploy by the recurring 4-hourly QBO Customer
--- sync. Each carries exactly one row in qbo.CustomerProject and zero
--- transactional/child rows. To avoid leaving a dangling
--- qbo.CustomerProject mapping at a deleted Project.Id, this script
--- REPOINTS each mapping to its canonical keeper before deletion (the
--- keepers currently have no mapping, so the UQ_CustomerProject_ProjectId
--- constraint is satisfied).
+--   Id 160 "HA - 206 Haverford Ave"          (keep Id 128, abbr=HA)
+--   Id 166 "WVA - 424 Westview Avenue"       (keep Id 46,  abbr=WVA)
+--   Id 162 "OL - 925 Overton Lea"            (keep Id 23,  abbr=OL)
+--   Id 164 "LR - 1833 Laurel Ridge Dr"       (keep Id 100, abbr=LR)
+--   Id 165 "HP - 6135 Hillsboro Pike"        (keep Id 18,  abbr=HP)
+--   Id 167 "MR2-MAIN - 1577 Moran Rd"        (keep Id 93,  abbr=MR2-MAIN)
+--
+-- Each carries exactly one row in qbo.CustomerProject and zero
+-- transactional/child rows. To avoid orphaning a qbo.CustomerProject
+-- row at a deleted Project.Id, the script REPOINTS each mapping to its
+-- canonical keeper before deletion. The pre-flight keeper-mapping check
+-- only fires when a phantom is still alive — once a (dup, keep) pair has
+-- been cleaned, the keeper is allowed to hold the mapping it inherited.
 --
 -- RUN:
 --   .venv/bin/python scripts/run_sql.py intelligence/persistence/sql/cleanup.project_duplicates.sql
@@ -27,7 +33,11 @@ BEGIN TRANSACTION;
 DECLARE @Map TABLE (DupId BIGINT PRIMARY KEY, KeepId BIGINT NOT NULL);
 INSERT INTO @Map (DupId, KeepId) VALUES
     (160, 128),  -- HA
-    (166,  46);  -- WVA
+    (166,  46),  -- WVA
+    (162,  23),  -- OL
+    (164, 100),  -- LR
+    (165,  18),  -- HP
+    (167,  93);  -- MR2-MAIN
 
 -- ─── 0. Short-circuit when there's nothing to do (idempotency) ──────────
 -- If both phantom rows are gone, treat as already-clean and exit
@@ -84,16 +94,20 @@ BEGIN
 END;
 
 -- ─── 2. Pre-flight for qbo.CustomerProject repoint ──────────────────────
--- Keepers must NOT already hold a mapping (UQ_CustomerProject_ProjectId).
--- If a keeper already has one, abort instead of silently colliding.
-DECLARE @KeeperWithMapping INT = (
+-- A repoint will violate UQ_CustomerProject_ProjectId only if the keeper
+-- ALREADY holds a mapping AND its phantom dup is still alive (i.e. about
+-- to repoint into the keeper). Once a (dup, keep) pair has been cleaned,
+-- the keeper is free to hold the mapping it inherited; the next run
+-- correctly treats that pair as a no-op.
+DECLARE @PairsInConflict INT = (
     SELECT COUNT(*)
-    FROM qbo.CustomerProject cp
-    JOIN @Map m ON cp.ProjectId = m.KeepId
+    FROM @Map m
+    WHERE EXISTS (SELECT 1 FROM dbo.Project       WHERE Id = m.DupId)
+      AND EXISTS (SELECT 1 FROM qbo.CustomerProject WHERE ProjectId = m.KeepId)
 );
-IF @KeeperWithMapping <> 0
+IF @PairsInConflict <> 0
 BEGIN
-    RAISERROR('cleanup.project_duplicates: at least one keeper Project already has a qbo.CustomerProject mapping; repoint would violate UQ_CustomerProject_ProjectId. Aborting.', 16, 1);
+    RAISERROR('cleanup.project_duplicates: at least one keeper Project already has a qbo.CustomerProject mapping while its phantom dup is still present; repoint would violate UQ_CustomerProject_ProjectId. Aborting.', 16, 1);
     ROLLBACK TRANSACTION;
     RETURN;
 END;

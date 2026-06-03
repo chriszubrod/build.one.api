@@ -1,5 +1,50 @@
 # Session Notes
 
+## Session: Contract Labor review-submit per-project email drafts (2026-06-03)
+
+### Overview
+Clicking Save & Submit For Review on a ContractLabor record now auto-enqueues one MS Graph `create_draft` per distinct project on the line items. Drafts land in the shared mailbox's Drafts folder for Chris to manually address (when PMs missing) and send. Goal: PM replies with the SubCostCode (the aggregator leaves SCCs NULL), Chris applies it on Edit, then Mark Ready → Generate Bills.
+
+End-to-end verified live in prod against CL.519 (Ricky Moreno, 2026-06-01, single project OHR2): hook fired ~4s after the Review row commit, draft drained cleanly, envelope/body/subject all correct, Chris reviewed and sent the draft.
+
+### Aggregator parent-totals fix (Migration 009)
+Pre-existing bug in `dbo.AggregateTimeEntryOnSubmit` (Migration 008): per-bucket cursor's parent lookup used `SELECT @var = col WHERE no_match` which is a T-SQL no-op (variable keeps prior value). Bucket #2 inherited bucket #1's SCOPE_IDENTITY, took UPDATE instead of INSERT, overwrote bucket #1's parent. Final state on multi-project days: parent.TotalHours = LAST bucket's hours, parent.ProjectId = FIRST bucket's project, line items correct.
+
+Fix: parent upsert moved OUT of the cursor and keyed on `SourceTimeEntryId` (1:1 with the source TE). Parent.TotalHours = SUM(buckets). Parent.ProjectId/HourlyRate/Markup/TotalAmount populated on single-project days, NULL on multi-project (per-project values live on line items). Migration 009. Mirrored on the EmployeeLabor branch.
+
+Repair: CL.516 (Ricky Moreno 2026-05-27, 4 projects) re-aggregated — TotalHours 2.05 → 8.21, ProjectId 13 → NULL. Audit of all CL rows with SourceTimeEntryId confirms parent matches `SUM(TimeLog.Duration)`.
+
+### Line-item ordering (Sproc patch)
+`ReadContractLaborLineItemsByContractLaborId` sorted by Id, which the aggregator's `@Buckets` cursor doesn't guarantee maps to chronology. Updated to ORDER BY MIN source TimeLog ClockIn (joined via `SourceTimeEntryId` + `ProjectId`), Id breaks ties for manual rows.
+
+### React View page
+[ContractLaborView.tsx](build.one.web/src/pages/contract-labor/ContractLaborView.tsx) rebuilt: read-only mirror of Edit page sections, all fields + line items in one read-only surface. Trim pass dropped Job/TimeIn/TimeOut/Break/Regular/Overtime from Time Entry Details, removed Time Log Details / Categorization / Source Tracking sections. Project label in the line-items table now skips duplicate abbreviation prefix when `Project.Name` already begins with the abbreviation.
+
+### Notification service shape
+New endpoints + service ([api/router.py](build.one.api/entities/contract_labor/api/router.py), [business/cl_notification_service.py](build.one.api/entities/review/business/cl_notification_service.py)):
+- `GET /api/v1/contract-labor/{public_id}/line-items` — child line items for Edit page
+- `GET /api/v1/contract-labor/{public_id}/daily-summary` — per-employee per-day 8h allocation widget. Also patched `ReadContractLaborDailySummary` sproc to add `SET NOCOUNT ON` (latent pyodbc bug since the Jinja controller that called it died with Wave E3).
+- `GET /api/v1/contract-labor/vendor-config` — VENDOR_CONFIG dict (rate + markup keyed by vendor name)
+- `GET /api/v1/contract-labor/billing-periods` — distinct BillingPeriodStart values for the List filter dropdown
+- New sproc `ResolveContractLaborReviewRecipientsPerProject` — returns one row per (project, PM/Owner). PMs → TO, Owners → CC. Empty TO is valid (relaxed `mode='draft'` guard in MS outbox worker). BCC always `Settings.invoice_inbox_email`.
+
+### Hook wiring
+In `ReviewService.create`, the per-project drafts fire on the initial Submit transition (first ReviewStatus by sort_order). Failure-isolated — never rolls back the Review row. Drafts are coordinated through the existing MS outbox pattern (`Kind='send_mail'`, `mode='draft'`).
+
+### Subject + body template (final)
+Subject: `Contract Labor - {Worker} - {Project} - {Date}`. Body matches Chris' template — `{name(s)},` greeting (slash-joined firstnames when PMs resolve; omitted entirely when not) → "The following Contract Labor record has been submitted for review..." → per-line `Date / Project / Hours / Is Billable / Is Overhead / Description` block. One block per line item, blank-line separated.
+
+### Project.145 data fix
+Chris fixed `Project.145.Abbreviation = 'OVH'` (was NULL) so the OVH draft subject matches the format of the other projects.
+
+### Out of scope (next step)
+Reviewer-reply automation. Pattern documented in this session's transcript: extend `email_specialist` to classify `Re: Contract Labor - ...` replies as `contract_labor_reviewer_reply` + `delegated_to_contract_labor_specialist`. Need to (a) persist the draft's MS Graph ConversationId on a new `ContractLaborReviewDraft(ContractLaborId, ProjectId, ConversationId)` table, (b) build a `find_contract_labor_by_conversation_id` sproc, (c) ship a `contract_labor_specialist` agent + `apply_reviewer_decision_contract_labor` tool that parses SCC + approval from the natural-language reply, updates the line item, advances the Review.
+
+### Files touched
+- API: [entities/review/business/service.py](entities/review/business/service.py) (hook), [entities/review/business/cl_notification_service.py](entities/review/business/cl_notification_service.py) (new), [integrations/ms/outbox/business/worker.py](integrations/ms/outbox/business/worker.py) (relaxed empty-recipient guard for draft mode), [entities/contract_labor/api/router.py](entities/contract_labor/api/router.py) (new GETs), migrations under [entities/time_entry/sql/migrations/](entities/time_entry/sql/migrations/) (009) + [entities/contract_labor/sql/migrations/](entities/contract_labor/sql/migrations/) + [entities/review/sql/migrations/](entities/review/sql/migrations/) (006, 007).
+- Web: [ContractLaborView.tsx](build.one.web/src/pages/contract-labor/ContractLaborView.tsx).
+- Memory: [contract_labor.md](memory/contract_labor.md) updated.
+
 ## Session: TimeTracking → ContractLabor / EmployeeLabor end-to-end (2026-05-28)
 
 Picked up the WIP commit `cb2bc33` ("wip: TimeTracking Phase 1 — employee labor, vendor rates, task inbox, audit fixes") and pushed it through to working end-to-end aggregation for Brayan's TimeEntry A4F5FA03 (id=24).

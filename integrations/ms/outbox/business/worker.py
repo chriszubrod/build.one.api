@@ -618,7 +618,12 @@ class MsOutboxWorker:
         html_preamble = payload.get("html_preamble") or None
 
         if not to_addresses and not cc_addresses and not bcc_addresses:
-            raise ValueError("send_mail payload has no recipients on any line")
+            # Drafts may legitimately have no recipients yet — e.g. the
+            # ContractLabor per-project review draft for a project with
+            # no PM configured. The user manually addresses + sends from
+            # Outlook Drafts. `send` mode still requires recipients.
+            if mode != "draft":
+                raise ValueError("send_mail payload has no recipients on any line")
 
         attachments = [attachment] if attachment else None
 

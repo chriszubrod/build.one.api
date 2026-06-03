@@ -108,6 +108,39 @@ class ReviewService:
                     review.id,
                 )
 
+        # Per-project email drafts on the initial Submit transition. One
+        # draft per distinct project on the CL's line items, addressed
+        # to that project's PM(s) (TO empty if no PM is configured).
+        # Drafts only — never auto-sent. Failure-isolated. Only fires on
+        # the FIRST configured ReviewStatus (sort_order = first) so
+        # Advance transitions don't re-enqueue.
+        if contract_labor_id is not None:
+            try:
+                first_status = self.review_status_service.get_first_status()
+                is_initial_submit = (
+                    first_status is not None
+                    and review.review_status_id == first_status.id
+                )
+                if is_initial_submit:
+                    from entities.contract_labor.business.service import ContractLaborService
+                    from entities.review.business.cl_notification_service import (
+                        ContractLaborReviewNotificationService,
+                    )
+
+                    cl = ContractLaborService().repo.read_by_id(contract_labor_id)
+                    if cl is not None:
+                        ContractLaborReviewNotificationService().enqueue_drafts(
+                            contract_labor=cl,
+                        )
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Failed to enqueue ContractLabor review-submit drafts "
+                    "(contract_labor_id=%s, review_id=%s)",
+                    contract_labor_id,
+                    review.id,
+                )
+
         return review
 
     # =========================================================================

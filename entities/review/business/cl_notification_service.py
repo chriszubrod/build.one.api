@@ -70,9 +70,14 @@ class ContractLaborReviewNotificationService:
         # line item (even if no PM is configured for that project).
         project_ids = set(lines_by_project.keys()) | set(recipients_by_project.keys())
 
+        # BCC the office archive (matches Bill's review-notification
+        # envelope). Lazy import — Settings can fail to load in some
+        # CLI contexts; never let it break the enqueue path.
+        bcc_addresses = self._build_bcc_addresses()
+
         outbox = MsOutboxService()
         enqueued = 0
-        empty_bucket = {"name": "", "abbreviation": "", "pms": []}
+        empty_bucket = {"name": "", "abbreviation": "", "pms": [], "owners": []}
         for project_id in sorted(project_ids):
             lines = lines_by_project.get(project_id, [])
             if not lines:
@@ -81,9 +86,11 @@ class ContractLaborReviewNotificationService:
                 continue
             bucket = recipients_by_project.get(project_id, empty_bucket)
             pms = bucket.get("pms", [])
+            owners = bucket.get("owners", [])
             project_label = self._format_project_label(bucket, project_id)
 
-            to_addresses = self._build_to_addresses(pms)
+            to_addresses = self._build_recipient_addresses(pms)
+            cc_addresses = self._build_recipient_addresses(owners)
             subject = f"Review: {worker_name} – {project_label} – {work_date}"
             body = self._build_body(
                 worker_name=worker_name,
@@ -98,6 +105,8 @@ class ContractLaborReviewNotificationService:
                     entity_type="ContractLabor",
                     entity_public_id=cl_public_id,
                     to_addresses=to_addresses,
+                    cc_addresses=cc_addresses,
+                    bcc_addresses=bcc_addresses,
                     subject=subject,
                     body=body,
                     body_type="HTML",
@@ -126,13 +135,15 @@ class ContractLaborReviewNotificationService:
 
     def _fetch_recipients(self, contract_labor_id: int) -> dict[int, dict]:
         """Return {project_id: {'name': str, 'abbreviation': Optional[str],
-        'pms': [{user_id, firstname, lastname, email}, ...]}}.
+        'pms': [...], 'owners': [...]}}.
 
-        Every project on the CL's line items appears, even when no PM is
-        configured — `'pms'` is an empty list in that case. Project name
-        and abbreviation come from the sproc's LEFT JOIN on dbo.Project
-        so this avoids the access-guarded service path (which would
-        return None in a no-actor context like the outbox worker)."""
+        Mirrors Bill's envelope: PMs go to TO, Owners go to CC. Every
+        project on the CL's line items appears, even when neither role
+        is configured — `'pms'` and `'owners'` are empty lists in that
+        case. Project name and abbreviation come from the sproc's LEFT
+        JOIN on dbo.Project so this avoids the access-guarded service
+        path (which returns None in the no-actor context the outbox
+        worker runs in)."""
         try:
             with get_connection() as conn:
                 cur = conn.cursor()
@@ -158,35 +169,57 @@ class ContractLaborReviewNotificationService:
                     "name": getattr(r, "ProjectName", None) or "",
                     "abbreviation": getattr(r, "ProjectAbbreviation", None) or "",
                     "pms": [],
+                    "owners": [],
                 },
             )
-            # Each sproc row corresponds to one PM (or to one NULL-PM
-            # placeholder row when the project has no PM). Skip NULL-PM
-            # rows — the bucket already exists.
+            # NULL UserId rows mark "project has no PM/Owner" — the
+            # bucket already exists; skip.
             if r.UserId is None:
                 continue
-            bucket["pms"].append(
-                {
-                    "user_id": r.UserId,
-                    "firstname": r.Firstname or "",
-                    "lastname": r.Lastname or "",
-                    "email": r.Email,
-                }
-            )
+            recipient = {
+                "user_id": r.UserId,
+                "firstname": r.Firstname or "",
+                "lastname": r.Lastname or "",
+                "email": r.Email,
+            }
+            role = (getattr(r, "RoleName", None) or "").strip()
+            if role == "Project Manager":
+                bucket["pms"].append(recipient)
+            elif role == "Owner":
+                bucket["owners"].append(recipient)
+            # else: unexpected role, ignore.
         return out
 
-    def _build_to_addresses(self, pms: list[dict]) -> list[dict]:
-        """Convert PM dicts into the MS-outbox recipient shape. Email-less
-        rows are dropped. Empty list is valid per the relaxed draft-mode
-        guard in the outbox worker."""
+    def _build_recipient_addresses(self, rows: list[dict]) -> list[dict]:
+        """Convert recipient dicts into the MS-outbox recipient shape.
+        Email-less rows are dropped. Empty list is valid per the relaxed
+        draft-mode guard in the outbox worker."""
         addrs: list[dict] = []
-        for r in pms:
+        for r in rows:
             email = (r.get("email") or "").strip()
             if not email:
                 continue
             name = f"{r.get('firstname', '')} {r.get('lastname', '')}".strip() or None
             addrs.append({"email": email, "name": name})
         return addrs
+
+    def _build_bcc_addresses(self) -> list[dict]:
+        """Office archive recipient list. Mirrors Bill's review notification
+        which BCCs `Settings.invoice_inbox_email` when configured. Returns
+        an empty list when not configured — never raises."""
+        try:
+            from config import Settings
+
+            settings = Settings()
+            inbox = (getattr(settings, "invoice_inbox_email", "") or "").strip()
+            if inbox:
+                return [{"email": inbox, "name": None}]
+        except Exception:
+            logger.warning(
+                "cl_review_notification.bcc_lookup_failed — falling back to no BCC",
+                exc_info=True,
+            )
+        return []
 
     def _format_project_label(self, bucket: dict, project_id: int) -> str:
         """Prefer abbreviation when set; fall back to project name; then to

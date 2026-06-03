@@ -568,6 +568,7 @@ def _resolve_me_payload(user_sub: str) -> dict:
                         "can_submit": bool(rm.can_submit),
                         "can_approve": bool(rm.can_approve),
                         "can_complete": bool(rm.can_complete),
+                        "can_view_team": bool(getattr(rm, "can_view_team", False)),
                     }
                 else:
                     existing["can_create"] = existing["can_create"] or bool(rm.can_create)
@@ -577,6 +578,7 @@ def _resolve_me_payload(user_sub: str) -> dict:
                     existing["can_submit"] = existing["can_submit"] or bool(rm.can_submit)
                     existing["can_approve"] = existing["can_approve"] or bool(rm.can_approve)
                     existing["can_complete"] = existing["can_complete"] or bool(rm.can_complete)
+                    existing["can_view_team"] = existing["can_view_team"] or bool(getattr(rm, "can_view_team", False))
 
         # Layer in additive UserModule grants — read-only, never downgrades a
         # role-granted module.
@@ -594,6 +596,7 @@ def _resolve_me_payload(user_sub: str) -> dict:
                 "can_submit": False,
                 "can_approve": False,
                 "can_complete": False,
+                "can_view_team": False,
             }
 
     # Surface a representative role for legacy UI bits that still display
@@ -617,12 +620,12 @@ def _resolve_me_payload(user_sub: str) -> dict:
         if is_system_admin:
             perms = {p: True for p in (
                 "can_create", "can_read", "can_update", "can_delete",
-                "can_submit", "can_approve", "can_complete",
+                "can_submit", "can_approve", "can_complete", "can_view_team",
             )}
         else:
             perms = permissions_by_module.get(m.id, {p: False for p in (
                 "can_create", "can_read", "can_update", "can_delete",
-                "can_submit", "can_approve", "can_complete",
+                "can_submit", "can_approve", "can_complete", "can_view_team",
             )})
         modules_payload.append({
             "public_id": m.public_id,

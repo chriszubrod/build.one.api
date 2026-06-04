@@ -28,10 +28,13 @@ def _toc_signed_amount(row: dict) -> Optional[float]:
     Return the row's display amount as a float, with the correct sign for credits.
 
     The InvoiceInvoiceConnector stores `dbo.InvoiceLineItem.Price` as a positive
-    magnitude even for BillCreditLineItem-sourced lines, while `Amount` retains
-    the negative QBO sign. Prefer Price for non-credit lines (it carries markup
-    when applicable), but negate it for credit lines so the TOC + subtotals
-    reflect the customer-facing reduction.
+    magnitude even for credit-sourced lines, while `Amount` retains the negative
+    QBO sign. Prefer Price for non-credit lines (it carries markup when
+    applicable), but negate it for credit lines so the TOC + subtotals reflect
+    the customer-facing reduction. Two credit shapes:
+      - BillCreditLineItem source (VendorCredit / credit memo)
+      - ExpenseLineItem whose parent `Expense.IsCredit = True` (expense refund;
+        Expense table doubles as the ExpenseRefund concept)
     """
     p = row.get("price")
     if p is None:
@@ -42,8 +45,12 @@ def _toc_signed_amount(row: dict) -> Optional[float]:
         v = float(p)
     except (TypeError, ValueError):
         return None
-    if row.get("source_type") == "BillCreditLineItem" and v > 0:
-        v = -v
+    if v > 0:
+        st = row.get("source_type")
+        if st == "BillCreditLineItem":
+            v = -v
+        elif st == "ExpenseLineItem" and row.get("is_credit"):
+            v = -v
     return v
 
 

@@ -89,6 +89,7 @@ def enrich_line_items(line_items) -> list[dict]:
                        e.ReferenceNumber AS ParentNumber,
                        e.PublicId AS ParentPublicId,
                        e.ExpenseDate AS SourceDate,
+                       e.IsCredit AS IsCredit,
                        v.Name AS VendorName,
                        scc.Number AS SccNumber, scc.Name AS SccName,
                        cc.Number AS CcNumber, cc.Name AS CcName,
@@ -118,6 +119,7 @@ def enrich_line_items(line_items) -> list[dict]:
                     "cost_code_number": row.CcNumber or "",
                     "cost_code_name": row.CcName or "",
                     "attachment_public_id": str(row.AttachmentPublicId) if row.AttachmentPublicId else "",
+                    "is_credit": bool(row.IsCredit),
                 }
 
         if credit_ids:

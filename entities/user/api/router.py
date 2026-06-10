@@ -4,8 +4,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
+from entities.auth.business.service import get_current_user_api
 from entities.user.api.schemas import UserCreate, UserUpdate, UserWorkerLinkUpdate
 from entities.user.business.service import UserService
+from shared.authz import current_user_id
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -52,6 +54,26 @@ def get_users_router(
     """
     users = UserService().read_all(include_agents=include_agents)
     return list_response([user.to_dict() for user in users])
+
+
+@router.get("/get/user/me")
+def get_my_user_router(current_user: dict = Depends(get_current_user_api)):
+    """
+    Read the caller's own User row.
+
+    Auth-only (no module RBAC) — the iOS bootstrap must resolve the
+    signed-in user's profile without a USERS module grant, which field
+    workers don't hold (2026-06-09 onboarding lockout: the /get/users
+    fallback 403'd for any role lacking Users-read). Declared before
+    /get/user/{public_id} so "me" doesn't match as a public_id.
+    """
+    user_id = current_user_id.get()
+    if user_id is None:
+        raise_not_found("User", "me")
+    user = UserService().read_by_id(id=user_id)
+    if not user:
+        raise_not_found("User", "me")
+    return item_response(user.to_dict())
 
 
 @router.get("/get/user/{public_id}")

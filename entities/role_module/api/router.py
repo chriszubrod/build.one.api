@@ -4,9 +4,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
+from entities.auth.business.service import get_current_user_api
 from entities.role_module.api.schemas import RoleModuleCreate, RoleModuleUpdate
 from entities.role_module.business.service import RoleModuleService
 from entities.user_role.business.service import UserRoleService
+from shared.authz import current_company_id, current_user_id
 from shared.profile_events import publish_profile_changed_many
 from shared.rbac import invalidate_all_caches, require_module_api
 from shared.rbac_constants import Modules
@@ -61,6 +63,42 @@ def create_role_module_router(body: RoleModuleCreate, current_user: dict = Depen
     invalidate_all_caches()
     publish_profile_changed_many(_user_ids_for_role_ids([body.role_id]))
     return item_response(result.get("data"))
+
+
+@router.get("/get/role_modules/me")
+def get_my_role_modules_router(current_user: dict = Depends(get_current_user_api)):
+    """
+    RoleModule rows for the caller's own roles in their active Company.
+
+    Auth-only (no module RBAC) — the iOS RBAC bootstrap needs the caller's
+    grant rows to decide which tabs to render, which a field worker without
+    the Roles permission must be able to do (2026-06-09 onboarding lockout:
+    /get/role_modules 403'd for any role lacking Roles-read). Mirrors the
+    auth-only /get/modules/user/{user_id} precedent.
+    """
+    user_id = current_user_id.get()
+    company_id = current_company_id.get()
+    if user_id is None:
+        return list_response([])
+
+    user_role_service = UserRoleService()
+    if company_id is not None:
+        user_roles = user_role_service.read_all_by_user_id_and_company_id(
+            user_id=user_id, company_id=company_id
+        )
+    else:
+        user_roles = user_role_service.read_all_by_user_id(user_id)
+
+    role_module_service = RoleModuleService()
+    seen_ids: set = set()
+    rows = []
+    for user_role in user_roles:
+        for role_module in role_module_service.read_all_by_role_id(role_id=user_role.role_id):
+            if role_module.id in seen_ids:
+                continue
+            seen_ids.add(role_module.id)
+            rows.append(role_module)
+    return list_response([role_module.to_dict() for role_module in rows])
 
 
 @router.get("/get/role_modules")

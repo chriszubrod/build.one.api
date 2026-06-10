@@ -1,3 +1,9 @@
+-- !!! SUPERSEDED BY MIGRATION 008 (2026-06-09) !!!
+-- Re-applying this file in isolation will WIPE the human-only filter
+-- (no LLM agents / no persona test accounts) that 008 adds to the
+-- recipient walk. If you need to touch the sproc, edit 008 instead, or
+-- chase this file with a re-run of 008.
+--
 -- Phase 1c — Review Notifications
 -- Resolves the user list to notify when a Review is submitted on a Bill.
 -- Walk: Bill -> BillLineItem -> Project -> UserProject (filtered to

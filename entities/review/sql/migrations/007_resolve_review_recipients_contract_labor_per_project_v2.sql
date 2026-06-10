@@ -1,4 +1,10 @@
 -- =============================================================================
+-- !!! SUPERSEDED BY MIGRATION 008 (2026-06-09) !!!
+-- Re-applying this file in isolation will WIPE the human-only filter
+-- (no LLM agents / no persona test accounts) that 008 adds to the
+-- recipient walk. If you need to touch the sproc, edit 008 instead, or
+-- chase this file with a re-run of 008.
+--
 -- 2026-06-03 — v2 of the per-project CL recipient resolver: include Owners.
 --
 -- Mirrors Bill's ResolveReviewRecipientsByBillId envelope: PMs go TO,

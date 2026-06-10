@@ -1,4 +1,13 @@
 -- =============================================================================
+-- !!! SUPERSEDED — DO NOT RE-APPLY IN ISOLATION !!!
+-- This was the v1 of dbo.ResolveContractLaborReviewRecipientsPerProject
+-- (PM-only). Two later migrations replaced it:
+--   - 007 added Owners (PM goes TO, Owner goes CC).
+--   - 008 added the human-only filter (no LLM agents, no persona test accounts).
+-- Re-applying this file resets the sproc to PM-only with no filter, wiping
+-- both fixes. If you need to touch the sproc body, edit 008 instead, or
+-- chase this file with a re-run of 007 followed by 008.
+--
 -- 2026-06-03 — Per-project recipient resolver for ContractLabor reviews.
 --
 -- Distinct from ResolveReviewRecipientsByContractLaborId (which dedupes by

@@ -62,6 +62,34 @@ def _secure_cookie_enabled() -> bool:
     return settings.env.lower() not in {"development", "local", "test"}
 
 
+def _log_refresh_rejection(*, surface: str, reason: str, token: Optional[str]) -> None:
+    """
+    Server-side breadcrumb for rejected refresh attempts. The client only
+    ever sees a 401, and App Insights only records the status code — without
+    this, "which device, which user, why" is undiagnosable (2026-06-09
+    onboarding-lockout incident: 29 refresh 401s with no attribution).
+    Claims are decoded WITHOUT signature verification — fine for logging,
+    never for auth decisions.
+    """
+    claims = {}
+    if token:
+        try:
+            import jwt as _jwt
+            claims = _jwt.decode(token, options={"verify_signature": False})
+        except Exception:
+            claims = {"undecodable": True}
+    logger.warning(
+        "Refresh rejected (%s): %s | sub=%s username=%s token_type=%s iat=%s exp=%s",
+        surface,
+        reason,
+        claims.get("sub"),
+        claims.get("username"),
+        claims.get("token_type"),
+        claims.get("iat"),
+        claims.get("exp"),
+    )
+
+
 def _set_auth_cookies(*, response: Response, access_token, refresh_token) -> None:
     secure_cookie = _secure_cookie_enabled()
     response.set_cookie(
@@ -281,6 +309,12 @@ def refresh_token_router(request: Request, response: Response, body: Optional[Au
             "token": access_token.to_dict(),
         })
     except ValueError as e:
+        _log_refresh_rejection(
+            surface="web",
+            reason=str(e),
+            token=(body.refresh_token if body and body.refresh_token else None)
+            or request.cookies.get(REFRESH_COOKIE_NAME),
+        )
         raise HTTPException(status_code=401, detail=str(e))
     except HTTPException:
         raise
@@ -472,6 +506,7 @@ def mobile_refresh_router(body: MobileRefreshRequest):
             "refresh_token": refresh_token.to_dict(),
         })
     except ValueError as e:
+        _log_refresh_rejection(surface="mobile", reason=str(e), token=body.refresh_token)
         raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail="Token refresh failed.")

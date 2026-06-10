@@ -532,6 +532,30 @@ class ContractLaborRepository:
             logger.error(f"Error during update contract labor bill info: {error}")
             raise map_database_error(error)
 
+    def update_aggregates(self, *, id: int) -> Optional[ContractLabor]:
+        """
+        Recompute parent aggregates (TotalHours, TotalAmount, HourlyRate, Markup)
+        from the child ContractLaborLineItem rows. Call AFTER applying line-item
+        edits so the parent doesn't drift from its children.
+
+        Server-internal recompute — does NOT take a row_version. Returns the
+        updated parent row so the caller can thread the fresh row_version to
+        the client.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="UpdateContractLaborAggregates",
+                    params={"Id": id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row) if row else None
+        except Exception as error:
+            logger.error(f"Error during update contract labor aggregates: {error}")
+            raise map_database_error(error)
+
     def get_last_rate_for_vendor(self, vendor_id: int) -> Tuple[Optional[Decimal], Optional[Decimal]]:
         """
         Get the last used hourly rate and markup for a vendor (for carry-forward).

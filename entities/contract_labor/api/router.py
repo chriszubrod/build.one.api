@@ -435,14 +435,25 @@ def update_contract_labor_bill(public_id: str, bill_update: ContractLaborBillUpd
             line_item_repo.delete_by_id(id=item_id)
             items_deleted += 1
 
+        # Recompute parent aggregates (TotalHours, TotalAmount, HourlyRate,
+        # Markup) from the now-current child line items so the list page and
+        # downstream consumers see fresh totals. The recompute bumps the
+        # parent row_version — return the post-recompute row to the client
+        # so a subsequent action uses the fresh token.
+        recomputed = service.repo.update_aggregates(id=entry.id) or updated
+
         return item_response({
-            "public_id": updated.public_id,
-            "row_version": updated.row_version,
-            "bill_vendor_id": updated.bill_vendor_id,
-            "bill_date": updated.bill_date,
-            "due_date": updated.due_date,
-            "bill_number": updated.bill_number,
-            "status": updated.status,
+            "public_id": recomputed.public_id,
+            "row_version": recomputed.row_version,
+            "bill_vendor_id": recomputed.bill_vendor_id,
+            "bill_date": recomputed.bill_date,
+            "due_date": recomputed.due_date,
+            "bill_number": recomputed.bill_number,
+            "status": recomputed.status,
+            "total_hours": str(recomputed.total_hours) if recomputed.total_hours is not None else None,
+            "total_amount": str(recomputed.total_amount) if recomputed.total_amount is not None else None,
+            "hourly_rate": str(recomputed.hourly_rate) if recomputed.hourly_rate is not None else None,
+            "markup": str(recomputed.markup) if recomputed.markup is not None else None,
             "line_items_created": items_created,
             "line_items_updated": items_updated,
             "line_items_deleted": items_deleted,

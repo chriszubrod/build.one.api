@@ -1,6 +1,6 @@
 # Python Standard Library Imports
 import logging
-from typing import Optional, Tuple
+from typing import Optional
 from decimal import Decimal
 from datetime import datetime
 
@@ -11,14 +11,9 @@ from entities.time_entry.business.model import TimeLog
 from entities.time_entry.persistence.repo import TimeEntryRepository
 from entities.time_entry.persistence.time_log_repo import TimeLogRepository
 from entities.time_entry.persistence.time_entry_status_repo import TimeEntryStatusRepository
-from shared.authz import current_user_id, current_is_system_admin
+from entities.time_entry.business.actor_scope import actor_scope as _actor_scope
 
 logger = logging.getLogger(__name__)
-
-
-def _actor_scope() -> Tuple[Optional[int], Optional[bool]]:
-    """Read the current request actor from ContextVars."""
-    return current_user_id.get(), current_is_system_admin.get()
 
 
 class TimeLogService:
@@ -26,8 +21,10 @@ class TimeLogService:
     Service for TimeLog entity business operations.
     Lightweight child entity — direct CRUD, no ProcessEngine routing.
 
-    Phase 3 row-scoping: forwards the actor's UserId + IsSystemAdmin
-    flag to the repo, which scopes via the parent TimeEntry.UserId.
+    Phase 3 row-scoping: forwards the actor's UserId + IsSystemAdmin +
+    CanViewTeam flags to the repo, which scopes via the parent
+    TimeEntry.UserId (widened to UserProject-overlap rows for
+    can_view_team actors).
     """
 
     def __init__(self, repo: Optional[TimeLogRepository] = None):
@@ -50,13 +47,14 @@ class TimeLogService:
         Create a new time log for a time entry.
         Only allowed when the parent time entry is in 'draft' status.
         """
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
 
         # Validate parent exists AND is accessible to the actor
         time_entry = TimeEntryRepository().read_by_public_id(
             public_id=time_entry_public_id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
         if not time_entry:
             raise ValueError(f"TimeEntry with public_id '{time_entry_public_id}' not found.")
@@ -85,11 +83,12 @@ class TimeLogService:
         """
         Read all time logs for a time entry by the parent's public ID.
         """
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
         time_entry = TimeEntryRepository().read_by_public_id(
             public_id=time_entry_public_id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
         if not time_entry:
             raise ValueError(f"TimeEntry with public_id '{time_entry_public_id}' not found.")
@@ -97,17 +96,19 @@ class TimeLogService:
             time_entry_id=time_entry.id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
 
     def read_by_public_id(self, public_id: str) -> Optional[TimeLog]:
         """
         Read a time log by public ID, scoped to the actor.
         """
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
         return self.repo.read_by_public_id(
             public_id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
 
     def update_by_public_id(
@@ -127,12 +128,13 @@ class TimeLogService:
         Update a time log by public ID, scoped to the actor.
         Only allowed when the parent time entry is in 'draft' status.
         """
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
 
         existing = self.repo.read_by_public_id(
             public_id=public_id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
         if not existing:
             raise ValueError(f"TimeLog with public_id '{public_id}' not found.")
@@ -164,6 +166,7 @@ class TimeLogService:
             existing,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
 
     def delete_by_public_id(self, public_id: str) -> Optional[TimeLog]:
@@ -171,12 +174,13 @@ class TimeLogService:
         Delete a time log by public ID, scoped to the actor.
         Only allowed when the parent time entry is in 'draft' status.
         """
-        actor_user_id, actor_is_system_admin = _actor_scope()
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
 
         existing = self.repo.read_by_public_id(
             public_id=public_id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
         if not existing:
             raise ValueError(f"TimeLog with public_id '{public_id}' not found.")
@@ -187,6 +191,7 @@ class TimeLogService:
             id=existing.id,
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
 
     def _validate_parent_is_draft(self, time_entry_id: int) -> None:

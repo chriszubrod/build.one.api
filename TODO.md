@@ -2,6 +2,24 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## Time-tracking round-2 review — API findings (2026-06-10)
+
+From the cross-repo invariant sweep (see build.one.ios/TODO.md for the 66 iOS findings). These break the iOS sync recovery logic from the server side:
+
+- [x] **(CRITICAL)** Database unique constraint violations return 500 instead of 409, breaking iOS duplicate-claim detection — **FIXED 2026-06-10** (422 + original message; 409 deliberately avoided — iOS maps it to conflict flow)
+  `build.one.api/entities/time_entry/api/router.py:491` — When a unique constraint violation occurs during CreateTimeLog (e.g., duplicate UX_TimeLog_TimeEntry_ClockIn key), the pyodbc.Error is caught by TimeLogRepository.create(), mapped to a DatabaseOperationError by map_database_error(), and bubbles up as an unhandled exception. FastAPI converts this to…
+- [x] **(CRITICAL)** UpdateTimeLogById and UpdateTimeEntryById sprocs in the 2026-05-26 migration inherit the same NULL-overwrite bug — **FIXED 2026-06-10** (guards in scripts/migrations/time_log_update_guards_and_unique_indexes.sql; run at deploy)
+  `build.one.api/scripts/migrations/time_entry_view_team.sql:824` — The 2026-05-26 time_entry_view_team.sql migration rewrote 6 TimeLog/TimeEntry mutation sprocs to add RBAC scope (the @ActorCanViewTeam branch). While threading actor scope, the sproc authors copied the original base-entity sprocs wholesale WITHOUT fixing the NULL-overwrite pattern. UpdateTimeLogById…
+- [x] **(HIGH)** *(latent)* TimeLogService._actor_scope() does not thread @ActorCanViewTeam to all repo calls — **RESOLVED 2026-06-10**: panel itself verified code is correct today; fail-closed required-param signature deferred to sync-layer consolidation
+  `build.one.api/entities/time_entry/business/time_log_service.py:21` — The service-layer _actor_scope() (lines 21-35) correctly reads the can_view_team flag from the ContextVar (line 34). However, not all repo calls in the service pass all three scope components. The pattern is inconsistent: some calls (e.g., read_by_public_id line 126-131) pass all three; but the muta…
+- [x] **(HIGH)** *(latent)* No uniqueness constraint on (TimeEntryId, ClockIn) pair — duplicate-detection path never triggers — **SCRIPTED 2026-06-10**: index creation in the same migration, gated on dedup; run cleanup.time_entry_duplicates.sql first (prod HAS live duplicates: 12 auto-mergeable log twins, 3 conflict groups, 11 dup entry days)
+  `build.one.api/entities/time_entry/sql/dbo.time_entry.sql:43` — iOS claims include duplicate-detection via timestampsMatch (iOS TimeEntryService.swift:121-125) — if a CREATE fails due to network drop and is retried, the client queries the server for matching (TimeEntryId, ClockIn) and claims the existing row instead of re-POSTing. This duplicate-recovery path de…
+
+**Note on the unique index:** prod `dbo.TimeLog` may already contain duplicate (TimeEntryId, ClockIn) pairs from the unprotected retry window — audit + dedup BEFORE creating the index or the CREATE will fail.
+
+---
+
+
 ## TimeTracking integration follow-ups (Phases 4 / 5 / 6 / 8 / 10 — deferred from 2026-05-28 session)
 
 Phases 0–3 + 9 of the [Phase 1–3 schema sketch](docs/integration-timetracking-contractlabor-bill-phase-1-3-schema.md) shipped 2026-05-28. End-to-end aggregation proven against Brayan's TimeEntry id=24 → ContractLabor 513 / line 366 / $410.85. See SESSION_NOTES.md "TimeTracking → ContractLabor / EmployeeLabor end-to-end (2026-05-28)" for the full log. Remaining work:

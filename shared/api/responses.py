@@ -47,3 +47,25 @@ def raise_not_found(entity_name: str) -> None:
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"{entity_name} not found",
     )
+
+
+def raise_database_error(error: Exception) -> None:
+    """Map database-layer failures escaping a router to transport-correct
+    statuses instead of opaque 500s.
+
+    Unique-key violations surface as 422 with the ORIGINAL message — the
+    iOS offline-sync client keys its duplicate-claim recovery off
+    `.requestFailed` (any 4xx except 401/404/409) + a message containing
+    'duplicate' / 'unique' / the constraint name. Deliberately NOT 409:
+    the client maps 409 to its optimistic-concurrency conflict flow, which
+    would bypass the claim logic entirely (round-2 review 2026-06-10).
+    Anything else re-raises unchanged.
+    """
+    message = str(error)
+    lower = message.lower()
+    if "duplicate key" in lower or "unique" in lower:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=message,
+        )
+    raise error

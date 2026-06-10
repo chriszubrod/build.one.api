@@ -18,7 +18,8 @@ from entities.time_entry.api.schemas import (
     TimeEntryApprove,
     TimeEntryReject,
 )
-from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
+from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found, raise_database_error
+from shared.database import DatabaseError
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -512,6 +513,8 @@ def create_time_log(
         return item_response(log.to_dict())
     except ValueError as e:
         raise_workflow_error(str(e), "Failed to create time log")
+    except DatabaseError as e:
+        raise_database_error(e)
 
 
 @router.get("/{public_id}/logs")
@@ -565,6 +568,10 @@ def update_time_log(
         return item_response(log.to_dict())
     except ValueError as e:
         raise_workflow_error(str(e), "Failed to update time log")
+    except DatabaseError as e:
+        # Same duplicate-shape contract as create — an UPDATE that lands a
+        # (TimeEntryId, ClockIn) collision must be claimable client-side.
+        raise_database_error(e)
 
 
 @time_log_router.delete("/{public_id}")

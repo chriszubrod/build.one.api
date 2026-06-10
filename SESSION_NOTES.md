@@ -1,5 +1,14 @@
 # Session Notes
 
+## Session: Thread can_view_team through TimeLog + TimeEntryStatus services (2026-06-10)
+
+Part of the iOS time-tracking bug hunt (see build.one.ios/SESSION_NOTES.md same date). The 2026-05-26 CanViewTeam migration threaded `@ActorCanViewTeam` through 16 TimeEntry/TimeLog/TimeEntryStatus sprocs, and the repo layer accepts `actor_can_view_team` on every method — but `TimeLogService._actor_scope()` and `TimeEntryStatusService._actor_scope()` still returned 2-tuples and never passed the flag, so the repos always sent the default (False). Effect: PM/Controller/Owner/Tenant-Admin actors (non-sysadmin) could see team TimeEntries via the Mine/Team toggle but got 404s on the child logs ("not found" on read/update/delete of a team member's TimeLog) and 0 rows of status history. Both services now mirror `TimeEntryService._actor_scope()`'s 3-tuple (`current_can_view_team("Time Tracking")`) and thread `actor_can_view_team` into every repo call (8 sites in TimeLogService, 4 in TimeEntryStatusService).
+
+Files: entities/time_entry/business/time_log_service.py, entities/time_entry/business/time_entry_status_service.py
+Verified: `python3 -m py_compile` both files → OK. Not yet deployed — needs the usual `az acr build` + `az webapp restart` (tag `:latest`).
+
+**Round-2 additions (same day):** (1) `entities/time_entry/api/router.py` — TimeLog create/update endpoints now map unique-key `DatabaseError`s to **422 with the original message** instead of escaping as opaque 500s. Deliberately NOT 409: the iOS client maps 409 → `.conflictError` (optimistic-concurrency flow), which would bypass its duplicate-claim recovery; 422 lands in `.requestFailed` where the recovery keys off message substrings. (2) New `scripts/migrations/time_log_update_guards_and_unique_indexes.sql` — NULL-overwrite guards on UpdateTimeLogById/UpdateTimeEntryById (only never-legitimately-NULL fields: ClockIn/LogType/GPS/UserId/WorkDate/entry-Note) + unique indexes `UX_TimeLog_TimeEntry_ClockIn` / `UX_TimeEntry_UserId_WorkDate`, each gated on a clean dup audit. (3) **Prod audit found LIVE duplicates** (the unprotected-retry artifact): ~15 dup log groups + 11 dup entry days, 2026-05-19→06-10 — workers' "disappeared" clock-outs/notes sit on the closed twins. New `scripts/cleanup.time_entry_duplicates.sql` (dry-run default) merges them data-preservingly; flags 3 conflicting log groups (entries 88/90/751) + 2 submitted dup days (users 41/47) for office review. **Deploy order: cleanup (@Apply=1) → guards+indexes migration → az acr build + restart (:latest).**
+
 ## Session: Project dedupe sweep + App Service tag-pin discovery (2026-06-03)
 
 ### Overview

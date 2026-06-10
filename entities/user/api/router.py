@@ -56,6 +56,24 @@ def get_users_router(
     return list_response([user.to_dict() for user in users])
 
 
+@router.get("/get/workers")
+def get_workers_router(
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_read")),
+):
+    """
+    Curated list of users eligible to be picked as the worker on a
+    TimeEntry. Backed by dbo.ReadWorkers — excludes LLM agents and
+    persona test accounts; includes employees, contractors, and users
+    with a 'Field Crew' or 'Intern' role.
+
+    Gated on TIME_TRACKING.can_read (not USERS) so PMs and time-clerks
+    who don't hold the USERS module can still see the worker roster
+    they need for time-entry creation.
+    """
+    users = UserService().read_workers()
+    return list_response([user.to_dict() for user in users])
+
+
 @router.get("/get/user/me")
 def get_my_user_router(current_user: dict = Depends(get_current_user_api)):
     """

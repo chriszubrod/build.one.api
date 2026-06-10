@@ -99,6 +99,25 @@ class UserRepository:
             logger.error(f"Error during create user: {error}")
             raise map_database_error(error)
 
+    def read_workers(self) -> list[User]:
+        """
+        Read users eligible to be picked as a worker on a TimeEntry.
+
+        Excludes LLM agents and persona test accounts; includes users
+        with an Employee/Vendor FK linkage OR a 'Field Crew' / 'Intern'
+        role. Same column shape as ReadUsers so _from_db hydrates
+        without changes.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor=cursor, name="ReadWorkers", params={})
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(f"Error during read workers: {error}")
+            raise map_database_error(error)
+
     def read_all(self, *, include_agents: bool = False) -> list[User]:
         """
         Read users. By default agent users (IsAgent=1) are hidden;

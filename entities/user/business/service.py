@@ -18,6 +18,10 @@ class UserService:
         """Initialize the UserService."""
         self.repo = repo or UserRepository()
 
+    def read_workers(self) -> list[User]:
+        """Curated worker list for the time-entry picker."""
+        return self.repo.read_workers()
+
     def create(
         self,
         *,

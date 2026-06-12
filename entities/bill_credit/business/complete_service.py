@@ -236,6 +236,11 @@ class BillCreditCompleteService:
             if excel_result.get("errors"):
                 all_errors.extend(excel_result["errors"])
 
+        # Box mirror — enqueue line-item attachments to each mapped
+        # project's Box folder. Additive + failure-isolated: never affects
+        # the completion result.
+        self._enqueue_box_uploads(bill_credit=bill_credit, line_items=line_items)
+
         # Determine overall status
         has_errors = len(all_errors) > 0
         status_code = 200 if not has_errors else 207  # 207 = Multi-Status (partial success)
@@ -251,6 +256,69 @@ class BillCreditCompleteService:
             "excel_syncs": excel_sync_results,
             "errors": all_errors
         }
+
+    def _enqueue_box_uploads(self, bill_credit, line_items: List) -> None:
+        """
+        Enqueue Box uploads for the bill credit's line-item attachments.
+
+        Mirrors the SharePoint module-folder upload: one enqueue per unique
+        (project, attachment) pair, routed to the project's mapped Box
+        folder. Projects without a Box mapping are skipped (one info log
+        per project). Additive + failure-isolated — any exception is logged
+        and swallowed so Box can never affect the completion flow.
+        """
+        import os as _os
+        if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
+            return  # gate closed — skip the DB legwork, not just the enqueue
+        try:
+            from integrations.box.folder.business.service import BoxProjectFolderService
+            from integrations.box.outbox.business.service import BoxOutboxService
+
+            folder_service = BoxProjectFolderService()
+            box_outbox = BoxOutboxService()
+            mapping_cache = {}  # project_id -> mapping dict or None
+            enqueued_keys = set()  # (project_id, attachment_id)
+
+            for line_item in line_items:
+                try:
+                    if not line_item.project_id or not line_item.public_id:
+                        continue
+                    project_id = line_item.project_id
+                    if project_id not in mapping_cache:
+                        mapping_cache[project_id] = folder_service.read_mapping_by_project_id(project_id)
+                        if mapping_cache[project_id] is None:
+                            logger.info(f"box.enqueue.skipped_unmapped_project project_id={project_id}")
+                    mapping = mapping_cache[project_id]
+                    if not mapping:
+                        continue
+                    attachment_link = self.bill_credit_line_item_attachment_service.read_by_bill_credit_line_item_id(
+                        bill_credit_line_item_public_id=line_item.public_id
+                    )
+                    if not attachment_link or not attachment_link.attachment_id:
+                        continue
+                    if (project_id, attachment_link.attachment_id) in enqueued_keys:
+                        continue
+                    attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
+                    if not attachment or not attachment.blob_url:
+                        continue
+                    box_outbox.enqueue_box_upload(
+                        entity_type="bill_credit",
+                        entity_public_id=str(bill_credit.public_id),
+                        doc_kind="attachment",
+                        blob_path=attachment.blob_url,
+                        filename=attachment.original_filename or attachment.filename or "document",
+                        content_type=attachment.content_type or "application/octet-stream",
+                        box_folder_id=mapping["box_folder_id"],
+                        attachment_id=attachment.id,
+                        project_id=project_id,
+                    )
+                    enqueued_keys.add((project_id, attachment_link.attachment_id))
+                except Exception as line_error:
+                    logger.warning(
+                        f"box.enqueue.failed bill_credit={bill_credit.public_id} line_item={line_item.id}: {line_error}"
+                    )
+        except Exception as e:
+            logger.warning(f"box.enqueue.failed bill_credit={bill_credit.public_id}: {e}")
 
     def _upload_attachments_to_module_folder(
         self,

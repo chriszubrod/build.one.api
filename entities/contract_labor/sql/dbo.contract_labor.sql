@@ -105,6 +105,16 @@ CREATE INDEX IX_ContractLaborLineItem_ContractLaborId ON [dbo].[ContractLaborLin
 END
 GO
 
+-- Budget variance support (2026-06-12): ReadBudgetVarianceByProjectId
+-- aggregates this table by ProjectId — without this index every variance
+-- call full-scans CLLI. Mirrored in scripts/migrations/budget_variance_support_indexes.sql.
+IF OBJECT_ID('dbo.ContractLaborLineItem', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ContractLaborLineItem_ProjectId' AND object_id = OBJECT_ID('dbo.ContractLaborLineItem'))
+BEGIN
+CREATE INDEX IX_ContractLaborLineItem_ProjectId ON [dbo].[ContractLaborLineItem] ([ProjectId])
+    INCLUDE ([SubCostCodeId], [Hours], [Price], [Markup], [IsOverhead], [IsBillable], [BillLineItemId]);
+END
+GO
+
 -- Add IsOverhead column to existing tables (idempotent migration)
 IF OBJECT_ID('dbo.ContractLaborLineItem', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.ContractLaborLineItem') AND name = 'IsOverhead')
 BEGIN
@@ -1067,7 +1077,8 @@ CREATE OR ALTER PROCEDURE CreateContractLaborLineItem
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
     @IsBillable BIT = 1,
-    @IsOverhead BIT = 0
+    @IsOverhead BIT = 0,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -1077,7 +1088,7 @@ BEGIN
 
     INSERT INTO dbo.[ContractLaborLineItem] (
         [CreatedDatetime], [ModifiedDatetime], [ContractLaborId], [LineDate], [ProjectId], [SubCostCodeId],
-        [Description], [Hours], [Rate], [Markup], [Price], [IsBillable], [IsOverhead]
+        [Description], [Hours], [Rate], [Markup], [Price], [IsBillable], [IsOverhead], [CreatedByUserId]
     )
     OUTPUT
         INSERTED.[Id],
@@ -1098,7 +1109,8 @@ BEGIN
         INSERTED.[IsOverhead]
     VALUES (
         @Now, @Now, @ContractLaborId, @LineDate, @ProjectId, @SubCostCodeId,
-        @Description, @Hours, @Rate, @Markup, @Price, @IsBillable, @IsOverhead
+        @Description, @Hours, @Rate, @Markup, @Price, @IsBillable, @IsOverhead,
+        COALESCE(@CreatedByUserId, 17)
     );
 
     COMMIT TRANSACTION;
@@ -1217,6 +1229,13 @@ GO
 
 GO
 
+-- NOTE: the CASE WHEN guard on [BillLineItemId] below is load-bearing.
+-- It preserves the billed link-back when callers omit / pass NULL for
+-- @BillLineItemId (no Python caller intentionally clears via this sproc —
+-- clearing happens only via FK_ContractLaborLineItem_BillLineItem
+-- ON DELETE SET NULL when the linked BillLineItem is deleted). Removing the
+-- guard silently re-introduces labor double-counting: bill generation and the
+-- budget variance rollup both key on this FK to exclude already-billed labor.
 CREATE OR ALTER PROCEDURE UpdateContractLaborLineItemById
 (
     @Id BIGINT,

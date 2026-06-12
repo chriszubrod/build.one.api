@@ -108,6 +108,11 @@ SYNCHRONOUS_TASKS = [
 
     # Time tracking
     "time_entry",
+
+    # Budget entities
+    "budget",
+    "budget_revision",
+    "budget_line_item",
 ]
 
 

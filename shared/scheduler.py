@@ -80,6 +80,7 @@ def start_scheduler() -> None:
     _register_qbo_reconcile_jobs(scheduler)
     _register_ms_outbox_drain(scheduler)
     _register_ms_reconcile_jobs(scheduler)
+    _register_box_outbox_drain(scheduler)
 
     scheduler.start()
     _scheduler = scheduler
@@ -88,7 +89,8 @@ def start_scheduler() -> None:
         "qbo_sync_{bill,invoice,purchase,vendorcredit} (15m), "
         "qbo_sync_{vendor,customer,item,account,term} (4h), "
         "qbo_sync_company_info (daily), qbo_reconcile_bills (daily), "
-        "ms_outbox_drain (5s), ms_reconcile_excel (daily)."
+        "ms_outbox_drain (5s), ms_reconcile_excel (daily), "
+        "box_outbox_drain (5s)."
     )
 
 
@@ -346,6 +348,34 @@ def _register_ms_reconcile_jobs(scheduler) -> None:
         hours=24,
         id="ms_reconcile_excel",
         next_run_time=now_utc + timedelta(hours=4),
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+
+def _register_box_outbox_drain(scheduler) -> None:
+    """Register the Box outbox drain tick. Same 5s cadence as QBO/MS; parallel
+    queue (`[box].[Outbox]`) with its own claim sproc (UPDLOCK + READPAST), so
+    concurrent ticks across processes can't double-claim. Blocking drain work
+    is dispatched via `asyncio.to_thread` so the event loop stays free — Box
+    uploads can take 10-30s and must not block FastAPI."""
+    from integrations.box.outbox.business.worker import BoxOutboxWorker
+
+    def _sync_drain() -> None:
+        BoxOutboxWorker().drain_once()
+
+    async def _drain_box_outbox() -> None:
+        try:
+            await asyncio.to_thread(_sync_drain)
+        except Exception:
+            logger.exception("box.outbox.drain.tick_failed")
+
+    scheduler.add_job(
+        _drain_box_outbox,
+        trigger="interval",
+        seconds=5,
+        id="box_outbox_drain",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

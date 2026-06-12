@@ -20,6 +20,7 @@ class Modules:
     # Financial entities
     BILLS           = "Bills"
     BILL_CREDITS    = "Bill Credits"
+    BUDGETS         = "Budgets"
     EXPENSES        = "Expenses"
     INVOICES        = "Invoices"
     CONTRACT_LABOR  = "Contract Labor"

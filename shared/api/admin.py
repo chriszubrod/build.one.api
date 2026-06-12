@@ -121,6 +121,56 @@ async def drain_outbox_router():
     return await _timed("outbox.drain", _run)
 
 
+# --- Box outbox drain ------------------------------------------------------- #
+
+
+@router.post("/box/drain", dependencies=[Depends(_require_drain_secret)])
+async def drain_box_outbox_router():
+    """
+    Drain the Box outbox (up to 20 rows / 20s budget per call). Called on a
+    short cadence by the scheduler Function App, mirroring /outbox/drain.
+    The worker runs its own pre-pass auth circuit breaker (returns
+    `{"skipped": "auth_unavailable"}` when a CCG token can't be minted) and
+    a visibility-lost circuit (aborts the pass after 3 consecutive
+    not-found/permission outcomes) — see docs/runbooks/box-outbox-backlog-growing.md.
+
+    Operator pause: set env var `PAUSE_BOX_DRAIN=true` on App Service and
+    restart. While set, this endpoint returns `{paused: true}` without
+    touching the DB or Box. Rows keep accumulating as `pending` and drain
+    in enqueue order once the pause lifts — nothing is lost.
+
+    Failure isolation: the worker import + drain run inside their own
+    try/except so a missing `[box]` schema (or any other deploy-ordering
+    problem) logs + returns an error payload instead of 500-ing on every
+    scheduler tick.
+    """
+    started = time.monotonic()
+
+    # Same value set + response shape as the PAUSE_EMAIL_* endpoints so
+    # Function App log parsing sees one uniform pause contract. The worker
+    # also checks this flag internally (covers the in-process scheduler
+    # fallback path) — this early return just skips the thread hop.
+    if os.getenv("PAUSE_BOX_DRAIN", "").strip().lower() in ("true", "1", "yes"):
+        return {
+            "status": "ok",
+            "job": "box_outbox_drain",
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "result": {"paused": True},
+        }
+
+    def _run() -> dict[str, Any]:
+        # Lazy import — keeps the Box integration off the FastAPI boot path
+        # and isolates a missing/broken [box] deployment to this endpoint.
+        try:
+            from integrations.box.outbox.business.worker import BoxOutboxWorker
+            return BoxOutboxWorker().drain_all(max_rows=20, time_budget_seconds=20.0)
+        except Exception as error:
+            logger.exception("box.outbox.drain.failed")
+            return {"error": f"{type(error).__name__}: {error}"}
+
+    return await _timed("box_outbox_drain", _run)
+
+
 # --- QBO pulls ------------------------------------------------------------- #
 
 

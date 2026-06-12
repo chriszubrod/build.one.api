@@ -98,6 +98,11 @@ PROCESS_REGISTRY: Dict[str, str] = {
 
     # Time tracking
     "time_entry": "entities.time_entry.business.service.TimeEntryService",
+
+    # Budget entities
+    "budget": "entities.budget.business.service.BudgetService",
+    "budget_revision": "entities.budget_revision.business.service.BudgetRevisionService",
+    "budget_line_item": "entities.budget_line_item.business.service.BudgetLineItemService",
 }
 
 _missing = set(SYNCHRONOUS_TASKS) - set(PROCESS_REGISTRY)
@@ -385,7 +390,7 @@ class InstantWorkflowHandler:
             
         except Exception as e:
             logger.error(f"Instant workflow {workflow.public_id} failed: {e}")
-            
+
             # Log the error
             self.orchestrator.log_error(
                 workflow_id=workflow.id,
@@ -393,7 +398,7 @@ class InstantWorkflowHandler:
                 error=e,
                 created_by="instant_workflow_handler",
             )
-            
+
             # Transition to failed
             try:
                 self.orchestrator.transition(
@@ -404,7 +409,15 @@ class InstantWorkflowHandler:
                 )
             except Exception as transition_error:
                 logger.error(f"Failed to transition workflow to failed state: {transition_error}")
-            
+
+            # Access-control failures must reach the app-level handler, which
+            # maps EntityNotAccessibleError to a generic 404. Stringifying it
+            # into a 400 workflow error would confirm the entity exists AND
+            # leak internal ids to an out-of-scope actor.
+            from shared.access import EntityNotAccessibleError
+            if isinstance(e, EntityNotAccessibleError):
+                raise
+
             return InstantWorkflowResult(
                 success=False,
                 workflow_id=workflow.public_id,

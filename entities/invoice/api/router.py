@@ -658,12 +658,55 @@ def _generate_invoice_packet(public_id: str):
 
     inv_att_service.create(invoice_id=invoice.id, attachment_id=attachment.id)
 
+    # Box mirror — enqueue the freshly generated packet to the invoice's
+    # mapped project Box folder. Additive + failure-isolated: never affects
+    # packet generation.
+    _enqueue_box_packet_upload(invoice=invoice, attachment=attachment, blob_url=blob_url, filename=filename)
+
     return item_response({
         "attachment_public_id": attachment.public_id,
         "filename": filename,
         "page_count": len(writer.pages),
         "skipped": skipped,
     })
+
+
+def _enqueue_box_packet_upload(invoice, attachment, blob_url: str, filename: str) -> None:
+    """
+    Enqueue a Box upload for the invoice packet attachment.
+
+    Uses the invoice's project for the Box folder mapping; unmapped (or
+    missing) project → skip with an info log. Additive + failure-isolated —
+    any exception is logged and swallowed so Box can never affect the
+    packet flow.
+    """
+    import os as _os
+    if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
+        return  # gate closed — skip the DB legwork, not just the enqueue
+    try:
+        from integrations.box.folder.business.service import BoxProjectFolderService
+        from integrations.box.outbox.business.service import BoxOutboxService
+
+        if not invoice.project_id:
+            logger.info(f"box.enqueue.skipped_unmapped_project project_id=None invoice={invoice.public_id}")
+            return
+        mapping = BoxProjectFolderService().read_mapping_by_project_id(invoice.project_id)
+        if mapping is None:
+            logger.info(f"box.enqueue.skipped_unmapped_project project_id={invoice.project_id}")
+            return
+        BoxOutboxService().enqueue_box_upload(
+            entity_type="invoice",
+            entity_public_id=str(invoice.public_id),
+            doc_kind="packet",
+            blob_path=blob_url,
+            filename=filename,
+            content_type="application/pdf",
+            box_folder_id=mapping["box_folder_id"],
+            attachment_id=attachment.id,
+            project_id=invoice.project_id,
+        )
+    except Exception as e:
+        logger.warning(f"box.enqueue.failed invoice={invoice.public_id}: {e}")
 
 
 @router.get("/get/invoice/{public_id}/reconcile")

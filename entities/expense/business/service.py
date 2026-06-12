@@ -561,6 +561,14 @@ class ExpenseService:
         # Step 4: QBO push disabled (no reverse sync at this time)
         qbo_sync_result = {"success": True, "message": "Skipped (reverse sync disabled)", "qbo_purchase_id": None, "errors": []}
 
+        # Step 5: Box mirror — enqueue line-item attachments to each mapped
+        # project's Box folder. Additive + failure-isolated. One pass covers
+        # both SharePoint destinations (module folder + general receipts):
+        # Box has a single per-project folder, and Policy C coalescing keys
+        # on attachment_id, so a second doc_kind pass would coalesce into a
+        # no-op anyway.
+        self._enqueue_box_uploads(expense=expense, line_items=line_items, doc_kind="attachment")
+
         has_errors = len(all_errors) > 0
         return {
             "status_code": 200 if not has_errors else 207,
@@ -1306,3 +1314,66 @@ class ExpenseService:
         except Exception as e:
             logger.exception("Error uploading to general receipts folder")
             return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
+
+    def _enqueue_box_uploads(self, expense, line_items: List, doc_kind: str) -> None:
+        """
+        Enqueue Box uploads for the expense's line-item attachments.
+
+        One enqueue per unique (project, attachment) pair, routed to the
+        line item's project Box folder mapping; unmapped projects are
+        skipped (one info log per project). Additive + failure-isolated —
+        any exception is logged and swallowed so Box can never affect the
+        completion flow.
+        """
+        import os as _os
+        if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
+            return  # gate closed — skip the DB legwork, not just the enqueue
+        try:
+            from integrations.box.folder.business.service import BoxProjectFolderService
+            from integrations.box.outbox.business.service import BoxOutboxService
+
+            folder_service = BoxProjectFolderService()
+            box_outbox = BoxOutboxService()
+            mapping_cache: dict = {}  # project_id -> mapping dict or None
+            enqueued_keys = set()  # (project_id, attachment_id)
+
+            for line_item in line_items:
+                try:
+                    if not line_item.project_id or not line_item.public_id:
+                        continue
+                    project_id = line_item.project_id
+                    if project_id not in mapping_cache:
+                        mapping_cache[project_id] = folder_service.read_mapping_by_project_id(project_id)
+                        if mapping_cache[project_id] is None:
+                            logger.info(f"box.enqueue.skipped_unmapped_project project_id={project_id}")
+                    mapping = mapping_cache[project_id]
+                    if not mapping:
+                        continue
+                    attachment_link = self.expense_line_item_attachment_service.read_by_expense_line_item_id(
+                        expense_line_item_public_id=line_item.public_id
+                    )
+                    if not attachment_link or not attachment_link.attachment_id:
+                        continue
+                    if (project_id, attachment_link.attachment_id) in enqueued_keys:
+                        continue
+                    attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
+                    if not attachment or not attachment.blob_url:
+                        continue
+                    box_outbox.enqueue_box_upload(
+                        entity_type="expense",
+                        entity_public_id=str(expense.public_id),
+                        doc_kind=doc_kind,
+                        blob_path=attachment.blob_url,
+                        filename=attachment.original_filename or attachment.filename or "document",
+                        content_type=attachment.content_type or "application/octet-stream",
+                        box_folder_id=mapping["box_folder_id"],
+                        attachment_id=attachment.id,
+                        project_id=project_id,
+                    )
+                    enqueued_keys.add((project_id, attachment_link.attachment_id))
+                except Exception as line_error:
+                    logger.warning(
+                        f"box.enqueue.failed expense={expense.public_id} line_item={line_item.id}: {line_error}"
+                    )
+        except Exception as e:
+            logger.warning(f"box.enqueue.failed expense={expense.public_id}: {e}")

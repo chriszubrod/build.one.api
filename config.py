@@ -104,6 +104,19 @@ class Settings(BaseSettings):
     # Format: <name>.<region>.azurewebsites.net
     azure_default_domain: Optional[str] = None
 
+    # Box Platform (client's Box enterprise) — Client Credentials Grant.
+    # The app is a Box Platform Custom App (Server Authentication / CCG);
+    # the client's admin authorizes the Client ID in their Admin Console and
+    # collaborates the generated service account into the in-scope folders.
+    # CCG has no refresh tokens — 60-minute access tokens are minted on
+    # demand from these credentials and cached in memory per process.
+    # NOTE: the write gate is ALLOW_BOX_WRITES, read via os.getenv in
+    # integrations/box/base/client.py (matching ALLOW_QBO/MS_WRITES — it is
+    # deliberately NOT a Settings field).
+    box_client_id: Optional[str] = None
+    box_client_secret: Optional[str] = None
+    box_enterprise_id: Optional[str] = None
+
     # Intelligence Layer — provider API keys
     anthropic_api_key: Optional[str] = None
 

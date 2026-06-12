@@ -409,6 +409,29 @@ BEGIN
 END
 GO
 
+-- Baseline + budget-variance indexes (2026-06-12): the line table shipped
+-- with zero nonclustered indexes. ProjectId feeds ReadBudgetVarianceByProjectId;
+-- EmployeeLaborId/PublicId are the standard line-table pair every sibling has.
+-- Mirrored in scripts/migrations/budget_variance_support_indexes.sql.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_EmployeeLaborLineItem_ProjectId' AND object_id = OBJECT_ID('dbo.EmployeeLaborLineItem'))
+BEGIN
+    CREATE INDEX [IX_EmployeeLaborLineItem_ProjectId] ON [dbo].[EmployeeLaborLineItem] ([ProjectId])
+        INCLUDE ([SubCostCodeId], [Hours], [Rate], [IsOverhead]);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_EmployeeLaborLineItem_EmployeeLaborId' AND object_id = OBJECT_ID('dbo.EmployeeLaborLineItem'))
+BEGIN
+    CREATE INDEX [IX_EmployeeLaborLineItem_EmployeeLaborId] ON [dbo].[EmployeeLaborLineItem] ([EmployeeLaborId]);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_EmployeeLaborLineItem_PublicId' AND object_id = OBJECT_ID('dbo.EmployeeLaborLineItem'))
+BEGIN
+    CREATE INDEX [IX_EmployeeLaborLineItem_PublicId] ON [dbo].[EmployeeLaborLineItem] ([PublicId]);
+END
+GO
+
 
 GO
 

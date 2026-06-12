@@ -2,6 +2,21 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## Budget entity follow-ups (2026-06-11; plan: umbrella memory project_budget_entity.md)
+
+Phase 0 + 1 shipped to the prod DB 2026-06-11 (schema + sprocs + seeds live; code awaits commit + container deploy). Remaining:
+
+- [ ] **Phase 2 — variance engine.** `ReadBudgetVarianceByProjectId(@ProjectId, @ActorUserId, @ActorIsSystemAdmin)` + `GET /get/budget/{public_id}/variance` + list-page rollups. The verified predicates live in the plan doc — key landmines: drawn SCC must COALESCE through all FOUR source-line FKs (QBO-pulled ILIs are source_type='Manual' with NULL SubCostCodeId); drawn sign-negation for credit-sourced lines; CL cost = `Price/(1+ISNULL(Markup,0))` (Rate is DAILY — Hours×Rate is ~8× wrong); EL cost = `Hours×Rate` (Price is markup-inclusive); CL no-double-count predicate = `clli.BillLineItemId IS NULL` (line-level FK, not header/status); exclude IsOverhead=1; include drafts everywhere per policy; Uncategorized bucket at both grains; aggregate per-family GROUP BY then join (113s lesson); `unpriced_labor_hours` in the payload. Perf-verify on a real project (no index on CLLI.BillLineItemId).
+- [ ] **Phase 3 — web UI** (after Phase 2): /budget/* routes in the trimmed app with a revived desktop layout route element (decision made 2026-06-11); BillEdit .li-card grid keyed by public_id; react-query conventions; flush+saveAll-bool before activate/approve; autosave `enabled` gated on revision status. Check whether the SWA deploy is live before shipping a new tab.
+- [ ] **Lifecycle unit tests** — plan called for them; repo has no test infra so none shipped (deviation recorded). The rules are pure-Python branches in the three services + SQL guards (smoke-tested live 2026-06-11). If/when a tests/ convention lands, this is the first candidate.
+- [ ] **QBO invoice re-pull clobbers ILI source links** (pre-existing, hurts Phase 2 drawn resolution): `connector/invoice_line_item/business/service.py` update path passes `source_type='Manual'` unconditionally — InvoiceAgent-linked lines degrade back to Manual on re-pull, migrating drawn dollars to Uncategorized over time. Guard the update path to preserve existing source FKs.
+- [ ] **Voided QBO invoices** — Invoice has only IsDraft; a voided invoice pulled from QBO stays IsDraft=0 with its lines. Check how voids appear in qbo staging before trusting drawn totals (Phase 2 acceptance item).
+- [ ] **Budget 'archived' flow** — status value + filtered unique index support re-baselining, but no archive endpoint/UI exists yet. Unscoped until a real re-baseline need arrives.
+
+## TimeEntry list N+1 — fix before raising iOS timeouts (2026-06-12)
+
+- [ ] **(P1) `GET /api/v1/time-entries` took 13.5s for 35 rows** (observed in prod 2026-06-11, App Insights). Root cause: per-row `read_current` status lookup in `_entry_dict_with_current_status` (the documented N+1) + count + project-ids batch. iOS now runs a 15s inter-byte request timeout — 1.5s headroom; the pull will intermittently fail on cellular until this is fixed. Batch the status lookup (one sproc returning latest status per entry id set, mirroring `ReadDistinctProjectIdsByTimeEntryIds`). Target <5s. Do NOT solve this by raising the iOS timeout (it bounds the worst-case UI freeze window).
+
 ## Time-tracking round-2 review — API findings (2026-06-10)
 
 From the cross-repo invariant sweep (see build.one.ios/TODO.md for the 66 iOS findings). These break the iOS sync recovery logic from the server side:

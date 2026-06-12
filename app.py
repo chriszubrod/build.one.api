@@ -78,6 +78,9 @@ from entities.review_status.api.router import router as review_status_api_router
 from entities.review.api.router import router as review_api_router
 from entities.task.api.router import router as task_api_router
 from entities.email_message.api.router import router as email_message_api_router
+from entities.budget.api.router import router as budget_api_router
+from entities.budget_revision.api.router import router as budget_revision_api_router
+from entities.budget_line_item.api.router import router as budget_line_item_api_router
 from shared.api.lookups import router as lookups_api_router
 from shared.api.admin import router as scheduler_admin_api_router
 
@@ -244,6 +247,9 @@ app.include_router(review_status_api_router)
 app.include_router(review_api_router)
 app.include_router(task_api_router)
 app.include_router(email_message_api_router)
+app.include_router(budget_api_router)
+app.include_router(budget_revision_api_router)
+app.include_router(budget_line_item_api_router)
 app.include_router(lookups_api_router)
 app.include_router(scheduler_admin_api_router)
 app.include_router(intelligence_api_router)

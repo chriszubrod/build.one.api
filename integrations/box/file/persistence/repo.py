@@ -150,6 +150,27 @@ class BoxFileRepository:
             logger.error(f"Error during read box files by entity: {error}")
             raise map_database_error(error)
 
+    def read_recent(self, limit: int = 25) -> List[BoxFile]:
+        """Most-recently-pushed registry rows (for the reconcile spot-check)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadRecentBoxFiles",
+                        params={"Limit": limit},
+                    )
+                    return [self._from_db(row) for row in cursor.fetchall()]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read recent box files: {error}")
+            raise map_database_error(error)
+
 
 class BoxPushLogRepository:
     """Persistence for `[box].[PushLog]` — append-only push audit trail."""

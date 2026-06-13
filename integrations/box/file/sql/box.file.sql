@@ -245,6 +245,34 @@ GO
 
 
 -- ============================================================================
+-- ReadRecentBoxFiles
+-- Most-recently-pushed registry rows, for the daily reconcile canary's
+-- "does this file still exist in Box?" spot-check. Bounded by @Limit so the
+-- canary stays well under Box rate limits regardless of registry size.
+-- ============================================================================
+CREATE OR ALTER PROCEDURE ReadRecentBoxFiles
+(
+    @Limit INT = 25
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP (@Limit)
+        [Id], [PublicId], [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120)  AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [BoxFileId], [BoxFolderId], [Name], [Kind],
+        [EntityType], [EntityPublicId], [AttachmentId], [ProjectId],
+        [Sha1], [Etag], [FileVersionId],
+        CONVERT(VARCHAR(19), [LastPushedAt], 120) AS [LastPushedAt]
+    FROM [box].[File]
+    ORDER BY COALESCE([LastPushedAt], [CreatedDatetime]) DESC, [Id] DESC;
+END;
+GO
+
+
+-- ============================================================================
 -- CreateBoxPushLog
 -- Append-only; one row per successful push (new file OR new version).
 -- ============================================================================

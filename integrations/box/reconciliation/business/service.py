@@ -76,3 +76,58 @@ class BoxReconciliationIssueService:
             },
         )
         return issue
+
+    def flag_drift(
+        self,
+        *,
+        drift_type: str,
+        severity: str,
+        entity_type: str,
+        tenant_id: str,
+        details: str,
+        drive_item_id: Optional[str] = None,
+        entity_public_id: Optional[str] = None,
+        reconcile_run_id: Optional[str] = None,
+    ) -> BoxReconciliationIssue:
+        """
+        Flag a drift finding from the daily reconcile canary (lost folder
+        collaboration, a registry file gone missing in Box, an auth-canary
+        failure). Generic sibling of `flag_dead_letter()` — same table, but
+        the caller supplies the drift type/severity directly.
+        """
+        issue = self.repo.create(
+            drift_type=drift_type,
+            severity=severity,
+            action="flagged",
+            entity_type=entity_type,
+            entity_public_id=entity_public_id,
+            tenant_id=tenant_id,
+            drive_item_id=drive_item_id,
+            details=details,
+            reconcile_run_id=reconcile_run_id,
+        )
+        logger.error(
+            "box.reconcile.drift.flagged",
+            extra={
+                "event_name": "box.reconcile.drift.flagged",
+                "drift_type": drift_type,
+                "severity": severity,
+                "entity_type": entity_type,
+                "tenant_id": tenant_id,
+                "drive_item_id": drive_item_id,
+                "issue_public_id": issue.public_id,
+                "reconcile_run_id": reconcile_run_id,
+            },
+        )
+        return issue
+
+    def open_drift_keys(self) -> set:
+        """
+        `(drift_type, drive_item_id)` pairs already flagged + still `open`.
+        The reconcile canary uses this to avoid re-flagging the same drift
+        every daily run until an operator resolves it.
+        """
+        keys = set()
+        for issue in self.repo.read_by_status("open"):
+            keys.add((issue.drift_type, issue.drive_item_id))
+        return keys

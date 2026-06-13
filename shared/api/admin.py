@@ -254,6 +254,26 @@ async def reconcile_ms_router():
     return await _timed("reconcile.ms", _run)
 
 
+@router.post("/reconcile/box", dependencies=[Depends(_require_drain_secret)])
+async def reconcile_box_router():
+    """
+    Run the Box daily reconcile canary: auth canary + per-mapped-folder
+    visibility + registry spot-check, flagging `[box].[ReconciliationIssue]`
+    on drift. Read-only against Box (no write gate needed) and failure-
+    isolated so a missing `[box]` schema or transient blip degrades to an
+    error payload rather than a 500 every tick.
+    """
+    def _run() -> dict[str, Any]:
+        try:
+            from integrations.box.reconciliation.business.reconcile_service import BoxReconcileService
+            return BoxReconcileService().run()
+        except Exception as error:
+            logger.exception("box.reconcile.failed")
+            return {"error": f"{type(error).__name__}: {error}"}
+
+    return await _timed("reconcile.box", _run)
+
+
 # --- Email inbox poll ------------------------------------------------------ #
 
 

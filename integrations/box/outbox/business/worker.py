@@ -86,9 +86,10 @@ class BoxOutboxWorker:
         self.repo = repo or BoxOutboxRepository()
         self._dispatch_table: Dict[str, Callable[[BoxOutbox, Dict[str, Any]], None]] = {
             KIND_UPLOAD_FILE: self._handle_upload_box_file,
-            # KIND_UPDATE_EXCEL is deliberately absent in Phase 2 — the
-            # constant exists for forward-compat enqueue sites only; a row
-            # of that kind dead-letters as an unknown kind today.
+            # Phase 3 (Excel-in-Box): DETAILS-tab updates to Box-hosted .xlsx
+            # workbooks. The handler downloads + edits with openpyxl + uploads
+            # a new version (Box has no cell-level API).
+            KIND_UPDATE_EXCEL: self._handle_update_box_excel,
         }
         self._retry_policy = RetryPolicy.for_writes()
         # Set by _process_inner after each row; read by drain_all to drive
@@ -519,3 +520,37 @@ class BoxOutboxWorker:
                 request_id=row.request_id,
                 actor_user_id=row.created_by_user_id,
             )
+
+    def _handle_update_box_excel(
+        self,
+        row: BoxOutbox,
+        payload: Dict[str, Any],
+    ) -> None:
+        """
+        Phase 3: update the DETAILS tab of a Box-hosted .xlsx. Payload shape
+        (written by BoxOutboxService.enqueue_box_excel):
+
+          {
+            "box_file_id": "1234567890",
+            "worksheet_name": "DETAILS",
+            "entity_type": "bill" | "expense" | "bill_credit",
+            "entity_public_id": "<uuid>",
+            "project_id": 7
+          }
+
+        Unlike the upload handler, the heavy lifting (download → openpyxl edit →
+        upload version) lives entirely inside the excel service, serialized by a
+        Box file lock. Box has no cell-level API, so all read / idempotency /
+        insertion / write happens at drain time here.
+        """
+        required = ("box_file_id", "entity_type", "entity_public_id")
+        missing = [key for key in required if not payload.get(key)]
+        if missing:
+            raise ValueError(f"update_box_excel payload missing required fields: {missing}")
+
+        # Lazy import: the excel package is a sibling vertical; importing at
+        # module load would couple outbox/ -> excel/ for every consumer of the
+        # worker (mirrors the upload handler's per-handler imports).
+        from integrations.box.excel.business.service import BoxExcelUpdateService
+
+        BoxExcelUpdateService().handle(row, payload)

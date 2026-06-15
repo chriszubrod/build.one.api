@@ -27,6 +27,7 @@ to run — no need to reverse-engineer the system under pressure.
 | [box-auth-reauthorization.md](box-auth-reauthorization.md) | Box CCG token mint failing — secret rotated, app pending reauthorization after a scope change, or enterprise deauthorized |
 | [box-rate-limit.md](box-rate-limit.md) | Box 429 storms — per-user limits (1,000 calls/min general, 240 uploads/min), Retry-After honored, outbox absorbs |
 | [box-outbox-backlog-growing.md](box-outbox-backlog-growing.md) | `box.Outbox` rows accumulating — drain paused/dead, auth/visibility circuits open, dead-letter triage |
+| [box-excel-conflict-storm.md](box-excel-conflict-storm.md) | Box DETAILS-tab `update_box_excel` rows deferring/failing — human WOPI co-edit lock, 412 version-churn storms, stuck file/app locks, col-Z no-op idempotency |
 | [deploy-restart-timing.md](deploy-restart-timing.md) | Work triggered within ~2 min of `az webapp restart` runs against OLD code while DB is on NEW migrations — sproc-rename / column-add contract mismatches surface as 500s and stuck `running` agent sessions |
 | [review-notification-failed.md](review-notification-failed.md) | Bill submitted for review but the expected notification didn't land in `invoice@rogersbuild.com`'s Drafts folder, or landed with wrong recipients / missing attachment |
 

@@ -212,6 +212,95 @@ class BoxOutboxService:
         )
         return created
 
+    def enqueue_box_excel(
+        self,
+        *,
+        entity_type: str,
+        entity_public_id: str,
+        project_id: int,
+        box_file_id: str,
+        worksheet_name: str,
+    ) -> Optional[BoxOutbox]:
+        """
+        Enqueue a Box DETAILS-tab Excel update for background dispatch (Phase 3).
+
+        Returns the outbox row on success, or None if the enqueue was refused
+        (write gate closed). Gated on ALLOW_BOX_WRITES exactly like
+        enqueue_box_upload — queueing a write is itself a "write action" from
+        the local-dev safety perspective.
+
+        NO Policy-C coalesce in v1: one row per (entity, workbook). Idempotency
+        is guaranteed downstream by column-Z (the DETAILS reconciliation key) —
+        the drain handler skips any line item whose public_id is already present
+        and no-ops if all are, so re-runs are safe even without debounce
+        collapsing.
+
+        v1 tradeoff (documented): this churns one Box file version per completed
+        entity per workbook. Batch-apply-per-workbook (one version per drain
+        pass across many entities) is a future optimization — it would require a
+        coalesce/aggregation layer the col-Z idempotency makes unnecessary for
+        correctness, only efficiency.
+
+        Payload JSON:
+          {"box_file_id","worksheet_name","entity_type","entity_public_id",
+           "project_id"}
+        """
+        correlation_id = get_correlation_id()
+
+        if not _writes_allowed():
+            logger.warning(
+                "box.outbox.row.refused",
+                extra={
+                    "event_name": "box.outbox.row.refused",
+                    "correlation_id": correlation_id,
+                    "operation_name": KIND_UPDATE_EXCEL,
+                    "entity_type": entity_type,
+                    "entity_public_id": entity_public_id,
+                    "reason": "ALLOW_BOX_WRITES_not_true",
+                },
+            )
+            return None
+
+        now = datetime.now(timezone.utc)
+        ready_after = now + timedelta(seconds=DEFAULT_READY_AFTER_SECONDS)
+        payload = {
+            "box_file_id": box_file_id,
+            "worksheet_name": worksheet_name,
+            "entity_type": entity_type,
+            "entity_public_id": entity_public_id,
+            "project_id": project_id,
+        }
+
+        request_id = str(uuid.uuid4())
+        created = self.repo.create(
+            kind=KIND_UPDATE_EXCEL,
+            entity_type=entity_type,
+            entity_public_id=entity_public_id,
+            request_id=request_id,
+            payload=json.dumps(payload),
+            ready_after=ready_after,
+            correlation_id=correlation_id,
+            # None → CreateBoxOutbox sproc COALESCEs to 17 (system default).
+            created_by_user_id=current_user_id.get(),
+        )
+        logger.info(
+            "box.outbox.row.enqueued",
+            extra={
+                "event_name": "box.outbox.row.enqueued",
+                "correlation_id": correlation_id,
+                "operation_name": KIND_UPDATE_EXCEL,
+                "outbox_public_id": created.public_id,
+                "entity_type": entity_type,
+                "entity_public_id": entity_public_id,
+                "box_file_id": box_file_id,
+                "worksheet_name": worksheet_name,
+                "project_id": project_id,
+                "request_id": request_id,
+                "ready_after": ready_after.isoformat(),
+            },
+        )
+        return created
+
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #

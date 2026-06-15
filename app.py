@@ -101,6 +101,7 @@ from integrations.intuit.qbo.client.api.router import router as qbo_client_api_r
 from integrations.ms.auth.api.router import router as ms_auth_api_router
 from integrations.box.auth.api.router import router as box_auth_api_router
 from integrations.box.folder.api.router import router as box_folder_api_router
+from integrations.box.excel.api.router import router as box_excel_api_router
 from integrations.ms.sharepoint.site.api.router import router as ms_sharepoint_site_api_router
 from integrations.ms.sharepoint.drive.api.router import router as ms_sharepoint_drive_api_router
 from integrations.ms.sharepoint.driveitem.api.router import router as ms_sharepoint_driveitem_api_router
@@ -219,6 +220,7 @@ app.include_router(ms_sharepoint_driveitem_api_router)
 app.include_router(ms_mail_api_router)
 app.include_router(box_auth_api_router)
 app.include_router(box_folder_api_router)
+app.include_router(box_excel_api_router)
 app.include_router(vendor_type_api_router)
 app.include_router(taxpayer_api_router)
 app.include_router(role_module_api_router)

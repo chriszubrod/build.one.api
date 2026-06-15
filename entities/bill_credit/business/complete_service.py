@@ -230,11 +230,18 @@ class BillCreditCompleteService:
             if upload_result.get("errors"):
                 all_errors.extend(upload_result["errors"])
 
-            # Excel workbook sync disabled
+            # Excel workbook sync disabled (MS Graph path). The Box Excel mirror
+            # below is independent of this — Box DETAILS-tab updates are driven
+            # by the Box workbook mapping, not the MS Excel link.
             excel_result = {"success": True, "message": "Disabled", "synced_count": 0, "errors": []}
             excel_sync_results[project_id] = excel_result
             if excel_result.get("errors"):
                 all_errors.extend(excel_result["errors"])
+
+            # Box Excel mirror — enqueue a DETAILS-tab update for this project's
+            # mapped Box workbook, alongside the (disabled) MS Excel sync.
+            # Additive + failure-isolated: never affects the completion result.
+            self._enqueue_box_excel(bill_credit=bill_credit, project_id=project_id)
 
         # Box mirror — enqueue line-item attachments to each mapped
         # project's Box folder. Additive + failure-isolated: never affects
@@ -319,6 +326,44 @@ class BillCreditCompleteService:
                     )
         except Exception as e:
             logger.warning(f"box.enqueue.failed bill_credit={bill_credit.public_id}: {e}")
+
+    def _enqueue_box_excel(self, bill_credit, project_id: int) -> None:
+        """
+        Enqueue a Box DETAILS-tab Excel update for this bill credit's project.
+
+        Sibling of _enqueue_box_uploads, called from the same completion flow
+        right where sync_to_excel_workbook (the MS Excel sync) would run. Looks
+        up the project's mapped Box workbook; if mapped, enqueues a single
+        update_box_excel outbox row (the drain handler re-fetches the entity +
+        rebuilds rows + edits the .xlsx with openpyxl). Idempotency is via
+        column Z, so one row per (entity, workbook) is safe.
+
+        Additive + failure-isolated — early-returns when ALLOW_BOX_WRITES is not
+        'true' (skip the DB legwork) and swallows every exception so Box can
+        never affect the completion flow.
+        """
+        import os as _os
+        if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
+            return  # gate closed — skip the DB legwork, not just the enqueue
+        try:
+            from integrations.box.excel.business.mapping_service import (
+                BoxProjectWorkbookService,
+            )
+            from integrations.box.outbox.business.service import BoxOutboxService
+
+            mapping = BoxProjectWorkbookService().read_by_project_id(project_id)
+            if not mapping:
+                logger.info(f"box.excel.skipped_unmapped_project project_id={project_id}")
+                return
+            BoxOutboxService().enqueue_box_excel(
+                entity_type="bill_credit",
+                entity_public_id=str(bill_credit.public_id),
+                project_id=project_id,
+                box_file_id=mapping["box_file_id"],
+                worksheet_name=mapping["worksheet_name"],
+            )
+        except Exception as e:
+            logger.warning(f"box.excel.enqueue.failed bill_credit={bill_credit.public_id} project_id={project_id}: {e}")
 
     def _upload_attachments_to_module_folder(
         self,

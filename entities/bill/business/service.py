@@ -1533,6 +1533,11 @@ class BillService:
             excel_sync_results[project_id] = excel_result
             if excel_result.get("errors"):
                 all_errors.extend(excel_result["errors"])
+
+            # Box Excel mirror — enqueue a DETAILS-tab update for this project's
+            # mapped Box workbook, alongside the MS Excel sync. Additive +
+            # failure-isolated: never affects the completion result.
+            self._enqueue_box_excel(bill=bill, project_id=project_id)
         
         # Step 5: Enqueue async push to QBO via the outbox. Completion returns
         # immediately; the outbox worker picks up the row within ~5 seconds and
@@ -1674,6 +1679,44 @@ class BillService:
                     )
         except Exception as e:
             logger.warning(f"box.enqueue.failed bill={bill.public_id}: {e}")
+
+    def _enqueue_box_excel(self, bill, project_id: int) -> None:
+        """
+        Enqueue a Box DETAILS-tab Excel update for this bill's project.
+
+        Sibling of _enqueue_box_uploads, called from the same completion flow
+        right where sync_to_excel_workbook (the MS Excel sync) runs. Looks up
+        the project's mapped Box workbook; if mapped, enqueues a single
+        update_box_excel outbox row (the drain handler re-fetches the entity +
+        rebuilds rows + edits the .xlsx with openpyxl). Idempotency is via
+        column Z, so one row per (entity, workbook) is safe.
+
+        Additive + failure-isolated — early-returns when ALLOW_BOX_WRITES is not
+        'true' (skip the DB legwork) and swallows every exception so Box can
+        never affect the completion flow.
+        """
+        import os as _os
+        if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
+            return  # gate closed — skip the DB legwork, not just the enqueue
+        try:
+            from integrations.box.excel.business.mapping_service import (
+                BoxProjectWorkbookService,
+            )
+            from integrations.box.outbox.business.service import BoxOutboxService
+
+            mapping = BoxProjectWorkbookService().read_by_project_id(project_id)
+            if not mapping:
+                logger.info(f"box.excel.skipped_unmapped_project project_id={project_id}")
+                return
+            BoxOutboxService().enqueue_box_excel(
+                entity_type="bill",
+                entity_public_id=str(bill.public_id),
+                project_id=project_id,
+                box_file_id=mapping["box_file_id"],
+                worksheet_name=mapping["worksheet_name"],
+            )
+        except Exception as e:
+            logger.warning(f"box.excel.enqueue.failed bill={bill.public_id} project_id={project_id}: {e}")
 
     def push_to_qbo(self, bill, realm_id: str):
         """

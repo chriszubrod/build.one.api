@@ -1,5 +1,19 @@
 # Session Notes
 
+## Session: Outbox drain split — per-integration QBO/MS/Box (2026-06-15)
+
+Split the combined outbox drain into independent per-integration drains so a slow drain in one integration can't head-of-line-block another (motivated by the Box work; Excel-in-Box in Phase 3 will add genuinely slow ops). The fused-ness lived in the API endpoint `/admin/outbox/drain` (ran `QboOutboxWorker.drain_once()` then `MsOutboxWorker.drain_once()` sequentially); the scheduler `drain_outbox` timer was a thin POST to it.
+
+**Shipped + LIVE-VERIFIED in prod:**
+- **API (commit 7b36e26, deployed):** new `POST /admin/outbox/drain/qbo` + `/admin/outbox/drain/ms` (each `drain_once`, drain-secret-gated, `_timed`). Combined `/admin/outbox/drain` kept as a DEPRECATED alias / manual fallback (no timer hits it). Also added an `is_configured()` short-circuit to `BoxOutboxWorker.drain_all` so the box drain timer is a true no-op (no empty-cred Box token mints) until a real tenant is configured.
+- **Scheduler (commit 381689e, published):** replaced the `drain_outbox` timer with `drain_qbo_outbox` + `drain_ms_outbox` (30s each); `drain_box_outbox` already existed → three independent per-integration drain timers.
+- **Azure scheduler settings:** `PYTHON_THREADPOOL_THREAD_COUNT=4` (so the timers actually run concurrently on the single always-ready worker — without this the split is cosmetic) + `REQUEST_TIMEOUT_SECONDS=60` (bounds worker occupancy by one hung POST; was implicit 300s).
+- **Always-ready repointed:** `function:drain_outbox=1` → `function:drain_qbo_outbox=1` (the old function no longer exists post-publish — the Flex pin MUST reference a live function or the worker scales to zero and timers silently miss). Verified clean (single pin).
+- **Verification (App Insights, prod):** post-cutover tight window shows ONLY the split timers firing — `/outbox/drain/qbo` 200×6, `/outbox/drain/ms` 200×7, `/box/drain` 200×7 — and the combined alias gets zero timer traffic. `drain_outbox` confirmed gone from `az functionapp function list`.
+- Docs updated: build.one.api CLAUDE.md (outbox-pattern + admin-endpoint list) and build.one.scheduler CLAUDE.md (always-ready key + endpoint list + worker settings).
+
+Note on the design rationale: the *real* isolation lever was the endpoint split + worker-concurrency settings, NOT just renaming the scheduler function — on a single always-ready worker, separate timers without `PYTHON_THREADPOOL_THREAD_COUNT` would still serialize.
+
 ## Session: Box.com integration — Phase 1 spine (2026-06-11)
 
 Third external integration scaffolded: `integrations/box/` for pushing project documents + editing Excel draw-sheet mirrors in a CLIENT's Box enterprise. Full plan (discovery → 4-critic adversarial review → 5 resolved decision gates) lives at umbrella memory `project_box_integration_plan.md`. Built via single-builder workflow + 2 verification reviewers; all findings applied.

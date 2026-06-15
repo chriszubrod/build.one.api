@@ -157,8 +157,16 @@ class BoxOutboxWorker:
             logger.info("box.outbox.drain.paused")
             return {"paused": True, **totals}
 
+        # Box not provisioned in this environment (no CCG creds): bail before
+        # touching the network or DB. Keeps the scheduler's box-drain timer a
+        # true no-op until a real tenant is configured — no empty-cred token
+        # mints to Box every tick.
+        auth = BoxAuthService()
+        if not auth.is_configured():
+            return {"skipped": "box_not_configured", **totals}
+
         try:
-            BoxAuthService().ensure_valid_token()
+            auth.ensure_valid_token()
         except BoxError as error:
             if error.is_retryable:
                 logger.warning(

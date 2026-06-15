@@ -96,9 +96,13 @@ async def _timed(job_name: str, sync_fn) -> dict[str, Any]:
 @router.post("/outbox/drain", dependencies=[Depends(_require_drain_secret)])
 async def drain_outbox_router():
     """
-    Drain QBO and MS outboxes once. Called on a short cadence (e.g. 30s)
-    by the scheduler Function App. Each integration drains independently;
-    a failure in one does not prevent the other from running.
+    DEPRECATED ALIAS — drains QBO and MS outboxes sequentially in one tick.
+
+    Superseded by the per-integration endpoints `/outbox/drain/qbo` and
+    `/outbox/drain/ms`, which the scheduler now calls on independent timers so
+    a slow drain in one integration can't delay the other. Kept as a manual
+    fallback / reversible-cutover path; no scheduler timer hits it anymore.
+    Each integration still drains independently (own try/except).
     """
     def _run() -> dict[str, Any]:
         from integrations.intuit.qbo.outbox.business.worker import QboOutboxWorker
@@ -119,6 +123,43 @@ async def drain_outbox_router():
         return summary
 
     return await _timed("outbox.drain", _run)
+
+
+@router.post("/outbox/drain/qbo", dependencies=[Depends(_require_drain_secret)])
+async def drain_qbo_outbox_router():
+    """
+    Drain the QBO outbox once. Called on a 30s cadence by the scheduler's
+    `drain_qbo_outbox` timer — independent of the MS drain so neither can
+    head-of-line-block the other.
+    """
+    def _run() -> dict[str, Any]:
+        from integrations.intuit.qbo.outbox.business.worker import QboOutboxWorker
+        try:
+            QboOutboxWorker().drain_once()
+            return {"qbo": "ok"}
+        except Exception as error:
+            logger.exception("qbo.outbox.drain.failed")
+            return {"qbo": {"error": str(error)}}
+
+    return await _timed("outbox.drain.qbo", _run)
+
+
+@router.post("/outbox/drain/ms", dependencies=[Depends(_require_drain_secret)])
+async def drain_ms_outbox_router():
+    """
+    Drain the MS outbox once. Called on a 30s cadence by the scheduler's
+    `drain_ms_outbox` timer — independent of the QBO drain.
+    """
+    def _run() -> dict[str, Any]:
+        from integrations.ms.outbox.business.worker import MsOutboxWorker
+        try:
+            MsOutboxWorker().drain_once()
+            return {"ms": "ok"}
+        except Exception as error:
+            logger.exception("ms.outbox.drain.failed")
+            return {"ms": {"error": str(error)}}
+
+    return await _timed("outbox.drain.ms", _run)
 
 
 # --- Box outbox drain ------------------------------------------------------- #

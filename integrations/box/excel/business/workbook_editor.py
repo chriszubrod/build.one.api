@@ -62,6 +62,34 @@ def _subcostcode_matches(cell_value: Any, target: str) -> bool:
         return False
 
 
+# Columns that signal a row is a real, occupied entry (vs a blank reserved
+# slot): Z key, N amount, M type, J vendor, K invoice, L description, I date.
+_ENTRY_SIGNAL_COLS = (26, 14, 13, 10, 11, 12, 9)
+_SUBTOTAL_COL = 5  # column E
+_SUBTOTAL_MARKER = "SUBTOTAL"
+
+
+def _is_occupied_entry(ws, row: int) -> bool:
+    """
+    True if `row` is a real cost entry (not a blank reserved slot, not a
+    subtotal). The original MS heuristic — "has BOTH Date AND Vendor" — wrongly
+    skipped legitimate entries missing one of those (e.g. a credit-card charge
+    with no vendor), so `_find_insertion_row` computed the insertion point as if
+    that entry didn't exist and a new line landed ABOVE it. We instead treat a
+    row as occupied if it carries ANY entry signal and is not a subtotal row
+    (E == "SUBTOTAL"; those carry a SUM in N and must never count as a group's
+    last entry).
+    """
+    e = ws.cell(row=row, column=_SUBTOTAL_COL).value
+    if e is not None and str(e).strip().upper() == _SUBTOTAL_MARKER:
+        return False
+    for col in _ENTRY_SIGNAL_COLS:
+        v = ws.cell(row=row, column=col).value
+        if v is not None and str(v).strip() != "":
+            return True
+    return False
+
+
 def _find_insertion_row(
     ws,
     target_subcostcode: str,
@@ -77,29 +105,24 @@ def _find_insertion_row(
     insert BEFORE (openpyxl ws.insert_rows(idx) shifts idx downward), or None to
     append at the end.
 
-    Logic (verbatim behavior):
-      1. Collect the matching rows (col C == target) and whether each has BOTH
-         Date (col I) AND Vendor (col J).
-      2. If a matching row has data, insert AFTER the last such row.
-      3. Else (matches but no data rows) insert two rows after the first match.
+    Logic:
+      1. Collect the matching rows (col C == target) and whether each is an
+         occupied entry (`_is_occupied_entry` — any entry signal, not a subtotal).
+      2. If a matching row is occupied, insert AFTER the LAST occupied one — i.e.
+         below every existing entry of the group, above its blank reserved rows.
+      3. Else (matches but all blank reserved) insert two rows after the first match.
       4. No match at all → None (append at end).
 
     Row 1 is treated as the header (skipped), mirroring the MS path which
     `continue`s on row_index == 0.
     """
-    matching_rows = []  # list of (excel_row, has_date_and_vendor)
+    matching_rows = []  # list of (excel_row, is_occupied_entry)
 
     for excel_row in range(2, max_existing_row + 1):
         col_c = ws.cell(row=excel_row, column=SUBCOSTCODE_COL_INDEX + 1).value
         if not _subcostcode_matches(col_c, target_subcostcode):
             continue
-        col_i = ws.cell(row=excel_row, column=9).value   # I
-        col_j = ws.cell(row=excel_row, column=10).value  # J
-        has_data = (
-            col_i is not None and str(col_i).strip() != ""
-            and col_j is not None and str(col_j).strip() != ""
-        )
-        matching_rows.append((excel_row, has_data))
+        matching_rows.append((excel_row, _is_occupied_entry(ws, excel_row)))
 
     if not matching_rows:
         return None

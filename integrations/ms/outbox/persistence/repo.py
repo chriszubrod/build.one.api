@@ -137,6 +137,39 @@ class MsOutboxRepository:
             logger.error(f"Error during read ms outbox by public ID: {error}")
             raise map_database_error(error)
 
+    def count_by_entity(self, entity_type: str, entity_public_id: str) -> int:
+        """
+        Count `[ms].[Outbox]` rows for an (entity_type, entity_public_id) pair
+        regardless of status (pending / in_progress / done / failed /
+        dead_letter). Used as an idempotency guard by callers that derive a
+        DETERMINISTIC `entity_public_id` per logical send (e.g. the time-entry
+        daily digest keys on a uuid5 of worker+work_date) so a re-run never
+        double-enqueues — including after the first row has drained to 'done'
+        (which `read_pending_by_entity` would miss).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="CountMsOutboxByEntity",
+                        params={
+                            "EntityType": entity_type,
+                            "EntityPublicId": entity_public_id,
+                        },
+                    )
+                    row = cursor.fetchone()
+                    return int(row.Cnt) if row and row.Cnt is not None else 0
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during count ms outbox by entity: {error}")
+            raise map_database_error(error)
+
     def read_pending_by_entity(
         self,
         entity_type: str,

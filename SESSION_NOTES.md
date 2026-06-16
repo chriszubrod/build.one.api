@@ -1,5 +1,22 @@
 # Session Notes
 
+## Session: Time-entry email notifications — daily per-worker digest (2026-06-16)
+
+Built server-side email notifications for time tracking. After reviewing the TimeEntry/TimeLog write paths, the design landed on a **once-a-morning per-worker digest of the prior day** (Chris's call) rather than per-event email — iOS fires multiple writes per clock-in/out, so per-event would be noisy, and a consolidated next-morning summary is the better correctness-confirmation artifact. It also moves the work to a scheduled sweep with no hooks in the hot write paths.
+
+**Flow:** scheduler `time_entry_daily_digest` timer (12:00 UTC ≈ 7am Central) → `POST /api/v1/admin/time-entry/daily-digest` (drain-secret guarded; optional `?work_date=YYYY-MM-DD`) → `TimeEntryDigestService` reads yesterday's entries + logs + worker email in one sproc, groups by worker, builds an HTML summary (project / clock in-out / hours / status / note + total), and enqueues one `[ms].[Outbox]` `send_mail` row per worker. The existing MS outbox drain sends it. Recipients: worker TO, archive BCC (`time_entry_digest_bcc` ?? `invoice_inbox_email`).
+
+**New files:** `entities/time_entry/business/digest_service.py`, `entities/time_entry/persistence/digest_repo.py`, `entities/time_entry/sql/migrations/011_2026_06_16_time_entry_digest.sql` (sprocs `ReadTimeEntriesForDigestByWorkDate` + generic `CountMsOutboxByEntity`). **Edited:** `config.py` (3 settings), `integrations/ms/outbox/persistence/repo.py` (`count_by_entity`), `shared/api/admin.py` (endpoint). **Scheduler repo:** `function_app.py` timer.
+
+**Key decisions / properties:**
+- `TIME_ENTRY_DIGEST_MODE` (off | draft | send) is the single knob + kill switch; ships **off**. Rollout: flip to `draft` for ~a week (eyeball content + confirm worker emails resolve), then `send`. Still gated by `ALLOW_MS_WRITES`. (Unlike review notifications, which hard-code draft, the digest honors the flag.)
+- **Idempotent per (worker, work_date)** via a deterministic `uuid5` outbox `EntityPublicId` (`EntityType='TimeEntryDigest'`) + `CountMsOutboxByEntity` (any-status) — re-runs / manual triggers won't double-send. Had to be a real GUID because `[ms].[Outbox].EntityPublicId` is `UNIQUEIDENTIFIER`.
+- Human-only: excludes LLM agents (`User.IsAgent=1`) + persona accounts, same filter as the review recipient resolvers. Workers with no `Contact.Email` are logged (`time_entry_digest.unreachable`) + skipped (Chris adds worker emails as needed).
+- Failure-isolated per worker; the sweep never raises back to the endpoint.
+- Clock times are **assumed stored UTC** and rendered in `business_timezone` (America/Chicago). **Verify against real data during the draft week** — if iOS stores local time, displayed times will be off by the UTC offset (fix in `TimeEntryDigestService._fmt_clock`).
+
+**Verification:** no project test suite exists — `py_compile` on all changed files + a standalone execution test of the digest logic (grouping, UTC→Central conversion, totals, HTML escaping, idempotency-key determinism) + a schema-identifier grep. Migration 011 run via `scripts/run_sql.py`. Feature inert (mode=off) pending API + scheduler deploy. Follow-ups in TODO.md.
+
 ## Session: Box document push — doc-class folder routing, LIVE for 23 projects (2026-06-16, commit 49af9c5)
 
 Built + deployed the Box PDF document push (vendor bill/expense/credit docs + customer invoice packets) with per-doc-class folder routing, then mapped + went live for 23 projects.

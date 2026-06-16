@@ -212,6 +212,34 @@ async def drain_box_outbox_router():
     return await _timed("box_outbox_drain", _run)
 
 
+# --- Time-entry daily digest ----------------------------------------------- #
+
+
+@router.post("/time-entry/daily-digest", dependencies=[Depends(_require_drain_secret)])
+async def time_entry_daily_digest_router(work_date: Optional[str] = None):
+    """
+    Run the daily time-entry digest sweep: email each worker a summary of a
+    day's time entries + logs (confirmation + correctness). Default target is
+    yesterday in the business timezone; pass `?work_date=YYYY-MM-DD` to (re)run
+    a specific day manually. Called once a day by the scheduler's
+    `time_entry_daily_digest` timer.
+
+    The sweep reads across all workers (this endpoint runs as system admin via
+    the drain-secret guard), enqueues one MS-outbox `send_mail` row per worker
+    with a resolvable Contact email, and is idempotent per (worker, work_date)
+    so a re-run won't double-enqueue. Honors TIME_ENTRY_DIGEST_MODE
+    (off | draft | send) — 'off' is a no-op — plus the ALLOW_MS_WRITES gate.
+    """
+    def _run() -> dict[str, Any]:
+        from entities.time_entry.business.digest_service import TimeEntryDigestService
+        svc = TimeEntryDigestService()
+        if work_date:
+            return svc.run_for_work_date(work_date)
+        return svc.run_for_yesterday()
+
+    return await _timed("time_entry.daily_digest", _run)
+
+
 # --- QBO pulls ------------------------------------------------------------- #
 
 

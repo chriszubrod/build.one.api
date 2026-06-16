@@ -2,6 +2,16 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## Time-entry email digest — follow-ups (2026-06-16)
+
+Daily per-worker prior-day summary email shipped (off by default). See SESSION_NOTES 2026-06-16. Remaining:
+
+- [ ] **Flip on.** Set `TIME_ENTRY_DIGEST_MODE=draft` on App Service for ~1 week to eyeball content + confirm worker `Contact.Email`s resolve, then `=send`. (`ALLOW_MS_WRITES=true` already gates it.)
+- [ ] **Verify clock-time timezone assumption.** The digest treats stored TimeLog clock times as UTC and renders them in `BUSINESS_TIMEZONE` (America/Chicago). Confirm against a real iOS-sourced entry during the draft week — if iOS stores local time, displayed times will be off by the UTC offset. Fix in `TimeEntryDigestService._fmt_clock` if so.
+- [ ] **Backfill worker Contact emails.** Field workers without a `Contact.Email` are silently skipped (logged `time_entry_digest.unreachable`). Add emails as needed.
+- [ ] **(low) Dead-lettered digest won't auto-retry.** Idempotency counts any-status outbox rows, so a digest that dead-lettered (5 failed sends) won't be re-attempted by a later sweep. Reset via the MS dead-letter recovery script if it ever matters.
+- [ ] **(low) No tests.** Repo has no test infra; digest logic was smoke-tested standalone only. First candidate if a `tests/` convention lands.
+
 ## Box integration — go-live follow-ups (2026-06-16)
 
 Box Excel-in-Box + document push went LIVE for the SharePoint-linked projects (24 workbook mappings, 46 ProjectFolder mappings across 23 projects; both pipelines prod-proven). Remaining:

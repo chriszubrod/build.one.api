@@ -287,6 +287,7 @@ class TimeEntryDigestService:
                     f"<td>{html.escape(cls._fmt_clock(log.get('clock_out')))}</td>"
                     f"<td style='text-align:right;'>{cls._fmt_hours(dur)}</td>"
                     f"<td>{html.escape((log.get('log_type') or '').title())}</td>"
+                    f"<td>{html.escape(log.get('note') or '')}</td>"
                     "</tr>"
                 )
 
@@ -300,31 +301,24 @@ class TimeEntryDigestService:
                     "<th align='left'>Clock Out</th>"
                     "<th align='right'>Hours</th>"
                     "<th align='left'>Type</th>"
+                    "<th align='left'>Note</th>"
                     "</tr>"
                     f"{''.join(rows_html)}</table>"
                 )
             else:
                 table = "<p style='margin-top:6px;'><em>No clock entries recorded.</em></p>"
 
-            status = entry.get("status")
-            status_html = (
-                f"<p style='margin:4px 0;'>Status: <strong>{html.escape((status or 'draft').title())}</strong></p>"
-                if status
-                else ""
-            )
             note = entry.get("note")
             note_html = (
                 f"<p style='margin:4px 0;'>Note: {html.escape(note)}</p>" if note else ""
             )
-            sections.append(f"{status_html}{table}{note_html}")
+            sections.append(f"{table}{note_html}")
 
         total_html = f"<p style='margin-top:8px;'>Total hours: <strong>{cls._fmt_hours(total)}</strong></p>"
 
         return (
             f"<p>{firstname},</p>"
-            f"<p>Here's a summary of the time recorded for you on {date_long}. "
-            "Please review it for accuracy — if anything needs to be corrected, "
-            "let your manager know.</p>"
+            f"<p>Here's a summary of the time recorded for you on {date_long}.</p>"
             f"{''.join(sections)}"
             f"{total_html}"
             "<p style='margin-top:8px;'>If everything looks correct, no action is needed.</p>"

@@ -6,9 +6,9 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 
 Daily per-worker prior-day summary email shipped (off by default). See SESSION_NOTES 2026-06-16. Remaining:
 
-- [ ] **Flip on.** Set `TIME_ENTRY_DIGEST_MODE=draft` on App Service for ~1 week to eyeball content + confirm worker `Contact.Email`s resolve, then `=send`. (`ALLOW_MS_WRITES=true` already gates it.)
+- [ ] **Go live (send).** Deployed + flipped to `TIME_ENTRY_DIGEST_MODE=draft` 2026-06-16; the 2026-06-15 batch was drafted, reviewed, and the template refined (see SESSION_NOTES). When ready, set `TIME_ENTRY_DIGEST_MODE=send` so workers receive it each morning (~7am Central). (`ALLOW_MS_WRITES=true` already gates it.)
 - [x] ~~**Verify clock-time timezone assumption.**~~ RESOLVED 2026-06-16. iOS stores TimeLog clock times in **local wall-clock** (verified against a real entry: Elmer Cordova 07:29→17:03 = 9.56h Central). The first draft batch rendered them UTC→Central (~5h shift); fixed `TimeEntryDigestService._fmt_clock` to render verbatim (no conversion). `BUSINESS_TIMEZONE` now only computes "yesterday".
-- [ ] **Backfill worker Contact emails.** Field workers without a `Contact.Email` are silently skipped (logged `time_entry_digest.unreachable`). Add emails as needed.
+- [ ] **Backfill worker Contact emails.** Field workers without a `Contact.Email` are silently skipped (logged `time_entry_digest.unreachable`). Add emails as needed. (All 6 workers in the 2026-06-15 batch already resolved — 0 skipped — but that's not the full roster.)
 - [ ] **(low) Dead-lettered digest won't auto-retry.** Idempotency counts any-status outbox rows, so a digest that dead-lettered (5 failed sends) won't be re-attempted by a later sweep. Reset via the MS dead-letter recovery script if it ever matters.
 - [ ] **(low) No tests.** Repo has no test infra; digest logic was smoke-tested standalone only. First candidate if a `tests/` convention lands.
 

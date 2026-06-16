@@ -13,9 +13,21 @@ Built server-side email notifications for time tracking. After reviewing the Tim
 - **Idempotent per (worker, work_date)** via a deterministic `uuid5` outbox `EntityPublicId` (`EntityType='TimeEntryDigest'`) + `CountMsOutboxByEntity` (any-status) — re-runs / manual triggers won't double-send. Had to be a real GUID because `[ms].[Outbox].EntityPublicId` is `UNIQUEIDENTIFIER`.
 - Human-only: excludes LLM agents (`User.IsAgent=1`) + persona accounts, same filter as the review recipient resolvers. Workers with no `Contact.Email` are logged (`time_entry_digest.unreachable`) + skipped (Chris adds worker emails as needed).
 - Failure-isolated per worker; the sweep never raises back to the endpoint.
-- Clock times are **assumed stored UTC** and rendered in `business_timezone` (America/Chicago). **Verify against real data during the draft week** — if iOS stores local time, displayed times will be off by the UTC offset (fix in `TimeEntryDigestService._fmt_clock`).
+- Clock times: iOS stores TimeLog clock times in **local wall-clock**, so they're rendered **verbatim** (no tz conversion). `business_timezone` (America/Chicago) is used only to compute "yesterday". (The initial build wrongly assumed UTC and shifted times ~5h; caught + fixed during the draft test — see Post-launch below.)
 
-**Verification:** no project test suite exists — `py_compile` on all changed files + a standalone execution test of the digest logic (grouping, UTC→Central conversion, totals, HTML escaping, idempotency-key determinism) + a schema-identifier grep. Migration 011 run via `scripts/run_sql.py`. Feature inert (mode=off) pending API + scheduler deploy. Follow-ups in TODO.md.
+**Verification:** no project test suite exists — `py_compile` + standalone execution tests of the digest logic (grouping, totals, HTML escaping, idempotency-key determinism, clock formatting) + schema-identifier grep + a live DB smoke test of both sprocs. Migration 011 applied via `scripts/run_sql.py`.
+
+**Shipped + deployed (2026-06-16):** API (Docker `:latest`) + scheduler (`func publish`) deployed; `TIME_ENTRY_DIGEST_MODE` flipped to **`draft`**; triggered the 2026-06-15 batch end-to-end — all **6 workers had a resolvable Contact email** (0 skipped), 6 outbox rows drained to Outlook drafts. Still **draft** (nothing reaches workers); go-live is `TIME_ENTRY_DIGEST_MODE=send`.
+
+**Post-launch refinements** (from reviewing the live drafts; each deployed + re-verified by inspecting rendered output):
+- `7f7291a` — clock times rendered verbatim (the UTC→local bug; iOS stores local wall-clock).
+- `9e9b5e7` — subject `TimeEntry - {Name} - {Date}`; greeting `{FirstName},` (dropped "Hi ").
+- `a66eb72` — removed the per-entry Status line + the "Please review it for accuracy…" lead-in; added a **Note** column (per-`TimeLog.Note`).
+- `487b8be` — closing line → "Please reply if any change is needed."
+
+**Final email:** Subject `TimeEntry - {Name} - {Month D, YYYY}`; body = `{FirstName},` / one-line lead-in / table [Project · Clock In · Clock Out · Hours · Type · Note] / `Total hours: N` / "Please reply if any change is needed."
+
+**Deploy gotcha learned:** a behavior-only change takes ~1–2 min to swap in after `az webapp restart` (the `:latest` pull lags the restart) and looks identical at the HTTP layer — so verify a redeploy by inspecting **rendered output**, not a status code. When regenerating a day's drafts, reset idempotency first: delete the deterministic `[ms].[Outbox]` `TimeEntryDigest` rows + their drafts (`mail/external/client.py::delete_message`, `ALLOW_MS_WRITES=true`), then re-trigger. Follow-ups in TODO.md.
 
 ## Session: Box document push — doc-class folder routing, LIVE for 23 projects (2026-06-16, commit 49af9c5)
 

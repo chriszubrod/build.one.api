@@ -66,12 +66,24 @@ class BoxAuthService:
         self._settings = settings or config.Settings()
 
     def is_configured(self) -> bool:
-        """True iff all three CCG credential settings are present."""
-        return bool(
-            self._settings.box_client_id
-            and self._settings.box_client_secret
-            and self._settings.box_enterprise_id
-        )
+        """
+        True iff CCG can mint: client id + secret, plus a subject — either a
+        managed user to impersonate (`box_as_user_id`, as-user mode) or the
+        enterprise (`box_enterprise_id`, service-account mode).
+        """
+        creds = bool(self._settings.box_client_id and self._settings.box_client_secret)
+        subject = bool(self._settings.box_as_user_id or self._settings.box_enterprise_id)
+        return creds and subject
+
+    def _subject(self) -> tuple:
+        """
+        The CCG token subject: ('user', <user_id>) when `box_as_user_id` is set
+        (act AS that managed user — production auth model), else
+        ('enterprise', <enterprise_id>) (act as the service account).
+        """
+        if self._settings.box_as_user_id:
+            return "user", str(self._settings.box_as_user_id)
+        return "enterprise", str(self._settings.box_enterprise_id)
 
     def ensure_valid_token(self, force_refresh: bool = False) -> str:
         """
@@ -121,11 +133,20 @@ class BoxAuthService:
             expires_at_iso = _token_cache.expires_at.isoformat()
             seconds_remaining = int((_token_cache.expires_at - now).total_seconds())
             cached = seconds_remaining > 0
+        subject_type, subject_id = self._subject()
         return {
             "configured": {
                 "client_id": bool(self._settings.box_client_id),
                 "client_secret": bool(self._settings.box_client_secret),
                 "enterprise_id": bool(self._settings.box_enterprise_id),
+                "as_user_id": bool(self._settings.box_as_user_id),
+            },
+            # Which identity tokens are minted as — 'user' (as-user, prod model)
+            # or 'enterprise' (service account). subject_id is a Box id, not a
+            # secret. None when no subject is configured.
+            "subject": {
+                "type": subject_type if self.is_configured() else None,
+                "id": subject_id if self.is_configured() else None,
             },
             "token": {
                 "cached": cached,
@@ -156,15 +177,17 @@ class BoxAuthService:
         """
         if not self.is_configured():
             raise BoxAuthError(
-                "Box CCG credentials are not configured "
-                "(box_client_id / box_client_secret / box_enterprise_id)"
+                "Box CCG credentials are not configured (need box_client_id + "
+                "box_client_secret + a subject: box_as_user_id or box_enterprise_id)"
             )
 
+        subject_type, subject_id = self._subject()
         logger.info(
             "box.auth.token.mint.started",
             extra={
                 "event_name": "box.auth.token.mint.started",
-                "enterprise_id": self._settings.box_enterprise_id,
+                "subject_type": subject_type,
+                "subject_id": subject_id,
             },
         )
 
@@ -172,8 +195,8 @@ class BoxAuthService:
             "grant_type": "client_credentials",
             "client_id": self._settings.box_client_id,
             "client_secret": self._settings.box_client_secret,
-            "box_subject_type": "enterprise",
-            "box_subject_id": str(self._settings.box_enterprise_id),
+            "box_subject_type": subject_type,
+            "box_subject_id": subject_id,
         }
 
         try:

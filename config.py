@@ -116,6 +116,14 @@ class Settings(BaseSettings):
     box_client_id: Optional[str] = None
     box_client_secret: Optional[str] = None
     box_enterprise_id: Optional[str] = None
+    # CCG "as-user" (production auth model): when set to a managed user's
+    # NUMERIC Box user id, tokens are minted AS that user (box_subject_type=user)
+    # so the backend acts with that user's existing folder/workbook access — no
+    # per-folder service-account collaboration needed, and still no refresh
+    # tokens. Requires the app's "Generate user access tokens" setting enabled +
+    # admin re-authorization, and the user must be managed in the authorizing
+    # enterprise. When unset, tokens mint as the enterprise service account.
+    box_as_user_id: Optional[str] = None
 
     # Intelligence Layer — provider API keys
     anthropic_api_key: Optional[str] = None

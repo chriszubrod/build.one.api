@@ -123,6 +123,8 @@ celerybeat.pid
 
 # Environments
 .env
+.secrets.env
+infra/.secrets.env
 .venv
 env/
 venv/

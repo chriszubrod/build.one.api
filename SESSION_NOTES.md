@@ -6,12 +6,9 @@
 
 **Built (a2d0dd9):** config-driven via `box_as_user_id` (numeric Box user id). When set, `BoxAuthService` mints `box_subject_type=user` + `box_subject_id=<id>`; unset → `box_subject_type=enterprise` (service account, the Phase-1 behavior). `is_configured`/`status`/`_subject` updated; `status()` exposes the subject mode (non-secret) so operators see which identity tokens mint as. Unit-tested both modes; live-verified the diagnosis (enterprise mint works = creds valid; as-user mint returns "Grant credentials are invalid" = blocked solely on the app setting below).
 
-**REMAINING (Box-side, Chris does these — then ping to live-verify):**
-1. Dev Console → app → Configuration → Application Scopes → enable **"Generate user access tokens"** (Make API calls using the as-user header).
-2. Admin Console → Platform Apps Manager → the app → **Reauthorize** (scope changed).
-3. Set `BOX_AS_USER_ID=31760447449` in prod App Service settings (and `.env` for local). Do this in lockstep with step 1 (setting it before the app supports user tokens makes local box mints fail with invalid_grant).
+**Box-side steps DONE + AUTH VERIFIED LIVE (2026-06-15):** Chris enabled "Generate user access tokens" + reauthorized (initial attempt failed because the scope save hadn't been clicked; once Saved, it worked). Live CCG-as-user mint now returns **"acting as Chris Zubrod <chris@rogersbuild.com> (id 31760447449)"** and the token has full workbook access (downloaded the 2.14MB OHR2 file via as-user, DETAILS 4534 rows, clean of test rows). **Production auth is READY** — durable unattended CCG-as-user, no dev token, no service-account collaboration. The full write pipeline is proven end-to-end under this identity (the earlier OHR2 writes used a dev token = same user; CCG-as-user is the same identity + scopes, so the client behaves identically — no further write needed to prove it).
 
-Once 1–2 are done, re-run the as-user mint test (it should return "acting as Chris Zubrod"), then the full Excel/upload pipeline through CCG-as-user replaces the dev-token test path → production auth ready. The earlier OHR2 real-file validation used a 60-min dev token (Chris's user) as a stand-in for exactly this.
+**For cutover:** set `BOX_AS_USER_ID=31760447449` in prod App Service settings (and `.env` for local as-user). Box config (scope + reauthorization) is complete and persistent.
 
 ## Session: Box Phase 3 — Excel-in-Box DETAILS updates (2026-06-15, commit 79580b0)
 

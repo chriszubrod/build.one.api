@@ -29,7 +29,12 @@ logger = logging.getLogger(__name__)
 #   25 Z line-item public_id (idempotency / reconciliation key)
 DETAILS_ROW_WIDTH = 26
 SUBCOSTCODE_COL_INDEX = 2  # column C (0-based)
+DATE_COL_INDEX = 8  # column I (0-based) — the date
 DEFAULT_KEY_COL_INDEX = 25  # column Z (0-based)
+
+# The date column is written as a real date VALUE (not a text string) so the
+# number format actually renders it, with an explicit mm/dd/yyyy display.
+DATE_NUMBER_FORMAT = "mm/dd/yyyy"
 
 
 def _normalize_subcostcode(value: Any) -> str:
@@ -192,6 +197,58 @@ def _cell_value_for_write(value: Any) -> Any:
         # number, not text.
         return float(str(value))
     return value
+
+
+def _coerce_date(value: Any) -> Any:
+    """
+    Coerce a date-like value to a real datetime so a date number format renders
+    it (a text string like "2026-06-15" would display literally — the format
+    only applies to actual date values). date/datetime pass through; common
+    string forms are parsed; anything unparseable is returned unchanged so we
+    never crash or corrupt a cell.
+    """
+    from datetime import date, datetime
+
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%m-%d-%Y", "%m-%d-%y"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            return value
+    return value
+
+
+def _write_row_values(ws, target_row: int, row: List[Any]) -> None:
+    """
+    Write a 26-col row's values into `target_row`. The date column (I) is
+    written as a real date value with the mm/dd/yyyy display format (overriding
+    whatever the styling template carried for that column); all other columns
+    pass through `_cell_value_for_write`.
+    """
+    from datetime import datetime
+
+    for col_index, value in enumerate(row):
+        cell = ws.cell(row=target_row, column=col_index + 1)
+        if col_index == DATE_COL_INDEX:
+            coerced = _coerce_date(value)
+            cell.value = coerced
+            if isinstance(coerced, datetime):
+                cell.number_format = DATE_NUMBER_FORMAT
+        else:
+            cell.value = _cell_value_for_write(value)
 
 
 # Column probed to recognize a "real, formatted data row" when choosing a
@@ -386,12 +443,7 @@ def apply_rows_to_details(
         for offset, row in enumerate(group_rows):
             target_row = insertion_row + offset
             _copy_row_style(ws, template_row, target_row, style_max_col)
-            for col_index, value in enumerate(row):
-                ws.cell(
-                    row=target_row,
-                    column=col_index + 1,
-                    value=_cell_value_for_write(value),
-                )
+            _write_row_values(ws, target_row, row)
             applied += 1
 
     # Append any groups that found no SubCostCode match at the end of the sheet.
@@ -402,12 +454,7 @@ def apply_rows_to_details(
         for offset, row in enumerate(append_rows):
             target_row = append_start + offset
             _copy_row_style(ws, template_row, target_row, style_max_col)
-            for col_index, value in enumerate(row):
-                ws.cell(
-                    row=target_row,
-                    column=col_index + 1,
-                    value=_cell_value_for_write(value),
-                )
+            _write_row_values(ws, target_row, row)
             applied += 1
 
     out = BytesIO()

@@ -259,6 +259,28 @@ az monitor metrics alert show -g "$RG" -n buildone-sql-dtu-high >/dev/null 2>&1 
        --description "SQL db DTU avg >80% for 1h — sustained saturation on 5-DTU Basic" -o none
 echo ">> alerts: buildone-sql-storage-high + buildone-sql-dtu-high -> $AG_NAME (chris@bchristopher.dev)"
 
+# Log (scheduled-query) alerts on App Insights — scheduler health + outbox dead-letters.
+AI_SCHED="/subscriptions/$SUBSCRIPTION/resourceGroups/$RG/providers/microsoft.insights/components/build-one-scheduler"
+AI_API="/subscriptions/$SUBSCRIPTION/resourceGroups/$RG/providers/microsoft.insights/components/buildone"
+az monitor scheduled-query show -g "$RG" -n buildone-sched-failed-invocations >/dev/null 2>&1 \
+  || az monitor scheduled-query create -g "$RG" -n buildone-sched-failed-invocations \
+       --scopes "$AI_SCHED" --condition "count 'Failures' > 5" \
+       --condition-query Failures="requests | where success == false" \
+       --evaluation-frequency 15m --window-size 15m --severity 2 --action-groups "$AGID" --auto-mitigate true \
+       --description "Scheduler: >5 failed function invocations in 15m" -o none
+az monitor scheduled-query show -g "$RG" -n buildone-sched-no-invocations >/dev/null 2>&1 \
+  || az monitor scheduled-query create -g "$RG" -n buildone-sched-no-invocations \
+       --scopes "$AI_SCHED" --condition "count 'Reqs' < 1" --condition-query Reqs="requests" \
+       --evaluation-frequency 5m --window-size 15m --severity 1 --action-groups "$AGID" --auto-mitigate true \
+       --description "Scheduler: ZERO function invocations in 15m (host down / scaled-to-zero / missed ticks)" -o none
+az monitor scheduled-query show -g "$RG" -n buildone-outbox-dead-letter >/dev/null 2>&1 \
+  || az monitor scheduled-query create -g "$RG" -n buildone-outbox-dead-letter \
+       --scopes "$AI_API" --condition "count 'DeadLetters' > 0" \
+       --condition-query DeadLetters="traces | where message contains 'outbox.row.dead_lettered'" \
+       --evaluation-frequency 30m --window-size 1h --severity 2 --action-groups "$AGID" --auto-mitigate true \
+       --description "Outbox row dead-lettered (qbo/ms/box) — a SharePoint/Excel/QBO write permanently failed" -o none
+echo ">> log alerts: sched-failed-invocations, sched-no-invocations, outbox-dead-letter -> $AG_NAME"
+
 # ============================================================================ #
 # 9. Azure SQL — REFERENCE ONLY (lives in resource group `owner`, shared server)
 # ============================================================================ #

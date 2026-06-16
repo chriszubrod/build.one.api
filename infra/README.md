@@ -47,17 +47,27 @@ bash infra/provision.sh                            # safe to re-run; idempotent
 
 ## Observability
 
-Azure Monitor metric alerts on the SQL DB (action group `buildone-ops-ag` →
-`chris@bchristopher.dev`), added 2026-06-16 — the **first alerting** in the env:
+Alerting was built out 2026-06-16 (action group `buildone-ops-ag` →
+`chris@bchristopher.dev`). All captured in `provision.sh` (§8b).
 
-- `buildone-sql-storage-high` — `storage_percent` avg > **65%** (6h window). This
-  is the agreed SQL tier-bump trigger (finding #1).
-- `buildone-sql-dtu-high` — `dtu_consumption_percent` avg > **80%** over 1h
-  (sustained saturation, ignores brief batch spikes).
+**Metric alerts (SQL DB):**
+- `buildone-sql-storage-high` — `storage_percent` avg > **65%** (6h). The agreed
+  SQL tier-bump trigger (finding #1).
+- `buildone-sql-dtu-high` — `dtu_consumption_percent` avg > **80%** over 1h.
 
-Both are captured in `provision.sh` (§8b). Broader gaps remain open: Function
-failed-invocation alerts, outbox dead-letter / critical `ReconciliationIssue`
-alerts, and a zero-invocation (missed-tick) alert on the scheduler.
+**Log alerts (App Insights):**
+- `buildone-sched-failed-invocations` — scheduler `requests` with `success==false`,
+  **>5 in 15m** (Sev2).
+- `buildone-sched-no-invocations` — scheduler `requests` **count <1 in 15m** (Sev1):
+  catches the Flex scale-to-zero / missed-tick failure mode.
+- `buildone-outbox-dead-letter` — API `traces` matching `outbox.row.dead_lettered`,
+  **>0 in 1h** (Sev2): a qbo/ms/box write that permanently failed (incl. the
+  critical "bill never reached the client Excel" case).
+
+**Still open (needs a code change, not just an alert):** a signal when a *critical*
+`[*].[ReconciliationIssue]` row is created — there's no queryable log emitted at
+creation today. Add a `logger.warning`/custom-metric on critical-issue creation,
+then a log alert. (The dead-letter alert already covers the highest-impact subset.)
 
 ## Findings surfaced by the capture (not visible from code)
 

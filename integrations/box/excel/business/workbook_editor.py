@@ -109,6 +109,67 @@ def _find_insertion_row(
     return matching_rows[0][0] + 2
 
 
+# Excel error literals. A `<definedName>` whose VALUE is one of these (e.g. a
+# broken `_xlnm.Print_Titles` = `#N/A`) is already non-functional in Excel, but
+# openpyxl's strict parser REJECTS THE WHOLE WORKBOOK over it
+# (PrintTitles.from_string("#N/A") -> ValueError). Real workbooks accumulate
+# these (the OHR2 Budget Tracker had 35). We strip only error-valued defined
+# names before load — valid named ranges are untouched, so no formula that
+# references a real name can break (a formula pointing at a #REF! name is
+# already broken anyway).
+_EXCEL_ERROR_LITERALS = ("#N/A", "#REF!", "#VALUE!", "#DIV/0!", "#NAME?", "#NULL!", "#NUM!")
+
+
+def _sanitize_workbook_bytes(file_bytes: bytes) -> bytes:
+    """
+    Return `file_bytes` with error-valued `<definedName>` elements stripped from
+    xl/workbook.xml, so openpyxl can load workbooks that Excel tolerates but
+    openpyxl rejects. Best-effort: any failure (not a zip / no workbook.xml /
+    no defined names) returns the original bytes unchanged.
+    """
+    import re
+    import zipfile
+
+    try:
+        src = BytesIO(file_bytes)
+        with zipfile.ZipFile(src) as zin:
+            if "xl/workbook.xml" not in zin.namelist():
+                return file_bytes
+            wbxml = zin.read("xl/workbook.xml").decode("utf-8")
+            if "<definedName" not in wbxml:
+                return file_bytes
+
+            def _drop_if_error(match: "re.Match") -> str:
+                inner = match.group(2)
+                return "" if any(e in inner for e in _EXCEL_ERROR_LITERALS) else match.group(0)
+
+            cleaned = re.sub(
+                r"<definedName\b([^>]*)>(.*?)</definedName>",
+                _drop_if_error,
+                wbxml,
+                flags=re.DOTALL,
+            )
+            if cleaned == wbxml:
+                return file_bytes  # nothing error-valued — leave the file byte-identical
+
+            out = BytesIO()
+            with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+                for item in zin.infolist():
+                    payload = cleaned.encode("utf-8") if item.filename == "xl/workbook.xml" else zin.read(item.filename)
+                    zout.writestr(item, payload)
+            logger.info(
+                "box.excel.workbook_sanitized",
+                extra={"event_name": "box.excel.workbook_sanitized"},
+            )
+            return out.getvalue()
+    except Exception as error:
+        logger.warning(
+            "box.excel.sanitize_skipped",
+            extra={"event_name": "box.excel.sanitize_skipped", "error_class": type(error).__name__},
+        )
+        return file_bytes
+
+
 def _cell_value_for_write(value: Any) -> Any:
     """
     Coerce a row element into something openpyxl can write without precision
@@ -168,6 +229,10 @@ def apply_rows_to_details(
     """
     from openpyxl import load_workbook
 
+    # Real workbooks carry openpyxl-hostile cruft (error-valued print-title /
+    # defined names) that Excel tolerates but openpyxl refuses to load. Strip it
+    # first; a clean workbook is returned byte-identical (no-op).
+    file_bytes = _sanitize_workbook_bytes(file_bytes)
     wb = load_workbook(BytesIO(file_bytes), data_only=False)
 
     # fullCalcOnLoad: the builder must use whatever attribute the installed

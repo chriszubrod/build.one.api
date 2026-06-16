@@ -684,15 +684,22 @@ def _enqueue_box_packet_upload(invoice, attachment, blob_url: str, filename: str
     if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
         return  # gate closed — skip the DB legwork, not just the enqueue
     try:
-        from integrations.box.folder.business.service import BoxProjectFolderService
+        from integrations.box.folder.business.service import (
+            BoxProjectFolderService,
+            DOC_CLASS_DRAW_REQUESTS,
+        )
         from integrations.box.outbox.business.service import BoxOutboxService
 
         if not invoice.project_id:
             logger.info(f"box.enqueue.skipped_unmapped_project project_id=None invoice={invoice.public_id}")
             return
-        mapping = BoxProjectFolderService().read_mapping_by_project_id(invoice.project_id)
+        # Customer invoice packets file to the project's "15 - Draw Requests"
+        # ('draw_requests') folder — distinct from vendor AP docs (14-Invoices).
+        mapping = BoxProjectFolderService().read_mapping_by_project_id_and_class(
+            invoice.project_id, DOC_CLASS_DRAW_REQUESTS
+        )
         if mapping is None:
-            logger.info(f"box.enqueue.skipped_unmapped_project project_id={invoice.project_id}")
+            logger.info(f"box.enqueue.skipped_unmapped_project project_id={invoice.project_id} doc_class=draw_requests")
             return
         BoxOutboxService().enqueue_box_upload(
             entity_type="invoice",

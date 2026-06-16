@@ -137,6 +137,7 @@ class BoxProjectFolderRepository:
                 # [BoxFolderId] is reserved for Box's STRING id in every
                 # result set (qbo/dbo keyspace lesson).
                 box_folder_id=getattr(row, "FolderId", None),
+                doc_class=getattr(row, "DocClass", None),
                 created_by_user_id=getattr(row, "CreatedByUserId", None),
             )
         except Exception as error:
@@ -175,6 +176,7 @@ class BoxProjectFolderRepository:
             "project_name": record.get("ProjectName"),
             "box_folder_id": str(external_folder_id) if external_folder_id is not None else None,
             "folder_name": folder_name,
+            "doc_class": record.get("DocClass"),
             "created_by_user_id": record.get("CreatedByUserId"),
             "created_datetime": record.get("CreatedDatetime"),
             "modified_datetime": record.get("ModifiedDatetime"),
@@ -187,6 +189,7 @@ class BoxProjectFolderRepository:
         *,
         project_id: int,
         box_folder_id: int,
+        doc_class: str = "invoices",
         created_by_user_id: Optional[int] = None,
     ) -> BoxProjectFolder:
         """`box_folder_id` is the local `[box].[Folder].Id` BIGINT, not the Box string id."""
@@ -200,6 +203,7 @@ class BoxProjectFolderRepository:
                         params={
                             "ProjectId": project_id,
                             "BoxFolderId": box_folder_id,
+                            "DocClass": doc_class,
                             "CreatedByUserId": created_by_user_id,
                         },
                     )
@@ -219,7 +223,12 @@ class BoxProjectFolderRepository:
     # --- Read ---
 
     def read_by_project_id(self, project_id: int) -> Optional[dict]:
-        """Joined read: mapping row + the Folder's Box string id + name."""
+        """
+        Joined read: the project's mapping row + the Folder's Box string id +
+        name. A project may now have multiple rows (one per DocClass); the
+        sproc orders 'invoices' first, so this legacy fetchone() returns the AP
+        folder. Prefer `read_by_project_id_and_doc_class` for routing.
+        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -237,6 +246,31 @@ class BoxProjectFolderRepository:
                         pass
         except Exception as error:
             logger.error(f"Error during read box project folder by project id: {error}")
+            raise map_database_error(error)
+
+    def read_by_project_id_and_doc_class(
+        self, project_id: int, doc_class: str
+    ) -> Optional[dict]:
+        """Joined read for one (project, doc_class) — the routing-aware lookup."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadBoxProjectFolderByProjectIdAndDocClass",
+                        params={"ProjectId": project_id, "DocClass": doc_class},
+                    )
+                    return self._joined_row_to_dict(cursor, cursor.fetchone())
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(
+                f"Error during read box project folder by project id + doc class: {error}"
+            )
             raise map_database_error(error)
 
     def read_all(self) -> List[dict]:

@@ -1334,7 +1334,10 @@ class ExpenseService:
         if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
             return  # gate closed — skip the DB legwork, not just the enqueue
         try:
-            from integrations.box.folder.business.service import BoxProjectFolderService
+            from integrations.box.folder.business.service import (
+                BoxProjectFolderService,
+                DOC_CLASS_INVOICES,
+            )
             from integrations.box.outbox.business.service import BoxOutboxService
 
             folder_service = BoxProjectFolderService()
@@ -1348,9 +1351,13 @@ class ExpenseService:
                         continue
                     project_id = line_item.project_id
                     if project_id not in mapping_cache:
-                        mapping_cache[project_id] = folder_service.read_mapping_by_project_id(project_id)
+                        # Expense docs + receipts file to the project's
+                        # "14 - Invoices" (AP/'invoices') folder.
+                        mapping_cache[project_id] = folder_service.read_mapping_by_project_id_and_class(
+                            project_id, DOC_CLASS_INVOICES
+                        )
                         if mapping_cache[project_id] is None:
-                            logger.info(f"box.enqueue.skipped_unmapped_project project_id={project_id}")
+                            logger.info(f"box.enqueue.skipped_unmapped_project project_id={project_id} doc_class=invoices")
                     mapping = mapping_cache[project_id]
                     if not mapping:
                         continue

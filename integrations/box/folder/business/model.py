@@ -26,9 +26,11 @@ class BoxFolder:
 @dataclass
 class BoxProjectFolder:
     """
-    Row in `[box].[ProjectFolder]` — 1:1 mapping between a dbo.Project and a
-    `[box].[Folder]` row. Both sides UNIQUE: a project maps to exactly one
-    Box folder and vice versa.
+    Row in `[box].[ProjectFolder]` — maps a dbo.Project to a `[box].[Folder]`
+    row PER document class. `doc_class` is 'invoices' (vendor AP docs →
+    "14 - Invoices") or 'draw_requests' (customer invoice packets →
+    "15 - Draw Requests"); a project has at most one folder per class, and each
+    Box folder maps to at most one project-class row.
 
     `box_folder_id` here is the local BIGINT FK to `[box].[Folder](Id)` —
     the external Box string id lives on the joined Folder row.
@@ -42,4 +44,5 @@ class BoxProjectFolder:
 
     project_id: Optional[int] = None
     box_folder_id: Optional[int] = None
+    doc_class: Optional[str] = None
     created_by_user_id: Optional[int] = None

@@ -2,7 +2,7 @@
 import html
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -82,7 +82,6 @@ class TimeEntryDigestService:
         failed = 0
 
         bcc = self._resolve_bcc(settings)
-        tz = self._business_tz(settings)
 
         for worker in workers:
             try:
@@ -91,7 +90,6 @@ class TimeEntryDigestService:
                     work_date=work_date,
                     mode=mode,
                     bcc=bcc,
-                    tz=tz,
                 )
                 if outcome == "notified":
                     notified += 1
@@ -126,7 +124,7 @@ class TimeEntryDigestService:
 
     # ─── per-worker enqueue ─────────────────────────────────────────────────
 
-    def _enqueue_for_worker(self, *, worker: dict, work_date: str, mode: str, bcc: list, tz: ZoneInfo) -> str:
+    def _enqueue_for_worker(self, *, worker: dict, work_date: str, mode: str, bcc: list) -> str:
         from integrations.ms.outbox.business.service import MsOutboxService
         from integrations.ms.outbox.persistence.repo import MsOutboxRepository
 
@@ -153,7 +151,7 @@ class TimeEntryDigestService:
             return "already_sent"
 
         subject = self._build_subject(work_date)
-        body_html = self._build_html_body(worker=worker, work_date=work_date, tz=tz)
+        body_html = self._build_html_body(worker=worker, work_date=work_date)
 
         result = MsOutboxService().enqueue_send_mail(
             entity_type=_ENTITY_TYPE,
@@ -270,7 +268,7 @@ class TimeEntryDigestService:
         return f"Your time summary for {cls._format_date_long(work_date)}"
 
     @classmethod
-    def _build_html_body(cls, *, worker: dict, work_date: str, tz: ZoneInfo) -> str:
+    def _build_html_body(cls, *, worker: dict, work_date: str) -> str:
         firstname = html.escape(worker.get("firstname") or "there")
         date_long = html.escape(cls._format_date_long(work_date))
 
@@ -285,8 +283,8 @@ class TimeEntryDigestService:
                 rows_html.append(
                     "<tr>"
                     f"<td>{html.escape(log.get('project') or '(unassigned)')}</td>"
-                    f"<td>{html.escape(cls._fmt_clock(log.get('clock_in'), tz))}</td>"
-                    f"<td>{html.escape(cls._fmt_clock(log.get('clock_out'), tz))}</td>"
+                    f"<td>{html.escape(cls._fmt_clock(log.get('clock_in')))}</td>"
+                    f"<td>{html.escape(cls._fmt_clock(log.get('clock_out')))}</td>"
                     f"<td style='text-align:right;'>{cls._fmt_hours(dur)}</td>"
                     f"<td>{html.escape((log.get('log_type') or '').title())}</td>"
                     "</tr>"
@@ -370,14 +368,21 @@ class TimeEntryDigestService:
         return None
 
     @classmethod
-    def _fmt_clock(cls, raw, tz: ZoneInfo) -> str:
-        """Clock timestamps are stored UTC; render in the business timezone."""
+    def _fmt_clock(cls, raw) -> str:
+        """Render a stored clock timestamp as a 12-hour time, VERBATIM.
+
+        TimeLog clock times are stored in the worker's LOCAL wall-clock time
+        (the iOS app records local time; bulk imports synthesize local too),
+        so we do NOT timezone-convert — a stored '07:29' is rendered '7:29 AM'.
+        (Verified 2026-06-16 against real iOS data: Elmer Cordova 07:29→17:03 =
+        9.56h, a normal Central workday. Treating these as UTC and converting
+        shifted them ~5h, which is the bug this replaced.)
+        """
         dt = cls._parse_dt(raw)
         if dt is None:
             return "—"
-        local = dt.replace(tzinfo=timezone.utc).astimezone(tz)
         # 12-hour, no leading zero, platform-independent.
-        return local.strftime("%I:%M %p").lstrip("0")
+        return dt.strftime("%I:%M %p").lstrip("0")
 
     @staticmethod
     def _format_date_long(work_date: str) -> str:

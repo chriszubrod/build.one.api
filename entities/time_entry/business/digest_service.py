@@ -321,7 +321,7 @@ class TimeEntryDigestService:
             f"<p>Here's a summary of the time recorded for you on {date_long}.</p>"
             f"{''.join(sections)}"
             f"{total_html}"
-            "<p style='margin-top:8px;'>If everything looks correct, no action is needed.</p>"
+            "<p style='margin-top:8px;'>Please reply if any change is needed.</p>"
         )
 
     # ─── formatting helpers ─────────────────────────────────────────────────

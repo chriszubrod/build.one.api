@@ -1,5 +1,78 @@
 # Session Notes
 
+## Session: Box document push — doc-class folder routing, LIVE for 23 projects (2026-06-16, commit 49af9c5)
+
+Built + deployed the Box PDF document push (vendor bill/expense/credit docs + customer invoice packets) with per-doc-class folder routing, then mapped + went live for 23 projects.
+
+**The design problem:** the client files vendor AP docs in each project's `14 - Invoices` folder and customer draw packets in `15 - Draw Requests` (the SharePoint per-module convention). But `[box].[ProjectFolder]` was one-folder-per-project, and the invoice-packet enqueue reused that single mapping — so a single folder couldn't honor the split. Chris chose the faithful routing (packets → 15) over flattening everything into 14.
+
+**Code change (commit 49af9c5, deployed to prod image; pushed to master):**
+- `[box].[ProjectFolder]` gains `DocClass NVARCHAR(32) DEFAULT 'invoices'`; UNIQUE swapped from `(ProjectId)` to `(ProjectId, DocClass)`; **`UNIQUE(BoxFolderId)` DROPPED** (see sharing below). New `ReadBoxProjectFolderByProjectIdAndDocClass` sproc; `@DocClass` on Create; DocClass in all reads/outputs. Migration idempotent + backward-compatible (ran on prod DB first; old image kept working).
+- `doc_class` threaded through model/repo/service; `map_project(..., doc_class)`, class-aware read, `unmap_project` + `POST /box/unmap-project` (added per review).
+- The 4 completion enqueues route by class: bill/expense/bill_credit → `DOC_CLASS_INVOICES` (→ 14); invoice packet → `DOC_CLASS_DRAW_REQUESTS` (→ 15).
+
+**Folder-sharing discovery (the load-bearing finding):** sub-unit projects SHARE the parent property's doc folders. Within scope: **OHR2 + OHR2-GUEST** (30,32), **OL + OL-PH** (23,132), and the **MR2 cluster** (91–95) each share one `14` and one `15`. OHR2-CHAPEL (31) has its own. That's why `UNIQUE(BoxFolderId)` had to go — one Box folder receives docs from several projects. (Caught from `[ms].[DriveItemProjectModule]` shared-driveitem analysis, not the LLM review.)
+
+**Adversarial review (4 agents):** SQL / Python / routing all `ship` (nits only); completeness flagged a `major` — no unmap path while the re-map error says "remove first". Addressed: added `unmap_project` + endpoint; added DocClass to the delete OUTPUT; added doc_class to the 3 AP skip logs.
+
+**Mapping (46 rows, 23 projects):** resolved each project's Box `14`/`15` ids via the SharePoint path → Box folder mirror (`200 - Rogers Build Projects` tree + the RBCC Ridge tree for MR2), verified every id (correct name + parent + sharing) with a live GET pass, then applied via `map_project` (doc_class invoices→14, draw_requests→15). All shared folders mapped with no constraint violations. 14-folder names vary (`14 - Invoices` / `14 - Invoices & Receipts`); 15 likewise (`15 - Draw Requests` / `… & Change Orders`) — mapped each to its actual folder.
+
+**Go-live state:** doc push is LIVE for these 23 projects — the next bill/expense/credit completion uploads its PDF to the project's `14` folder; the next invoice packet to `15`. Additive to the SharePoint upload (both fire). **Not col-Z idempotent like Excel** — but `BoxFileService.push_blob_to_box` uses deterministic identity-embedded filenames + 409→re-version recovery, so a re-completion re-versions rather than duplicates, and new completions create new files (safe for go-live; do NOT back-fill old bills — same hand-placed-file duplicate risk as Excel).
+
+**Deferred / dormant:**
+- **ML (74):** its Box project folder (`ML 4524 Millrace Ln (2021)--2019--04`) has NO `14 - Invoices` subfolder (old 2019 project predating the convention) — left unmapped; needs the folder created in Box, then map it.
+- The ~65 non-SP-linked projects (no `14`/`15` mapping) — docs skip cleanly.
+- **Prod doc-push pipeline PROVEN end-to-end (2026-06-16):** controlled proof — enqueued a real completed bill's attachment (`26-0145 Bluebird.pdf`) to a THROWAWAY Box folder in Chris's root (no client folder touched); the PROD scheduler drained it (attempts=1, `done`); the prod App Service downloaded the blob from Azure + uploaded multipart to Box as-user with the deterministic identity-embedded name (`...-ad15fc81.pdf`, 157713 B) and the handler's sha1 integrity check passed (a `done` REQUIRES the sha1 match). Then full self-cleanup: test folder deleted (recursive) + `[box].[File]`/`[box].[PushLog]`/`[box].[Outbox]` rows removed — verified zero residue (folder 404, outbox back to 3 done, 0 orphan registry rows). So the upload path is now proven in the real prod environment, not just the test bed.
+
+## Session: Box workbook mapping — all 24 SharePoint-linked projects (2026-06-16)
+
+Extended the OHR2 go-live to every project that already has an MS/SharePoint Excel workbook linked (Chris’s call: SharePoint-linked first, because those are already on automated sync → safe to add Box sync without colliding with hand-entry). No code changes — prod DB mapping rows only.
+
+**Result: `[box].[ProjectWorkbook]` now has 24 mappings** (OHR2 + 23 new, ids 3–25). Box Excel sync is LIVE for all 24 (gate already on). Each project’s next bill/expense/credit completion pushes its DETAILS rows to its mapped Box workbook.
+
+**How:** `[ms].[DriveItemProjectExcel]` (ProjectId→MsDriveItemId+WorksheetName) joined to `ms.DriveItem.Name` gave the 24 SP-linked projects + the SharePoint workbook filename. Matched against the Box `225 - Budget Trackers` folder (id 388262995180, 89 files) — Box filenames == SharePoint filenames (migrated copies). 17 matched by exact SP-filename identity; 6 had no file in that folder.
+
+**Verification (multi-agent workflow, 23 agents, each downloaded the real Box file):**
+- 17 verified matches → all `confirm`: filename + parent folder + worksheet TAB all confirmed live; semantic correspondence checked (benign descriptor diffs like Pike/Road, 1543/1539, 7550C/7550, Ave omitted — all confirmed same property because the SharePoint file the system already syncs to carries the identical name). High-risk clusters (Buffalo Rd BR-*, Overton Lea OL/OL-PH/OL2, SSC/SSC2, Kirkwood KA/KA2, OHR2 family) each confirmed to map to their UNIQUE-prefix file. No mismatches, no better alternatives.
+- 6 unmatched → all `found` elsewhere in Box (visible to Chris’s user): **LR** (1833 Laurel Ridge, file 2272615552558) in `General/200 - Rogers Build Projects/LR…`; **MR2-BARN/CABIN/MAIN/SITE/STABLES** (1577 Moran Rd) each has its OWN dedicated tracker in `General/RBP, LLC - General/RBCC Ridge, LLC/MR2 - 1577 Moran Rd/12 - Budgets` (NOT a shared workbook — 1:1 is correct; folder also holds MR2-RH + MR2-SHED). They simply weren’t migrated into the central folder.
+
+**Worksheet names matter (threaded per-project):** most tabs are `DETAILS`, but **HRL (proj 9) and ML (proj 74) use `Tracking Budget DETAILS`**, and **TB3 (proj 73) uses `DETAIL` (singular)**. Mapped each with its actual SharePoint worksheet name, not a hardcoded default.
+
+**openpyxl #N/A note:** the LR + 5 MR2 files raise openpyxl’s `#N/A is not a valid print titles definition` on a RAW load — but `_sanitize_workbook_bytes()` strips exactly those defined names (same fix OHR2 needed). Confirmed all 6 open via our sanitizer with the DETAILS tab present, so the drain handler edits them fine.
+
+**Still dormant / follow-ups:**
+- **Non-SP-linked projects** (~65 of the 89 Box trackers have no `DriveItemProjectExcel` link) — deliberately NOT mapped this pass (Chris said SP-linked first). They carry higher hand-entry duplicate risk (no automated-sync precedent), so each should be confirmed not-actively-hand-entered before mapping.
+- **Doc-push folders** still unmapped (PDFs dormant) — separate decision.
+- **MS/SharePoint Excel sync still fires alongside Box** for these 24 (additive). If SharePoint is fully abandoned post-migration, those writes are wasted-but-harmless; unlinking them (`DriveItemProjectExcelConnector.unlink_excel_from_project`) is an optional cleanup.
+
+## Session: Box Excel-in-Box GO-LIVE for OHR2 (2026-06-16)
+
+Executed the production cutover. **Box Excel sync is now LIVE for project OHR2 (id 30).** No code changes this session — only prod state (App Service setting + one DB mapping row) + validation.
+
+**Cutover steps done:**
+- **Code already deployed:** prod image runs `b2b7eb7` (verified prior session; container tag `:latest`). Box shipped dormant.
+- **Prod config (App Service `buildone`):** `BOX_CLIENT_ID` / `BOX_CLIENT_SECRET` / `BOX_ENTERPRISE_ID` / `BOX_AS_USER_ID=31760447449` all set (prior). This session flipped **`ALLOW_BOX_WRITES=true`** (verified value=`true`). This is the go-live switch.
+- **Workbook mapping (prod DB):** `[box].[ProjectWorkbook]` row id=2, public_id `0D257103-9A1C-4C65-B60F-30DFF60B81A1` — project 30 (`OHR2 - 1539 Old Hillsboro Road`) → Box file `2272203908942` (`OHR2 - 1539 Old Hillsboro Road - Budget Tracker.xlsx`), worksheet `DETAILS`. Created via `BoxProjectWorkbookService.map_workbook` (as-user; visibility GET passed; metadata-stamp POST correctly skipped because local gate is off — best-effort).
+
+**Validations (all passed):**
+- **Read path (Task 13):** `build_details_rows("bill", …)` on 3 real completed OHR2 bills → correct 26-col rows (CostCode/SubCostCode split, vendor/number/desc, M="Bill", Decimal col N, GUID in col Z, yyyy-mm-dd col I that the editor coerces to mm/dd/yyyy on write).
+- **As-user auth (Task 11):** local mint with `BOX_AS_USER_ID` set → `subject: user/31760447449`; downloaded the live 2.14MB OHR2 file (enterprise-subject mint 404s the file → confirms why as-user is required).
+- **Workbook audit:** DETAILS has 4534 rows, **101 col-Z GUIDs** (carried over from the SharePoint-era MS sync at migration). Of **936 completed project-30 line items, only 79 are present by GUID; 857 absent** — and the absent ones are OLDER (Feb–Mar 2026), i.e. hand-entered before the GUID sync existed. **Implication:** col-Z idempotency protects against re-syncing the 79 automated rows, but does NOT dedup against the 857 hand-entered rows. So **only NEW completions are safe to push** (their rows don't pre-exist); back-filling old bills would duplicate human rows. Go-live correctly pushes new completions only.
+- **Controlled e2e (Task 14), prod, no-op:** enqueued bill 18725 (26-0145; single line; GUID already present) → drained by the **prod scheduler** (my manual `/admin/box/drain` 401'd — local `.env` `DRAIN_SECRET` ≠ prod's; scheduler uses the right one). Outbox row → **done, attempts=1**. Workbook **version 51→51, etag 104→104** = no new version, no content change. Reaching `done` is only possible *after* the Step-4 Box lock PUT (a gated write) + download + col-Z no-op → proves the entire prod write-capable pipeline minus the final byte upload (which is the same prod HTTP client just exercised by the lock, and was already proven locally against this file under the same identity).
+
+**Go-live state:**
+- **Excel sync LIVE for OHR2 only.** Next OHR2 bill/expense/bill_credit completion auto-pushes its DETAILS row(s) to the Box workbook (new lines insert; already-present skip). Note this is ADDITIVE to the MS/SharePoint Excel sync (both fire) — if SharePoint is abandoned post-migration, that MS write is wasted-but-harmless; stopping it is a separate change.
+- **Document push (PDFs) ENABLED BY GATE BUT DORMANT** — zero `[box].[ProjectFolder]` mappings, so all doc pushes hit `skipped_unmapped_project` (safe no-op). Needs the client's per-project doc-destination folder convention (the budget-tracker folder `225 - Budget Trackers` is NOT it — it's a flat folder of 89 trackers). **Open decision for Chris.**
+- **Other ~88 projects:** Excel sync dormant until each `[box].[ProjectWorkbook]` mapping is added. All workbooks are name-discoverable in folder `225 - Budget Trackers` (id 388262995180), each named with the `dbo.Project.Name` prefix → bulk mapping is mechanical. NOT done autonomously because turning on automation for projects the team currently HAND-ENTERS would duplicate their manual rows going forward (a per-project workflow decision). OHR2 was safe because recent OHR2 bills were already on automated (GUID) sync.
+
+**Follow-ups / notes:**
+- Doc-folder destination decision + `[box].[ProjectFolder]` mappings (to light up PDF push).
+- Bulk `[box].[ProjectWorkbook]` mapping for the other projects (name-match; reversible; gate workflow change with Chris).
+- **Multi-project-bill behavior:** the drain handler's `build_details_rows` returns ALL of a bill's line items regardless of project, so a bill spanning >1 project would write all its lines into EACH mapped project's workbook. Moot for OHR2 single-project bills; confirm desired behavior before broad rollout.
+- **Observability:** App Insights classic `traces` query returned empty for `buildone` (workspace-based AI → logs are in Log Analytics `AppTraces`, not the classic table the CLI hits). Box events ARE emitted (the row processed); confirm the Log Analytics query path for monitoring the first real bill.
+- Local `.env` `DRAIN_SECRET` ≠ prod's (manual prod drain triggers 401; scheduler is the real driver — fine).
+- Pre-existing temp Azure SQL firewall rule `claude-session-temp-1781539334` (from prior session) still noted for cleanup.
+
 ## Session: Box production auth = CCG as-user (2026-06-15, commit a2d0dd9)
 
 **Decision (Chris):** production auth model = **CCG "as-user"**, impersonating **Chris's own managed user, Box id `31760447449`** (chris@rogersbuild.com). Acts with that user's existing folder/workbook access → NO per-folder service-account collaboration, and still NO refresh tokens (durable, unattended). Rejected: dedicated automation user (more setup) and going back to the service-account-collaboration model (the thing we were avoiding).

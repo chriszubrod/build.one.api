@@ -2,6 +2,16 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## Box integration — go-live follow-ups (2026-06-16)
+
+Box Excel-in-Box + document push went LIVE for the SharePoint-linked projects (24 workbook mappings, 46 ProjectFolder mappings across 23 projects; both pipelines prod-proven). Remaining:
+
+- [ ] **ML (project 74) doc-push.** Its Box project folder (`ML 4524 Millrace Ln (2021)--2019--04`) has NO `14 - Invoices` / `15 - Draw Requests` subfolders (old 2019 project predating the convention). Create them in Box, then `POST /box/map-project` for both `doc_class`. Excel sync for ML is already live. Until then its bill/expense/credit PDFs skip cleanly (`skipped_unmapped_project`).
+- [ ] **~65 non-SharePoint-linked projects.** No Box Excel (`[box].[ProjectWorkbook]`) or doc (`[box].[ProjectFolder]`) mappings → they skip. Deliberate later pass: unlike the SP-linked set (already on automated sync), these carry higher hand-entry duplicate risk, so confirm each isn't actively hand-entered before mapping. Workbooks are name-discoverable in `225 - Budget Trackers` (388262995180); doc folders under `200 - Rogers Build Projects` (388262164461) + the RBP/RBCC trees.
+- [ ] **SharePoint sync still double-writes.** The MS/SharePoint Excel sync + module-folder doc upload still fire alongside Box (additive). Once SharePoint is confirmed retired, unlink: `DriveItemProjectExcelConnector.unlink_excel_from_project` (Excel) + delete the `[ms].[DriveItemProjectModule]` rows (docs). Harmless until then (writes to abandoned files).
+- [ ] **Observability for Box events.** The App Insights *classic* `traces` query returns empty for `buildone` (workspace-based AI). Confirm the Log Analytics `AppTraces` query path before relying on it to monitor the first real completions + the daily `reconcile_box`.
+- [ ] **(low) Re-stamp Box metadata.** The mapping runs created `[box].[ProjectFolder]`/`[box].[ProjectWorkbook]` rows but the best-effort `buildone_project_public_id` metadata stamp on the Box folders/files was skipped (the local mapping process had `ALLOW_BOX_WRITES` unset → write-gated POST swallowed). Re-stamp when convenient (purely informational Box-side linkage; not required for sync).
+
 ## Budget entity follow-ups (2026-06-11; plan: umbrella memory project_budget_entity.md)
 
 Phase 0 + 1 shipped to the prod DB 2026-06-11; Phase 2 (variance) shipped 2026-06-12 (schema + sprocs + seeds + indexes live; code awaits combined commit + container deploy). Remaining:

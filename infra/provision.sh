@@ -236,6 +236,30 @@ az keyvault show -n "$KEYVAULT" >/dev/null 2>&1 \
 echo ">> key vault: $KEYVAULT (RBAC mode; not yet referenced by any app)"
 
 # ============================================================================ #
+# 8b. Observability — Azure Monitor alerts (first alerting, 2026-06-16)
+# ============================================================================ #
+# Action group -> email; metric alerts on the SQL DB (which lives in RG `owner`).
+AG_NAME="buildone-ops-ag"
+SQL_DBID="/subscriptions/$SUBSCRIPTION/resourceGroups/owner/providers/Microsoft.Sql/servers/bchristopher/databases/buildone"
+az monitor action-group show -g "$RG" -n "$AG_NAME" >/dev/null 2>&1 \
+  || az monitor action-group create -g "$RG" -n "$AG_NAME" --short-name buildoneops \
+       --action email chris chris@bchristopher.dev -o none
+AGID=$(az monitor action-group show -g "$RG" -n "$AG_NAME" --query id -o tsv)
+# Storage: fires at 65% of the 2GB cap — the agreed SQL tier-bump trigger.
+az monitor metrics alert show -g "$RG" -n buildone-sql-storage-high >/dev/null 2>&1 \
+  || az monitor metrics alert create -n buildone-sql-storage-high -g "$RG" \
+       --scopes "$SQL_DBID" --condition "avg storage_percent > 65" \
+       --window-size 6h --evaluation-frequency 1h --severity 2 --action "$AGID" --auto-mitigate true \
+       --description "SQL db storage >65% of 2GB cap — plan S1 + geo backup" -o none
+# DTU: fires on sustained compute saturation (avg >80% over 1h), not brief spikes.
+az monitor metrics alert show -g "$RG" -n buildone-sql-dtu-high >/dev/null 2>&1 \
+  || az monitor metrics alert create -n buildone-sql-dtu-high -g "$RG" \
+       --scopes "$SQL_DBID" --condition "avg dtu_consumption_percent > 80" \
+       --window-size 1h --evaluation-frequency 15m --severity 2 --action "$AGID" --auto-mitigate true \
+       --description "SQL db DTU avg >80% for 1h — sustained saturation on 5-DTU Basic" -o none
+echo ">> alerts: buildone-sql-storage-high + buildone-sql-dtu-high -> $AG_NAME (chris@bchristopher.dev)"
+
+# ============================================================================ #
 # 9. Azure SQL — REFERENCE ONLY (lives in resource group `owner`, shared server)
 # ============================================================================ #
 # The production DB is NOT in $RG. Documented here so the topology is complete.

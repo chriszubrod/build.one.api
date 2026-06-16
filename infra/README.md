@@ -45,6 +45,20 @@ bash infra/provision.sh                            # safe to re-run; idempotent
 | User MI | `oidc-msi-a7e7` | purpose unconfirmed — audit |
 | **SQL (in RG `owner`)** | server `bchristopher` / db `buildone` | **Basic tier, 5 DTU, 2 GB cap, LRS backup, 7d PITR** |
 
+## Observability
+
+Azure Monitor metric alerts on the SQL DB (action group `buildone-ops-ag` →
+`chris@bchristopher.dev`), added 2026-06-16 — the **first alerting** in the env:
+
+- `buildone-sql-storage-high` — `storage_percent` avg > **65%** (6h window). This
+  is the agreed SQL tier-bump trigger (finding #1).
+- `buildone-sql-dtu-high` — `dtu_consumption_percent` avg > **80%** over 1h
+  (sustained saturation, ignores brief batch spikes).
+
+Both are captured in `provision.sh` (§8b). Broader gaps remain open: Function
+failed-invocation alerts, outbox dead-letter / critical `ReconciliationIssue`
+alerts, and a zero-invocation (missed-tick) alert on the scheduler.
+
 ## Findings surfaced by the capture (not visible from code)
 
 Ordered roughly by impact:

@@ -150,7 +150,7 @@ class TimeEntryDigestService:
             )
             return "already_sent"
 
-        subject = self._build_subject(work_date)
+        subject = self._build_subject(worker_name=self._worker_name(worker), work_date=work_date)
         body_html = self._build_html_body(worker=worker, work_date=work_date)
 
         result = MsOutboxService().enqueue_send_mail(
@@ -264,8 +264,8 @@ class TimeEntryDigestService:
     # ─── subject + body ─────────────────────────────────────────────────────
 
     @classmethod
-    def _build_subject(cls, work_date: str) -> str:
-        return f"Your time summary for {cls._format_date_long(work_date)}"
+    def _build_subject(cls, *, worker_name: str, work_date: str) -> str:
+        return f"TimeEntry - {worker_name} - {cls._format_date_subject(work_date)}"
 
     @classmethod
     def _build_html_body(cls, *, worker: dict, work_date: str) -> str:
@@ -321,7 +321,7 @@ class TimeEntryDigestService:
         total_html = f"<p style='margin-top:8px;'>Total hours: <strong>{cls._fmt_hours(total)}</strong></p>"
 
         return (
-            f"<p>Hi {firstname},</p>"
+            f"<p>{firstname},</p>"
             f"<p>Here's a summary of the time recorded for you on {date_long}. "
             "Please review it for accuracy — if anything needs to be corrected, "
             "let your manager know.</p>"
@@ -390,5 +390,14 @@ class TimeEntryDigestService:
         try:
             d = datetime.strptime(str(work_date), "%Y-%m-%d").date()
             return f"{d.strftime('%A, %B')} {d.day}, {d.year}"
+        except Exception:
+            return str(work_date)
+
+    @staticmethod
+    def _format_date_subject(work_date: str) -> str:
+        """'2026-06-15' -> 'June 15, 2026' (no weekday). Falls back to raw."""
+        try:
+            d = datetime.strptime(str(work_date), "%Y-%m-%d").date()
+            return f"{d.strftime('%B')} {d.day}, {d.year}"
         except Exception:
             return str(work_date)

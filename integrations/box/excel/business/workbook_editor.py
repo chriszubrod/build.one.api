@@ -1,6 +1,7 @@
 # Python Standard Library Imports
 import logging
 from collections import defaultdict
+from copy import copy
 from io import BytesIO
 from typing import Any, Dict, List, Optional
 
@@ -193,6 +194,55 @@ def _cell_value_for_write(value: Any) -> Any:
     return value
 
 
+# Column probed to recognize a "real, formatted data row" when choosing a
+# styling template — N (amount, 1-based 14) reliably carries a currency format
+# on populated cost lines; a blank/separator row shows 'General'.
+_STYLE_PROBE_COL = 14
+
+
+def _find_template_row(ws, anchor_row: int, *, limit: int = 200) -> Optional[int]:
+    """
+    Nearest row at/above `anchor_row` that looks like a real formatted data row
+    (its amount cell carries a non-'General' number format), to copy styling
+    from. For an insert, `anchor_row` is the matched group's last row (already
+    formatted, returned immediately). For an append, we may walk up past blank
+    trailing rows. Returns `anchor_row` as a fallback, or None if out of range.
+    """
+    floor = max(1, anchor_row - limit)
+    r = anchor_row
+    while r >= floor:
+        cell = ws.cell(row=r, column=_STYLE_PROBE_COL)
+        if cell.has_style and cell.number_format not in (None, "General"):
+            return r
+        r -= 1
+    return anchor_row if anchor_row >= 1 else None
+
+
+def _copy_row_style(ws, src_row: Optional[int], dst_row: int, max_col: int) -> None:
+    """
+    Copy cell formatting (number format, font, border, fill, alignment,
+    protection) + row height from `src_row` to `dst_row`. openpyxl inserts BARE
+    rows (default Calibri / 'General'), unlike Excel which inherits the row
+    above — so without this, every inserted cost line loses its currency / date
+    formatting and font. Style objects are copy()'d (openpyxl forbids sharing).
+    """
+    if not src_row or src_row < 1 or src_row == dst_row:
+        return
+    for col in range(1, max_col + 1):
+        src = ws.cell(row=src_row, column=col)
+        if not src.has_style:
+            continue
+        dst = ws.cell(row=dst_row, column=col)
+        dst.font = copy(src.font)
+        dst.border = copy(src.border)
+        dst.fill = copy(src.fill)
+        dst.number_format = src.number_format  # str — no copy needed
+        dst.alignment = copy(src.alignment)
+        dst.protection = copy(src.protection)
+    if src_row in ws.row_dimensions and ws.row_dimensions[src_row].height is not None:
+        ws.row_dimensions[dst_row].height = ws.row_dimensions[src_row].height
+
+
 def apply_rows_to_details(
     file_bytes: bytes,
     worksheet_name: str,
@@ -320,6 +370,8 @@ def apply_rows_to_details(
             append_rows.extend(group_rows)
 
     applied = 0
+    # Columns to carry styling across (insert_rows doesn't change column count).
+    style_max_col = ws.max_column
 
     # Apply inserts top-of-sheet-last: sort by insertion_row DESCENDING so each
     # ws.insert_rows shifts only rows below it — never invalidating a
@@ -327,8 +379,13 @@ def apply_rows_to_details(
     planned_inserts.sort(key=lambda g: g[0], reverse=True)
     for insertion_row, group_rows in planned_inserts:
         ws.insert_rows(insertion_row, amount=len(group_rows))
+        # The row directly above the insertion is the matched group's last
+        # (formatted) row — our styling template so the new cost lines inherit
+        # the currency/date number formats, font, borders + fill.
+        template_row = _find_template_row(ws, insertion_row - 1)
         for offset, row in enumerate(group_rows):
             target_row = insertion_row + offset
+            _copy_row_style(ws, template_row, target_row, style_max_col)
             for col_index, value in enumerate(row):
                 ws.cell(
                     row=target_row,
@@ -341,8 +398,10 @@ def apply_rows_to_details(
     if append_rows:
         # Recompute the end after the inserts above (insert_rows updated max_row).
         append_start = ws.max_row + 1
+        template_row = _find_template_row(ws, append_start - 1)
         for offset, row in enumerate(append_rows):
             target_row = append_start + offset
+            _copy_row_style(ws, template_row, target_row, style_max_col)
             for col_index, value in enumerate(row):
                 ws.cell(
                     row=target_row,

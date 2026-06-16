@@ -1,5 +1,18 @@
 # Session Notes
 
+## Session: Box production auth = CCG as-user (2026-06-15, commit a2d0dd9)
+
+**Decision (Chris):** production auth model = **CCG "as-user"**, impersonating **Chris's own managed user, Box id `31760447449`** (chris@rogersbuild.com). Acts with that user's existing folder/workbook access → NO per-folder service-account collaboration, and still NO refresh tokens (durable, unattended). Rejected: dedicated automation user (more setup) and going back to the service-account-collaboration model (the thing we were avoiding).
+
+**Built (a2d0dd9):** config-driven via `box_as_user_id` (numeric Box user id). When set, `BoxAuthService` mints `box_subject_type=user` + `box_subject_id=<id>`; unset → `box_subject_type=enterprise` (service account, the Phase-1 behavior). `is_configured`/`status`/`_subject` updated; `status()` exposes the subject mode (non-secret) so operators see which identity tokens mint as. Unit-tested both modes; live-verified the diagnosis (enterprise mint works = creds valid; as-user mint returns "Grant credentials are invalid" = blocked solely on the app setting below).
+
+**REMAINING (Box-side, Chris does these — then ping to live-verify):**
+1. Dev Console → app → Configuration → Application Scopes → enable **"Generate user access tokens"** (Make API calls using the as-user header).
+2. Admin Console → Platform Apps Manager → the app → **Reauthorize** (scope changed).
+3. Set `BOX_AS_USER_ID=31760447449` in prod App Service settings (and `.env` for local). Do this in lockstep with step 1 (setting it before the app supports user tokens makes local box mints fail with invalid_grant).
+
+Once 1–2 are done, re-run the as-user mint test (it should return "acting as Chris Zubrod"), then the full Excel/upload pipeline through CCG-as-user replaces the dev-token test path → production auth ready. The earlier OHR2 real-file validation used a 60-min dev token (Chris's user) as a stand-in for exactly this.
+
 ## Session: Box Phase 3 — Excel-in-Box DETAILS updates (2026-06-15, commit 79580b0)
 
 The MS-Graph-parity other half: programmatic edits to the DETAILS tab of Box-hosted draw-sheet .xlsx workbooks. Box has NO cell-level/workbook API, so (unlike the Graph path) the drain handler downloads the whole file, edits with openpyxl, and uploads a new version — **defer-while-open** against human Excel-for-web co-editing (confirmed acceptable: small team, closes daily; SharePoint→Box migration means Graph's concurrent cell-edit path is no longer available).

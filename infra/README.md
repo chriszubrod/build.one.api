@@ -49,12 +49,14 @@ bash infra/provision.sh                            # safe to re-run; idempotent
 
 Ordered roughly by impact:
 
-1. **SQL DB is Basic tier (5 DTU / 2 GB max size).** For the financial dataset
-   (~18K bills + line items + agent/workflow/email audit tables), the **2 GB
-   ceiling is a hard risk** — at the cap the DB goes read-only. 5 DTU also
-   throttles easily, compounding the missing transient-retry on the CRUD path.
-   Backup redundancy is **Local** (lost in a regional disaster). → Consider S0/S1
-   (or vCore serverless) + geo-redundant backup; check current size now.
+1. **SQL DB is Basic tier (5 DTU / 2 GB max size).** Measured 2026-06-16 (30d):
+   storage at **28% of cap (582 MiB), growing ~96 MiB/mo → ~15-month runway** to
+   the 2 GB ceiling (at the cap the DB goes read-only). DTU is comfortable at
+   median (7%) but **saturates under burst load** — peak 100%, p99 94%, 4 hrs
+   ≥95% / 9 hrs ≥80% over 14 days — which compounds the missing transient-retry
+   on the CRUD path. Backup is **Local** redundancy, 7-day PITR (no geo). Verdict:
+   not urgent, but plan a move to **S1 (20 DTU) or GP-serverless** (absorbs
+   bursts, raises the storage cap to 250 GB) + **geo-redundant backup**.
 2. **App connects as the SQL server admin** (`zubrodcb@bchristopher`), and the
    server has **public network access on** with a sprawling ad-hoc firewall
    allowlist (incl. transient `claude-*` rules + `AllowAllWindowsAzureIps`).

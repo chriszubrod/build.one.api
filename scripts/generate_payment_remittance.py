@@ -304,9 +304,29 @@ def upload_or_version(client: BoxHttpClient, folder_id: str, filename: str, data
         return "versioned"
 
 
+def _vendor_from_filename(name: str) -> Optional[str]:
+    """Pull the vendor segment out of '{date} - BILL PAYMENT - {doc} - {vendor} - {total}.pdf'.
+
+    Returns None when the name doesn't follow the convention. Joins on ' - ' so a
+    vendor that itself contains ' - ' survives (none do today, but be safe).
+    """
+    if " - BILL PAYMENT - " not in name:
+        return None
+    stem = name[:-4] if name.lower().endswith(".pdf") else name
+    parts = stem.split(" - ")
+    if len(parts) < 5:  # [date, 'BILL PAYMENT', doc, *vendor, total]
+        return None
+    return " - ".join(parts[3:-1])
+
+
 def find_existing_for_payment(client: BoxHttpClient, folder_id: str,
                               doc_number: str, vendor: str) -> Optional[Dict[str, Any]]:
-    """Loose (doc#, vendor) match against existing filenames, ignoring date/punctuation."""
+    """Match an existing file on (doc#, vendor), ignoring date/punctuation differences.
+
+    The vendor is parsed from the filename and compared EXACTLY (normalized) rather
+    than as a substring — otherwise 'Weston Parker' would spuriously match a
+    'Weston Parker (Expense)' file (and vice versa) for the same payment.
+    """
     def norm(s: str) -> str:
         return "".join(ch for ch in s.lower() if ch.isalnum())
     vtoken = norm(vendor)
@@ -314,7 +334,10 @@ def find_existing_for_payment(client: BoxHttpClient, folder_id: str,
         if it["type"] != "file":
             continue
         nm = it["name"]
-        if doc_number in nm and vtoken in norm(nm):
+        if doc_number not in nm:
+            continue
+        fv = _vendor_from_filename(nm)
+        if fv is not None and norm(fv) == vtoken:
             return it
     return None
 

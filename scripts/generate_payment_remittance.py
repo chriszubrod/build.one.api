@@ -26,6 +26,8 @@ upload, gated behind --upload AND ALLOW_BOX_WRITES=true.
 """
 # Standard Library
 import argparse
+import base64
+import html
 import io
 import os
 import sys
@@ -54,6 +56,7 @@ BOX_999_ACCOUNTING_ID = "388262075849"
 BOX_PATH_SEGMENTS = ["02 - Accounts Payable", "535 - Rogers Build - Check Stubs"]
 COMPANY_FALLBACK = "Rogers Build, Inc."
 METHOD_LABEL = "ACH"  # business pays via ACH even though QBO books PayType=Check
+REMITTANCE_BCC = "invoice@rogersbuild.com"  # always BCC'd on vendor remittance drafts
 CENTS = Decimal("0.01")
 
 
@@ -104,6 +107,16 @@ def fetch_payment_batch(doc_number: str) -> Dict[str, Any]:
             ).get("Bill", []):
                 bill_by_id[str(b["Id"])] = b
 
+        # Each vendor's QBO PrimaryEmailAddr (fallback email source after local Contacts).
+        vendor_qbo_ids = sorted({str(p["VendorRef"]["value"]) for p in payments_raw})
+        vendor_email_by_id: Dict[str, Optional[str]] = {}
+        if vendor_qbo_ids:
+            vid_list = ",".join(f"'{v}'" for v in vendor_qbo_ids)
+            for v in _qbo_query(
+                client, f"select Id, PrimaryEmailAddr from Vendor where Id in ({vid_list})"
+            ).get("Vendor", []):
+                vendor_email_by_id[str(v["Id"])] = (v.get("PrimaryEmailAddr") or {}).get("Address")
+
     payments = []
     for p in payments_raw:
         lines = []
@@ -118,8 +131,11 @@ def fetch_payment_batch(doc_number: str) -> Dict[str, Any]:
                     "bill_date": b.get("TxnDate"),
                     "amount": amt,
                 })
+        vqid = str(p["VendorRef"]["value"])
         payments.append({
             "vendor": p["VendorRef"]["name"],
+            "vendor_qbo_id": vqid,
+            "qbo_email": vendor_email_by_id.get(vqid),
             "doc_number": str(p.get("DocNumber")),
             "txn_date": p.get("TxnDate"),
             "total": _money(p.get("TotalAmt")),
@@ -142,6 +158,16 @@ def _date_short(iso: Optional[str]) -> str:
         return ""
     try:
         return datetime.strptime(iso, "%Y-%m-%d").strftime("%m-%d-%y")
+    except ValueError:
+        return iso
+
+
+def _date_long(iso: Optional[str]) -> str:
+    """'YYYY-MM-DD' -> 'June 12, 2026' (email body, vendor-facing)."""
+    if not iso:
+        return ""
+    try:
+        return datetime.strptime(iso, "%Y-%m-%d").strftime("%B %-d, %Y")
     except ValueError:
         return iso
 
@@ -300,6 +326,109 @@ def extract_pdf_text(data: bytes) -> str:
 
 
 # ---------------------------------------------------------------------------- #
+# Vendor email resolution + draft (MS Graph, into invoice@rogersbuild.com Drafts)
+# ---------------------------------------------------------------------------- #
+def local_vendor_and_contact_emails(qbo_vendor_id: str):
+    """Map a QBO vendor id -> (local Vendor.Id, [existing Contact emails])."""
+    from shared.database import get_connection
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT v.Id, c.Email
+            FROM qbo.Vendor qv
+            JOIN qbo.VendorVendor vv ON vv.QboVendorId = qv.Id
+            JOIN dbo.Vendor v ON v.Id = vv.VendorId
+            LEFT JOIN dbo.Contact c ON c.VendorId = v.Id
+            WHERE qv.QboId = ?
+            """,
+            (qbo_vendor_id,),
+        )
+        rows = cur.fetchall()
+    if not rows:
+        return None, []
+    local_id = rows[0][0]
+    emails = sorted({r[1].strip() for r in rows if r[1] and r[1].strip()})
+    return local_id, emails
+
+
+def backfill_contact_email(local_vendor_id: int, email: str) -> bool:
+    """Create a Contact row carrying a newly-sourced vendor email. Best-effort."""
+    try:
+        from entities.contact.business.service import ContactService
+        ContactService().create(
+            email=email,
+            vendor_id=local_vendor_id,
+            notes="Email captured for payment-remittance distribution",
+        )
+        return True
+    except Exception as ex:  # never let a backfill failure block the draft
+        print(f"    (contact backfill failed for {email}: {ex})")
+        return False
+
+
+def resolve_vendor_emails(payment: Dict[str, Any], overrides: Dict[str, List[str]]):
+    """Resolve recipient emails: --email override -> local Contact -> QBO PrimaryEmailAddr.
+
+    Returns (emails, source, local_vendor_id, contact_emails).
+    """
+    vqid = payment["vendor_qbo_id"]
+    local_id, contact_emails = local_vendor_and_contact_emails(vqid)
+    if overrides.get(vqid):
+        return overrides[vqid], "override", local_id, contact_emails
+    if contact_emails:
+        return contact_emails, "contact", local_id, contact_emails
+    if payment.get("qbo_email"):
+        return [payment["qbo_email"]], "qbo", local_id, contact_emails
+    return [], "none", local_id, contact_emails
+
+
+def email_subject(payment: Dict[str, Any]) -> str:
+    return f"Rogers Build Inc. - {payment['vendor']} - ACH {payment['doc_number']}"
+
+
+def email_body_html(payment: Dict[str, Any]) -> str:
+    return (
+        f"<p>{html.escape(payment['vendor'])} Team,</p>"
+        f"<p>ACH details are attached for the payment process on "
+        f"{_date_long(payment['txn_date'])}. Please review, and let us know if you have "
+        f"any questions or need additional information.</p>"
+        f"<p>Thanks,<br>Accounting</p>"
+    )
+
+
+def create_vendor_draft(payment: Dict[str, Any], emails: List[str],
+                        pdf: bytes, filename: str) -> Dict[str, Any]:
+    """Create a draft (with the remittance PDF attached) in invoice@rogersbuild.com Drafts."""
+    from integrations.ms.mail.message.business.service import MsMessageService
+    return MsMessageService().create_draft(
+        to_recipients=[{"email": e, "name": payment["vendor"]} for e in emails],
+        bcc_recipients=[{"email": REMITTANCE_BCC}],
+        subject=email_subject(payment),
+        body=email_body_html(payment),
+        body_type="HTML",
+        attachments=[{
+            "name": filename,
+            "content_type": "application/pdf",
+            "content_bytes": base64.b64encode(pdf).decode("ascii"),
+        }],
+    )
+
+
+def parse_email_overrides(values: Optional[List[str]]) -> Dict[str, List[str]]:
+    """--email QBOID=addr1,addr2  (repeatable) -> {qbo_id: [addrs]}."""
+    out: Dict[str, List[str]] = {}
+    for raw in values or []:
+        if "=" not in raw:
+            raise SystemExit(f"--email expects QBOID=address, got {raw!r}")
+        vid, addrs = raw.split("=", 1)
+        out.setdefault(vid.strip(), []).extend(
+            a.strip() for a in addrs.split(",") if a.strip()
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------- #
 # Main
 # ---------------------------------------------------------------------------- #
 def main() -> None:
@@ -308,17 +437,28 @@ def main() -> None:
     ap.add_argument("--out-dir", default="/Users/chris/Applications/build.one/_remittance_out",
                     help="Local folder for generated PDFs (default: %(default)s)")
     ap.add_argument("--upload", action="store_true", help="Upload each PDF to Box (prod write; needs ALLOW_BOX_WRITES=true).")
+    ap.add_argument("--draft-emails", action="store_true",
+                    help="Draft a per-vendor email (PDF attached) in invoice@rogersbuild.com Drafts (needs ALLOW_MS_WRITES=true).")
+    ap.add_argument("--email", action="append", metavar="QBOID=addr[,addr2]",
+                    help="Supply email(s) for a vendor missing one (repeatable). e.g. --email 767=ap@bemac.com")
+    ap.add_argument("--vendors", help="Comma-separated QBO vendor ids to limit processing to (e.g. 767,139).")
     args = ap.parse_args()
+
+    overrides = parse_email_overrides(args.email)
+    vendor_filter = {v.strip() for v in args.vendors.split(",")} if args.vendors else None
 
     batch = fetch_payment_batch(args.doc_number)
     payer = batch["payer"]
     payments = batch["payments"]
+    if vendor_filter:
+        payments = [p for p in payments if p["vendor_qbo_id"] in vendor_filter]
     os.makedirs(args.out_dir, exist_ok=True)
     print(f"Payer: {payer}")
     print(f"Payment #{args.doc_number}: {len(payments)} vendor(s)\n")
 
     box = BoxHttpClient() if args.upload else None
     year_folder: Optional[str] = None
+    needs_email: List[Dict[str, Any]] = []
 
     for p in payments:
         filename = build_filename(p)
@@ -330,6 +470,28 @@ def main() -> None:
         flag = "" if sum_lines == p["total"] else f"  !! lines sum {sum_lines} != total {p['total']}"
         print(f"• {p['vendor']}: {len(p['lines'])} bill(s), total {_usd(p['total'])}{flag}")
         print(f"    -> {local_path}")
+
+        if args.draft_emails:
+            emails, source, local_id, contact_emails = resolve_vendor_emails(p, overrides)
+            if not emails:
+                needs_email.append(p)
+                print(f"    EMAIL: no address on file (QBO id {p['vendor_qbo_id']}, local vendor "
+                      f"{local_id}) — skipped; supply via --email {p['vendor_qbo_id']}=addr")
+            else:
+                # Capture any newly-sourced address into a local Contact row.
+                if source in ("qbo", "override") and local_id:
+                    for e in emails:
+                        if e not in contact_emails:
+                            ok = backfill_contact_email(local_id, e)
+                            if ok:
+                                print(f"    CONTACT: backfilled {e} (from {source}) -> vendor {local_id}")
+                try:
+                    res = create_vendor_draft(p, emails, pdf, filename)
+                    ok = res.get("status_code") in (200, 201)
+                    print(f"    EMAIL: draft {'created' if ok else 'FAILED: ' + str(res)} "
+                          f"-> {', '.join(emails)} (source: {source})")
+                except Exception as ex:
+                    print(f"    EMAIL: draft FAILED ({type(ex).__name__}: {ex})")
 
         if not args.upload:
             continue
@@ -372,6 +534,10 @@ def main() -> None:
     if box:
         box.close()
     print(f"\nLocal PDFs in: {args.out_dir}")
+    if needs_email:
+        print("\nNEEDS EMAIL (no address on file — re-run with --email QBOID=addr):")
+        for p in needs_email:
+            print(f"  - {p['vendor']}  (QBO id {p['vendor_qbo_id']}, total {_usd(p['total'])})")
 
 
 if __name__ == "__main__":

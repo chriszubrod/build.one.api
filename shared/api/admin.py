@@ -846,3 +846,111 @@ async def bill_folder_enumerate_router():
             )
 
     return await _timed("bill_folder.enumerate", _run)
+
+
+# --- Expense folder processing -- one file per tick ------------------------ #
+
+
+@router.post("/expense-folder/tick", dependencies=[Depends(_require_drain_secret)])
+async def expense_folder_tick_router():
+    """
+    Process one queued ExpenseFolderRunItem. Called on a cadence by the
+    scheduler Function App. Returns {"processed": false} when the queue
+    is empty so the caller can stop looping.
+
+    Bounded work — one file per call — so Azure App Service's idle
+    timeout and transient MS Graph failures only affect that single
+    file. Per-file errors go on the item row; the parent run keeps
+    draining the rest.
+    """
+    def _run() -> dict[str, Any]:
+        from entities.expense.business.folder_processor import ExpenseFolderProcessor
+        from entities.expense.persistence.folder_run_repo import ExpenseFolderRunItemRepository
+
+        item_repo = ExpenseFolderRunItemRepository()
+
+        # Sweep stale items + runs before claiming. Cheap (indexed) and
+        # keeps the UI from hanging on abandoned runs after a bad deploy.
+        try:
+            item_repo.auto_fail_stale(stale_after_minutes=30)
+        except Exception:
+            logger.exception("auto_fail_stale failed — aborting tick")
+            raise
+
+        item = item_repo.claim_next(reclaim_after_seconds=180, max_attempts=3)
+        if item is None:
+            return {"processed": False}
+
+        logger.info(
+            "expense_folder.tick.claimed item=%s filename=%s attempts=%d",
+            item.public_id, item.filename, item.attempts,
+        )
+
+        try:
+            outcome = ExpenseFolderProcessor().process_single_item(
+                filename=item.filename,
+                item_id=item.item_id,
+                company_id=1,
+                tenant_id=1,
+            )
+        except Exception as error:
+            # Transient failure — return to queue or dead-letter.
+            logger.exception("expense_folder.tick.failed item=%s", item.public_id)
+            item_repo.mark_failure(
+                public_id=item.public_id,
+                last_error=f"{type(error).__name__}: {error}",
+                max_attempts=3,
+            )
+            item_repo.check_and_complete_run(run_id=item.run_id)
+            return {
+                "processed": True,
+                "run_id": item.run_id,
+                "filename": item.filename,
+                "item_status": "retry",
+            }
+
+        # Permanent-terminal path: processor returned a result dict.
+        terminal_status = outcome.get("status", "skipped")
+        item_repo.mark_success(
+            public_id=item.public_id,
+            status=terminal_status,
+            result=outcome,
+        )
+        item_repo.check_and_complete_run(run_id=item.run_id)
+        return {
+            "processed": True,
+            "run_id": item.run_id,
+            "filename": item.filename,
+            "item_status": terminal_status,
+        }
+
+    return await _timed("expense_folder.tick", _run)
+
+
+@router.post("/expense-folder/enumerate", dependencies=[Depends(_require_drain_secret)])
+async def expense_folder_enumerate_router():
+    """
+    Scan the SharePoint source folder and enqueue any new PDFs as run
+    items. Called on a 5-min cadence by the scheduler Function App so
+    files dropped into the folder get picked up without anyone clicking
+    the React 'Process Folder' button.
+
+    Skips files that are already in 'queued' or 'processing' so a
+    button-triggered run + scheduled tick can't double-queue the same
+    PDF. Returns {"status": "noop"} when nothing new is found (no run
+    row created).
+    """
+    def _run() -> dict[str, Any]:
+        from entities.expense.business.folder_processor import (
+            ExpenseFolderEnumerationError,
+            enqueue_expense_folder_run,
+        )
+        try:
+            return enqueue_expense_folder_run(dedup_active=True)
+        except ExpenseFolderEnumerationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to enumerate source folder: {error}",
+            )
+
+    return await _timed("expense_folder.enumerate", _run)

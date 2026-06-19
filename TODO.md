@@ -2,6 +2,13 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## TimeEntry/TimeLog agency agent (Claude Code / Cowork) — follow-ups (2026-06-19)
+
+Shipped this unit: MCP tools `search_time_entries` / `get_time_entry_by_id` / `submit_time_entry` (build.one.mcp), `cowork_time_agent_prompt.md` (evaluate → submit-if-fully-clean / else flag + leave draft), and the `claude_agent` Time Tracking grant folded into the seed (Read + Update + CanViewTeam on the stacked `Time Tracking Specialist` role; **no** can_approve). Surfaced during the adversarial review, deferred:
+
+- [ ] **`RoleModule.CanViewTeam` lives only in `scripts/migrations/time_entry_view_team.sql`, not canonical `entities/role_module/sql/dbo.rolemodule.sql`.** The migration ships `CanViewTeam`-aware `CREATE OR ALTER` versions of the RoleModule CRUD sprocs (`ReadRoleModuleBy*` / `CreateRoleModule` / `UpdateRoleModuleById`); the canonical file defines the same sproc names *without* it. Whichever runs last wins — re-applying the canonical file after the migration silently drops `CanViewTeam` from the sproc SELECTs, so `shared/rbac.py`'s `getattr(rm,'can_view_team',False)` reads False and any non-admin relying on team visibility (incl. a demoted claude_agent) goes blind on team rows. No bulk auto-apply runner exists, so it's a manual footgun, not a live regression. Fix: fold `CanViewTeam` (column ALTER-if-missing + all six CRUD sprocs) into canonical `dbo.rolemodule.sql`. Same "canonical SQL drifted from live migrations" class as the Expense/Bill drift noted below.
+- [ ] **(low) `claude_agent` is `IsSystemAdmin=1` in prod**, so the new Time Tracking grant + CanViewTeam are currently **inert** — claude_agent already bypasses module + row scoping (verified via live query: isa=1, 135/135 UserProject, 0/36 TimeLog projects missing). The grant is the correct least-privilege fallback if claude_agent is ever demoted (as Apple Reviewer was 2026-05-12). If the time agent should run as a non-admin, demote claude_agent and re-run `gap1_agent_user_project_backfill.sql` so draft discovery still returns rows.
+
 ## ExpenseAgent (BillAgent parity) — follow-ups (2026-06-18)
 
 Surfaced during the Unit 1 adversarial correctness hunt. Deferred (out of the immediate unit scope) but tracked:

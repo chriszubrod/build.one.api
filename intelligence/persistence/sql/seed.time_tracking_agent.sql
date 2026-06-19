@@ -6,12 +6,18 @@
 -- never transitions CurrentStatus.
 --
 -- Grants:
---   Time Tracking — Create + Read + Update (no Delete/Submit/Approve/Complete).
+--   Time Tracking — Create + Read + Update + ViewTeam (no Delete/Submit/Approve/Complete).
 --                   `validate_time_entry_completeness` needs can_read;
 --                   `flag_time_entry_for_human_review` needs can_update.
 --                   CanCreate=1 is a forward-compat hedge — v1 doesn't use it,
 --                   but matches the bill_agent shape so v2 doesn't need a
 --                   migration if the agent ever needs to create a TimeEntry.
+--                   CanViewTeam=1 lets a time-tracking agent SEE other workers'
+--                   entries via the row-scoped LIST endpoint (it owns none of
+--                   its own). Inert for THIS API agent (it reads by public_id
+--                   with a system-admin bypass), but required by the MCP/Cowork
+--                   agency agent, which stacks this role onto claude_agent and
+--                   discovers crew drafts through that scoped list.
 --   Projects      — Read only (lookup Project name for context enrichment).
 --   Users         — Read only (lookup the submitter's name for context).
 --
@@ -27,6 +33,19 @@ DECLARE @RogersCompanyId      BIGINT = (SELECT Id FROM dbo.Company WHERE Name = 
 IF @TimeTrackingModuleId IS NULL OR @ProjectModuleId IS NULL OR @UserModuleId IS NULL OR @RogersCompanyId IS NULL
 BEGIN
     RAISERROR('Required Module/Company rows (Time Tracking / Projects / Users / Rogers Build) missing. Aborting.', 16, 1);
+    RETURN;
+END;
+
+-- The Time Tracking grant below writes RoleModule.CanViewTeam (added by
+-- scripts/migrations/time_entry_view_team.sql). Fail fast with an actionable
+-- message instead of an opaque "Invalid column name" mid-script if the
+-- migration hasn't been applied to this database yet.
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('dbo.RoleModule') AND name = 'CanViewTeam'
+)
+BEGIN
+    RAISERROR('dbo.RoleModule.CanViewTeam missing — run scripts/migrations/time_entry_view_team.sql first. Aborting.', 16, 1);
     RETURN;
 END;
 
@@ -92,18 +111,20 @@ BEGIN
     PRINT '  time_tracking_agent: user-company link created (Rogers Build, Inc.)';
 END;
 
--- Time Tracking — Create + Read + Update (no Delete/Submit/Approve/Complete).
+-- Time Tracking — Create + Read + Update + ViewTeam (no Delete/Submit/Approve/Complete).
+-- CanViewTeam=1: see the header note. Column added by
+-- scripts/migrations/time_entry_view_team.sql (must be applied first).
 IF EXISTS (SELECT 1 FROM dbo.RoleModule WHERE RoleId = @RoleId AND ModuleId = @TimeTrackingModuleId)
     UPDATE dbo.RoleModule
        SET CanCreate = 1, CanRead = 1, CanUpdate = 1, CanDelete = 0,
-           CanSubmit = 0, CanApprove = 0, CanComplete = 0,
+           CanSubmit = 0, CanApprove = 0, CanComplete = 0, CanViewTeam = 1,
            ModifiedDatetime = @Now
      WHERE RoleId = @RoleId AND ModuleId = @TimeTrackingModuleId;
 ELSE
     INSERT INTO dbo.RoleModule
         (CreatedDatetime, ModifiedDatetime, RoleId, ModuleId,
-         CanCreate, CanRead, CanUpdate, CanDelete, CanSubmit, CanApprove, CanComplete)
-    VALUES (@Now, @Now, @RoleId, @TimeTrackingModuleId, 1, 1, 1, 0, 0, 0, 0);
+         CanCreate, CanRead, CanUpdate, CanDelete, CanSubmit, CanApprove, CanComplete, CanViewTeam)
+    VALUES (@Now, @Now, @RoleId, @TimeTrackingModuleId, 1, 1, 1, 0, 0, 0, 0, 1);
 
 -- Projects — read only (Project lookup for context).
 IF EXISTS (SELECT 1 FROM dbo.RoleModule WHERE RoleId = @RoleId AND ModuleId = @ProjectModuleId)

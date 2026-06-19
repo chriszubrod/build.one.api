@@ -43,7 +43,9 @@ GO
 -- =============================================
 GO
 
-CREATE OR ALTER PROCEDURE [qbo].[CreateVendorCreditLineItemBillCreditLineItem]
+-- NOTE: procedures live in dbo (call_procedure issues EXEC dbo.{name}); the TABLE
+-- stays in the qbo schema. Mirrors Bill's mapping sprocs.
+CREATE OR ALTER PROCEDURE [dbo].[CreateVendorCreditLineItemBillCreditLineItem]
     @QboVendorCreditLineId BIGINT,
     @BillCreditLineItemId BIGINT
 AS
@@ -74,7 +76,9 @@ GO
 -- =============================================
 GO
 
-CREATE OR ALTER PROCEDURE [qbo].[ReadVendorCreditLineItemBillCreditLineItemByQboLineId]
+-- NOTE: procedures live in dbo (call_procedure issues EXEC dbo.{name}); the TABLE
+-- stays in the qbo schema. Mirrors Bill's mapping sprocs.
+CREATE OR ALTER PROCEDURE [dbo].[ReadVendorCreditLineItemBillCreditLineItemByQboLineId]
     @QboVendorCreditLineId BIGINT
 AS
 BEGIN
@@ -98,7 +102,9 @@ GO
 -- =============================================
 GO
 
-CREATE OR ALTER PROCEDURE [qbo].[ReadVendorCreditLineItemBillCreditLineItemByBillCreditLineItemId]
+-- NOTE: procedures live in dbo (call_procedure issues EXEC dbo.{name}); the TABLE
+-- stays in the qbo schema. Mirrors Bill's mapping sprocs.
+CREATE OR ALTER PROCEDURE [dbo].[ReadVendorCreditLineItemBillCreditLineItemByBillCreditLineItemId]
     @BillCreditLineItemId BIGINT
 AS
 BEGIN
@@ -124,7 +130,9 @@ GO
 -- =============================================
 GO
 
-CREATE OR ALTER PROCEDURE [qbo].[DeleteVendorCreditLineItemBillCreditLineItemById]
+-- NOTE: procedures live in dbo (call_procedure issues EXEC dbo.{name}); the TABLE
+-- stays in the qbo schema. Mirrors Bill's mapping sprocs.
+CREATE OR ALTER PROCEDURE [dbo].[DeleteVendorCreditLineItemBillCreditLineItemById]
     @Id BIGINT
 AS
 BEGIN

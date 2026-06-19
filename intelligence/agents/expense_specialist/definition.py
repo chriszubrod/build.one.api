@@ -28,6 +28,10 @@ expense_specialist = Agent(
         # Vendor read tools — for parent name resolution and lookup-by-name
         "search_vendors",
         "read_vendor_by_public_id",
+        # Ranked multi-strategy vendor lookup for receipt-driven creation
+        # (domain -> exact -> abbr -> prefix -> substring). Use this, not
+        # search_vendors, when the receipt's vendor name may not match the DB.
+        "find_vendor_for_invoice",
         # SubCostCode reads — required to resolve cost-code id for line items
         "search_sub_cost_codes",
         "read_sub_cost_code_by_number",
@@ -35,6 +39,9 @@ expense_specialist = Agent(
         # Project reads — required to resolve project_public_id for line items
         "search_projects",
         "read_project_by_public_id",
+        # Resolve a job-site / Ship To address -> Project via the project
+        # specialist (find_project_for_invoice), same as bill_specialist.
+        "delegate_to_project_specialist",
     ),
     model="claude-sonnet-4-6",
     provider="anthropic",
@@ -42,8 +49,10 @@ expense_specialist = Agent(
     budget=BudgetPolicy(max_turns=12, max_tokens=150_000),
     description=(
         "Specialist for Expenses (and refunds via Expense.IsCredit=true) — "
-        "search/read + draft create + approval-gated update / delete / "
-        "complete workflow + line-item CRUD."
+        "search/read + receipt-driven draft create (attachment + inline "
+        "summary line, ungated) + approval-gated update / delete / complete "
+        "workflow + line-item CRUD. Resolves vendor via find_vendor_for_invoice "
+        "and job-site project via delegate_to_project_specialist."
     ),
 )
 

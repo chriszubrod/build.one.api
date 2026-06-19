@@ -25,9 +25,10 @@ email_specialist = Agent(
         # is a lookup-only Bill tool; bill_specialist still owns all Bill
         # writes and the application of the decision.
         "find_bill_by_conversation_id",
-        # Delegation tools. Add expense / bill_credit later.
+        # Delegation tools. (bill_credit still deferred.)
         "delegate_to_bill_specialist",
         "delegate_to_contract_labor_specialist",
+        "delegate_to_expense_specialist",
     ),
     model="claude-haiku-4-5-20251001",
     provider="anthropic",
@@ -38,9 +39,10 @@ email_specialist = Agent(
     budget=BudgetPolicy(max_turns=20, max_tokens=300_000),
     description=(
         "Specialist for polled invoice-inbox emails. Reads each pending "
-        "email, classifies it, runs DI on invoice-shaped attachments, "
-        "bridges to Attachment rows, and delegates draft-bill creation "
-        "to bill_specialist. Stamps an outcome category back to Outlook."
+        "email, classifies it, runs DI on document attachments, bridges to "
+        "Attachment rows, and delegates draft creation to bill_specialist "
+        "(vendor invoices) or expense_specialist (point-of-sale receipts). "
+        "Stamps an outcome category back to Outlook."
     ),
 )
 

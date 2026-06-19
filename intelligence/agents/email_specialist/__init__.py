@@ -30,6 +30,7 @@ import entities.email_message.intelligence.tools  # noqa: F401
 # them.
 import intelligence.agents.bill_specialist  # noqa: F401
 import intelligence.agents.contract_labor_specialist  # noqa: F401
+import intelligence.agents.expense_specialist  # noqa: F401
 
 from intelligence.composition.delegation import make_delegation_tool
 from intelligence.tools.registry import register as _register_tool
@@ -96,6 +97,35 @@ _register_tool(make_delegation_tool(
         "review for rate / markup / SubCostCode. The specialist "
         "returns its final markdown answer; quote the gist in your "
         "own final message."
+    ),
+))
+
+_register_tool(make_delegation_tool(
+    name="delegate_to_expense_specialist",
+    target_agent="expense_specialist",
+    description=(
+        "Hand a draft-Expense creation task off to the Expense specialist "
+        "agent. Use this when an attachment is a point-of-sale / retail "
+        "receipt (a card purchase — Home Depot, gas, hardware, supplies — "
+        "NOT an AP invoice with payment terms and NOT a vendor credit memo). "
+        "Use it once you've extracted the receipt fields (confidence >= 0.95) "
+        "and bridged the email attachment to a regular Attachment row.\n\n"
+        "Pass a self-contained task description in markdown that carries:\n"
+        "  • DI-extracted vendor / merchant name (for find_vendor_for_invoice)\n"
+        "  • Sender email domain as a disambiguation tiebreaker\n"
+        "  • Expense date (ISO YYYY-MM-DD)\n"
+        "  • Reference / receipt / transaction number (-> reference_number)\n"
+        "  • Total amount\n"
+        "  • is_credit hint: true if the receipt is a return / refund / card "
+        "    credit, else false (default false when unsure)\n"
+        "  • The bridged Attachment public_id  ← REQUIRED for create_expense\n"
+        "  • The source EmailMessage public_id ← traceability\n"
+        "  • Job-site / Ship To address if the receipt carries one\n\n"
+        "create_expense is NOT approval-gated — the specialist creates the "
+        "draft Expense (with the receipt attached + an inline summary line) "
+        "immediately; it awaits a human to review + complete. The delegation "
+        "returns the specialist's final markdown answer; quote the gist in "
+        "your own final message."
     ),
 ))
 

@@ -115,10 +115,16 @@ class ExpenseService:
             self._qbo_auth_service = QboAuthService()
         return self._qbo_auth_service
 
-    def create(self, *, tenant_id: int = 1, vendor_public_id: str, expense_date: str, reference_number: str, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, is_credit: bool = False) -> Expense:
+    def create(self, *, tenant_id: int = 1, vendor_public_id: str, expense_date: str, reference_number: str, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, is_credit: bool = False, source_email_message_public_id: Optional[str] = None, attachment_public_id: Optional[str] = None,
+               line_description: Optional[str] = None, line_quantity: Optional[int] = None,
+               line_rate: Optional[Decimal] = None, line_amount: Optional[Decimal] = None,
+               line_markup: Optional[Decimal] = None, line_price: Optional[Decimal] = None,
+               line_is_billable: Optional[bool] = None,
+               line_sub_cost_code_id: Optional[int] = None,
+               line_project_public_id: Optional[str] = None) -> Expense:
         """
         Create a new expense.
-        
+
         Args:
             tenant_id: Tenant ID for multi-tenant isolation (default: 1)
             vendor_public_id: Vendor public ID (required)
@@ -127,6 +133,19 @@ class ExpenseService:
             total_amount: Total amount (optional)
             memo: Memo (optional)
             is_draft: Whether expense is in draft state
+            is_credit: True for a refund / credit-card credit (Expense.IsCredit).
+            source_email_message_public_id: EmailMessage UUID when created from a
+                receipt email (receipt-intake pipeline); preserves the source trail.
+            attachment_public_id: OPTIONAL at this layer. When provided (every
+                human / agent / folder create — required at the API boundary via
+                the ExpenseCreate schema), the server creates a placeholder
+                ExpenseLineItem and links the receipt PDF to it via
+                ExpenseLineItemAttachment, mirroring BillService.create. Left
+                None ONLY by the internal QBO Purchase→Expense connector, which
+                attaches receipts later via a separate attachables sync — so the
+                requirement is enforced at the boundary, not against system pulls.
+                When provided, the inline `line_*` fields populate that placeholder
+                line in a single call (avoids a follow-up add_expense_line_items).
         """
         if not vendor_public_id:
             raise ValueError("Vendor is required.")
@@ -134,18 +153,54 @@ class ExpenseService:
             raise ValueError("Expense date is required.")
         if not reference_number:
             raise ValueError("Reference number is required.")
-        
+
+        # Resolve + validate the receipt attachment up front (fail fast) when one
+        # is supplied. Mirrors BillService.create, including the EmailAttachment
+        # auto-bridge fallback so an agent that passes an EmailAttachment public_id
+        # by mistake still succeeds.
+        attachment = None
+        if attachment_public_id:
+            attachment = self.attachment_service.read_by_public_id(public_id=attachment_public_id)
+            if not attachment:
+                from entities.email_message.business.service import EmailAttachmentBridgeService
+                from entities.email_message.persistence.repo import EmailAttachmentRepository
+                ea = EmailAttachmentRepository().read_by_public_id(attachment_public_id)
+                if not ea:
+                    raise ValueError(f"Attachment with public_id '{attachment_public_id}' not found.")
+                bridged = EmailAttachmentBridgeService().bridge(
+                    email_attachment_public_id=attachment_public_id
+                )
+                logger.info(
+                    "ExpenseService.create auto-bridged EmailAttachment %s → Attachment %s",
+                    attachment_public_id, bridged.public_id,
+                )
+                attachment_public_id = str(bridged.public_id)
+                attachment = bridged
+            if attachment.content_type != "application/pdf":
+                raise ValueError(
+                    f"Attachment must be application/pdf; got '{attachment.content_type}'."
+                )
+
         vendor = VendorService().read_by_public_id(public_id=vendor_public_id)
         if not vendor:
             raise ValueError(f"Vendor with public_id '{vendor_public_id}' not found.")
         vendor_id = vendor.id
-        
+
+        # Resolve source EmailMessage UUID → BIGINT for the FK column.
+        source_email_message_id = None
+        if source_email_message_public_id:
+            from entities.email_message.business.service import EmailMessageService
+            source_email = EmailMessageService().read_by_public_id(public_id=source_email_message_public_id)
+            if not source_email:
+                raise ValueError(f"EmailMessage with public_id '{source_email_message_public_id}' not found.")
+            source_email_message_id = source_email.id
+
         # Check if an expense with the same ReferenceNumber and VendorId already exists
         existing = self.repo.read_by_reference_number_and_vendor_id(reference_number=reference_number, vendor_id=vendor_id)
         if existing:
             raise ValueError(f"An expense with ReferenceNumber '{reference_number}' already exists for this vendor. Please update the existing expense instead of creating a new one.")
-        
-        return self.repo.create(
+
+        expense = self.repo.create(
             tenant_id=tenant_id,
             vendor_id=vendor_id,
             expense_date=expense_date,
@@ -154,8 +209,76 @@ class ExpenseService:
             memo=memo,
             is_draft=is_draft,
             is_credit=is_credit,
+            source_email_message_id=source_email_message_id,
             created_by_user_id=current_user_id.get(),
         )
+
+        # When a receipt was supplied, hang it off a placeholder ExpenseLineItem
+        # (the one that always carries the attachment). The inline line_* fields
+        # populate it so agent/folder flows need no follow-up call. If either
+        # insert fails we roll back the expense — an expense whose required
+        # receipt failed to attach violates the boundary invariant.
+        if attachment_public_id:
+            placeholder_line_item = None
+            try:
+                line_kwargs: dict = {
+                    "tenant_id": tenant_id,
+                    "expense_public_id": expense.public_id,
+                    "is_billable": True if line_is_billable is None else bool(line_is_billable),
+                }
+                if line_description is not None:
+                    line_kwargs["description"] = line_description
+                if line_quantity is not None:
+                    line_kwargs["quantity"] = line_quantity
+                if line_rate is not None:
+                    line_kwargs["rate"] = line_rate
+                if line_amount is not None:
+                    line_kwargs["amount"] = line_amount
+                if line_markup is not None:
+                    line_kwargs["markup"] = line_markup
+                if line_price is not None:
+                    line_kwargs["price"] = line_price
+                if line_sub_cost_code_id is not None:
+                    line_kwargs["sub_cost_code_id"] = line_sub_cost_code_id
+                if line_project_public_id is not None:
+                    line_kwargs["project_public_id"] = line_project_public_id
+                placeholder_line_item = self.expense_line_item_service.create(**line_kwargs)
+                self.expense_line_item_attachment_service.create(
+                    tenant_id=tenant_id,
+                    expense_line_item_public_id=placeholder_line_item.public_id,
+                    attachment_public_id=attachment_public_id,
+                )
+            except Exception as attach_error:
+                logger.exception(
+                    "Failed to attach PDF to new expense %s; rolling back.",
+                    expense.public_id,
+                )
+                # The placeholder line item commits in its own transaction
+                # before the attachment link. FK_ExpenseLineItem_Expense has no
+                # ON DELETE CASCADE, so a bare expense delete would raise 547
+                # and orphan BOTH rows — which then wedges retries on the unique
+                # (vendor, reference_number) constraint. Delete the child first
+                # (delete_by_public_id cascades its own attachment/blob if any).
+                if placeholder_line_item is not None:
+                    try:
+                        self.expense_line_item_service.delete_by_public_id(
+                            public_id=placeholder_line_item.public_id
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Rollback: failed to delete placeholder line item for expense %s.",
+                            expense.public_id,
+                        )
+                try:
+                    self.repo.delete_by_id(id=expense.id)
+                except Exception:
+                    logger.exception(
+                        "Best-effort rollback of expense %s also failed; manual cleanup may be required.",
+                        expense.public_id,
+                    )
+                raise ValueError(f"Failed to attach PDF to new expense: {attach_error}")
+
+        return expense
 
     def read_all(self) -> list[Expense]:
         """Read expenses, scoped by UserProject for non-admin actors."""

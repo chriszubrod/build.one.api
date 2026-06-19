@@ -55,6 +55,9 @@ class ExpenseRepository:
                 memo=getattr(row, "Memo", None),
                 is_draft=bool(getattr(row, "IsDraft", False)) if getattr(row, "IsDraft", None) is not None else None,
                 is_credit=bool(getattr(row, "IsCredit", False)) if getattr(row, "IsCredit", None) is not None else None,
+                # getattr-guarded: read sprocs that don't yet project this
+                # column simply yield None (no AttributeError).
+                source_email_message_id=getattr(row, "SourceEmailMessageId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during expense mapping: {error}")
@@ -63,10 +66,10 @@ class ExpenseRepository:
             logger.error(f"Unexpected error during expense mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, vendor_id: Optional[int] = None, expense_date: Optional[str] = None, reference_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, is_credit: bool = False, created_by_user_id: Optional[int] = None) -> Expense:
+    def create(self, *, tenant_id: int = 1, vendor_id: Optional[int] = None, expense_date: Optional[str] = None, reference_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, is_credit: bool = False, source_email_message_id: Optional[int] = None, created_by_user_id: Optional[int] = None) -> Expense:
         """
         Create a new expense.
-        
+
         Args:
             tenant_id: Tenant ID for multi-tenant isolation (logged for audit, not yet used for filtering)
             vendor_id: Vendor ID
@@ -75,6 +78,8 @@ class ExpenseRepository:
             total_amount: Total amount
             memo: Memo
             is_draft: Whether expense is in draft state
+            source_email_message_id: dbo.EmailMessage.Id when this expense was
+                created from a receipt email (receipt-intake pipeline); NULL otherwise.
         """
         try:
             with get_connection() as conn:
@@ -90,6 +95,7 @@ class ExpenseRepository:
                         "Memo": memo,
                         "IsDraft": 1 if is_draft else 0,
                         "IsCredit": 1 if is_credit else 0,
+                        "SourceEmailMessageId": source_email_message_id,
                         "CreatedByUserId": created_by_user_id,
                     },
                 )

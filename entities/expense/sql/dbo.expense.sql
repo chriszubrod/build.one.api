@@ -1,3 +1,15 @@
+-- ⚠️ DRIFT WARNING — DO NOT re-run this whole file against an existing DB.
+-- This canonical file is STALE relative to the live schema:
+--   • The CREATE TABLE block below omits IsCredit / CreatedByUserId /
+--     SourceEmailMessageId (added later by add_is_credit_column.sql,
+--     gap2_core_threading.sql, source_email_message_fk.sql). A from-scratch
+--     run would build a table the CreateExpense INSERT then fails against.
+--   • ReadExpenses / ReadExpensesPaginated / CountExpenses here LACK the live
+--     @ActorUserId / @ActorIsSystemAdmin RBAC params (from the Gap 1 list-scoping
+--     migrations) that the Python repo passes — re-running them would REGRESS
+--     per-user UserProject scoping (silent data-leak across users).
+-- Apply targeted migrations under entities/expense/sql/migrations/ instead.
+-- (Full canonical reconcile is tracked in TODO.md.)
 GO
 
 IF OBJECT_ID('dbo.Expense', 'U') IS NULL
@@ -48,6 +60,9 @@ GO
 
 GO
 
+-- NOTE: kept in sync with entities/expense/sql/migrations/001_expense_source_email.sql
+-- and scripts/migrations/gap2_core_threading.sql. Carries @CreatedByUserId
+-- (Gap 2 attribution) + @SourceEmailMessageId (receipt-intake source trail).
 CREATE OR ALTER PROCEDURE CreateExpense
 (
     @VendorId BIGINT,
@@ -56,15 +71,21 @@ CREATE OR ALTER PROCEDURE CreateExpense
     @TotalAmount DECIMAL(18,2) NULL,
     @Memo NVARCHAR(MAX) NULL,
     @IsDraft BIT = 1,
-    @IsCredit BIT = 0
+    @IsCredit BIT = 0,
+    @SourceEmailMessageId BIGINT = NULL,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Expense] ([CreatedDatetime], [ModifiedDatetime], [VendorId], [ExpenseDate], [ReferenceNumber], [TotalAmount], [Memo], [IsDraft], [IsCredit])
+    INSERT INTO dbo.[Expense]
+        ([CreatedDatetime], [ModifiedDatetime], [VendorId], [ExpenseDate],
+         [ReferenceNumber], [TotalAmount], [Memo], [IsDraft], [IsCredit],
+         [SourceEmailMessageId], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -77,8 +98,11 @@ BEGIN
         INSERTED.[TotalAmount],
         INSERTED.[Memo],
         INSERTED.[IsDraft],
-        INSERTED.[IsCredit]
-    VALUES (@Now, @Now, @VendorId, @ExpenseDate, @ReferenceNumber, @TotalAmount, @Memo, @IsDraft, @IsCredit);
+        INSERTED.[IsCredit],
+        INSERTED.[SourceEmailMessageId]
+    VALUES (@Now, @Now, @VendorId, @ExpenseDate, @ReferenceNumber, @TotalAmount,
+            @Memo, @IsDraft, @IsCredit, @SourceEmailMessageId,
+            COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;

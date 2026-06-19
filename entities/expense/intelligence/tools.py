@@ -192,6 +192,35 @@ class CreateExpenseArgs(BaseModel):
             "ExpenseRefund entity."
         ),
     )
+    attachment_public_id: str = Field(
+        description=(
+            "REQUIRED. UUID of an Attachment row (a PDF) carrying the receipt. "
+            "For receipt-intake flows delegated from email_specialist, pass the "
+            "bridged attachment_public_id from your task description verbatim. "
+            "For human chat flows the user must upload via POST "
+            "/api/v1/upload/attachment first. The call 422s without it. "
+            "Server creates a placeholder line item + links the receipt to it."
+        ),
+    )
+    source_email_message_public_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional UUID of the source EmailMessage (receipt-intake flows) — "
+            "preserves the draft → source-email trail. Null for chat flows."
+        ),
+    )
+    line_description: Optional[str] = Field(
+        default=None,
+        description="Inline summary line description (~6 words, e.g. 'Fuel, materials, supplies').",
+    )
+    line_quantity: Optional[int] = Field(default=None, description="Quantity. Summary-line use passes 1.")
+    line_rate: Optional[float] = Field(default=None, description="Rate (often equals total_amount on a summary line).")
+    line_amount: Optional[float] = Field(default=None, description="Amount = quantity × rate.")
+    line_markup: Optional[float] = Field(default=None, description="Markup decimal (0.10 = 10%). Null = no markup.")
+    line_price: Optional[float] = Field(default=None, description="Price = amount × (1 + markup). Equals amount when markup is null/0.")
+    line_is_billable: Optional[bool] = Field(default=None, description="Defaults True server-side when omitted.")
+    line_sub_cost_code_id: Optional[int] = Field(default=None, description="BIGINT — resolve via SubCostCode read tools first.")
+    line_project_public_id: Optional[str] = Field(default=None, description="UUID of the Project for this line.")
 
 
 async def _create_expense(args: dict, ctx: ToolContext) -> ToolResult:
@@ -203,27 +232,24 @@ async def _create_expense(args: dict, ctx: ToolContext) -> ToolResult:
     )
 
 
-def _summarize_create_expense(args: dict) -> str:
-    ref = args.get("reference_number") or "?"
-    kind = "refund" if args.get("is_credit") else "expense"
-    return f"Create draft {kind} {ref}"
-
-
 create_expense = Tool(
     name="create_expense",
     description=(
-        "Create a NEW DRAFT EXPENSE with no line items. REQUIRES USER "
-        "APPROVAL. The expense becomes a draft (IsDraft=true). To "
-        "record a refund (credit-card credit), pass `is_credit=true` "
-        "— same tool, same shape, just a different IsCredit value. "
-        "If the user names a vendor, resolve via `search_vendors` "
-        "first. Server enforces (vendor, reference_number) "
-        "uniqueness."
+        "Create a NEW DRAFT EXPENSE. NO APPROVAL GATE — the expense commits "
+        "as a draft (IsDraft=true) immediately and is reversible via "
+        "delete_expense; it has no external side effects until "
+        "complete_expense. REQUIRES `attachment_public_id` (a receipt PDF) — "
+        "the server creates a placeholder line item and links the receipt to "
+        "it. For receipt-intake flows, pass the inline `line_*` summary fields "
+        "so no follow-up add_expense_line_items is needed. To record a refund "
+        "(credit-card credit), pass `is_credit=true` — same tool, same shape. "
+        "For receipt-driven creation resolve the vendor via "
+        "`find_vendor_for_invoice` first; for user-typed flows `search_vendors` "
+        "is fine. Server enforces (vendor, reference_number) uniqueness."
     ),
     input_schema=input_schema_from(CreateExpenseArgs),
     handler=_create_expense,
-    requires_approval=True,
-    approval_summary=_summarize_create_expense,
+    requires_approval=False,
 )
 
 
@@ -454,25 +480,20 @@ async def _add_expense_line_items(args: dict, ctx: ToolContext) -> ToolResult:
     )
 
 
-def _summarize_add_expense_line_items(args: dict) -> str:
-    items = args.get("items") or []
-    return f"Add {len(items)} line item(s) to expense"
-
-
 add_expense_line_items = Tool(
     name="add_expense_line_items",
     description=(
-        "Add line items to an existing expense in batch. REQUIRES USER "
-        "APPROVAL. Each line item needs a `sub_cost_code_id` (BIGINT — "
-        "resolve via SubCostCode tools first) and optional "
-        "`project_public_id`. Server creates each line as IsDraft=true; "
-        "the expense itself remains a draft until `complete_expense`. "
-        "Same partial-success contract as add_bill_line_items."
+        "Add line items to an existing draft expense in batch. NO APPROVAL "
+        "GATE — lines commit as IsDraft=true (no external side effects until "
+        "complete_expense) and each is reversible via remove_expense_line_item. "
+        "Each line item needs a `sub_cost_code_id` (BIGINT — resolve via "
+        "SubCostCode tools first) and optional `project_public_id`. The "
+        "expense itself remains a draft until `complete_expense`. Same "
+        "partial-success contract as add_bill_line_items."
     ),
     input_schema=input_schema_from(AddExpenseLineItemsArgs),
     handler=_add_expense_line_items,
-    requires_approval=True,
-    approval_summary=_summarize_add_expense_line_items,
+    requires_approval=False,
 )
 
 

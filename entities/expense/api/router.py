@@ -51,6 +51,23 @@ def create_expense_router(body: ExpenseCreate, current_user: dict = Depends(requ
             "total_amount": Decimal(str(body.total_amount)) if body.total_amount is not None else None,
             "memo": body.memo,
             "is_draft": body.is_draft if body.is_draft is not None else True,
+            # Was previously dropped here — is_credit silently defaulted to False
+            # so refunds created via the API/agent never stuck. Now threaded.
+            "is_credit": body.is_credit if body.is_credit is not None else False,
+            "source_email_message_public_id": body.source_email_message_public_id,
+            "attachment_public_id": body.attachment_public_id,
+            # Inline summary-line fields (all optional). When provided, the
+            # service populates the auto-created placeholder ExpenseLineItem so
+            # agent / folder flows don't need a follow-up update.
+            "line_description": body.line_description,
+            "line_quantity": body.line_quantity,
+            "line_rate": Decimal(str(body.line_rate)) if body.line_rate is not None else None,
+            "line_amount": Decimal(str(body.line_amount)) if body.line_amount is not None else None,
+            "line_markup": Decimal(str(body.line_markup)) if body.line_markup is not None else None,
+            "line_price": Decimal(str(body.line_price)) if body.line_price is not None else None,
+            "line_is_billable": body.line_is_billable,
+            "line_sub_cost_code_id": body.line_sub_cost_code_id,
+            "line_project_public_id": body.line_project_public_id,
         },
         workflow_type="expense_create",
     )
@@ -161,6 +178,10 @@ def update_expense_by_public_id_router(public_id: str, body: ExpenseUpdate, curr
             "total_amount": Decimal(str(body.total_amount)) if body.total_amount is not None else None,
             "memo": body.memo,
             "is_draft": body.is_draft,
+            # Was dropped here too (same bug-class as the create path). The
+            # service applies is_credit only when not None, so an unchanged
+            # PUT (is_credit=None) is a no-op — but a toggle now sticks.
+            "is_credit": body.is_credit,
         },
         workflow_type="expense_update",
     )

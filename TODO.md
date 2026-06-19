@@ -2,6 +2,14 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## ExpenseAgent (BillAgent parity) — follow-ups (2026-06-18)
+
+Surfaced during the Unit 1 adversarial correctness hunt. Deferred (out of the immediate unit scope) but tracked:
+
+- [ ] **`BillService.create` has the same partial-attach rollback bug just fixed in `ExpenseService.create`.** On attach-link failure the rollback does a bare `self.repo.delete_by_id(bill.id)` while the committed placeholder `BillLineItem` still references it — `FK_BillLineItem_Bill` has no `ON DELETE CASCADE`, so the parent delete raises 547, is swallowed, and both rows orphan (then wedge retries on the (vendor, bill_number) unique constraint). Mirror the Expense fix: delete the placeholder line item (cascade-aware `delete_by_public_id`) before deleting the bill. Latent today because bill creates rarely hit the partial-failure window.
+- [ ] **Canonical `entities/expense/sql/dbo.expense.sql` is drifted** (warning header added 2026-06-18). `CREATE TABLE dbo.Expense` omits `IsCredit`/`CreatedByUserId`/`SourceEmailMessageId`; `ReadExpenses`/`ReadExpensesPaginated`/`CountExpenses` lack the live `@ActorUserId`/`@ActorIsSystemAdmin` Gap-1 RBAC params. Re-running the file from scratch would build a broken table and regress per-user scoping. Reconcile the canonical file to match the live sprocs (pull live defs, fold the migration history in). Same drift class likely on `bill`/`bill_credit`/`invoice` canonical SQL.
+- [ ] **Inline line-item create is not Project-access-gated.** `ExpenseLineItemService.create` (and `BillLineItemService.create`) resolve `project_public_id → project_id` without `assert_can_access_project`, so a non-admin agent can attach a receipt line to a Project they have no `UserProject` membership on. Pre-existing cross-cutting pattern — fold into a dedicated line-item access-gating pass (decide QBO-connector + manual-UI exemptions first, since both legitimately stamp projects).
+
 ## Time-entry email digest — follow-ups (2026-06-16)
 
 Daily per-worker prior-day summary email shipped (off by default). See SESSION_NOTES 2026-06-16. Remaining:

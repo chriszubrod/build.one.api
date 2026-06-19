@@ -198,6 +198,15 @@ class InvoiceLineItemRepository:
             logger.error(f"Error nullifying invoice line items for bill_line_item_id={bill_line_item_id}: {error}")
             raise map_database_error(error)
 
+    def nullify_bill_credit_line_item_id(self, bill_credit_line_item_id: int) -> None:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor=cursor, name="NullifyInvoiceLineItemsByBillCreditLineItemId", params={"BillCreditLineItemId": bill_credit_line_item_id})
+        except Exception as error:
+            logger.error(f"Error nullifying invoice line items for bill_credit_line_item_id={bill_credit_line_item_id}: {error}")
+            raise map_database_error(error)
+
     def delete_by_bill_line_item_id(self, bill_line_item_id: int) -> None:
         try:
             with get_connection() as conn:

@@ -146,26 +146,36 @@ class VendorCreditBillCreditConnector:
         Task #17 (Shape B line matching) could not be applied here because
         fingerprint matching requires upsert-in-place semantics.
 
-        TODO: refactor to upsert-in-place like Bill's _sync_line_items in
-        `bill/connector/bill/business/service.py`. Steps:
-          1. For each qbo_line, look up existing BillCreditLineItem via the
-             VendorCreditLineItemBillCreditLineItem mapping table.
-          2. Update in place if found; create if not.
-          3. Delete only lines whose mapping is no longer referenced by any
-             current qbo_line (true stale-line cleanup).
-        Blocks full line-matching parity with Bill (task #17).
+        The delete is now FK-safe: BillCreditLineItemService.delete_by_public_id
+        nullifies any InvoiceLineItem.BillCreditLineItemId first, so a credit line
+        that has been billed onto a customer Invoice can be deleted instead of the
+        delete being swallowed and the line re-created as a DUPLICATE on the next
+        pull (the historical VendorCredit duplication bug). If a delete still fails
+        for any other reason we RAISE rather than continue, so the caller records the
+        sync as failed and we never recreate on top of un-deleted lines.
+
+        TODO: refactor to true upsert-in-place like Bill's _sync_line_items in
+        `bill/connector/bill/business/service.py` (match via the
+        VendorCreditLineItemBillCreditLineItem mapping, update in place, delete only
+        truly-stale lines) so local-only line state survives a re-pull.
         """
         from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import VendorCreditLineItemConnector
 
         connector = VendorCreditLineItemConnector()
 
-        # Delete existing line items and recreate (see TODO above).
+        # Delete existing line items, then recreate (see NOTE above). The delete is
+        # FK-safe now; if one still fails, abort WITHOUT recreating so a partial
+        # delete can't be doubled — fail loud and let the next pull re-converge.
         existing_items = self.bill_credit_line_item_service.read_by_bill_credit_id(bill_credit_id)
         for item in existing_items:
             try:
                 self.bill_credit_line_item_service.delete_by_public_id(item.public_id)
             except Exception as e:
-                logger.warning(f"Error deleting line item {item.id}: {e}")
+                logger.error(
+                    f"Aborting line sync for BillCredit {bill_credit_id}: could not delete "
+                    f"existing line {item.id}: {e}. Not recreating (would duplicate)."
+                )
+                raise
 
         # Create new line items from QBO lines
         for line in qbo_lines:

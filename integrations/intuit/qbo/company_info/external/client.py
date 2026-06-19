@@ -109,13 +109,20 @@ class QboCompanyInfoClient:
         )
 
         query_response = data.get("QueryResponse") if isinstance(data, dict) else None
-        if query_response:
-            company_info_list = query_response.get("CompanyInfo", [])
-            if company_info_list:
-                return QboCompanyInfo(**company_info_list[0])
-            raise ValueError("No CompanyInfo found in query response")
+        company_info_list = (
+            query_response.get("CompanyInfo", []) if isinstance(query_response, dict) else []
+        )
+        if company_info_list:
+            return QboCompanyInfo(**company_info_list[0])
 
-        return QboCompanyInfoResponse(**data).company_info
+        # The query endpoint returned no CompanyInfo: either an EMPTY QueryResponse
+        # (`{"QueryResponse": {}}`) or a delta query with no updates since
+        # last_updated_time. Treat as "nothing to sync" — QboCompanyInfoService
+        # .sync_from_qbo catches this ValueError and returns None. Previously an
+        # empty QueryResponse dict was falsy and fell through to
+        # QboCompanyInfoResponse(**data), which raised a Pydantic ValidationError
+        # ("CompanyInfo Field required") and failed the whole sync.
+        raise ValueError("No CompanyInfo found in query response")
 
     def update_company_info(
         self,

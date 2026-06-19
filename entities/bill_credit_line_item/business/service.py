@@ -174,9 +174,20 @@ class BillCreditLineItemService:
     def delete_by_public_id(self, public_id: str) -> Optional[BillCreditLineItem]:
         """
         Delete a bill credit line item by public ID.
+
+        Nullifies any InvoiceLineItem.BillCreditLineItemId FK first so the delete
+        can never be blocked by a customer Invoice that billed this credit line.
+        A blocked delete used to be swallowed by the VendorCredit connector and the
+        line then re-created from QBO, producing a duplicate on the next pull.
+        Mirrors BillLineItemService.delete_by_public_id.
         """
         existing = self.read_by_public_id(public_id=public_id)
         if not existing or not existing.id:
             return None
-        
+
+        # Lazy import to avoid a circular dependency (invoice_line_item imports
+        # bill_credit_line_item models elsewhere).
+        from entities.invoice_line_item.persistence.repo import InvoiceLineItemRepository
+        InvoiceLineItemRepository().nullify_bill_credit_line_item_id(existing.id)
+
         return self.repo.delete_by_id(existing.id)

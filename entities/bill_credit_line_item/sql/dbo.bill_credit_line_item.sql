@@ -326,3 +326,32 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+
+-- Nullify the InvoiceLineItem -> BillCreditLineItem FK before a BillCreditLineItem
+-- is deleted, so the delete can never be FK-blocked. A blocked delete used to be
+-- swallowed by the VendorCredit connector and the line then re-created from QBO,
+-- producing a DUPLICATE BillCreditLineItem on every re-pull of a credit whose line
+-- had been billed onto a customer Invoice. Mirrors NullifyInvoiceLineItemsByBillLineItemId.
+-- The customer Invoice line itself is preserved (only its source FK is cleared).
+CREATE OR ALTER PROCEDURE NullifyInvoiceLineItemsByBillCreditLineItemId
+(
+    @BillCreditLineItemId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    UPDATE dbo.[InvoiceLineItem]
+    SET
+        [ModifiedDatetime] = @Now,
+        [BillCreditLineItemId] = NULL
+    WHERE [BillCreditLineItemId] = @BillCreditLineItemId;
+
+    COMMIT TRANSACTION;
+END;
+GO

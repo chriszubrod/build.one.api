@@ -217,3 +217,60 @@ class QboVendorCreditRepository:
         except Exception as e:
             logger.error(f"Error deleting VendorCreditLines: {e}")
             raise map_database_error(e)
+
+    def read_line_by_vendor_credit_id_and_qbo_line_id(
+        self, qbo_vendor_credit_id: int, qbo_line_id: str
+    ) -> Optional[QboVendorCreditLine]:
+        """Find a stored line by its stable QBO Line.Id (for upsert-in-place)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor, "ReadQboVendorCreditLineByVendorCreditIdAndQboLineId", {
+                    "QboVendorCreditId": qbo_vendor_credit_id,
+                    "QboLineId": qbo_line_id,
+                })
+                row = cursor.fetchone()
+                return self._line_from_db(row)
+        except Exception as e:
+            logger.error(f"Error reading VendorCreditLine by VendorCreditId and QboLineId: {e}")
+            raise map_database_error(e)
+
+    def update_line_by_id(self, line: QboVendorCreditLine) -> Optional[QboVendorCreditLine]:
+        """Update a stored line in place (keeps the PK so the BillCredit mapping survives)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor, "UpdateQboVendorCreditLineById", {
+                    "Id": line.id,
+                    "QboLineId": line.qbo_line_id,
+                    "LineNum": line.line_num,
+                    "Description": line.description,
+                    "Amount": Decimal(str(line.amount)) if line.amount is not None else None,
+                    "DetailType": line.detail_type,
+                    "ItemRefValue": line.item_ref_value,
+                    "ItemRefName": line.item_ref_name,
+                    "ClassRefValue": line.class_ref_value,
+                    "ClassRefName": line.class_ref_name,
+                    "UnitPrice": Decimal(str(line.unit_price)) if line.unit_price is not None else None,
+                    "Qty": Decimal(str(line.qty)) if line.qty is not None else None,
+                    "BillableStatus": line.billable_status,
+                    "CustomerRefValue": line.customer_ref_value,
+                    "CustomerRefName": line.customer_ref_name,
+                    "AccountRefValue": line.account_ref_value,
+                    "AccountRefName": line.account_ref_name,
+                })
+                row = cursor.fetchone()
+                return self._line_from_db(row)
+        except Exception as e:
+            logger.error(f"Error updating VendorCreditLine by Id: {e}")
+            raise map_database_error(e)
+
+    def delete_line_by_id(self, id: int) -> None:
+        """Delete a single stored line by PK (stale-line cleanup)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor, "DeleteQboVendorCreditLineById", {"Id": id})
+        except Exception as e:
+            logger.error(f"Error deleting VendorCreditLine by Id: {e}")
+            raise map_database_error(e)

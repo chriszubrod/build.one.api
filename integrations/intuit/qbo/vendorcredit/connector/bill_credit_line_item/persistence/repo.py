@@ -83,3 +83,12 @@ class VendorCreditLineItemBillCreditLineItemMappingRepository:
         except Exception as e:
             logger.error(f"Error reading mapping by BillCreditLineItemId: {e}")
             raise map_database_error(e)
+
+    def delete_by_id(self, id: int) -> None:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor, "DeleteVendorCreditLineItemBillCreditLineItemById", {"Id": id})
+        except Exception as e:
+            logger.error(f"Error deleting VendorCreditLineItemBillCreditLineItem mapping by Id: {e}")
+            raise map_database_error(e)

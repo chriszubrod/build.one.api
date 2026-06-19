@@ -116,3 +116,19 @@ BEGIN
     WHERE [BillCreditLineItemId] = @BillCreditLineItemId
 END
 GO
+
+-- =============================================
+-- Stored Procedure: DeleteVendorCreditLineItemBillCreditLineItemById
+-- Used to drop a stale line mapping when its qbo.VendorCreditLine is removed
+-- (snapshot stale-line cleanup), and to clear a dangling mapping during upsert.
+-- =============================================
+GO
+
+CREATE OR ALTER PROCEDURE [qbo].[DeleteVendorCreditLineItemBillCreditLineItemById]
+    @Id BIGINT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DELETE FROM [qbo].[VendorCreditLineItemBillCreditLineItem] WHERE [Id] = @Id;
+END
+GO

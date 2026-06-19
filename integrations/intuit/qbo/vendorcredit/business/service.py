@@ -114,10 +114,18 @@ class QboVendorCreditService:
             return self.repo.create(local_vc)
 
     def _upsert_vendor_credit_lines(self, qbo_vendor_credit_id: int, lines: List[QboVendorCreditLineSchema]) -> None:
-        """Upsert VendorCredit line items."""
-        # Delete existing lines and recreate (simpler than individual updates)
-        self.repo.delete_lines_by_vendor_credit_id(qbo_vendor_credit_id)
-        
+        """
+        Upsert VendorCredit line items IN PLACE, keyed on the stable QBO Line.Id.
+
+        Matching by QboLineId (instead of delete-then-recreate) keeps each stored
+        qbo.VendorCreditLine PK stable across re-pulls, which keeps the downstream
+        VendorCreditLineItemBillCreditLineItem mapping valid so the connector can
+        update BillCreditLineItems in place (preserving attachments + the
+        InvoiceLineItem -> credit-line FK). Lines QBO no longer returns are deleted
+        along with their mapping. Mirrors Bill's _upsert_bill_lines.
+        """
+        current_qbo_line_ids = {line.id for line in lines if line.id}
+
         for line in lines:
             # Extract detail fields based on detail type
             item_ref_value = None
@@ -160,12 +168,19 @@ class QboVendorCreditService:
                     customer_ref_value = detail.customer_ref.value
                     customer_ref_name = detail.customer_ref.name
             
+            # Match an existing stored line by stable QBO Line.Id (upsert-in-place).
+            existing_line = None
+            if line.id:
+                existing_line = self.repo.read_line_by_vendor_credit_id_and_qbo_line_id(
+                    qbo_vendor_credit_id, line.id
+                )
+
             local_line = QboVendorCreditLine(
-                id=None,
-                public_id=None,
-                row_version=None,
-                created_datetime=None,
-                modified_datetime=None,
+                id=existing_line.id if existing_line else None,
+                public_id=existing_line.public_id if existing_line else None,
+                row_version=existing_line.row_version if existing_line else None,
+                created_datetime=existing_line.created_datetime if existing_line else None,
+                modified_datetime=existing_line.modified_datetime if existing_line else None,
                 qbo_vendor_credit_id=qbo_vendor_credit_id,
                 qbo_line_id=line.id,
                 line_num=line.line_num,
@@ -184,8 +199,43 @@ class QboVendorCreditService:
                 account_ref_value=account_ref_value,
                 account_ref_name=account_ref_name,
             )
-            
-            self.repo.create_line(local_line)
+
+            if existing_line:
+                self.repo.update_line_by_id(local_line)
+            else:
+                self.repo.create_line(local_line)
+
+        # Stale-line cleanup: any stored line whose QboLineId is no longer in the
+        # QBO response was removed in QBO. Drop its BillCredit mapping first (FK),
+        # then the stored line. The downstream BillCreditLineItem is left orphaned
+        # (mirrors Bill) rather than deleted, so local-only state isn't destroyed.
+        from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.persistence.repo import (
+            VendorCreditLineItemBillCreditLineItemMappingRepository,
+        )
+        mapping_repo = VendorCreditLineItemBillCreditLineItemMappingRepository()
+        for stored_line in self.repo.read_lines_by_vendor_credit_id(qbo_vendor_credit_id):
+            if stored_line.qbo_line_id in current_qbo_line_ids:
+                continue
+            logger.info(
+                f"Deleting stale QboVendorCreditLine id={stored_line.id} "
+                f"qbo_line_id={stored_line.qbo_line_id} (no longer in QBO response)"
+            )
+            mapping_cleaned = True
+            try:
+                stale_mapping = mapping_repo.read_by_qbo_line_id(stored_line.id)
+                if stale_mapping:
+                    mapping_repo.delete_by_id(stale_mapping.id)
+            except Exception as e:
+                mapping_cleaned = False
+                logger.error(
+                    f"Could not delete stale mapping for QboVendorCreditLine "
+                    f"{stored_line.id}: {e} - skipping line deletion to prevent orphan"
+                )
+            if mapping_cleaned:
+                try:
+                    self.repo.delete_line_by_id(stored_line.id)
+                except Exception as e:
+                    logger.warning(f"Could not delete stale QboVendorCreditLine {stored_line.id}: {e}")
 
     def _sync_to_bill_credits(self, vendor_credits: List[QboVendorCredit]) -> None:
         """Sync VendorCredits to BillCredit module via connector."""

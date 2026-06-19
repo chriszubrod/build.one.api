@@ -139,47 +139,27 @@ class VendorCreditBillCreditConnector:
         qbo_lines: List[QboVendorCreditLine],
     ) -> None:
         """
-        Sync line items from QBO VendorCredit to BillCreditLineItems.
+        Sync line items from QBO VendorCredit to BillCreditLineItems by UPSERTING
+        each line in place (parity with Bill's _sync_line_items).
 
-        NOTE: Current implementation is delete-then-recreate, which loses any
-        local-only state on the line items (attachments, etc.) on every sync.
-        Task #17 (Shape B line matching) could not be applied here because
-        fingerprint matching requires upsert-in-place semantics.
-
-        The delete is now FK-safe: BillCreditLineItemService.delete_by_public_id
-        nullifies any InvoiceLineItem.BillCreditLineItemId first, so a credit line
-        that has been billed onto a customer Invoice can be deleted instead of the
-        delete being swallowed and the line re-created as a DUPLICATE on the next
-        pull (the historical VendorCredit duplication bug). If a delete still fails
-        for any other reason we RAISE rather than continue, so the caller records the
-        sync as failed and we never recreate on top of un-deleted lines.
-
-        TODO: refactor to true upsert-in-place like Bill's _sync_line_items in
-        `bill/connector/bill/business/service.py` (match via the
-        VendorCreditLineItemBillCreditLineItem mapping, update in place, delete only
-        truly-stale lines) so local-only line state survives a re-pull.
+        The snapshot layer (_upsert_vendor_credit_lines) keeps qbo.VendorCreditLine
+        PKs stable across re-pulls, so the VendorCreditLineItemBillCreditLineItem
+        mapping survives and each BillCreditLineItem is updated in place rather than
+        deleted+recreated. This preserves the BillCreditLineItem PK, its attachments,
+        and any InvoiceLineItem -> credit-line FK, and removes the old duplication
+        vector entirely (an invoice-referenced line is updated, never re-created).
+        Stale-line cleanup (lines QBO removed) is handled in the snapshot layer.
         """
         from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import VendorCreditLineItemConnector
 
         connector = VendorCreditLineItemConnector()
 
-        # Delete existing line items, then recreate (see NOTE above). The delete is
-        # FK-safe now; if one still fails, abort WITHOUT recreating so a partial
-        # delete can't be doubled — fail loud and let the next pull re-converge.
-        existing_items = self.bill_credit_line_item_service.read_by_bill_credit_id(bill_credit_id)
-        for item in existing_items:
-            try:
-                self.bill_credit_line_item_service.delete_by_public_id(item.public_id)
-            except Exception as e:
-                logger.error(
-                    f"Aborting line sync for BillCredit {bill_credit_id}: could not delete "
-                    f"existing line {item.id}: {e}. Not recreating (would duplicate)."
-                )
-                raise
-
-        # Create new line items from QBO lines
+        # Upsert each QBO line in place. No delete-then-recreate: stale-line cleanup
+        # lives in the snapshot layer, and the connector matches existing
+        # BillCreditLineItems via the (now-stable) line mapping (with a content
+        # fingerprint fallback for QBO line-id regeneration).
         for line in qbo_lines:
             try:
-                connector.sync_from_qbo_line(bill_credit_public_id, line)
+                connector.sync_from_qbo_line(bill_credit_id, bill_credit_public_id, line)
             except Exception as e:
                 logger.warning(f"Error syncing line item {line.qbo_line_id}: {e}")

@@ -9,6 +9,12 @@ from integrations.intuit.qbo.vendor.business.service import QboVendorService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from shared.api.responses import list_response, item_response
+from shared.authz.context import (
+    current_user_id,
+    current_company_id,
+    current_is_system_admin,
+    set_authz_context,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-vendor"])
 service = QboVendorService()
@@ -18,12 +24,26 @@ service = QboVendorService()
 def sync_qbo_vendors_router(body: QboVendorSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync Vendors from QBO.
+
+    A QBO pull is a system-level operation spanning all users' rows. The
+    connector resolves existing entities via UserProject/access-scoped lookups;
+    under the requesting user's authz those reads can return None and drive
+    duplicate creation / mapping deletion. Assert system intent at the boundary
+    (save -> set -> restore) like the outbox worker / admin drain. See
+    feedback_outbox_authz_boundary.md.
     """
-    vendors = service.sync_from_qbo(
-        realm_id=body.realm_id,
-        last_updated_time=body.last_updated_time,
-        sync_to_modules=body.sync_to_modules
-    )
+    prior_uid = current_user_id.get()
+    prior_cid = current_company_id.get()
+    prior_isa = current_is_system_admin.get()
+    set_authz_context(user_id=None, company_id=None, is_system_admin=True)
+    try:
+        vendors = service.sync_from_qbo(
+            realm_id=body.realm_id,
+            last_updated_time=body.last_updated_time,
+            sync_to_modules=body.sync_to_modules
+        )
+    finally:
+        set_authz_context(user_id=prior_uid, company_id=prior_cid, is_system_admin=prior_isa)
     return list_response([vendor.to_dict() for vendor in vendors])
 
 

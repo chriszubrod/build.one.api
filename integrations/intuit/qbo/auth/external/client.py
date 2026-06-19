@@ -208,14 +208,23 @@ def connect_intuit_oauth_2_token_endpoint_refresh():
         "grant_type": "refresh_token",
         "refresh_token": refresh_token
     }
-    resp = requests.post(url=url, data=data, headers=headers)
+    resp = requests.post(url=url, data=data, headers=headers, timeout=30)
     #print("resp status code: ", resp.status_code)
     #print("resp: ", resp.text)
 
     if resp.status_code == 400:
+        # Intuit returns HTTP 400 (invalid_grant) when the refresh_token is
+        # expired, revoked, or already-rotated (the loser of a token rotation).
+        # This is FATAL and non-retryable — a human must re-authorize via the
+        # authorization-code flow. Do NOT use the 201 success sentinel here and
+        # do NOT update the DB; surface the real error so ensure_valid_token()
+        # returns None and the caller fails loudly instead of using a stale token.
         return {
-                "message": resp.text,
-                "status_code": 201
+                "message": (
+                    "QBO refresh token invalid/expired/revoked — re-authorization "
+                    f"required. Intuit response: {resp.text}"
+                ),
+                "status_code": 400
             }
 
     if resp.status_code == 200:
@@ -261,6 +270,15 @@ def connect_intuit_oauth_2_token_endpoint_refresh():
             }
 
         return resp
+
+    # Any other status (401 / 403 / 429 / 5xx) is an unexpected refresh failure.
+    # Return an explicit non-201 error so ensure_valid_token() treats it as a
+    # failure (status_code != 201) rather than falling through to an implicit
+    # `return None`, which discards the real status for diagnosis.
+    return {
+        "message": f"Unexpected status code from token refresh endpoint: {resp.status_code}. Response: {resp.text}",
+        "status_code": resp.status_code,
+    }
 
 
 def connect_intuit_oauth_2_token_endpoint_revoke():

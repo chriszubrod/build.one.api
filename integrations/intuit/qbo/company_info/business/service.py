@@ -67,7 +67,6 @@ class QboCompanyInfoService:
             # Use the actual QBO Id from the address reference, or fallback to constructed ID
             addr_qbo_id = qbo_company_info.company_addr.id or f"{realm_id}-company"
             company_addr_id = self._sync_physical_address(
-                qbo_auth.access_token,
                 realm_id,
                 qbo_company_info.company_addr,
                 addr_qbo_id
@@ -78,7 +77,6 @@ class QboCompanyInfoService:
             # Use the actual QBO Id from the address reference, or fallback to constructed ID
             addr_qbo_id = qbo_company_info.legal_addr.id or f"{realm_id}-legal"
             legal_addr_id = self._sync_physical_address(
-                qbo_auth.access_token,
                 realm_id,
                 qbo_company_info.legal_addr,
                 addr_qbo_id
@@ -89,7 +87,6 @@ class QboCompanyInfoService:
             # Use the actual QBO Id from the address reference, or fallback to constructed ID
             addr_qbo_id = qbo_company_info.customer_communication_addr.id or f"{realm_id}-customer-communication"
             customer_communication_addr_id = self._sync_physical_address(
-                qbo_auth.access_token,
                 realm_id,
                 qbo_company_info.customer_communication_addr,
                 addr_qbo_id
@@ -154,16 +151,18 @@ class QboCompanyInfoService:
 
     def _sync_physical_address(
         self,
-        access_token: str,
         realm_id: str,
         address_ref,
         qbo_id: str
     ) -> Optional[int]:
         """
         Sync a PhysicalAddress record and return its database ID.
-        
+
+        Token resolution is lazy inside QboHttpClient / the physical-address
+        repos, so no access_token is threaded here (removing it closed a P0
+        NameError: the caller referenced an undefined `qbo_auth`).
+
         Args:
-            access_token: QBO OAuth access token
             realm_id: QBO company realm ID
             address_ref: QboPhysicalAddressRef object from CompanyInfo
             qbo_id: QBO ID to use for the address record

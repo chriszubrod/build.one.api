@@ -189,6 +189,7 @@ class BillService:
         return self._attachable_attachment_connector
 
     def create(self, *, tenant_id: int = 1, user_id: Optional[int] = None, vendor_public_id: Optional[str] = None, payment_term_public_id: Optional[str] = None, bill_date: str, due_date: str, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, intake_source: Optional[str] = None, intake_source_detail: Optional[str] = None, source_email_message_public_id: Optional[str] = None, attachment_public_id: Optional[str] = None,
+               require_attachment: bool = True,
                line_description: Optional[str] = None, line_quantity: Optional[int] = None,
                line_rate: Optional[Decimal] = None, line_amount: Optional[Decimal] = None,
                line_markup: Optional[Decimal] = None, line_price: Optional[Decimal] = None,
@@ -223,33 +224,39 @@ class BillService:
                                    attachment to it via BillLineItemAttachment.
         """
         # Universal rule: every Bill must have a PDF attachment from the moment
-        # of creation. Validate up front — fail fast before touching any DB.
-        if not attachment_public_id:
+        # of creation — EXCEPT bills projected from an external system of record
+        # (QBO pull), which legitimately have no local PDF. Those callers pass
+        # require_attachment=False; their line items are created by the connector,
+        # not the placeholder-attachment path below. When an attachment IS supplied
+        # we always validate it. Fail fast before touching any DB.
+        if require_attachment and not attachment_public_id:
             raise ValueError("Attachment is required. Upload a PDF first and pass attachment_public_id.")
-        attachment = self.attachment_service.read_by_public_id(public_id=attachment_public_id)
-        if not attachment:
-            # Auto-bridge fallback: if the public_id points at an
-            # EmailAttachment instead of an Attachment, bridge it on the fly
-            # and continue. Saves the agent one round-trip and the human a
-            # confusing "not found" when the wrong UUID type is passed.
-            from entities.email_message.business.service import EmailAttachmentBridgeService
-            from entities.email_message.persistence.repo import EmailAttachmentRepository
-            ea = EmailAttachmentRepository().read_by_public_id(attachment_public_id)
-            if not ea:
-                raise ValueError(f"Attachment with public_id '{attachment_public_id}' not found.")
-            bridged = EmailAttachmentBridgeService().bridge(
-                email_attachment_public_id=attachment_public_id
-            )
-            logger.info(
-                "BillService.create auto-bridged EmailAttachment %s → Attachment %s",
-                attachment_public_id, bridged.public_id,
-            )
-            attachment_public_id = str(bridged.public_id)
-            attachment = bridged
-        if attachment.content_type != "application/pdf":
-            raise ValueError(
-                f"Attachment must be application/pdf; got '{attachment.content_type}'."
-            )
+        attachment = None
+        if attachment_public_id:
+            attachment = self.attachment_service.read_by_public_id(public_id=attachment_public_id)
+            if not attachment:
+                # Auto-bridge fallback: if the public_id points at an
+                # EmailAttachment instead of an Attachment, bridge it on the fly
+                # and continue. Saves the agent one round-trip and the human a
+                # confusing "not found" when the wrong UUID type is passed.
+                from entities.email_message.business.service import EmailAttachmentBridgeService
+                from entities.email_message.persistence.repo import EmailAttachmentRepository
+                ea = EmailAttachmentRepository().read_by_public_id(attachment_public_id)
+                if not ea:
+                    raise ValueError(f"Attachment with public_id '{attachment_public_id}' not found.")
+                bridged = EmailAttachmentBridgeService().bridge(
+                    email_attachment_public_id=attachment_public_id
+                )
+                logger.info(
+                    "BillService.create auto-bridged EmailAttachment %s → Attachment %s",
+                    attachment_public_id, bridged.public_id,
+                )
+                attachment_public_id = str(bridged.public_id)
+                attachment = bridged
+            if attachment.content_type != "application/pdf":
+                raise ValueError(
+                    f"Attachment must be application/pdf; got '{attachment.content_type}'."
+                )
 
         if not bill_date:
             raise ValueError("Bill date is required.")
@@ -362,52 +369,57 @@ class BillService:
         # adds more line items alongside it. If either of these inserts fails
         # we roll back the bill — having a Bill row without its required
         # attachment violates the invariant.
-        try:
-            # Resolve project_public_id → project_id (BillLineItemService
-            # may take either; we resolve here to keep the call explicit).
-            line_kwargs: dict = {
-                "tenant_id": tenant_id,
-                "bill_public_id": bill.public_id,
-                # is_billable defaults True for summary-line use; the
-                # caller can override by passing line_is_billable=False
-                # explicitly. None (omitted) → True.
-                "is_billable": True if line_is_billable is None else bool(line_is_billable),
-            }
-            if line_description is not None:
-                line_kwargs["description"] = line_description
-            if line_quantity is not None:
-                line_kwargs["quantity"] = line_quantity
-            if line_rate is not None:
-                line_kwargs["rate"] = line_rate
-            if line_amount is not None:
-                line_kwargs["amount"] = line_amount
-            if line_markup is not None:
-                line_kwargs["markup"] = line_markup
-            if line_price is not None:
-                line_kwargs["price"] = line_price
-            if line_sub_cost_code_id is not None:
-                line_kwargs["sub_cost_code_id"] = line_sub_cost_code_id
-            if line_project_public_id is not None:
-                line_kwargs["project_public_id"] = line_project_public_id
-            placeholder_line_item = self.bill_line_item_service.create(**line_kwargs)
-            self.bill_line_item_attachment_service.create(
-                tenant_id=tenant_id,
-                bill_line_item_public_id=placeholder_line_item.public_id,
-                attachment_public_id=attachment_public_id,
-            )
-        except Exception as attach_error:
-            logger.exception(
-                "Failed to attach PDF to new bill %s; rolling back the bill row.",
-                bill.public_id,
-            )
+        #
+        # Skipped entirely when no attachment was supplied (require_attachment=False,
+        # i.e. QBO-projected bills): those get their real line items from the
+        # connector's _sync_line_items, so we must NOT create an empty placeholder.
+        if attachment_public_id:
             try:
-                self.repo.delete_by_id(id=bill.id)
-            except Exception:
+                # Resolve project_public_id → project_id (BillLineItemService
+                # may take either; we resolve here to keep the call explicit).
+                line_kwargs: dict = {
+                    "tenant_id": tenant_id,
+                    "bill_public_id": bill.public_id,
+                    # is_billable defaults True for summary-line use; the
+                    # caller can override by passing line_is_billable=False
+                    # explicitly. None (omitted) → True.
+                    "is_billable": True if line_is_billable is None else bool(line_is_billable),
+                }
+                if line_description is not None:
+                    line_kwargs["description"] = line_description
+                if line_quantity is not None:
+                    line_kwargs["quantity"] = line_quantity
+                if line_rate is not None:
+                    line_kwargs["rate"] = line_rate
+                if line_amount is not None:
+                    line_kwargs["amount"] = line_amount
+                if line_markup is not None:
+                    line_kwargs["markup"] = line_markup
+                if line_price is not None:
+                    line_kwargs["price"] = line_price
+                if line_sub_cost_code_id is not None:
+                    line_kwargs["sub_cost_code_id"] = line_sub_cost_code_id
+                if line_project_public_id is not None:
+                    line_kwargs["project_public_id"] = line_project_public_id
+                placeholder_line_item = self.bill_line_item_service.create(**line_kwargs)
+                self.bill_line_item_attachment_service.create(
+                    tenant_id=tenant_id,
+                    bill_line_item_public_id=placeholder_line_item.public_id,
+                    attachment_public_id=attachment_public_id,
+                )
+            except Exception as attach_error:
                 logger.exception(
-                    "Best-effort rollback of bill %s also failed; manual cleanup may be required.",
+                    "Failed to attach PDF to new bill %s; rolling back the bill row.",
                     bill.public_id,
                 )
-            raise ValueError(f"Failed to attach PDF to new bill: {attach_error}")
+                try:
+                    self.repo.delete_by_id(id=bill.id)
+                except Exception:
+                    logger.exception(
+                        "Best-effort rollback of bill %s also failed; manual cleanup may be required.",
+                        bill.public_id,
+                    )
+                raise ValueError(f"Failed to attach PDF to new bill: {attach_error}")
 
         # Auto-Submit hook. Creating a draft bill IS submitting it for review,
         # so write a Review row at status=Submitted. Skipped when:

@@ -143,7 +143,11 @@ class BillBillConnector:
             bill_number=bill_number,
             total_amount=total_amount,
             memo=memo,
-            is_draft=False
+            is_draft=False,
+            # QBO-origin bills have no local PDF; the universal attachment rule
+            # does not apply. Line items are created by _sync_line_items below,
+            # not by create()'s placeholder-attachment path.
+            require_attachment=False,
         )
         
         # Create mapping

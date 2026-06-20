@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 import logging
+import os
 import uuid
 from typing import Optional
 
@@ -154,6 +155,13 @@ class ReconciliationService:
         )
         from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository
 
+        # Auto-backfill gate. When off (default) we only COUNT the unprojected
+        # backlog and emit a single low-severity summary — so a large backlog can't
+        # be backfilled unintentionally and we don't write one high-severity issue
+        # per bill per run (that flooded the table 600x/day). Flip to "true" to run
+        # a controlled backfill.
+        autofix_enabled = os.getenv("QBO_RECONCILE_BILL_AUTOFIX", "false").strip().lower() == "true"
+
         mapping_repo = BillBillRepository()
         qbo_bill_repo = QboBillRepository()
         qbo_bill_service = QboBillService()
@@ -161,29 +169,34 @@ class ReconciliationService:
 
         auto_fixed = 0
         errors = 0
+        missing = 0
+        skipped_unmapped = 0
 
         with QboBillClient(realm_id=realm_id) as client:
             qbo_bills = client.query_all_bills()
 
         logger.info(
-            f"Reconciliation fetched {len(qbo_bills)} bills from QBO for realm {realm_id}"
+            f"Reconciliation fetched {len(qbo_bills)} bills from QBO for realm {realm_id} "
+            f"(autofix_enabled={autofix_enabled})"
         )
 
         for qbo_bill in qbo_bills:
             try:
-                # Is the QboBill already in our local cache?
+                # Is the QboBill already in our local cache with a Bill mapping?
                 local_qbo_bill = qbo_bill_repo.read_by_qbo_id(qbo_bill.id)
-
                 if local_qbo_bill:
-                    # Check mapping to local Bill
                     mapping = mapping_repo.read_by_qbo_bill_id(local_qbo_bill.id)
                     if mapping:
                         # Fully synced — nothing to do.
                         continue
 
-                # Either QboBill is missing locally, OR it exists but has no
-                # Bill mapping. Persist external → local dataclass first, then
-                # hand the dataclass to the connector.
+                # Missing locally (or staged but unmapped).
+                missing += 1
+                if not autofix_enabled:
+                    # Backfill is deferred — count only, do not auto-create.
+                    continue
+
+                # Persist external → local dataclass first, then hand it to the connector.
                 try:
                     local_bill, lines = qbo_bill_service.upsert_from_external(
                         qbo_bill, realm_id
@@ -198,6 +211,15 @@ class ReconciliationService:
                         realm_id=realm_id,
                         details=f"Pulled QBO Bill {qbo_bill.id} into local cache via reconciliation.",
                         reconcile_run_id=run_id,
+                    )
+                except ValueError as data_error:
+                    # Permanent data issue (e.g. vendor deleted/unmapped in QBO). It
+                    # will never self-resolve, so skip quietly rather than re-flag a
+                    # high-severity issue on every daily run.
+                    skipped_unmapped += 1
+                    logger.info(
+                        f"Reconciliation skipped QBO Bill {qbo_bill.id} "
+                        f"(unfixable data issue): {data_error}"
                     )
                 except Exception as error:
                     errors += 1
@@ -222,7 +244,30 @@ class ReconciliationService:
                     f"Reconciliation error processing QBO Bill {getattr(qbo_bill, 'id', '?')}"
                 )
 
-        return {"auto_fixed": auto_fixed, "flagged": errors, "errors": errors}
+        # One deduped low-severity summary instead of a per-bill flood when backfill
+        # is deferred — keeps the backlog visible without spamming the issue table.
+        if missing and not autofix_enabled:
+            self._record_issue(
+                drift_type=DRIFT_QBO_MISSING_LOCALLY,
+                action="flagged",
+                severity_override="low",
+                entity_type="Bill",
+                qbo_id=None,
+                realm_id=realm_id,
+                details=(
+                    f"{missing} QBO Bill(s) are not projected locally. Auto-backfill is "
+                    f"disabled (QBO_RECONCILE_BILL_AUTOFIX=false); set it true to backfill."
+                ),
+                reconcile_run_id=run_id,
+            )
+
+        return {
+            "auto_fixed": auto_fixed,
+            "missing": missing,
+            "skipped_unmapped": skipped_unmapped,
+            "flagged": errors,
+            "errors": errors,
+        }
 
     # ------------------------------------------------------------------ #
     # Void detection (task #21)

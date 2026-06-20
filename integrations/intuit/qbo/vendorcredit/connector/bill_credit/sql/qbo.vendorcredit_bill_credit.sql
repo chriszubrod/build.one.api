@@ -122,12 +122,15 @@ GO
 -- =============================================
 GO
 
-CREATE OR ALTER PROCEDURE [qbo].[DeleteVendorCreditBillCreditByQboVendorCreditId]
-    @QboVendorCreditId INT
+-- NOTE: defined in dbo (call_procedure issues EXEC dbo.{name}); the TABLE stays
+-- in qbo. The old [qbo].[...] copy was unreachable. @QboVendorCreditId is BIGINT
+-- (the local qbo.VendorCredit PK).
+CREATE OR ALTER PROCEDURE [dbo].[DeleteVendorCreditBillCreditByQboVendorCreditId]
+    @QboVendorCreditId BIGINT
 AS
 BEGIN
     SET NOCOUNT ON;
-    
+
     DELETE FROM [qbo].[VendorCreditBillCredit]
     WHERE [QboVendorCreditId] = @QboVendorCreditId
 END

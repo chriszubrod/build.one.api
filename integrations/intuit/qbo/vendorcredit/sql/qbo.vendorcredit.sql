@@ -453,6 +453,19 @@ BEGIN
 END;
 GO
 
+
+-- Reconcile-deletes: delete a staging header by QBO id. The lines are removed by
+-- FK_QboVendorCreditLine_QboVendorCredit ON DELETE CASCADE; mappings + BillCredit
+-- are deleted by the service first.
+CREATE OR ALTER PROCEDURE DeleteQboVendorCreditByQboId
+    @QboId NVARCHAR(50)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DELETE FROM [qbo].[VendorCredit] WHERE [QboId] = @QboId;
+END;
+GO
+
 -- Mapping table for VendorCredit <-> BillCredit
 GO
 

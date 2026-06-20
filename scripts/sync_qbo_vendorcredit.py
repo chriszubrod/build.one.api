@@ -234,7 +234,8 @@ def sync_qbo_to_local(
         last_updated_time=last_sync_time,
         start_date=start_date,
         end_date=end_date,
-        sync_to_modules=False  # We'll handle module sync separately for better control
+        sync_to_modules=False,  # We'll handle module sync separately for better control
+        reconcile_deletes=True,  # full-sync-only guard inside: removes local records deleted in QBO
     )
     
     if not vendor_credits:
@@ -250,7 +251,8 @@ def sync_qbo_to_local(
     # Sync vendor credits to BillCredit module
     bill_credits_module_synced = 0
     attachments_synced = 0
-    failed_vendor_credits = []
+    skipped_vendor_credits = []   # permanent data issues (e.g. vendor not mapped) — do NOT block the watermark
+    failed_vendor_credits = []    # transient errors (DB, connection) — block the watermark for retry
 
     for i, vendor_credit in enumerate(vendor_credits):
         try:
@@ -287,7 +289,14 @@ def sync_qbo_to_local(
                     except Exception as att_e:
                         logger.error(f"Failed to sync attachments for VendorCredit {vendor_credit.qbo_id}: {att_e}")
 
+        except ValueError as e:
+            # Permanent data issue (e.g. vendor not mapped) — will never self-resolve
+            # on retry, so skip WITHOUT blocking the sync watermark.
+            logger.info(f"Skipped QboVendorCredit {vendor_credit.id} (permanent data issue): {e}")
+            skipped_vendor_credits.append(vendor_credit.id)
         except Exception as e:
+            # Transient error (DB, connection, etc.) — MUST block the watermark so this
+            # credit is re-fetched and retried on the next incremental sync.
             logger.error(f"Failed to sync QboVendorCredit {vendor_credit.id} to BillCredit: {e}")
             failed_vendor_credits.append(vendor_credit.id)
 
@@ -296,13 +305,19 @@ def sync_qbo_to_local(
             logger.debug(f"Processed {i + 1}/{len(vendor_credits)} vendor credits, pausing...")
             time.sleep(BATCH_DELAY)
 
+    if skipped_vendor_credits:
+        logger.info(f"Skipped {len(skipped_vendor_credits)} vendor credit(s) due to permanent data issues (won't block watermark): {skipped_vendor_credits}")
     if failed_vendor_credits:
-        logger.warning(f"Failed to sync {len(failed_vendor_credits)} vendor credits: {failed_vendor_credits}")
+        logger.warning(f"Failed to sync {len(failed_vendor_credits)} vendor credits (watermark will hold for retry): {failed_vendor_credits}")
 
     return {
         "vendor_credits_synced": len(vendor_credits),
         "bill_credits_module_synced": bill_credits_module_synced,
         "attachments_synced": attachments_synced,
+        "skipped_count": len(skipped_vendor_credits),
+        "skipped_vendor_credit_ids": skipped_vendor_credits,
+        "failed_count": len(failed_vendor_credits),
+        "failed_vendor_credit_ids": failed_vendor_credits,
         "vendor_credits": [vc.to_dict() for vc in vendor_credits],
     }
 
@@ -415,6 +430,16 @@ def sync_qbo_vendorcredit(
             sync_datetime = f"{end_date}T23:59:59"
             logger.info(f"Setting sync record to end_date: {sync_datetime}")
             updated_sync = _update_sync_record(sync_service, sync_record, sync_datetime)
+        elif qbo_to_local_result.get("failed_count", 0) > 0:
+            # Do NOT advance the watermark when vendor credits failed to sync — they
+            # must be re-fetched and retried next run (QBO re-returns them; their
+            # LastUpdatedTime stays > the preserved watermark). Permanent skips
+            # (vendor not mapped, etc.) are excluded — they never block.
+            logger.warning(
+                f"Pull watermark NOT advanced: {qbo_to_local_result['failed_count']} vendor credit(s) failed "
+                f"({qbo_to_local_result.get('failed_vendor_credit_ids')}). Will retry next run."
+            )
+            updated_sync = sync_record
         else:
             # Normal incremental sync - use current time
             updated_sync = _update_sync_record(sync_service, sync_record, end_time_str)

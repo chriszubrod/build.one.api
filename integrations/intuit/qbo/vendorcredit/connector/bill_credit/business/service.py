@@ -44,8 +44,12 @@ class VendorCreditBillCreditConnector:
             # Step 1: Resolve vendor
             vendor_public_id = self._get_vendor_public_id(qbo_vc.vendor_ref_value)
             if not vendor_public_id:
-                logger.warning(f"Cannot sync VendorCredit {qbo_vc.qbo_id}: vendor not found for ref {qbo_vc.vendor_ref_value}")
-                return None
+                # Permanent data issue — raise (don't silently return None) so the
+                # caller classifies it as a skip that doesn't block the watermark,
+                # consistent with the Bill and Purchase connectors.
+                raise ValueError(
+                    f"No vendor mapping found for QBO vendor ref: {qbo_vc.vendor_ref_value}"
+                )
             
             # Step 2: Check for existing mapping
             existing_mapping = self.mapping_repo.read_by_qbo_vendor_credit_id(qbo_vc.id)
@@ -92,9 +96,14 @@ class VendorCreditBillCreditConnector:
             
             return bill_credit
             
+        except ValueError:
+            # Permanent data issue — propagate for the caller to classify as a skip.
+            raise
         except Exception as e:
+            # Transient error (DB, connection, etc.) — propagate so the caller can
+            # block the watermark and retry next run, instead of silently dropping it.
             logger.error(f"Error syncing VendorCredit {qbo_vc.qbo_id} to BillCredit: {e}")
-            return None
+            raise
 
     def _get_vendor_public_id(self, qbo_vendor_ref_value: Optional[str]) -> Optional[str]:
         """Resolve QBO vendor ref (QBO API string ID) to local Vendor public_id.

@@ -30,6 +30,7 @@ class QboVendorCreditService:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         sync_to_modules: bool = True,
+        reconcile_deletes: bool = False,
     ) -> List[QboVendorCredit]:
         """
         Sync VendorCredits from QBO to local cache.
@@ -78,8 +79,88 @@ class QboVendorCreditService:
         # Sync to BillCredit module if requested
         if sync_to_modules and synced:
             self._sync_to_bill_credits(synced)
-        
+
+        # Delete reconciliation: only valid on a full, unfiltered sync so the API
+        # response represents the complete current state of QBO.
+        if reconcile_deletes and last_updated_time is None and not start_date and not end_date:
+            self._reconcile_deleted_vendor_credits(realm_id, vendor_credits)
+
         return synced
+
+    def _reconcile_deleted_vendor_credits(self, realm_id: str, qbo_vcs: list) -> int:
+        """
+        Delete local records for QBO vendor credits that no longer exist in QBO.
+
+        Only called on full syncs (no last_updated_time / date filters) so the API
+        response represents the complete current state of QBO. Mirrors
+        QboPurchaseService._reconcile_deleted_purchases.
+
+        Deletion order (respects FK NO ACTION constraints):
+          1. VendorCreditLineItemBillCreditLineItem mapping rows for the credit's lines.
+          2. The VendorCreditBillCredit mapping row (before deleting the BillCredit).
+          3. The BillCredit (app-layer cascade: BillCreditLineItem -> attachment -> blob,
+             with any InvoiceLineItem FK nullified first by the line-item delete).
+          4. The QboVendorCredit (FK_QboVendorCreditLine_QboVendorCredit CASCADE handles lines).
+        """
+        from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
+            VendorCreditBillCreditMappingRepository,
+        )
+        from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.persistence.repo import (
+            VendorCreditLineItemBillCreditLineItemMappingRepository,
+        )
+        from entities.bill_credit.business.service import BillCreditService
+
+        qbo_ids_from_api = {vc.id for vc in qbo_vcs}
+        local_vcs = self.repo.read_by_realm_id(realm_id)
+
+        bc_mapping_repo = VendorCreditBillCreditMappingRepository()
+        line_mapping_repo = VendorCreditLineItemBillCreditLineItemMappingRepository()
+        bill_credit_service = BillCreditService()
+
+        deleted = 0
+        for local in local_vcs:
+            if local.qbo_id in qbo_ids_from_api:
+                continue
+
+            logger.warning(
+                f"QboVendorCredit qbo_id={local.qbo_id} (local id={local.id}) not found in QBO — "
+                f"deleting local record and mapped BillCredit"
+            )
+            try:
+                # Step 1: line mappings (before BillCreditLineItem deletion).
+                for line in self.repo.read_lines_by_vendor_credit_id(local.id):
+                    try:
+                        lm = line_mapping_repo.read_by_qbo_line_id(line.id)
+                        if lm:
+                            line_mapping_repo.delete_by_id(lm.id)
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not delete VendorCreditLineItemBillCreditLineItem mapping for "
+                            f"line {line.id} (VC {local.qbo_id}): {e}"
+                        )
+
+                # Step 2: the VendorCreditBillCredit mapping BEFORE the BillCredit.
+                bc_mapping = bc_mapping_repo.read_by_qbo_vendor_credit_id(local.id)
+                if bc_mapping:
+                    try:
+                        bc_mapping_repo.delete_by_qbo_vendor_credit_id(local.id)
+                    except Exception as e:
+                        logger.warning(f"Could not delete VendorCreditBillCredit mapping for VC {local.qbo_id}: {e}")
+                    bc = bill_credit_service.read_by_id(bc_mapping.bill_credit_id)
+                    if bc:
+                        bill_credit_service.delete_by_public_id(bc.public_id)
+                        logger.info(f"Deleted BillCredit id={bc.id} mapped to deleted QboVendorCredit {local.qbo_id}")
+
+                # Step 3: the QboVendorCredit staging (CASCADE removes qbo.VendorCreditLine).
+                self.repo.delete_by_qbo_id(local.qbo_id)
+                logger.info(f"Deleted QboVendorCredit qbo_id={local.qbo_id}")
+                deleted += 1
+            except Exception as e:
+                logger.error(f"Failed to delete stale QboVendorCredit {local.qbo_id}: {e}")
+
+        if deleted:
+            logger.info(f"Reconciled {deleted} deleted QBO vendor credit(s) for realm {realm_id}")
+        return deleted
 
     def _upsert_vendor_credit(self, qbo_vc: QboVendorCreditSchema, realm_id: str) -> Optional[QboVendorCredit]:
         """Upsert a VendorCredit to local cache."""

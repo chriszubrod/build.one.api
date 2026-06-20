@@ -71,6 +71,19 @@ class VendorCreditBillCreditMappingRepository:
             logger.error(f"Error reading mapping by QboVendorCreditId: {e}")
             raise map_database_error(e)
 
+    def delete_by_qbo_vendor_credit_id(self, qbo_vendor_credit_id: int) -> None:
+        """Delete the VendorCredit<->BillCredit mapping by local qbo.VendorCredit PK.
+        Must run before deleting the BillCredit (FK NO ACTION). Used by reconcile-deletes."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor, "DeleteVendorCreditBillCreditByQboVendorCreditId", {
+                    "QboVendorCreditId": qbo_vendor_credit_id,
+                })
+        except Exception as e:
+            logger.error(f"Error deleting VendorCreditBillCredit mapping by QboVendorCreditId: {e}")
+            raise map_database_error(e)
+
     def read_by_bill_credit_id(self, bill_credit_id: int) -> Optional[VendorCreditBillCreditMapping]:
         try:
             with get_connection() as conn:

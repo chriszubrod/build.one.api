@@ -274,3 +274,14 @@ class QboVendorCreditRepository:
         except Exception as e:
             logger.error(f"Error deleting VendorCreditLine by Id: {e}")
             raise map_database_error(e)
+
+    def delete_by_qbo_id(self, qbo_id: str) -> None:
+        """Delete a qbo.VendorCredit staging header by its QBO id (lines cascade
+        via FK_QboVendorCreditLine_QboVendorCredit). Used by reconcile-deletes."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor, "DeleteQboVendorCreditByQboId", {"QboId": qbo_id})
+        except Exception as e:
+            logger.error(f"Error deleting QboVendorCredit by QboId: {e}")
+            raise map_database_error(e)

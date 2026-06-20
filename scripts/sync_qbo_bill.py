@@ -301,6 +301,7 @@ def sync_qbo_to_local(
         start_date=start_date,
         end_date=end_date,
         sync_to_modules=False,
+        reconcile_deletes=True,  # full-sync-only guard inside: removes local records deleted in QBO
     )
     
     if not bills:
@@ -316,8 +317,9 @@ def sync_qbo_to_local(
     # Sync bills to Bill module
     bills_module_synced = 0
     attachments_synced = 0
-    failed_bills = []
-    
+    skipped_bills = []   # permanent data issues (e.g. vendor not mapped) — do NOT block the watermark
+    failed_bills = []    # transient errors (DB, connection) — block the watermark for retry
+
     for i, bill in enumerate(bills):
         try:
             # Get bill lines for this bill
@@ -353,22 +355,35 @@ def sync_qbo_to_local(
                         )
                 except Exception as att_e:
                     logger.error(f"Failed to sync attachments for Bill {bill.qbo_id}: {att_e}")
+        except ValueError as e:
+            # Permanent data issue (e.g. vendor not mapped) — will never self-resolve
+            # on retry, so skip WITHOUT blocking the sync watermark.
+            logger.info(f"Skipped QboBill {bill.id} (permanent data issue): {e}")
+            skipped_bills.append(bill.id)
         except Exception as e:
+            # Transient error (DB, connection, etc.) — MUST block the watermark so this
+            # bill is re-fetched and retried on the next incremental sync.
             logger.error(f"Failed to sync QboBill {bill.id} to Bill: {e}")
             failed_bills.append(bill.id)
-        
+
         # Add delay between batches to keep connection alive
         if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(bills):
             logger.debug(f"Processed {i + 1}/{len(bills)} bills, pausing...")
             time.sleep(BATCH_DELAY)
-    
+
+    if skipped_bills:
+        logger.info(f"Skipped {len(skipped_bills)} bill(s) due to permanent data issues (won't block watermark): {skipped_bills}")
     if failed_bills:
-        logger.warning(f"Failed to sync {len(failed_bills)} bills: {failed_bills}")
-    
+        logger.warning(f"Failed to sync {len(failed_bills)} bills (watermark will hold for retry): {failed_bills}")
+
     return {
         "bills_synced": len(bills),
         "bills_module_synced": bills_module_synced,
         "attachments_synced": attachments_synced,
+        "skipped_count": len(skipped_bills),
+        "skipped_bill_ids": skipped_bills,
+        "failed_count": len(failed_bills),
+        "failed_bill_ids": failed_bills,
         "bills": [bill.to_dict() for bill in bills],
     }
 
@@ -782,6 +797,16 @@ def sync_qbo_bill(
             sync_datetime = f"{end_date}T23:59:59"
             logger.info(f"Setting sync record to end_date: {sync_datetime}")
             updated_sync = _update_sync_record(sync_service, sync_record, sync_datetime)
+        elif qbo_to_local_result.get("failed_count", 0) > 0:
+            # Do NOT advance the watermark when bills failed to sync — they must be
+            # re-fetched and retried next run (QBO re-returns them; their
+            # LastUpdatedTime stays > the preserved watermark). Permanent skips
+            # (vendor not mapped, etc.) are excluded — they never block.
+            logger.warning(
+                f"Pull watermark NOT advanced: {qbo_to_local_result['failed_count']} bill(s) failed "
+                f"({qbo_to_local_result.get('failed_bill_ids')}). Will retry next run."
+            )
+            updated_sync = sync_record
         else:
             # Normal incremental sync - use current time
             updated_sync = _update_sync_record(sync_service, sync_record, end_time_str)

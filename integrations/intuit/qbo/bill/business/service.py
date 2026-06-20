@@ -41,7 +41,8 @@ class QboBillService:
         last_updated_time: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        sync_to_modules: bool = False
+        sync_to_modules: bool = False,
+        reconcile_deletes: bool = False,
     ) -> List[QboBill]:
         """
         Fetch Bills from QBO API and store locally.
@@ -109,8 +110,84 @@ class QboBillService:
         # Sync to modules if requested
         if sync_to_modules:
             self._sync_to_bills(synced_bills)
-        
+
+        # Delete reconciliation: only valid on a full, unfiltered sync so the API
+        # response represents the complete current state of QBO.
+        if reconcile_deletes and last_updated_time is None and not start_date and not end_date:
+            self._reconcile_deleted_bills(realm_id, qbo_bills)
+
         return synced_bills
+
+    def _reconcile_deleted_bills(self, realm_id: str, qbo_bills: list) -> int:
+        """
+        Delete local records for QBO bills that no longer exist in QBO.
+
+        Only called on full syncs (no last_updated_time / date filters) so the API
+        response represents the complete current state of QBO. Mirrors
+        QboPurchaseService._reconcile_deleted_purchases.
+
+        Deletion order (respects FK NO ACTION constraints):
+          1. BillLineItemBillLine mapping rows for the bill's lines.
+          2. The BillBill mapping row (before deleting the Bill).
+          3. The Bill (app-layer cascade: BillLineItem -> attachment -> blob, with any
+             InvoiceLineItem FK nullified first by BillService.delete_by_public_id).
+          4. The QboBill (FK_QboBillLine_QboBill ON DELETE CASCADE handles qbo.BillLine).
+        """
+        from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
+        from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import BillLineItemBillLineRepository
+        from entities.bill.business.service import BillService
+
+        qbo_ids_from_api = {b.id for b in qbo_bills}
+        local_bills = self.repo.read_by_realm_id(realm_id)
+
+        bill_bill_repo = BillBillRepository()
+        line_mapping_repo = BillLineItemBillLineRepository()
+        bill_service = BillService()
+
+        deleted = 0
+        for local in local_bills:
+            if local.qbo_id in qbo_ids_from_api:
+                continue
+
+            logger.warning(
+                f"QboBill qbo_id={local.qbo_id} (local id={local.id}) not found in QBO — "
+                f"deleting local record and mapped Bill"
+            )
+            try:
+                # Step 1: line mappings (before BillLineItem deletion — FK NO ACTION).
+                for line in self.line_repo.read_by_qbo_bill_id(local.id):
+                    try:
+                        lm = line_mapping_repo.read_by_qbo_bill_line_id(line.id)
+                        if lm:
+                            line_mapping_repo.delete_by_id(lm.id)
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not delete BillLineItemBillLine mapping for "
+                            f"QboBillLine {line.id} (QboBill {local.qbo_id}): {e}"
+                        )
+
+                # Step 2: the BillBill mapping BEFORE the Bill (FK NO ACTION).
+                bb_mapping = bill_bill_repo.read_by_qbo_bill_id(local.id)
+                if bb_mapping:
+                    try:
+                        bill_bill_repo.delete_by_id(bb_mapping.id)
+                    except Exception as e:
+                        logger.warning(f"Could not delete BillBill mapping for QboBill {local.qbo_id}: {e}")
+                    bill = bill_service.read_by_id(bb_mapping.bill_id)
+                    if bill:
+                        bill_service.delete_by_public_id(bill.public_id)
+                        logger.info(f"Deleted Bill id={bill.id} mapped to deleted QboBill {local.qbo_id}")
+
+                # Step 3: the QboBill staging (CASCADE removes qbo.BillLine).
+                self.repo.delete_by_qbo_id(local.qbo_id)
+                logger.info(f"Deleted QboBill qbo_id={local.qbo_id}")
+                deleted += 1
+            except Exception as e:
+                logger.error(f"Failed to delete stale QboBill {local.qbo_id}: {e}")
+
+        if deleted:
+            logger.info(f"Reconciled {deleted} deleted QBO bill(s) for realm {realm_id}")
+        return deleted
 
     def upsert_from_external(
         self, qbo_bill: QboBillExternalSchema, realm_id: str,

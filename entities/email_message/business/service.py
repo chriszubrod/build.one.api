@@ -28,6 +28,7 @@ EmailAttachmentExtractionService
 """
 import json
 import logging
+import re
 import uuid
 from decimal import Decimal
 from typing import Optional
@@ -660,26 +661,39 @@ class EmailAttachmentExtractionService:
             "currency": currency,
         }
 
-    def extract_by_public_id(self, public_id: str) -> dict:
+    def extract_by_public_id(self, public_id: str, *, force_inline: bool = False) -> dict:
         attachment = self.attachment_repo.read_by_public_id(public_id)
         if not attachment:
             raise ValueError(f"EmailAttachment not found: {public_id}")
-        return self._extract(attachment)
+        return self._extract(attachment, force_inline=force_inline)
 
-    def extract_by_id(self, attachment_id: int) -> dict:
+    def extract_by_id(self, attachment_id: int, *, force_inline: bool = False) -> dict:
         attachment = self.attachment_repo.read_by_id(attachment_id)
         if not attachment:
             raise ValueError(f"EmailAttachment not found: id={attachment_id}")
-        return self._extract(attachment)
+        return self._extract(attachment, force_inline=force_inline)
 
-    def _extract(self, attachment: EmailAttachment) -> dict:
-        if attachment.is_inline:
+    def _extract(self, attachment: EmailAttachment, *, force_inline: bool = False) -> dict:
+        # Inline attachments (email signatures, embedded screenshots) are
+        # skipped by default — most are signature images that burn DI cost
+        # for no signal. The agent can opt back in with force_inline=True
+        # when the visible text signal is ambiguous and an embedded image
+        # might carry the decisive context (e.g., a screenshot of a remit
+        # advice pasted into a vendor reply).
+        if attachment.is_inline and not force_inline:
             self.attachment_repo.update_extraction(
                 id=attachment.id,
                 extraction_status="skipped",
                 last_error="inline attachment (signature image, etc.) — skipped",
             )
             return {"status": "skipped", "reason": "inline"}
+
+        # Inline attachments are NOT persisted to blob storage (the poll
+        # service only uploads non-inline). force_inline'd extractions
+        # fetch the bytes from MS Graph on demand, run DI in-memory, and
+        # cache the DI result on the EmailAttachment row — no blob upload.
+        if attachment.is_inline and force_inline:
+            return self._extract_inline_from_graph(attachment)
 
         if not attachment.blob_uri:
             self.attachment_repo.update_extraction(
@@ -689,39 +703,11 @@ class EmailAttachmentExtractionService:
             )
             return {"status": "failed", "reason": "no_blob_uri"}
 
-        # Cache-aware: if this attachment has already been DI'd successfully,
-        # short-circuit and reshape the persisted DiResultJson into the same
-        # response the live extraction produces. Saves ~6s of DI latency +
-        # the ~$0.05 DI charge on every agent re-run of the same email.
-        if (attachment.extraction_status == "extracted"
-                and attachment.di_result_json):
-            try:
-                cached_raw = json.loads(attachment.di_result_json)
-            except Exception:
-                cached_raw = None
-            if cached_raw:
-                cached = self.di._hoist_and_validate(cached_raw)
-                return {
-                    "status": "extracted",
-                    "cached": True,
-                    "content": cached.get("content"),
-                    "key_value_pairs": [
-                        {
-                            "key": kvp["key"],
-                            "value": kvp["value"],
-                            "confidence": _decimal_to_str(kvp.get("confidence")),
-                        }
-                        for kvp in (cached.get("key_value_pairs") or [])
-                    ],
-                    "tables": cached.get("tables") or [],
-                    "pages_count": cached.get("pages_count"),
-                    "vendor_name": attachment.di_vendor_name,
-                    "invoice_number": attachment.di_invoice_number,
-                    "total_amount": _decimal_to_str(attachment.di_total_amount),
-                    "currency": attachment.di_currency,
-                    "confidence": _decimal_to_str(attachment.di_confidence),
-                    "validation": cached.get("validation") or {"is_valid": True, "issues": []},
-                }
+        # Cache short-circuit — saves ~6s of DI latency + the DI charge on
+        # every agent re-run of the same email.
+        cached_response = self._cached_extraction_response(attachment)
+        if cached_response is not None:
+            return cached_response
 
         # Pull the bytes from blob (avoids needing a SAS-signed URL).
         try:
@@ -736,8 +722,107 @@ class EmailAttachmentExtractionService:
             return {"status": "failed", "reason": "blob_download_error", "error": str(e)}
 
         content_type = metadata.get("content_type") or attachment.content_type or "application/pdf"
+        return self._run_di_and_persist(attachment, content, content_type)
 
-        # Run DI.
+    def _extract_inline_from_graph(self, attachment: EmailAttachment) -> dict:
+        """Force-extract an inline attachment by fetching the bytes from
+        MS Graph on demand. Inline attachments are not in blob storage
+        (the poll service skips them). We cache the DI result on the row
+        so re-runs don't re-call Graph or DI."""
+        # Cache short-circuit (same shape as the blob path).
+        cached_response = self._cached_extraction_response(attachment)
+        if cached_response is not None:
+            return cached_response
+
+        if not attachment.graph_attachment_id:
+            self.attachment_repo.update_extraction(
+                id=attachment.id,
+                extraction_status="failed",
+                last_error="No GraphAttachmentId — cannot fetch inline bytes from Graph",
+            )
+            return {"status": "failed", "reason": "no_graph_attachment_id"}
+
+        # Read parent EmailMessage for the GraphMessageId + MailboxAddress.
+        parent = EmailMessageRepository().read_by_id(attachment.email_message_id)
+        if not parent or not parent.graph_message_id or not parent.mailbox_address:
+            self.attachment_repo.update_extraction(
+                id=attachment.id,
+                extraction_status="failed",
+                last_error="Parent EmailMessage missing graph_message_id or mailbox_address",
+            )
+            return {"status": "failed", "reason": "parent_unavailable"}
+
+        download_result = mail_client.download_attachment(
+            message_id=parent.graph_message_id,
+            attachment_id=attachment.graph_attachment_id,
+            mailbox=parent.mailbox_address,
+        )
+        if download_result.get("status_code") != 200:
+            err = download_result.get("message") or "graph download failed"
+            self.attachment_repo.update_extraction(
+                id=attachment.id,
+                extraction_status="failed",
+                last_error=f"Graph download failed: {err}",
+            )
+            return {"status": "failed", "reason": "graph_download_error", "error": err}
+
+        content = download_result.get("content")
+        content_type = (
+            download_result.get("content_type")
+            or attachment.content_type
+            or "application/octet-stream"
+        )
+        if not content:
+            self.attachment_repo.update_extraction(
+                id=attachment.id,
+                extraction_status="failed",
+                last_error="Graph returned an empty attachment body",
+            )
+            return {"status": "failed", "reason": "graph_empty_body"}
+
+        return self._run_di_and_persist(attachment, content, content_type)
+
+    def _cached_extraction_response(self, attachment: EmailAttachment) -> Optional[dict]:
+        """If this attachment has a usable cached DI result, reshape it
+        into the standard extraction response. Returns None on cache miss
+        so the caller can run a fresh extraction."""
+        if attachment.extraction_status != "extracted" or not attachment.di_result_json:
+            return None
+        try:
+            cached_raw = json.loads(attachment.di_result_json)
+        except Exception:
+            return None
+        if not cached_raw:
+            return None
+        cached = self.di._hoist_and_validate(cached_raw)
+        return {
+            "status": "extracted",
+            "cached": True,
+            "content": cached.get("content"),
+            "key_value_pairs": [
+                {
+                    "key": kvp["key"],
+                    "value": kvp["value"],
+                    "confidence": _decimal_to_str(kvp.get("confidence")),
+                }
+                for kvp in (cached.get("key_value_pairs") or [])
+            ],
+            "tables": cached.get("tables") or [],
+            "pages_count": cached.get("pages_count"),
+            "vendor_name": attachment.di_vendor_name,
+            "invoice_number": attachment.di_invoice_number,
+            "total_amount": _decimal_to_str(attachment.di_total_amount),
+            "currency": attachment.di_currency,
+            "confidence": _decimal_to_str(attachment.di_confidence),
+            "validation": cached.get("validation") or {"is_valid": True, "issues": []},
+        }
+
+    def _run_di_and_persist(
+        self, attachment: EmailAttachment, content: bytes, content_type: str
+    ) -> dict:
+        """Shared DI invocation + result persistence + response shaping.
+        Used by both the blob-backed extraction path and the force-inline
+        Graph-backed path."""
         try:
             extracted = self.di.extract_invoice(content, content_type=content_type)
         except DocumentIntelligenceConfigError as e:
@@ -806,6 +891,121 @@ class EmailAttachmentExtractionService:
 
 def _decimal_to_str(d: Optional[Decimal]) -> Optional[str]:
     return str(d) if d is not None else None
+
+
+# ─── Quoted-history isolation for reply / forward bodies ────────────────────
+#
+# Outlook / Gmail / Apple Mail / etc. each have their own convention for
+# marking where the new content ends and the quoted prior message begins.
+# We detect the first plausible boundary and split into:
+#   • body_new_text       = the sender's new content (top)
+#   • body_quoted_history = the quoted prior message + everything below
+# Both returned as plain text. Detection is best-effort — when no
+# boundary is found, the full body is treated as new_text and history
+# is empty. The agent reads new_text first; quoted_history is available
+# when the new-text portion alone isn't enough context.
+
+# Plain-text reply markers. Ordered by specificity.
+_TEXT_BOUNDARY_PATTERNS = [
+    # "From: <person>" header lines that begin a reply quote. The four-
+    # line Outlook block (From: / Sent: / To: / Subject:) typically
+    # starts with this. Anchored to line start, surrounded by newlines.
+    re.compile(r"\n[ \t]*From:[ \t]+.+\n[ \t]*Sent:[ \t]+", re.IGNORECASE),
+    re.compile(r"\n[ \t]*From:[ \t]+.+\n[ \t]*Date:[ \t]+", re.IGNORECASE),
+    re.compile(r"\n[ \t]*From:[ \t]+.+\n[ \t]*To:[ \t]+", re.IGNORECASE),
+    # "On <date>, <person> wrote:" — Gmail / Apple Mail convention.
+    re.compile(r"\n[ \t]*On .+ wrote:\s*\n", re.IGNORECASE),
+    # Explicit Outlook separator (English locale).
+    re.compile(r"\n[ \t]*-----[ \t]?Original Message[ \t]?-----", re.IGNORECASE),
+    # Long horizontal rule of underscores/equals/dashes (visual separator).
+    re.compile(r"\n[ \t]*[_=-]{20,}\s*\n"),
+]
+
+
+def _html_to_plain_text(html: str) -> str:
+    """Render an HTML fragment to whitespace-normalized plain text. Uses
+    BeautifulSoup with the stdlib `html.parser` so no extra runtime deps
+    beyond what's already in requirements.txt."""
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        # Defensive: BS4 is in requirements but if it ever drops, fall
+        # back to a naive tag-strip rather than 500'ing the agent.
+        return re.sub(r"<[^>]+>", " ", html)
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(separator="\n")
+    # Collapse runs of whitespace within a line, but preserve line breaks
+    # — line structure is the signal we use to find quoted-history headers.
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in text.splitlines()]
+    return "\n".join(lines).strip()
+
+
+def _split_html_at_quote_boundary(html: str) -> Optional[tuple[str, str]]:
+    """Detect a quote-block boundary in HTML (Gmail blockquote, Outlook
+    reply div, Apple Mail cite). Returns (before_html, after_html) when
+    found, None otherwise."""
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return None
+    soup = BeautifulSoup(html, "html.parser")
+    candidates: list = []
+    candidates.extend(soup.find_all("blockquote"))
+    candidates.extend(soup.find_all("div", class_="gmail_quote"))
+    candidates.extend(soup.find_all("div", id=re.compile(r"^(divRplyFwdMsg|appendonsend)$")))
+    candidates.extend(soup.find_all("div", attrs={"type": "cite"}))
+    if not candidates:
+        return None
+    # Pick the candidate that appears earliest in the source.
+    earliest = min(candidates, key=lambda el: html.find(str(el)) if str(el) in html else 10**9)
+    if str(earliest) not in html:
+        return None
+    split_at = html.find(str(earliest))
+    before_html = html[:split_at]
+    after_html = html[split_at:]
+    return before_html, after_html
+
+
+def isolate_new_text(
+    body_content: Optional[str],
+    body_content_type: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Split a polled email body into (new_text, quoted_history) as plain
+    text. When no boundary is detected, returns (full_body_as_text, None).
+
+    The agent reads `new_text` first — that's the sender's actual new
+    content on a reply/forward — and only falls back to `quoted_history`
+    when the new-text portion alone is insufficient context. Cuts down
+    on the size + noise of every reply email by ~60-90%.
+    """
+    if not body_content:
+        return None, None
+    is_html = (body_content_type or "").lower() == "html" or "<html" in body_content[:200].lower()
+
+    # HTML path: try structural quote-block detection first.
+    if is_html:
+        split = _split_html_at_quote_boundary(body_content)
+        if split is not None:
+            before_html, after_html = split
+            return _html_to_plain_text(before_html), _html_to_plain_text(after_html)
+        # No structural boundary — flatten to text and fall through to
+        # the text-pattern detector below.
+        body_content = _html_to_plain_text(body_content)
+
+    # Plain-text path: scan for any of the boundary patterns and pick the
+    # earliest hit. Everything before = new text; the marker + everything
+    # after = quoted history.
+    earliest_match = None
+    for pattern in _TEXT_BOUNDARY_PATTERNS:
+        m = pattern.search(body_content)
+        if m is not None and (earliest_match is None or m.start() < earliest_match.start()):
+            earliest_match = m
+    if earliest_match is None:
+        # No quote boundary detected; the whole body is new content.
+        return body_content.strip() or None, None
+    new_text = body_content[: earliest_match.start()].strip()
+    quoted = body_content[earliest_match.start():].strip()
+    return new_text or None, quoted or None
 
 
 # File-extension → canonical MIME mapping. Used to recover from mail

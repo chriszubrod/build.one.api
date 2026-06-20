@@ -790,7 +790,8 @@ GO
 CREATE OR ALTER PROCEDURE ReadEmailSenderHistory
 (
     @FromEmail NVARCHAR(320),
-    @ExcludePublicId UNIQUEIDENTIFIER = NULL
+    @ExcludePublicId UNIQUEIDENTIFIER = NULL,
+    @RecentLimit INT = 10
 )
 AS
 BEGIN
@@ -862,6 +863,25 @@ BEGIN
     WHERE em.[FromAddress] = @FromEmail
     GROUP BY v.[Id], v.[PublicId], v.[Name]
     ORDER BY VendorName;
+
+    -- Result set 3: most recent N classified prior emails from this sender.
+    -- The agent reads this to see WHAT was decided + WHY on similar prior
+    -- emails, not just aggregate counts. Cuts down on classification
+    -- mistakes when a sender's emails have varied over time (e.g. vendor
+    -- that switched from invoices to statements). Ordered newest-first so
+    -- the most relevant prior decision is at the top.
+    SELECT TOP (@RecentLimit)
+        CAST([PublicId] AS NVARCHAR(36))                 AS EmailPublicId,
+        [Subject]                                        AS Subject,
+        CONVERT(VARCHAR(19), [ReceivedDatetime], 120)    AS ReceivedDatetime,
+        [AgentClassification]                            AS Classification,
+        [AgentClassificationReason]                      AS ClassificationReason,
+        [AgentDecidedAction]                             AS DecidedAction
+    FROM dbo.[EmailMessage]
+    WHERE [FromAddress] = @FromEmail
+      AND (@ExcludePublicId IS NULL OR [PublicId] <> @ExcludePublicId)
+      AND [AgentClassification] IS NOT NULL
+    ORDER BY [ReceivedDatetime] DESC;
 END;
 GO
 GO

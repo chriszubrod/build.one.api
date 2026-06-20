@@ -116,6 +116,19 @@ def get_email_message_by_public_id_router(
         d.pop("di_result_json", None)
         attachments.append(d)
     payload["attachments"] = attachments
+    # Reply-text isolation: split the body into (new_text, quoted_history)
+    # so the agent reads the sender's actual new content first and only
+    # falls back to the quoted-history block when the new-text portion
+    # alone isn't enough context. Best-effort — when no quote boundary is
+    # detected, body_new_text carries the whole body and body_quoted_history
+    # is null. Both fields are PLAIN TEXT regardless of body_content_type.
+    # The original body_content is preserved unchanged for backward compat.
+    from entities.email_message.business.service import isolate_new_text
+    new_text, quoted_history = isolate_new_text(
+        email.body_content, email.body_content_type
+    )
+    payload["body_new_text"] = new_text
+    payload["body_quoted_history"] = quoted_history
     # Reverse lookup: any Bill carrying this email's id as its source.
     # Lazy import to avoid pulling the Bill module into the email-message
     # service's import graph at startup.
@@ -144,6 +157,18 @@ def get_email_message_attachments_router(
 @router.post("/email-attachments/{public_id}/extract")
 def extract_email_attachment_router(
     public_id: str,
+    force_inline: bool = Query(
+        default=False,
+        description=(
+            "When true, force-extract an inline attachment by fetching the "
+            "bytes from MS Graph on demand (inline attachments are not "
+            "persisted to blob storage). Use only when the visible text "
+            "signal is ambiguous and an inline image — embedded screenshot, "
+            "pasted remit advice — might carry decisive context. Default "
+            "False preserves the existing cost-saving behavior of "
+            "auto-skipping inline attachments."
+        ),
+    ),
     current_user: dict = Depends(require_module_api(Modules.EMAIL_MESSAGES, "can_update")),
 ):
     """Run Document Intelligence on a single EmailAttachment.
@@ -153,7 +178,9 @@ def extract_email_attachment_router(
     + validation outcome, suitable for the agent to reason over.
     """
     return item_response(
-        EmailAttachmentExtractionService().extract_by_public_id(public_id)
+        EmailAttachmentExtractionService().extract_by_public_id(
+            public_id, force_inline=force_inline
+        )
     )
 
 

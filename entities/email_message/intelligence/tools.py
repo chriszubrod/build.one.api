@@ -222,10 +222,30 @@ read_email_message = Tool(
 # ─── Write tools (no approval — internal bookkeeping) ────────────────────
 
 
+class _ExtractEmailAttachmentArgs(BaseModel):
+    public_id: str = Field(description="UUID of the EmailAttachment.")
+    force_inline: bool = Field(
+        default=False,
+        description=(
+            "When true, force-extract an inline attachment (signature "
+            "image, embedded screenshot, pasted remit advice) by fetching "
+            "the bytes from MS Graph on demand. Inline attachments are "
+            "skipped by default because most are low-signal signature "
+            "images that burn DI cost for nothing. Set this to true ONLY "
+            "when the email's text signal is ambiguous AND an inline image "
+            "might carry decisive context — e.g. a screenshot of a remit "
+            "advice pasted into a vendor reply, or an embedded receipt "
+            "image. Re-runs are cached on the row, so a second call won't "
+            "re-pay DI or re-fetch from Graph."
+        ),
+    )
+
+
 async def _extract_email_attachment(args: dict, ctx: ToolContext) -> ToolResult:
-    parsed = _PublicIdArgs(**args)
+    parsed = _ExtractEmailAttachmentArgs(**args)
+    qs = "?force_inline=true" if parsed.force_inline else ""
     return await ctx.call_api(
-        "POST", f"/api/v1/email-attachments/{parsed.public_id}/extract"
+        "POST", f"/api/v1/email-attachments/{parsed.public_id}/extract{qs}"
     )
 
 
@@ -248,10 +268,14 @@ extract_email_attachment = Tool(
         "Call on every PDF/JPG/PNG/TIFF attachment that isn't inline. "
         "DI doesn't support xlsx/docx; flag those emails for review "
         "without calling extract.\n\n"
+        "Inline attachments (signature images, embedded screenshots) are "
+        "skipped by default. Pass `force_inline=true` when the text "
+        "signal is ambiguous and an inline image might carry decisive "
+        "context.\n\n"
         "Idempotent — re-running on the same attachment overwrites the "
         "stored DI result with the latest run."
     ),
-    input_schema=input_schema_from(_PublicIdArgs),
+    input_schema=input_schema_from(_ExtractEmailAttachmentArgs),
     handler=_extract_email_attachment,
 )
 

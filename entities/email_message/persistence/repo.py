@@ -288,6 +288,20 @@ class EmailMessageRepository:
                             "name": vrow.VendorName,
                             "bill_count": vrow.BillCount,
                         })
+                # Third result set: most-recent N classified prior emails
+                # from this sender. Lets the agent read WHAT was decided
+                # + WHY on similar prior emails, not just aggregate counts.
+                recent_classifications: list[dict] = []
+                if cursor.nextset():
+                    for rrow in cursor.fetchall():
+                        recent_classifications.append({
+                            "email_public_id":       rrow.EmailPublicId,
+                            "subject":               rrow.Subject,
+                            "received_datetime":     rrow.ReceivedDatetime,
+                            "classification":        rrow.Classification,
+                            "classification_reason": rrow.ClassificationReason,
+                            "decided_action":        rrow.DecidedAction,
+                        })
                 if not agg_row:
                     return {
                         "from_email": from_email,
@@ -296,6 +310,7 @@ class EmailMessageRepository:
                         "prior_expenses_committed": 0,
                         "prior_bill_credits_committed": 0,
                         "associated_vendors": vendors,
+                        "recent_classifications": recent_classifications,
                     }
                 return {
                     "from_email": from_email,
@@ -341,6 +356,7 @@ class EmailMessageRepository:
                     "prior_expenses_committed":      int(agg_row.PriorExpensesCommitted or 0),
                     "prior_bill_credits_committed":  int(agg_row.PriorBillCreditsCommitted or 0),
                     "associated_vendors":            vendors,
+                    "recent_classifications":        recent_classifications,
                 }
         except Exception as error:
             logger.error(f"Error reading email sender history: {error}")

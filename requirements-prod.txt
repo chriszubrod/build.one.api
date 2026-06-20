@@ -6,6 +6,7 @@ APScheduler==3.10.4
 async-timeout==4.0.3
 azure-monitor-opentelemetry==1.6.9
 bcrypt==4.1.2
+beautifulsoup4==4.14.3
 bracex==2.6
 certifi==2025.10.5
 cffi==2.0.0

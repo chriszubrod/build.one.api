@@ -78,7 +78,9 @@ class BillLineItemConnector:
         # Map QBO BillLine fields to BillLineItem module fields
         description = qbo_bill_line.description
         amount = qbo_bill_line.amount
-        qty = int(qbo_bill_line.qty) if qbo_bill_line.qty else None
+        # Keep fractional quantities (e.g. 2.5 hrs) — BillLineItem.Quantity is DECIMAL.
+        # Use `is not None` so a legitimate 0 quantity isn't dropped.
+        qty = qbo_bill_line.qty if qbo_bill_line.qty is not None else None
         rate = qbo_bill_line.unit_price
         
         # Map markup from QBO (QBO uses percentage like 10 for 10%, convert to decimal 0.10)
@@ -264,13 +266,15 @@ class BillLineItemConnector:
         rate,
     ):
         """
-        Find at most one unmapped line item whose content fingerprint matches.
+        Find an unmapped line item whose content fingerprint matches, POSITION-AWARE.
 
-        The fingerprint is `(description, amount, quantity, rate)` — the four
-        fields most likely to uniquely identify a line. Exact match on all four
-        is required. If zero or multiple candidates match, returns None — the
-        caller falls through to creating a new BillLineItem rather than risk
-        adopting the wrong one.
+        The fingerprint is `(description, amount, quantity, rate)`. When several
+        unmapped lines share a fingerprint (a 50-50 split, repeated draws), we return
+        the FIRST in stable position order (by id ≈ creation ≈ LineNum). The caller
+        consumes it (creates a mapping) before the next QBO line, so processing QBO
+        lines in order pairs identical-content lines 1:1 by position. This is robust
+        to QBO regenerating line ids even with duplicate content, instead of bailing
+        and creating duplicates. Returns None only when nothing matches.
         """
         target = (
             self._normalize_for_fingerprint(description),
@@ -280,7 +284,7 @@ class BillLineItemConnector:
         )
 
         matches = []
-        for candidate in unmapped:
+        for candidate in sorted(unmapped, key=lambda c: getattr(c, "id", 0) or 0):
             candidate_fp = (
                 self._normalize_for_fingerprint(getattr(candidate, "description", None)),
                 self._normalize_for_fingerprint(getattr(candidate, "amount", None)),
@@ -290,14 +294,13 @@ class BillLineItemConnector:
             if candidate_fp == target:
                 matches.append(candidate)
 
-        if len(matches) == 1:
+        if matches:
+            if len(matches) > 1:
+                logger.info(
+                    f"{len(matches)} unmapped BillLineItems share (description, amount, qty, rate); "
+                    f"adopting the first by position (QBO line-id regeneration)"
+                )
             return matches[0]
-        if len(matches) > 1:
-            logger.info(
-                f"Content-fingerprint match ambiguous: {len(matches)} unmapped "
-                f"BillLineItems have identical (description, amount, qty, rate); "
-                f"creating new line rather than guessing"
-            )
         return None
 
     def create_mapping(self, bill_line_item_id: int, qbo_bill_line_id: int) -> BillLineItemBillLine:

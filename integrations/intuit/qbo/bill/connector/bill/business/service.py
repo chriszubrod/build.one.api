@@ -211,12 +211,24 @@ class BillBillConnector:
         from integrations.intuit.qbo.bill.connector.bill_line_item.business.service import BillLineItemConnector
         
         line_connector = BillLineItemConnector()
-        
+
+        # Attempt EVERY line (so the log enumerates all problems in one pass), collect
+        # failures, then RAISE if any failed. The Bill header total was already written
+        # from QBO, so swallowing a per-line failure would leave a silently unbalanced
+        # bill (header total != sum of lines). Raising marks the whole bill failed so
+        # the pull watermark holds and it retries; re-pull is idempotent.
+        failed = []
         for qbo_line in qbo_bill_lines:
             try:
                 line_connector.sync_from_qbo_bill_line(bill_id, qbo_line)
             except Exception as e:
                 logger.error(f"Failed to sync QboBillLine {qbo_line.id} to BillLineItem: {e}")
+                failed.append((qbo_line.id, str(e)))
+        if failed:
+            raise RuntimeError(
+                f"{len(failed)} of {len(qbo_bill_lines)} bill line(s) failed to project for "
+                f"bill_id={bill_id}: {failed}"
+            )
 
     def create_mapping(self, bill_id: int, qbo_bill_id: int) -> BillBill:
         """

@@ -167,8 +167,18 @@ class VendorCreditBillCreditConnector:
         # lives in the snapshot layer, and the connector matches existing
         # BillCreditLineItems via the (now-stable) line mapping (with a content
         # fingerprint fallback for QBO line-id regeneration).
+        # Attempt EVERY line, collect failures, then RAISE if any failed — never leave
+        # a BillCredit whose header total doesn't match its lines. Raising marks the
+        # whole credit failed so the pull watermark holds and it retries (idempotent).
+        failed = []
         for line in qbo_lines:
             try:
                 connector.sync_from_qbo_line(bill_credit_id, bill_credit_public_id, line)
             except Exception as e:
-                logger.warning(f"Error syncing line item {line.qbo_line_id}: {e}")
+                logger.error(f"Error syncing line item {line.qbo_line_id}: {e}")
+                failed.append((line.qbo_line_id, str(e)))
+        if failed:
+            raise RuntimeError(
+                f"{len(failed)} of {len(qbo_lines)} credit line(s) failed to project for "
+                f"bill_credit_id={bill_credit_id}: {failed}"
+            )

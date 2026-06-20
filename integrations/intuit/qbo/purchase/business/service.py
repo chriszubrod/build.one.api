@@ -340,27 +340,26 @@ class QboPurchaseService:
                     markup_percent=markup_percent,
                 )
 
-        # Delete stale lines — any locally-stored QboPurchaseLine whose qbo_line_id is
-        # no longer present in the QBO API response means QBO removed that line.
-        # Delete in order: mapping → ExpenseLineItem (cascade: attachment/blob) → QboPurchaseLine.
-        # The mapping must come first: FK_PurchaseLineExpenseLineItem_ExpenseLineItem (NO ACTION)
-        # blocks deleting an ExpenseLineItem while its mapping row still references it.
+        # Stale lines — any locally-stored QboPurchaseLine whose qbo_line_id is no longer
+        # present in the QBO API response means QBO removed (or regenerated the id of) that
+        # line. ORPHAN the local ExpenseLineItem (delete only the QBO mapping + the
+        # QboPurchaseLine staging row) rather than DELETING the ExpenseLineItem + its
+        # attachment — matching Bill/VendorCredit. Destroying the local line on a QBO
+        # line-id regeneration was a data-loss path; keeping it (unmapped) lets the
+        # connector's content-fingerprint fallback re-adopt it on the same pull.
         from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import PurchaseLineExpenseLineItemRepository
-        from entities.expense_line_item.business.service import ExpenseLineItemService
         mapping_repo = PurchaseLineExpenseLineItemRepository()
-        expense_line_item_service = ExpenseLineItemService()
         stored_lines = self.line_repo.read_by_qbo_purchase_id(qbo_purchase_id)
         for stored_line in stored_lines:
             if stored_line.qbo_line_id not in current_qbo_line_ids:
                 logger.info(
                     f"Deleting stale QboPurchaseLine id={stored_line.id} "
-                    f"qbo_line_id={stored_line.qbo_line_id} (no longer in QBO response)"
+                    f"qbo_line_id={stored_line.qbo_line_id} (no longer in QBO response); "
+                    f"orphaning its ExpenseLineItem (kept for re-adoption)"
                 )
-                # Step 1: Delete the mapping FIRST.
-                # FK_PurchaseLineExpenseLineItem_ExpenseLineItem (NO ACTION) prevents deleting an
-                # ExpenseLineItem while a mapping row still references it — delete the mapping first
-                # so the subsequent ExpenseLineItem deletion is always safe.
-                stale_mapping = None
+                # Delete the mapping FIRST so the dbo ExpenseLineItem becomes unmapped
+                # (re-adoptable by the connector's fingerprint fallback), then the
+                # QboPurchaseLine staging row. The ExpenseLineItem itself is preserved.
                 mapping_cleaned = True
                 try:
                     stale_mapping = mapping_repo.read_by_qbo_purchase_line_id(stored_line.id)
@@ -371,17 +370,6 @@ class QboPurchaseService:
                     mapping_cleaned = False
                     logger.error(f"Could not delete stale mapping for QboPurchaseLine {stored_line.id}: {e} — skipping line deletion to prevent orphan")
 
-                # Step 2: Delete the linked ExpenseLineItem (now safe: mapping is gone)
-                if mapping_cleaned and stale_mapping:
-                    try:
-                        eli = expense_line_item_service.read_by_id(stale_mapping.expense_line_item_id)
-                        if eli:
-                            expense_line_item_service.delete_by_public_id(eli.public_id)
-                            logger.info(f"Deleted stale ExpenseLineItem id={eli.id} linked to QboPurchaseLine {stored_line.id}")
-                    except Exception as e:
-                        logger.error(f"Could not delete stale ExpenseLineItem for QboPurchaseLine {stored_line.id}: {e}")
-
-                # Step 3: Delete the QboPurchaseLine itself
                 if mapping_cleaned:
                     try:
                         self.line_repo.delete_by_id(stored_line.id)

@@ -46,7 +46,7 @@ class BillLineItemRepository:
                 sub_cost_code_id=getattr(row, "SubCostCodeId", None),
                 project_id=getattr(row, "ProjectId", None),
                 description=getattr(row, "Description", None),
-                quantity=int(getattr(row, "Quantity", None)) if getattr(row, "Quantity", None) is not None else None,
+                quantity=Decimal(str(getattr(row, "Quantity", None))) if getattr(row, "Quantity", None) is not None else None,
                 rate=Decimal(str(getattr(row, "Rate", None))) if getattr(row, "Rate", None) is not None else None,
                 amount=Decimal(str(getattr(row, "Amount", None))) if getattr(row, "Amount", None) is not None else None,
                 is_billable=bool(getattr(row, "IsBillable", False)) if getattr(row, "IsBillable", None) is not None else None,

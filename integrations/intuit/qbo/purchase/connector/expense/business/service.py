@@ -208,10 +208,11 @@ class PurchaseExpenseConnector:
                 failed_line_ids.append(qbo_line.id)
 
         if failed_line_ids:
-            logger.warning(
+            # Raise so the whole expense is marked failed (pull watermark holds + retries)
+            # rather than silently leaving an expense whose total != sum of its lines.
+            raise RuntimeError(
                 f"Expense {expense_id}: {len(failed_line_ids)} of {len(qbo_purchase_lines)} "
-                f"line items failed to sync and are missing locally. "
-                f"Failed QboPurchaseLine ids: {failed_line_ids}"
+                f"line item(s) failed to project: {failed_line_ids}"
             )
 
     def create_mapping(self, expense_id: int, qbo_purchase_id: int) -> PurchaseExpense:

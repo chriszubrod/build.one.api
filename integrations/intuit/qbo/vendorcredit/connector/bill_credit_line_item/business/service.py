@@ -164,12 +164,13 @@ class VendorCreditLineItemConnector:
 
     def _match_unmapped_by_fingerprint(self, bill_credit_id: int, qbo_line: QboVendorCreditLine):
         """
-        Find at most one unmapped BillCreditLineItem on this credit whose
-        (description, amount, qty, unit_price) matches the QBO line. The full
-        4-field key (parity with Bill's _match_by_fingerprint) keeps distinct lines
-        that merely share description+amount distinguishable, so they're adopted in
-        place rather than duplicated. Returns None on zero or multiple matches
-        (ambiguous → create new rather than adopt the wrong one).
+        Find an unmapped BillCreditLineItem whose (description, amount, qty, unit_price)
+        matches the QBO line, POSITION-AWARE. When several unmapped lines share a
+        fingerprint (a 50-50 split, repeated draws), return the FIRST in stable position
+        order (by id ≈ creation ≈ LineNum). The caller consumes it (creates a mapping)
+        before the next QBO line, so processing lines in order pairs identical-content
+        lines 1:1 by position — robust to QBO line-id regeneration even with duplicate
+        content, instead of bailing and duplicating. Returns None only when nothing matches.
         """
         existing = self.bill_credit_line_item_service.read_by_bill_credit_id(bill_credit_id)
         target = (
@@ -177,20 +178,20 @@ class VendorCreditLineItemConnector:
             self._fingerprint(qbo_line.qty), self._fingerprint(qbo_line.unit_price),
         )
         matches = [
-            li for li in existing
+            li for li in sorted(existing, key=lambda c: getattr(c, "id", 0) or 0)
             if not self.mapping_repo.read_by_bill_credit_line_item_id(li.id)
             and (
                 self._fingerprint(li.description), self._fingerprint(li.amount),
                 self._fingerprint(li.quantity), self._fingerprint(li.unit_price),
             ) == target
         ]
-        if len(matches) == 1:
+        if matches:
+            if len(matches) > 1:
+                logger.info(
+                    f"{len(matches)} unmapped BillCreditLineItems share the fingerprint for "
+                    f"QboVendorCreditLine {qbo_line.id}; adopting the first by position"
+                )
             return matches[0]
-        if len(matches) > 1:
-            logger.info(
-                f"Fingerprint match ambiguous for QboVendorCreditLine {qbo_line.id}: "
-                f"{len(matches)} unmapped lines share (description, amount); creating new"
-            )
         return None
 
     def _get_project_public_id(self, qbo_customer_ref_value: str) -> Optional[str]:

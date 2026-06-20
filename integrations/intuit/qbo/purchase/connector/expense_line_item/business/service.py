@@ -325,13 +325,17 @@ class PurchaseLineExpenseLineItemConnector:
         rate,
     ):
         """
-        Find at most one unmapped ExpenseLineItem on this expense whose content
-        fingerprint matches. Returns None on zero or ambiguous matches (caller
-        falls through to creating a new line rather than guessing).
+        Find an unmapped ExpenseLineItem whose content fingerprint matches,
+        POSITION-AWARE. When several unmapped lines share a fingerprint, return the
+        FIRST in stable position order (by id ≈ creation ≈ LineNum). The caller
+        consumes it (creates a mapping) before the next QBO line, so processing lines
+        in order pairs identical-content lines 1:1 by position — robust to QBO line-id
+        regeneration even with duplicate content, instead of bailing and duplicating.
+        Returns None only when nothing matches.
         """
         existing = self.expense_line_item_service.read_by_expense_id(expense_id=expense_id)
         unmapped = [
-            li for li in existing
+            li for li in sorted(existing, key=lambda c: int(getattr(c, "id", 0) or 0))
             if not self.mapping_repo.read_by_expense_line_item_id(int(li.id))
         ]
 
@@ -353,13 +357,13 @@ class PurchaseLineExpenseLineItemConnector:
             if candidate_fp == target:
                 matches.append(candidate)
 
-        if len(matches) == 1:
+        if matches:
+            if len(matches) > 1:
+                logger.info(
+                    f"{len(matches)} unmapped ExpenseLineItems share the fingerprint; "
+                    f"adopting the first by position (QBO line-id regeneration)"
+                )
             return matches[0]
-        if len(matches) > 1:
-            logger.info(
-                f"Content-fingerprint match ambiguous: {len(matches)} unmapped "
-                f"ExpenseLineItems have identical fingerprint; creating new line"
-            )
         return None
 
     def get_mapping_by_expense_line_item_id(self, expense_line_item_id: int) -> Optional[PurchaseLineExpenseLineItem]:

@@ -223,6 +223,60 @@ class EmailMessageRepository:
             logger.error(f"Error reading active conversation ids: {error}")
             raise map_database_error(error)
 
+    def read_by_conversation_id(
+        self,
+        *,
+        conversation_id: str,
+        exclude_public_id: Optional[str] = None,
+        max_rows: int = 50,
+    ) -> list[EmailMessage]:
+        """Return all EmailMessages sharing this Graph ConversationId,
+        ordered oldest → newest. Powers `read_email_thread` — the agent
+        reads sibling-thread context as the strongest single signal for
+        what the current email means."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadEmailMessagesByConversationId",
+                    params={
+                        "ConversationId":  conversation_id,
+                        "ExcludePublicId": exclude_public_id,
+                        "MaxRows":         max_rows,
+                    },
+                )
+                rows = []
+                for row in cursor.fetchall():
+                    rows.append(EmailMessage(
+                        id=row.Id,
+                        public_id=str(row.PublicId) if row.PublicId else None,
+                        created_datetime=row.CreatedDatetime,
+                        received_datetime=row.ReceivedDatetime,
+                        graph_message_id=row.GraphMessageId,
+                        internet_message_id=getattr(row, "InternetMessageId", None),
+                        conversation_id=row.ConversationId,
+                        mailbox_address=row.MailboxAddress,
+                        from_address=row.FromAddress,
+                        from_name=row.FromName,
+                        subject=row.Subject,
+                        body_preview=row.BodyPreview,
+                        has_attachments=bool(row.HasAttachments),
+                        folder=row.Folder,
+                        processing_status=row.ProcessingStatus,
+                        agent_classification=getattr(row, "AgentClassification", None),
+                        agent_classification_reason=getattr(row, "AgentClassificationReason", None),
+                        agent_decided_action=getattr(row, "AgentDecidedAction", None),
+                        agent_classification_confidence=(
+                            Decimal(str(row.AgentClassificationConfidence))
+                            if row.AgentClassificationConfidence is not None else None
+                        ),
+                    ))
+                return rows
+        except Exception as error:
+            logger.error(f"Error reading email messages by conversation id: {error}")
+            raise map_database_error(error)
+
     def update_status(self, *, id: int, processing_status: str,
                       last_error: Optional[str] = None,
                       agent_session_id: Optional[int] = None,

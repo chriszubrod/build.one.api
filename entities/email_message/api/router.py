@@ -151,6 +151,120 @@ def get_email_message_attachments_router(
     return list_response([r.to_dict() for r in rows])
 
 
+@router.get("/email-messages/gather-invoice-context")
+def gather_invoice_context_router(
+    email_message_id: str = Query(
+        ...,
+        description="UUID of the focal EmailMessage.",
+    ),
+    email_attachment_id: Optional[str] = Query(
+        default=None,
+        description=(
+            "Optional UUID of the invoice attachment to use as the source "
+            "of DI typed fields. When omitted, the first attachment with a "
+            "populated DiInvoiceNumber is used."
+        ),
+    ),
+    current_user: dict = Depends(require_module_api(Modules.EMAIL_MESSAGES)),
+):
+    """One-call gather for invoice-shaped emails: vendor candidates +
+    project candidates + existing-bill dedup, bundled.
+
+    Replaces the three chained calls (find_vendor_for_invoice + delegate
+    to project_specialist + manual bill search) with a single read.
+    Powers the agent's `gather_invoice_context` tool.
+
+    Reads from the focal attachment's recorded DI typed columns —
+    `extract_email_attachment` + `record_extracted_fields` must have
+    been called first. Returns `extraction_required=true` when no
+    attachment carries typed overlay yet.
+
+    Existing-bill dedup is a non-trivial signal: when populated, the
+    agent must NOT create a duplicate Bill; it should either link the
+    email to the existing Bill (via the existing
+    LinkBillSourceEmailMessage path) or surface the dup and skip
+    creating a new one.
+    """
+    service = EmailMessageService()
+    email = service.read_by_public_id(public_id=email_message_id)
+    if not email:
+        raise_not_found("Email message")
+    attachment_id: Optional[int] = None
+    if email_attachment_id is not None:
+        from entities.email_message.persistence.repo import EmailAttachmentRepository
+        ea = EmailAttachmentRepository().read_by_public_id(email_attachment_id)
+        if not ea or ea.email_message_id != email.id:
+            raise_not_found("Email attachment")
+        attachment_id = ea.id
+    return item_response(service.gather_invoice_context(
+        email_message_id=email.id,
+        email_attachment_id=attachment_id,
+    ))
+
+
+@router.get("/get/email-message/{public_id}/attachment-totals")
+def get_email_message_attachment_totals_router(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.EMAIL_MESSAGES)),
+):
+    """Sum DI-extracted total_amount across all attachments on an email.
+
+    Used by the email agent's `compute_attachment_totals` tool: the agent
+    compares the sum against any balance-due claim in the body as a
+    strong completeness signal. Greenrise's 5 attached invoices summed
+    exactly to $6,102.50, matching the vendor's claimed balance — that
+    math reconciliation was the decisive signal the agent should detect
+    automatically rather than each agent re-deriving it.
+
+    Returns per-attachment Di* breakdown + aggregate sum + currency. Sum
+    is null when no extractions exist OR when attachments use mixed
+    currencies (refuse-to-sum). Use the per-attachment list to compare
+    against the body's stated balance manually in that case.
+    """
+    service = EmailMessageService()
+    email = service.read_by_public_id(public_id=public_id)
+    if not email:
+        raise_not_found("Email message")
+    return item_response(service.compute_attachment_totals(email_message_id=email.id))
+
+
+@router.get("/get/email-message/{public_id}/thread")
+def get_email_message_thread_router(
+    public_id: str,
+    max_rows: int = Query(
+        default=50, ge=1, le=200,
+        description="Maximum number of sibling messages to return.",
+    ),
+    current_user: dict = Depends(require_module_api(Modules.EMAIL_MESSAGES)),
+):
+    """Sibling EmailMessages in the same Graph conversation thread.
+
+    Returns all EmailMessage rows sharing the focal email's
+    `ConversationId`, ordered oldest → newest. The focal email itself is
+    excluded (use `read_email_message` for that). Powers the agent's
+    `read_email_thread` tool: the prior emails in the same conversation
+    are usually the strongest single signal for what the current email
+    means (e.g. a vendor's collections email only makes sense alongside
+    the prior exchanges in that thread).
+
+    Header-only — `body_content` + attachments are NOT included to keep
+    the response slim. Call `read_email_message` on any sibling whose
+    body the agent needs to read in full.
+    """
+    service = EmailMessageService()
+    email = service.read_by_public_id(public_id=public_id)
+    if not email:
+        raise_not_found("Email message")
+    if not email.conversation_id:
+        return list_response([])
+    siblings = service.read_thread_by_conversation_id(
+        conversation_id=email.conversation_id,
+        exclude_public_id=public_id,
+        max_rows=max_rows,
+    )
+    return list_response([s.to_dict() for s in siblings])
+
+
 # ─── Write endpoints (agent uses these via tools) ─────────────────────────
 
 

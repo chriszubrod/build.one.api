@@ -179,6 +179,16 @@ CREATE NONCLUSTERED INDEX IX_EmailMessage_GraphMessageId
 END
 GO
 
+-- (Phase B, 2026-05-28) ConversationId lookup index. Backs
+-- ReadEmailMessagesByConversationId (sibling-thread context for the
+-- email agent) + the existing ReadActiveConversationIds GROUP BY.
+IF OBJECT_ID('dbo.EmailMessage', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_EmailMessage_ConversationId' AND object_id = OBJECT_ID('dbo.EmailMessage'))
+BEGIN
+CREATE NONCLUSTERED INDEX IX_EmailMessage_ConversationId
+    ON dbo.[EmailMessage] ([ConversationId], [ReceivedDatetime]);
+END
+GO
+
 GO
 
 -- Active conversation IDs from recent EmailMessage rows. Used by the
@@ -210,6 +220,50 @@ BEGIN
         GROUP BY [ConversationId]
     ) g
     ORDER BY g.LastSeen DESC;
+END;
+GO
+
+-- Sibling-thread context lookup. Returns header-only EmailMessage rows
+-- belonging to the same Graph conversation thread, ordered oldest
+-- → newest so the agent reads the chronology in order. Powers
+-- read_email_thread (Phase B, 2026-05-28): the prior emails in the
+-- same conversation are usually the strongest signal for what THIS
+-- email means (e.g. NSW's collections email only makes sense alongside
+-- the 4 prior exchanges).
+CREATE OR ALTER PROCEDURE ReadEmailMessagesByConversationId
+(
+    @ConversationId NVARCHAR(255),
+    @ExcludePublicId UNIQUEIDENTIFIER = NULL,
+    @MaxRows INT = 50
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP (@MaxRows)
+        [Id],
+        CAST([PublicId] AS NVARCHAR(36))                  AS PublicId,
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120)      AS CreatedDatetime,
+        CONVERT(VARCHAR(19), [ReceivedDatetime], 120)     AS ReceivedDatetime,
+        [GraphMessageId],
+        [InternetMessageId],
+        [ConversationId],
+        [MailboxAddress],
+        [FromAddress],
+        [FromName],
+        [Subject],
+        [BodyPreview],
+        [HasAttachments],
+        [Folder],
+        [ProcessingStatus],
+        [AgentClassification],
+        [AgentClassificationReason],
+        [AgentDecidedAction],
+        [AgentClassificationConfidence]
+    FROM dbo.[EmailMessage]
+    WHERE [ConversationId] = @ConversationId
+      AND (@ExcludePublicId IS NULL OR [PublicId] <> @ExcludePublicId)
+    ORDER BY [ReceivedDatetime] ASC, [CreatedDatetime] ASC;
 END;
 GO
 

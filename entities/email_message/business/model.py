@@ -30,6 +30,7 @@ class EmailMessage:
     agent_session_id: Optional[int] = None
     web_link: Optional[str] = None
     has_attachments: bool = False
+    folder: Optional[str] = None
     # Agent classification stamp — set by mark_email_outcome. See
     # email_specialist prompt for the controlled vocabulary.
     agent_classification: Optional[str] = None

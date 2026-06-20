@@ -445,14 +445,165 @@ record_extracted_fields = Tool(
 )
 
 
+# ─── Sibling-thread context (read) ─────────────────────────────────────
+
+
+class _ReadEmailThreadArgs(BaseModel):
+    public_id: str = Field(description="UUID of the focal EmailMessage.")
+    max_rows: int = Field(
+        default=50, ge=1, le=200,
+        description=(
+            "Maximum number of sibling messages to return, oldest first. "
+            "Default 50 covers nearly every real thread; raise to 200 if "
+            "you hit a long-running collections / dispute chain."
+        ),
+    )
+
+
+async def _read_email_thread(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = _ReadEmailThreadArgs(**args)
+    return await ctx.call_api(
+        "GET",
+        f"/api/v1/get/email-message/{parsed.public_id}/thread?max_rows={parsed.max_rows}",
+    )
+
+
+read_email_thread = Tool(
+    name="read_email_thread",
+    description=(
+        "Read sibling EmailMessages in the same Graph conversation thread "
+        "as the focal email, oldest → newest. The focal email itself is "
+        "excluded — call `read_email_message` for its body.\n\n"
+        "Use this as the second call after `read_email_message` whenever "
+        "the focal email is a reply / forward (subject starts with `Re:` "
+        "/ `Fw:` / `Fwd:`, or `body_quoted_history` is non-empty). The "
+        "prior emails in the same conversation are usually the strongest "
+        "single signal for what the current email means — a vendor's "
+        "collections reply only makes sense alongside the 4 prior "
+        "exchanges; a PM's `Re:` only makes sense alongside the "
+        "notification it's responding to.\n\n"
+        "Returns header-only rows (subject, from, received, "
+        "classification, decided_action, body_preview, has_attachments). "
+        "Body content + attachments NOT included — call "
+        "`read_email_message` on any sibling whose body you need in full."
+    ),
+    input_schema=input_schema_from(_ReadEmailThreadArgs),
+    handler=_read_email_thread,
+)
+
+
+# ─── Cross-attachment math (read) ──────────────────────────────────────
+
+
+async def _compute_attachment_totals(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = _PublicIdArgs(**args)
+    return await ctx.call_api(
+        "GET", f"/api/v1/get/email-message/{parsed.public_id}/attachment-totals"
+    )
+
+
+compute_attachment_totals = Tool(
+    name="compute_attachment_totals",
+    description=(
+        "Sum the DI-extracted `total_amount` across all attachments on an "
+        "email and return the per-attachment breakdown alongside the sum.\n\n"
+        "Use this AFTER you've run `extract_email_attachment` + "
+        "`record_extracted_fields` on every attachment that warranted "
+        "extraction. The math is a decisive completeness signal — when a "
+        "vendor's email claims a balance due (e.g. \"we are owed "
+        "$6,102.50\"), summing the attached invoices should reconcile to "
+        "that amount. Yesterday's Greenrise case had 5 PDFs summing "
+        "exactly to the claimed balance — that match made the agent's "
+        "next action obvious instead of leaving it to be inferred.\n\n"
+        "Returns:\n"
+        "  • `extracted_count` / `skipped_count`\n"
+        "  • `sum` — total in the unanimous currency, or null when "
+        "    attachments use mixed currencies (refuse-to-sum)\n"
+        "  • `currency` + `currencies_seen`\n"
+        "  • `per_attachment` — every attachment's DI typed fields "
+        "    (vendor, invoice_number, invoice_date, total, currency, "
+        "    extraction_status) for line-by-line comparison\n\n"
+        "Compare `sum` against any balance/total mentioned in the email "
+        "body and surface the match in your classification reasoning."
+    ),
+    input_schema=input_schema_from(_PublicIdArgs),
+    handler=_compute_attachment_totals,
+)
+
+
+# ─── Invoice-context aggregator (read) ─────────────────────────────────
+
+
+class _GatherInvoiceContextArgs(BaseModel):
+    email_message_public_id: str = Field(description="UUID of the focal EmailMessage.")
+    email_attachment_public_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional UUID of the invoice attachment to use as the source "
+            "of DI typed fields. When omitted, the helper picks the first "
+            "attachment with a populated DiInvoiceNumber."
+        ),
+    )
+
+
+async def _gather_invoice_context(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = _GatherInvoiceContextArgs(**args)
+    qs = f"email_message_id={parsed.email_message_public_id}"
+    if parsed.email_attachment_public_id:
+        qs += f"&email_attachment_id={parsed.email_attachment_public_id}"
+    return await ctx.call_api(
+        "GET", f"/api/v1/email-messages/gather-invoice-context?{qs}"
+    )
+
+
+gather_invoice_context = Tool(
+    name="gather_invoice_context",
+    description=(
+        "One-call gather for invoice-shaped emails: vendor candidates + "
+        "project candidates + existing-bill dedup, bundled. Replaces the "
+        "three chained calls (find_vendor_for_invoice + delegate to "
+        "project_specialist + manual bill search) with a single read.\n\n"
+        "Reads from the focal attachment's DI typed columns — call "
+        "`extract_email_attachment` + `record_extracted_fields` on the "
+        "invoice attachment FIRST. If no attachment carries recorded "
+        "typed fields yet, the response carries "
+        "`extraction_required=true` with a hint to back up and extract.\n\n"
+        "Returns:\n"
+        "  • `di_typed` — the typed DI fields the helper used "
+        "(vendor_name, invoice_number, dates, total, currency, source "
+        "attachment public_id)\n"
+        "  • `vendor_candidates` — top 5 from FindVendorForInvoice using "
+        "the agent's recorded vendor_name + the email's sender domain. "
+        "Each carries `vendor.notes` so vendor-specific rules (e.g. "
+        "\"trim /N suffix from invoice numbers\") are visible.\n"
+        "  • `project_candidates` — top 5 from FindProjectForInvoice "
+        "using email subject + body_preview as the address hint. Empty "
+        "for multi-project / statement-level emails (correct — there is "
+        "no single project to bind).\n"
+        "  • `existing_bill_matches` — Bills already in the system "
+        "matching (top vendor candidates × DI invoice_number). When "
+        "non-empty, DO NOT create a duplicate Bill; the agent should "
+        "either link the email to the existing Bill or surface the dup "
+        "and skip.\n"
+        "  • `address_hint_used` / `sender_domain` — for transparency on "
+        "what fed the candidates."
+    ),
+    input_schema=input_schema_from(_GatherInvoiceContextArgs),
+    handler=_gather_invoice_context,
+)
+
+
 # ─── Self-register ───────────────────────────────────────────────────────
 
 for _tool in (
     read_email_message,
     search_email_sender_history,
+    read_email_thread,
     extract_email_attachment,
     record_extracted_fields,
     bridge_email_attachment,
+    compute_attachment_totals,
+    gather_invoice_context,
     mark_email_outcome,
 ):
     register(_tool)

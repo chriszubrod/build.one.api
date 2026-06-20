@@ -77,6 +77,246 @@ class EmailMessageService:
     def list_attachments(self, email_message_id: int) -> list[EmailAttachment]:
         return self.attachment_repo.read_by_email_message_id(email_message_id)
 
+    def gather_invoice_context(
+        self,
+        *,
+        email_message_id: int,
+        email_attachment_id: Optional[int] = None,
+    ) -> dict:
+        """Bundle the typical gather chain for an invoice-shaped email:
+        DI typed fields → vendor matches → project matches → existing-bill
+        dedup check. One call replaces ~5 chained calls the agent would
+        otherwise make.
+
+        Inputs:
+          email_message_id    — required
+          email_attachment_id — optional; if omitted, the first attachment
+                                with a populated DiInvoiceNumber is used.
+                                If no attachment has typed DI overlay
+                                populated, returns extraction_required=True.
+
+        Returns:
+          {
+            extraction_required: bool,
+            di_typed:           {vendor_name, invoice_number, invoice_date,
+                                 due_date, total_amount, currency,
+                                 source_attachment_public_id},
+            vendor_candidates:  [{vendor: {...}, confidence, strategy,
+                                  matched_term}, …]   (top 5 from FindVendor)
+            project_candidates: [{project: {...}, confidence, strategy,
+                                  matched_term}, …]   (top 5 from FindProject)
+            address_hint_used:  str | None  (what we fed FindProject)
+            sender_domain:      str | None
+            existing_bill_matches: [{bill_id, public_id, vendor_id,
+                                     vendor_name, bill_number, bill_date,
+                                     total_amount, is_draft,
+                                     source_email_message_id}, …]
+          }
+        """
+        # Lazy imports — avoid pulling the Bill/Vendor/Project modules into
+        # the email_message service's import graph at startup.
+        from entities.bill.persistence.repo import BillRepository
+        from entities.project.business.service import ProjectService
+        from entities.vendor.business.service import VendorService
+
+        email = self.repo.read_by_id(email_message_id)
+        if not email:
+            raise ValueError(f"EmailMessage not found: id={email_message_id}")
+
+        # Pick the focal attachment.
+        attachments = self.attachment_repo.read_by_email_message_id(email_message_id)
+        focal = None
+        if email_attachment_id is not None:
+            focal = next((a for a in attachments if a.id == email_attachment_id), None)
+            if focal is None:
+                raise ValueError(
+                    f"EmailAttachment {email_attachment_id} not on EmailMessage {email_message_id}"
+                )
+        else:
+            focal = next((a for a in attachments if a.di_invoice_number), None)
+            if focal is None:
+                focal = next(
+                    (a for a in attachments if a.extraction_status == "extracted"),
+                    None,
+                )
+
+        # Guard: nothing extracted yet OR typed overlay not recorded.
+        if focal is None or not (focal.di_invoice_number or focal.di_vendor_name):
+            return {
+                "extraction_required": True,
+                "di_typed":            {},
+                "vendor_candidates":   [],
+                "project_candidates":  [],
+                "address_hint_used":   None,
+                "sender_domain":       _domain_of(email.from_address),
+                "existing_bill_matches": [],
+                "hint": (
+                    "No attachment carries recorded DI typed fields yet. "
+                    "Call extract_email_attachment + record_extracted_fields "
+                    "on the invoice attachment first, then call this tool again."
+                ),
+            }
+
+        di_typed = {
+            "source_attachment_public_id": focal.public_id,
+            "vendor_name":    focal.di_vendor_name,
+            "invoice_number": focal.di_invoice_number,
+            "invoice_date":   focal.di_invoice_date,
+            "due_date":       focal.di_due_date,
+            "total_amount":   focal.di_total_amount,
+            "currency":       focal.di_currency,
+        }
+
+        sender_domain = _domain_of(email.from_address)
+
+        # Vendor candidates — FindVendorForInvoice using the agent's
+        # recorded vendor_name + the email's sender domain.
+        vendor_candidates: list[dict] = []
+        if di_typed["vendor_name"]:
+            try:
+                vendor_candidates = VendorService().find_for_invoice(
+                    vendor_name=di_typed["vendor_name"],
+                    sender_domain=sender_domain,
+                )
+            except Exception as e:
+                logger.warning(
+                    "gather_invoice_context.vendor_lookup_failed em=%s: %s",
+                    email_message_id, e,
+                )
+
+        # Project candidates — FindProjectForInvoice. The strongest address
+        # signal lives in DI raw JSON (Ship To / Worksite key-value pairs),
+        # but those don't have typed columns yet. Fall back to subject +
+        # body_preview as a passable address-hint corpus — many vendor
+        # emails ("Re: 7550 Buffalo Road", "TB3 - …") encode it there.
+        address_hint = " | ".join(
+            s for s in (email.subject, email.body_preview) if s
+        ).strip() or None
+        project_candidates: list[dict] = []
+        if address_hint:
+            try:
+                project_candidates = ProjectService().find_for_invoice(
+                    address_hint=address_hint,
+                )
+            except Exception as e:
+                logger.warning(
+                    "gather_invoice_context.project_lookup_failed em=%s: %s",
+                    email_message_id, e,
+                )
+
+        # Existing-bill dedup — read_by_bill_number_and_vendor_id for the
+        # top 2 vendor candidates. Doesn't dedup against amount/date
+        # because the BillNumber match is the strongest signal; the agent
+        # can compare amount/date manually against the returned rows.
+        existing_bill_matches: list[dict] = []
+        if di_typed["invoice_number"] and vendor_candidates:
+            bill_repo = BillRepository()
+            seen_bill_ids: set[int] = set()
+            for vc in vendor_candidates[:2]:
+                vid = (vc.get("vendor") or {}).get("id")
+                if not vid:
+                    continue
+                try:
+                    match = bill_repo.read_by_bill_number_and_vendor_id(
+                        bill_number=di_typed["invoice_number"],
+                        vendor_id=vid,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "gather_invoice_context.bill_dedup_failed em=%s vid=%s: %s",
+                        email_message_id, vid, e,
+                    )
+                    continue
+                if match is None or match.id in seen_bill_ids:
+                    continue
+                seen_bill_ids.add(match.id)
+                existing_bill_matches.append({
+                    "id":                       match.id,
+                    "public_id":                match.public_id,
+                    "vendor_id":                match.vendor_id,
+                    "vendor_name":              vc["vendor"].get("name"),
+                    "bill_number":              match.bill_number,
+                    "bill_date":                str(match.bill_date) if match.bill_date else None,
+                    "total_amount":             float(match.total_amount) if match.total_amount is not None else None,
+                    "is_draft":                 bool(match.is_draft) if match.is_draft is not None else None,
+                    "source_email_message_id":  match.source_email_message_id,
+                })
+
+        return {
+            "extraction_required":    False,
+            "di_typed":               di_typed,
+            "vendor_candidates":      vendor_candidates,
+            "project_candidates":     project_candidates,
+            "address_hint_used":      address_hint,
+            "sender_domain":          sender_domain,
+            "existing_bill_matches":  existing_bill_matches,
+        }
+
+    def compute_attachment_totals(self, email_message_id: int) -> dict:
+        """Sum DI-extracted total_amount across all attachments on an
+        email. Powers `compute_attachment_totals` — the agent compares
+        the sum against any balance-due claim in the body as a strong
+        completeness signal (e.g. Greenrise's 5 attached invoices
+        summed to $6,102.50, matching the claimed balance exactly).
+
+        Returns:
+          {
+            per_attachment: [{public_id, filename, extraction_status,
+                              di_vendor_name, di_invoice_number,
+                              di_invoice_date, di_total_amount,
+                              di_currency}, ...],
+            extracted_count: N,    # how many attachments had a numeric total
+            skipped_count: N,      # how many were skipped/failed/not-extracted
+            sum: Decimal | None,   # null when no extractions OR mixed currencies
+            currency: str | None,  # the unanimous currency, or null if mixed
+            currencies_seen: [str, ...],  # for diagnosis when sum is null
+          }
+        """
+        attachments = self.attachment_repo.read_by_email_message_id(email_message_id)
+        per_attachment: list[dict] = []
+        running_sum: Decimal = Decimal("0")
+        extracted_count = 0
+        skipped_count = 0
+        currencies_seen: set = set()
+        for a in attachments:
+            row = {
+                "public_id":         a.public_id,
+                "filename":          a.filename,
+                "extraction_status": a.extraction_status,
+                "di_vendor_name":    a.di_vendor_name,
+                "di_invoice_number": a.di_invoice_number,
+                "di_invoice_date":   a.di_invoice_date,
+                "di_total_amount":   a.di_total_amount,
+                "di_currency":       a.di_currency,
+            }
+            per_attachment.append(row)
+            if a.di_total_amount is not None:
+                running_sum += a.di_total_amount
+                extracted_count += 1
+                if a.di_currency:
+                    currencies_seen.add(a.di_currency.upper())
+            else:
+                skipped_count += 1
+        currency: Optional[str] = None
+        sum_value: Optional[Decimal] = None
+        if extracted_count > 0:
+            if len(currencies_seen) <= 1:
+                currency = next(iter(currencies_seen), None) or "USD"
+                sum_value = running_sum
+            else:
+                # Mixed currencies — refuse to sum. Agent should look at the
+                # per-attachment breakdown and decide what's comparable.
+                sum_value = None
+                currency = None
+        return {
+            "per_attachment":   per_attachment,
+            "extracted_count":  extracted_count,
+            "skipped_count":    skipped_count,
+            "sum":              sum_value,
+            "currency":         currency,
+            "currencies_seen":  sorted(currencies_seen),
+        }
+
     def update_status(self, *, id: int, processing_status: str,
                       last_error: Optional[str] = None,
                       agent_session_id: Optional[int] = None,
@@ -103,6 +343,23 @@ class EmailMessageService:
         return self.repo.read_sender_history(
             from_email=from_email,
             exclude_public_id=exclude_public_id,
+        )
+
+    def read_thread_by_conversation_id(
+        self,
+        *,
+        conversation_id: str,
+        exclude_public_id: Optional[str] = None,
+        max_rows: int = 50,
+    ) -> list[EmailMessage]:
+        """Return all EmailMessages in the same Graph conversation,
+        oldest first. Powers `read_email_thread` — the agent reads the
+        sibling-thread chronology as the strongest single signal for
+        what the current email means."""
+        return self.repo.read_by_conversation_id(
+            conversation_id=conversation_id,
+            exclude_public_id=exclude_public_id,
+            max_rows=max_rows,
         )
 
     def claim_next_pending(self) -> Optional[EmailMessage]:
@@ -891,6 +1148,13 @@ class EmailAttachmentExtractionService:
 
 def _decimal_to_str(d: Optional[Decimal]) -> Optional[str]:
     return str(d) if d is not None else None
+
+
+def _domain_of(email_address: Optional[str]) -> Optional[str]:
+    """Lowercase domain portion of an SMTP address, or None."""
+    if not email_address or "@" not in email_address:
+        return None
+    return email_address.rsplit("@", 1)[-1].strip().lower() or None
 
 
 # ─── Quoted-history isolation for reply / forward bodies ────────────────────

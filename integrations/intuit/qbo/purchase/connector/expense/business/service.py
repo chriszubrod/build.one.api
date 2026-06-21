@@ -669,6 +669,17 @@ def sync_purchase_attachments_to_expense_line_items(
         return 0
 
     linked = 0
+
+    # Pre-load existing links once, then track within-run links in the same set —
+    # avoids an N+1 re-query (each per-line read also re-resolved public_id->id) on
+    # every (attachment x line item) iteration.
+    linked_public_ids = {
+        a.expense_line_item_public_id
+        for a in expense_line_item_attachment_service.read_by_expense_line_item_ids(
+            [li.public_id for li in line_items if li.public_id]
+        )
+    }
+
     for qbo_attachable in qbo_attachables:
         mapping = attachable_attachment_repo.read_by_qbo_attachable_id(qbo_attachable.id)
         if not mapping:
@@ -681,12 +692,7 @@ def sync_purchase_attachments_to_expense_line_items(
         # Link this attachment to any line items that are not yet linked; skip those that are.
         attachment_linked_count = 0
         for line_item in line_items:
-            if not line_item.public_id:
-                continue
-            existing = expense_line_item_attachment_service.read_by_expense_line_item_id(
-                expense_line_item_public_id=line_item.public_id
-            )
-            if existing:
+            if not line_item.public_id or line_item.public_id in linked_public_ids:
                 continue
             try:
                 expense_line_item_attachment_service.create(
@@ -695,6 +701,7 @@ def sync_purchase_attachments_to_expense_line_items(
                 )
                 linked += 1
                 attachment_linked_count += 1
+                linked_public_ids.add(line_item.public_id)
             except Exception as e:
                 logger.debug(f"Could not link Attachment {attachment.id} to ExpenseLineItem {line_item.id}: {e}")
         if attachment_linked_count == 0:
@@ -706,130 +713,4 @@ def sync_purchase_attachments_to_expense_line_items(
 
     if linked > 0:
         logger.info(f"Created {linked} ExpenseLineItemAttachment links for Expense {expense_id}")
-    return linked
-
-
-def sync_purchase_attachments_to_needing_categorize_lines(
-    expense_id: int,
-    qbo_purchase_lines: List[QboPurchaseLine],
-    qbo_attachables: list,
-    realm_id: str,
-) -> int:
-    """
-    Link QBO attachables (already synced to Attachments) to ExpenseLineItem(s)
-    that correspond to PurchaseLines with AccountRefName containing 'NEED TO CATEGORIZE' or 'NEED TO UPDATE'.
-
-    QBO attachments are entity-level (not line-level), so we cannot do ID-based matching.
-    When there is exactly 1 "needing" line and 1 attachment, we link them 1:1.
-    When counts match, we link by position order (line_num ascending).
-    When counts don't match, we log a warning and link each attachment to ALL needing lines
-    (same pattern as sync_purchase_attachments_to_expense_line_items) to avoid wrong pairings.
-
-    Returns count of attachments linked.
-    """
-    NEED_PATTERNS = ("NEED TO CATEGORIZE", "NEED TO UPDATE")
-    needing_lines = sorted(
-        [
-            pl for pl in qbo_purchase_lines
-            if pl.account_ref_name and any(p.upper() in (pl.account_ref_name or "").upper() for p in NEED_PATTERNS)
-        ],
-        key=lambda pl: pl.line_num or 0,
-    )
-    if not needing_lines or not qbo_attachables:
-        return 0
-
-    from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import (
-        PurchaseLineExpenseLineItemRepository,
-    )
-    from integrations.intuit.qbo.attachable.connector.attachment.business.service import (
-        AttachableAttachmentConnector,
-    )
-    from entities.attachment.business.service import AttachmentService
-    from entities.expense_line_item_attachment.business.service import ExpenseLineItemAttachmentService
-
-    mapping_repo = PurchaseLineExpenseLineItemRepository()
-    attachment_connector = AttachableAttachmentConnector()
-    expense_line_item_service = ExpenseLineItemService()
-    expense_line_item_attachment_service = ExpenseLineItemAttachmentService()
-    attachment_service = AttachmentService()
-    linked = 0
-
-    # Resolve all needing lines to their ExpenseLineItems
-    resolved_line_items = []
-    for qbo_line in needing_lines:
-        mapping = mapping_repo.read_by_qbo_purchase_line_id(qbo_line.id)
-        if not mapping:
-            continue
-        line_item = expense_line_item_service.read_by_id(mapping.expense_line_item_id)
-        if not line_item or not line_item.public_id:
-            continue
-        resolved_line_items.append(line_item)
-
-    if not resolved_line_items:
-        return 0
-
-    # Resolve all attachables to Attachments
-    resolved_attachments = []
-    for qbo_att in qbo_attachables:
-        att_mapping = attachment_connector.get_mapping_by_qbo_attachable_id(qbo_att.id)
-        if not att_mapping:
-            continue
-        attachment = attachment_service.read_by_id(att_mapping.attachment_id)
-        if not attachment or not attachment.public_id:
-            continue
-        resolved_attachments.append(attachment)
-
-    if not resolved_attachments:
-        return 0
-
-    # Sort attachments by DB id for a stable, deterministic ordering across runs.
-    # QBO does not guarantee attachment order, so without this the position-based
-    # 1:1 pairing could match a different attachment to the same line on re-sync.
-    resolved_attachments.sort(key=lambda a: a.id if a.id else 0)
-
-    # Determine linking strategy based on count match
-    counts_match = len(resolved_line_items) == len(resolved_attachments)
-
-    if not counts_match:
-        logger.warning(
-            f"Expense {expense_id}: {len(resolved_line_items)} needing-categorize lines vs "
-            f"{len(resolved_attachments)} attachments — counts don't match. "
-            f"Linking each attachment to ALL needing lines to avoid wrong pairings."
-        )
-        # Link each attachment to each line item (safe fallback)
-        for attachment in resolved_attachments:
-            for line_item in resolved_line_items:
-                existing = expense_line_item_attachment_service.read_by_expense_line_item_id(
-                    expense_line_item_public_id=line_item.public_id
-                )
-                if existing:
-                    continue
-                try:
-                    expense_line_item_attachment_service.create(
-                        expense_line_item_public_id=line_item.public_id,
-                        attachment_public_id=attachment.public_id,
-                    )
-                    linked += 1
-                except Exception as e:
-                    logger.debug(f"Could not link Attachment {attachment.id} to ExpenseLineItem {line_item.id}: {e}")
-    else:
-        # Counts match — link 1:1 by position (sorted by line_num)
-        for line_item, attachment in zip(resolved_line_items, resolved_attachments):
-            existing = expense_line_item_attachment_service.read_by_expense_line_item_id(
-                expense_line_item_public_id=line_item.public_id
-            )
-            if existing:
-                continue
-            try:
-                expense_line_item_attachment_service.create(
-                    expense_line_item_public_id=line_item.public_id,
-                    attachment_public_id=attachment.public_id,
-                )
-                linked += 1
-            except Exception as e:
-                logger.error(f"Failed to link attachment {attachment.id} to line item {line_item.id}: {e}")
-
-    if linked > 0:
-        logger.info(f"Linked {linked} attachments to needing-categorize lines for Expense {expense_id}")
-
     return linked

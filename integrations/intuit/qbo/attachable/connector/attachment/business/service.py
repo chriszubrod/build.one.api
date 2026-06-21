@@ -65,14 +65,17 @@ class AttachableAttachmentConnector:
             # Found existing mapping - verify the Attachment and its blob still exist
             attachment = self.attachment_service.read_by_id(mapping.attachment_id)
             if attachment:
-                # Verify the blob still exists in Azure storage
+                # Verify the blob still exists in Azure storage with a lightweight
+                # HEAD probe (exists()) rather than downloading the whole file.
                 blob_ok = True
                 if attachment.blob_url:
                     try:
-                        storage = AzureBlobStorage()
-                        storage.download_file(attachment.blob_url)
+                        blob_ok = AzureBlobStorage().exists(attachment.blob_url)
                     except Exception:
+                        # Couldn't determine existence (auth/network) — treat as
+                        # missing so we re-download (heals) rather than trusting it.
                         blob_ok = False
+                    if not blob_ok:
                         logger.warning(
                             f"Attachment {attachment.id} blob missing at {attachment.blob_url} — "
                             f"re-downloading from QBO for QboAttachable {qbo_attachable.id}"
@@ -111,8 +114,16 @@ class AttachableAttachmentConnector:
                     # Re-read to get updated record
                     return self.attachment_service.read_by_id(attachment.id)
                 else:
+                    # Blob is gone AND re-download failed — do NOT return a record that
+                    # points at a missing blob (it would get linked to line items and
+                    # fail later in packets/exports). Raise so this attachable is skipped
+                    # this run and re-attempted on the next sync (attachments are
+                    # best-effort: the parent entity still projects).
                     logger.error(f"Could not re-download file from QBO for Attachment {attachment.id}")
-                    return attachment  # Return existing record even though blob is missing
+                    raise RuntimeError(
+                        f"Attachment {attachment.id} blob missing and re-download from QBO "
+                        f"failed for QboAttachable {qbo_attachable.id}"
+                    )
             else:
                 # Mapping exists but Attachment not found - recreate
                 logger.warning(f"Mapping exists but Attachment {mapping.attachment_id} not found. Creating new.")
@@ -140,6 +151,35 @@ class AttachableAttachmentConnector:
         existing_by_hash = self.attachment_service.read_by_hash(file_hash)
         if existing_by_hash:
             logger.info(f"Found existing Attachment by hash for QboAttachable {qbo_attachable.id}")
+            # Verify the hash-deduped attachment's blob is actually present. If it's
+            # gone (or it never had a blob_url), heal it by re-uploading the content we
+            # just downloaded — otherwise the healthy-subset contract would report a
+            # missing-blob record as healthy and we'd link a broken attachment.
+            blob_ok = False
+            if existing_by_hash.blob_url:
+                try:
+                    blob_ok = AzureBlobStorage().exists(existing_by_hash.blob_url)
+                except Exception:
+                    blob_ok = False
+            if not blob_ok:
+                logger.warning(
+                    f"Hash-matched Attachment {existing_by_hash.id} blob missing at "
+                    f"{existing_by_hash.blob_url} — re-uploading from the downloaded content"
+                )
+                blob_url = self._upload_to_blob(
+                    file_content=file_content,
+                    file_name=file_name,
+                    content_type=content_type,
+                )
+                self.attachment_service.update_by_public_id(
+                    public_id=existing_by_hash.public_id,
+                    row_version=existing_by_hash.row_version,
+                    blob_url=blob_url,
+                    file_size=len(file_content),
+                    content_type=content_type,
+                    file_extension=file_extension,
+                )
+                existing_by_hash = self.attachment_service.read_by_id(existing_by_hash.id)
             # Create mapping to existing attachment
             self._create_mapping(attachment_id=existing_by_hash.id, qbo_attachable_id=qbo_attachable.id)
             return existing_by_hash

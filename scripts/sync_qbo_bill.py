@@ -165,7 +165,17 @@ def _link_attachments_to_bill_line_items(
         return 0
     
     links_created = 0
-    
+
+    # Pre-load existing links once, then track within-run links in the same set —
+    # avoids an N+1 re-query (each per-line read also re-resolved public_id->id) on
+    # every (attachment x line item) iteration.
+    linked_public_ids = {
+        a.bill_line_item_public_id
+        for a in bill_line_item_attachment_service.read_by_bill_line_item_ids(
+            [li.public_id for li in bill_line_items if li.public_id]
+        )
+    }
+
     # For each attachment, link to each line item
     for qbo_attachable in qbo_attachables:
         # Get the Attachment record via the AttachableAttachment mapping
@@ -175,22 +185,34 @@ def _link_attachments_to_bill_line_items(
             continue
         
         attachment = attachment_service.read_by_id(mapping.attachment_id)
-        if not attachment:
+        if not attachment or not attachment.public_id:
             logger.debug(f"Attachment {mapping.attachment_id} not found")
             continue
-        
-        # Link this attachment to each BillLineItem
+
+        # BillLineItemAttachment is 1:1 — each line item holds at most one attachment.
+        # Link this attachment to any line items not yet linked; pre-check existing so a
+        # real failure isn't silently swallowed as "already linked".
+        attachment_linked_count = 0
         for line_item in bill_line_items:
+            if not line_item.public_id or line_item.public_id in linked_public_ids:
+                continue
             try:
                 bill_line_item_attachment_service.create(
                     bill_line_item_public_id=line_item.public_id,
                     attachment_public_id=attachment.public_id,
                 )
                 links_created += 1
+                attachment_linked_count += 1
+                linked_public_ids.add(line_item.public_id)
                 logger.debug(f"Linked Attachment {attachment.id} to BillLineItem {line_item.id}")
             except Exception as e:
-                # May fail if already linked (1-1 constraint) - that's OK
                 logger.debug(f"Could not link Attachment {attachment.id} to BillLineItem {line_item.id}: {e}")
+        if attachment_linked_count == 0:
+            logger.warning(
+                f"Bill {bill_id}: Attachment {attachment.id} (QboAttachable {qbo_attachable.id}) "
+                f"could not be linked — all {len(bill_line_items)} line item(s) already have an attachment. "
+                f"BillLineItemAttachment is 1:1; this attachment is unlinked."
+            )
     
     if links_created > 0:
         logger.info(f"Created {links_created} BillLineItemAttachment links for Bill {bill_id}")

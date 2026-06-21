@@ -273,6 +273,53 @@ class AzureBlobStorage:
             logger.error(f"Error downloading blob {blob_url}: {e}")
             raise AzureBlobStorageError(f"Failed to download blob: {str(e)}")
 
+    def exists(self, blob_url: str) -> bool:
+        """
+        Check whether a blob exists without downloading it (HEAD / Get Blob Properties).
+
+        This is a lightweight existence probe — it does NOT transfer the blob body,
+        unlike download_file(). Use it to verify a stored blob is still present.
+
+        Args:
+            blob_url: Full URL of the blob
+
+        Returns:
+            True if the blob exists, False if it definitively does not (404).
+
+        Raises:
+            AzureBlobStorageError: If existence cannot be determined (auth/network/
+                other HTTP error). Callers that want to treat "couldn't tell" as
+                "missing" should catch this.
+        """
+        try:
+            # Parse URL to extract container and blob name
+            container, blob_name = self._parse_blob_url(blob_url)
+
+            url = self._build_url(blob_name, use_sas=bool(self.sas_token), container_name=container)
+            headers = self._get_headers("HEAD")
+
+            # Add authentication if using Shared Key
+            if self.account_key and not self.sas_token:
+                url_path = f"/{container}/{quote(blob_name, safe='/')}"
+                headers["Authorization"] = self._generate_shared_key_signature("HEAD", url_path, headers)
+
+            with httpx.Client(timeout=30.0) as client:
+                response = client.head(url, headers=headers)
+
+            if response.status_code == 404:
+                return False
+            response.raise_for_status()
+            return True
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return False
+            logger.error(f"HTTP error checking blob existence {blob_url}: {e.response.status_code}")
+            raise AzureBlobStorageError(f"Failed to check blob existence: {e.response.status_code}")
+        except Exception as e:
+            logger.error(f"Error checking blob existence {blob_url}: {e}")
+            raise AzureBlobStorageError(f"Failed to check blob existence: {str(e)}")
+
     def delete_file(self, blob_url: str) -> None:
         """
         Delete a file from Azure Blob Storage.

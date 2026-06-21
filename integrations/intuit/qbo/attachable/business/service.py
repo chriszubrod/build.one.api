@@ -70,9 +70,50 @@ class QboAttachableService:
 
         # Sync to Attachment module if requested
         if sync_to_modules:
-            self._sync_to_attachments(synced, realm_id)
+            # Return only attachables whose blob synced healthily so callers
+            # never link a missing-blob record to a line item.
+            return self._sync_to_attachments(synced, realm_id)
 
         return synced
+
+    def _query_attachables_with_fallback(self, client, entity_type: str, entity_id: str) -> list:
+        """
+        Fetch the attachables linked to one QBO entity, with a defensive fallback.
+
+        Primary path is the entity-specific query. NOTE: that client call already
+        self-handles an "unsupported filter" response (HTTP >= 400) internally by
+        degrading to a full list, so this outer except mainly catches auth (401) and
+        transport errors. On a hard auth failure the fallback's own
+        query_all_attachables() fails the same way and the error propagates — the
+        per-entity callers treat attachment sync as best-effort and log it, rather than
+        silently returning an empty list that looks like "no attachments".
+
+        When the fallback does run, it lists all attachables and filters locally by an
+        EXACT entity-ref match — both the id AND the type must match. Exact type match
+        (not startswith) prevents cross-type collisions where ids are only unique per
+        type (e.g. a "PurchaseOrder" or "BillPayment" attachable being mis-attributed
+        to a "Purchase"/"Bill" with the same id).
+        """
+        try:
+            return client.query_attachables_for_entity(entity_type=entity_type, entity_id=entity_id)
+        except Exception as e:
+            logger.warning(
+                "Entity-specific attachable query failed for %s %s: %s. Using fallback.",
+                entity_type, entity_id, e,
+            )
+            target_type = entity_type.upper()
+            all_att = client.query_all_attachables()
+            filtered = [
+                a for a in all_att
+                if a.attachable_ref and any(
+                    ref.entity_ref_value == entity_id
+                    and (ref.entity_ref_type or "").upper() == target_type
+                    for ref in (a.attachable_ref or [])
+                )
+            ]
+            if filtered:
+                logger.info(f"Found {len(filtered)} attachables via fallback filter for {entity_type} {entity_id}")
+            return filtered
 
     def sync_attachables_for_bill(
         self,
@@ -101,10 +142,7 @@ class QboAttachableService:
             access_token=qbo_auth.access_token,
             realm_id=realm_id
         ) as client:
-            qbo_attachables = client.query_attachables_for_entity(
-                entity_type="Bill",
-                entity_id=bill_qbo_id
-            )
+            qbo_attachables = self._query_attachables_with_fallback(client, "Bill", bill_qbo_id)
 
         logger.info(f"Fetched {len(qbo_attachables)} attachables for Bill {bill_qbo_id}")
 
@@ -119,7 +157,9 @@ class QboAttachableService:
 
         # Sync to Attachment module if requested
         if sync_to_modules:
-            self._sync_to_attachments(synced, realm_id)
+            # Return only attachables whose blob synced healthily so callers
+            # never link a missing-blob record to a line item.
+            return self._sync_to_attachments(synced, realm_id)
 
         return synced
 
@@ -148,10 +188,7 @@ class QboAttachableService:
             access_token=qbo_auth.access_token,
             realm_id=realm_id
         ) as client:
-            qbo_attachables = client.query_attachables_for_entity(
-                entity_type="VendorCredit",
-                entity_id=vendor_credit_qbo_id
-            )
+            qbo_attachables = self._query_attachables_with_fallback(client, "VendorCredit", vendor_credit_qbo_id)
 
         logger.info(f"Fetched {len(qbo_attachables)} attachables for VendorCredit {vendor_credit_qbo_id}")
 
@@ -164,7 +201,9 @@ class QboAttachableService:
                 logger.error(f"Failed to upsert attachable {qbo_att.id}: {e}")
 
         if sync_to_modules:
-            self._sync_to_attachments(synced, realm_id)
+            # Return only attachables whose blob synced healthily so callers
+            # never link a missing-blob record to a line item.
+            return self._sync_to_attachments(synced, realm_id)
 
         return synced
 
@@ -193,28 +232,7 @@ class QboAttachableService:
             access_token=qbo_auth.access_token,
             realm_id=realm_id
         ) as client:
-            try:
-                qbo_attachables = client.query_attachables_for_entity(
-                    entity_type="Purchase",
-                    entity_id=purchase_qbo_id
-                )
-            except Exception as e:
-                # Fallback only when entity-specific query fails (e.g. QBO doesn't support Purchase)
-                logger.warning(
-                    "Entity-specific attachable query failed for Purchase %s: %s. Using fallback.",
-                    purchase_qbo_id, e,
-                )
-                all_att = client.query_all_attachables()
-                qbo_attachables = [
-                    a for a in all_att
-                    if a.attachable_ref and any(
-                        ref.entity_ref_value == purchase_qbo_id
-                        and (ref.entity_ref_type or "").upper().startswith("PURCHASE")
-                        for ref in (a.attachable_ref or [])
-                    )
-                ]
-                if qbo_attachables:
-                    logger.info(f"Found {len(qbo_attachables)} attachables via fallback filter")
+            qbo_attachables = self._query_attachables_with_fallback(client, "Purchase", purchase_qbo_id)
 
         logger.info(f"Fetched {len(qbo_attachables)} attachables for Purchase {purchase_qbo_id}")
 
@@ -227,7 +245,9 @@ class QboAttachableService:
                 logger.error(f"Failed to upsert attachable {qbo_att.id}: {e}")
 
         if sync_to_modules:
-            self._sync_to_attachments(synced, realm_id)
+            # Return only attachables whose blob synced healthily so callers
+            # never link a missing-blob record to a line item.
+            return self._sync_to_attachments(synced, realm_id)
 
         return synced
 
@@ -287,28 +307,40 @@ class QboAttachableService:
                 entity_ref_value=entity_ref_value,
             )
 
-    def _sync_to_attachments(self, attachables: List[QboAttachable], realm_id: str) -> None:
+    def _sync_to_attachments(self, attachables: List[QboAttachable], realm_id: str) -> List[QboAttachable]:
         """
-        Sync attachables to Attachment module.
-        
+        Sync attachables to the Attachment module (download blob + create Attachment + mapping).
+
+        Per-attachable failures are isolated (one bad attachable doesn't abort the rest)
+        and only the attachables whose blob synced healthily are returned. Callers link
+        downstream off the returned list, so a missing-blob / failed-download attachable
+        is never linked to a line item.
+
         Args:
             attachables: List of QboAttachable records
             realm_id: QBO realm ID for downloading files
+
+        Returns:
+            The subset of attachables that synced to a healthy Attachment (blob present).
         """
         if not attachables:
-            return
+            return []
 
         # Import here to avoid circular dependencies
         from integrations.intuit.qbo.attachable.connector.attachment.business.service import AttachableAttachmentConnector
 
         connector = AttachableAttachmentConnector()
 
+        healthy = []
         for att in attachables:
             try:
                 attachment = connector.sync_from_qbo_attachable(att, realm_id)
                 logger.info(f"Synced QboAttachable {att.id} to Attachment {attachment.id}")
+                healthy.append(att)
             except Exception as e:
                 logger.error(f"Failed to sync QboAttachable {att.id} to Attachment: {e}")
+
+        return healthy
 
     def read_by_id(self, id: int) -> Optional[QboAttachable]:
         """

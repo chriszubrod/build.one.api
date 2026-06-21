@@ -213,6 +213,59 @@ Cap is 50 messages (raise to 200 only for unusually long collections / dispute c
 
 Carry the thread context into Steps 2-9. A `Re:` whose siblings show prior `vendor_invoice` + `awaiting_approval` is almost certainly a reviewer clarification, not a fresh invoice — handle accordingly.
 
+### 1e. AP-instruction-reply branch
+
+**Before** running steps 2–9, check if this email is an AP/internal reply giving you instructions on a prior email you flagged. If so, branch to the instruction-reply flow and skip the standard invoice path.
+
+This is the lightest bidirectional surface we have. AP replies from `invoice@` → `invoice@` (or from any internal address, in-thread) and you treat the reply body as override / context for the prior email you couldn't confidently classify.
+
+**Detection criteria (all must hold):**
+
+- `from_address` is from our own domain (`@rogersbuild.com` and similar — internal-domain match), AND
+- subject starts with `Re:` (case-insensitive) or `body_quoted_history` from Step 1 is non-empty, AND
+- the thread (from Step 1d) contains **≥1 sibling whose `agent_decided_action == "flagged_needs_review"`** OR whose `agent_classification ∈ {"non_actionable", "unknown"}` — i.e., a prior email the agent stamped as "human attention needed", AND
+- `find_bill_by_conversation_id(conversation_id, …)` returns null — distinguishes this from the Step 1b reviewer-reply branch (Bill present → 1b takes precedence).
+
+If any criterion fails → skip this branch and continue to step 2.
+
+**When the branch fires:**
+
+1. **Identify the target sibling.** From the thread (Step 1d) pick the most-recent sibling whose `from_address` is NOT internal-domain (i.e., the original vendor/external email) AND was stamped `flagged_needs_review` (or `non_actionable` / `unknown`). That's the email the AP is giving you instructions about. If multiple siblings match, pick the most-recent by `received_datetime` — the AP is reacting to the most-recent flag.
+
+2. **Read the AP's instructions.** Use the focal email's `body_new_text` from Step 1 — that's the AP's prose with the quoted thread stripped. This is free-form English; interpret in context. Common shapes you should handle:
+   - *"this is a vendor credit memo"* / *"classify as X"* / *"it's a statement"* → re-stamp the target with the corrected classification + appropriate action.
+   - *"route to bill_specialist anyway"* / *"create the bill"* / *"go ahead and delegate"* → continue from Step 7b on the target with confidence overridden to 0.95; AP is explicitly authorizing the action.
+   - *"route to expense_specialist"* / *"it's a receipt"* → run Step 9b on the target's attachment(s).
+   - *"route to contract_labor_specialist"* / *"this is a timesheet"* → run Step 1c's flow on the target.
+   - *"skip"* / *"irrelevant"* / *"ignore"* / *"handled manually"* → re-stamp target as `marked_irrelevant`.
+   - *"the project is X"* / *"the vendor is X"* / *"missing PO# is Y"* — AP filled in the missing info → re-run `gather_invoice_context` on the target's attachment with the hint, then proceed normally.
+   - *"reclassify and re-run"* / *"try again"* (no specific instruction) — re-run the full Step 2-9 chain on the target with the AP reply quoted in `classification_reason` so the second-pass is auditable.
+
+3. **Read the target's full context.** `read_email_message(target.public_id)` → the source email's body + attachments. DI extractions are cached if already run; force-inline (`extract_email_attachment(force_inline=true)`) is available if the AP's reply hints that you missed an inline image signal.
+
+4. **Take the corrected action on the target.** Execute whichever path step 2's interpretation selected — delegate to a specialist, re-stamp directly, or re-run the gather chain. The action operates on the TARGET email, not the focal email.
+
+5. **Re-stamp the target with the new outcome.** Call `mark_email_outcome(target.public_id, outcome=<new>, classification=<new>, decided_action=<new>, classification_reason="Re-classified per AP instruction in reply <focal.public_id>: <one-sentence summary of the instruction>", confidence=0.95)`. The new outcome overrides the prior `needs_review`.
+
+6. **Stamp the focal email** (the AP's reply) as terminal:
+   - Successful re-classification → `mark_email_outcome(focal.public_id, outcome="processed", classification="internal_reply", decided_action="marked_processed", classification_reason="AP instruction applied to target email <target.public_id> — <one-sentence summary>", confidence=0.95)`.
+   - AP's reply was ambiguous / unparseable / contradictory → `mark_email_outcome(focal.public_id, outcome="needs_review", classification="internal_reply", decided_action="flagged_needs_review", classification_reason="AP reply couldn't be confidently interpreted as an instruction — surfacing for human follow-up.", reason="<the actual reply body, for context>", confidence=0.8)`. Do NOT re-stamp the target in this case; leave its prior `needs_review` in place.
+
+7. **Skip steps 2–9.** The instruction-reply branch is terminal.
+
+**Output style for this branch:** lead with what the AP said + what you did to the target. Example:
+
+```
+AP-instruction reply on EM <target.public_id> (Greenrise vendor statement).
+- Chris replied: "this is a statement, not a new invoice — skip"
+- Re-stamped target as marked_irrelevant (classification: vendor_statement)
+- Stamped focal as internal_reply + marked_processed.
+
+Outcome: processed.
+```
+
+**Known v1 gap:** if a thread carries BOTH a tracked Bill (1b detection) AND a prior agent-flagged sibling (1e detection), Step 1b takes precedence. If the AP's reply isn't a PM approval (and bill_specialist rejects it as "not an authorized reviewer"), the focal will stamp `marked_irrelevant` instead of routing through 1e. Tighten the precedence after v1 if this surfaces.
+
 ### 2. Look up sender history
 
 `search_email_sender_history(from_email)` → returns prior context for this sender. Read:

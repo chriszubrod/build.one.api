@@ -76,9 +76,11 @@ Run these in order, top to bottom. Skip downstream steps when an early step shor
 
 - `from_address`, `from_name` — sender identity and domain
 - `mailbox_address` — which of our inboxes received it
-- `subject`, `body_preview`, `body_content` — the prose context
-- `conversation_id` — non-null + subject starts with `Re:` / `Fwd:` means this is a reply on an existing thread (relevant context)
+- `subject`, `body_preview`, `body_new_text`, `body_content` — the prose context. **Read `body_new_text` FIRST** — it's the sender's actual new content with the quoted prior message stripped (typically 60-90% smaller + much less noise than `body_content` on reply emails). Fall back to `body_content` only when the new-text portion alone isn't enough.
+- `body_quoted_history` — the quoted prior message + everything below the quote boundary, when a quote was detected. Non-null means this is a reply/forward — branch to Step 1d for sibling-thread context.
+- `conversation_id` — non-null + subject starts with `Re:` / `Fwd:` means this is a reply on an existing thread (relevant context; pair with Step 1d)
 - `attachments[]` — each has `filename`, `content_type`, `size_bytes`, `is_inline`, `extraction_status`, `blob_uri`
+- `linked_bill` — slim summary of any Bill already created from this email. Non-null means the work was already done; do NOT re-delegate.
 
 ### 1b. Reviewer-reply branch (Wave 3)
 
@@ -193,7 +195,23 @@ If only some of these hit → skip this branch and fall through to step 2. The s
 
 3. **Skip steps 2–9.** The contract-labor-timesheet branch is terminal.
 
-If detection fails (not a timesheet) → continue to step 2.
+If detection fails (not a timesheet) → continue to step 1d.
+
+### 1d. Sibling-thread context (replies + forwards)
+
+Skip if the focal email is a fresh send — no `Re:` / `Fw:` / `Fwd:` subject prefix AND empty `body_quoted_history`. Otherwise run `read_email_thread(public_id)` to pull the chronological list of sibling EmailMessages sharing the focal email's `conversation_id`.
+
+**Why:** prior emails in the same thread are usually the strongest single signal for what the current email means. A vendor's collections reply only makes sense alongside the prior 4 exchanges. A PM's `Re:` only makes sense alongside the notification it's responding to. Without the thread, you're often guessing.
+
+For each sibling read:
+
+- `from_address`, `subject`, `received_datetime` — chronology + who said what
+- `agent_classification`, `agent_decided_action` — what prior runs decided this thread was about
+- `body_preview` — short context; if you need the full body, call `read_email_message` on the sibling's `public_id`
+
+Cap is 50 messages (raise to 200 only for unusually long collections / dispute chains via the `max_rows` arg). Header-only — attachments + full body are NOT included to keep the response slim.
+
+Carry the thread context into Steps 2-9. A `Re:` whose siblings show prior `vendor_invoice` + `awaiting_approval` is almost certainly a reviewer clarification, not a fresh invoice — handle accordingly.
 
 ### 2. Look up sender history
 
@@ -204,6 +222,7 @@ If detection fails (not a timesheet) → continue to step 2.
 - `prior_emails.by_action` — were prior emails delegated, flagged, or marked irrelevant? Recurrent `flagged_needs_review` from this sender is a yellow flag.
 - `prior_bills_committed` / `prior_expenses_committed` / `prior_bill_credits_committed` — actual entities created. Often zero (approval-gate bottleneck), so don't over-interpret.
 - `associated_vendors[]` — distinct Vendor rows linked via committed Bills. If non-empty, you have a Vendor public_id you can hand directly to bill_specialist; if empty, bill_specialist will run its own search.
+- `recent_classifications[]` — most-recent N (default 10) prior emails from this sender, newest first. Each row carries `subject`, `received_datetime`, `classification`, `classification_reason`, `decided_action`. **Read these before classifying** — they show you WHAT was decided + WHY on similar prior emails, not just aggregate counts. Particularly useful when a sender's behavior has varied (e.g. vendor that switched from invoices to statements; sender whose first email was misclassified). Aim to be consistent with prior decisions unless you have a clear reason to diverge — and cite the divergence in your `classification_reason`.
 
 Pass the current email's `public_id` (the same UUID you received in your user_message) as `exclude_public_id` so you don't see yourself in the counts.
 
@@ -215,6 +234,7 @@ For each attachment in `attachments[]`:
 - **Skip** if `size_bytes < 2048` (~ 2 KB; almost certainly a tiny image, not a document).
 - **Skip with a `needs_review` flag** if `content_type` indicates an unsupported format (`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`, etc.). DI doesn't analyze xlsx/docx; the human has to look. Note: `application/octet-stream` is a generic byte-stream MIME type that mail systems often emit for PDFs — *do not* skip on octet-stream; check the filename extension instead.
 - **Otherwise** call `extract_email_attachment(public_id)`. The endpoint is idempotent — if `extraction_status` on the attachment is already `extracted`, it returns the cached result without re-running DI. Always safe to call.
+- **Force-inline escape hatch** — when the visible text signal is ambiguous AND an inline image might carry decisive context (embedded screenshot of a remit advice, pasted receipt image, scanned signature with text), call `extract_email_attachment(public_id, force_inline=true)` to run DI against the inline bytes pulled directly from MS Graph. Result is cached on the row so repeat calls are free. Use sparingly — most inline attachments are signature graphics with no signal.
 
 You'll receive `content`, `key_value_pairs`, `tables`, `pages_count` per attachment.
 
@@ -228,6 +248,23 @@ Read the DI `content` string and the first few `key_value_pairs`. Document type 
 - **Statement / aged-receivables** — multiple invoices listed in one document; "STATEMENT", "ACCOUNT SUMMARY", "ENDING BALANCE". → flag `needs_review` (no v1 path)
 - **Packing slip / quote / order confirmation / certificate / non-financial** — ship/receive language but no totals to act on. → flag `needs_review` if the email's subject suggests an invoice was expected, otherwise `irrelevant`
 - **Generic / unparseable** — DI returned little structure, content is empty or noise. → flag `needs_review`
+
+### 4b. Cross-attachment math (multi-attachment emails)
+
+Skip if the email has only one substantive attachment. Otherwise, after extracting + persisting typed fields on every attachment (Steps 3, 5, 7 on each), call `compute_attachment_totals(public_id)`. Returns:
+
+- `extracted_count` / `skipped_count` — how many attachments contributed a numeric total
+- `sum` — aggregate in the unanimous currency (null when mixed currencies — refuses to sum)
+- `currency` + `currencies_seen` — for diagnosis
+- `per_attachment[]` — every attachment's typed DI fields, side-by-side
+
+**Use it as a completeness signal.** When the email body claims a balance due (e.g. `"we are owed $6,102.50"`, `"amount due: $185.81"`, `"please pay $X"`), check the sum against the claim:
+
+- **Reconciles exactly** → strong signal you've extracted everything correctly. Cite the match in your `classification_reason` (e.g. `"5 attached invoices sum to $6,102.50 — matches the body's claimed balance exactly"`).
+- **Off by a small amount** (one credit memo / one missing invoice) → flag `needs_review` with the delta, so the human knows what to look for.
+- **No claimed balance in the body** → no harm done; just don't make a claim you can't substantiate.
+
+For statement-shaped emails (vendor reminding us of multiple outstanding invoices), this is the decisive signal — every attached invoice is already in our system or isn't, and the math confirms the count.
 
 ### 5. For "vendor invoice" — extract delegation fields and validate
 
@@ -269,6 +306,32 @@ For each invoice attachment you intend to delegate: `record_extracted_fields(pub
 
 Pass only the fields you actually extracted — leave any you didn't find unset rather than guessing. This persists onto the EmailAttachment row's `Di*` columns so the next email from this sender sees your interpretation via `search_email_sender_history`.
 
+### 7b. Gather invoice context (vendor + project + bill dedup, bundled)
+
+For each invoice attachment you've persisted typed fields on: call `gather_invoice_context(email_message_public_id, email_attachment_public_id)`. One read returns:
+
+- `di_typed` — the typed DI fields the helper used (echoed for transparency)
+- `vendor_candidates[]` — top 5 ranked vendor matches from `FindVendorForInvoice` using your recorded vendor_name + the email's sender domain. Each carries `vendor.notes` (vendor-specific rules: trim `/N` suffix, etc.).
+- `project_candidates[]` — top 5 ranked project matches from `FindProjectForInvoice` using email subject + body_preview as the address hint. Empty for statement-level emails (correct — no single project to bind).
+- `existing_bill_matches[]` — Bills already in the system matching (top vendor candidates × DI invoice_number).
+- `sender_domain` + `address_hint_used` — for transparency on what fed the candidates.
+
+**Dedup gate (load-bearing) — when `existing_bill_matches` is non-empty:**
+
+- A Bill already exists with the same (vendor, invoice_number). **DO NOT delegate to bill_specialist** — a duplicate would land. Instead:
+  - If the existing Bill's `source_email_message_id` is null OR points to a different email → this is a re-send. Skip the delegation; stamp `marked_processed` with `classification` = the appropriate invoice-shaped value (most often `vendor_invoice` or `vendor_statement`) and `decided_action="marked_processed"`. Cite the existing Bill id in `classification_reason` (`"Bill 18554 (INV-GRT83366) already exists from prior email; no action taken"`). The `LinkBillSourceEmailMessage` sproc will opportunistically backfill the source-email link the next time anyone touches the Bill.
+  - If the existing Bill is a draft (`is_draft=true`) → still skip — let the human reconcile via the React Bills page.
+
+**When `existing_bill_matches` is empty + vendor/project candidates are clean:**
+
+- You've pre-resolved what bill_specialist would have to look up. Carry the top vendor and project candidates' `public_id`s into the delegation task (Step 9) so bill_specialist doesn't re-derive — quote them in the task body under a new `**Pre-resolved bindings**` section.
+
+**When candidates are ambiguous** (multiple vendors near the top with similar confidence, OR multiple project candidates that could plausibly match):
+
+- Surface the ambiguity to bill_specialist by quoting the top 2-3 candidates and asking it to pick. Don't pre-bind in this case.
+
+**Extraction-required hint** — if the response carries `extraction_required=true`, you skipped Step 7 or the typed columns weren't populated. Back up: call `record_extracted_fields` on the invoice attachment first, then re-call.
+
 ### 8. Bridge attachments that survived validation
 
 For each invoice attachment that classified cleanly: `bridge_email_attachment(public_id)`. Returns an Attachment row whose `public_id` you'll pass to `bill_specialist.create_bill`. Hash-deduped — re-runs return the existing Attachment.
@@ -302,13 +365,20 @@ Create a draft Bill from a polled invoice email.
 **Project hint (Ship To / job-site address)**
 - Ship To: 917 TYNE BLVD     ← cleaned: just the street address; strip city/state/zip and phone if DI returned them on the same kvp
 
+**Pre-resolved bindings** (from `gather_invoice_context` — pass through verbatim when present)
+- vendor_public_id:  <uuid from top vendor_candidate, only when confidence ≥ 0.85 + no ambiguity>
+- vendor_notes:      "<vendor.notes — apply these as create_bill rules>"
+- project_public_id: <uuid from top project_candidate, only when confidence ≥ 0.85 + no ambiguity>
+- project_notes:     "<project.notes — apply these as create_bill rules>"
+- (Omit either binding when ambiguous; bill_specialist falls back to its own lookup.)
+
 **Required for create_bill**
 - attachment_public_id:           <uuid bridged from EmailAttachment>  ← REQUIRED
 - source_email_message_public_id: <uuid>                               ← traceability
 
 Resolution flow for the bill_specialist (do NOT execute — this is for context):
-  1. `find_vendor_for_invoice(vendor_name, sender_domain)` → vendor_public_id + notes
-  2. `delegate_to_project_specialist(address_hint=ship_to)` → project_public_id + notes
+  1. `find_vendor_for_invoice(vendor_name, sender_domain)` → vendor_public_id + notes   (skip if pre-bound above)
+  2. `delegate_to_project_specialist(address_hint=ship_to)` → project_public_id + notes (skip if pre-bound above)
   3. `create_bill(...)` with inline summary-line fields — single call, no follow-up `add_bill_line_items`. The bill stays in draft until a human reviews and triggers `complete_bill`.
 
 The bill_specialist applies vendor `notes` (e.g. trim `/N` invoice-number suffixes) and project `notes` (address aliases, special handling), folds your DI-extracted line items into a single 6-word-summary BillLineItem, and binds the Project from the Ship To address.
@@ -361,6 +431,29 @@ Resolution flow for the expense_specialist (do NOT execute — context only):
 ````
 
 `create_expense` is NOT approval-gated, so the specialist returns a full answer (a draft Expense was created with the receipt attached). Stamp the email `awaiting_approval` with `decided_action = delegated_to_expense_specialist` (the draft awaits a human to review + complete it).
+
+### 9c. Adversarial action enumeration (gate before "no action")
+
+Before you stamp `marked_irrelevant` OR `flagged_needs_review` with classification `non_actionable`, run this gate. "No action" is the path that gets the least scrutiny in practice — flipping that.
+
+**Force-list at least 3 plausible actions** the agent fleet *could* take on this email — even ones that feel unlikely at first glance. Examples for inspiration:
+
+1. *Could this be a vendor invoice in a non-standard format?* (logo-heavy header, missing the literal "INVOICE" word, attached as a screenshot inside the body)
+2. *Could this be a vendor credit memo / refund I'm dismissing?* (look for "CREDIT", "REFUND", negative amounts, references to an earlier invoice)
+3. *Could this be a vendor statement listing invoices we don't yet have?* (use Step 4b cross-attachment math to verify against any claimed balance)
+4. *Could this be a customer payment / remittance advice?* (check for our customers in `to_recipients` or sender domain)
+5. *Could this be a Project Manager / Owner reply I missed?* (internal-domain sender + `Re:` + Step 1d sibling-thread might point to a tracked Bill)
+6. *Could this be a contract-labor timesheet with a sender I didn't recognize?* (re-check Step 1c detection criteria)
+7. *Could this require us to send a reply or take a non-create action?* (collections check-in needing a remittance reply, vendor question, dispute)
+
+**Refute each one in one sentence.** Cite evidence from the email signal, sender history (especially `recent_classifications`), thread context, and DI extractions. A refutation must point to specific evidence — "sender has 12 prior `vendor_newsletter` classifications and zero `vendor_invoice`" is a refutation; "feels like noise" is not.
+
+**If any candidate action survives refutation** — even partially — drop to `flagged_needs_review` with that surviving action quoted in `reason`. Better a human reviews than the agent silently drops a real action on the floor.
+
+Skip this gate when:
+
+- You're stamping a positive action (`delegated_to_*`, `applied_reviewer_decision`, `marked_processed`) — those already represent a chosen action.
+- Confidence ≥ 0.95 + the email is *unambiguously* a newsletter / out-of-office / system noise / Re-pinged dup of an already-handled invoice (cite the existing Bill match from Step 7b when applicable).
 
 ### 10. Roll up the email's outcome
 

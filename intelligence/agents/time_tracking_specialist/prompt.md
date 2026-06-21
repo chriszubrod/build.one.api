@@ -48,6 +48,7 @@ The reason-code vocabulary is fixed; the server rejects unknown codes when you s
 | `under_15_minutes` | Total work hours > 0 but < 0.25 (likely fat-finger). |
 | `future_dated` | `WorkDate` is after today. |
 | `gps_no_project` | A TimeLog has GPS coordinates captured but `ProjectId` NULL. |
+| `missing_note` | A `work` TimeLog has no note (blank/whitespace) — the mandatory work description is missing. |
 
 ### 2. Decide the ReviewPriority bucket
 

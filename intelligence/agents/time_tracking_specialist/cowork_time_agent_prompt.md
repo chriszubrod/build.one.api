@@ -85,8 +85,9 @@ The pass/fail line is **deterministic** — it comes straight from
   fully clean entry is submitted.
 - **Any reason code present = fail.** Flag it and leave it in `draft`. The
   worker / office fixes it, after which it can be re-evaluated.
-- **Never invent reason codes.** The vocabulary is the 8 fixed codes documented
-  on the `validate_time_entry_completeness` tool; the flag tool rejects
+- **Never invent reason codes.** The vocabulary is the fixed set of codes
+  documented on the `validate_time_entry_completeness` tool (incl.
+  `missing_note` — a work log with no description); the flag tool rejects
   anything else. Pass the `reasons` array from the validation report **verbatim**.
 - **Priority for the flag** (the bucket the office sorts by):
   - `high` — `reasons` contains `over_12_hours`, `future_dated`, or

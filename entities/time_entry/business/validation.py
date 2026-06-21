@@ -18,6 +18,7 @@ REASON_OVER_12_HOURS = "over_12_hours"
 REASON_UNDER_15_MINUTES = "under_15_minutes"
 REASON_FUTURE_DATED = "future_dated"
 REASON_GPS_NO_PROJECT = "gps_no_project"
+REASON_MISSING_NOTE = "missing_note"
 
 ALL_REASON_CODES = (
     REASON_NO_TIME_LOGS,
@@ -28,6 +29,7 @@ ALL_REASON_CODES = (
     REASON_UNDER_15_MINUTES,
     REASON_FUTURE_DATED,
     REASON_GPS_NO_PROJECT,
+    REASON_MISSING_NOTE,
 )
 
 
@@ -92,6 +94,10 @@ def validate_completeness(
     Hours math: only `log_type='work'` (or NULL log_type — treated as work for
     legacy rows) contribute to total_work_hours. Break rows are ignored.
 
+    Note requirement: every `log_type='work'` log must carry a non-empty
+    `note` (the mandatory work description) — a None or whitespace-only note
+    trips `missing_note`. Break rows are exempt.
+
     `today` defaults to today's local date; injectable for tests.
     """
     today = today or date.today()
@@ -105,12 +111,17 @@ def validate_completeness(
     has_missing_clockout = False
     has_overnight = False
     has_gps_no_project = False
+    has_missing_note = False
 
     work_logs: List[TimeLog] = []
     for log in logs:
         lt = (log.log_type or "work").lower()
         if lt == "work":
             work_logs.append(log)
+            # Work logs must carry the mandatory work description.
+            # Treat None or whitespace-only as missing. Breaks are exempt.
+            if log.note is None or not log.note.strip():
+                has_missing_note = True
 
         if log.project_id is None:
             has_null_project = True
@@ -131,6 +142,8 @@ def validate_completeness(
         reasons.append(REASON_OVERNIGHT_SHIFT)
     if has_gps_no_project:
         reasons.append(REASON_GPS_NO_PROJECT)
+    if has_missing_note:
+        reasons.append(REASON_MISSING_NOTE)
 
     # Total work hours.
     total_work_hours = sum((_as_decimal(l.duration) for l in work_logs), Decimal("0"))

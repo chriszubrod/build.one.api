@@ -341,6 +341,10 @@ def sync_qbo_to_local(
     attachments_synced = 0
     skipped_bills = []   # permanent data issues (e.g. vendor not mapped) — do NOT block the watermark
     failed_bills = []    # transient errors (DB, connection) — block the watermark for retry
+    excel_rows_synced = 0
+    synced_bills = []    # (bill, bill_id) — collected for batched budget-tracker Excel sync
+    bill_service = BillService()
+    bill_line_item_service = BillLineItemService()
 
     for i, bill in enumerate(bills):
         try:
@@ -357,7 +361,9 @@ def sync_qbo_to_local(
             )
             bills_module_synced += 1
             logger.info(f"Synced QboBill {bill.id} to Bill {bill_module.id}")
-            
+            # Collect for batched budget-tracker Excel sync after the loop
+            synced_bills.append((bill_module, bill_module.id))
+
             # Sync attachments for this bill if requested
             if sync_attachments and attachable_service and bill.qbo_id:
                 try:
@@ -398,10 +404,43 @@ def sync_qbo_to_local(
     if failed_bills:
         logger.warning(f"Failed to sync {len(failed_bills)} bills (watermark will hold for retry): {failed_bills}")
 
+    # --- Batch budget-tracker Excel sync: one worksheet read + batched insert per project ---
+    # Mirrors the purchase pull (sync_expenses_batch_to_excel). Best-effort: an Excel
+    # failure is logged and never blocks the bill watermark.
+    if synced_bills:
+        project_bill_map = {}  # project_id -> [(bill, [line_items_for_this_project])]
+        for bill, bill_id in synced_bills:
+            try:
+                blis = bill_line_item_service.read_by_bill_id(bill_id=bill_id)
+                by_project = {}
+                for bli in blis:
+                    if bli.project_id:
+                        by_project.setdefault(bli.project_id, []).append(bli)
+                for proj_id, proj_items in by_project.items():
+                    project_bill_map.setdefault(proj_id, []).append((bill, proj_items))
+            except Exception as e:
+                logger.warning(f"Could not read line items for Bill {bill_id} for Excel sync: {e}")
+
+        if project_bill_map:
+            logger.info(f"Excel sync: {len(project_bill_map)} project(s) to sync across {len(synced_bills)} bill(s)")
+        for proj_id, bill_line_pairs in project_bill_map.items():
+            try:
+                excel_result = bill_service.sync_bills_batch_to_excel(
+                    bill_line_pairs=bill_line_pairs,
+                    project_id=proj_id,
+                )
+                excel_rows_synced += excel_result.get("synced_count", 0)
+                if excel_result.get("errors"):
+                    for err in excel_result["errors"]:
+                        logger.warning(f"Excel sync error for project {proj_id}: {err}")
+            except Exception as excel_e:
+                logger.warning(f"Could not sync bills to Excel for project {proj_id}: {excel_e}")
+
     return {
         "bills_synced": len(bills),
         "bills_module_synced": bills_module_synced,
         "attachments_synced": attachments_synced,
+        "excel_rows_synced": excel_rows_synced,
         "skipped_count": len(skipped_bills),
         "skipped_bill_ids": skipped_bills,
         "failed_count": len(failed_bills),
@@ -850,6 +889,7 @@ def sync_qbo_bill(
         pushed_count = local_to_qbo_result['bills_pushed'] if local_to_qbo_result else 0
         logger.info(f"QBO Bill sync completed. Bills from QBO: {qbo_to_local_result['bills_synced']}, "
                     f"Bills module synced: {qbo_to_local_result['bills_module_synced']}, "
+                    f"Excel rows synced: {qbo_to_local_result.get('excel_rows_synced', 0)}, "
                     f"Bills pushed: {pushed_count}")
         
         return {

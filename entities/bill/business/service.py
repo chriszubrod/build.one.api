@@ -2147,6 +2147,212 @@ class BillService:
                 close_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id, session_id=session_id)
 
 
+    def sync_bills_batch_to_excel(self, bill_line_pairs: List[tuple], project_id: int) -> dict:
+        """
+        Batch sync line items from multiple bills to one project's Excel workbook.
+        Single worksheet read + batched outbox insert per project, regardless of how
+        many bills contribute line items. Used by the QBO pull sync script.
+
+        The single-bill ``sync_to_excel_workbook`` remains for ``complete_bill``.
+
+        Args:
+            bill_line_pairs: list of (bill, [line_items]) tuples
+            project_id: target project ID
+
+        Returns:
+            dict with success, synced_count, errors
+        """
+        session_id = None
+        try:
+            if not bill_line_pairs:
+                return {"success": True, "message": "No bills to sync", "synced_count": 0, "errors": []}
+
+            # --- resolve workbook location (once) ---
+            excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
+            if not excel_mapping:
+                return {"success": False, "message": f"Excel not linked for project {project_id}", "synced_count": 0, "errors": [{"error": f"Excel not linked for project {project_id}"}]}
+
+            worksheet_name = excel_mapping.get("worksheet_name")
+            if not worksheet_name:
+                return {"success": False, "message": "Worksheet name not found", "synced_count": 0, "errors": [{"error": "Worksheet name not found"}]}
+
+            driveitem_repo = MsDriveItemRepository()
+            items = driveitem_repo.read_all()
+            driveitem = next((item for item in items if item.id == excel_mapping.get("id")), None)
+            if not driveitem:
+                return {"success": False, "message": "DriveItem not found", "synced_count": 0, "errors": [{"error": "DriveItem not found"}]}
+
+            drive = self.drive_repo.read_by_id(driveitem.ms_drive_id)
+            if not drive:
+                return {"success": False, "message": "Drive not found", "synced_count": 0, "errors": [{"error": "Drive not found"}]}
+
+            # --- resolve vendors for all bills (cached) ---
+            vendor_cache = {}
+            for bill, _ in bill_line_pairs:
+                if bill.vendor_id and bill.vendor_id not in vendor_cache:
+                    vendor_cache[bill.vendor_id] = self.vendor_service.read_by_id(id=bill.vendor_id)
+            scc_cache = {}  # memoize SubCostCode reads across all line items in this batch
+
+            session_id = create_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id)
+
+            # --- read worksheet once ---
+            logger.info(f"Reading worksheet '{worksheet_name}' for project {project_id} (batch: {len(bill_line_pairs)} bill(s))")
+            worksheet_result = get_excel_used_range_values(
+                drive_id=drive.drive_id,
+                item_id=driveitem.item_id,
+                worksheet_name=worksheet_name,
+                session_id=session_id,
+            )
+            worksheet_values = []
+            if worksheet_result.get("status_code") == 200:
+                range_data = worksheet_result.get("range", {})
+                worksheet_values = range_data.get("values", [])
+                logger.info(f"Worksheet has {len(worksheet_values)} rows")
+            else:
+                logger.warning(f"Could not read worksheet data: {worksheet_result.get('message')}. Will append at end.")
+
+            # --- idempotency: column Z across ALL line items ---
+            existing_public_ids = set()
+            for row in worksheet_values:
+                if len(row) > 25:
+                    val = row[25]
+                    if val is not None and str(val).strip():
+                        existing_public_ids.add(str(val).strip())
+
+            # --- build rows for every (bill, line_item) pair ---
+            errors = []
+            all_new_rows = []  # (scc_number, row)
+            for bill, line_items in bill_line_pairs:
+                vendor = vendor_cache.get(bill.vendor_id)
+                vendor_name = (vendor.name or "") if vendor else ""
+                for li in line_items:
+                    pid = str(li.public_id).strip() if li.public_id else ""
+                    if pid and pid in existing_public_ids:
+                        continue
+                    try:
+                        scc = None
+                        if li.sub_cost_code_id is not None:
+                            scc_key = str(li.sub_cost_code_id)
+                            if scc_key not in scc_cache:
+                                scc_cache[scc_key] = self.sub_cost_code_service.read_by_id(id=scc_key)
+                            scc = scc_cache[scc_key]
+                        scc_number = (scc.number or "") if scc else ""
+                        cc_number = scc_number.split(".")[0] if "." in scc_number else scc_number
+                        # N: prefer Price; fall back to Amount when Price is NULL so QBO-pulled
+                        # account-based lines (which often carry no Price) don't land as $0.
+                        if li.price is not None:
+                            n_value = float(li.price)
+                        elif getattr(li, "amount", None) is not None:
+                            n_value = float(li.amount)
+                        else:
+                            n_value = 0
+                        row = [
+                            "",                                                          # A
+                            cc_number,                                                   # B: CostCode
+                            scc_number,                                                  # C: SubCostCode
+                            "", "", "", "", "",                                          # D-H
+                            bill.bill_date[:10] if bill.bill_date else "",               # I: Date
+                            vendor_name,                                                 # J: Vendor
+                            bill.bill_number or "",                                      # K: Bill #
+                            li.description or "",                                         # L: Description
+                            "Bill",                                                      # M: Type
+                            n_value,                                                     # N: Price (Amount fallback)
+                            "", "", "", "", "", "", "", "", "", "", "",                   # O-Y
+                            pid,                                                         # Z: Reconciliation key
+                        ]
+                        all_new_rows.append((scc_number, row))
+                    except Exception as e:
+                        logger.error(f"Error building Excel row for BillLineItem {li.id}: {e}")
+                        errors.append({"line_item_id": li.id, "error": str(e)})
+
+            if not all_new_rows:
+                logger.info(f"Project {project_id}: all bill line items already in worksheet, nothing to sync")
+                return {"success": True, "message": "All rows already synced", "synced_count": 0, "errors": []}
+
+            logger.info(f"Project {project_id}: {len(all_new_rows)} new bill row(s) to sync")
+
+            # --- group by subcostcode, find insertion points ---
+            groups_by_scc = defaultdict(list)
+            for scc_number, row in all_new_rows:
+                groups_by_scc[scc_number].append(row)
+
+            synced_count = 0
+            rows_to_append = []
+            insert_groups = []
+            for scc_number, group_rows in groups_by_scc.items():
+                insertion_row = None
+                if scc_number and worksheet_values:
+                    insertion_row = find_insertion_row_for_subcostcode(
+                        worksheet_values=worksheet_values,
+                        target_subcostcode=scc_number,
+                    )
+                if insertion_row:
+                    insert_groups.append((insertion_row, group_rows, scc_number))
+                else:
+                    rows_to_append.extend(group_rows)
+
+            insert_groups.sort(key=lambda g: g[0])
+
+            from integrations.ms.outbox.business.service import MsOutboxService
+            ms_outbox = MsOutboxService()
+            batch_entity_public_id = str(project_id)
+
+            for insertion_row, group_rows, scc_number in insert_groups:
+                queued = ms_outbox.enqueue_excel_insert(
+                    entity_type="BillBatch",
+                    entity_public_id=batch_entity_public_id,
+                    drive_id=drive.drive_id,
+                    item_id=driveitem.item_id,
+                    worksheet_name=worksheet_name,
+                    row_index=insertion_row,
+                    values=group_rows,
+                    session_id=None,
+                )
+                if queued is not None:
+                    synced_count += len(group_rows)
+                    logger.info(
+                        f"Queued batch Excel insert of {len(group_rows)} row(s) at row "
+                        f"{insertion_row} for SubCostCode {scc_number} (outbox {queued.public_id})"
+                    )
+                else:
+                    errors.append({
+                        "sub_cost_code": scc_number,
+                        "error": "Excel insert enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
+                    })
+
+            if rows_to_append:
+                logger.info(f"Queuing batch append of {len(rows_to_append)} row(s) to end of worksheet")
+                queued = ms_outbox.enqueue_excel_append(
+                    entity_type="BillBatch",
+                    entity_public_id=batch_entity_public_id,
+                    drive_id=drive.drive_id,
+                    item_id=driveitem.item_id,
+                    worksheet_name=worksheet_name,
+                    values=rows_to_append,
+                    session_id=None,
+                )
+                if queued is not None:
+                    synced_count += len(rows_to_append)
+                    logger.info(f"Queued batch Excel append of {len(rows_to_append)} row(s) (outbox {queued.public_id})")
+                else:
+                    errors.append({"error": "Excel append enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"})
+
+            logger.info(f"Project {project_id}: synced {synced_count} bill row(s) to Excel workbook")
+            has_errors = len(errors) > 0
+            return {
+                "success": synced_count > 0 or not has_errors,
+                "message": f"Synced {synced_count} row(s) to Excel workbook",
+                "synced_count": synced_count,
+                "errors": errors,
+            }
+
+        except Exception as e:
+            logger.exception(f"Error batch-syncing bills to Excel workbook for project {project_id}")
+            return {"success": False, "message": f"Error syncing to Excel: {str(e)}", "synced_count": 0, "errors": [{"error": str(e)}]}
+        finally:
+            if session_id:
+                close_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id, session_id=session_id)
+
     def _upload_attachments_to_module_folder(
         self,
         bill,

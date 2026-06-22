@@ -26,6 +26,7 @@ from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.attachable.business.service import QboAttachableService
 from integrations.intuit.qbo.attachable.connector.attachment.persistence.repo import AttachableAttachmentRepository
 from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+from entities.bill_credit.business.complete_service import BillCreditCompleteService
 from entities.attachment.business.service import AttachmentService
 from entities.bill_credit_line_item_attachment.business.service import BillCreditLineItemAttachmentService
 
@@ -278,6 +279,10 @@ def sync_qbo_to_local(
     attachments_synced = 0
     skipped_vendor_credits = []   # permanent data issues (e.g. vendor not mapped) — do NOT block the watermark
     failed_vendor_credits = []    # transient errors (DB, connection) — block the watermark for retry
+    excel_rows_synced = 0
+    synced_credits = []    # (bill_credit, bill_credit_id) — collected for batched budget-tracker Excel sync
+    bill_credit_complete_service = BillCreditCompleteService()
+    bill_credit_line_item_service = BillCreditLineItemService()
 
     for i, vendor_credit in enumerate(vendor_credits):
         try:
@@ -295,6 +300,8 @@ def sync_qbo_to_local(
             if bill_credit:
                 bill_credits_module_synced += 1
                 logger.info(f"Synced QboVendorCredit {vendor_credit.id} to BillCredit {bill_credit.id}")
+                # Collect for batched budget-tracker Excel sync after the loop
+                synced_credits.append((bill_credit, bill_credit.id))
 
                 # Sync attachments for this vendor credit if requested
                 if sync_attachments and attachable_service and vendor_credit.qbo_id:
@@ -335,10 +342,43 @@ def sync_qbo_to_local(
     if failed_vendor_credits:
         logger.warning(f"Failed to sync {len(failed_vendor_credits)} vendor credits (watermark will hold for retry): {failed_vendor_credits}")
 
+    # --- Batch budget-tracker Excel sync: one worksheet read + batched insert per project ---
+    # Mirrors the purchase pull (sync_expenses_batch_to_excel). Best-effort: an Excel
+    # failure is logged and never blocks the credit watermark.
+    if synced_credits:
+        project_credit_map = {}  # project_id -> [(bill_credit, [line_items_for_this_project])]
+        for bill_credit, bill_credit_id in synced_credits:
+            try:
+                bclis = bill_credit_line_item_service.read_by_bill_credit_id(bill_credit_id=bill_credit_id)
+                by_project = {}
+                for bcli in bclis:
+                    if bcli.project_id:
+                        by_project.setdefault(bcli.project_id, []).append(bcli)
+                for proj_id, proj_items in by_project.items():
+                    project_credit_map.setdefault(proj_id, []).append((bill_credit, proj_items))
+            except Exception as e:
+                logger.warning(f"Could not read line items for BillCredit {bill_credit_id} for Excel sync: {e}")
+
+        if project_credit_map:
+            logger.info(f"Excel sync: {len(project_credit_map)} project(s) to sync across {len(synced_credits)} credit(s)")
+        for proj_id, bill_credit_line_pairs in project_credit_map.items():
+            try:
+                excel_result = bill_credit_complete_service.sync_bill_credits_batch_to_excel(
+                    bill_credit_line_pairs=bill_credit_line_pairs,
+                    project_id=proj_id,
+                )
+                excel_rows_synced += excel_result.get("synced_count", 0)
+                if excel_result.get("errors"):
+                    for err in excel_result["errors"]:
+                        logger.warning(f"Excel sync error for project {proj_id}: {err}")
+            except Exception as excel_e:
+                logger.warning(f"Could not sync bill credits to Excel for project {proj_id}: {excel_e}")
+
     return {
         "vendor_credits_synced": len(vendor_credits),
         "bill_credits_module_synced": bill_credits_module_synced,
         "attachments_synced": attachments_synced,
+        "excel_rows_synced": excel_rows_synced,
         "skipped_count": len(skipped_vendor_credits),
         "skipped_vendor_credit_ids": skipped_vendor_credits,
         "failed_count": len(failed_vendor_credits),
@@ -485,7 +525,8 @@ def sync_qbo_vendorcredit(
         logger.info(
             f"QBO VendorCredit sync completed. VendorCredits from QBO: {qbo_to_local_result['vendor_credits_synced']}, "
             f"BillCredits module synced: {qbo_to_local_result['bill_credits_module_synced']}, "
-            f"attachments synced: {qbo_to_local_result.get('attachments_synced', 0)}"
+            f"attachments synced: {qbo_to_local_result.get('attachments_synced', 0)}, "
+            f"Excel rows synced: {qbo_to_local_result.get('excel_rows_synced', 0)}"
         )
         
         return {

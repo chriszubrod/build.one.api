@@ -453,6 +453,26 @@ def set_email_outcome_router(
             mailbox=email.mailbox_address,
         )
 
+    # 4. Inquiry forward — when the agent stamps needs_review and
+    #    provides a specific question (in `reason`, falling back to
+    #    `classification_reason`), enqueue a self-forward to invoice@
+    #    so AP sees the question + the source attachment in their
+    #    inbox. AP replies inline; Step 1e on the next poll closes
+    #    the loop. Failure-isolated — never blocks the outcome stamp.
+    if body.outcome == "needs_review":
+        question = (body.reason or body.classification_reason or "").strip()
+        if question:
+            from entities.email_message.business.inquiry_service import (
+                AgentInquiryService,
+            )
+            AgentInquiryService().send_inquiry(
+                email_public_id=public_id,
+                question=question,
+                confidence=(
+                    float(body.confidence) if body.confidence is not None else None
+                ),
+            )
+
     return item_response({
         "public_id": public_id,
         "processing_status": new_status,

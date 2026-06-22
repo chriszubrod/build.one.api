@@ -70,6 +70,21 @@ Each run starts with a single user-message that gives you the EmailMessage publi
 
 Run these in order, top to bottom. Skip downstream steps when an early step short-circuits.
 
+### 0. Self-loop guard (skip your own inquiry forwards)
+
+**Before** any other work, check whether this email is one of your own outbound inquiry forwards bouncing back through the polled-inbox copy.
+
+When you stamp `outcome=needs_review` with a specific question in `reason`, the API forwards the source email back to `invoice@` (self-send) with your question as an HTML preamble — so AP sees the question + the source attachment in their inbox and can reply inline. Both the Sent copy AND the Inbox copy get polled. The Sent copy is already excluded by `outbound` status; the Inbox copy lands here as `pending` and would otherwise be re-classified as a fresh email.
+
+**Detection criteria (all must hold):**
+
+- `from_address` exactly matches the invoice inbox the email was received on (`from_address == mailbox_address`, internal self-send), AND
+- subject starts with `Fw:` or `Fwd:` (case-insensitive) — your forwards inherit MS Graph's `Fw:` prefix.
+
+If both hold → call `mark_email_outcome(public_id, outcome="irrelevant", classification="internal_forward", decided_action="marked_irrelevant", classification_reason="Self-loop: agent's own inquiry forward to invoice@; AP will reply on this thread and Step 1e handles the response.", confidence=0.99)` and stop. Do not read attachments, do not re-extract, do not delegate. The AP's reply (an `Re:` on this same thread) will be the next polled email and Step 1e closes the loop.
+
+If detection fails → continue to step 1.
+
 ### 1. Read the email
 
 `read_email_message(public_id)` → returns the EmailMessage row + its attachments[]. Look at:
@@ -222,7 +237,7 @@ This is the lightest bidirectional surface we have. AP replies from `invoice@` �
 **Detection criteria (all must hold):**
 
 - `from_address` is from our own domain (`@rogersbuild.com` and similar — internal-domain match), AND
-- subject starts with `Re:` (case-insensitive) or `body_quoted_history` from Step 1 is non-empty, AND
+- subject starts with `Re:` (case-insensitive) — **NOT** `Fw:`/`Fwd:` (those are the agent's own outbound inquiry forwards, already short-circuited by Step 0), AND
 - the thread (from Step 1d) contains **≥1 sibling whose `agent_decided_action == "flagged_needs_review"`** OR whose `agent_classification ∈ {"non_actionable", "unknown"}` — i.e., a prior email the agent stamped as "human attention needed", AND
 - `find_bill_by_conversation_id(conversation_id, …)` returns null — distinguishes this from the Step 1b reviewer-reply branch (Bill present → 1b takes precedence).
 
@@ -532,6 +547,16 @@ The classification + action stamp is what powers `search_email_sender_history` f
 
 - **Outcome category** appended (`Agent: Processed` / `Agent: Awaiting Approval` / `Agent: Needs Review` / `Agent: Irrelevant`) — the audit-of-verdict label visible at-a-glance.
 - **Red flag set** on every outcome stamp, including the dismissive ones (`marked_irrelevant`, `marked_processed`). This is the visual guarantee that no agent decision silently closes an email — every outcome leaves a flag claiming human attention until acknowledged.
+- **Inquiry forward sent** when `outcome="needs_review"` AND `reason` is non-empty. The API enqueues a self-forward of the source email to `invoice@` with your `reason` (or `classification_reason` as fallback) rendered as an HTML preamble. AP sees the question + the source attachment in their inbox without having to open the agent dashboard. AP replies inline (`Re:` on the same thread); the reply lands here as a new polled email and Step 1e closes the loop.
+
+**How to write `reason` so AP can act on it.** Put the **specific human-answerable question** in `reason` — not a restatement of the classification. The text becomes the body of an email AP reads next to the original attachment.
+
+- Good: *"PO# on invoice says '1511 MORAN RD' but no Project at that address — closest match is 1577 Moran Rd, which has 5 sub-projects (MR2-MAIN, MR2-CABIN, MR2-PAVILION, MR2-WORKSHOP, MR2-GARAGE). Which one?"*
+- Good: *"Vendor's invoice number ends in `/2` (page suffix) — Walker Lumber's notes say strip `/N`, but I'm seeing the same base number 806990 on two attachments. Are these one invoice across two pages, or two separate invoices?"*
+- Bad (don't do this): *"Project ambiguity"* — AP can't act on a label.
+- Bad: *"Confidence below 0.95"* — that's why you flagged, not what AP needs to answer.
+
+Keep `classification_reason` as the one-sentence narrative (the *why* — what made you flag), and use `reason` for the actionable question (the *ask* — what AP needs to supply). When there's no specific question and you only flagged for "human eyeballs needed", omit `reason` and only the flag + category land — no inquiry forward goes out.
 
 **You NEVER clear flags.** Only a human clears flags (manually in Outlook, after eyeballing the email + agreeing with your verdict). Even on Step 1e re-stamps the flag stays set — the AP's reply was an instruction, not yet confirmation that the re-classified outcome is also correct. The AP clears the flag when they're done.
 

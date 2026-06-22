@@ -602,6 +602,7 @@ class MsOutboxWorker:
             create_draft,
             create_forward_draft,
             forward_message,
+            send_draft,
             send_message,
         )
 
@@ -631,7 +632,30 @@ class MsOutboxWorker:
             # Forward path — inherit subject/body/attachments from the
             # source message; `comment_text` becomes the plain-text
             # preamble. `subject` / `body` / `attachment` ignored.
-            if mode == "send":
+            if mode == "send" and html_preamble:
+                # Graph's /forward endpoint only accepts a plain-text
+                # `comment` (it strips newlines + ignores HTML). To send
+                # an immediate forward with a formatted HTML preamble
+                # (yellow callout boxes, line breaks, styled labels) we
+                # have to draft-then-send: createForward + PATCH body
+                # gives us the HTML injection, then /send dispatches.
+                draft_result = create_forward_draft(
+                    message_id=forward_message_id,
+                    html_preamble=html_preamble,
+                    to_recipients=to_addresses or None,
+                    cc_recipients=cc_addresses or None,
+                    bcc_recipients=bcc_addresses or None,
+                )
+                draft_id = (
+                    ((draft_result or {}).get("draft") or {}).get("id")
+                    if isinstance(draft_result, dict)
+                    else None
+                )
+                if not draft_id:
+                    result = draft_result
+                else:
+                    result = send_draft(draft_id)
+            elif mode == "send":
                 result = forward_message(
                     message_id=forward_message_id,
                     to_recipients=to_addresses,

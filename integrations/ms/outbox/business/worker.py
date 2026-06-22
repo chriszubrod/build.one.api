@@ -647,7 +647,7 @@ class MsOutboxWorker:
                     bcc_recipients=bcc_addresses or None,
                 )
                 draft_id = (
-                    ((draft_result or {}).get("draft") or {}).get("id")
+                    ((draft_result or {}).get("draft") or {}).get("message_id")
                     if isinstance(draft_result, dict)
                     else None
                 )

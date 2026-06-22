@@ -343,6 +343,7 @@ def sync_qbo_to_local(
     failed_bills = []    # transient errors (DB, connection) — block the watermark for retry
     excel_rows_synced = 0
     sharepoint_uploads_synced = 0
+    box_excel_batches = 0
     synced_bills = []    # (bill, bill_id) — collected for batched budget-tracker Excel sync
     bill_service = BillService()
     bill_line_item_service = BillLineItemService()
@@ -460,12 +461,42 @@ def sync_qbo_to_local(
                 except Exception as sp_e:
                     logger.warning(f"Could not upload bill attachments to SharePoint for project {proj_id}: {sp_e}")
 
+        # --- Box: doc-push (PDFs -> project's "14 - Invoices") + BATCHED Box Excel ---
+        # Best-effort, ALLOW_BOX_WRITES-gated. Box Excel is batched per project (one
+        # download/edit/upload per workbook for all the project's pulled bills) since the
+        # drain rewrites the whole .xlsx; per-entity would churn one Box version per bill.
+        import os as _os
+        if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() == "true":
+            from integrations.box.outbox.business.service import BoxOutboxService
+            from integrations.box.excel.business.mapping_service import BoxProjectWorkbookService
+            _box_outbox = BoxOutboxService()
+            _box_workbook = BoxProjectWorkbookService()
+            for proj_id, bill_line_pairs in project_bill_map.items():
+                for bill, proj_items in bill_line_pairs:
+                    try:
+                        bill_service._enqueue_box_uploads(bill, proj_items)
+                    except Exception as box_e:
+                        logger.warning(f"Could not enqueue Box doc-push for project {proj_id}: {box_e}")
+                try:
+                    mapping = _box_workbook.read_by_project_id(proj_id)
+                    if mapping:
+                        entities = [{"entity_type": "bill", "entity_public_id": str(b.public_id)}
+                                    for b, _ in bill_line_pairs]
+                        if _box_outbox.enqueue_box_excel_batch(
+                            entities=entities, project_id=proj_id,
+                            box_file_id=mapping["box_file_id"], worksheet_name=mapping["worksheet_name"],
+                        ):
+                            box_excel_batches += 1
+                except Exception as box_e:
+                    logger.warning(f"Could not enqueue Box Excel batch for project {proj_id}: {box_e}")
+
     return {
         "bills_synced": len(bills),
         "bills_module_synced": bills_module_synced,
         "attachments_synced": attachments_synced,
         "excel_rows_synced": excel_rows_synced,
         "sharepoint_uploads_synced": sharepoint_uploads_synced,
+        "box_excel_batches": box_excel_batches,
         "skipped_count": len(skipped_bills),
         "skipped_bill_ids": skipped_bills,
         "failed_count": len(failed_bills),
@@ -916,6 +947,7 @@ def sync_qbo_bill(
                     f"Bills module synced: {qbo_to_local_result['bills_module_synced']}, "
                     f"Excel rows synced: {qbo_to_local_result.get('excel_rows_synced', 0)}, "
                     f"SharePoint uploads: {qbo_to_local_result.get('sharepoint_uploads_synced', 0)}, "
+                    f"Box Excel batches: {qbo_to_local_result.get('box_excel_batches', 0)}, "
                     f"Bills pushed: {pushed_count}")
         
         return {

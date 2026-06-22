@@ -67,10 +67,17 @@ class BoxExcelUpdateService:
         entity_type = payload.get("entity_type") or row.entity_type
         entity_public_id = payload.get("entity_public_id") or row.entity_public_id
         project_id = payload.get("project_id")
+        # Batch rows carry a list of {entity_type, entity_public_id}; single rows
+        # carry one entity ref. Only the row-build differs — the lock / download /
+        # apply / upload path below is identical.
+        entities = payload.get("entities")
 
         if not box_file_id:
             raise ValueError("update_box_excel payload missing box_file_id")
-        if not entity_type or not entity_public_id:
+        if entities is not None:
+            if not isinstance(entities, list) or not entities:
+                raise ValueError("update_box_excel batch payload has empty/invalid entities")
+        elif not entity_type or not entity_public_id:
             raise ValueError(
                 "update_box_excel payload missing entity_type / entity_public_id"
             )
@@ -96,6 +103,7 @@ class BoxExcelUpdateService:
                     entity_type=entity_type,
                     entity_public_id=str(entity_public_id),
                     project_id=project_id,
+                    entities=entities,
                 )
 
     # ------------------------------------------------------------------ #
@@ -112,6 +120,7 @@ class BoxExcelUpdateService:
         entity_type: str,
         entity_public_id: str,
         project_id: Optional[int],
+        entities: Optional[list] = None,
     ) -> None:
         # Step 3: read meta (etag + lock + name).
         meta = client.get(
@@ -166,7 +175,15 @@ class BoxExcelUpdateService:
                 apply_rows_to_details,
             )
 
-            rows = build_details_rows(entity_type, entity_public_id)
+            if entities:
+                # Batch: concatenate fresh rows for every entity; one download +
+                # apply + upload covers them all. col-Z dedup in apply_rows_to_details
+                # drops any line item already present, so re-runs stay safe.
+                rows = []
+                for ent in entities:
+                    rows.extend(build_details_rows(ent["entity_type"], ent["entity_public_id"]))
+            else:
+                rows = build_details_rows(entity_type, entity_public_id)
             if not rows:
                 logger.info(
                     "box.outbox.excel.no_rows",

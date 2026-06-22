@@ -301,6 +301,92 @@ class BoxOutboxService:
         )
         return created
 
+    def enqueue_box_excel_batch(
+        self,
+        *,
+        entities: list,
+        project_id: int,
+        box_file_id: str,
+        worksheet_name: str,
+    ) -> Optional[BoxOutbox]:
+        """
+        Batch variant of enqueue_box_excel: ONE outbox row whose payload carries
+        MANY entities for the SAME workbook. The drain handler downloads the
+        .xlsx once, builds + appends rows for every entity, and uploads a SINGLE
+        new version — instead of one download/edit/upload (one Box file version)
+        per entity. Used by the QBO pull, which routinely projects many
+        bills/expenses/credits onto one project's workbook in a single run.
+
+        `entities` is a list of {"entity_type", "entity_public_id"} dicts. The
+        drain re-fetches each entity fresh and dedups by column-Z, exactly like
+        the single-entity path — only the I/O is coalesced.
+
+        Gated on ALLOW_BOX_WRITES. Returns the row, or None if refused / empty.
+
+        Payload JSON:
+          {"box_file_id","worksheet_name","project_id",
+           "entities":[{"entity_type","entity_public_id"},...]}
+        """
+        correlation_id = get_correlation_id()
+
+        if not entities:
+            return None
+
+        if not _writes_allowed():
+            logger.warning(
+                "box.outbox.row.refused",
+                extra={
+                    "event_name": "box.outbox.row.refused",
+                    "correlation_id": correlation_id,
+                    "operation_name": KIND_UPDATE_EXCEL,
+                    "entity_type": "box_excel_batch",
+                    "entity_public_id": str(project_id),
+                    "reason": "ALLOW_BOX_WRITES_not_true",
+                },
+            )
+            return None
+
+        now = datetime.now(timezone.utc)
+        ready_after = now + timedelta(seconds=DEFAULT_READY_AFTER_SECONDS)
+        payload = {
+            "box_file_id": box_file_id,
+            "worksheet_name": worksheet_name,
+            "project_id": project_id,
+            "entities": entities,
+        }
+
+        request_id = str(uuid.uuid4())
+        # The entity_public_id column is a per-row UNIQUEIDENTIFIER; a batch row
+        # represents many entities, so it carries its own synthetic id (the real
+        # entity refs live in payload["entities"]).
+        created = self.repo.create(
+            kind=KIND_UPDATE_EXCEL,
+            entity_type="box_excel_batch",
+            entity_public_id=str(uuid.uuid4()),
+            request_id=request_id,
+            payload=json.dumps(payload),
+            ready_after=ready_after,
+            correlation_id=correlation_id,
+            created_by_user_id=current_user_id.get(),
+        )
+        logger.info(
+            "box.outbox.row.enqueued",
+            extra={
+                "event_name": "box.outbox.row.enqueued",
+                "correlation_id": correlation_id,
+                "operation_name": KIND_UPDATE_EXCEL,
+                "outbox_public_id": created.public_id,
+                "entity_type": "box_excel_batch",
+                "entity_count": len(entities),
+                "box_file_id": box_file_id,
+                "worksheet_name": worksheet_name,
+                "project_id": project_id,
+                "request_id": request_id,
+                "ready_after": ready_after.isoformat(),
+            },
+        )
+        return created
+
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #

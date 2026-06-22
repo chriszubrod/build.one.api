@@ -281,6 +281,7 @@ def sync_qbo_to_local(
     failed_vendor_credits = []    # transient errors (DB, connection) — block the watermark for retry
     excel_rows_synced = 0
     sharepoint_uploads_synced = 0
+    box_excel_batches = 0
     synced_credits = []    # (bill_credit, bill_credit_id) — collected for batched budget-tracker Excel sync
     bill_credit_complete_service = BillCreditCompleteService()
     bill_credit_line_item_service = BillCreditLineItemService()
@@ -393,12 +394,41 @@ def sync_qbo_to_local(
                 except Exception as sp_e:
                     logger.warning(f"Could not upload credit attachments to SharePoint for project {proj_id}: {sp_e}")
 
+        # --- Box: doc-push (PDFs -> project's "14 - Invoices") + BATCHED Box Excel ---
+        # Best-effort, ALLOW_BOX_WRITES-gated. Box Excel is batched per project (one
+        # download/edit/upload per workbook for all the project's pulled credits).
+        import os as _os
+        if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() == "true":
+            from integrations.box.outbox.business.service import BoxOutboxService
+            from integrations.box.excel.business.mapping_service import BoxProjectWorkbookService
+            _box_outbox = BoxOutboxService()
+            _box_workbook = BoxProjectWorkbookService()
+            for proj_id, bill_credit_line_pairs in project_credit_map.items():
+                for bill_credit, proj_items in bill_credit_line_pairs:
+                    try:
+                        bill_credit_complete_service._enqueue_box_uploads(bill_credit, proj_items)
+                    except Exception as box_e:
+                        logger.warning(f"Could not enqueue Box doc-push for project {proj_id}: {box_e}")
+                try:
+                    mapping = _box_workbook.read_by_project_id(proj_id)
+                    if mapping:
+                        entities = [{"entity_type": "bill_credit", "entity_public_id": str(c.public_id)}
+                                    for c, _ in bill_credit_line_pairs]
+                        if _box_outbox.enqueue_box_excel_batch(
+                            entities=entities, project_id=proj_id,
+                            box_file_id=mapping["box_file_id"], worksheet_name=mapping["worksheet_name"],
+                        ):
+                            box_excel_batches += 1
+                except Exception as box_e:
+                    logger.warning(f"Could not enqueue Box Excel batch for project {proj_id}: {box_e}")
+
     return {
         "vendor_credits_synced": len(vendor_credits),
         "bill_credits_module_synced": bill_credits_module_synced,
         "attachments_synced": attachments_synced,
         "excel_rows_synced": excel_rows_synced,
         "sharepoint_uploads_synced": sharepoint_uploads_synced,
+        "box_excel_batches": box_excel_batches,
         "skipped_count": len(skipped_vendor_credits),
         "skipped_vendor_credit_ids": skipped_vendor_credits,
         "failed_count": len(failed_vendor_credits),
@@ -547,7 +577,8 @@ def sync_qbo_vendorcredit(
             f"BillCredits module synced: {qbo_to_local_result['bill_credits_module_synced']}, "
             f"attachments synced: {qbo_to_local_result.get('attachments_synced', 0)}, "
             f"Excel rows synced: {qbo_to_local_result.get('excel_rows_synced', 0)}, "
-            f"SharePoint uploads: {qbo_to_local_result.get('sharepoint_uploads_synced', 0)}"
+            f"SharePoint uploads: {qbo_to_local_result.get('sharepoint_uploads_synced', 0)}, "
+            f"Box Excel batches: {qbo_to_local_result.get('box_excel_batches', 0)}"
         )
         
         return {

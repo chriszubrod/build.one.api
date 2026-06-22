@@ -543,10 +543,21 @@ class BoxOutboxWorker:
         Box file lock. Box has no cell-level API, so all read / idempotency /
         insertion / write happens at drain time here.
         """
-        required = ("box_file_id", "entity_type", "entity_public_id")
-        missing = [key for key in required if not payload.get(key)]
-        if missing:
-            raise ValueError(f"update_box_excel payload missing required fields: {missing}")
+        # Accept either a single-entity payload (entity_type + entity_public_id) or a
+        # batch payload (entities: [{entity_type, entity_public_id}, ...], written by
+        # BoxOutboxService.enqueue_box_excel_batch). Detailed branch validation also lives
+        # in BoxExcelUpdateService.handle(); this outer gate mirrors it so batch rows are
+        # NOT dead-lettered before delegation.
+        if not payload.get("box_file_id"):
+            raise ValueError("update_box_excel payload missing required fields: ['box_file_id']")
+        entities = payload.get("entities")
+        if entities is not None:
+            if not isinstance(entities, list) or not entities:
+                raise ValueError("update_box_excel batch payload has empty/invalid entities")
+        elif not payload.get("entity_type") or not payload.get("entity_public_id"):
+            raise ValueError(
+                "update_box_excel payload missing required fields: ['entity_type', 'entity_public_id']"
+            )
 
         # Lazy import: the excel package is a sibling vertical; importing at
         # module load would couple outbox/ -> excel/ for every consumer of the

@@ -1061,7 +1061,11 @@ class ExpenseService:
             # represents a bundle of expenses; we record the project_id for
             # downstream traceability since a single batch-entity isn't
             # meaningful here.
-            batch_entity_public_id = str(project_id)
+            # EntityPublicId is a UNIQUEIDENTIFIER; a batch row spans many entities, so
+            # derive a deterministic GUID from the project. (Plain str(project_id) fails
+            # the nvarchar->uniqueidentifier cast in the outbox sproc.)
+            import uuid as _uuid
+            batch_entity_public_id = str(_uuid.uuid5(_uuid.NAMESPACE_URL, f"ms-excel-batch:{project_id}"))
 
             for insertion_row, group_rows, scc_number in insert_groups:
                 queued = ms_outbox.enqueue_excel_insert(

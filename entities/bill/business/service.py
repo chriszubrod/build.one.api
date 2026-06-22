@@ -2455,7 +2455,7 @@ class BillService:
             synced_count = 0
             errors = []
             uploaded_attachments = {}  # Track to avoid duplicates
-            
+
             logger.info(f"SharePoint sync: Processing {len(line_items)} line items for project {project_id}")
 
             # Process each line item
@@ -2490,7 +2490,7 @@ class BillService:
                             "error": "Attachment not found or missing blob_url"
                         })
                         continue
-                    
+
                     # Get SubCostCode for filename
                     sub_cost_code_number = ""
                     if line_item.sub_cost_code_id:

@@ -195,6 +195,7 @@ def sync_qbo_to_local(
     expenses_module_synced = 0
     attachments_linked = 0
     excel_rows_synced = 0
+    sharepoint_uploads_synced = 0
     skipped_purchases = []   # permanent data issues (missing vendor, etc.) — don't block timestamp
     failed_purchases = []    # transient errors (DB, connection) — block timestamp for retry
     synced_expenses = []     # (expense, expense_id) — collected for batched Excel sync
@@ -272,9 +273,11 @@ def sync_qbo_to_local(
     if synced_expenses:
         # Build project_id -> [(expense, [line_items]), ...] mapping
         project_expense_map = {}  # project_id -> [(expense, [line_items_for_this_project])]
+        expense_line_counts = {}  # expense.id -> total line count (SharePoint filename parity with completion)
         for expense, expense_id in synced_expenses:
             try:
                 eli_list = expense_line_item_service.read_by_expense_id(expense_id=expense_id)
+                expense_line_counts[expense.id] = len(eli_list)
                 by_project = {}
                 for eli in eli_list:
                     if eli.project_id:
@@ -298,6 +301,25 @@ def sync_qbo_to_local(
                         logger.warning(f"Excel sync error for project {proj_id}: {err}")
             except Exception as excel_e:
                 logger.warning(f"Could not sync expenses to Excel for project {proj_id}: {excel_e}")
+
+        # --- SharePoint document upload (best-effort) ---
+        # Re-pull-safe without a synced-guard: incremental watermark avoids re-fetching an
+        # unchanged expense; a re-pull uses conflictBehavior=replace (refresh, not duplicate).
+        for proj_id, expense_line_pairs in project_expense_map.items():
+            for expense, proj_items in expense_line_pairs:
+                try:
+                    sp_result = expense_service._upload_attachments_to_module_folder(
+                        expense=expense,
+                        line_items=proj_items,
+                        project_id=proj_id,
+                        expense_line_items_count=expense_line_counts.get(expense.id, len(proj_items)),
+                    )
+                    sharepoint_uploads_synced += sp_result.get("synced_count", 0)
+                    if sp_result.get("errors"):
+                        for err in sp_result["errors"]:
+                            logger.warning(f"SharePoint upload error for project {proj_id}: {err}")
+                except Exception as sp_e:
+                    logger.warning(f"Could not upload expense attachments to SharePoint for project {proj_id}: {sp_e}")
 
     # --- Auto-complete: Expenses are intake-only from QBO, finalize immediately ---
     expenses_completed = 0
@@ -330,6 +352,7 @@ def sync_qbo_to_local(
         "expenses_completed": expenses_completed,
         "attachments_linked": attachments_linked,
         "excel_rows_synced": excel_rows_synced,
+        "sharepoint_uploads_synced": sharepoint_uploads_synced,
         "skipped_count": len(skipped_purchases),
         "skipped_purchase_ids": skipped_purchases,
         "failed_count": len(failed_purchases),
@@ -475,7 +498,8 @@ def sync_qbo_purchase(
                     f"Skipped: {qbo_to_local_result.get('skipped_count', 0)}, "
                     f"Failed: {qbo_to_local_result.get('failed_count', 0)}, "
                     f"Attachments linked: {qbo_to_local_result['attachments_linked']}, "
-                    f"Excel rows synced: {qbo_to_local_result.get('excel_rows_synced', 0)}")
+                    f"Excel rows synced: {qbo_to_local_result.get('excel_rows_synced', 0)}, "
+                    f"SharePoint uploads: {qbo_to_local_result.get('sharepoint_uploads_synced', 0)}")
         
         return {
             "result": result,

@@ -280,6 +280,7 @@ def sync_qbo_to_local(
     skipped_vendor_credits = []   # permanent data issues (e.g. vendor not mapped) — do NOT block the watermark
     failed_vendor_credits = []    # transient errors (DB, connection) — block the watermark for retry
     excel_rows_synced = 0
+    sharepoint_uploads_synced = 0
     synced_credits = []    # (bill_credit, bill_credit_id) — collected for batched budget-tracker Excel sync
     bill_credit_complete_service = BillCreditCompleteService()
     bill_credit_line_item_service = BillCreditLineItemService()
@@ -374,11 +375,30 @@ def sync_qbo_to_local(
             except Exception as excel_e:
                 logger.warning(f"Could not sync bill credits to Excel for project {proj_id}: {excel_e}")
 
+        # --- SharePoint document upload (best-effort) ---
+        # Re-pull-safe without a synced-guard: incremental watermark avoids re-fetching an
+        # unchanged credit; a re-pull uses conflictBehavior=replace (refresh, not duplicate).
+        for proj_id, bill_credit_line_pairs in project_credit_map.items():
+            for bill_credit, proj_items in bill_credit_line_pairs:
+                try:
+                    sp_result = bill_credit_complete_service._upload_attachments_to_module_folder(
+                        bill_credit=bill_credit,
+                        line_items=proj_items,
+                        project_id=proj_id,
+                    )
+                    sharepoint_uploads_synced += sp_result.get("synced_count", 0)
+                    if sp_result.get("errors"):
+                        for err in sp_result["errors"]:
+                            logger.warning(f"SharePoint upload error for project {proj_id}: {err}")
+                except Exception as sp_e:
+                    logger.warning(f"Could not upload credit attachments to SharePoint for project {proj_id}: {sp_e}")
+
     return {
         "vendor_credits_synced": len(vendor_credits),
         "bill_credits_module_synced": bill_credits_module_synced,
         "attachments_synced": attachments_synced,
         "excel_rows_synced": excel_rows_synced,
+        "sharepoint_uploads_synced": sharepoint_uploads_synced,
         "skipped_count": len(skipped_vendor_credits),
         "skipped_vendor_credit_ids": skipped_vendor_credits,
         "failed_count": len(failed_vendor_credits),
@@ -526,7 +546,8 @@ def sync_qbo_vendorcredit(
             f"QBO VendorCredit sync completed. VendorCredits from QBO: {qbo_to_local_result['vendor_credits_synced']}, "
             f"BillCredits module synced: {qbo_to_local_result['bill_credits_module_synced']}, "
             f"attachments synced: {qbo_to_local_result.get('attachments_synced', 0)}, "
-            f"Excel rows synced: {qbo_to_local_result.get('excel_rows_synced', 0)}"
+            f"Excel rows synced: {qbo_to_local_result.get('excel_rows_synced', 0)}, "
+            f"SharePoint uploads: {qbo_to_local_result.get('sharepoint_uploads_synced', 0)}"
         )
         
         return {

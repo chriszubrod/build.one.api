@@ -342,6 +342,7 @@ def sync_qbo_to_local(
     skipped_bills = []   # permanent data issues (e.g. vendor not mapped) — do NOT block the watermark
     failed_bills = []    # transient errors (DB, connection) — block the watermark for retry
     excel_rows_synced = 0
+    sharepoint_uploads_synced = 0
     synced_bills = []    # (bill, bill_id) — collected for batched budget-tracker Excel sync
     bill_service = BillService()
     bill_line_item_service = BillLineItemService()
@@ -409,9 +410,11 @@ def sync_qbo_to_local(
     # failure is logged and never blocks the bill watermark.
     if synced_bills:
         project_bill_map = {}  # project_id -> [(bill, [line_items_for_this_project])]
+        bill_line_counts = {}  # bill.id -> total line count (SharePoint filename parity with completion)
         for bill, bill_id in synced_bills:
             try:
                 blis = bill_line_item_service.read_by_bill_id(bill_id=bill_id)
+                bill_line_counts[bill.id] = len(blis)
                 by_project = {}
                 for bli in blis:
                     if bli.project_id:
@@ -436,11 +439,33 @@ def sync_qbo_to_local(
             except Exception as excel_e:
                 logger.warning(f"Could not sync bills to Excel for project {proj_id}: {excel_e}")
 
+        # --- SharePoint document upload (best-effort) ---
+        # Re-pull-safe without a synced-guard: the pull is incremental (watermark), so an
+        # unchanged bill is never re-fetched; when a bill IS re-pulled (modified in QBO, or a
+        # rare full sync) the upload uses conflictBehavior=replace, refreshing the same-named
+        # file rather than creating a duplicate.
+        for proj_id, bill_line_pairs in project_bill_map.items():
+            for bill, proj_items in bill_line_pairs:
+                try:
+                    sp_result = bill_service._upload_attachments_to_module_folder(
+                        bill=bill,
+                        line_items=proj_items,
+                        project_id=proj_id,
+                        bill_line_items_count=bill_line_counts.get(bill.id, len(proj_items)),
+                    )
+                    sharepoint_uploads_synced += sp_result.get("synced_count", 0)
+                    if sp_result.get("errors"):
+                        for err in sp_result["errors"]:
+                            logger.warning(f"SharePoint upload error for project {proj_id}: {err}")
+                except Exception as sp_e:
+                    logger.warning(f"Could not upload bill attachments to SharePoint for project {proj_id}: {sp_e}")
+
     return {
         "bills_synced": len(bills),
         "bills_module_synced": bills_module_synced,
         "attachments_synced": attachments_synced,
         "excel_rows_synced": excel_rows_synced,
+        "sharepoint_uploads_synced": sharepoint_uploads_synced,
         "skipped_count": len(skipped_bills),
         "skipped_bill_ids": skipped_bills,
         "failed_count": len(failed_bills),
@@ -890,6 +915,7 @@ def sync_qbo_bill(
         logger.info(f"QBO Bill sync completed. Bills from QBO: {qbo_to_local_result['bills_synced']}, "
                     f"Bills module synced: {qbo_to_local_result['bills_module_synced']}, "
                     f"Excel rows synced: {qbo_to_local_result.get('excel_rows_synced', 0)}, "
+                    f"SharePoint uploads: {qbo_to_local_result.get('sharepoint_uploads_synced', 0)}, "
                     f"Bills pushed: {pushed_count}")
         
         return {

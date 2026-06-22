@@ -482,7 +482,7 @@ class BillCreditCompleteService:
             synced_count = 0
             errors = []
             uploaded_attachments = {}  # Track to avoid duplicates
-            
+
             print(f"  SharePoint sync: Processing {len(line_items)} line items for project {project_id}")
             logger.info(f"SharePoint sync: Processing {len(line_items)} line items for project {project_id}")
             
@@ -522,7 +522,7 @@ class BillCreditCompleteService:
                             "error": "Attachment not found or missing blob_url"
                         })
                         continue
-                    
+
                     # Get SubCostCode for filename
                     sub_cost_code_number = ""
                     if line_item.sub_cost_code_id:

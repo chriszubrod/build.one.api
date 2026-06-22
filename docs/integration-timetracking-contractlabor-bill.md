@@ -255,3 +255,75 @@ After the 8 decisions were locked, the 7-phase plan was reshaped + executed in o
 ### Address fields from VENDOR_CONFIG
 
 VENDOR_CONFIG still carries `address` + `city_state_zip` (used for the ContractLabor bill PDF header). Phase 2 left this in place — rate/markup moved to DB, address-half stays in `VENDOR_CONFIG` dict for now. Long-term migration to the existing `VendorAddress` entity is a separate follow-on.
+
+---
+
+## 2026-06-04 — Legacy ContractLabor → TimeEntry data migration (in scoping)
+
+Separate from the integration project above. Goal: backfill TimeEntry / TimeLog / TimeEntryStatus rows from the 421 Excel-imported legacy ContractLabor rows so workers and reviewers see a complete history in the new system, and so the entire labor pipeline lives under one model going forward.
+
+### Source
+
+`dbo.ContractLabor` rows where `ImportBatchId IS NOT NULL`:
+
+- **421 rows total** spanning WorkDate 2026-01-02 → 2026-03-13 (~10 weeks)
+- 6 Excel import batches (`TimeClock.xls` family) created 2026-01-21 → 2026-03-23
+- 8 distinct `EmployeeName` values
+- Status: 338 `billed` (270 with live `BillLineItemId`), 74 `pending_review`, 9 `ready`
+
+### Hard constraint
+
+**Must not re-trigger `dbo.AggregateTimeEntryOnSubmit`** — 338 of 421 legacy CL rows already have downstream Bills produced. Re-aggregation would create duplicate ContractLabor parents and double-count hours.
+
+Migration writes TimeEntry / TimeLog / TimeEntryStatus rows representing historical data, then **stamps `dbo.ContractLabor.SourceTimeEntryId = <new TE Id>` retroactively** to close the lineage loop. Legacy CL row stays canonical for billing history; nothing in the bill chain moves.
+
+### Collapse ratio (key shape decision)
+
+Legacy CL is one row per `(Worker × Day × Project)`. TimeEntry is one row per `(Worker × Day)` with N TimeLogs hanging off it. So multi-project days collapse:
+
+| CL rows on same worker-day | worker-days | = CL rows |
+|---|---|---|
+| 1 (single-project, 1:1) | 258 | 258 |
+| 2 | 44 | 88 |
+| 3 | 17 | 51 |
+| 4 | 6 | 24 |
+| **Total** | **325 TimeEntries** | **421 TimeLogs (1:1 with CL)** |
+
+**Grouping key**: `(resolved_user_id, work_date)`.
+
+### Decisions locked
+
+**Worker name → User.Id resolution**:
+
+| Legacy EmployeeName | → User |
+|---|---|
+| `Wilmer  Diaz` | 41 |
+| `Emilson  Cordova` | 38 |
+| `Elmer Cordova` | 37 |
+| `Selvin Cordova` | 40 |
+| `Michael Jacobson` | 39 |
+| `Parker Hazen` | 42 |
+| `Brayan Rafael Marcia Salina` | 36 (name shortened to `Brayan Marcia Salina` later) |
+| `Denis Marcia Izaguirre` | **NEW** `User` row — `Firstname='Denis'`, `Lastname='Izaguirre'`, `Email=NULL`. No longer with the company; created for historical records only (no Auth row, no UserRole, no UserProject). |
+
+**TimeEntry field mapping**:
+
+| TimeEntry column | Source |
+|---|---|
+| `UserId` | resolved from `EmployeeName` per table above |
+| `WorkDate` | `CL.WorkDate` |
+| `Note` | `NULL` (per-session worker notes ride on TimeLog) |
+| `CompanyId` | `CL.CompanyId` |
+| `CreatedByUserId` | each worker's own resolved `User.Id` (TE is "self-authored" historically — Wilmer's TEs `CreatedByUserId=41`, Michael's `=39`, etc.) |
+| `CreatedDatetime` | `MIN(CL.CreatedDatetime)` across the group (earliest import-timestamp on the day) |
+| `ProjectId` | `NULL` (deprecated on TE; project lives on TimeLog) |
+| `ReviewPriority`, `ReviewReasons` | `NULL` (agent-stamped fields not back-populated) |
+
+### Still open (next scoping pass)
+
+- **ContractLabor → TimeeLog mapping** — `TimeIn`/`TimeOut` parse strategy, `BreakTime` modeling, ProjectId carry-through, Duration source (`TotalHours` vs computed from clock-in/out).
+- **ContractLabor.Status → TimeEntryStatus mapping** — `billed` → `billed`, `ready` → `approved`, `pending_review` → ? (`submitted` or `draft`).
+- **Lineage back-stamp** — exact SQL for `UPDATE ContractLabor SET SourceTimeEntryId = ?` post-insert.
+- **Idempotency** — re-runnable via `(SourceFile, SourceRow)` natural key, or one-shot?
+- **Acting system context** — `set_authz_context(is_system_admin=True)` requirement during the migration since cross-user row writes will hit RBAC.
+- **EmployeeLabor backfill** — table is empty; confirm no employee-side historical data in scope.

@@ -435,11 +435,30 @@ def set_email_outcome_router(
         else:
             graph_result = {"status": "already_tagged"}
 
+    # 3. Red flag — the agent sets a flag on EVERY outcome stamp,
+    #    including the dismissive ones (marked_irrelevant /
+    #    marked_processed). Only a human clears the flag (manually in
+    #    Outlook) after they've eyeballed the email + agreed with the
+    #    agent's verdict. This is the visual guarantee that no agent
+    #    decision can silently close an email — every outcome leaves a
+    #    flag claiming human attention until acknowledged.
+    #    Best-effort: log + carry on if Graph PATCH fails. PATCH-ing
+    #    `flag.flagStatus = "flagged"` is idempotent — a no-op if the
+    #    message is already flagged.
+    flag_result: dict = {"status": "skipped"}
+    if email.graph_message_id and email.mailbox_address:
+        flag_result = mail_client.flag_message(
+            message_id=email.graph_message_id,
+            flagged=True,
+            mailbox=email.mailbox_address,
+        )
+
     return item_response({
         "public_id": public_id,
         "processing_status": new_status,
         "outcome_category": outcome_category,
         "graph_result": graph_result,
+        "flag_result": flag_result,
     })
 
 

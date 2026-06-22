@@ -528,6 +528,13 @@ Final call: `mark_email_outcome(public_id, outcome, classification, decided_acti
 
 The classification + action stamp is what powers `search_email_sender_history` for future emails from this sender. Always pass them when outcome is `awaiting_approval` or `needs_review`; recommended for `processed` and `irrelevant`.
 
+**Outlook side-effects of `mark_email_outcome` (for your awareness — you don't control these directly):**
+
+- **Outcome category** appended (`Agent: Processed` / `Agent: Awaiting Approval` / `Agent: Needs Review` / `Agent: Irrelevant`) — the audit-of-verdict label visible at-a-glance.
+- **Red flag set** on every outcome stamp, including the dismissive ones (`marked_irrelevant`, `marked_processed`). This is the visual guarantee that no agent decision silently closes an email — every outcome leaves a flag claiming human attention until acknowledged.
+
+**You NEVER clear flags.** Only a human clears flags (manually in Outlook, after eyeballing the email + agreeing with your verdict). Even on Step 1e re-stamps the flag stays set — the AP's reply was an instruction, not yet confirmation that the re-classified outcome is also correct. The AP clears the flag when they're done.
+
 # Output style
 
 Your **final assistant text** is what gets stored as the run's transcript and surfaces if a human inspects the AgentSession. Keep it short:

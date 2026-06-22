@@ -25,6 +25,16 @@ WORKBOOK_CONTENT_TYPE = (
 # (Box auto-expires the lock at this horizon even if our unlock never runs).
 BOX_LOCK_TTL_SECONDS = 300  # 5 minutes
 
+# Operation discriminator string constants. Shared across enqueue (BoxOutboxService
+# writes the value) and drain (BoxExcelUpdateService reads + branches), so a typo
+# at the enqueue site is impossible. handle() dead-letters any payload whose
+# operation is outside KNOWN_OPERATIONS — a rolling deploy that ships a new
+# enqueue path without the matching worker branch fails loudly instead of
+# silently falling through to "insert".
+OP_INSERT = "insert"
+OP_STAMP_DRAW_REQUEST = "stamp_draw_request"
+KNOWN_OPERATIONS = (OP_INSERT, OP_STAMP_DRAW_REQUEST)
+
 
 class BoxExcelUpdateService:
     """
@@ -71,12 +81,36 @@ class BoxExcelUpdateService:
         # carry one entity ref. Only the row-build differs — the lock / download /
         # apply / upload path below is identical.
         entities = payload.get("entities")
+        # Operation discriminator. Absent → "insert" (bill/expense/bill_credit
+        # path, builds new DETAILS rows). "stamp_draw_request" → invoice path,
+        # only updates column H on existing rows by col-Z match.
+        operation = (payload.get("operation") or "insert").strip().lower()
+
+        # KNOWN_OPERATIONS is the closed set we recognize; anything else gets
+        # dead-lettered HERE rather than silently running the insert branch,
+        # so a future operation kind added to enqueue-side code is forced to
+        # land its worker-side branch in the same deploy (catches the BR-MAIN-25
+        # rolling-deploy race in reverse).
+        if operation not in KNOWN_OPERATIONS:
+            raise ValueError(
+                f"update_box_excel payload has unknown operation {operation!r} "
+                f"(expected one of {KNOWN_OPERATIONS})"
+            )
 
         if not box_file_id:
             raise ValueError("update_box_excel payload missing box_file_id")
         if entities is not None:
             if not isinstance(entities, list) or not entities:
                 raise ValueError("update_box_excel batch payload has empty/invalid entities")
+            if operation == OP_STAMP_DRAW_REQUEST:
+                # stamp_draw_request is single-entity; reject batch payloads
+                # HERE so we don't waste a Box file lock acquire before
+                # discovering the misconfiguration inside _run_locked.
+                raise ValueError(
+                    "update_box_excel: operation='stamp_draw_request' is not "
+                    "compatible with a batch 'entities' payload — use one row "
+                    "per invoice"
+                )
         elif not entity_type or not entity_public_id:
             raise ValueError(
                 "update_box_excel payload missing entity_type / entity_public_id"
@@ -104,6 +138,7 @@ class BoxExcelUpdateService:
                     entity_public_id=str(entity_public_id),
                     project_id=project_id,
                     entities=entities,
+                    operation=operation,
                 )
 
     # ------------------------------------------------------------------ #
@@ -121,6 +156,7 @@ class BoxExcelUpdateService:
         entity_public_id: str,
         project_id: Optional[int],
         entities: Optional[list] = None,
+        operation: str = "insert",
     ) -> None:
         # Step 3: read meta (etag + lock + name).
         meta = client.get(
@@ -169,47 +205,105 @@ class BoxExcelUpdateService:
         file_name = lock_resp.get("name") or meta.get("name") or "workbook.xlsx"
 
         try:
-            # Step 5: build rows fresh + download + apply.
-            from integrations.box.excel.business.row_builder import build_details_rows
+            # Step 5: build mutation plan + download + apply. Two operations
+            # share the same lock/download/upload machinery but differ in HOW
+            # they mutate the workbook bytes:
+            #   "insert" (default) — bill/expense/bill_credit add new DETAILS
+            #     rows; col-Z dedups across re-runs.
+            #   "stamp_draw_request" — invoice stamps column H on existing
+            #     rows by col-Z match; never inserts. Re-stamping the same
+            #     value is a no-op.
+            from integrations.box.excel.business.row_builder import (
+                build_details_rows,
+                build_invoice_draw_stamp_pairs,
+                DRAW_REQUEST_COL_INDEX,
+            )
             from integrations.box.excel.business.workbook_editor import (
                 apply_rows_to_details,
+                stamp_columns_by_key,
             )
 
-            if entities:
-                # Batch: concatenate fresh rows for every entity; one download +
-                # apply + upload covers them all. col-Z dedup in apply_rows_to_details
-                # drops any line item already present, so re-runs stay safe.
-                rows = []
-                for ent in entities:
-                    rows.extend(build_details_rows(ent["entity_type"], ent["entity_public_id"]))
-            else:
-                rows = build_details_rows(entity_type, entity_public_id)
-            if not rows:
-                logger.info(
-                    "box.outbox.excel.no_rows",
-                    extra={
-                        "event_name": "box.outbox.excel.no_rows",
-                        "box_file_id": box_file_id,
-                        "entity_type": entity_type,
-                        "entity_public_id": entity_public_id,
-                    },
+            if operation == OP_STAMP_DRAW_REQUEST:
+                # Invoice path. Batch payloads are rejected upstream in handle().
+                pairs = build_invoice_draw_stamp_pairs(entity_public_id)
+                if not pairs:
+                    logger.info(
+                        "box.outbox.excel.no_rows",
+                        extra={
+                            "event_name": "box.outbox.excel.no_rows",
+                            "box_file_id": box_file_id,
+                            "entity_type": entity_type,
+                            "entity_public_id": entity_public_id,
+                            "operation": operation,
+                        },
+                    )
+                    return
+                updates = [
+                    (source_pid, {DRAW_REQUEST_COL_INDEX: draw_value})
+                    for source_pid, draw_value in pairs
+                ]
+                data = client.download_file(
+                    box_file_id, operation_name="box.excel.download"
                 )
-                return
+                result = stamp_columns_by_key(data, worksheet_name, updates)
+            else:
+                if entities:
+                    # Batch: concatenate fresh rows for every entity. Each
+                    # entity is scoped to `project_id` from the payload so a
+                    # multi-project parent never writes lines that belong to
+                    # other projects into this workbook (review finding F1).
+                    rows = []
+                    for ent in entities:
+                        rows.extend(build_details_rows(
+                            ent["entity_type"],
+                            ent["entity_public_id"],
+                            project_id=project_id,
+                        ))
+                else:
+                    rows = build_details_rows(
+                        entity_type, entity_public_id, project_id=project_id,
+                    )
+                if not rows:
+                    logger.info(
+                        "box.outbox.excel.no_rows",
+                        extra={
+                            "event_name": "box.outbox.excel.no_rows",
+                            "box_file_id": box_file_id,
+                            "entity_type": entity_type,
+                            "entity_public_id": entity_public_id,
+                            "operation": operation,
+                        },
+                    )
+                    return
 
-            data = client.download_file(
-                box_file_id, operation_name="box.excel.download"
-            )
-            result = apply_rows_to_details(data, worksheet_name, rows)
+                data = client.download_file(
+                    box_file_id, operation_name="box.excel.download"
+                )
+                result = apply_rows_to_details(data, worksheet_name, rows)
 
-            # Step 6: no-op when all keys already present.
+            # Step 6: no-op when nothing was written. Two distinct reasons,
+            # both yield bytes=None from the editor — an invoice stamp that
+            # found ZERO matching col-Z keys logs `stamp_lost_no_match`
+            # (warning), everything else is `noop_all_present` (info). The
+            # outbox row marks done either way; re-stamping is cheap and
+            # future invoice completions will retry.
             if result.get("bytes") is None:
-                logger.info(
-                    "box.outbox.excel.noop_all_present",
+                stamp_lost = (
+                    operation == OP_STAMP_DRAW_REQUEST
+                    and result.get("matched", 0) == 0
+                    and result.get("skipped", 0) > 0
+                )
+                event = "box.outbox.excel.stamp_lost_no_match" if stamp_lost else "box.outbox.excel.noop_all_present"
+                log_fn = logger.warning if stamp_lost else logger.info
+                log_fn(
+                    event,
                     extra={
-                        "event_name": "box.outbox.excel.noop_all_present",
+                        "event_name": event,
                         "box_file_id": box_file_id,
                         "entity_type": entity_type,
                         "entity_public_id": entity_public_id,
+                        "operation": operation,
+                        "matched": result.get("matched"),
                         "skipped": result.get("skipped"),
                     },
                 )
@@ -228,14 +322,22 @@ class BoxExcelUpdateService:
                 operation_name="box.excel.upload_version",
             )
 
+            # For stamp_draw_request, pass NULL EntityType/EntityPublicId so
+            # the UpsertBoxFile MERGE preserves the workbook's prior entity
+            # ownership (typically a bill/expense/credit insert that registered
+            # the workbook first). A stamp is a passive update to column H —
+            # it shouldn't claim the workbook in the registry. PushLog still
+            # records the new sha1/version (review finding F11).
+            push_entity_type = None if operation == OP_STAMP_DRAW_REQUEST else entity_type
+            push_entity_public_id = None if operation == OP_STAMP_DRAW_REQUEST else entity_public_id
             self._record_push(
                 row=row,
                 upload_result=up,
                 box_file_id=box_file_id,
                 file_name=file_name,
                 new_bytes=new_bytes,
-                entity_type=entity_type,
-                entity_public_id=entity_public_id,
+                entity_type=push_entity_type,
+                entity_public_id=push_entity_public_id,
                 project_id=project_id,
             )
 
@@ -246,8 +348,10 @@ class BoxExcelUpdateService:
                     "box_file_id": box_file_id,
                     "entity_type": entity_type,
                     "entity_public_id": entity_public_id,
+                    "operation": operation,
                     "applied": result.get("applied"),
                     "skipped": result.get("skipped"),
+                    "matched": result.get("matched"),
                     "outcome": "success",
                 },
             )

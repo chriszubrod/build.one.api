@@ -24,6 +24,13 @@ DEFAULT_READY_AFTER_SECONDS = 5
 KIND_UPLOAD_FILE = "upload_box_file"
 KIND_UPDATE_EXCEL = "update_box_excel"  # Phase 2: constant only — no handler yet.
 
+# `update_box_excel` operation discriminator — shared source of truth with the
+# worker side (integrations/box/excel/business/service.py:OP_*). Lazy import
+# to avoid pulling in openpyxl/excel-package surface at outbox load time.
+from integrations.box.excel.business.service import (  # noqa: E402
+    OP_STAMP_DRAW_REQUEST,
+)
+
 # The closed set of (entity_type, doc_kind) classes that may be pushed to
 # Box. Enqueue refuses anything outside this set so a future call site can't
 # silently start shipping a new document class without a deliberate decision.
@@ -292,6 +299,90 @@ class BoxOutboxService:
                 "outbox_public_id": created.public_id,
                 "entity_type": entity_type,
                 "entity_public_id": entity_public_id,
+                "box_file_id": box_file_id,
+                "worksheet_name": worksheet_name,
+                "project_id": project_id,
+                "request_id": request_id,
+                "ready_after": ready_after.isoformat(),
+            },
+        )
+        return created
+
+    def enqueue_box_excel_draw_stamp(
+        self,
+        *,
+        invoice_public_id: str,
+        project_id: int,
+        box_file_id: str,
+        worksheet_name: str,
+    ) -> Optional[BoxOutbox]:
+        """
+        Enqueue a Box DETAILS-tab UPDATE (column H = DRAW REQUEST) for an
+        invoice's source line items.
+
+        Sibling of enqueue_box_excel, but the worker treats this row as a
+        stamp-only operation: no inserts, only column-H writes on rows
+        already in DETAILS (matched by col-Z public_id). The MS / SharePoint
+        side already runs InvoiceService.sync_to_excel_workbook for the same
+        purpose against the SP-hosted workbook; this is the Box mirror.
+
+        Payload JSON (mirrors enqueue_box_excel + an `operation` discriminator):
+          {"operation":"stamp_draw_request","box_file_id","worksheet_name",
+           "entity_type":"invoice","entity_public_id":<invoice_public_id>,
+           "project_id"}
+
+        Gated on ALLOW_BOX_WRITES like its siblings. Returns the row, or None
+        if refused.
+        """
+        correlation_id = get_correlation_id()
+
+        if not _writes_allowed():
+            logger.warning(
+                "box.outbox.row.refused",
+                extra={
+                    "event_name": "box.outbox.row.refused",
+                    "correlation_id": correlation_id,
+                    "operation_name": KIND_UPDATE_EXCEL,
+                    "entity_type": "invoice",
+                    "entity_public_id": invoice_public_id,
+                    "operation": OP_STAMP_DRAW_REQUEST,
+                    "reason": "ALLOW_BOX_WRITES_not_true",
+                },
+            )
+            return None
+
+        now = datetime.now(timezone.utc)
+        ready_after = now + timedelta(seconds=DEFAULT_READY_AFTER_SECONDS)
+        payload = {
+            "operation": OP_STAMP_DRAW_REQUEST,
+            "box_file_id": box_file_id,
+            "worksheet_name": worksheet_name,
+            "entity_type": "invoice",
+            "entity_public_id": invoice_public_id,
+            "project_id": project_id,
+        }
+
+        request_id = str(uuid.uuid4())
+        created = self.repo.create(
+            kind=KIND_UPDATE_EXCEL,
+            entity_type="invoice",
+            entity_public_id=invoice_public_id,
+            request_id=request_id,
+            payload=json.dumps(payload),
+            ready_after=ready_after,
+            correlation_id=correlation_id,
+            created_by_user_id=current_user_id.get(),
+        )
+        logger.info(
+            "box.outbox.row.enqueued",
+            extra={
+                "event_name": "box.outbox.row.enqueued",
+                "correlation_id": correlation_id,
+                "operation_name": KIND_UPDATE_EXCEL,
+                "operation": OP_STAMP_DRAW_REQUEST,
+                "outbox_public_id": created.public_id,
+                "entity_type": "invoice",
+                "entity_public_id": invoice_public_id,
                 "box_file_id": box_file_id,
                 "worksheet_name": worksheet_name,
                 "project_id": project_id,

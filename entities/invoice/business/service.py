@@ -426,6 +426,12 @@ class InvoiceService:
                 }
                 errors.append({"step": "excel_sync", "error": str(e)})
 
+            # Box mirror — enqueue a DRAW REQUEST stamp on the project's Box
+            # workbook, sibling of the MS sync above. Additive + failure-isolated:
+            # gated on ALLOW_BOX_WRITES inside the helper, swallows every error
+            # so a Box hiccup never breaks invoice completion.
+            self._enqueue_box_excel(invoice=finalized, project_id=invoice.project_id)
+
         # QBO push sync deliberately disabled — re-enable when QBO
         # invoice sync is wired end-to-end.
         qbo_result = {"success": True, "message": "Disabled", "errors": []}
@@ -599,6 +605,42 @@ class InvoiceService:
         finally:
             if session_id:
                 close_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id, session_id=session_id)
+
+    def _enqueue_box_excel(self, invoice, project_id: int) -> None:
+        """
+        Enqueue a Box DETAILS-tab DRAW REQUEST stamp for this invoice's project.
+
+        Sibling of BillService._enqueue_box_excel / ExpenseService._enqueue_box_excel,
+        but the worker treats this row as UPDATE-only — column H stamped onto
+        rows already in DETAILS, matched by col-Z public_id. The MS / SharePoint
+        equivalent runs in sync_to_excel_workbook above; this is the Box mirror,
+        invoked from the same completion-flow point.
+
+        Additive + failure-isolated — early-returns when ALLOW_BOX_WRITES is not
+        'true' and swallows every exception so Box can never affect the
+        completion flow.
+        """
+        import os as _os
+        if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
+            return
+        try:
+            from integrations.box.excel.business.mapping_service import (
+                BoxProjectWorkbookService,
+            )
+            from integrations.box.outbox.business.service import BoxOutboxService
+
+            mapping = BoxProjectWorkbookService().read_by_project_id(project_id)
+            if not mapping:
+                logger.info(f"box.excel.skipped_unmapped_project project_id={project_id}")
+                return
+            BoxOutboxService().enqueue_box_excel_draw_stamp(
+                invoice_public_id=str(invoice.public_id),
+                project_id=project_id,
+                box_file_id=mapping["box_file_id"],
+                worksheet_name=mapping["worksheet_name"],
+            )
+        except Exception as e:
+            logger.warning(f"box.excel.enqueue.failed invoice={invoice.public_id} project_id={project_id}: {e}")
 
     def get_billable_items_for_project(self, project_public_id: str, invoice_public_id: str = None) -> dict:
         """

@@ -485,6 +485,103 @@ def apply_rows_to_details(
     return {"bytes": out.getvalue(), "applied": applied, "skipped": skipped}
 
 
+def stamp_columns_by_key(
+    file_bytes: bytes,
+    worksheet_name: str,
+    updates: List[Any],
+    key_col_index: int = DEFAULT_KEY_COL_INDEX,
+) -> Dict[str, Any]:
+    """
+    UPDATE-only sibling of `apply_rows_to_details`: stamp target column
+    values onto rows already in the worksheet, matched by col-Z key. Never
+    inserts. Used by the invoice DRAW REQUEST sync.
+
+    `updates` is a list of (key, {col_index: value}) tuples. Returns
+    {"bytes", "applied", "skipped", "matched"}. The `matched`/`skipped`
+    split is the retry signal: bytes=None with matched=0 & skipped>0 means
+    "the source row hasn't landed in DETAILS yet" (worth warning), whereas
+    matched>0 with applied=0 means "already stamped" (truly idempotent).
+    """
+    # Defensive empty short-circuit — the worker's pair-builder already
+    # short-circuits when no pairs are available, but this avoids a full
+    # sanitize + openpyxl parse for any future caller that passes an empty
+    # list.
+    if not updates:
+        return {"bytes": None, "applied": 0, "skipped": 0, "matched": 0}
+
+    from openpyxl import load_workbook
+
+    file_bytes = _sanitize_workbook_bytes(file_bytes)
+    wb = load_workbook(BytesIO(file_bytes), data_only=False)
+
+    try:
+        wb.calculation.fullCalcOnLoad = True
+    except Exception:
+        logger.warning(
+            "box.excel.editor.fullcalc_unavailable",
+            extra={"event_name": "box.excel.editor.fullcalc_unavailable"},
+        )
+
+    if worksheet_name not in wb.sheetnames:
+        raise ValueError(
+            f"worksheet {worksheet_name!r} not found in workbook "
+            f"(tabs: {wb.sheetnames})"
+        )
+    ws = wb[worksheet_name]
+
+    key_col = key_col_index + 1
+    max_existing_row = ws.max_row
+
+    # Build key → row index. Lowercased + stripped so we match the same way
+    # the MS path does (UUIDs in DETAILS are written lowercase by openpyxl
+    # at insert time, but tolerant matching defends against case drift).
+    key_to_row: Dict[str, int] = {}
+    for excel_row in range(1, max_existing_row + 1):
+        val = ws.cell(row=excel_row, column=key_col).value
+        if val is None:
+            continue
+        norm = str(val).strip().lower()
+        if norm:
+            key_to_row[norm] = excel_row
+
+    applied = 0
+    skipped = 0
+    matched = 0
+    for key, col_updates in updates:
+        if key is None:
+            skipped += 1
+            continue
+        norm = str(key).strip().lower()
+        if not norm:
+            skipped += 1
+            continue
+        excel_row = key_to_row.get(norm)
+        if excel_row is None:
+            skipped += 1
+            continue
+        matched += 1
+        if not isinstance(col_updates, dict) or not col_updates:
+            continue
+        changed = False
+        for col_index, new_value in col_updates.items():
+            cell = ws.cell(row=excel_row, column=col_index + 1)
+            current = cell.value
+            # Compare as strings — DRAW REQUEST is a text column. None becomes
+            # "" so an empty-cell → value transition still counts as changed.
+            if str(current if current is not None else "") != str(new_value if new_value is not None else ""):
+                cell.value = _cell_value_for_write(new_value)
+                changed = True
+        if changed:
+            applied += 1
+
+    if applied == 0:
+        return {"bytes": None, "applied": 0, "skipped": skipped, "matched": matched}
+
+    out = BytesIO()
+    wb.save(out)
+    return {"bytes": out.getvalue(), "applied": applied, "skipped": skipped, "matched": matched}
+
+
 # ---------------------------------------------------------------------------
 # Self-test. Run `python integrations/box/excel/business/workbook_editor.py`.
 # Builds a tiny in-memory .xlsx with a DETAILS data sheet + a formula summary
@@ -588,6 +685,61 @@ def _self_test() -> None:  # pragma: no cover - manual harness
     reapply = apply_rows_to_details(result["bytes"], "DETAILS", rows)
     assert reapply["bytes"] is None, "re-apply should be a no-op (bytes=None)"
     assert reapply["applied"] == 0, "re-apply should apply nothing"
+
+    # ---- stamp_columns_by_key (DRAW REQUEST sync) ----
+    # Stamp column H (index 7) on two existing rows; one missing key should be
+    # counted as skipped, not raise.
+    stamp_updates = [
+        ("existing-key-aaaa", {7: "BR-TEST-1"}),
+        ("new-key-1111", {7: "BR-TEST-1"}),
+        ("does-not-exist", {7: "BR-TEST-1"}),
+    ]
+    stamp_result = stamp_columns_by_key(result["bytes"], "DETAILS", stamp_updates)
+    assert stamp_result["bytes"] is not None, "stamp: expected bytes when rows changed"
+    assert stamp_result["applied"] == 2, f"stamp: expected 2 applied, got {stamp_result['applied']}"
+    assert stamp_result["skipped"] == 1, f"stamp: expected 1 skipped, got {stamp_result['skipped']}"
+    assert stamp_result["matched"] == 2, f"stamp: expected matched=2, got {stamp_result['matched']}"
+
+    wb3 = load_workbook(_BytesIO(stamp_result["bytes"]), data_only=False)
+    d3 = wb3["DETAILS"]
+    stamped_h = {}
+    for r in range(1, d3.max_row + 1):
+        k = d3.cell(row=r, column=26).value
+        h = d3.cell(row=r, column=8).value
+        if k:
+            stamped_h[str(k).strip().lower()] = h
+    assert stamped_h.get("existing-key-aaaa") == "BR-TEST-1", "stamp: H not set on existing-key-aaaa"
+    assert stamped_h.get("new-key-1111") == "BR-TEST-1", "stamp: H not set on new-key-1111"
+
+    # Summary formula must still be intact after a stamp pass.
+    s3 = wb3["Summary"]
+    assert s3["B1"].value == "=SUM(DETAILS!N:N)", (
+        f"stamp: summary formula did not survive: {s3['B1'].value!r}"
+    )
+
+    # Re-stamp with the same values → idempotent no-op (bytes=None).
+    # matched stays 2 (real keys are still in the workbook), skipped stays 1
+    # (the missing key) — this is how the worker tells "all already stamped"
+    # apart from "no keys matched at all".
+    restamp = stamp_columns_by_key(stamp_result["bytes"], "DETAILS", stamp_updates)
+    assert restamp["bytes"] is None, "stamp: re-stamp should be a no-op"
+    assert restamp["applied"] == 0, "stamp: re-stamp applied should be 0"
+    assert restamp["skipped"] == 1, "stamp: still 1 missing key on re-stamp"
+    assert restamp["matched"] == 2, f"stamp: re-stamp matched should still be 2, got {restamp['matched']}"
+
+    # The "lost stamp" failure mode: every key missing from the workbook
+    # (e.g. invoice stamp drained before its source insert) — bytes=None,
+    # applied=0, skipped=N, MATCHED=0. The worker uses matched=0 to log
+    # `stamp_lost_no_match` instead of the success-shaped `noop_all_present`.
+    lost_updates = [
+        ("does-not-exist-aaaa", {7: "BR-TEST-2"}),
+        ("does-not-exist-bbbb", {7: "BR-TEST-2"}),
+    ]
+    lost_result = stamp_columns_by_key(result["bytes"], "DETAILS", lost_updates)
+    assert lost_result["bytes"] is None, "stamp: no matches → bytes should be None"
+    assert lost_result["applied"] == 0, "stamp: no matches → applied should be 0"
+    assert lost_result["skipped"] == 2, f"stamp: no matches → skipped should be 2, got {lost_result['skipped']}"
+    assert lost_result["matched"] == 0, f"stamp: no matches → matched should be 0, got {lost_result['matched']}"
 
     print("workbook_editor self-test PASSED")
 

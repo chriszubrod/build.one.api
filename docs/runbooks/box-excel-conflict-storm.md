@@ -30,6 +30,12 @@ Any of:
 - A `box` `ReconciliationIssue` row with a `update_box_excel` dead-letter
   `DriftType` and `Severity='critical'`.
 - `box_file_write:<box_file_id>` application lock held without clearing.
+- `box.outbox.excel.stamp_lost_no_match` warnings: an Invoice completed and
+  tried to stamp the DRAW REQUEST column, but the workbook didn't have any
+  matching col-Z rows — usually because the source Bill/Expense Box outbox
+  rows hadn't drained yet. Run `scripts/backfill_box_workbook.py --project <pid>`
+  to seed the missing source rows, then re-complete the invoice to re-fire
+  the stamp.
 
 ## Severity
 
@@ -101,12 +107,18 @@ problem, that's the fix, not disabling the feature.
        JSON_VALUE(Payload, '$.box_file_id')      AS box_file_id,
        JSON_VALUE(Payload, '$.worksheet_name')   AS worksheet,
        JSON_VALUE(Payload, '$.entity_type')      AS entity_type,
-       JSON_VALUE(Payload, '$.entity_public_id') AS entity_public_id
+       JSON_VALUE(Payload, '$.entity_public_id') AS entity_public_id,
+       JSON_VALUE(Payload, '$.operation')        AS op
    FROM box.Outbox
    WHERE Kind = 'update_box_excel'
      AND Status IN ('pending','failed','dead_letter')
    ORDER BY Id DESC;
    ```
+
+   `op` is the operation discriminator inside the payload — `insert` (default
+   when missing) seeds DETAILS rows for a completed Bill/Expense/BillCredit;
+   `stamp_draw_request` writes the DRAW REQUEST column (H) on existing rows
+   when an Invoice completes. Either path can show up in this query.
 
    Group by `box_file_id`. One `box_file_id` with many deferring/failing rows =
    one workbook is the problem.

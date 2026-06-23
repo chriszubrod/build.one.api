@@ -1,43 +1,57 @@
 # Python Standard Library Imports
 import html
 import logging
-from typing import Optional
+from typing import Literal, Optional
 
 # Local Imports
 
 logger = logging.getLogger(__name__)
 
+# Mode controls which HTML preamble (color + header label) renders on the
+# self-forward. Two modes today:
+#   "inquiry"      — fired on needs_review; "AGENT REVIEW" yellow callout;
+#                    body is findings + ask; AP replies with the answer
+#                    and Step 1e applies it.
+#   "confirmation" — fired on awaiting_approval / processed (when an
+#                    action was taken); "AGENT ACTION" green callout;
+#                    body is findings + what-I-did + next-step.
+#                    Redirect replies are not yet automated in v1 — AP
+#                    sees the action, replies if a change is needed, and
+#                    the reply gets flagged for manual handling.
+CorrespondenceMode = Literal["inquiry", "confirmation"]
+
 
 class AgentInquiryService:
     """Sends a self-forward of a polled email to invoice@ with the
-    agent's findings + ask as an HTML preamble. Triggered on every
-    `outcome=needs_review` stamp where `reason` is non-empty (the
-    prompt mandates a findings+ask `reason` on every needs_review,
-    so in practice this fires for every needs_review outcome).
+    agent's findings (+ ask OR + what-was-done) as an HTML preamble.
+
+    Triggered on every `outcome=needs_review` stamp where `reason` is
+    non-empty (mode=inquiry), plus every `outcome=awaiting_approval` or
+    `outcome=processed` stamp where `reason` is non-empty AND the
+    decided_action represents real work (mode=confirmation). NEVER
+    triggered on `outcome=irrelevant` — newsletter/spam outcomes don't
+    warrant a self-forward.
 
     Why a forward (not a new email): forwards preserve the source
-    `ConversationId`, so when AP replies to the inquiry forward, the
-    reply lands in the SAME conversation as the source vendor email.
-    Step 1e's existing detection (internal sender + Re: + sibling
-    stamped `flagged_needs_review` + no tracked Bill) then fires on
-    the reply without needing any new conversation-tracking token.
-    The source attachment (PDF) auto-rides along on the forward, so
-    AP sees the document alongside the question.
+    `ConversationId`, so when AP replies, the reply lands in the SAME
+    conversation as the source vendor email. Step 1e's detection
+    (internal sender + Re: + sibling stamped flagged_needs_review +
+    no tracked Bill) then fires on the reply without needing any new
+    conversation-tracking token. The source attachment (PDF) auto-rides
+    along on the forward, so AP sees the document alongside the message.
 
     Self-loop hygiene: the forward goes invoice@ -> invoice@. Both
     copies (Sent + Inbox) get polled, but:
       - Sent-folder copy is stamped `outbound` by the poll service
-        (already handled, doesn't enter pending queue).
-      - Inbox copy is `pending` and would normally be classified by
-        the agent. To prevent the agent processing its own outbound
-        as an "instruction reply", the email_specialist prompt's
-        Step 0 self-loop guard detects emails matching
-        (from_address == invoice_inbox_email AND subject starts with
-        "Fw:") and short-circuits them as
-        `internal_forward + marked_irrelevant`.
+        (doesn't enter pending queue).
+      - Inbox copy of an invoice@-from-invoice@ self-send is filtered
+        out at the poll layer (entities/email_message/business/service.py
+        `_ingest_messages` defensive filter), so it never reaches the
+        agent. The email_specialist's Step 0 self-loop guard is
+        defense-in-depth.
 
-    Failure semantics: every step is wrapped in an outer try/except.
-    An inquiry-forward failure NEVER propagates back to the caller -
+    Failure semantics: every step is wrapped in an outer try/except. A
+    correspondence-forward failure NEVER propagates back to the caller —
     the EmailMessage outcome stamp + red flag stand on their own.
     """
 
@@ -47,19 +61,28 @@ class AgentInquiryService:
         email_public_id: str,
         question: str,
         confidence: Optional[float] = None,
+        mode: CorrespondenceMode = "inquiry",
     ) -> None:
         """Public surface. Drafts + sends a self-forward of the source
-        email with the agent's question as an HTML preamble."""
+        email with the agent's findings rendered as an HTML preamble.
+
+        `mode` controls the preamble style:
+          - "inquiry"      — findings + ask (needs_review path).
+          - "confirmation" — findings + what-I-did (awaiting_approval /
+                             processed path).
+        """
         try:
             self._do_send(
                 email_public_id=email_public_id,
                 question=question,
                 confidence=confidence,
+                mode=mode,
             )
         except Exception as error:
             logger.exception(
-                "agent_inquiry.send_failed email_public_id=%s: %s",
+                "agent_inquiry.send_failed email_public_id=%s mode=%s: %s",
                 email_public_id,
+                mode,
                 error,
             )
 
@@ -69,6 +92,7 @@ class AgentInquiryService:
         email_public_id: str,
         question: str,
         confidence: Optional[float],
+        mode: CorrespondenceMode = "inquiry",
     ) -> None:
         # Lazy imports to avoid circular dependencies with the
         # EmailMessage service and the MS outbox.
@@ -112,6 +136,7 @@ class AgentInquiryService:
             email=email,
             question=question,
             confidence=confidence,
+            mode=mode,
         )
 
         # Enqueue forward via the outbox. mode=send so the inquiry
@@ -148,33 +173,36 @@ class AgentInquiryService:
             return
 
         logger.info(
-            "agent_inquiry.enqueued email_public_id=%s outbox_public_id=%s "
-            "invoice_inbox=%s",
+            "agent_inquiry.enqueued email_public_id=%s mode=%s "
+            "outbox_public_id=%s invoice_inbox=%s",
             email_public_id,
+            mode,
             result.public_id,
             invoice_inbox,
         )
 
     @staticmethod
-    def _build_html_preamble(*, email, question: str, confidence: Optional[float]) -> str:
-        """HTML block prepended to the forwarded body. Format:
+    def _build_html_preamble(
+        *,
+        email,
+        question: str,
+        confidence: Optional[float],
+        mode: CorrespondenceMode = "inquiry",
+    ) -> str:
+        """HTML block prepended to the forwarded body.
 
-            **AGENT QUESTION** (confidence X%)
-
-            {question}
-
-            How to reply: just hit Reply and answer in plain English.
-            Your reply lands back in invoice@ and the agent picks it
-            up automatically. Examples: ...
-
-            ---
+        Two visual modes:
+          - inquiry: yellow "AGENT REVIEW" callout — agent has a
+            question; AP reply lands back via Step 1e and applies.
+          - confirmation: green "AGENT ACTION" callout — agent took
+            an action; AP reply lands flagged for manual handling
+            (redirect-via-reply automation is v2 work).
 
         Question / source values are HTML-escaped to avoid markup
         injection from agent-generated text. Hidden HTML comment
-        marker (`<!-- agent-inquiry -->`) included as a redundant
-        signal in case future flows need it, but the primary
-        self-loop guard is the from-address + Fw: subject check in
-        the email_specialist prompt.
+        marker (`<!-- agent-inquiry -->`) included for downstream
+        detection if a future flow needs it; primary self-loop guard
+        is the poll-layer from-address filter, not the marker.
         """
         escaped_question = html.escape(question)
         vendor_display = html.escape(email.from_name or email.from_address or "(unknown sender)")
@@ -185,21 +213,55 @@ class AgentInquiryService:
             else ""
         )
 
+        if mode == "confirmation":
+            # Green callout — "AGENT ACTION" — confirms what the agent
+            # did and tells AP what to expect next. v1 reply path is
+            # informational only (no autonomous redirect/undo yet).
+            header_label = "AGENT ACTION"
+            border_color = "#059669"       # emerald-600
+            bg_color = "#d1fae5"            # emerald-100
+            text_color = "#065f46"          # emerald-800
+            hint_color = "#064e3b"          # emerald-900
+            reply_hint = (
+                "<em>FYI / Reply to redirect:</em> Hit Reply and prefix your "
+                "instruction with <strong>@Build.One</strong> so the agent "
+                "knows which part is for it. Examples: "
+                "<em>'@Build.One change project to MR2-CABIN'</em>, "
+                "<em>'@Build.One delete that draft'</em>, "
+                "<em>'@Build.One reclassify as a credit memo'</em>. "
+                "Replies are flagged for manual follow-up in v1 — automated "
+                "redirect/undo is not wired yet."
+            )
+        else:
+            # Yellow callout — "AGENT REVIEW" — agent needs help to
+            # resolve. AP reply is parsed by Step 1e and applied.
+            header_label = "AGENT REVIEW"
+            border_color = "#d97706"        # amber-600
+            bg_color = "#fef3c7"             # amber-100
+            text_color = "#92400e"           # amber-800
+            hint_color = "#78350f"           # amber-900
+            reply_hint = (
+                "<em>How to reply:</em> Hit Reply and prefix your instruction "
+                "with <strong>@Build.One</strong> so the agent knows which "
+                "part is for it (rest of the email can be free-form chatter "
+                "for your team). Examples: "
+                "<em>'@Build.One project is MR2-CABIN'</em>, "
+                "<em>'@Build.One skip'</em>, "
+                "<em>'@Build.One this is a credit memo'</em>, "
+                "<em>'@Build.One create the bill manually'</em>, "
+                "<em>'@Build.One route to bill_specialist anyway'</em>."
+            )
+
         return (
             "<!-- agent-inquiry -->"
-            "<div style='border-left:4px solid #d97706; padding:8px 12px; "
-            "background:#fef3c7; font-family:Arial,Helvetica,sans-serif; "
-            "font-size:14px; color:#92400e; margin-bottom:12px;'>"
-            f"<p style='margin:0 0 8px 0;'><strong>AGENT REVIEW</strong>"
+            f"<div style='border-left:4px solid {border_color}; padding:8px 12px; "
+            f"background:{bg_color}; font-family:Arial,Helvetica,sans-serif; "
+            f"font-size:14px; color:{text_color}; margin-bottom:12px;'>"
+            f"<p style='margin:0 0 8px 0;'><strong>{header_label}</strong>"
             f"{html.escape(confidence_pct)}</p>"
             f"<p style='margin:0 0 8px 0; white-space:pre-wrap;'>{escaped_question}</p>"
-            "<p style='margin:0 0 0 0; font-size:12px; color:#78350f;'>"
-            "<em>How to reply:</em> Hit Reply and answer in plain English. "
-            "Your reply lands back in invoice@ and the agent picks it up "
-            "automatically. Examples: <em>'project is MR2-CABIN'</em>, "
-            "<em>'skip'</em>, <em>'this is a credit memo'</em>, "
-            "<em>'create the bill manually'</em>, "
-            "<em>'route to bill_specialist anyway'</em>."
+            f"<p style='margin:0 0 0 0; font-size:12px; color:{hint_color};'>"
+            f"{reply_hint}"
             "</p>"
             "</div>"
             f"<p style='font-size:12px; color:#6b7280;'>"
@@ -207,3 +269,4 @@ class AgentInquiryService:
             "</p>"
             "<hr style='border:none; border-top:1px solid #e5e7eb; margin:8px 0;'/>"
         )
+

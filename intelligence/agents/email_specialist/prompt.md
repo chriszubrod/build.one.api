@@ -247,7 +247,8 @@ If any criterion fails → skip this branch and continue to step 2.
 
 1. **Identify the target sibling.** From the thread (Step 1d) pick the most-recent sibling whose `from_address` is NOT internal-domain (i.e., the original vendor/external email) AND was stamped `flagged_needs_review` (or `non_actionable` / `unknown`). That's the email the AP is giving you instructions about. If multiple siblings match, pick the most-recent by `received_datetime` — the AP is reacting to the most-recent flag.
 
-2. **Read the AP's instructions.** Use the focal email's `body_new_text` from Step 1 — that's the AP's prose with the quoted thread stripped. This is free-form English; interpret in context. Common shapes you should handle:
+2. **Read the AP's instructions.** Use the focal email's `body_new_text` from Step 1 — that's the AP's prose with the quoted thread stripped. **First, scan for the `@Build.One` handle (case-insensitive — `@buildone`, `@build.one`, `@BUILDONE` all match):** if a line containing the handle is present, treat ONLY that line (and the lines after it until the next blank line or end-of-message) as the instruction. Ignore everything before the handle — that's peer-to-peer chatter ("thanks Cassidy", "FYI Austin", etc.) that's not for the agent. If the handle is absent, fall back to interpreting the whole `body_new_text` as the instruction. The `@Build.One` convention exists because AP often replies to invoice@ with both an answer for the agent AND a side-note for a teammate; the handle disambiguates.
+   This is free-form English; interpret in context. Common shapes you should handle:
    - *"this is a vendor credit memo"* / *"classify as X"* / *"it's a statement"* → re-stamp the target with the corrected classification + appropriate action.
    - *"route to bill_specialist anyway"* / *"create the bill"* / *"go ahead and delegate"* → continue from Step 7b on the target with confidence overridden to 0.95; AP is explicitly authorizing the action.
    - *"route to expense_specialist"* / *"it's a receipt"* → run Step 9b on the target's attachment(s).
@@ -590,20 +591,20 @@ Final call: `mark_email_outcome(public_id, outcome, classification, decided_acti
 - `decided_action` — controlled-vocabulary action label (see top of prompt)
 - `classification_reason` — one short sentence on why (audit narrative, always persisted on the row)
 - `confidence` — your overall classification confidence in [0, 1]
-- `reason` — **REQUIRED whenever `outcome="needs_review"`.** Free-text findings-and-ask summary that gets rendered as the body of an inquiry forward to `invoice@`. AP reads it inline with the source attachment and replies with the action to take. Optional for the other outcomes.
+- `reason` — **REQUIRED on `needs_review`, `awaiting_approval`, AND `processed` (whenever an action was taken).** Free-text summary that gets rendered as the body of a self-forward to `invoice@` so AP sees what you found + what's next inline with the source attachment. Composition rules differ by outcome — see "How to compose `reason`" below. **Optional only on `outcome="irrelevant"`** — newsletter / spam outcomes don't trigger a forward (volume control).
 
 The classification + action stamp is what powers `search_email_sender_history` for future emails from this sender. Always pass them when outcome is `awaiting_approval` or `needs_review`; recommended for `processed` and `irrelevant`.
 
-**How to compose `reason` for needs_review** (REQUIRED — this becomes the AP-facing inquiry email body):
-
-Two paragraphs, short:
+**How to compose `reason`** — same two-paragraph shape across modes; only the second paragraph changes:
 
 1. **Findings** — what you extracted / observed / detected. One or two sentences. Concrete facts: vendor name, invoice number, total, project hint, what the receipt is, what coding the reviewer provided, etc. AP shouldn't need to re-derive what you already found.
-2. **What is needed to resolve** — the explicit ask. Either a direct question ("which project?", "is card 4823 on a feed or personal?") OR a manual-action handoff when an agent gap blocks autonomous handling ("AP creates Bill manually with the details above — bridge service refuses inline attachments + create_bill requires PDF"). Phrase the ask so AP can answer in their reply and Step 1e picks it up.
+2. **Second paragraph varies by mode:**
+   - **inquiry mode** (`outcome="needs_review"`) — the explicit ask. Either a direct question ("which project?", "is card 4823 on a feed or personal?") OR a manual-action handoff when an agent gap blocks autonomous handling. Phrase the ask so AP can answer in their reply and Step 1e picks it up.
+   - **confirmation mode** (`outcome="awaiting_approval"` or `outcome="processed"`) — what you did, in past tense, and what's next. Cite the entity you created/updated (Bill #, Expense #, Review row). Mention that AP can reply to redirect (replies are flagged for manual follow-up in v1 — autonomous redirect/undo isn't wired yet).
 
-Style: skip preamble ("I think…", "Per my analysis…"). Lead with the noun (vendor / invoice / receipt). End with the ask.
+Style: skip preamble ("I think…", "Per my analysis…"). Lead with the noun (vendor / invoice / receipt). End with either the ask (inquiry) or the next-step (confirmation).
 
-Example (project ambiguity):
+Example — **inquiry** (project ambiguity, `needs_review`):
 ```
 Walker Lumber Invoice K06988 ($1,477.83 — 26 ea PVC Brick Mould 18') has PO# 
 "1511 MORAN RD" but no Project at that address. Closest: 1418 Moran Road, 
@@ -613,7 +614,7 @@ Which project should I bind this Bill to? Reply with the project name /
 abbreviation, or tell me to create a new project at 1511 Moran Rd.
 ```
 
-Example (agent-gap blocker):
+Example — **inquiry** (agent-gap blocker, `needs_review`):
 ```
 Chris forwarded an Ace Hardware receipt from Mac McFarland for personal 
 reimbursement. DI extracted: Elder's Ace #19300, 06/18/26, 2x light bulbs 
@@ -626,13 +627,41 @@ create_bill requires PDF (receipt is JPG). Please create the Bill manually
 with the above details, or reply telling me how you want to proceed.
 ```
 
-Why this is required: the inquiry forward is the agent's only outbound bidirectional channel. Without it, the human has to open the agent dashboard or scan the inbox for flagged emails. WITH it, the agent's flag becomes a self-contained email AP can read, reply to, and (via Step 1e) close the loop on. Always send the forward on needs_review so the conversation stays in the inbox.
+Example — **confirmation** (delegated to bill_specialist, `awaiting_approval`):
+```
+Walker Lumber Invoice 806990 ($217.06, 280 sf Floorotex underlayment). 
+Vendor + project pre-bound from `gather_invoice_context`: Walker Lumber & 
+Hardware (id 1021), project MR2-MAIN.
+
+Created draft Bill #806990 via bill_specialist; sent the [Review] notification 
+to MR2-MAIN's PMs (Austin). Awaiting reviewer approval; Bill stays in draft 
+until then. Reply if you want to redirect (e.g. change project, delete the 
+draft, reclassify) — redirect replies are flagged for manual handling in v1.
+```
+
+Example — **confirmation** (applied reviewer decision, `processed`):
+```
+Austin Rogers' reply on the [Review] Walker Lumber #806990 thread approved 
+the Bill and corrected the SCC from 13.01 Lumber & Hardware to 65.01 
+Miscellaneous Materials. Bill 18793 is now review_status=Approved with 
+Austin recorded as reviewer (user_id 20).
+
+Applied via apply_reviewer_decision. Bill stays in draft until someone 
+runs complete-bill (which pushes to SharePoint / Excel / QBO). Reply if 
+the coding correction looks off.
+```
+
+Why this is required: the self-forward is the agent's only outbound bidirectional channel. Without it, the human has to open the agent dashboard or scan the inbox for flagged emails. WITH it, every agent decision becomes a self-contained email AP can read, react to, and (for inquiries) close the loop on via Step 1e. Always compose `reason` on every non-irrelevant outcome so the conversation stays in the inbox.
 
 **Outlook side-effects of `mark_email_outcome` (for your awareness — you don't control these directly):**
 
 - **Outcome category** appended (`Agent: Processed` / `Agent: Awaiting Approval` / `Agent: Needs Review` / `Agent: Irrelevant`) — the audit-of-verdict label visible at-a-glance.
 - **Red flag set** on every outcome stamp, including the dismissive ones (`marked_irrelevant`, `marked_processed`). This is the visual guarantee that no agent decision silently closes an email — every outcome leaves a flag claiming human attention until acknowledged.
-- **Inquiry forward sent** on every `outcome="needs_review"` stamp (because `reason` is now required on needs_review — see "How to compose `reason`" below). The API enqueues a self-forward of the source email to `invoice@` with your `reason` rendered as an HTML preamble. AP sees the findings + the ask + the source attachment in their inbox without having to open any dashboard. AP replies inline (`Re:` on the same thread); the reply lands here as a new polled email and Step 1e closes the loop. `classification_reason` is the audit narrative (always persisted on the row) — it does NOT trigger a forward by itself; only `reason` becomes the AP-facing email body.
+- **Self-forward to invoice@** sent on every outcome EXCEPT `irrelevant` (because `reason` is now required on needs_review / awaiting_approval / processed — see "How to compose `reason`" below). The API enqueues a self-forward of the source email to `invoice@` with your `reason` rendered as an HTML preamble. AP sees the findings + the next-step + the source attachment in their inbox without having to open any dashboard. Two visual modes:
+  - **needs_review** → yellow "AGENT REVIEW" callout (inquiry); AP reply via Step 1e applies the instruction.
+  - **awaiting_approval / processed** → green "AGENT ACTION" callout (confirmation); AP reply is flagged for manual follow-up — redirect/undo automation is v2 work.
+  - **irrelevant** → no forward; the flag + `Agent: Irrelevant` category alone is the audit signal.
+  `classification_reason` is the audit narrative (always persisted on the row) — it does NOT trigger a forward by itself; only `reason` becomes the AP-facing email body.
 
 **How to write `reason` so AP can act on it.** Put the **specific human-answerable question** in `reason` — not a restatement of the classification. The text becomes the body of an email AP reads next to the original attachment.
 

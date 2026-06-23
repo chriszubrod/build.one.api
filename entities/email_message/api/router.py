@@ -453,31 +453,49 @@ def set_email_outcome_router(
             mailbox=email.mailbox_address,
         )
 
-    # 4. Inquiry forward — on every needs_review stamp where `reason`
-    #    is non-empty, enqueue a self-forward of the source email to
-    #    invoice@. The agent's `reason` (composed as findings + ask
-    #    per the email_specialist prompt's Step 10) becomes the email
-    #    body; AP replies inline, and Step 1e on the next poll picks
-    #    up the reply as an instruction to act on.
+    # 4. Agent correspondence forward — on every outcome where the
+    #    agent has something to say to AP (everything except
+    #    `irrelevant`), enqueue a self-forward of the source email to
+    #    invoice@ with the agent's `reason` rendered as an HTML
+    #    preamble. Two modes:
     #
-    #    The prompt mandates `reason` on every needs_review, so in
-    #    practice this fires for every flag. `classification_reason`
-    #    is the audit narrative (persisted on the row) and does NOT
-    #    trigger a forward by itself — only `reason` becomes the
-    #    AP-facing email body.
+    #      - needs_review        → mode='inquiry' (yellow "AGENT REVIEW"
+    #                              callout; findings + ask; AP reply via
+    #                              Step 1e applies the instruction).
+    #      - awaiting_approval   → mode='confirmation' (green "AGENT
+    #        / processed          ACTION" callout; findings + what-I-did;
+    #                              AP reply is flagged for manual
+    #                              follow-up — redirect/undo automation
+    #                              is deferred to v2).
+    #      - irrelevant          → no forward (newsletter/spam doesn't
+    #                              warrant outbound noise).
+    #
+    #    The prompt mandates a `reason` whenever an action was taken
+    #    (Step 10), so `reason` is non-empty in practice for every
+    #    non-irrelevant outcome. `classification_reason` is the audit
+    #    narrative (persisted on the row) and does NOT trigger a
+    #    forward by itself — only `reason` becomes the AP-facing
+    #    email body.
     #    Failure-isolated — never blocks the outcome stamp.
-    if body.outcome == "needs_review":
-        question = (body.reason or "").strip()
-        if question:
+    _FORWARD_MODE_BY_OUTCOME = {
+        "needs_review": "inquiry",
+        "awaiting_approval": "confirmation",
+        "processed": "confirmation",
+    }
+    forward_mode = _FORWARD_MODE_BY_OUTCOME.get(body.outcome)
+    if forward_mode:
+        message_body = (body.reason or "").strip()
+        if message_body:
             from entities.email_message.business.inquiry_service import (
                 AgentInquiryService,
             )
             AgentInquiryService().send_inquiry(
                 email_public_id=public_id,
-                question=question,
+                question=message_body,
                 confidence=(
                     float(body.confidence) if body.confidence is not None else None
                 ),
+                mode=forward_mode,
             )
 
     return item_response({

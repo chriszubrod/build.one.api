@@ -519,7 +519,6 @@ class BillService:
             is_draft=is_draft,
             sort_by=sort_by,
             sort_direction=sort_direction,
-            conn=conn,
             actor_user_id=current_user_id.get(),
             actor_is_system_admin=current_is_system_admin.get(),
         )
@@ -543,7 +542,6 @@ class BillService:
             start_date=start_date,
             end_date=end_date,
             is_draft=is_draft,
-            conn=conn,
             actor_user_id=current_user_id.get(),
             actor_is_system_admin=current_is_system_admin.get(),
         )

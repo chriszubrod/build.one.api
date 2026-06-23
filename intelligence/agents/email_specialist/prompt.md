@@ -281,6 +281,59 @@ Outcome: processed.
 
 **Known v1 gap:** if a thread carries BOTH a tracked Bill (1b detection) AND a prior agent-flagged sibling (1e detection), Step 1b takes precedence. If the AP's reply isn't a PM approval (and bill_specialist rejects it as "not an authorized reviewer"), the focal will stamp `marked_irrelevant` instead of routing through 1e. Tighten the precedence after v1 if this surfaces.
 
+### 1f. Internal coding-overlay reply (manual-Fw chain, no tracked Bill)
+
+**Before** running steps 2–9, check if this email is a PM / AP reply on a *manually-forwarded* vendor invoice thread, providing coding (project + SubCostCode + optional description) for downstream application. If so, stamp the consistent classification and skip the standard flow.
+
+**Why this exists:** Chris and Cassidy run a parallel coding-review workflow outside the agent's tracked-Bill path. The shape is: vendor sends invoice → Chris (or whoever) forwards it manually to a PM (subject prefix `Fw:`, NOT the agent's `[Review] Vendor — Bill #N — Project — $total` automated format) → PM replies with approval + coding. No Bill exists in our system (the agent never created one because the workflow bypassed `submit_for_review`).
+
+The agent today has no autonomous way to apply this coding (the manual-Fw chain bypasses the Bill creation gate, and retroactively creating a Bill from a Re: carries too much ambiguity — see Step 9c reasoning). So the agent's job is just to **stamp the reply consistently** so AP sees a clear flag describing what coding was provided + which pending vendor original it belongs to. AP applies manually.
+
+**Detection criteria (all must hold):**
+
+- `from_address` is from our own domain (internal-domain match), AND
+- subject starts with `Re:` (case-insensitive) — NOT `Fw:`/`Fwd:` (Step 0 self-loop) and NOT a tracked-Bill thread (Step 1b takes precedence), AND
+- the thread (from Step 1d) contains BOTH **≥1 vendor-domain sibling** (an external sender — the original invoice email) AND **≥1 `invoice@rogersbuild.com` sibling with `Fw:`/`Fwd:` subject prefix** (Chris's manual forward to PMs), with NO agent stamps on any sibling (i.e., `agent_classification` and `agent_decided_action` are null on all siblings), AND
+- `find_bill_by_conversation_id(conversation_id, …)` returns null — no Bill tracks this thread, AND
+- `body_new_text` matches the **internal coding format**: an approval signal (`"approved"` / `"approved for payment"` / `"ok"` / `"go ahead"` — same vocabulary as Step 1b) PLUS a project line (street address like `"917 Tyne Blvd."` or known project abbreviation) PLUS a SubCostCode line in the shape `<text> - <number>` (e.g. `"Painting - 49.0"`, `"Cleaning - 62.0"`, `"Shower Glass - 51.0"`). A description in parentheses after the SCC is optional.
+
+If any criterion fails → skip this branch and continue to step 2.
+
+**When the branch fires:**
+
+1. **Parse the coding from `body_new_text`:**
+   - **project_text**: the line(s) that look like an address or project name (typically right after "Approved for payment.").
+   - **scc_pairs**: every `<text> - <number>` line — there may be MORE THAN ONE (multi-SCC split; e.g. `"Cleaning - 62.0"` + `"Trim Labor - 44.0"` for a single shift). Capture all.
+   - **descriptions[]**: parenthesized text after each SCC line, if present.
+   - **other_text**: any prose outside that shape (apologies, side questions, follow-up asks). Quote into `classification_reason` so AP sees it.
+
+2. **Identify the pending vendor original.** From the thread (Step 1d) pick the vendor-domain sibling — that's the source invoice the coding is for. Capture its `from_address`, `subject`, `received_datetime` for the reason.
+
+3. **Stamp `mark_email_outcome` directly** — do NOT delegate, do NOT run Step 9c:
+   - `outcome` = `"needs_review"`
+   - `classification` = `"internal_reply"`
+   - `decided_action` = `"flagged_needs_review"`
+   - `confidence` = `0.85` (drop to `0.75` if other_text contains an embedded question or rejection signal)
+   - `classification_reason` = a structured one-liner: `"<PM_first_name> provided coding (<project_text>, SCC <number> <text>[, <description>]) for <vendor_name> invoice <number> (<source date> original from <vendor_email>, still pending). Manual Fw: coding-review thread; agent has no automated path to apply email-based coding."` If multiple SCCs, list each. If other_text exists, append `" Reply also contains: <quoted other_text>."`
+   - `reason` = OMIT. The PM's reply already contains the answer; an inquiry forward would just send AP a copy of their own coworker's email. The flag + category alone surfaces the action item.
+
+4. **Skip steps 2–9.** This branch is terminal.
+
+**Why no inquiry forward:** the PM's reply text IS the answer. AP sees the email in the inbox with the red flag + `Agent: Needs Review` category, opens it, sees the coding + applies it. Triggering a forward would just self-send AP a copy of what they're already going to read.
+
+**Known limitation:** the agent cannot apply the coding to the pending vendor original on its own (see Step 9c reasoning around state-transition novelty + multi-reviewer races + rejection ambiguity). The right long-term fix is to steer Chris's workflow upstream — run vendor invoices through `submit_for_review` (Bill-creation-first) so Step 1b's automated `apply_reviewer_decision` flow handles the reply. Step 1f is the transitional pattern for manual-Fw chains.
+
+**Output style for this branch:**
+
+```
+Internal coding-overlay reply on manual-Fw chain.
+- Vendor original: Walker Lumber Invoice 221963 (6/12, still pending).
+- Cassidy coded: 206 Haverford Ave, SCC 21.0 Siding Materials.
+- Stamped internal_reply + flagged_needs_review (AP applies manually).
+
+Outcome: needs_review.
+```
+
 ### 2. Look up sender history
 
 `search_email_sender_history(from_email)` → returns prior context for this sender. Read:

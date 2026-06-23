@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # Local Imports
 from scripts.sync_helper import _normalize_last_sync, assert_cli_system_admin
 from shared.database import with_retry, is_transient_error
+from integrations.intuit.qbo.base.pull_race import read_lines_riding_out_race, header_has_amount
 from integrations.sync.business.service import SyncService
 from integrations.sync.business.model import Sync
 from integrations.intuit.qbo.vendorcredit.business.service import QboVendorCreditService
@@ -288,8 +289,22 @@ def sync_qbo_to_local(
 
     for i, vendor_credit in enumerate(vendor_credits):
         try:
-            # Get vendor credit lines for this vendor credit
-            vendor_credit_lines = qbo_vendor_credit_service.read_lines_by_vendor_credit_id(vendor_credit.id)
+            # Get vendor credit lines, re-reading to ride out the cross-process pull-race (an
+            # empty read colliding with a non-zero header). If the lines never arrive, DEFER the
+            # row: skip it WITHOUT failing so the watermark advances — avoids stalling the sync on
+            # a genuinely line-less record. NOTE: there is no vendorcredit reconciler yet (only
+            # bills are reconciled), so a RARE genuinely-line-less credit is logged here but not
+            # auto-recovered — see TODO.md ("QBO reconcilers for purchase/vendorcredit").
+            vendor_credit_lines = read_lines_riding_out_race(
+                qbo_vendor_credit_service.read_lines_by_vendor_credit_id, vendor_credit.id, vendor_credit.total_amt
+            )
+            if not vendor_credit_lines and header_has_amount(vendor_credit.total_amt):
+                logger.warning(
+                    f"Deferring QboVendorCredit {vendor_credit.id} (qbo_id={vendor_credit.qbo_id}): no "
+                    f"lines for non-zero header {vendor_credit.total_amt} after re-read (pull race or "
+                    f"genuinely line-less); skipping so the watermark advances (no vendorcredit reconciler yet — logged only)."
+                )
+                continue
 
             # Use retry logic for transient errors
             bill_credit = with_retry(

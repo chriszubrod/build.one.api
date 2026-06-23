@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # Local Imports
 from scripts.sync_helper import _normalize_last_sync, assert_cli_system_admin
 from shared.database import with_retry, is_transient_error
+from integrations.intuit.qbo.base.pull_race import read_lines_riding_out_race, header_has_amount
 from integrations.sync.business.service import SyncService
 from integrations.sync.business.model import Sync
 from integrations.intuit.qbo.bill.business.service import QboBillService
@@ -350,9 +351,24 @@ def sync_qbo_to_local(
 
     for i, bill in enumerate(bills):
         try:
-            # Get bill lines for this bill
-            bill_lines = qbo_bill_service.read_lines_by_qbo_bill_id(bill.id)
-            
+            # Get bill lines, re-reading to ride out the cross-process pull-race (an empty read
+            # colliding with a non-zero header). If the lines never arrive, DEFER the row: skip
+            # it WITHOUT adding to failed_bills so the watermark advances — this avoids stalling
+            # the whole sync on a genuinely line-less record. Recovery for the (rare) genuinely-
+            # line-less case: the daily QBO reconcile COUNTS unprojected bills (auto-recreate is
+            # gated on QBO_RECONCILE_BILL_AUTOFIX, default off → surfaced, not recreated); and any
+            # OTHER real failure that holds the watermark re-pulls this row next tick (slow race).
+            bill_lines = read_lines_riding_out_race(
+                qbo_bill_service.read_lines_by_qbo_bill_id, bill.id, bill.total_amt
+            )
+            if not bill_lines and header_has_amount(bill.total_amt):
+                logger.warning(
+                    f"Deferring QboBill {bill.id} (qbo_id={bill.qbo_id}): no lines for non-zero "
+                    f"header {bill.total_amt} after re-read (pull race or genuinely line-less); "
+                    f"skipping so the watermark advances (the daily QBO reconcile counts unprojected bills)."
+                )
+                continue
+
             # Use retry logic for transient errors
             bill_module = with_retry(
                 bill_connector.sync_from_qbo_bill,

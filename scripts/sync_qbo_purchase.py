@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # Local Imports
 from scripts.sync_helper import _normalize_last_sync, assert_cli_system_admin
 from shared.database import with_retry, is_transient_error
+from integrations.intuit.qbo.base.pull_race import read_lines_riding_out_race, header_has_amount
 from integrations.sync.business.service import SyncService
 from integrations.sync.business.model import Sync
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
@@ -209,8 +210,22 @@ def sync_qbo_to_local(
 
     for i, purchase in enumerate(purchases):
         try:
-            # Get purchase lines for this purchase
-            purchase_lines = qbo_purchase_service.read_lines_by_qbo_purchase_id(purchase.id)
+            # Get purchase lines, re-reading to ride out the cross-process pull-race (an empty
+            # read colliding with a non-zero header). If the lines never arrive, DEFER the row:
+            # skip it WITHOUT failing so the watermark advances — avoids stalling the sync on a
+            # genuinely line-less record. NOTE: there is no purchase reconciler yet (only bills
+            # are reconciled), so a RARE genuinely-line-less purchase is logged here but not
+            # auto-recovered — see TODO.md ("QBO reconcilers for purchase/vendorcredit").
+            purchase_lines = read_lines_riding_out_race(
+                qbo_purchase_service.read_lines_by_qbo_purchase_id, purchase.id, purchase.total_amt
+            )
+            if not purchase_lines and header_has_amount(purchase.total_amt):
+                logger.warning(
+                    f"Deferring QboPurchase {purchase.id} (qbo_id={purchase.qbo_id}): no lines for "
+                    f"non-zero header {purchase.total_amt} after re-read (pull race or genuinely "
+                    f"line-less); skipping so the watermark advances (no purchase reconciler yet — logged only)."
+                )
+                continue
 
             # Use retry logic for transient errors
             expense = with_retry(

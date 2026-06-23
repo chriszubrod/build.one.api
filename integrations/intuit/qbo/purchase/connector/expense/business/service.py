@@ -15,6 +15,7 @@ from entities.expense.business.service import ExpenseService
 from entities.expense.business.model import Expense
 from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.vendor.business.service import VendorService
+from integrations.intuit.qbo.base.pull_race import guard_lines_present
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,14 @@ class PurchaseExpenseConnector:
         expense_date = qbo_purchase.txn_date
         memo = qbo_purchase.private_note
         total_amount = qbo_purchase.total_amt
-        
+
+        # Last-resort guard against the QBO pull-race that mints half-built expenses (see
+        # base.pull_race). Pull scripts pre-read past the race; this protects every other caller.
+        guard_lines_present(
+            qbo_purchase_lines, total_amount,
+            entity_label="QboPurchase", entity_id=qbo_purchase.id, qbo_id=qbo_purchase.qbo_id,
+        )
+
         # Check for existing mapping
         mapping = self.mapping_repo.read_by_qbo_purchase_id(qbo_purchase.id)
         

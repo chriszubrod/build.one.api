@@ -12,6 +12,7 @@ from entities.bill_credit.business.service import BillCreditService
 from entities.bill_credit.business.model import BillCredit
 from entities.bill_credit_line_item.business.service import BillCreditLineItemService
 from entities.vendor.business.service import VendorService
+from integrations.intuit.qbo.base.pull_race import guard_lines_present
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,14 @@ class VendorCreditBillCreditConnector:
         4. Create mapping record
         5. Sync line items
         """
+        # Last-resort guard against the QBO pull-race that mints half-built credits (see
+        # base.pull_race). Placed BEFORE the try so the RuntimeError isn't swallowed by the
+        # inner except. Pull scripts pre-read past the race; this protects every other caller.
+        guard_lines_present(
+            qbo_lines, qbo_vc.total_amt,
+            entity_label="QboVendorCredit", entity_id=qbo_vc.id, qbo_id=qbo_vc.qbo_id,
+        )
+
         try:
             # Step 1: Resolve vendor
             vendor_public_id = self._get_vendor_public_id(qbo_vc.vendor_ref_value)

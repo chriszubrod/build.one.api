@@ -113,6 +113,17 @@ class Settings(BaseSettings):
     # unset, falls back to invoice_inbox_email; when neither is set, no BCC.
     time_entry_digest_bcc: Optional[str] = None
 
+    # Deterministic prior-day TimeEntry auto-submit sweep (no LLM). Modes:
+    #   - "off"     : no-op kill switch (default).
+    #   - "dry_run" : validate + report the would-submit / would-flag plan,
+    #                 NO writes.
+    #   - "on"      : execute — submit fully-clean entries (draft -> submitted),
+    #                 flag the rest, skip test/agent + duplicates.
+    # Switch via env var TIME_AUTOSUBMIT_MODE — no code redeploy needed. Uses
+    # business_timezone (above) to compute "yesterday". Run by the scheduler's
+    # auto_submit_prior_day timer (12:00 CST).
+    time_autosubmit_mode: str = "off"
+
     # Azure AI Document Intelligence Configuration
     # Used by the email-agent pipeline to extract structured data from
     # vendor-invoice PDFs (deterministic — never hallucinates dollar amounts).

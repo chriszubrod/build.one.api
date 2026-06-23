@@ -240,6 +240,33 @@ async def time_entry_daily_digest_router(work_date: Optional[str] = None):
     return await _timed("time_entry.daily_digest", _run)
 
 
+# --- Time-entry auto-submit (deterministic prior-day sweep) ---------------- #
+
+
+@router.post("/time-tracking/auto-submit-prior-day", dependencies=[Depends(_require_drain_secret)])
+async def time_tracking_auto_submit_prior_day_router(work_date: Optional[str] = None):
+    """
+    Deterministic prior-day TimeEntry auto-submit sweep (NO LLM, NO agent):
+    for yesterday in the business timezone (or `?work_date=YYYY-MM-DD` to re-run
+    a specific completed day), submit fully-clean draft entries
+    (draft -> submitted + billing aggregation) and flag the rest, skipping
+    test/agent accounts + duplicates (a draft whose worker-day already has a
+    non-draft entry, or extra clean drafts on one worker-day).
+
+    Runs as system admin via the drain-secret guard. Honors TIME_AUTOSUBMIT_MODE
+    (off = no-op | dry_run = report only | on = execute). Called once a day by
+    the scheduler's `auto_submit_prior_day` timer (18:00 UTC = 12:00 CST).
+    """
+    def _run() -> dict[str, Any]:
+        from entities.time_entry.business.auto_submit_service import TimeEntryAutoSubmitService
+        svc = TimeEntryAutoSubmitService()
+        if work_date:
+            return svc.run_for_work_date(work_date)
+        return svc.run_for_prior_day()
+
+    return await _timed("time_autosubmit.prior_day", _run)
+
+
 # --- QBO pulls ------------------------------------------------------------- #
 
 

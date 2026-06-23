@@ -2,6 +2,15 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## TimeEntry auto-submit (deterministic prior-day sweep) — follow-ups (2026-06-23)
+
+Shipped: `TimeEntryAutoSubmitService` + `POST /api/v1/admin/time-tracking/auto-submit-prior-day` (DRAIN_SECRET-gated, `TIME_AUTOSUBMIT_MODE` off|dry_run|on) + scheduler timer `auto_submit_prior_day` (18:00 UTC = noon CST). Deterministic submit-if-clean / flag-else for the prior day; excludes test/agent + duplicates. Adversarial review applied the Id-tie-break, business-tz `today`, NULL-status guard, actions cap, sargable WorkDate predicate. Deferred:
+
+- [ ] **(medium) Root-cause `Id` tie-break on the shared status-read sprocs.** `ReadCurrentTimeEntryStatus` (canonical `dbo.time_entry.sql`) + the migration copies (`001`/`002`/`time_entry_view_team.sql`) + the embedded correlated subqueries in `ReadTimeEntriesPaginated`/`ReadTimeEntries` all do `ORDER BY CreatedDatetime DESC` with NO `Id` tie-break. `TimeEntryStatus.CreatedDatetime` is DATETIME2(3); `reject()` writes `rejected` then `draft` in two `SYSUTCDATETIME()` calls that can collide at ms → non-deterministic "current status" (a reject→draft entry can read as `rejected`). The auto-submit service's own discovery query was fixed (`, s.Id DESC`), but `submit()._validate_transition` still reads via the flawed sproc, so a same-ms reject→draft entry can throw a spurious transition error (caught + counted as `errors`, no bad write). Fix all status-read sprocs with `, s.Id DESC` for system-wide determinism.
+- [ ] **(medium) Sweep-level `sp_getapplock`.** The auto-submit sweep has no concurrency guard; a manual `?work_date=` re-run overlapping the daily timer (or a worker re-fire) can double-write `submitted` status rows + double-enqueue the review outbox (NOT a double-bill — `AggregateTimeEntryOnSubmit` is `SourceTimeEntryId`-idempotent). Wrap `run_for_work_date` in `sp_getapplock('time_autosubmit_sweep')`, bail with `skipped: already_running` if not acquired.
+- [ ] **(low) dry_run worker-linkage pre-flight.** `_has_labor_row` runs only under `mode=='on'`, so a `dry_run` report can't surface "would submit but worker has no Vendor/Employee linkage → aggregation no-ops" (the Parker-Hazen class). Add a read-only XOR-linkage check + `would_be_unaggregated` count to dry_run.
+- [ ] **(low) Optional `work_date` 400-validation** on the endpoint (malformed date → opaque 500 today; matches the digest endpoint's existing shape).
+
 ## QBO pull-race guard — follow-ups (2026-06-23)
 
 Shipped this unit: `integrations/intuit/qbo/base/pull_race.py` (`guard_lines_present` + `read_lines_riding_out_race` + `header_has_amount`) wired into all 3 QBO connectors (Bill/Purchase/VendorCredit), the 3 production pull scripts, and the backfill — fixes the cross-process pull-race that minted half-built (header-only / missing-line) entities under load. Connector raises a last-resort guard; pull scripts re-read past the race then DEFER (skip → watermark advances, no stall). Deferred:

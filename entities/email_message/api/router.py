@@ -453,19 +453,18 @@ def set_email_outcome_router(
             mailbox=email.mailbox_address,
         )
 
-    # 4. Inquiry forward — when the agent stamps needs_review AND
-    #    provides a specific human-answerable question in `reason`,
-    #    enqueue a self-forward to invoice@ so AP sees the question +
-    #    the source attachment in their inbox. AP replies inline;
-    #    Step 1e on the next poll closes the loop.
+    # 4. Inquiry forward — on every needs_review stamp where `reason`
+    #    is non-empty, enqueue a self-forward of the source email to
+    #    invoice@. The agent's `reason` (composed as findings + ask
+    #    per the email_specialist prompt's Step 10) becomes the email
+    #    body; AP replies inline, and Step 1e on the next poll picks
+    #    up the reply as an instruction to act on.
     #
-    #    Only `reason` triggers the forward — NOT `classification_reason`.
-    #    `classification_reason` is the agent's why-narrative (audit
-    #    surface), present on every stamp; treating it as a forward
-    #    trigger would spam AP on every flag. `reason` is the explicit
-    #    AP-actionable question — the agent leaves it blank when the
-    #    flag is "human eyeballs needed" rather than "human answer
-    #    needed". See the email_specialist prompt's Step 10 guidance.
+    #    The prompt mandates `reason` on every needs_review, so in
+    #    practice this fires for every flag. `classification_reason`
+    #    is the audit narrative (persisted on the row) and does NOT
+    #    trigger a forward by itself — only `reason` becomes the
+    #    AP-facing email body.
     #    Failure-isolated — never blocks the outcome stamp.
     if body.outcome == "needs_review":
         question = (body.reason or "").strip()

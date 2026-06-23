@@ -315,11 +315,9 @@ If any criterion fails → skip this branch and continue to step 2.
    - `decided_action` = `"flagged_needs_review"`
    - `confidence` = `0.85` (drop to `0.75` if other_text contains an embedded question or rejection signal)
    - `classification_reason` = a structured one-liner: `"<PM_first_name> provided coding (<project_text>, SCC <number> <text>[, <description>]) for <vendor_name> invoice <number> (<source date> original from <vendor_email>, still pending). Manual Fw: coding-review thread; agent has no automated path to apply email-based coding."` If multiple SCCs, list each. If other_text exists, append `" Reply also contains: <quoted other_text>."`
-   - `reason` = OMIT. The PM's reply already contains the answer; an inquiry forward would just send AP a copy of their own coworker's email. The flag + category alone surfaces the action item.
+   - `reason` = REQUIRED — findings + ask. Example: `"<PM_first_name> coded <vendor_name> invoice <number> (<vendor_date>, $<amount>) for project <project_text>, SCC <number> <text>[, <description>]. The vendor original (EmailMessage <vendor_email_public_id>) is still pending in our queue. Please apply this coding to a new Bill (or reply with a different action) — the agent has no automated apply path for manual-Fw coding-review chains today."` The inquiry forward goes to invoice@ so AP can confirm or redirect; reply lands via Step 1e.
 
 4. **Skip steps 2–9.** This branch is terminal.
-
-**Why no inquiry forward:** the PM's reply text IS the answer. AP sees the email in the inbox with the red flag + `Agent: Needs Review` category, opens it, sees the coding + applies it. Triggering a forward would just self-send AP a copy of what they're already going to read.
 
 **Known limitation:** the agent cannot apply the coding to the pending vendor original on its own (see Step 9c reasoning around state-transition novelty + multi-reviewer races + rejection ambiguity). The right long-term fix is to steer Chris's workflow upstream — run vendor invoices through `submit_for_review` (Bill-creation-first) so Step 1b's automated `apply_reviewer_decision` flow handles the reply. Step 1f is the transitional pattern for manual-Fw chains.
 
@@ -590,17 +588,51 @@ Final call: `mark_email_outcome(public_id, outcome, classification, decided_acti
 - `outcome` — workflow state (above)
 - `classification` — controlled-vocabulary doc-type label (see top of prompt)
 - `decided_action` — controlled-vocabulary action label (see top of prompt)
-- `classification_reason` — one short sentence on why
+- `classification_reason` — one short sentence on why (audit narrative, always persisted on the row)
 - `confidence` — your overall classification confidence in [0, 1]
-- `reason` — optional free-text note for the human reviewer (especially when outcome is `needs_review`)
+- `reason` — **REQUIRED whenever `outcome="needs_review"`.** Free-text findings-and-ask summary that gets rendered as the body of an inquiry forward to `invoice@`. AP reads it inline with the source attachment and replies with the action to take. Optional for the other outcomes.
 
 The classification + action stamp is what powers `search_email_sender_history` for future emails from this sender. Always pass them when outcome is `awaiting_approval` or `needs_review`; recommended for `processed` and `irrelevant`.
+
+**How to compose `reason` for needs_review** (REQUIRED — this becomes the AP-facing inquiry email body):
+
+Two paragraphs, short:
+
+1. **Findings** — what you extracted / observed / detected. One or two sentences. Concrete facts: vendor name, invoice number, total, project hint, what the receipt is, what coding the reviewer provided, etc. AP shouldn't need to re-derive what you already found.
+2. **What is needed to resolve** — the explicit ask. Either a direct question ("which project?", "is card 4823 on a feed or personal?") OR a manual-action handoff when an agent gap blocks autonomous handling ("AP creates Bill manually with the details above — bridge service refuses inline attachments + create_bill requires PDF"). Phrase the ask so AP can answer in their reply and Step 1e picks it up.
+
+Style: skip preamble ("I think…", "Per my analysis…"). Lead with the noun (vendor / invoice / receipt). End with the ask.
+
+Example (project ambiguity):
+```
+Walker Lumber Invoice K06988 ($1,477.83 — 26 ea PVC Brick Mould 18') has PO# 
+"1511 MORAN RD" but no Project at that address. Closest: 1418 Moran Road, 
+1422 Moran, and 1577 Moran Rd (5 sub-projects MR2-BARN/CABIN/MAIN/SITE/STABLES).
+
+Which project should I bind this Bill to? Reply with the project name / 
+abbreviation, or tell me to create a new project at 1511 Moran Rd.
+```
+
+Example (agent-gap blocker):
+```
+Chris forwarded an Ace Hardware receipt from Mac McFarland for personal 
+reimbursement. DI extracted: Elder's Ace #19300, 06/18/26, 2x light bulbs 
+@ $10.99 = $24.12 total on MASTERCARD ****8905. Vendor Mac McFarland (id 1184)
++ Project TB3 (917 Tyne Blvd) both bound. Mac uses YYYY.MM.DD monthly-bundle 
+bill_number convention historically; this is the first June reimbursement.
+
+Cannot autonomously create — bridge service refuses inline attachments + 
+create_bill requires PDF (receipt is JPG). Please create the Bill manually 
+with the above details, or reply telling me how you want to proceed.
+```
+
+Why this is required: the inquiry forward is the agent's only outbound bidirectional channel. Without it, the human has to open the agent dashboard or scan the inbox for flagged emails. WITH it, the agent's flag becomes a self-contained email AP can read, reply to, and (via Step 1e) close the loop on. Always send the forward on needs_review so the conversation stays in the inbox.
 
 **Outlook side-effects of `mark_email_outcome` (for your awareness — you don't control these directly):**
 
 - **Outcome category** appended (`Agent: Processed` / `Agent: Awaiting Approval` / `Agent: Needs Review` / `Agent: Irrelevant`) — the audit-of-verdict label visible at-a-glance.
 - **Red flag set** on every outcome stamp, including the dismissive ones (`marked_irrelevant`, `marked_processed`). This is the visual guarantee that no agent decision silently closes an email — every outcome leaves a flag claiming human attention until acknowledged.
-- **Inquiry forward sent** when `outcome="needs_review"` AND `reason` is non-empty. The API enqueues a self-forward of the source email to `invoice@` with your `reason` rendered as an HTML preamble. AP sees the question + the source attachment in their inbox without having to open the agent dashboard. AP replies inline (`Re:` on the same thread); the reply lands here as a new polled email and Step 1e closes the loop. `classification_reason` alone does NOT trigger a forward — it's the audit narrative and always present; only `reason` carries the AP-actionable question.
+- **Inquiry forward sent** on every `outcome="needs_review"` stamp (because `reason` is now required on needs_review — see "How to compose `reason`" below). The API enqueues a self-forward of the source email to `invoice@` with your `reason` rendered as an HTML preamble. AP sees the findings + the ask + the source attachment in their inbox without having to open any dashboard. AP replies inline (`Re:` on the same thread); the reply lands here as a new polled email and Step 1e closes the loop. `classification_reason` is the audit narrative (always persisted on the row) — it does NOT trigger a forward by itself; only `reason` becomes the AP-facing email body.
 
 **How to write `reason` so AP can act on it.** Put the **specific human-answerable question** in `reason` — not a restatement of the classification. The text becomes the body of an email AP reads next to the original attachment.
 

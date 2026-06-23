@@ -10,9 +10,10 @@ logger = logging.getLogger(__name__)
 
 class AgentInquiryService:
     """Sends a self-forward of a polled email to invoice@ with the
-    agent's question as an HTML preamble. Triggered when the agent
-    stamps `outcome=needs_review` and provides a specific
-    human-answerable question in `reason` / `classification_reason`.
+    agent's findings + ask as an HTML preamble. Triggered on every
+    `outcome=needs_review` stamp where `reason` is non-empty (the
+    prompt mandates a findings+ask `reason` on every needs_review,
+    so in practice this fires for every needs_review outcome).
 
     Why a forward (not a new email): forwards preserve the source
     `ConversationId`, so when AP replies to the inquiry forward, the
@@ -189,7 +190,7 @@ class AgentInquiryService:
             "<div style='border-left:4px solid #d97706; padding:8px 12px; "
             "background:#fef3c7; font-family:Arial,Helvetica,sans-serif; "
             "font-size:14px; color:#92400e; margin-bottom:12px;'>"
-            f"<p style='margin:0 0 8px 0;'><strong>AGENT QUESTION</strong>"
+            f"<p style='margin:0 0 8px 0;'><strong>AGENT REVIEW</strong>"
             f"{html.escape(confidence_pct)}</p>"
             f"<p style='margin:0 0 8px 0; white-space:pre-wrap;'>{escaped_question}</p>"
             "<p style='margin:0 0 0 0; font-size:12px; color:#78350f;'>"
@@ -197,6 +198,7 @@ class AgentInquiryService:
             "Your reply lands back in invoice@ and the agent picks it up "
             "automatically. Examples: <em>'project is MR2-CABIN'</em>, "
             "<em>'skip'</em>, <em>'this is a credit memo'</em>, "
+            "<em>'create the bill manually'</em>, "
             "<em>'route to bill_specialist anyway'</em>."
             "</p>"
             "</div>"

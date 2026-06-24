@@ -464,6 +464,67 @@ class ContractLaborRepository:
             logger.error(f"Error during update contract labor by ID: {error}")
             raise map_database_error(error)
 
+    def find_for_reviewer_reply(
+        self,
+        conversation_id: Optional[str] = None,
+        worker_hint: Optional[str] = None,
+        project_hint: Optional[str] = None,
+        work_date_hint: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Find the (ContractLabor, Project) pair a PM/Owner reply is
+        reviewing.
+
+        Strategy:
+          1. Strict ConversationId match — look up the outbound CL
+             notification (`cl_notification_service`-enqueued) by
+             `EmailMessage.ConversationId`, parse its subject for
+             worker + project_abbr + work_date, bind to the CL +
+             line-item-Project the notification was about.
+          2. Fuzzy fallback when (1) misses or the subject parse fails
+             — caller supplies all three hints (worker / project_abbr /
+             work_date) parsed from the REPLY's own subject. Same bind
+             with single-result-or-null requirement.
+
+        Returns a slim dict (not a ContractLabor model) carrying the
+        fields apply_reviewer_decision needs + `match_kind` for
+        telemetry (`'conversation'` | `'fuzzy'`). Returns None on 0 or
+        2+ candidates — ambiguous cases flow through `flagged_needs_review`
+        at the agent layer.
+
+        Mirrors `BillRepository.find_for_reviewer_reply` (Wave 3 Phase 1).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="FindContractLaborForReviewerReply",
+                    params={
+                        "ConversationId": conversation_id,
+                        "WorkerHint": worker_hint,
+                        "ProjectHint": project_hint,
+                        "WorkDateHint": work_date_hint,
+                    },
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    "contract_labor_id": row.ContractLaborId,
+                    "contract_labor_public_id": str(row.ContractLaborPublicId) if row.ContractLaborPublicId else None,
+                    "project_id": row.ProjectId,
+                    "project_public_id": str(row.ProjectPublicId) if row.ProjectPublicId else None,
+                    "project_abbreviation": row.ProjectAbbreviation,
+                    "project_name": row.ProjectName,
+                    "parsed_worker": row.ParsedWorker,
+                    "parsed_work_date": row.ParsedWorkDate,
+                    "contract_labor_status": row.ContractLaborStatus,
+                    "match_kind": row.MatchKind,
+                }
+        except Exception as error:
+            logger.error(f"Error in find_for_reviewer_reply (ContractLabor): {error}")
+            raise map_database_error(error)
+
     def delete_by_id(self, id: int) -> Optional[ContractLabor]:
         """
         Delete a contract labor entry by ID.

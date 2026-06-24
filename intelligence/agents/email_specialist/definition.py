@@ -20,11 +20,13 @@ email_specialist = Agent(
         "record_extracted_fields",
         "bridge_email_attachment",
         "mark_email_outcome",
-        # Reviewer-reply branch (Wave 3): detect a reply on a tracked
-        # review thread before running the standard 3-signal flow. This
-        # is a lookup-only Bill tool; bill_specialist still owns all Bill
-        # writes and the application of the decision.
+        # Reviewer-reply detection (Wave 3 + Wave 4): bind an inbound reply
+        # to its tracked Bill (Step 1b) or ContractLabor (Step 1bx)
+        # conversation before running the standard 3-signal flow. These
+        # are lookup-only — bill_specialist / contract_labor_specialist
+        # own the apply writes.
         "find_bill_by_conversation_id",
+        "find_contract_labor_by_conversation_id",
         # Delegation tools. (bill_credit still deferred.)
         "delegate_to_bill_specialist",
         "delegate_to_contract_labor_specialist",

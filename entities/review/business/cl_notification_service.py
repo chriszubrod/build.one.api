@@ -92,6 +92,19 @@ class ContractLaborReviewNotificationService:
             to_addresses = self._build_recipient_addresses(pms)
             cc_addresses = self._build_recipient_addresses(owners)
             subject = f"Contract Labor - {worker_name} - {project_label} - {work_date}"
+
+            # Persist the (CL, Project, Subject) triple so the reviewer-reply
+            # lookup (FindContractLaborForReviewerReply) can bind an inbound
+            # reply back to its (CL, Project) pair via JOIN — no subject
+            # parsing at lookup time. The Subject acts as the dedup key
+            # between this row and the BCC inbox copy that arrives after
+            # the MS outbox drains. See entities/contract_labor/sql/
+            # ContractLaborNotification.sql for the table.
+            self._register_notification(
+                contract_labor_id=cl_id,
+                project_id=project_id,
+                outbound_subject=subject,
+            )
             body = self._build_body(
                 worker_name=worker_name,
                 work_date=str(work_date),
@@ -128,6 +141,33 @@ class ContractLaborReviewNotificationService:
             len(project_ids),
             enqueued,
         )
+
+    def _register_notification(
+        self, *, contract_labor_id: int, project_id: int, outbound_subject: str,
+    ) -> None:
+        """Insert one ContractLaborNotification row per outbound draft.
+
+        Failure-isolated: a write failure here is logged but does not
+        propagate (the outbox row is already enqueued and we don't want
+        to block the notification flow). The cost of a missing join row
+        is that the reviewer-reply lookup falls through to fuzzy hints
+        for that conversation — degraded, not broken.
+        """
+        try:
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """INSERT INTO dbo.[ContractLaborNotification]
+                           ([ContractLaborId], [ProjectId], [OutboundSubject])
+                       VALUES (?, ?, ?)""",
+                    (contract_labor_id, project_id, outbound_subject),
+                )
+                conn.commit()
+        except Exception as error:
+            logger.warning(
+                "cl_review_notification.register_failed cl_id=%s project_id=%s: %s",
+                contract_labor_id, project_id, error,
+            )
 
     # =========================================================================
     # Internals

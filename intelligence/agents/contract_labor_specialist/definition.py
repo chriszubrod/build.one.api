@@ -18,8 +18,16 @@ contract_labor_specialist = Agent(
         "find_contract_labor_vendor_by_email",
         # Project resolution from job-site address.
         "delegate_to_project_specialist",
-        # ContractLabor row creation.
+        # ContractLabor row creation (timesheet-intake path).
         "create_contract_labor",
+        # Reviewer-reply detection (Unit 2): bind a PM/Owner reply to
+        # its (ContractLabor, Project) pair via ConversationId.
+        "find_contract_labor_by_conversation_id",
+        # Reviewer-reply apply (Unit 3): SCC resolution + insert a
+        # Review row with the PM's decision. find_sub_cost_code_for_reply
+        # is shared with bill_specialist; reuse the existing registration.
+        "find_sub_cost_code_for_reply",
+        "apply_contract_labor_reviewer_decision",
     ),
     model="claude-haiku-4-5-20251001",
     provider="anthropic",

@@ -359,6 +359,291 @@ class ContractLaborService:
             return self.repo.delete_by_id(existing.id)
         return None
 
+    def apply_reviewer_decision(
+        self,
+        *,
+        contract_labor_public_id: str,
+        project_public_id: str,
+        decision: str,
+        reviewer_email: str,
+        sub_cost_code_public_id: Optional[str] = None,
+        description: Optional[str] = None,
+        raw_reply_text: Optional[str] = None,
+        reviewer_email_message_public_id: Optional[str] = None,
+    ) -> dict:
+        """Apply a Project Manager / Owner's emailed review decision to a CL row.
+
+        Mirrors BillService.apply_reviewer_decision (entities/bill/
+        business/service.py:1008) with `bill_id → contract_labor_id`.
+        Each invocation:
+          1. Validates the CL is still `pending_review` (mirrors Bill's
+             draft guard; Unit 2's find sproc deliberately doesn't filter
+             on status so we can surface a specific error here).
+          2. Authorizes `reviewer_email` against PM/Owner UserProject
+             recipients on the matched `project_public_id` (via
+             dbo.ResolveContractLaborReviewRecipientsPerProject — same
+             sproc cl_notification_service uses to address the outbound).
+          3. On approval: updates each ContractLaborLineItem WHERE
+             ProjectId = matched project with the supplied SCC +
+             description (read-modify-write to preserve all other line
+             fields).
+          4. Always: inserts a new Review row (insert-only audit trail)
+             with the target ReviewStatus + raw_reply_text as comments +
+             email_message_id link.
+
+        CL.Status stays at 'pending_review' either way (per design Q3):
+        the PM-supplied SCC + description is applied, AP still has to
+        enter rate/markup before mark_as_ready.
+
+        decision ∈ {'approved', 'rejected'} — same vocab as Bill's.
+
+        Returns: dict with decision_applied, review_status name,
+        reviewer_user_id, the CL public_id, the matched project_id.
+        """
+        from entities.contract_labor.persistence.line_item_repo import (
+            ContractLaborLineItemRepository,
+        )
+        from entities.review.persistence.repo import ReviewRepository
+        from entities.review_status.business.service import ReviewStatusService
+        from entities.sub_cost_code.business.service import SubCostCodeService
+        from shared.database import call_procedure, get_connection
+
+        if decision not in ('approved', 'rejected'):
+            raise ValueError(
+                f"decision must be 'approved' or 'rejected'; got '{decision}'"
+            )
+
+        cl = self.read_by_public_id(public_id=contract_labor_public_id)
+        if cl is None or cl.id is None:
+            raise ValueError(
+                f"ContractLabor with public_id '{contract_labor_public_id}' not found."
+            )
+
+        # Status guard — surfaced here so the agent can produce a
+        # specific human-readable failure ('CL has advanced past
+        # pending_review; reviewer decisions cannot be applied').
+        # Mirrors Bill's draft guard at service.py:1062.
+        if cl.status != 'pending_review':
+            raise ValueError(
+                f"ContractLabor {contract_labor_public_id} is no longer "
+                f"pending_review (current status: {cl.status!r}); reviewer "
+                f"decisions cannot be applied. The human must edit directly."
+            )
+
+        # Resolve target project from the supplied public_id; needed to
+        # filter the line-item update + the authz check.
+        project = ProjectService().read_by_public_id(public_id=project_public_id)
+        if project is None or project.id is None:
+            raise ValueError(
+                f"Project with public_id '{project_public_id}' not found."
+            )
+
+        # ── Authz: reviewer_email must be a PM or Owner on this project ──
+        # ResolveContractLaborReviewRecipientsPerProject returns one row
+        # per (project, PM/Owner) tuple across ALL projects the CL spans;
+        # filter to the matched project_id then case-insensitive email match.
+        with get_connection() as conn:
+            cur = conn.cursor()
+            call_procedure(
+                cursor=cur,
+                name='ResolveContractLaborReviewRecipientsPerProject',
+                params={'ContractLaborId': cl.id},
+            )
+            recipients = cur.fetchall()
+
+        normalized_email = (reviewer_email or '').strip().lower()
+        reviewer_user_id: Optional[int] = None
+        for r in recipients:
+            if int(r.ProjectId or 0) != int(project.id):
+                continue
+            row_email = (getattr(r, 'Email', None) or '').strip().lower()
+            if row_email and row_email == normalized_email:
+                reviewer_user_id = int(r.UserId) if r.UserId is not None else None
+                break
+
+        if reviewer_user_id is None:
+            raise ValueError(
+                f"Sender '{reviewer_email}' is not an authorized reviewer for "
+                f"ContractLabor {contract_labor_public_id} on project "
+                f"{project_public_id} (must be Project Manager or Owner)."
+            )
+
+        # ── Approval prework: resolve SCC + load line items ──────────
+        # Validate the SCC + collect target line items BEFORE writing the
+        # Review row. We want the SCC-not-found / no-matching-lines errors
+        # to abort EARLY (no audit row written for a decision the system
+        # can't apply). Once the Review row exists, partial line-item
+        # failures are reported but the audit intent is preserved.
+        scc_id: Optional[int] = None
+        matched_lines: list = []
+        if decision == 'approved':
+            if not sub_cost_code_public_id:
+                raise ValueError(
+                    "sub_cost_code_public_id is required when decision='approved'."
+                )
+            scc = SubCostCodeService().read_by_public_id(public_id=sub_cost_code_public_id)
+            if scc is None or scc.id is None:
+                raise ValueError(
+                    f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
+                )
+            scc_id = int(scc.id)
+
+            li_repo = ContractLaborLineItemRepository()
+            line_items = li_repo.read_by_contract_labor_id(contract_labor_id=cl.id)
+            # Filter to the matched project. Overhead lines (IsOverhead=1,
+            # ProjectId NULL) are silently excluded — the PM is reviewing
+            # a specific project, not the worker's overhead allocation.
+            # The agent's docstring covers this so the omission is auditable.
+            matched_lines = [li for li in line_items if li.project_id == project.id]
+            if not matched_lines:
+                raise ValueError(
+                    f"ContractLabor {contract_labor_public_id} has no line items "
+                    f"on project {project_public_id} to apply the SCC to."
+                )
+
+        # ── Resolve target ReviewStatus + source EmailMessage ───────
+        # Approved → first IsFinal AND NOT IsDeclined; rejected → first
+        # IsDeclined. Mirrors Bill at service.py:1129-1148. PM approval
+        # IS the approval per the multi-reviewer locked semantics.
+        comments = (raw_reply_text or '').strip() or None
+        review_statuses = ReviewStatusService().read_all()
+        if decision == 'approved':
+            target = next(
+                (s for s in review_statuses if s.is_final and not s.is_declined),
+                None,
+            )
+            if target is None:
+                raise ValueError(
+                    "No terminal non-declined ReviewStatus configured "
+                    "(expected one with IsFinal=true AND IsDeclined=false)."
+                )
+        else:  # rejected
+            target = next(
+                (s for s in review_statuses if s.is_declined),
+                None,
+            )
+            if target is None:
+                raise ValueError(
+                    "No declined ReviewStatus configured (expected one with IsDeclined=true)."
+                )
+
+        email_message_id: Optional[int] = None
+        if reviewer_email_message_public_id:
+            from entities.email_message.business.service import EmailMessageService
+            em = EmailMessageService().read_by_public_id(
+                public_id=reviewer_email_message_public_id,
+            )
+            if em is not None:
+                email_message_id = em.id
+
+        # ── Write Review row FIRST so audit intent is always captured ─
+        # /code-review Unit 3 (bugs_correctness/errors_lifecycle): if we
+        # wrote line items first and a mid-loop row-version conflict
+        # raised, the audit trail would be silently empty while half the
+        # lines were mutated. Reversing the order means partial line-item
+        # failures still leave the Review row in place so AP can see what
+        # was attempted + reconcile the split state from the React queue.
+        new_review = ReviewRepository().create(
+            review_status_id=target.id,
+            user_id=reviewer_user_id,
+            comments=comments,
+            bill_id=None,
+            expense_id=None,
+            bill_credit_id=None,
+            invoice_id=None,
+            contract_labor_id=cl.id,
+            email_message_id=email_message_id,
+            created_by_user_id=reviewer_user_id,
+        )
+
+        # ── Approval only: update each matched line item ─────────────
+        # Per-line try/except so a single row-version conflict on one
+        # line doesn't silently abort the rest. Collect failures into a
+        # structured list and raise at the end if any. The Review row is
+        # already written (above) so the audit trail records the
+        # decision regardless of how many lines actually applied.
+        #
+        # NOTE: when `description` is supplied on an approval that
+        # matches multiple line items on the same project, every
+        # matched line's description is overwritten with the same
+        # string — this flattens distinct per-line descriptions. The
+        # tool prompt documents this; agents pass `description` only
+        # when the PM's intent is clearly project-wide.
+        if decision == 'approved' and matched_lines:
+            line_failures: list[str] = []
+            for li in matched_lines:
+                try:
+                    li_repo.update_by_id(
+                        id=li.id,
+                        row_version=li.row_version_bytes,
+                        line_date=li.line_date,
+                        project_id=li.project_id,
+                        sub_cost_code_id=scc_id,
+                        description=description if description is not None else li.description,
+                        hours=li.hours,
+                        rate=li.rate,
+                        markup=li.markup,
+                        price=li.price,
+                        # Use the project's canonical `is not False`
+                        # phrasing per CLAUDE.md project_conventions
+                        # (handles None → default-billable=True correctly).
+                        is_billable=(li.is_billable is not False),
+                        is_overhead=bool(li.is_overhead) if li.is_overhead is not None else False,
+                        bill_line_item_id=li.bill_line_item_id,
+                    )
+                except Exception as line_error:
+                    line_failures.append(
+                        f"line_item_id={li.id}: {type(line_error).__name__}: {line_error}"
+                    )
+                    logger.warning(
+                        "apply_reviewer_decision partial-update on CL %s line %s: %s",
+                        contract_labor_public_id, li.id, line_error,
+                    )
+            if line_failures:
+                raise ValueError(
+                    f"ContractLabor {contract_labor_public_id} apply partial-failure: "
+                    f"Review row was created (id={new_review.id}) but "
+                    f"{len(line_failures)}/{len(matched_lines)} line items failed "
+                    f"to update. AP must reconcile via React queue. "
+                    f"Failures: {'; '.join(line_failures)}"
+                )
+
+        rs = ReviewStatusService().read_by_id(id=new_review.review_status_id) if new_review.review_status_id else None
+        new_status_name = rs.name if rs else None
+
+        return {
+            'decision_applied': decision,
+            'review_status': new_status_name,
+            'reviewer_user_id': reviewer_user_id,
+            'contract_labor_public_id': contract_labor_public_id,
+            'project_public_id': project_public_id,
+            'project_id': project.id,
+            'contract_labor_id': cl.id,
+        }
+
+    def find_for_reviewer_reply(
+        self,
+        *,
+        conversation_id: Optional[str] = None,
+        worker_hint: Optional[str] = None,
+        project_hint: Optional[str] = None,
+        work_date_hint: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Bind a PM/Owner reply email back to its (ContractLabor,
+        Project) pair via the outbound notification's ConversationId.
+
+        Used by the contract_labor_specialist agent during the email_
+        specialist Step 1bx reviewer-reply branch detection. Returns
+        None when no unambiguous match exists; the caller then flows
+        the reply through flagged_needs_review.
+        """
+        return self.repo.find_for_reviewer_reply(
+            conversation_id=conversation_id,
+            worker_hint=worker_hint,
+            project_hint=project_hint,
+            work_date_hint=work_date_hint,
+        )
+
     def read_distinct_billing_periods(self) -> list[str]:
         """Return distinct BillingPeriodStart values (YYYY-MM-DD), most-recent first."""
         return self.repo.read_distinct_billing_periods()

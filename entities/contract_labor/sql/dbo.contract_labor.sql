@@ -1586,3 +1586,132 @@ GO
 
 
 
+
+
+-- ─────────────────────────────────────────────────────────────────────
+-- ContractLaborNotification — join table populated by
+-- cl_notification_service at outbound-enqueue time. One row per
+-- (CL, Project) draft, carrying the exact OutboundSubject as the
+-- deterministic JOIN key against the BCC-arrived EmailMessage.
+--
+-- Migration counterpart: scripts/migrations/2026_05_27_find_contract_labor_for_reviewer_reply.sql
+-- (keep in sync — re-running canonical must match the migration body).
+-- ─────────────────────────────────────────────────────────────────────
+
+IF OBJECT_ID('dbo.ContractLaborNotification', 'U') IS NULL
+BEGIN
+    CREATE TABLE [dbo].[ContractLaborNotification]
+    (
+        [Id]               BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
+        [PublicId]         UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
+        [CreatedDatetime]  DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME(),
+        [ContractLaborId]  BIGINT NOT NULL,
+        [ProjectId]        BIGINT NOT NULL,
+        [OutboundSubject]  NVARCHAR(500) NOT NULL,
+
+        CONSTRAINT [FK_CLN_ContractLabor] FOREIGN KEY ([ContractLaborId])
+            REFERENCES [dbo].[ContractLabor] ([Id]),
+        CONSTRAINT [FK_CLN_Project] FOREIGN KEY ([ProjectId])
+            REFERENCES [dbo].[Project] ([Id])
+    );
+
+    CREATE INDEX [IX_CLN_OutboundSubject]
+        ON [dbo].[ContractLaborNotification] ([OutboundSubject]);
+    CREATE INDEX [IX_CLN_ContractLaborId]
+        ON [dbo].[ContractLaborNotification] ([ContractLaborId]);
+END;
+GO
+
+
+-- ─────────────────────────────────────────────────────────────────────
+-- FindContractLaborForReviewerReply — bind a PM/Owner reply email back
+-- to the (ContractLabor, Project) pair via the ContractLaborNotification
+-- join table. PRIMARY path is a 2-step JOIN through EmailMessage; FUZZY
+-- fallback handles non-Outlook clients that lose ConversationId.
+--
+-- NO Status filter (mirrors BillRepo.find_for_reviewer_reply). Unit 3's
+-- apply path enforces with a specific error.
+-- ─────────────────────────────────────────────────────────────────────
+
+CREATE OR ALTER PROCEDURE FindContractLaborForReviewerReply
+(
+    @ConversationId NVARCHAR(255),
+    @WorkerHint NVARCHAR(255) = NULL,
+    @ProjectHint NVARCHAR(255) = NULL,
+    @WorkDateHint NVARCHAR(20) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @MatchKind NVARCHAR(20) = NULL;
+    DECLARE @CLId BIGINT = NULL;
+    DECLARE @ProjectId BIGINT = NULL;
+
+    DECLARE @PrimaryHits TABLE (CLId BIGINT, ProjectId BIGINT);
+
+    INSERT INTO @PrimaryHits (CLId, ProjectId)
+    SELECT DISTINCT TOP 2
+        cln.[ContractLaborId],
+        cln.[ProjectId]
+    FROM dbo.[EmailMessage] em
+    INNER JOIN dbo.[ContractLaborNotification] cln
+        ON cln.[OutboundSubject] = em.[Subject]
+    WHERE em.[ConversationId]   = @ConversationId
+      AND em.[ProcessingStatus] = 'outbound'
+      AND em.[Subject] LIKE 'Contract Labor - %';
+
+    IF (SELECT COUNT(*) FROM @PrimaryHits) = 1
+    BEGIN
+        SELECT TOP 1
+            @CLId      = CLId,
+            @ProjectId = ProjectId
+        FROM @PrimaryHits;
+        SET @MatchKind = 'conversation';
+    END
+
+    IF @MatchKind IS NULL
+       AND @WorkerHint IS NOT NULL
+       AND @ProjectHint IS NOT NULL
+       AND @WorkDateHint IS NOT NULL
+    BEGIN
+        DECLARE @WorkDate DATE = TRY_CAST(@WorkDateHint AS DATE);
+        IF @WorkDate IS NOT NULL
+        BEGIN
+            DECLARE @FuzzyHits TABLE (CLId BIGINT, ProjectId BIGINT);
+
+            INSERT INTO @FuzzyHits (CLId, ProjectId)
+            SELECT DISTINCT TOP 2 cl.[Id], p.[Id]
+            FROM dbo.[ContractLabor] cl
+            INNER JOIN dbo.[ContractLaborLineItem] cli ON cli.[ContractLaborId] = cl.[Id]
+            INNER JOIN dbo.[Project] p ON p.[Id] = cli.[ProjectId]
+            WHERE cl.[EmployeeName] = @WorkerHint
+              AND cl.[WorkDate]     = @WorkDate
+              AND p.[Abbreviation]  = @ProjectHint;
+
+            IF (SELECT COUNT(*) FROM @FuzzyHits) = 1
+            BEGIN
+                SELECT TOP 1
+                    @CLId      = CLId,
+                    @ProjectId = ProjectId
+                FROM @FuzzyHits;
+                SET @MatchKind = 'fuzzy';
+            END
+        END
+    END
+
+    SELECT
+        cl.[Id]                                         AS ContractLaborId,
+        CAST(cl.[PublicId] AS NVARCHAR(36))             AS ContractLaborPublicId,
+        p.[Id]                                          AS ProjectId,
+        CAST(p.[PublicId] AS NVARCHAR(36))              AS ProjectPublicId,
+        p.[Abbreviation]                                AS ProjectAbbreviation,
+        p.[Name]                                        AS ProjectName,
+        cl.[EmployeeName]                               AS ParsedWorker,
+        CONVERT(VARCHAR(10), cl.[WorkDate], 120)        AS ParsedWorkDate,
+        cl.[Status]                                     AS ContractLaborStatus,
+        @MatchKind                                      AS MatchKind
+    FROM dbo.[ContractLabor] cl
+    INNER JOIN dbo.[Project] p ON p.[Id] = @ProjectId
+    WHERE cl.[Id] = @CLId AND @CLId IS NOT NULL;
+END;

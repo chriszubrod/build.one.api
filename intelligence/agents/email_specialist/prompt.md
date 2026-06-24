@@ -159,7 +159,96 @@ If `find_bill_by_conversation_id` returns null → this is not a tracked review 
 
 5. **Skip steps 2–9.** The reviewer-reply branch is terminal.
 
-If detection fails (not a reply, or no tracked Bill) → continue to step 1c.
+If detection fails (not a reply, or no tracked Bill) → continue to step 1bx.
+
+### 1bx. Contract-labor reviewer-reply branch (Wave 4)
+
+**Before** running steps 2–9 OR step 1c, check if this email is a Project Manager / Owner reply on a tracked CL notification conversation. If so, branch to the CL-apply flow and skip the standard invoice path AND the timesheet-intake branch.
+
+CL notifications carry a structured subject (`Contract Labor - {Worker} - {ProjectAbbr} - {YYYY-MM-DD}`) and one outbound notification fires per distinct project on a CL row's line items. The reply binds back to a specific `(CL, Project)` pair.
+
+**Detection criteria:**
+
+The PRIMARY gate is `find_contract_labor_by_conversation_id` — if it returns a CL, this IS a tracked reviewer-reply regardless of from-address heuristics. PMs frequently reply from personal email (gmail/icloud) on mobile, and MS Graph preserves ConversationId across that boundary; gating on `@rogersbuild.com` alone would fail-closed for those.
+
+Run the lookup FIRST when the subject is a plausible reply:
+
+- subject starts with `Re:` (case-insensitive — also `RE:`, `Re :`, etc.), AND
+- subject after the `Re:` prefix is shaped like `Contract Labor - <worker> - <project> - <YYYY-MM-DD>` (a 4-segment pattern split on ` - `), AND
+- **`find_contract_labor_by_conversation_id(conversation_id, worker_hint, project_hint, work_date_hint)` returns a CL** (non-null). Pass all four args. Hints come from parsing the REPLY subject (drop the `Re: ` prefix; treat what remains as four ` - `-delimited segments). The primary lookup uses a `ContractLaborNotification` join row via `EmailMessage.ConversationId`; fuzzy hints unlock a backup path for clients that lose conversation_id.
+
+Both `match_kind=conversation` and `match_kind=fuzzy` are valid hits — quote whichever in your final `classification_reason` for telemetry.
+
+Internal-domain match is a **secondary** signal: when present, it raises confidence; when absent (PM replied from gmail), only the conversation-id lookup matters. Do NOT gate the branch on the from-address — gate it on the lookup's non-null return.
+
+If `find_contract_labor_by_conversation_id` returns null → not a tracked CL conversation. Skip this branch and proceed to step 1c.
+
+**When the branch fires:**
+
+1. **Parse the reply body for intent.** Look at the *new* text portion (above the quoted-original separator). Match on meaning, not exact words — the parser is identical to Step 1b's reviewer-reply parser:
+   - **Approval signal** — `"approved"`, `"approve"`, `"OK"`, `"ok"`, `"good"`, `"go ahead"`, `"proceed"`, `"yes"`, `"ship it"`, `"thumbs up"` — pick `decision="approved"`.
+   - **Rejection signal** — `"reject"`, `"no"`, `"not approved"`, `"hold"`, `"don't pay"`, `"declined"`, `"this is wrong"`, `"wrong worker"`, `"that wasn't him"` — pick `decision="rejected"`. Also use `"rejected"` for "needs revision" / questions / edit requests (`"let's remove…"`, `"is this a copy and paste?"`) — the AP reviewer reads `Review.Comments` and triages.
+   - **Mixed / ambiguous** — fall back to `flagged_needs_review` (don't apply).
+
+2. **(Approval only) Parse SubCostCode hint + description.** PMs commonly reply with project-anchored shorthand:
+   - `"Approved for payment. 917 Tyne Blvd. Misc. Labor - 65.2"` → hint `"65.2"`, description `"Misc. Labor"`
+   - `"Approved. HP – 98.0 – Warranty"` → hint `"98.0"`, description `"Warranty"` (the en-dash works too)
+   - `"Approved Misc Labor - 65.2"` → hint `"65.2"`, description `"Misc Labor"`
+   - `"Approved"` (no SCC) → fall back to `flagged_needs_review` — the agent must not guess an SCC.
+
+   The contract_labor_specialist will resolve the hint via `find_sub_cost_code_for_reply` (shared with bill_specialist) — that tool segment-pads `"65.2"` → `"65.02"` server-side, so don't pre-normalize.
+
+3. **MULTI-SCC GATE.** Count **distinct SCC mentions** in the reply body's new-text portion. The detection rule:
+
+   **A "SCC mention" is a decimal number of shape `[0-9]{1,3}\.[0-9]{1,2}` optionally preceded or followed by a name word (e.g. `Cleaning - 62.0`, `65.02 - Misc Labor`, bare `65.2`). Date fragments (`6-18`, `2026-06-18`) do NOT count because dates have no decimal point. Two mentions are "distinct" only when their numeric forms differ after zero-padding the fractional part to 2 digits (e.g. `65.2` and `65.02` are the SAME SCC — count once).**
+
+   Examples:
+
+   - `"Approved 65.2 - Misc Labor"` → 1 SCC. APPLY (single-SCC).
+   - `"Approved Misc Labor - 65.02"` → 1 SCC. APPLY.
+   - `"Sorry, I meant 65.2 not 65.1"` → 2 distinct SCCs (65.20 vs 65.10). FLAG.
+   - `"On 6/18 we agreed 65.2 looks right"` → 1 SCC (date `6/18` has no decimal point — doesn't count). APPLY.
+   - `"Cleaning - 62.0 (basement)\nTrim Labor - 44.0 (playroom)"` → 2 distinct SCCs (62.00 vs 44.00). FLAG.
+
+   When ≥2 distinct SCC mentions detected, DO NOT delegate. Stamp the outcome as `needs_review` + `flagged_needs_review` with a structured reason capturing every SCC the PM listed, e.g. `"Multi-SCC reply on N-hour project: SCC1=Cleaning 62.0, SCC2=Trim Labor 44.0. No per-SCC hour split possible; AP must split manually."` (Per design Q1: split-evenly auto-apply is wrong when the PM meant unequal; always-flag is the v1 contract.)
+
+4. **(Single-SCC only) Delegate to contract_labor_specialist.** Call `delegate_to_contract_labor_specialist(task=…)` with this self-contained markdown:
+
+   ````markdown
+   Apply a Project Manager / Owner's emailed review decision to a ContractLabor row.
+
+   **CL (already located via find_contract_labor_by_conversation_id):**
+   - contract_labor_public_id: <uuid>
+   - project_public_id:        <uuid>            ← the specific project (CL notifications are per-project)
+   - project_abbreviation:     "TB3"
+   - worker:                   "Ricky Moreno"
+   - work_date:                "2026-06-18"
+   - current_status:           "pending_review"
+
+   **Reviewer's decision:**
+   - decision:                          approved | rejected
+   - reviewer_email:                    cassidy@rogersbuild.com
+   - reviewer_email_message_public_id:  <the EmailMessage public_id you received in your user_message>
+   - sub_cost_code_text:                "65.2"   ← only on approval; verbatim PM shorthand
+   - description_text:                  "Misc. Labor"   ← only on approval; null when PM didn't supply
+   - raw_reply_text:                    <full new-text portion of the reply, post-quote-stripping>
+
+   Flow: (approval only) find_sub_cost_code_for_reply → apply_contract_labor_reviewer_decision.
+   Pick the highest-confidence SCC candidate; surface ambiguity if multiple score similarly.
+   Errors are returned as HTTP 400 — relay them so I can stamp the right outcome.
+   ````
+
+5. **Stamp the outcome based on contract_labor_specialist's response:**
+   - Clean success → `mark_email_outcome(outcome="processed", classification="reviewer_reply", decided_action="applied_reviewer_decision", classification_reason="…", confidence=0.95+)`. Quote the `match_kind` (`conversation` / `fuzzy`) in the reason for telemetry.
+   - **Partial-failure** (specialist's response mentions "partial-failure: Review row was created (id=N) but X/M line items failed to update") → `mark_email_outcome(outcome="needs_review", classification="reviewer_reply", decided_action="flagged_needs_review", reason="<quote the N/M counts from the specialist's response so AP knows which lines need reconciliation>", confidence=0.85)`. The audit row exists; AP must reconcile via the React queue.
+   - Specialist returned an error citing **"no longer pending_review"** → `internal_reply` + `marked_irrelevant` (the CL already advanced; reviewer's decision arrived too late).
+   - Specialist returned **"not an authorized reviewer"** → `internal_reply` + `marked_irrelevant` (sender isn't a PM/Owner on this project — out-of-band).
+   - Specialist returned **"no line items on project to apply the SCC to"** → `flagged_needs_review` (the CL was found but has nothing to apply against — likely a data-entry race or a line-item delete since notification). Reason: quote the error verbatim.
+   - Specialist surfaced **SCC ambiguity / unparseable body** → `flagged_needs_review`.
+
+6. **Skip steps 2–9 AND step 1c.** The CL reviewer-reply branch is terminal.
+
+If detection fails (not a CL reply, or no tracked CL conversation) → continue to step 1c.
 
 ### 1c. Contract-labor-timesheet branch
 

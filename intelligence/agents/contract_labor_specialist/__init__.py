@@ -24,6 +24,10 @@ Importing this package triggers tool + delegation + agent registration.
 # Entity tools.
 import entities.vendor.intelligence.tools  # noqa: F401
 import entities.contract_labor.intelligence.tools  # noqa: F401
+# SubCostCode tools — for find_sub_cost_code_for_reply on the
+# reviewer-reply apply path (Unit 3). Shared with bill_specialist; the
+# import is idempotent and gives us the registered tool either way.
+import entities.sub_cost_code.intelligence.tools  # noqa: F401
 
 # project_specialist self-registers the `delegate_to_project_specialist`
 # tool alongside its own agent registration — importing it here brings

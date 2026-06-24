@@ -140,6 +140,77 @@ class InvoiceInvoiceConnector:
                 self.mapping_repo.delete_by_id(mapping.id)
                 mapping = None
         
+        # --- Gap-detect / adopt: prevent phantom "-N" duplicate invoices ---
+        # If a local Invoice already exists for this (project, number) but isn't mapped to THIS
+        # QboInvoice, it's almost certainly the same invoice whose header mapping was lost (or a
+        # manual original). ADOPT it (ensure the mapping, take the UPDATE path) rather than minting
+        # a phantom suffixed duplicate via the retry loop below. Only a number genuinely owned by a
+        # DIFFERENT QboInvoice falls through to a real CREATE. (Fix for the 46 phantom -N invoices.)
+        proj = self.project_service.read_by_public_id(project_public_id) if project_public_id else None
+        existing_local = (
+            self.invoice_service.repo.read_by_invoice_number_and_project_id(invoice_number, proj.id)
+            if proj else None
+        )
+        if existing_local:
+            existing_map = self.mapping_repo.read_by_invoice_id(int(existing_local.id))
+            if existing_map and existing_map.qbo_invoice_id != qbo_invoice.id:
+                logger.warning(
+                    f"Invoice number '{invoice_number}' (project {proj.id}) is already mapped to a "
+                    f"DIFFERENT QboInvoice {existing_map.qbo_invoice_id}; QboInvoice {qbo_invoice.id} "
+                    f"will create a suffixed invoice (genuine number collision)."
+                )
+            else:
+                # Positive-evidence guard: a (project, number) match alone is NOT enough to adopt.
+                # Local-origin / manual invoices are normally UNMAPPED (QBO push is disabled) and a
+                # local invoice can legitimately share a number with a DIFFERENT QboInvoice; adopting
+                # one would overwrite its header and double-add lines. Only adopt when the header
+                # fingerprint confirms the SAME invoice whose mapping was lost: total within $0.01 AND
+                # same txn date. Otherwise fall through to the safe (non-destructive) suffix CREATE.
+                ex_total = getattr(existing_local, "total_amount", None)
+                qbo_date = str(invoice_date or "").strip()[:10]
+                ex_date = str(getattr(existing_local, "invoice_date", "") or "").strip()[:10]
+                same_invoice = (
+                    total_amount is not None and ex_total is not None
+                    and abs(float(total_amount) - float(ex_total)) <= 0.01
+                    and bool(qbo_date) and qbo_date == ex_date   # require a real (non-blank) matching date
+                )
+                if not same_invoice:
+                    logger.warning(
+                        f"Local Invoice {existing_local.id} shares (project {proj.id}, number "
+                        f"'{invoice_number}') with QboInvoice {qbo_invoice.id} but header fingerprint "
+                        f"(total/date) differs — NOT adopting; will create a suffixed invoice."
+                    )
+                else:
+                    logger.info(
+                        f"Adopting existing Invoice {existing_local.id} for QboInvoice {qbo_invoice.id} "
+                        f"(number '{invoice_number}', fingerprint match) instead of minting a phantom"
+                    )
+                    from entities.invoice_line_item.business.service import InvoiceLineItemService
+                    had_lines = bool(InvoiceLineItemService().read_by_invoice_id(int(existing_local.id)))
+                    if not existing_map:
+                        self.create_mapping(invoice_id=int(existing_local.id), qbo_invoice_id=qbo_invoice.id)
+                    updated = self.invoice_service.update_by_public_id(
+                        existing_local.public_id,
+                        row_version=existing_local.row_version,
+                        project_public_id=project_public_id,
+                        invoice_date=invoice_date,
+                        due_date=due_date,
+                        invoice_number=invoice_number,
+                        total_amount=Decimal(str(total_amount)) if total_amount is not None else None,
+                        memo=memo,
+                        is_draft=False,
+                    )
+                    if self._invoice_cache is not None:
+                        self._invoice_cache[updated.id] = updated
+                    # Re-project lines ONLY when the adopted invoice is EMPTY. Never re-sync onto an
+                    # already-populated invoice: its source-backed (Bill/Expense) lines aren't matched
+                    # by the Manual-only line fingerprinter, so every QBO line would be DOUBLE-ADDED as
+                    # a phantom Manual duplicate. A populated invoice keeps its lines; re-establishing
+                    # the header mapping lets future UPDATE pulls reconcile via the existing line maps.
+                    if not had_lines:
+                        self._sync_line_items(updated.id, updated.public_id, qbo_invoice_lines)
+                    return updated
+
         # Create new Invoice, handling duplicate invoice numbers
         logger.info(f"Creating new Invoice from QboInvoice {qbo_invoice.id}: invoice_number={invoice_number}")
         create_number = invoice_number
@@ -172,7 +243,22 @@ class InvoiceInvoiceConnector:
             mapping = self.create_mapping(invoice_id=invoice_id, qbo_invoice_id=qbo_invoice.id)
             logger.info(f"Created mapping: Invoice {invoice_id} <-> QboInvoice {qbo_invoice.id}")
         except ValueError as e:
-            logger.warning(f"Could not create mapping: {e}")
+            # Do NOT leave an orphan invoice with no mapping — that is exactly how the phantom -N
+            # invoices accrued. Roll back the just-created (still line-less) header and re-raise so
+            # the caller's watermark holds and the invoice retries cleanly next sync.
+            logger.error(
+                f"create_mapping failed for new Invoice {invoice_id} <-> QboInvoice {qbo_invoice.id}: {e}; "
+                f"rolling back the orphan invoice"
+            )
+            try:
+                self.invoice_service.delete_by_public_id(invoice.public_id)
+            except Exception as de:
+                logger.critical(
+                    f"  ORPHAN CLEANUP FAILED: Invoice {invoice_id} (public_id {invoice.public_id}) was "
+                    f"created with NO mapping and could NOT be rolled back ({de}) — REQUIRES MANUAL "
+                    f"CLEANUP (it is an adoptable/suffixable phantom on the next pull)."
+                )
+            raise
 
         # Sync line items for new invoice
         self._sync_line_items(invoice_id, invoice.public_id, qbo_invoice_lines)

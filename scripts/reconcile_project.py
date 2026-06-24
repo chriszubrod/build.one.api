@@ -53,6 +53,11 @@ from integrations.intuit.qbo.bill.connector.bill.business.service import BillBil
 from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
 from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import BillLineItemBillLineRepository
 from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, QboBillLineRepository
+# For post-mapping SubCostCode back-fill (a direct mapping-create otherwise bypasses the
+# connector's ItemRef -> SubCostCode reconciliation, leaving the line's scc NULL).
+from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
+from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
+from entities.bill_line_item.persistence.repo import BillLineItemRepository
 from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
@@ -358,6 +363,10 @@ def repair_qbo_line_item_mappings(
     """
     issues = []
     repairs_count = 0
+    # Repos for the post-mapping SubCostCode back-fill (mirrors the connector's ItemRef resolution).
+    _qbo_item_repo = QboItemRepository()
+    _item_scc_repo = ItemSubCostCodeRepository()
+    _bli_repo = BillLineItemRepository()
 
     for bill_id, bill in bills_by_id.items():
         bill_bill = bill_bill_repo.read_by_bill_id(bill_id)
@@ -435,6 +444,23 @@ def repair_qbo_line_item_mappings(
                 )
                 print(f"    Created BillLineItemBillLine mapping")
                 repairs_count += 1
+                # Back-fill SubCostCode from the QBO line's ItemRef — the connector sets this on a
+                # normal pull, but this direct mapping-create bypasses it, leaving the line's scc
+                # NULL (the Invoice-1057 gap). Targeted: only set when scc is currently NULL; never
+                # touches other fields (li is the fully-hydrated model re-sent unchanged otherwise).
+                try:
+                    if li.sub_cost_code_id is None and getattr(matched_qbo_line, "item_ref_value", None):
+                        qbo_item = _qbo_item_repo.read_by_qbo_id(matched_qbo_line.item_ref_value)
+                        if qbo_item:
+                            isc = _item_scc_repo.read_by_qbo_item_id(qbo_item.id)
+                            if isc and isc.sub_cost_code_id:
+                                li.sub_cost_code_id = isc.sub_cost_code_id
+                                _bli_repo.update_by_id(li)
+                                print(f"    Back-filled SubCostCode {isc.sub_cost_code_id} from ItemRef")
+                except Exception as scc_e:
+                    issues.append(
+                        f"  [QBO repair] BillLineItem id={li.id} mapped OK but SubCostCode back-fill failed: {scc_e}"
+                    )
             except Exception as e:
                 issues.append(
                     f"  [QBO repair] BillLineItem id={li.id}: create mapping failed: {e}"

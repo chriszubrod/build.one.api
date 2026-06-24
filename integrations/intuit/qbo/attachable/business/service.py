@@ -27,6 +27,10 @@ class QboAttachableService:
         """Initialize the QboAttachableService."""
         self.repo = repo or QboAttachableRepository()
         self.auth_service = auth_service or QboAuthService()
+        # Per-instance snapshot of the full realm attachable list, populated lazily on the first
+        # per-entity lookup and reused across the sync run (the service is created once per run).
+        # Avoids re-pulling the full list per entity while making same-entity lookups authoritative.
+        self._all_attachables_cache = None
 
     def sync_from_qbo(
         self,
@@ -78,42 +82,36 @@ class QboAttachableService:
 
     def _query_attachables_with_fallback(self, client, entity_type: str, entity_id: str) -> list:
         """
-        Fetch the attachables linked to one QBO entity, with a defensive fallback.
+        Fetch the attachables linked to one QBO entity — authoritatively.
 
-        Primary path is the entity-specific query. NOTE: that client call already
-        self-handles an "unsupported filter" response (HTTP >= 400) internally by
-        degrading to a full list, so this outer except mainly catches auth (401) and
-        transport errors. On a hard auth failure the fallback's own
-        query_all_attachables() fails the same way and the error propagates — the
-        per-entity callers treat attachment sync as best-effort and log it, rather than
-        silently returning an empty list that looks like "no attachments".
+        QBO does NOT support a WHERE on AttachableRef: the old per-entity query
+        (`query_attachables_for_entity`) returned either a 400 (handled) or a misleading
+        200 (all rows, or empty) that was trusted as-is, and the single-page fallback
+        (`query_attachables`, MAXRESULTS 1000) silently missed any entity whose attachable
+        sat past position 1000 of the ~3.3k realm total. Both produced false "no attachments".
 
-        When the fallback does run, it lists all attachables and filters locally by an
-        EXACT entity-ref match — both the id AND the type must match. Exact type match
-        (not startswith) prevents cross-type collisions where ids are only unique per
-        type (e.g. a "PurchaseOrder" or "BillPayment" attachable being mis-attributed
-        to a "Purchase"/"Bill" with the same id).
+        Fix: pull the FULL realm list once (cached on this service for the sync run; the
+        service is created once per run) and filter in-memory by an EXACT (entity_ref_type,
+        entity_ref_value) match — both must match. Exact type match (not startswith) prevents
+        cross-type collisions where ids are only unique per type (a "PurchaseOrder" /
+        "BillPayment" attachable mis-attributed to a "Purchase"/"Bill" with the same id).
+        Note: this captures SAME-entity docs reliably; cross-entity (Invoice-keyed) docs are
+        recovered by the separate all-realm reconcile, not here.
         """
-        try:
-            return client.query_attachables_for_entity(entity_type=entity_type, entity_id=entity_id)
-        except Exception as e:
-            logger.warning(
-                "Entity-specific attachable query failed for %s %s: %s. Using fallback.",
-                entity_type, entity_id, e,
+        if self._all_attachables_cache is None:
+            self._all_attachables_cache = client.query_all_attachables()
+        target_type = (entity_type or "").upper()
+        filtered = [
+            a for a in self._all_attachables_cache
+            if a.attachable_ref and any(
+                ref.entity_ref_value == entity_id
+                and (ref.entity_ref_type or "").upper() == target_type
+                for ref in (a.attachable_ref or [])
             )
-            target_type = entity_type.upper()
-            all_att = client.query_all_attachables()
-            filtered = [
-                a for a in all_att
-                if a.attachable_ref and any(
-                    ref.entity_ref_value == entity_id
-                    and (ref.entity_ref_type or "").upper() == target_type
-                    for ref in (a.attachable_ref or [])
-                )
-            ]
-            if filtered:
-                logger.info(f"Found {len(filtered)} attachables via fallback filter for {entity_type} {entity_id}")
-            return filtered
+        ]
+        if filtered:
+            logger.info(f"Found {len(filtered)} attachables for {entity_type} {entity_id} (full-list filter)")
+        return filtered
 
     def sync_attachables_for_bill(
         self,

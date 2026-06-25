@@ -377,6 +377,17 @@ class _OutcomeBody(BaseModel):
             "this is >= 0.95, otherwise needs_review regardless of value."
         ),
     )
+    related_bill_public_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "PublicId of a Bill the outcome touched (delegated_to_bill_specialist "
+            "created it, or applied_reviewer_decision applied to it). When set, "
+            "the correspondence forward to invoice@ renders a clickable 'View "
+            "Bill' button linking to {WEB_BASE_URL}/bill/{public_id}, so AP can "
+            "jump straight from the email to the Bill detail page. Optional; "
+            "omit on outcomes that didn't touch a specific Bill."
+        ),
+    )
 
 
 @router.patch("/email-messages/{public_id}/outcome")
@@ -496,6 +507,7 @@ def set_email_outcome_router(
                     float(body.confidence) if body.confidence is not None else None
                 ),
                 mode=forward_mode,
+                bill_public_id=body.related_bill_public_id,
             )
 
     return item_response({

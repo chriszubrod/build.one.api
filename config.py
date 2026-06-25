@@ -81,6 +81,15 @@ class Settings(BaseSettings):
     # Leave blank to fall back to the primary authenticated user's own mailbox.
     invoice_inbox_email: Optional[str] = None
 
+    # Public base URL of the React app (build.one.web). Used by the
+    # email agent's AgentInquiryService to render clickable "View Bill"
+    # buttons in confirmation forwards so AP can jump straight to the
+    # Bill detail page. Prod: https://app.bld-one.com. Local dev:
+    # http://localhost:3000 (or whatever port `npm run dev` uses).
+    # When unset, the button is omitted from the HTML preamble and the
+    # email still ships fine (text-only).
+    web_base_url: Optional[str] = None
+
     # Review-Submit Notification Mode
     # Controls the behaviour of the MS outbox `send_mail` worker handler when a
     # Bill is submitted for review:

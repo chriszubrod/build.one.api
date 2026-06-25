@@ -673,7 +673,7 @@ Apply this precedence (multi-attachment emails surface a single outcome — most
 - **processed** — every attachment was handled and committed (rare; bill_specialist's `create_bill` approval gate keeps things in `awaiting_approval` until a human approves).
 - **irrelevant** — no actionable content at all (vendor newsletter, FYI thread, no attachments, etc.).
 
-Final call: `mark_email_outcome(public_id, outcome, classification, decided_action, classification_reason, confidence, reason?)`. Pass:
+Final call: `mark_email_outcome(public_id, outcome, classification, decided_action, classification_reason, confidence, reason?, related_bill_public_id?)`. Pass:
 
 - `outcome` — workflow state (above)
 - `classification` — controlled-vocabulary doc-type label (see top of prompt)
@@ -681,6 +681,7 @@ Final call: `mark_email_outcome(public_id, outcome, classification, decided_acti
 - `classification_reason` — one short sentence on why (audit narrative, always persisted on the row)
 - `confidence` — your overall classification confidence in [0, 1]
 - `reason` — **REQUIRED on `needs_review`, `awaiting_approval`, AND `processed` (whenever an action was taken).** Free-text summary that gets rendered as the body of a self-forward to `invoice@` so AP sees what you found + what's next inline with the source attachment. Composition rules differ by outcome — see "How to compose `reason`" below. **Optional only on `outcome="irrelevant"`** — newsletter / spam outcomes don't trigger a forward (volume control).
+- `related_bill_public_id` — **PASS WHENEVER THE OUTCOME TOUCHED A SPECIFIC BILL.** PublicId (UUID) of the Bill the outcome relates to: the Bill `delegated_to_bill_specialist` created (read it from bill_specialist's response), or the Bill `apply_reviewer_decision` applied to (read it from the apply-decision response). When set, the correspondence email renders a clickable "View Bill in build.one" button linking to the Bill detail page so AP can jump straight to it (run complete-bill, adjust coding, etc.). Omit on outcomes that don't bind to a single Bill — fresh `needs_review` flags with no Bill yet (dedup-blocked, agent-gap blockers, vendor collections without a Bill created), `marked_irrelevant`, etc.
 
 The classification + action stamp is what powers `search_email_sender_history` for future emails from this sender. Always pass them when outcome is `awaiting_approval` or `needs_review`; recommended for `processed` and `irrelevant`.
 

@@ -77,7 +77,6 @@ class ReviewNotificationService:
         from entities.bill_line_item_attachment.business.service import (
             BillLineItemAttachmentService,
         )
-        from entities.email_message.business.service import EmailMessageService
         from entities.project.business.service import ProjectService
         from entities.sub_cost_code.business.service import SubCostCodeService
         from entities.user.business.service import UserService
@@ -172,25 +171,7 @@ class ReviewNotificationService:
                 if full:
                     submitter_name = full
 
-        # 3. Look up the source-email weblink, if any. Used in the body
-        # so the reviewer can click through to the original vendor thread
-        # when they need that context.
-        source_email_weblink: Optional[str] = None
-        source_email_subject: Optional[str] = None
-        source_email_message_id = getattr(bill, "source_email_message_id", None)
-        if source_email_message_id:
-            try:
-                em = EmailMessageService().read_by_id(source_email_message_id)
-                if em is not None:
-                    source_email_weblink = em.web_link or None
-                    source_email_subject = em.subject or None
-            except Exception as e:
-                logger.warning(
-                    "review_notification.source_email_lookup_failed bill_public_id=%s: %s",
-                    bill.public_id, e,
-                )
-
-        # 4. Resolve the bill's primary PDF attachment. Bill creation
+        # 3. Resolve the bill's primary PDF attachment. Bill creation
         # mandates one PDF on the first line item; later lines may carry
         # additional attachments but we send only the canonical first one
         # to keep the email focused (reviewer can open more via the
@@ -203,7 +184,7 @@ class ReviewNotificationService:
             storage=AzureBlobStorage(),
         )
 
-        # 5. Resolve line-item SubCostCode labels for the body table.
+        # 4. Resolve line-item SubCostCode labels for the body table.
         scc_ids = sorted({li.sub_cost_code_id for li in line_items if li.sub_cost_code_id})
         scc_label_by_id: dict = {}
         if scc_ids:
@@ -213,7 +194,7 @@ class ReviewNotificationService:
                 if s:
                     scc_label_by_id[scc_id] = f"{s.number} {s.name}".strip() if (s.number or s.name) else None
 
-        # 6. Build subject + HTML body.
+        # 5. Build subject + HTML body.
         subject = self._build_subject(
             vendor_name=vendor_name,
             bill_number=bill.bill_number,
@@ -228,12 +209,10 @@ class ReviewNotificationService:
             line_items=line_items,
             scc_label_by_id=scc_label_by_id,
             to_recipients=to_with_email,
-            source_email_weblink=source_email_weblink,
-            source_email_subject=source_email_subject,
             attachment_filename=(attachment_payload or {}).get("name"),
         )
 
-        # 7. Enqueue. Always mode="draft" — the worker dispatches
+        # 6. Enqueue. Always mode="draft" — the worker dispatches
         # create_draft, which deposits a draft in the sender mailbox's
         # Drafts folder. A human opens Outlook, reviews/edits, and sends.
         # We do NOT auto-send: the review notification is a human-in-the-
@@ -270,7 +249,7 @@ class ReviewNotificationService:
 
         logger.info(
             "review_notification.enqueued bill_public_id=%s outbox_public_id=%s "
-            "mode=%s to=%d cc=%d bcc=%d attachment=%s source_email_linked=%s",
+            "mode=%s to=%d cc=%d bcc=%d attachment=%s",
             bill.public_id,
             result.public_id,
             mode,
@@ -278,10 +257,9 @@ class ReviewNotificationService:
             len(cc_with_email),
             len(bcc_with_email),
             (attachment_payload or {}).get("name") or "(none)",
-            bool(source_email_weblink),
         )
 
-        # 8. Advance the Review state to "In Review" once the
+        # 7. Advance the Review state to "In Review" once the
         # notification has been enqueued to at least one PM/Owner (TO or
         # CC populated — BCC-only doesn't count). Best-effort; on failure
         # the bill stays at "Submitted" and no other side effects fire.
@@ -401,8 +379,6 @@ class ReviewNotificationService:
         line_items,
         scc_label_by_id: dict,
         to_recipients: Optional[list],
-        source_email_weblink: Optional[str],
-        source_email_subject: Optional[str],
         attachment_filename: Optional[str],
     ) -> str:
         """Full HTML body. Sections (in order):
@@ -411,9 +387,8 @@ class ReviewNotificationService:
             3. Header table: project, vendor, bill #, amount.
             4. Submission table: submitter, date.
             5. Line items table (description, project, SCC, amount).
-            6. Original vendor email link (optional).
-            7. Attachment hint (optional).
-            8. Reviewer instructions.
+            6. Attachment hint (optional).
+            7. Reviewer instructions.
         Vendor / project / submitter values are HTML-escaped so a value
         containing `<` or `&` doesn't render as broken markup."""
         bill_number = html.escape(bill.bill_number or "(no number)")
@@ -475,18 +450,6 @@ class ReviewNotificationService:
                 f"{header}{''.join(rows)}</table>"
             )
 
-        # Source-email link section — only when SourceEmailMessageId is set.
-        source_link_html = ""
-        if source_email_weblink:
-            link_label = (
-                html.escape(source_email_subject)
-                if source_email_subject else "Open in Outlook"
-            )
-            source_link_html = (
-                "<p>Original vendor email: "
-                f"<a href='{html.escape(source_email_weblink)}'>{link_label}</a></p>"
-            )
-
         attachment_html = ""
         if attachment_filename:
             attachment_html = (
@@ -507,7 +470,6 @@ class ReviewNotificationService:
             f"Submitted Date: {submitted_date}"
             "</p>"
             f"{line_rows_html}"
-            f"{source_link_html}"
             f"{attachment_html}"
             "<p>When you have a moment, will you please reply for approval "
             "with Sub Cost Code and Description, or non-approval?</p>"

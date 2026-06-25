@@ -27,14 +27,11 @@ email_specialist = Agent(
         # own the apply writes.
         "find_bill_by_conversation_id",
         "find_contract_labor_by_conversation_id",
-        # Delegation tools. (bill_credit still deferred.)
-        # The per-specialist delegates are the legacy direct path; Unit 3
-        # migrates every entity action onto delegate_to_buildone_orchestrator
-        # (the central router) and removes these three. Kept alongside for now
-        # so the current prompt's direct calls keep working.
-        "delegate_to_bill_specialist",
-        "delegate_to_contract_labor_specialist",
-        "delegate_to_expense_specialist",
+        # Single delegation tool: every entity action (draft Bill / Expense /
+        # ContractLabor + reviewer-decision applies) is wrapped in an
+        # EntityActionEnvelope and handed to the Build.One orchestrator, which
+        # routes by entity_type. The legacy per-specialist delegates were
+        # removed 2026-06-25 (Build.One migration).
         "delegate_to_buildone_orchestrator",
     ),
     model="claude-haiku-4-5-20251001",

@@ -57,6 +57,10 @@ When your user message is an EntityActionEnvelope (see "Two operating modes"), y
 
 ## Envelope schema
 
+The envelope arrives as a fenced ` ```json ` routing object, **optionally followed by a separate fenced ` ```markdown ` block** that carries the specialist task body (`payload.task_markdown`). Trigger sources keep the large task body out of the JSON so they don't have to escape a multi-line document — so expect the markdown block form in practice:
+
+````
+EntityActionEnvelope — route this:
 ```json
 {
   "entity_type": "Bill | Expense | BillCredit | Invoice | ContractLabor | ContractLaborLineItem | TimeEntry | TimeLog",
@@ -67,13 +71,17 @@ When your user message is an EntityActionEnvelope (see "Two operating modes"), y
   "customer_candidate_public_id": "…",
   "project_candidate_public_id": "…",
   "attachment_public_id": "…",
-  "payload": { "task_markdown": "…self-contained instruction the specialist consumes verbatim…" },
   "classification_reason": "…",
   "confidence": 0.97
 }
 ```
+payload.task_markdown:
+```markdown
+…self-contained instruction the specialist consumes verbatim…
+```
+````
 
-`action` is informational (telemetry / your framing) — **routing is by `entity_type` only**. The candidate public_ids and `attachment_public_id` are optional pre-resolved bindings; the specialist still validates them. `payload.task_markdown` is already the complete instruction — deliver it, don't rewrite it.
+Read the task body from the following ` ```markdown ` block. (If a sender instead inlined it as `payload.task_markdown` inside the JSON, use that — accept either form.) `action` is informational (telemetry / framing) — **routing is by `entity_type` only**. The candidate public_ids and `attachment_public_id` are optional pre-resolved bindings; the specialist still validates them. The task body is already the complete instruction — deliver it, don't rewrite it.
 
 ## Routing table (entity_type → dispatch tool)
 
@@ -92,9 +100,9 @@ When your user message is an EntityActionEnvelope (see "Two operating modes"), y
 
 ## How to dispatch
 
-1. Parse the envelope. If it isn't valid JSON or has no `entity_type`, return the **parse_error** status — do not guess.
+1. Parse the JSON routing block. If it isn't valid JSON or has no `entity_type`, return the **parse_error** status — do not guess. The specialist task body is the following ` ```markdown ` block (or, if the sender inlined it, `payload.task_markdown` inside the JSON).
 2. Look up `entity_type`. If it isn't in the table, return the **not_routable** status.
-3. Call the table's tool with `task` = the envelope's `payload.task_markdown`. If the envelope carries pre-resolved bindings (`vendor_candidate_public_id`, `project_candidate_public_id`, `attachment_public_id`) that `task_markdown` doesn't already state, append a short `**Routing context**` block listing them so the specialist has them; otherwise pass `task_markdown` through unchanged.
+3. Call the table's tool with `task` = that task body. If the envelope carries pre-resolved bindings (`vendor_candidate_public_id`, `project_candidate_public_id`, `attachment_public_id`) that the task body doesn't already state, append a short `**Routing context**` block listing them so the specialist has them; otherwise pass the body through unchanged.
 4. One envelope → one specialist → one dispatch. Multi-entity fan-out is not wired yet — a source that needs two entities sends two envelopes.
 
 ## What to return (failure-isolation contract)

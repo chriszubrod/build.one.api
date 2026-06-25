@@ -1,9 +1,10 @@
 """Contract Labor specialist agent — processes forwarded worker
 timesheet emails into draft `ContractLabor` rows.
 
-Invoked by `email_specialist` via `delegate_to_contract_labor_specialist`
-when an incoming email classifies as `contract_labor_timesheet`. The
-specialist:
+Invoked by the Build.One orchestrator via `delegate_to_contract_labor`
+(routed there from email_specialist's `delegate_to_buildone_orchestrator`
+when an incoming email classifies as `contract_labor_timesheet` or a CL
+reviewer-reply). The specialist:
 
   1. Binds the sender's email back to a contract-labor Vendor via
      `find_contract_labor_vendor_by_email`.

@@ -16,7 +16,7 @@ from intelligence.transport.base import Usage  # noqa: F401 — re-exported for 
 # All forwardable event types carry the same source-identification
 # fields. The delegation tool stamps each forwarded event with the
 # sub-session's public_id and the target agent's name before
-# publishing onto the parent's channel; scout's own events leave
+# publishing onto the parent's channel; the orchestrator's own events leave
 # these unset (UI treats unset = "primary agent"). Optional throughout
 # for backwards compatibility — older clients ignore unknown fields.
 

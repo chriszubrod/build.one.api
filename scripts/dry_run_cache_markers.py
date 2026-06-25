@@ -14,7 +14,7 @@ loudly here instead of silently regressing prod cost.
 
 Run:
     .venv/bin/python scripts/dry_run_cache_markers.py              # email_specialist
-    .venv/bin/python scripts/dry_run_cache_markers.py scout
+    .venv/bin/python scripts/dry_run_cache_markers.py buildone
     .venv/bin/python scripts/dry_run_cache_markers.py bill_specialist
 
 Exits 0 on PASS, 1 on FAIL. No DB, no network.
@@ -37,7 +37,7 @@ def _import_agent_modules() -> None:
     registries on import; we don't try to be selective here since the
     list is short and the imports are cheap.
     """
-    import intelligence.agents.scout                  # noqa: F401
+    import intelligence.agents.buildone                  # noqa: F401
     import intelligence.agents.sub_cost_code_specialist  # noqa: F401
     import intelligence.agents.cost_code_specialist   # noqa: F401
     import intelligence.agents.customer_specialist    # noqa: F401

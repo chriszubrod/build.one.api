@@ -1,7 +1,7 @@
 -- Provision the "claude_agent" User + Auth + Role link + Org/Company links.
--- Mirrors scout_agent's shape: Agent Orchestrator role (zero module grants),
+-- Mirrors buildone_agent's shape: Agent Orchestrator role (zero module grants),
 -- Rogers Build, Inc. company, no Contact row, no UserModule rows.
--- One additive change vs scout: a UserOrganization row to Rogers Build, Inc.
+-- One additive change vs buildone: a UserOrganization row to Rogers Build, Inc.
 --
 -- Idempotent — safe to re-run.
 --

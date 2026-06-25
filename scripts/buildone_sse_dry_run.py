@@ -1,4 +1,4 @@
-"""End-to-end SSE dry run for scout via the new HTTP surface.
+"""End-to-end SSE dry run for buildone via the new HTTP surface.
 
 Authenticates as a real user (via the mobile login endpoint), POSTs a run,
 then streams events back via Server-Sent Events. Prints each event as it
@@ -8,13 +8,13 @@ Requires:
   - FastAPI server running (uvicorn app:app --port 8000)
   - A user in the DB with credentials to log in as
   - Env vars SSE_TEST_USERNAME / SSE_TEST_PASSWORD (the *requesting user*)
-    or fall back to SCOUT_AGENT_USERNAME / SCOUT_AGENT_PASSWORD for a quick
+    or fall back to BUILDONE_AGENT_USERNAME / BUILDONE_AGENT_PASSWORD for a quick
     local test.
 
 Usage:
-    python scripts/scout_sse_dry_run.py "What is sub-cost-code 10.01?"
-    python scripts/scout_sse_dry_run.py --agent scout "List some sub-cost-codes"
-    python scripts/scout_sse_dry_run.py --disconnect-at 2 "prompt"   # stop stream after 2 events
+    python scripts/buildone_sse_dry_run.py "What is sub-cost-code 10.01?"
+    python scripts/buildone_sse_dry_run.py --agent buildone "List some sub-cost-codes"
+    python scripts/buildone_sse_dry_run.py --disconnect-at 2 "prompt"   # stop stream after 2 events
 """
 import argparse
 import asyncio
@@ -54,15 +54,15 @@ async def drive(
     settings = config.Settings()
     username = (
         os.environ.get("SSE_TEST_USERNAME")
-        or settings.scout_agent_username
+        or settings.buildone_agent_username
     )
     password = (
         os.environ.get("SSE_TEST_PASSWORD")
-        or settings.scout_agent_password
+        or settings.buildone_agent_password
     )
     if not username or not password:
         print(
-            "error: SSE_TEST_USERNAME / SSE_TEST_PASSWORD (or SCOUT_AGENT_*) not set",
+            "error: SSE_TEST_USERNAME / SSE_TEST_PASSWORD (or BUILDONE_AGENT_*) not set",
             file=sys.stderr,
         )
         return 2
@@ -125,9 +125,9 @@ async def drive(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Scout SSE dry run")
+    parser = argparse.ArgumentParser(description="Build.One SSE dry run")
     parser.add_argument("prompt", nargs="+")
-    parser.add_argument("--agent", default="scout")
+    parser.add_argument("--agent", default="buildone")
     parser.add_argument(
         "--disconnect-at",
         type=int,

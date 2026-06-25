@@ -2,13 +2,13 @@
 
 Scope: SubCostCode (read + create/update/delete) and CostCode (read for
 parent resolution). Has its own User + Auth + Role with permissions
-limited to those two modules — least-privilege compared to scout's
+limited to those two modules — least-privilege compared to Build.One's
 delegating-only role.
 
 Importing this package triggers tool + agent registration.
 """
 # Ensure the entity tools are registered. These imports are idempotent —
-# Python caches the module so scout's import doesn't conflict.
+# Python caches the module so Build.One's import doesn't conflict.
 import entities.sub_cost_code.intelligence.tools  # noqa: F401
 import entities.cost_code.intelligence.tools  # noqa: F401
 

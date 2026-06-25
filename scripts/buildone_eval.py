@@ -1,18 +1,18 @@
-"""Scout evaluation harness.
+"""Build.One evaluation harness.
 
-Run a suite of representative prompts against scout on a local API and
+Run a suite of representative prompts against buildone on a local API and
 check behavior: which tools got called, what the final answer contains,
 what it must NOT contain, plus token/latency stats.
 
 Prereqs:
   - Local API running on http://localhost:8000
-  - SCOUT_AGENT_USERNAME / SCOUT_AGENT_PASSWORD in .env matching a real
+  - BUILDONE_AGENT_USERNAME / BUILDONE_AGENT_PASSWORD in .env matching a real
     user in the database
 
 Usage:
-    .venv/bin/python scripts/scout_eval.py
-    .venv/bin/python scripts/scout_eval.py --case lookup_by_number  # single case
-    .venv/bin/python scripts/scout_eval.py -v                        # verbose
+    .venv/bin/python scripts/buildone_eval.py
+    .venv/bin/python scripts/buildone_eval.py --case lookup_by_number  # single case
+    .venv/bin/python scripts/buildone_eval.py -v                        # verbose
 
 Exit code: 0 if all pass, 1 otherwise.
 """
@@ -75,7 +75,7 @@ CASES: list[Case] = [
         name="alias_lookup",
         prompt="What sub-cost-code has the alias '01.1'?",
         required_phrases=["1.01"],
-        # Scout may pick either search or read_by_alias; both are acceptable.
+        # Build.One may pick either search or read_by_alias; both are acceptable.
     ),
     Case(
         name="not_found_graceful",
@@ -138,8 +138,8 @@ async def login(c: httpx.AsyncClient) -> str:
     r = await c.post(
         "/api/v1/mobile/auth/login",
         json={
-            "username": s.scout_agent_username,
-            "password": s.scout_agent_password,
+            "username": s.buildone_agent_username,
+            "password": s.buildone_agent_password,
         },
     )
     r.raise_for_status()
@@ -151,7 +151,7 @@ async def run_case(
 ) -> Result:
     start = time.time()
     r = await c.post(
-        "/api/v1/agents/scout/runs",
+        "/api/v1/agents/buildone/runs",
         headers=auth,
         json={"user_message": case.prompt},
     )
@@ -293,13 +293,13 @@ async def main(args: argparse.Namespace) -> int:
             print(f"Login failed: {exc}", file=sys.stderr)
             print(
                 "\nEnsure the API is running on localhost:8000 and "
-                "SCOUT_AGENT_USERNAME / SCOUT_AGENT_PASSWORD are set in .env",
+                "BUILDONE_AGENT_USERNAME / BUILDONE_AGENT_PASSWORD are set in .env",
                 file=sys.stderr,
             )
             return 2
         auth = {"Authorization": f"Bearer {token}"}
 
-        print("Scout Evaluation Harness")
+        print("Build.One Evaluation Harness")
         print("=" * 72)
         print()
 
@@ -328,7 +328,7 @@ async def main(args: argparse.Namespace) -> int:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Scout evaluation harness")
+    parser = argparse.ArgumentParser(description="Build.One evaluation harness")
     parser.add_argument(
         "--case", help="Run only the case with this name", default=None
     )

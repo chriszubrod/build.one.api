@@ -1,7 +1,7 @@
 -- Stack module grants onto claude_agent for the MCP tool surface.
 --
 -- The base seed (seed.claude_agent.sql) gives claude_agent the
--- "Agent Orchestrator" role (zero module grants — scout-shape).
+-- "Agent Orchestrator" role (zero module grants — buildone-shape).
 -- The MCP server's tools call the API directly as claude_agent, so it needs
 -- broader access. Most tools are reads, but the surface now includes two
 -- WRITES on Time Tracking: submit_time_entry (transitions draft -> submitted

@@ -1,10 +1,10 @@
 -- Provision the agent fleet's User + Auth + Role + grants. Idempotent.
 --
 -- Three agents:
---   scout_agent          — orchestrator. Renamed from legacy "agent_one".
---                          Keeps Admin role for now (still has direct
---                          tools alongside delegation). Phase 1B will
---                          narrow it once pure-delegation lands.
+--   buildone_agent       — central orchestrator. Renamed from "scout_agent"
+--                          (2026-06-25), which was itself renamed from the
+--                          legacy "agent_one". Least-privilege role assigned
+--                          by seed.buildone_role.sql (zero module grants).
 --   sub_cost_code_agent  — specialist. SubCostCode CRUD + CostCode read.
 --   cost_code_agent      — specialist (credentials only — no agent code
 --                          yet; ready for the future CostCodeSpecialist).
@@ -33,32 +33,41 @@ END;
 
 
 -- ════════════════════════════════════════════════════════════════════════
--- 1. scout_agent — rename from agent_one + new password
+-- 1. buildone_agent — central orchestrator (renamed from scout_agent / agent_one)
 -- ════════════════════════════════════════════════════════════════════════
 
-DECLARE @ScoutPasswordHash NVARCHAR(255) =
+DECLARE @BuildOnePasswordHash NVARCHAR(255) =
     '$2b$12$cpEJ6KUuoIGw6Z5vJ1Lhlu9W88AIYR8mSsfXygoiYeph1fZFA2tfa';
 
 IF EXISTS (SELECT 1 FROM dbo.Auth WHERE Username = 'agent_one')
 BEGIN
     UPDATE dbo.Auth
-       SET Username = 'scout_agent',
-           PasswordHash = @ScoutPasswordHash,
+       SET Username = 'buildone_agent',
+           PasswordHash = @BuildOnePasswordHash,
            ModifiedDatetime = @Now
      WHERE Username = 'agent_one';
-    PRINT '  scout: renamed agent_one -> scout_agent (password rotated)';
+    PRINT '  buildone: renamed agent_one -> buildone_agent (password rotated)';
 END
 ELSE IF EXISTS (SELECT 1 FROM dbo.Auth WHERE Username = 'scout_agent')
 BEGIN
     UPDATE dbo.Auth
-       SET PasswordHash = @ScoutPasswordHash,
+       SET Username = 'buildone_agent',
+           PasswordHash = @BuildOnePasswordHash,
            ModifiedDatetime = @Now
      WHERE Username = 'scout_agent';
-    PRINT '  scout: scout_agent exists (password rotated)';
+    PRINT '  buildone: renamed scout_agent -> buildone_agent (password rotated)';
+END
+ELSE IF EXISTS (SELECT 1 FROM dbo.Auth WHERE Username = 'buildone_agent')
+BEGIN
+    UPDATE dbo.Auth
+       SET PasswordHash = @BuildOnePasswordHash,
+           ModifiedDatetime = @Now
+     WHERE Username = 'buildone_agent';
+    PRINT '  buildone: buildone_agent exists (password rotated)';
 END
 ELSE
 BEGIN
-    PRINT '  scout: NEITHER agent_one NOR scout_agent found — skipped (no User row to rename)';
+    PRINT '  buildone: no agent_one / scout_agent / buildone_agent found — skipped (no User row to rename)';
 END;
 
 

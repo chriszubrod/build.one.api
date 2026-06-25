@@ -1,6 +1,6 @@
 """End-to-end approval-flow smoke test.
 
-Drives a scout run that will trigger a create_sub_cost_code tool call,
+Drives a buildone run that will trigger a create_sub_cost_code tool call,
 intercepts the approval_request SSE event, decides via POST /approve,
 and verifies the run completes with the tool executed (or rejected,
 depending on the test variant).
@@ -13,7 +13,7 @@ Usage:
 
 Prereqs:
     API on localhost:8000
-    SCOUT_AGENT_USERNAME / SCOUT_AGENT_PASSWORD set
+    BUILDONE_AGENT_USERNAME / BUILDONE_AGENT_PASSWORD set
 """
 from __future__ import annotations
 
@@ -38,8 +38,8 @@ async def _login(c: httpx.AsyncClient) -> str:
     r = await c.post(
         "/api/v1/mobile/auth/login",
         json={
-            "username": s.scout_agent_username,
-            "password": s.scout_agent_password,
+            "username": s.buildone_agent_username,
+            "password": s.buildone_agent_password,
         },
     )
     r.raise_for_status()
@@ -47,8 +47,8 @@ async def _login(c: httpx.AsyncClient) -> str:
 
 
 async def drive(variant: str) -> int:
-    # A prompt that induces scout to propose a create. We pass a real
-    # CostCode public_id inline so scout has the parent handle.
+    # A prompt that induces buildone to propose a create. We pass a real
+    # CostCode public_id inline so buildone has the parent handle.
     prompt = (
         "I want to add a new sub-cost-code. Create `99.99` named "
         "`Test — Approval Smoke` under cost code with "
@@ -62,7 +62,7 @@ async def drive(variant: str) -> int:
 
         print(f"── POST /runs  [{variant}]")
         r = await c.post(
-            "/api/v1/agents/scout/runs",
+            "/api/v1/agents/buildone/runs",
             headers=auth,
             json={"user_message": prompt},
         )

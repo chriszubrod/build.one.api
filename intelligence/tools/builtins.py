@@ -1,4 +1,4 @@
-"""Trivial tools for wiring validation. NOT scout's real tool set.
+"""Trivial tools for wiring validation. NOT Build.One's real tool set.
 
 `now` — no arguments, validates the zero-arg path.
 `add` — two numeric arguments, validates the argument-parsing path.

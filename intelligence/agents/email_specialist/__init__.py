@@ -1,7 +1,7 @@
 """Email specialist agent package — pure orchestrator for the polled
 invoice inbox.
 
-The email_specialist is system-triggered (not Scout-initiated) by the
+The email_specialist is system-triggered (not Build.One-initiated) by the
 scheduler-driven /admin/email/process_one endpoint. For each pending
 EmailMessage it:
 

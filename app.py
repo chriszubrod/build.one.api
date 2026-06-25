@@ -84,10 +84,10 @@ from entities.budget_line_item.api.router import router as budget_line_item_api_
 from shared.api.lookups import router as lookups_api_router
 from shared.api.admin import router as scheduler_admin_api_router
 
-# Intelligence layer — import scout's package to register agent + tools, then
-# include its HTTP router for the SSE/run endpoints.
-import intelligence.agents.scout  # noqa: F401 — triggers registration of scout + sub-agents
-# email_specialist is system-triggered (not under scout), so import it
+# Intelligence layer — import Build.One's package to register agent + tools,
+# then include its HTTP router for the SSE/run endpoints.
+import intelligence.agents.buildone  # noqa: F401 — triggers registration of Build.One + sub-agents
+# email_specialist is system-triggered (not under Build.One), so import it
 # explicitly to register the agent + its delegation/tool surface.
 import intelligence.agents.email_specialist  # noqa: F401
 from intelligence.api.router import router as intelligence_api_router

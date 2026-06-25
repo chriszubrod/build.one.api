@@ -1,7 +1,7 @@
 """Top-level agent invocation — the single entry point for running an agent.
 
     async for ev in run_agent(
-        name="scout",
+        name="buildone",
         user_message="What's sub-cost-code 10.01?",
     ):
         ...

@@ -1,6 +1,6 @@
-"""End-to-end dry run for the scout agent.
+"""End-to-end dry run for the buildone agent.
 
-Requires the FastAPI server to be running (scout calls its own API over
+Requires the FastAPI server to be running (buildone calls its own API over
 HTTP). Default base URL is http://localhost:8000 (override via
 INTERNAL_API_BASE_URL env var).
 
@@ -9,12 +9,12 @@ Usage:
     .venv/bin/uvicorn app:app --reload --port 8000
 
     # Then:
-    .venv/bin/python scripts/scout_dry_run.py "What is sub-cost-code 10.01?"
-    .venv/bin/python scripts/scout_dry_run.py -v "List all sub-cost-codes"
+    .venv/bin/python scripts/buildone_dry_run.py "What is sub-cost-code 10.01?"
+    .venv/bin/python scripts/buildone_dry_run.py -v "List all sub-cost-codes"
 
 Prerequisites:
   - ANTHROPIC_API_KEY in .env
-  - SCOUT_AGENT_USERNAME / SCOUT_AGENT_PASSWORD in .env matching a real
+  - BUILDONE_AGENT_USERNAME / BUILDONE_AGENT_PASSWORD in .env matching a real
     user in the database
 """
 import argparse
@@ -26,7 +26,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Triggers tool + agent registration.
-import intelligence.agents.scout  # noqa: F401
+import intelligence.agents.buildone  # noqa: F401
 from intelligence.run import run_agent
 
 
@@ -39,14 +39,14 @@ async def drive(prompt: str, verbose: bool) -> int:
             print(f"── session: {sess.public_id}")
 
     if verbose:
-        print(f"[scout] prompt: {prompt!r}")
-        print("[scout] running ...")
+        print(f"[buildone] prompt: {prompt!r}")
+        print("[buildone] running ...")
     else:
         print(f"── prompt: {prompt}")
 
     errored = False
     async for ev in run_agent(
-        name="scout",
+        name="buildone",
         user_message=prompt,
         on_session_created=_record_session_created,
     ):
@@ -76,14 +76,14 @@ async def drive(prompt: str, verbose: bool) -> int:
                 f"tokens in/out = {ev.usage.input_tokens}/{ev.usage.output_tokens} ──"
             )
         elif ev.type == "error":
-            print(f"\n[scout] ERROR: {ev.message} (code={ev.code})", file=sys.stderr)
+            print(f"\n[buildone] ERROR: {ev.message} (code={ev.code})", file=sys.stderr)
             errored = True
 
     return 1 if errored else 0
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Scout agent dry run")
+    parser = argparse.ArgumentParser(description="Build.One agent dry run")
     parser.add_argument("prompt", nargs="*")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()

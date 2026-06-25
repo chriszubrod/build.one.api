@@ -176,10 +176,12 @@ class Settings(BaseSettings):
     internal_api_base_url: str = "http://localhost:8000"
 
     # Intelligence Layer — per-agent credentials
-    # Each Agent carries a `credentials_key` (e.g. "scout_agent") and the
+    # Each Agent carries a `credentials_key` (e.g. "buildone_agent") and the
     # auth helper reads `{key}_username` / `{key}_password` from here.
-    scout_agent_username: Optional[str] = None
-    scout_agent_password: Optional[str] = None
+    # NOTE: `buildone_agent` was renamed from `scout_agent` (2026-06-25).
+    # Prod App Service must carry BUILDONE_AGENT_USERNAME / BUILDONE_AGENT_PASSWORD.
+    buildone_agent_username: Optional[str] = None
+    buildone_agent_password: Optional[str] = None
     sub_cost_code_agent_username: Optional[str] = None
     sub_cost_code_agent_password: Optional[str] = None
     cost_code_agent_username: Optional[str] = None

@@ -1,6 +1,6 @@
 """SubCostCode specialist agent definition.
 
-Invoked by other agents (today: scout) via the `delegate_to_sub_cost_code`
+Invoked by other agents (today: buildone) via the `delegate_to_sub_cost_code`
 tool. Carries its own User+Auth+Role with permissions narrowed to
 SubCostCode + CostCode modules only.
 """

@@ -1,6 +1,6 @@
 -- Provision email_agent user, auth, role, and grants. Idempotent.
 --
--- The email agent is a pure orchestrator (like scout) — it reads
+-- The email agent is a pure orchestrator (like buildone) — it reads
 -- polled emails, decides what each is, and delegates to bill_specialist
 -- (and later expense/bill_credit specialists) for actual entity work.
 -- It carries grants ONLY on the Email Messages module so it can:

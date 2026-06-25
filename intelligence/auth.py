@@ -1,6 +1,6 @@
 """Agent authentication — logs in as an agent user to obtain a bearer JWT.
 
-Each agent declares a `credentials_key` on its definition (e.g. "scout_agent").
+Each agent declares a `credentials_key` on its definition (e.g. "buildone_agent").
 This module reads `{key}_username` / `{key}_password` from config.Settings,
 POSTs to /api/v1/mobile/auth/login, and returns the access token string.
 

@@ -28,9 +28,14 @@ email_specialist = Agent(
         "find_bill_by_conversation_id",
         "find_contract_labor_by_conversation_id",
         # Delegation tools. (bill_credit still deferred.)
+        # The per-specialist delegates are the legacy direct path; Unit 3
+        # migrates every entity action onto delegate_to_buildone_orchestrator
+        # (the central router) and removes these three. Kept alongside for now
+        # so the current prompt's direct calls keep working.
         "delegate_to_bill_specialist",
         "delegate_to_contract_labor_specialist",
         "delegate_to_expense_specialist",
+        "delegate_to_buildone_orchestrator",
     ),
     model="claude-haiku-4-5-20251001",
     provider="anthropic",

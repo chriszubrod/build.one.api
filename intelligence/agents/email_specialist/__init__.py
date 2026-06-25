@@ -32,6 +32,12 @@ import intelligence.agents.bill_specialist  # noqa: F401
 import intelligence.agents.contract_labor_specialist  # noqa: F401
 import intelligence.agents.expense_specialist  # noqa: F401
 
+# Build.One (the central orchestrator) registers `delegate_to_buildone_orchestrator`
+# in its own package — import it here so the tool resolves even when
+# email_specialist is loaded standalone (e.g. dry-run scripts). At app startup
+# app.py already imports buildone first; this import is then a cached no-op.
+import intelligence.agents.buildone  # noqa: F401
+
 from intelligence.composition.delegation import make_delegation_tool
 from intelligence.tools.registry import register as _register_tool
 

@@ -22,6 +22,8 @@ import intelligence.agents.bill_specialist  # noqa: F401
 import intelligence.agents.bill_credit_specialist  # noqa: F401
 import intelligence.agents.expense_specialist  # noqa: F401
 import intelligence.agents.invoice_specialist  # noqa: F401
+import intelligence.agents.contract_labor_specialist  # noqa: F401
+import intelligence.agents.time_tracking_specialist  # noqa: F401
 
 from intelligence.composition.delegation import make_delegation_tool
 from intelligence.tools.registry import register as _register_tool
@@ -159,6 +161,60 @@ _register_tool(make_delegation_tool(
         "credit lines' billed status. Catalog is small (~900 rows). "
         "No line-item edits today — the 'select billable items to "
         "roll into this invoice' workflow goes through the UI."
+    ),
+))
+
+_register_tool(make_delegation_tool(
+    name="delegate_to_contract_labor",
+    target_agent="contract_labor_specialist",
+    description=(
+        "Hand a ContractLabor task off to the Contract Labor specialist "
+        "agent. Handles forwarded worker-timesheet intake (creates a "
+        "draft `pending_review` ContractLabor row from a sender + body) "
+        "and Project-Manager reviewer-reply application (apply an "
+        "approve/reject + SubCostCode decision to an existing row). "
+        "The specialist owns ContractLabor AND its line items "
+        "(ContractLaborLineItem) — route both here. Pass a self-contained "
+        "task description; the specialist binds the vendor + project and "
+        "parses the times itself."
+    ),
+))
+
+_register_tool(make_delegation_tool(
+    name="delegate_to_time_tracking",
+    target_agent="time_tracking_specialist",
+    description=(
+        "Hand a TimeEntry / TimeLog task off to the Time Tracking "
+        "specialist agent. It is **review-only**: it runs the "
+        "completeness checklist on an iOS-submitted TimeEntry and flags "
+        "it for the human Approver (it never transitions status and does "
+        "no general CRUD). Route TimeEntry and TimeLog work here. Pass "
+        "the TimeEntry public_id in the task."
+    ),
+))
+
+# Inbound delegation INTO Build.One. Registered here (not on each caller)
+# following the project_specialist pattern, so any trigger source —
+# email_specialist today, scheduler/MCP later — can share one registration
+# without colliding on register(). The task string carries an
+# EntityActionEnvelope (JSON); Build.One's prompt parses it and routes.
+_register_tool(make_delegation_tool(
+    name="delegate_to_buildone_orchestrator",
+    target_agent="buildone",
+    description=(
+        "Hand an entity action off to the Build.One orchestrator, which "
+        "routes it to the correct entity specialist. Use this instead of "
+        "calling a specialist directly. Pass an **EntityActionEnvelope** "
+        "as the task: a JSON object carrying `entity_type` (Bill | Expense "
+        "| BillCredit | Invoice | ContractLabor | ContractLaborLineItem | "
+        "TimeEntry | TimeLog), `intake_source`, optional pre-resolved "
+        "bindings (vendor/project/attachment public_ids), and "
+        "`payload.task_markdown` — the self-contained, specialist-ready "
+        "instruction. Build.One returns a status line: `ROUTED ok ...` + "
+        "the specialist's answer on success, or `ROUTED error ...` / "
+        "`ROUTING not_routable ...` / `ROUTING parse_error ...` on failure. "
+        "Build.One never stamps your source record — you read its status "
+        "line and decide the outcome."
     ),
 ))
 

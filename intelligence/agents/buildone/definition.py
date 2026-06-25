@@ -30,6 +30,8 @@ buildone = Agent(
         "delegate_to_bill_credit",
         "delegate_to_expense",
         "delegate_to_invoice",
+        "delegate_to_contract_labor",
+        "delegate_to_time_tracking",
     ),
     model="claude-sonnet-4-6",
     provider="anthropic",

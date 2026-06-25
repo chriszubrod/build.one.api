@@ -2,6 +2,70 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## Build.One agent — centralized orchestrator + Cowork-hosted EmailAgent loop (2026-06-25)
+
+Architecture shift to unify trigger sources behind a single orchestrator agent and move the recurring email-processing loop out of in-process APScheduler into Cowork. Once shipped, ANY trigger (email poll, ad-hoc chat, scheduled job, future MCP-initiated work) hands a structured `EntityActionEnvelope` to the Build.One orchestrator, which routes to the right entity specialist. Eliminates per-trigger delegate-tool sprawl on email_specialist and positions for any future Cowork-hosted agent to use the same MCP/API surface (no repo access needed).
+
+**Target architecture:**
+```
+  email_specialist (Cowork)  ─┐
+  chat user (Scout/Build.One) ─┼─► Build.One orchestrator ──► bill_specialist
+  scheduled jobs              ─┘    (EntityActionEnvelope)  ├──► expense_specialist
+                                                            ├──► bill_credit_specialist
+                                                            ├──► expense_refund_specialist (new — defer)
+                                                            ├──► invoice_specialist
+                                                            ├──► bill_payment_specialist (new — defer)
+                                                            ├──► contract_labor_specialist
+                                                            └──► time_tracking_specialist (TimeEntry + TimeLog)
+```
+
+Entity types in scope (10): Bill, Expense, BillCredit, ExpenseRefund, Invoice, BillPayment, TimeEntry, TimeLog, ContractLabor, ContractLaborLineItem. Two specialists (ExpenseRefund, BillPayment) don't exist yet — they're separate units.
+
+**Tight-loop carve-outs stay direct** (no orchestrator hop): Step 1b reviewer-reply auto-apply + Step 1bx ContractLabor reviewer-reply auto-apply. 3-call fixed sequences, no routing decision, routing them adds latency without value.
+
+### Sequenced units
+
+- [ ] **Step A — BuildOneAgent layer (build.one.api).** Three sub-units, each its own two-pass review + commit:
+  - Sub A1: rename Scout → Build.One. Touches `intelligence/agents/scout/` → `buildone/`, prompt content, agent definition, tool registrations, `intelligence/persistence/sql/seed.scout_role.sql` (rename + migration to update User/Role display names — STOP for approval before running against prod DB), and any "Scout"-by-name references in `build.one.mcp` / `build.one.web` / umbrella memory files (search-and-replace pass).
+  - Sub A2: define the EntityActionEnvelope contract + Build.One routing. New `delegate_to_buildone_orchestrator(envelope)` tool. Routing table inside Build.One's prompt maps entity_type → specialist. KEEP existing per-specialist delegate tools wired alongside for now (don't break the current path).
+  - Sub A3: migrate email_specialist to route through Build.One. Update Step 9/9b/1c to build an envelope + delegate to orchestrator. Tight-loop carve-outs (1b/1bx) stay direct. Remove the now-unused per-specialist delegate tools from email_specialist.
+  - Bridging decision in A2: specialists today consume markdown via `delegate_to_X(task=…)` — the envelope is structured JSON. Two options: (a) Build.One renders the envelope into markdown task before calling each specialist (specialists stay unchanged), or (b) migrate each specialist to accept envelope-shaped input directly. Start with (a) — ships fastest; (b) can come as a follow-up.
+
+- [ ] **Step B — MCP tools for the EmailAgent (build.one.mcp).** Today email_specialist runs in-API and uses Python-side tool calls; for Cowork to run the same agent prompt, every tool needs an MCP wrapper. All are thin pass-throughs to existing API endpoints (`/api/v1/get/email-message/{id}`, `/api/v1/email-attachments/{id}/extract`, `/api/v1/email-attachments/{id}/bridge-to-attachment`, `/api/v1/email-messages/{id}/outcome`, etc.). Tools needed:
+  - `read_email_message`, `read_email_thread`, `search_email_sender_history`
+  - `compute_attachment_totals`, `gather_invoice_context`
+  - `extract_email_attachment`, `bridge_email_attachment`, `record_extracted_fields`
+  - `find_bill_by_conversation_id`
+  - `delegate_to_buildone_orchestrator` (built in Step A2)
+  - `mark_email_outcome`
+
+  Per `build.one.mcp/CLAUDE.md`: MCP is thin pass-through, no agentic logic / no LLM calls / no business logic. New tools follow the existing snake_case convention + are wrapped in `@logged_tool` + use pydantic models for input/output in the same file as the handler. Quality gates: `ruff check`, `black --check`, `mypy` (strict), `pytest`. Manual live smoke is the test-against-prod path.
+
+- [ ] **Step C — Cowork EmailAgent recurring loop config (operational).** No code. Configure a Cowork session that:
+  - Runs on a recurring schedule (every 5 min, matching the current in-API poll cycle).
+  - Auths to MCP via the long-lived `MCP_AUTH_TOKEN` (per `build.one.mcp/CLAUDE.md` AUTH-1).
+  - Uses the email_specialist prompt verbatim.
+  - Iterates pending EmailMessages, stamps outcomes, returns. No persistent state in Cowork.
+  - Operational handoff: turn off the in-API agent runner once Cowork is verified stable.
+
+### Open Qs to lock during Step A design pass
+
+- **Cross-repo rename sequencing.** If a single Cowork/Code session can't touch all 3 repos (api + mcp + web), Sub A1 might split into 3 mini-units (one PR per repo). Decide based on Cowork's repo-access model when the build kicks off.
+- **DB rename safety.** The Scout User row owns audit-trail records (Workflow.CreatedByUserId rows). UPDATE the same row's Name (don't create a new user); rely on the existing UserRole/UserModule joins. Migration file goes in `scripts/migrations/` with a date prefix. Don't auto-apply against prod — display proposed SQL first + stop for approval.
+- **Concurrency on the email-processing loop.** Today the in-API agent runner has implicit serialization (single APScheduler tick). Cowork's loop needs an `sp_getapplock` or `ClaimNextPendingEmailMessage`-style sproc guard so two concurrent Cowork sessions don't double-process the same email. Already exists per `ClaimNextPendingEmailMessage` — verify it's wired through the MCP path.
+- **Failure isolation.** What happens if Build.One returns an error mid-envelope? EmailMessage stays pending? Stamps as `needs_review` with the error? Define the contract in A2.
+
+### Why this matters
+
+- **Eliminates per-trigger delegate-tool sprawl.** Today email_specialist has `delegate_to_bill_specialist` / `delegate_to_expense_specialist` / `delegate_to_contract_labor_specialist`. As 7 more entity types come online (BillCredit, ExpenseRefund, Invoice, BillPayment, TimeEntry, TimeLog, ContractLaborLineItem), the tool surface explodes. With Build.One, email_specialist has ONE delegate tool.
+- **Positions ALL future trigger sources to reuse the same orchestrator.** Scheduler jobs, MCP-initiated batch work, chat-initiated actions — they all hand an envelope to Build.One. Routing decisions live in one place.
+- **Decouples the email pipeline from the API process.** Today the agent runner is a Python loop inside the FastAPI app. Moving it to Cowork frees the API to focus on serving requests, and lets the agent loop scale / retry / fail independently. Also means a Cowork outage doesn't take down the API and vice versa.
+- **No repo access needed for the recurring loop.** Cowork's email loop is read-state-via-MCP + write-state-via-MCP. No git, no deploys, no cross-repo coordination during routine operation.
+
+### Source material
+
+- Full session prompt for Step A drafted during 2026-06-25 conversation (see transcript `~/.claude/projects/-Users-chris-Applications-build-one/89de231e-047c-443b-a749-23c5505b81e0.jsonl` — search for "Build.One" / "BuildOneAgent" / "EntityActionEnvelope"). The prompt includes worked examples, two-pass-review constraints, and report-back structure. Re-extract and refine when the build kicks off.
+
 ## HA-04 InvoiceAgent run — follow-ups (2026-06-24)
 
 HA-04 (dbo.Invoice 1057 / qbo.Invoice 975 / $321,143.66 / 89 lines) ran end-to-end after the 2026-06-23 audit fixes. SCC back-fill held (0 NULL on prior 8 gaps), `InvoiceInvoiceConnector` adopt-path preserved Step 4 linkage on the re-run, no new same-day (vendor, billnumber) duplicates were minted. Two structural gaps surfaced that the run worked around manually — capture for proper fixes:

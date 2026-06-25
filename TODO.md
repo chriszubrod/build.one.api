@@ -2,6 +2,22 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## BillView page load is slow (2026-06-25)
+
+User reported: clicking the "View Bill in build.one →" button in an agent confirmation forward (Bill 25801, public_id `46F24E84-A149-421E-A232-BFE037C4E3EC`) landed on the right URL after the PWA service-worker cache was cleared, but the page took noticeably long to render the data details (Bill header, attachment image, line items, etc.). UX friction; not a correctness bug.
+
+Likely culprits (need diagnostic data before optimizing):
+- BillView fires multiple serialized API calls (header → line items → attachments → reviews → enrichment lookups) — classic React-page waterfall.
+- Each individual endpoint may also be slow if heavy joins (e.g., `/api/v1/get/bill/{public_id}` JOIN to vendor + payment_term + project lookups; `/api/v1/get/bill-line-items/...` JOIN to sub_cost_code + attachment thumbnails; the attachment image fetch from blob storage is a separate round-trip).
+- Initial React render may be heavy if BillView renders synchronously instead of streaming sections.
+
+Next action: ask user to open DevTools → Network tab on the next BillView load + share the top 2–3 slow endpoints (or screenshot of the waterfall). 10 seconds of inspection saves hours of optimizing the wrong thing. Once we know which endpoint or which serial round-trip is the long pole, options are:
+- **(a) One slow endpoint** → server-side fix (denormalized join, missing index, or N+1 inside the sproc).
+- **(b) Too many serialized round-trips** → parallelize with `Promise.all` (web side) OR add a `/api/v1/get/bill/{public_id}/full` endpoint that returns Bill + lines + attachments + reviews in one envelope.
+- **(c) Heavy initial render** → split BillView into independently-suspending sections (`<Suspense>` per section) so the page chrome renders immediately and each detail card streams as its data arrives.
+
+Lives in build.one.web (BillView page) + potentially build.one.api (denormalized read endpoint or sproc tightening). Cross-repo coordination needed once the diagnostic narrows the fix surface.
+
 ## Build.One agent — centralized orchestrator + Cowork-hosted EmailAgent loop (2026-06-25)
 
 Architecture shift to unify trigger sources behind a single orchestrator agent and move the recurring email-processing loop out of in-process APScheduler into Cowork. Once shipped, ANY trigger (email poll, ad-hoc chat, scheduled job, future MCP-initiated work) hands a structured `EntityActionEnvelope` to the Build.One orchestrator, which routes to the right entity specialist. Eliminates per-trigger delegate-tool sprawl on email_specialist and positions for any future Cowork-hosted agent to use the same MCP/API surface (no repo access needed).

@@ -240,11 +240,13 @@ class AgentInquiryService:
             hint_color = "#064e3b"          # emerald-900
             reply_hint = (
                 "<em>FYI / Reply to redirect:</em> Hit Reply and prefix your "
-                "instruction with <strong>@Build.One</strong> so the agent "
-                "knows which part is for it. Examples: "
+                "instruction with <strong>@Build.One</strong> (or any of "
+                "<em>@buildone</em>, <em>@agent</em>, <em>@AGENT</em>, "
+                "<em>@ai</em> — all recognized) so the agent knows which "
+                "part is for it. Examples: "
                 "<em>'@Build.One change project to MR2-CABIN'</em>, "
-                "<em>'@Build.One delete that draft'</em>, "
-                "<em>'@Build.One reclassify as a credit memo'</em>. "
+                "<em>'@agent delete that draft'</em>, "
+                "<em>'@AGENT reclassify as a credit memo'</em>. "
                 "Replies are flagged for manual follow-up in v1 — automated "
                 "redirect/undo is not wired yet."
             )
@@ -258,14 +260,16 @@ class AgentInquiryService:
             hint_color = "#78350f"           # amber-900
             reply_hint = (
                 "<em>How to reply:</em> Hit Reply and prefix your instruction "
-                "with <strong>@Build.One</strong> so the agent knows which "
-                "part is for it (rest of the email can be free-form chatter "
-                "for your team). Examples: "
+                "with <strong>@Build.One</strong> (or any of <em>@buildone</em>, "
+                "<em>@agent</em>, <em>@AGENT</em>, <em>@ai</em> — all "
+                "recognized) so the agent knows which part is for it (rest "
+                "of the email can be free-form chatter for your team). "
+                "Examples: "
                 "<em>'@Build.One project is MR2-CABIN'</em>, "
-                "<em>'@Build.One skip'</em>, "
-                "<em>'@Build.One this is a credit memo'</em>, "
+                "<em>'@agent skip'</em>, "
+                "<em>'@AGENT this is a credit memo'</em>, "
                 "<em>'@Build.One create the bill manually'</em>, "
-                "<em>'@Build.One route to bill_specialist anyway'</em>."
+                "<em>'@ai route to bill_specialist anyway'</em>."
             )
 
         # Optional "View Bill" button — renders only when the caller

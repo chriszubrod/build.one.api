@@ -421,16 +421,44 @@ class BillService:
                     )
                 raise ValueError(f"Failed to attach PDF to new bill: {attach_error}")
 
-        # Auto-Submit hook. Creating a draft bill IS submitting it for review,
-        # so write a Review row at status=Submitted. Skipped when:
-        #   - is_draft=False (bill was created already-finalized; no review window)
-        #   - user_id is None (caller didn't go through the auth-resolved router;
-        #     don't fabricate a UserId for the audit row)
-        # Failures are logged but do NOT roll back the bill — a missing review
-        # row is recoverable (manual /submit/review/bill/<id> works), a missing
-        # bill is not.
-        if is_draft and user_id is not None:
-            review = None
+        # Auto-Submit hook. Creating a draft bill IS submitting it for review
+        # — when the caller has supplied enough data for the reviewer email
+        # to resolve real recipients. The gate:
+        #
+        #   - is_draft must be True (already-finalized bills have no review
+        #     window).
+        #   - user_id must be set (no auth context = don't fabricate audit).
+        #   - line_project_public_id must be present. Recipient resolution
+        #     walks Bill → BillLineItem → Project → UserProject → PM/Owner,
+        #     so without a project on the line item the resolver returns an
+        #     empty TO/CC and notification_service.py:288 short-circuits the
+        #     "In Review" advance. That was the 2026-06-25 K06988 bug:
+        #     manual UI creates landed with a placeholder line item (no
+        #     project), the auto-fire shipped a blank-bodied BCC-only email,
+        #     and the workflow transition was skipped.
+        #
+        # We deliberately do NOT also gate on line_sub_cost_code_id even
+        # though SCC shows up in the notification body. bill_specialist's
+        # prompt explicitly leaves SCC null on invoice-driven creates ("SCC
+        # is for the human to apply during review"), so requiring it would
+        # silently disable the auto-fire for the entire email pipeline —
+        # the load-bearing happy path the hook exists to serve. A missing
+        # SCC just renders an empty cell in the email body; reviewers fill
+        # it in via their email reply (the reviewer-reply automation hooks
+        # parse it back out).
+        #
+        # The bill-folder pipeline doesn't pass user_id and therefore never
+        # reaches this hook regardless — folder bills land as plain drafts
+        # and the user must click Submit for Review on the BillEdit page
+        # after coding the line items. Manual UI creates are the same shape.
+        #
+        # The notification hook itself lives in ReviewService.create's Bill
+        # block, so any future caller that writes a Submitted Review row
+        # for a Bill — agent, manual submit, scripted backfill — fires the
+        # notification uniformly. Failures don't roll back the bill (a
+        # missing review row is recoverable via the manual Submit endpoint;
+        # a missing bill is not).
+        if is_draft and user_id is not None and line_project_public_id is not None:
             try:
                 from entities.review.business.service import ReviewService
                 from entities.review_status.business.service import ReviewStatusService
@@ -443,7 +471,7 @@ class BillService:
                         bill.public_id,
                     )
                 else:
-                    review = ReviewService().create(
+                    ReviewService().create(
                         review_status_id=first_status.id,
                         user_id=user_id,
                         comments=None,
@@ -451,35 +479,17 @@ class BillService:
                         # Wave 3 Phase E: link the Submitted row back to
                         # the source vendor email for the Web UI's final-
                         # review surface. NULL when the bill came from a
-                        # non-email path (manual UI / bill_folder).
+                        # non-email path.
                         email_message_id=source_email_message_id,
                     )
+                    # The notification + the Review→"In Review" advance both
+                    # fire from inside ReviewService.create's Bill block —
+                    # no extra plumbing needed here.
             except Exception as review_error:
                 logger.exception(
                     "Failed to auto-write Submitted Review row for bill %s: %s",
                     bill.public_id, review_error,
                 )
-
-            # Notify reviewers (PMs To:, Owners Cc:) per UserProject.RoleId.
-            # Wave 4 (May 2026). Failure-isolated — never propagates back to
-            # bill create. ReviewNotificationService swallows its own errors;
-            # we still wrap the import path in case the module fails to load.
-            if review is not None:
-                try:
-                    from entities.review.business.notification_service import (
-                        ReviewNotificationService,
-                    )
-                    ReviewNotificationService().enqueue_for_bill(
-                        bill=bill,
-                        review=review,
-                        exclude_user_id=user_id,
-                    )
-                except Exception as notify_error:
-                    logger.exception(
-                        "Unhandled review-notification error for bill %s: %s",
-                        bill.public_id,
-                        notify_error,
-                    )
 
         return bill
 

@@ -388,6 +388,17 @@ class _OutcomeBody(BaseModel):
             "omit on outcomes that didn't touch a specific Bill."
         ),
     )
+    related_contract_labor_public_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "PublicId of a ContractLabor row the outcome touched "
+            "(delegated_to_contract_labor_specialist created it, or a Step 1e "
+            "instruction applied to it). When set, the correspondence forward "
+            "to invoice@ renders a clickable 'View Contract Labor' button "
+            "linking to {WEB_BASE_URL}/labor/{public_id}. Optional; can be set "
+            "alongside `related_bill_public_id` (both buttons render)."
+        ),
+    )
 
 
 @router.patch("/email-messages/{public_id}/outcome")
@@ -508,6 +519,7 @@ def set_email_outcome_router(
                 ),
                 mode=forward_mode,
                 bill_public_id=body.related_bill_public_id,
+                contract_labor_public_id=body.related_contract_labor_public_id,
             )
 
     return item_response({

@@ -63,6 +63,7 @@ class AgentInquiryService:
         confidence: Optional[float] = None,
         mode: CorrespondenceMode = "inquiry",
         bill_public_id: Optional[str] = None,
+        contract_labor_public_id: Optional[str] = None,
     ) -> None:
         """Public surface. Drafts + sends a self-forward of the source
         email with the agent's findings rendered as an HTML preamble.
@@ -72,11 +73,17 @@ class AgentInquiryService:
           - "confirmation" — findings + what-I-did (awaiting_approval /
                              processed path).
 
-        `bill_public_id` — when set AND `Settings.web_base_url` is
-        configured, the preamble renders a clickable "View Bill" button
-        linking to `{web_base_url}/bill/{public_id}`. Lets AP jump
-        straight from the email to the Bill detail page (to run
-        complete-bill, adjust coding, etc.).
+        Entity-link buttons (each independent — both can render when
+        both are set) are drawn into the preamble when their
+        public_id is supplied AND `Settings.web_base_url` is
+        configured:
+          - `bill_public_id`            → "View Bill in build.one →"
+                                          linking to `{web}/bill/{pid}`
+          - `contract_labor_public_id`  → "View Contract Labor in
+                                          build.one →" linking to
+                                          `{web}/labor/{pid}`
+        Lets AP jump straight from the email to the entity detail
+        page (to run complete, adjust coding, etc.).
         """
         try:
             self._do_send(
@@ -85,6 +92,7 @@ class AgentInquiryService:
                 confidence=confidence,
                 mode=mode,
                 bill_public_id=bill_public_id,
+                contract_labor_public_id=contract_labor_public_id,
             )
         except Exception as error:
             logger.exception(
@@ -102,6 +110,7 @@ class AgentInquiryService:
         confidence: Optional[float],
         mode: CorrespondenceMode = "inquiry",
         bill_public_id: Optional[str] = None,
+        contract_labor_public_id: Optional[str] = None,
     ) -> None:
         # Lazy imports to avoid circular dependencies with the
         # EmailMessage service and the MS outbox.
@@ -141,17 +150,29 @@ class AgentInquiryService:
             )
             return
 
-        bill_view_url: Optional[str] = None
-        if bill_public_id and settings.web_base_url:
+        # Each entity-link button is independent; both can appear
+        # together (e.g. a CL whose linked Bill was also touched).
+        entity_buttons: list[tuple[str, str]] = []
+        if settings.web_base_url:
             base = settings.web_base_url.rstrip("/")
-            bill_view_url = f"{base}/bill/{bill_public_id}"
+            if bill_public_id:
+                entity_buttons.append(
+                    ("View Bill in build.one", f"{base}/bill/{bill_public_id}")
+                )
+            if contract_labor_public_id:
+                entity_buttons.append(
+                    (
+                        "View Contract Labor in build.one",
+                        f"{base}/labor/{contract_labor_public_id}",
+                    )
+                )
 
         html_preamble = self._build_html_preamble(
             email=email,
             question=question,
             confidence=confidence,
             mode=mode,
-            bill_view_url=bill_view_url,
+            entity_buttons=entity_buttons,
         )
 
         # Enqueue forward via the outbox. mode=send so the inquiry
@@ -203,7 +224,7 @@ class AgentInquiryService:
         question: str,
         confidence: Optional[float],
         mode: CorrespondenceMode = "inquiry",
-        bill_view_url: Optional[str] = None,
+        entity_buttons: Optional[list[tuple[str, str]]] = None,
     ) -> str:
         """HTML block prepended to the forwarded body.
 
@@ -272,23 +293,30 @@ class AgentInquiryService:
                 "<em>'@ai route to bill_specialist anyway'</em>."
             )
 
-        # Optional "View Bill" button — renders only when the caller
-        # supplied a bill_public_id AND web_base_url was configured (so
-        # we have a real URL to link). Outlook treats the <a> tag as a
-        # clickable button via the inline styles. Same-origin-only by
-        # construction (URL is composed from `settings.web_base_url` —
-        # not from user input).
-        bill_button_html = ""
-        if bill_view_url:
-            bill_button_html = (
-                f"<p style='margin:0 0 12px 0;'>"
-                f"<a href='{html.escape(bill_view_url, quote=True)}' "
+        # Entity-link buttons — rendered only for (label, url) pairs
+        # the caller supplied. URLs are composed upstream from
+        # `settings.web_base_url` + a public_id, so same-origin by
+        # construction (not user input). Outlook treats the <a> as a
+        # clickable button via the inline styles.
+        button_html_parts: list[str] = []
+        for label, url in (entity_buttons or []):
+            button_html_parts.append(
+                f"<p style='margin:0 0 8px 0;'>"
+                f"<a href='{html.escape(url, quote=True)}' "
                 f"style='display:inline-block; padding:8px 16px; "
                 f"background:#1f3864; color:#ffffff; text-decoration:none; "
                 f"font-family:Arial,Helvetica,sans-serif; font-size:13px; "
-                f"font-weight:600; border-radius:4px;'>View Bill in build.one →</a>"
+                f"font-weight:600; border-radius:4px;'>"
+                f"{html.escape(label)} →</a>"
                 f"</p>"
             )
+        # Bottom margin lift on the final button so the reply hint
+        # below isn't crammed against it.
+        if button_html_parts:
+            button_html_parts[-1] = button_html_parts[-1].replace(
+                "margin:0 0 8px 0;", "margin:0 0 12px 0;", 1
+            )
+        entity_buttons_html = "".join(button_html_parts)
 
         # Anti-phishing footer — surfaces on every correspondence email
         # regardless of mode, so AP doesn't reflex-click on a spoofed
@@ -313,7 +341,7 @@ class AgentInquiryService:
             f"<p style='margin:0 0 8px 0;'><strong>{header_label}</strong>"
             f"{html.escape(confidence_pct)}</p>"
             f"<p style='margin:0 0 8px 0; white-space:pre-wrap;'>{escaped_question}</p>"
-            f"{bill_button_html}"
+            f"{entity_buttons_html}"
             f"<p style='margin:0 0 0 0; font-size:12px; color:{hint_color};'>"
             f"{reply_hint}"
             "</p>"

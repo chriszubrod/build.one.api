@@ -118,6 +118,17 @@ def find_insertion_row_for_subcostcode(worksheet_values: List[List[Any]], target
     return first_match_row + 2
 
 
+# ---------------------------------------------------------------------------
+# QBO deep-link URL builder.
+# ---------------------------------------------------------------------------
+# Module-level + pure so the test surface is trivial. Realm is included in the
+# query string so the link 404s cleanly (instead of opening a stranger's
+# company file) when the user's last QBO session was a different realm.
+
+def _build_qbo_bill_url(qbo_id: str, realm_id: str) -> str:
+    return f"https://app.qbo.intuit.com/app/bill?txnId={qbo_id}&realmId={realm_id}"
+
+
 class BillService:
     """
     Service for Bill entity business operations.
@@ -575,6 +586,22 @@ class BillService:
             return None
         assert_can_access_bill(bill.id)
         return bill
+
+    def get_qbo_bill_url(self, bill_id: int) -> Optional[str]:
+        """
+        Return a clickable deep link to the bill in QuickBooks Online, or
+        None if the bill has no synced QBO counterpart yet (drafted but
+        not pushed). Realm is included so the link 404s cleanly when the
+        active QBO session belongs to a different realm.
+
+        Used by `GET /api/v1/get/bill/{public_id}` to attach
+        `qbo_bill_url` to the response.
+        """
+        assert_can_access_bill(bill_id)
+        info = self.repo.read_qbo_link_info(bill_id=bill_id)
+        if not info:
+            return None
+        return _build_qbo_bill_url(info["qbo_id"], info["qbo_realm_id"])
 
     def read_by_bill_number(self, bill_number: str) -> Optional[Bill]:
         """

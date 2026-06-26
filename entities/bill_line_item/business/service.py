@@ -14,6 +14,21 @@ from entities.project.business.service import ProjectService
 from entities.bill.business.service import BillService
 
 
+# ---------------------------------------------------------------------------
+# Box deep-link URL builders.
+# ---------------------------------------------------------------------------
+# Kept at module scope (pure, stateless) so they can be unit-tested + shared
+# without dragging in the rest of the service. The Box web app accepts a bare
+# folder/file id under the canonical paths below; no auth bounce, no realm.
+
+def _build_box_folder_url(box_folder_id: str) -> str:
+    return f"https://app.box.com/folder/{box_folder_id}"
+
+
+def _build_box_file_url(box_file_id: str) -> str:
+    return f"https://app.box.com/file/{box_file_id}"
+
+
 class BillLineItemService:
     """
     Service for BillLineItem entity business operations.
@@ -96,6 +111,29 @@ class BillLineItemService:
         """
         assert_can_access_bill(bill_id)
         return self.repo.read_by_bill_id(bill_id=bill_id)
+
+    def get_box_links_by_bill_id(self, bill_id: int) -> dict[int, dict]:
+        """
+        Return per-line-item Box deep-link URLs for a bill, keyed by
+        BillLineItemId. Each value is a dict with `box_folder_url` and
+        `box_workbook_url` — either nullable string. The router merges
+        the result row-by-row into the existing line-item list response.
+
+        Access-gates on the parent bill the same way `read_by_bill_id`
+        does, so unauthorized callers don't even learn whether the bill
+        has Box mappings.
+        """
+        assert_can_access_bill(bill_id)
+        raw = self.repo.read_box_links_by_bill_id(bill_id=bill_id)
+        out: dict[int, dict] = {}
+        for line_item_id, ids in raw.items():
+            folder_id = ids.get("box_invoices_folder_id")
+            file_id = ids.get("box_workbook_file_id")
+            out[line_item_id] = {
+                "box_folder_url": _build_box_folder_url(folder_id) if folder_id else None,
+                "box_workbook_url": _build_box_file_url(file_id) if file_id else None,
+            }
+        return out
 
     def read_by_project_id(self, project_id: int) -> list[BillLineItem]:
         """

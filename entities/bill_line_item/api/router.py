@@ -74,9 +74,24 @@ def get_bill_line_item_by_public_id_router(public_id: str, current_user: dict = 
 def get_bill_line_items_by_bill_id_router(bill_id: int, current_user: dict = Depends(require_module_api(Modules.BILLS))):
     """
     Read all bill line items for a specific bill.
+
+    Each row also carries optional `box_folder_url` + `box_workbook_url`
+    — deep links to the project's `14 - Invoices` Box folder and the
+    project's budget-tracker workbook. Null when the line item's project
+    has no Box mapping. Built server-side via
+    `BillLineItemService.get_box_links_by_bill_id`.
     """
-    bill_line_items = BillLineItemService().read_by_bill_id(bill_id=bill_id)
-    return list_response([bill_line_item.to_dict() for bill_line_item in bill_line_items])
+    service = BillLineItemService()
+    bill_line_items = service.read_by_bill_id(bill_id=bill_id)
+    box_links = service.get_box_links_by_bill_id(bill_id=bill_id)
+    payload = []
+    for line_item in bill_line_items:
+        row = line_item.to_dict()
+        links = box_links.get(line_item.id, {})
+        row["box_folder_url"] = links.get("box_folder_url")
+        row["box_workbook_url"] = links.get("box_workbook_url")
+        payload.append(row)
+    return list_response(payload)
 
 
 @router.get("/get/bill_line_items/project/{project_id}")

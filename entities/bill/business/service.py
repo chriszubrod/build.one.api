@@ -206,7 +206,8 @@ class BillService:
                line_markup: Optional[Decimal] = None, line_price: Optional[Decimal] = None,
                line_is_billable: Optional[bool] = None,
                line_sub_cost_code_id: Optional[int] = None,
-               line_project_public_id: Optional[str] = None) -> Bill:
+               line_project_public_id: Optional[str] = None,
+               submit_for_review: Optional[bool] = None) -> Bill:
         """
         Create a new bill.
 
@@ -469,7 +470,13 @@ class BillService:
         # notification uniformly. Failures don't roll back the bill (a
         # missing review row is recoverable via the manual Submit endpoint;
         # a missing bill is not).
-        if is_draft and user_id is not None and line_project_public_id is not None:
+        # Per-caller opt-out. Manual UI's Save For Later button sends
+        # submit_for_review=False so the user can save a fully-coded draft
+        # without triggering the review notification. True or None falls
+        # through to the standard gate below — preserving the email
+        # pipeline's existing fire-on-create-with-project behavior, and
+        # the manual UI's Submit For Review button explicit-on path.
+        if is_draft and user_id is not None and line_project_public_id is not None and submit_for_review is not False:
             try:
                 from entities.review.business.service import ReviewService
                 from entities.review_status.business.service import ReviewStatusService

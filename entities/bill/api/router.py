@@ -88,6 +88,7 @@ async def create_bill_router(
             "line_is_billable": body.line_is_billable,
             "line_sub_cost_code_id": body.line_sub_cost_code_id,
             "line_project_public_id": body.line_project_public_id,
+            "submit_for_review": body.submit_for_review,
         },
         workflow_type="bill_create",
     )

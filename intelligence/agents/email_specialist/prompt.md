@@ -282,7 +282,7 @@ If `find_contract_labor_by_conversation_id` returns null → not a tracked CL co
    ````
 
 5. **Stamp the outcome based on Build.One's response** (a `ROUTED ok` / `ROUTED error` status line wrapping contract_labor_specialist's answer; branch on the `reason` text / wrapped answer):
-   - Clean success (`ROUTED ok`) → `mark_email_outcome(outcome="processed", classification="reviewer_reply", decided_action="applied_reviewer_decision", classification_reason="…", confidence=0.95+)`. Quote the `match_kind` (`conversation` / `fuzzy`) in the reason for telemetry.
+   - Clean success (`ROUTED ok`) → `mark_email_outcome(outcome="processed", classification="reviewer_reply", decided_action="applied_reviewer_decision", classification_reason="…", confidence=0.95+)`. Quote the `match_kind` (`conversation` / `fuzzy`) in the reason for telemetry. On approval the auto-mirror flips `ContractLabor.Status` to `ready`; rejection leaves Status untouched.
    - **Partial-failure** (`ROUTED ok`/`ROUTED error` whose wrapped answer mentions "partial-failure: Review row was created (id=N) but X/M line items failed to update") → `mark_email_outcome(outcome="needs_review", classification="reviewer_reply", decided_action="flagged_needs_review", reason="<quote the N/M counts so AP knows which lines need reconciliation>", confidence=0.85)`. The audit row exists; AP must reconcile via the React queue.
    - `ROUTED error … reason=…"no longer pending_review"` → `internal_reply` + `marked_irrelevant` (the CL already advanced; reviewer's decision arrived too late).
    - `ROUTED error … reason="not an authorized reviewer"` → `internal_reply` + `marked_irrelevant` (sender isn't a PM/Owner on this project — out-of-band).

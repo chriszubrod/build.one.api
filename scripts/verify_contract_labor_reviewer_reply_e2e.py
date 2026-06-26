@@ -182,8 +182,10 @@ def verify() -> int:
 
         # Verify line items updated + status unchanged + Review row added
         after = _snapshot_state(CASE1_EXPECTED_CL_ID, CASE1_EXPECTED_PROJECT_ABBR)
-        if after['status'] != 'pending_review':
-            failures.append(f'case 1.post: status={after["status"]!r}, expected pending_review')
+        # Auto-mirror flips CL.Status to 'ready' after approval (post-2026-06-26;
+        # matches React /advance/review canonical path).
+        if after['status'] != 'ready':
+            failures.append(f'case 1.post: status={after["status"]!r}, expected ready (auto-mirror)')
         if after['review_count'] != snapshot['review_count'] + 1:
             failures.append(
                 f'case 1.post: review_count={after["review_count"]}, '

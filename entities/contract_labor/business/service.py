@@ -608,6 +608,26 @@ class ContractLaborService:
                     f"Failures: {'; '.join(line_failures)}"
                 )
 
+        # ── Auto-mirror Review → ContractLabor.status ──────────────
+        # When the new Review row lands at an approved final state
+        # (IsFinal=true, IsDeclined=false), flip CL.Status pending_review
+        # → ready so Generate Bills picks it up. Mirrors
+        # ReviewService.create() lines 95-111 (the canonical hook fired
+        # by the React /advance/review path); replicated here because
+        # we go through ReviewRepository.create directly (Bill mirror
+        # pattern for created_by_user_id=reviewer attribution).
+        # Failure-isolated: log + continue; the Review row is the
+        # authoritative audit and stands on its own.
+        if new_review.status_is_final and not new_review.status_is_declined:
+            try:
+                self.mark_as_ready_via_review_approval(contract_labor_id=cl.id)
+            except Exception:
+                logger.exception(
+                    "Failed to mirror ContractLabor.status after Review approval "
+                    "via apply_reviewer_decision (cl_id=%s, review_id=%s)",
+                    cl.id, new_review.id,
+                )
+
         rs = ReviewStatusService().read_by_id(id=new_review.review_status_id) if new_review.review_status_id else None
         new_status_name = rs.name if rs else None
 

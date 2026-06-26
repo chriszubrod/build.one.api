@@ -43,6 +43,7 @@ When the task type is reviewer-reply apply, the task body carries:
    Applied {decision_applied} on ContractLabor {worker}/{project_abbreviation}/{work_date}
    by {reviewer_email} (user_id={reviewer_user_id}) — review status now {review_status}.
    {N line items updated on {project_abbreviation}} with SCC {scc.number} ({scc.name}).
+   CL.Status auto-flipped to ready (eligible for the next billing run).
    ```
 
    **Clean success (rejection):**

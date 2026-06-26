@@ -77,6 +77,23 @@ def _restore_state(cl_id: int, snapshot: dict) -> None:
         conn.commit()
 
 
+def _force_pending_review(cl_id: int) -> None:
+    """Reset CL.Status to pending_review between test cases.
+
+    Necessary because the new auto-mirror (post-2026-06-26) flips CL.Status
+    to 'ready' after every successful approval — subsequent cases that
+    depend on the row being in pending_review would fail their precondition
+    guard without a reset.
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE dbo.[ContractLabor] SET [Status] = 'pending_review' WHERE [Id] = ?",
+            (cl_id,),
+        )
+        conn.commit()
+
+
 def _delete_reviews_created_for_cl(cl_id: int, before_count: int) -> None:
     """Delete Review rows we created during the test, leaving any pre-existing rows."""
     with get_connection() as conn:
@@ -117,9 +134,27 @@ def verify() -> int:
     failures: list = []
     initial_snapshot = _snapshot_state(CL_ID)
     initial_review_count = _count_reviews(CL_ID)
-    print(f'  baseline: CL 647 status={initial_snapshot["status"]}, '
-          f'line items on TB3={len(initial_snapshot["line_items"])}, '
-          f'pre-existing reviews={initial_review_count}')
+    # CL 647 may have been left at 'ready' / 'billed' by a prior verify
+    # run (the auto-mirror flips on Approval and earlier verify cases
+    # may not have restored). Force back to pending_review for the
+    # duration of this test; cleanup restores whatever the original
+    # snapshot's status was.
+    if initial_snapshot['status'] != 'pending_review':
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE dbo.[ContractLabor] SET [Status] = 'pending_review' WHERE [Id] = ?",
+                (CL_ID,),
+            )
+            conn.commit()
+        print(f'  baseline: CL 647 status was {initial_snapshot["status"]!r} '
+              f'(reset to pending_review for test; restored on cleanup), '
+              f'line items on TB3={len(initial_snapshot["line_items"])}, '
+              f'pre-existing reviews={initial_review_count}')
+    else:
+        print(f'  baseline: CL 647 status={initial_snapshot["status"]}, '
+              f'line items on TB3={len(initial_snapshot["line_items"])}, '
+              f'pre-existing reviews={initial_review_count}')
 
     try:
         # ── Case 1: Approval ──────────────────────────────────────────
@@ -163,10 +198,13 @@ def verify() -> int:
                         f'case 1: line item {li_id} description not updated; '
                         f'got {desc!r}'
                     )
-            if status_after != 'pending_review':
+            # Auto-mirror: Approved Review → CL.Status flips to 'ready'
+            # (matches React /advance/review canonical path; see
+            # service.py mark_as_ready_via_review_approval).
+            if status_after != 'ready':
                 failures.append(
                     f'case 1: CL.Status={status_after!r} after approval; '
-                    f'expected stay at pending_review (per design Q3)'
+                    f'expected ready (auto-mirror from Review approval)'
                 )
             # Verify a new Review row was inserted
             new_count = _count_reviews(CL_ID)
@@ -178,6 +216,7 @@ def verify() -> int:
             failures.append(f'case 1: raised {type(e).__name__}: {e}')
 
         # ── Case 2: Rejection ─────────────────────────────────────────
+        _force_pending_review(CL_ID)  # case 1's approval flipped to ready
         snapshot_before_case2 = _snapshot_state(CL_ID)
         try:
             r2 = service.apply_reviewer_decision(
@@ -242,6 +281,7 @@ def verify() -> int:
                 conn.commit()
 
         # ── Case 4: Unauthorized reviewer ─────────────────────────────
+        _force_pending_review(CL_ID)
         try:
             service.apply_reviewer_decision(
                 contract_labor_public_id=CL_PUBLIC_ID,
@@ -260,6 +300,7 @@ def verify() -> int:
                 print(f'  case 4 (unauthorized) → ValueError as expected: {str(e)[:80]}…')
 
         # ── Case 5: Approval without SCC ─────────────────────────────
+        _force_pending_review(CL_ID)
         try:
             service.apply_reviewer_decision(
                 contract_labor_public_id=CL_PUBLIC_ID,
@@ -300,10 +341,11 @@ def verify() -> int:
         return 1
 
     print(
-        '\nPASS — apply_reviewer_decision: approval updates line items + writes Review, '
-        'rejection leaves lines untouched + writes Review, status race rejects with '
-        'specific error, unauthorized sender rejects, missing SCC rejects. CL.Status '
-        'stays pending_review throughout (per design Q3).'
+        '\nPASS — apply_reviewer_decision: approval updates line items + writes Review + '
+        'auto-mirrors CL.Status pending_review → ready (matches React /advance/review '
+        'canonical path); rejection leaves lines untouched + writes Declined Review '
+        '(Status untouched); status race rejects with specific error; unauthorized '
+        'sender rejects; missing SCC rejects.'
     )
     return 0
 

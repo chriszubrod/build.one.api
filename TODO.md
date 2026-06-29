@@ -2,6 +2,77 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## Structured Alias entities — ProjectAlias, VendorAlias, SubCostCodeAlias, CostCodeAlias (2026-06-26)
+
+Today's email_specialist live-run kept tripping on entity resolution across all four parent types:
+- **Project**: invoices reference projects by ship-to address, homeowner name, marketing nickname ("Bluebird"), or street-number-with-letter-suffix (`7550C Buffalo` vs `7550 Buffalo Rd`) — none of which line up cleanly with `Project.Name`. Current workaround is the Bluebird→OHR2 line we hand-appended to `Project.Notes` yesterday.
+- **Vendor**: senders use DBA names, abbreviations, parent-company names, and divisional brands — e.g., emails from `accounting@leebp.com` say "Lee Masonry Products" but the vendor row is "Lee Building Products"; Cobra invoices come from `stacey@cobrallc.net` (FromName "Stacey Downs" — the AR clerk, not the vendor name).
+- **SubCostCode**: reviewers and vendors reference SCCs by old numbering (`62.0` vs canonical `62.00`), name shorthand ("trim labor" → 44.00 Trim Labor), or vendor-internal codes ("HVAC rough" → 25.00 HVAC). `SubCostCode.Aliases` is a single comma-separated string today — brittle and lacks provenance.
+- **CostCode**: same story one level up — division shorthand ("trade labor", "site work") needs structured lookup.
+
+All four currently rely on either free-text Notes / Aliases columns or substring-fuzz against the canonical Name. That's brittle: no provenance, no confidence, no way to record what an alias originated from. **One unified entity pattern** across all four parents — same shape, same agent tool family, same UI affordance.
+
+**Proposed shape (template — applied to all four entities):**
+```
+entities/{project|vendor|sub_cost_code|cost_code}_alias/
+  api/router.py
+  business/service.py
+  persistence/repo.py
+  sql/dbo.{project|vendor|sub_cost_code|cost_code}_alias.sql
+  intelligence/tools.py  -> record_{parent}_alias(parent, type, value, source, confidence)
+```
+
+`dbo.{Parent}Alias` table (one per parent):
+- `Id BIGINT PK`, `PublicId UUID`, `RowVersion`, `CreatedDatetime`, `ModifiedDatetime`, `CompanyId`, `CreatedByUserId`
+- `{Parent}Id BIGINT FK NOT NULL`
+- `Type NVARCHAR(40) NOT NULL` — per-parent enum (see "Type vocabularies" below)
+- `Value NVARCHAR(200) NOT NULL` — the actual hint string
+- `NormalizedValue NVARCHAR(200) NOT NULL` — case-folded, punctuation-stripped, persisted for lookup
+- `Source NVARCHAR(40) NOT NULL` — `manual` | `agent_inferred` | `vendor_supplied`
+- `Confidence DECIMAL(5,4) NULL` — only populated when `Source = 'agent_inferred'`
+- `IsActive BIT NOT NULL DEFAULT 1` — soft-delete for retired aliases
+- Filtered unique index `UQ_{Parent}Alias_Value_Type_Parent_Active` on `(NormalizedValue, Type, {Parent}Id)` where `IsActive = 1`
+
+**Type vocabularies (per parent):**
+- **ProjectAlias.Type**: `address_alias` | `nickname` | `vendor_referent` | `homeowner_name` | `mailing_label` | `lot_number`
+- **VendorAlias.Type**: `dba_name` | `abbreviation` | `division_brand` | `parent_company` | `vendor_internal_code` | `domain_alias`
+- **SubCostCodeAlias.Type**: `legacy_number` | `name_variant` | `vendor_referent` | `reviewer_shorthand`
+- **CostCodeAlias.Type**: `legacy_number` | `name_variant` | `division_shorthand`
+
+**Upgrade the `Find*ForInvoice` sproc family** to JOIN against the new alias tables and score structured matches HIGHER than the existing free-text fuzz:
+- `1.00` `alias_exact` — `{Parent}Alias.NormalizedValue` exactly matches lookup chunk
+- `0.95` `alias_substring` — alias is a substring of the lookup hint
+- `0.90` existing `name`/`abbreviation` exact (current top-of-rankings)
+- lower tiers — existing prefix/substring fuzz (kept as fallback)
+
+For SubCostCode + CostCode lookup (called by bill_specialist + reviewer_reply paths), upgrade `FindSubCostCodeForReply` similarly: alias_exact > number > name > current alias-string LIKE fuzz.
+
+**Agent tools** (one per parent — same handler shape):
+- `record_project_alias(project_public_id, type, value, source, confidence)`
+- `record_vendor_alias(vendor_public_id, type, value, source, confidence)`
+- `record_sub_cost_code_alias(sub_cost_code_public_id, type, value, source, confidence)`
+- `record_cost_code_alias(cost_code_public_id, type, value, source, confidence)`
+
+When an agent resolves a parent via fuzzy match + the user later confirms (via [Review] reply approving the draft Bill / line coding), the agent auto-persists the fragment as `agent_inferred` with the resolved confidence. Next invoice referencing the same fragment hits `alias_exact` instead of fuzz — the agent gets compounding-smarter every time AP confirms a match. Manual UI entries → `Source='manual'`, `Confidence=NULL`.
+
+**Why a child entity per parent, not just more columns:**
+- A parent commonly has 3-10+ aliases (e.g., Cobra LLC: dba "Cobra", domain "cobrallc.net", AR name "Stacey Downs", etc.).
+- Per-row provenance (`Source`, `Confidence`) doesn't fit into a single column.
+- Soft-deletable so retired aliases (e.g., DBA renamed) don't bleed into matches.
+
+**Backfill plan:**
+- Migrate the Bluebird→OHR2 alias we hand-added to `Project.Notes` yesterday into a real `ProjectAlias` row (`Type='nickname'`, `Source='manual'`).
+- Migrate the existing `SubCostCode.Aliases` comma-separated string into `SubCostCodeAlias` rows (one per token, `Type='name_variant'`, `Source='manual'`). Then drop the column on a follow-up migration.
+- Future cleanup pass: parse `Vendor.Notes` + `Project.Notes` free-text on every row, surface alias-shaped lines for human review-then-promote.
+
+**Mechanical pieces (per parent — 4× the same work):**
+- New entity package (mirror Contact's child-of-parent shape, but single-parent FK).
+- New module row per alias entity + RBAC grants on parent's module roles.
+- React surface: inline section on parent edit page, similar to `<InlineContacts />` component → `<InlineAliases parentEntity="project" parentId={...} />`.
+- Migration: `scripts/migrations/alias_entities_create.sql` covering all four tables + indexes + the `Find*ForInvoice` sproc upgrades + `SubCostCode.Aliases` backfill.
+
+Driven by: 2026-06-26 live-run friction where parser missed project on 4 of 7 vendor invoices (project lookup) + missed vendor on 3 of 3 Cobra invoices (vendor lookup keyed on sender name not company name). Today's lookups are binary (match canonical Name substring or fail); a structured hint layer makes the agent compounding-smart across all four parent types (every successful match teaches next time's lookup). Apply the pattern uniformly so the alias-handling shape is one mental model, not four.
+
 ## BillView page load is slow (2026-06-25)
 
 User reported: clicking the "View Bill in build.one →" button in an agent confirmation forward (Bill 25801, public_id `46F24E84-A149-421E-A232-BFE037C4E3EC`) landed on the right URL after the PWA service-worker cache was cleared, but the page took noticeably long to render the data details (Bill header, attachment image, line items, etc.). UX friction; not a correctness bug.

@@ -30,6 +30,7 @@ import base64
 import html
 import io
 import os
+import re
 import sys
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
@@ -176,6 +177,15 @@ def _usd(d: Decimal) -> str:
     return f"${d:,.2f}"
 
 
+def _bill_sort_key(bill_number: str):
+    """Natural-sort key for the Bill column: numeric runs compared as ints so
+    99 < 100, while date-style ('2026.05.31') and alphanumeric ('K72551')
+    numbers stay deterministic. re.split on (\\d+) alternates non-digit/digit
+    chunks, so at any position both keys are the same type (no int/str clash)."""
+    return [int(c) if c.isdigit() else c.lower()
+            for c in re.split(r"(\d+)", str(bill_number))]
+
+
 def build_filename(payment: Dict[str, Any]) -> str:
     name = (
         f"{_date_dots(payment['txn_date'])} - BILL PAYMENT - {payment['doc_number']} - "
@@ -216,7 +226,7 @@ def render_pdf(payer: str, payment: Dict[str, Any]) -> bytes:
     el += [mt, Spacer(1, 14)]
 
     data: List[List[str]] = [["Bill", "Date", "Amount"]]
-    for ln in payment["lines"]:
+    for ln in sorted(payment["lines"], key=lambda l: _bill_sort_key(l["bill_number"])):
         data.append([ln["bill_number"], _date_short(ln["bill_date"]), _usd(ln["amount"])])
     data.append(["", "Total", _usd(payment["total"])])
     n = len(data)
@@ -390,19 +400,28 @@ def backfill_contact_email(local_vendor_id: int, email: str) -> bool:
         return False
 
 
+def _split_emails(raw: Optional[str]) -> List[str]:
+    """Split a possibly multi-address string on commas/semicolons into clean
+    individual addresses. QBO `PrimaryEmailAddr` can hold 'a@x.com,b@y.com'."""
+    return [a.strip() for a in re.split(r"[,;]", raw or "") if a.strip()]
+
+
 def resolve_vendor_emails(payment: Dict[str, Any], overrides: Dict[str, List[str]]):
     """Resolve recipient emails: --email override -> local Contact -> QBO PrimaryEmailAddr.
 
-    Returns (emails, source, local_vendor_id, contact_emails).
+    Each source is split on commas/semicolons so a multi-address value becomes
+    individual recipients (and one Contact backfill each), never one malformed
+    'a@x.com,b@y.com' address. Returns (emails, source, local_vendor_id, contact_emails).
     """
     vqid = payment["vendor_qbo_id"]
     local_id, contact_emails = local_vendor_and_contact_emails(vqid)
     if overrides.get(vqid):
         return overrides[vqid], "override", local_id, contact_emails
     if contact_emails:
-        return contact_emails, "contact", local_id, contact_emails
+        flat = [a for e in contact_emails for a in _split_emails(e)]
+        return flat, "contact", local_id, contact_emails
     if payment.get("qbo_email"):
-        return [payment["qbo_email"]], "qbo", local_id, contact_emails
+        return _split_emails(payment["qbo_email"]), "qbo", local_id, contact_emails
     return [], "none", local_id, contact_emails
 
 

@@ -58,7 +58,7 @@ email_triage_specialist = Agent(
         "search_email_sender_history",
     ),
     model="claude-haiku-4-5-20251001",   # placeholder; cascade overrides per rung
-    provider="anthropic",
+    provider="cascade",
     credentials_key="email_agent",       # reuse the existing email agent identity
     budget=BudgetPolicy(max_turns=6, max_tokens=60_000),
     description=(

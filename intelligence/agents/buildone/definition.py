@@ -34,7 +34,7 @@ buildone = Agent(
         "delegate_to_time_tracking",
     ),
     model="claude-sonnet-4-6",
-    provider="anthropic",
+    provider="cascade",
     credentials_key="buildone_agent",
     budget=BudgetPolicy(max_turns=12, max_tokens=150_000),
     description="Central orchestrator — routes requests to entity specialists.",

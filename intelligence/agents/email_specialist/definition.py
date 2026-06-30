@@ -35,7 +35,7 @@ email_specialist = Agent(
         "delegate_to_buildone_orchestrator",
     ),
     model="claude-haiku-4-5-20251001",
-    provider="anthropic",
+    provider="cascade",
     credentials_key="email_agent",
     # Bigger budget than other specialists — a multi-attachment email
     # with DI extraction + delegation can run several minutes and pile

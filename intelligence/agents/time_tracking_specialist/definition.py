@@ -17,7 +17,7 @@ time_tracking_specialist = Agent(
         "flag_time_entry_for_human_review",
     ),
     model="claude-haiku-4-5-20251001",
-    provider="anthropic",
+    provider="cascade",
     credentials_key="time_tracking_agent",
     # Each run is exactly 2 tool calls (validate → flag) + final text.
     # 6 turns leaves slack for retries / clarifications. 60K tokens is

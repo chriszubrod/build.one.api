@@ -27,7 +27,7 @@ project_specialist = Agent(
         "read_customer_by_id",
     ),
     model="claude-sonnet-4-6",
-    provider="anthropic",
+    provider="cascade",
     credentials_key="project_agent",
     budget=BudgetPolicy(max_turns=12, max_tokens=150_000),
     description="Specialist for Projects (CRUD) and Project→Customer relationships (read).",

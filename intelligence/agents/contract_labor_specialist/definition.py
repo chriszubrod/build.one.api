@@ -30,7 +30,7 @@ contract_labor_specialist = Agent(
         "apply_contract_labor_reviewer_decision",
     ),
     model="claude-haiku-4-5-20251001",
-    provider="anthropic",
+    provider="cascade",
     credentials_key="contract_labor_agent",
     # Each run does ~3 tool calls (lookup, delegate, create) + final
     # text. 8 turns leaves slack for retries / clarifications.

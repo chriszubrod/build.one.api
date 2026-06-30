@@ -74,6 +74,7 @@ class AnthropicTransport:
         system: Optional[str] = None,
         max_tokens: int = 4096,
         tools: Optional[list[dict[str, Any]]] = None,
+        extra_body: Optional[dict[str, Any]] = None,
     ) -> AsyncIterator[TransportEvent]:
         if not self._api_key:
             yield TransportError(
@@ -89,6 +90,13 @@ class AnthropicTransport:
             max_tokens=max_tokens,
             tools=tools,
         )
+        # Merge only the generation params Anthropic supports; silently drop
+        # the rest (e.g. OpenAI-style `reasoning_effort`) so a caller can pass
+        # a cross-provider superset.
+        if extra_body:
+            for k in ("temperature", "top_p", "top_k", "stop_sequences"):
+                if k in extra_body:
+                    body[k] = extra_body[k]
         body["stream"] = True
 
         headers = {

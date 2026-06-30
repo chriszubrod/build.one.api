@@ -57,6 +57,13 @@ class StructuredTask:
     build_user_message: Callable[[Any], str]
     validate: Callable[[dict[str, Any]], tuple[bool, str]]
     ladder: Optional[tuple[Rung, ...]] = None
+    # Generation params passed to every rung as a superset; each transport keeps
+    # only what its model family accepts (temperature for non-reasoning models,
+    # reasoning_effort for reasoning models). Default = deterministic + cheap,
+    # which is what classify/extract tasks want.
+    gen_params: dict[str, Any] = field(
+        default_factory=lambda: {"temperature": 0, "reasoning_effort": "minimal"}
+    )
 
 
 @dataclass
@@ -105,6 +112,7 @@ async def run_cascade(
         t0 = time.perf_counter()
         parsed, confidence, usage, error = await _complete_structured(
             get_transport(rung.provider), rung, task.system_prompt, user_text,
+            gen_params=task.gen_params,
         )
         latency_ms = int((time.perf_counter() - t0) * 1000)
 
@@ -168,6 +176,7 @@ async def _complete_structured(
     rung: Rung,
     system: str,
     user_text: str,
+    gen_params: Optional[dict[str, Any]] = None,
 ) -> tuple[Optional[dict[str, Any]], Optional[float], Usage, Optional[str]]:
     """One structured completion. Returns (parsed_result, confidence, usage, error)."""
     messages = [Message(role="user", content=[Text(text=user_text)])]
@@ -177,7 +186,7 @@ async def _complete_structured(
     try:
         async for ev in transport.stream(
             messages, model=rung.model, system=system,
-            max_tokens=rung.max_tokens, tools=None,
+            max_tokens=rung.max_tokens, tools=None, extra_body=gen_params,
         ):
             if isinstance(ev, TextDelta):
                 text_parts.append(ev.text)

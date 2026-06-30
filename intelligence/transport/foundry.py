@@ -56,18 +56,35 @@ _MAX_DELAY_SECONDS = 8.0
 _DEFAULT_API_VERSION = "2024-05-01-preview"
 
 
-def _token_param(model: str) -> str:
-    """Output-token-cap body field for a model.
+_REASONING_PREFIXES = ("gpt-", "o1", "o3", "o4")
 
-    Confirmed at smoke: gpt-5.4-mini/nano REJECT `max_tokens` (HTTP 400
-    "Unsupported parameter… use max_completion_tokens") while DeepSeek-V4-Flash
-    takes `max_tokens`. Heuristic by family; a defensive swap-retry in stream()
-    covers any model this guesses wrong.
-    """
-    m = model.lower()
-    if m.startswith(("gpt-", "o1", "o3", "o4")):
-        return "max_completion_tokens"
-    return "max_tokens"
+
+def _is_reasoning_model(model: str) -> bool:
+    """GPT-5.4 / o-series are reasoning models. Confirmed at smoke they (a)
+    require `max_completion_tokens` not `max_tokens`, and (b) reject
+    `temperature`/`top_p` (the lever is `reasoning_effort`). DeepSeek-V4-Flash
+    is non-reasoning: `max_tokens` + temperature, and it rejects
+    `reasoning_effort`."""
+    return model.lower().startswith(_REASONING_PREFIXES)
+
+
+def _token_param(model: str) -> str:
+    """Output-token-cap body field: `max_completion_tokens` for reasoning
+    models, `max_tokens` otherwise. A defensive swap-retry in stream() covers
+    any model this guesses wrong."""
+    return "max_completion_tokens" if _is_reasoning_model(model) else "max_tokens"
+
+
+def _filter_gen_params(model: str, extra_body: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the generation params this model's family accepts, so a caller
+    can pass a generous superset without a provider 400."""
+    eb = dict(extra_body)
+    if _is_reasoning_model(model):
+        eb.pop("temperature", None)
+        eb.pop("top_p", None)
+    else:
+        eb.pop("reasoning_effort", None)
+    return eb
 
 
 def _retry_delay(attempt: int, retry_after: Optional[float] = None) -> float:
@@ -121,6 +138,7 @@ class FoundryTransport:
         system: Optional[str] = None,
         max_tokens: int = 4096,
         tools: Optional[list[dict[str, Any]]] = None,
+        extra_body: Optional[dict[str, Any]] = None,
     ) -> AsyncIterator[TransportEvent]:
         if not self._api_key:
             yield TransportError(message="FOUNDRY_API_KEY is not configured", code="missing_api_key")
@@ -136,6 +154,9 @@ class FoundryTransport:
         token_param = _token_param(model)
         if token_param != "max_tokens":
             body[token_param] = body.pop("max_tokens")
+        # Generation params, filtered to what this model's family accepts.
+        if extra_body:
+            body.update(_filter_gen_params(model, extra_body))
         body["stream"] = True
         body["stream_options"] = {"include_usage": True}
 

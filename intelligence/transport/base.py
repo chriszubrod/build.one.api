@@ -79,4 +79,11 @@ class Transport(Protocol):
         system: Optional[str] = None,
         max_tokens: int = 4096,
         tools: Optional[list[dict[str, Any]]] = None,
-    ) -> AsyncIterator[TransportEvent]: ...
+        extra_body: Optional[dict[str, Any]] = None,
+    ) -> AsyncIterator[TransportEvent]:
+        """`extra_body` carries optional generation params (temperature,
+        reasoning_effort, top_p, …). Each adapter merges the keys its
+        provider/model supports and silently drops the rest, so a caller may
+        pass a generous superset (e.g. both temperature and reasoning_effort)
+        without risking a provider 400 on an unsupported field."""
+        ...

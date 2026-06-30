@@ -1,16 +1,20 @@
 """Transport registry — name → Transport factory.
 
-Phase 1 holds a single entry. The indirection exists so agents can reference
-providers by string (in their Agent definition) rather than importing a class.
+The indirection exists so agents (and the model cascade) can reference
+providers by string (in their Agent definition / ladder rung) rather than
+importing a class.
 """
 from typing import Callable
 
 from intelligence.transport.anthropic import AnthropicTransport
 from intelligence.transport.base import Transport
+from intelligence.transport.foundry import FoundryTransport
 
 
 _providers: dict[str, Callable[[], Transport]] = {
     "anthropic": AnthropicTransport,
+    # Azure AI Foundry — OpenAI-compatible surface for DeepSeek + GPT-5.4 family.
+    "foundry": FoundryTransport,
 }
 
 

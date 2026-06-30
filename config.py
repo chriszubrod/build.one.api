@@ -169,6 +169,12 @@ class Settings(BaseSettings):
 
     # Intelligence Layer — provider API keys
     anthropic_api_key: Optional[str] = None
+    # Azure AI Foundry (OpenAI-compatible chat-completions; DeepSeek + GPT-5.4
+    # family). `foundry_endpoint` is the base that the transport appends
+    # `/chat/completions` to — e.g. https://<resource>.services.ai.azure.com/models
+    foundry_api_key: Optional[str] = None
+    foundry_endpoint: Optional[str] = None
+    foundry_api_version: Optional[str] = None
 
     # Intelligence Layer — internal API base URL
     # Agents call their own API surface as HTTP clients so they go through

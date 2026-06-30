@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 _PROD = "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net"
 
 
-async def drive(public_id: str, threshold: float) -> int:
+async def drive(public_id: str, threshold: float, consensus_k=None) -> int:
     # Imported after INTERNAL_API_BASE_URL is set so the agent's tool calls
     # resolve against the chosen API.
     import intelligence.agents.email_triage_specialist  # noqa: F401  (registers the agent)
@@ -46,13 +46,16 @@ async def drive(public_id: str, threshold: float) -> int:
     )
 
     print(f"── triage cascade on EmailMessage {public_id}")
-    print(f"── API: {os.environ.get('INTERNAL_API_BASE_URL')}  τ={threshold}\n")
+    ck = f"  consensus_k={consensus_k}" if consensus_k else ""
+    print(f"── API: {os.environ.get('INTERNAL_API_BASE_URL')}  τ={threshold}{ck}\n")
 
     result = await run_agent_cascade(
         agent_name="email_triage_specialist",
         user_message=user_message,
         validate=_validate,
         threshold=threshold,
+        consensus_k=consensus_k,
+        consensus_key="classification" if consensus_k else None,
     )
 
     print("── per-rung attempts (cheapest-first):")
@@ -73,7 +76,8 @@ async def drive(public_id: str, threshold: float) -> int:
     if result.accepted:
         r = result.result or {}
         print(
-            f"✅ ACCEPTED at {result.winning_rung.provider}/{result.winning_rung.model}: "
+            f"✅ ACCEPTED (via {result.accepted_via}) at "
+            f"{result.winning_rung.provider}/{result.winning_rung.model}: "
             f"{r.get('classification')} (confidence {result.confidence})"
         )
         print(f"   reason: {r.get('reason')}")
@@ -94,6 +98,8 @@ def main() -> int:
                         help="acceptance confidence threshold (default: task default)")
     parser.add_argument("--base-url", default=None,
                         help=f"INTERNAL_API_BASE_URL for the agent's tool calls (default: prod {_PROD})")
+    parser.add_argument("--consensus-k", type=int, default=None,
+                        help="accept early if K rungs agree on the label (cross-model consensus)")
     args = parser.parse_args()
 
     # Point the agent's tool calls at the chosen API before importing anything
@@ -105,7 +111,7 @@ def main() -> int:
         from intelligence.cascade.email_classification import EMAIL_CLASSIFY_THRESHOLD
         threshold = EMAIL_CLASSIFY_THRESHOLD
 
-    return asyncio.run(drive(args.public_id, threshold))
+    return asyncio.run(drive(args.public_id, threshold, consensus_k=args.consensus_k))
 
 
 if __name__ == "__main__":

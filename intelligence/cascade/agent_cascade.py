@@ -52,13 +52,16 @@ async def run_agent_cascade(
     extract_result: Optional[ExtractResult] = None,
     ladder: Optional[tuple[Rung, ...]] = None,
     requesting_user_id: Optional[int] = None,
+    consensus_k: Optional[int] = None,
+    consensus_key: Optional[str] = None,
     run_agent_fn: Optional[Callable[..., Any]] = None,
 ) -> CascadeResult:
     """Run `agent_name` cheapest-first, escalating until the run-level gate
     passes (finished cleanly AND validator passes AND confidence ≥ τ).
 
-    `run_agent_fn` is injectable for testing; defaults to the real
-    `intelligence.run.run_agent`. See the module docstring's read-only scope.
+    `consensus_k`/`consensus_key` optionally accept on cross-rung agreement
+    (see run_ladder). `run_agent_fn` is injectable for testing; defaults to the
+    real `intelligence.run.run_agent`. See the module docstring's read-only scope.
     """
     rungs = ladder or DEFAULT_LADDER
     extract = extract_result or _default_extract
@@ -71,7 +74,10 @@ async def run_agent_cascade(
             runner, agent_name, rung, user_message, extract, requesting_user_id,
         )
 
-    return await run_ladder(rungs, execute, validate, threshold, f"agent:{agent_name}")
+    return await run_ladder(
+        rungs, execute, validate, threshold, f"agent:{agent_name}",
+        consensus_k=consensus_k, consensus_key=consensus_key,
+    )
 
 
 async def _run_agent_rung(

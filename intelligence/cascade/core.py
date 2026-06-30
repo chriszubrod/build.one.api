@@ -64,6 +64,12 @@ class StructuredTask:
     gen_params: dict[str, Any] = field(
         default_factory=lambda: {"temperature": 0, "reasoning_effort": "minimal"}
     )
+    # Consensus accept (optional): if `consensus_k` validated rungs agree on the
+    # same `result[consensus_key]` value, accept it even if no single rung's
+    # confidence reached τ. Cross-model agreement is often a stronger signal
+    # than any one model's self-confidence. Disabled when either is None.
+    consensus_k: Optional[int] = None
+    consensus_key: Optional[str] = None
 
 
 @dataclass
@@ -87,6 +93,7 @@ class CascadeResult:
     confidence: Optional[float]
     winning_rung: Optional[Rung]
     attempts: list[Attempt]
+    accepted_via: Optional[str] = None   # "threshold" | "consensus" when accepted
 
 
 async def run_cascade(
@@ -113,7 +120,10 @@ async def run_cascade(
             gen_params=task.gen_params,
         )
 
-    return await run_ladder(rungs, execute, task.validate, task.threshold, task.name)
+    return await run_ladder(
+        rungs, execute, task.validate, task.threshold, task.name,
+        consensus_k=task.consensus_k, consensus_key=task.consensus_key,
+    )
 
 
 async def run_ladder(
@@ -122,6 +132,8 @@ async def run_ladder(
     validate: Callable[[dict[str, Any]], tuple[bool, str]],
     threshold: float,
     name: str,
+    consensus_k: Optional[int] = None,
+    consensus_key: Optional[str] = None,
 ) -> CascadeResult:
     """Generic cheapest-first escalation, shared by the single-shot cascade and
     the agent-loop cascade.
@@ -131,8 +143,13 @@ async def run_ladder(
     validation+confidence gate; the first accepted rung wins; if none pass, the
     best attempt is returned with `needs_human=True` (never auto-accept a
     failing result).
+
+    Optional consensus: when `consensus_k`/`consensus_key` are set, a rung is
+    also accepted if `consensus_k` validated rungs (including this one) agree on
+    the same `result[consensus_key]` value — even if no single rung reached τ.
     """
     attempts: list[Attempt] = []
+    agree: dict[Any, int] = {}   # validated label -> count, for consensus
     for rung in rungs:
         t0 = time.perf_counter()
         parsed, confidence, usage, error = await execute(rung)
@@ -151,6 +168,17 @@ async def run_ladder(
 
         validated, vreason = validate(parsed)
         accepted = validated and confidence is not None and confidence >= threshold
+        accepted_via = "threshold" if accepted else None
+
+        # Consensus: count agreement among validated rungs on consensus_key.
+        if validated and consensus_k and consensus_key:
+            label = parsed.get(consensus_key)
+            if label is not None:
+                agree[label] = agree.get(label, 0) + 1
+                if not accepted and agree[label] >= consensus_k:
+                    accepted = True
+                    accepted_via = "consensus"
+
         attempts.append(Attempt(
             rung=rung, accepted=accepted, confidence=confidence,
             validated=validated, validation_reason=vreason, result=parsed,
@@ -159,13 +187,14 @@ async def run_ladder(
         logger.info(
             "cascade[%s] rung %s/%s -> %s (validated=%s, conf=%s, τ=%.2f, %dms)",
             name, rung.provider, rung.model,
-            "ACCEPT" if accepted else "escalate",
+            (accepted_via.upper() if accepted_via else "escalate"),
             validated, confidence, threshold, latency_ms,
         )
         if accepted:
             return CascadeResult(
                 accepted=True, needs_human=False, result=parsed,
                 confidence=confidence, winning_rung=rung, attempts=attempts,
+                accepted_via=accepted_via,
             )
 
     best = _best_attempt(attempts)

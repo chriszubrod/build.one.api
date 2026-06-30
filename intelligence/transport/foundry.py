@@ -47,16 +47,27 @@ from intelligence.transport.base import (
 
 logger = logging.getLogger(__name__)
 
-# Body field carrying the output-token cap. Azure-OpenAI's newest models want
-# `max_completion_tokens`; DeepSeek + older deployments take `max_tokens`.
-# Kept as a constant so it's a one-line change at smoke time.
-_TOKEN_PARAM = "max_tokens"
-
 _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 529})
 _MAX_RETRIES = 2            # 3 attempts total
 _BASE_DELAY_SECONDS = 1.0
 _MAX_DELAY_SECONDS = 8.0
-_DEFAULT_API_VERSION = "2024-10-21"
+# Confirmed working api-version for the Foundry /models inference route
+# (smoke 2026-06-30): DeepSeek-V4-Flash + gpt-5.4-mini/nano all answer on it.
+_DEFAULT_API_VERSION = "2024-05-01-preview"
+
+
+def _token_param(model: str) -> str:
+    """Output-token-cap body field for a model.
+
+    Confirmed at smoke: gpt-5.4-mini/nano REJECT `max_tokens` (HTTP 400
+    "Unsupported parameter… use max_completion_tokens") while DeepSeek-V4-Flash
+    takes `max_tokens`. Heuristic by family; a defensive swap-retry in stream()
+    covers any model this guesses wrong.
+    """
+    m = model.lower()
+    if m.startswith(("gpt-", "o1", "o3", "o4")):
+        return "max_completion_tokens"
+    return "max_tokens"
 
 
 def _retry_delay(attempt: int, retry_after: Optional[float] = None) -> float:
@@ -85,8 +96,23 @@ class FoundryTransport:
         )
         self._timeout = timeout
 
+    def _models_base(self) -> str:
+        """Resolve the resource-level `/models` inference base from whatever
+        FOUNDRY_ENDPOINT is set to. The Azure AI Foundry *project* endpoint
+        (`https://<res>.services.ai.azure.com/api/projects/<proj>`), the bare
+        resource root, and an explicit `.../models` base all collapse to
+        `https://<res>.services.ai.azure.com/models` — the OpenAI-compatible
+        chat-completions surface that serves every deployment (model-in-body)."""
+        ep = self._endpoint
+        if "/api/projects/" in ep:
+            ep = ep.split("/api/projects/")[0]
+        ep = ep.rstrip("/")
+        if ep.endswith("/models"):
+            ep = ep[: -len("/models")]
+        return f"{ep}/models"
+
     def _url(self) -> str:
-        return f"{self._endpoint}/chat/completions?api-version={self._api_version}"
+        return f"{self._models_base()}/chat/completions?api-version={self._api_version}"
 
     async def stream(
         self,
@@ -106,14 +132,19 @@ class FoundryTransport:
         body = to_openai_request(
             messages, model=model, system=system, max_tokens=max_tokens, tools=tools,
         )
-        # Rename the token cap field if this deployment needs it, and stream
-        # with usage accounting on the terminal chunk.
-        if _TOKEN_PARAM != "max_tokens":
-            body[_TOKEN_PARAM] = body.pop("max_tokens")
+        # Per-model output-token cap field; stream with terminal usage accounting.
+        token_param = _token_param(model)
+        if token_param != "max_tokens":
+            body[token_param] = body.pop("max_tokens")
         body["stream"] = True
         body["stream_options"] = {"include_usage": True}
 
-        headers = {"api-key": self._api_key, "content-type": "application/json"}
+        # Foundry /models route authenticates the resource key as a bearer token.
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "content-type": "application/json",
+        }
+        token_param_swapped = False
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(
             connect=10.0, read=self._timeout, write=30.0, pool=10.0,
@@ -133,6 +164,19 @@ class FoundryTransport:
                 status = resp.status_code
                 await resp_ctx.__aexit__(None, None, None)
                 resp_ctx = None
+                err_text = err_body.decode(errors="replace")
+                # Defensive: if _token_param() guessed the cap field wrong for
+                # this deployment, the API returns a specific 400 — swap the
+                # field once and retry (covers models the heuristic doesn't know).
+                if status == 400 and not token_param_swapped and "max_completion_tokens" in err_text:
+                    if "max_tokens" in body:
+                        body["max_completion_tokens"] = body.pop("max_tokens")
+                        token_param_swapped = True
+                        continue
+                    if "max_completion_tokens" in body and "max_tokens" in err_text:
+                        body["max_tokens"] = body.pop("max_completion_tokens")
+                        token_param_swapped = True
+                        continue
                 if status in _RETRYABLE_STATUSES and attempt < _MAX_RETRIES:
                     delay = _retry_delay(attempt, retry_after)
                     logger.info(
@@ -142,7 +186,7 @@ class FoundryTransport:
                     await asyncio.sleep(delay)
                     continue
                 yield TransportError(
-                    message=f"HTTP {status}: {err_body.decode(errors='replace')[:500]}",
+                    message=f"HTTP {status}: {err_text[:500]}",
                     code=f"http_{status}",
                 )
                 return

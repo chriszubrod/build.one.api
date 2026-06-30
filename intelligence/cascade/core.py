@@ -107,28 +107,50 @@ async def run_cascade(
     get_transport = transport_for or transport_registry.get_transport
     user_text = task.build_user_message(payload)
 
-    attempts: list[Attempt] = []
-    for rung in rungs:
-        t0 = time.perf_counter()
-        parsed, confidence, usage, error = await _complete_structured(
+    async def execute(rung: Rung):
+        return await _complete_structured(
             get_transport(rung.provider), rung, task.system_prompt, user_text,
             gen_params=task.gen_params,
         )
+
+    return await run_ladder(rungs, execute, task.validate, task.threshold, task.name)
+
+
+async def run_ladder(
+    rungs: tuple[Rung, ...],
+    execute: Callable[[Rung], Any],
+    validate: Callable[[dict[str, Any]], tuple[bool, str]],
+    threshold: float,
+    name: str,
+) -> CascadeResult:
+    """Generic cheapest-first escalation, shared by the single-shot cascade and
+    the agent-loop cascade.
+
+    `execute(rung)` runs the rung and returns
+    `(parsed_result, confidence, usage, error)`. Each result runs the
+    validation+confidence gate; the first accepted rung wins; if none pass, the
+    best attempt is returned with `needs_human=True` (never auto-accept a
+    failing result).
+    """
+    attempts: list[Attempt] = []
+    for rung in rungs:
+        t0 = time.perf_counter()
+        parsed, confidence, usage, error = await execute(rung)
         latency_ms = int((time.perf_counter() - t0) * 1000)
 
         if error or parsed is None:
             attempts.append(Attempt(
                 rung=rung, accepted=False, usage=usage, latency_ms=latency_ms,
-                error=error or "no parseable JSON in response",
+                error=error or "no parseable result",
             ))
             logger.info(
                 "cascade[%s] rung %s/%s -> escalate (error=%s, %dms)",
-                task.name, rung.provider, rung.model, error, latency_ms,
+                name, rung.provider, rung.model, error, latency_ms,
             )
             continue
 
-        validated, vreason = task.validate(parsed)
-        accepted = validated and confidence is not None and confidence >= task.threshold
+        validated, vreason = validate(parsed)
+        accepted = validated and confidence is not None and confidence >= threshold
         attempts.append(Attempt(
             rung=rung, accepted=accepted, confidence=confidence,
             validated=validated, validation_reason=vreason, result=parsed,
@@ -136,9 +158,9 @@ async def run_cascade(
         ))
         logger.info(
             "cascade[%s] rung %s/%s -> %s (validated=%s, conf=%s, τ=%.2f, %dms)",
-            task.name, rung.provider, rung.model,
+            name, rung.provider, rung.model,
             "ACCEPT" if accepted else "escalate",
-            validated, confidence, task.threshold, latency_ms,
+            validated, confidence, threshold, latency_ms,
         )
         if accepted:
             return CascadeResult(
@@ -146,11 +168,10 @@ async def run_cascade(
                 confidence=confidence, winning_rung=rung, attempts=attempts,
             )
 
-    # Ladder exhausted — surface the best attempt for a human, never auto-accept.
     best = _best_attempt(attempts)
     logger.warning(
         "cascade[%s] EXHAUSTED %d rungs without acceptance -> needs_human",
-        task.name, len(attempts),
+        name, len(attempts),
     )
     return CascadeResult(
         accepted=False, needs_human=True,

@@ -35,8 +35,15 @@ async def run_agent(
     parent_session_id: Optional[int] = None,
     previous_session_id: Optional[int] = None,
     on_session_created: Optional[callable] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> AsyncIterator[LoopEvent]:
     """Run an agent by name. Yields LoopEvents as they happen.
+
+    `provider`/`model` optionally override the agent's declared LLM for this
+    run — the model cascade uses this to run an agent's prompt + tools +
+    identity on a cheaper model and escalate on failure. They default to the
+    agent's own provider/model, so existing callers are unaffected.
 
     Raises ValueError if the agent is not registered. Raises AgentAuthError
     if login fails (propagates — no session row is created in that case).
@@ -45,6 +52,8 @@ async def run_agent(
     agent = agent_registry.get(name)
     if agent is None:
         raise ValueError(f"Unknown agent: {name!r}")
+    eff_provider = provider or agent.provider
+    eff_model = model or agent.model
 
     # 2. Log in as the agent user
     access_token, agent_user_id = await login_agent_with_user_id(agent.credentials_key)
@@ -62,12 +71,12 @@ async def run_agent(
     )
 
     # 5. Drive the persistent session
-    transport = get_transport(agent.provider)
+    transport = get_transport(eff_provider)
     async for ev in run_session(
         transport=transport,
-        provider=agent.provider,
+        provider=eff_provider,
         agent_name=agent.name,
-        model=agent.model,
+        model=eff_model,
         user_message=user_message,
         tools=tools,
         ctx=ctx,

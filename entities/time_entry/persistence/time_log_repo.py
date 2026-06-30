@@ -109,6 +109,37 @@ class TimeLogRepository:
             logger.error(f"Error during create time log: {error}")
             raise map_database_error(error)
 
+    def read_by_time_entry_ids(self, time_entry_ids: list[int]) -> list[TimeLog]:
+        """
+        Batch-read TimeLogs for a list of TimeEntry IDs in a single sproc
+        call. Returns a flat list; the caller groups by `time_entry_id`.
+
+        Unscoped by actor — the caller is responsible for having already
+        constrained the entry-ID set to entries the actor can see. Used by
+        the list endpoint's include_logs=true path, where parent entries
+        are pulled via service.read_paginated (which IS actor-scoped) and
+        we just want to attach logs without N round-trips. Mirrors the
+        Review entity's ReadCurrentReviewsByBillIds pattern.
+        """
+        if not time_entry_ids:
+            return []
+        csv = ",".join(str(int(i)) for i in time_entry_ids if i is not None)
+        if not csv:
+            return []
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadTimeLogsByTimeEntryIds",
+                    params={"TimeEntryIds": csv},
+                )
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(f"Error during ReadTimeLogsByTimeEntryIds: {error}")
+            raise map_database_error(error)
+
     def read_by_time_entry_id(
         self,
         time_entry_id: int,

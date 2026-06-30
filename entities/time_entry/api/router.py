@@ -36,7 +36,12 @@ def _resolve_user_id(current_user: dict) -> int:
     return auth.user_id
 
 
-def _entry_dict_with_current_status(entry, *, project_ids: Optional[list[int]] = None) -> dict:
+def _entry_dict_with_current_status(
+    entry,
+    *,
+    project_ids: Optional[list[int]] = None,
+    time_logs: Optional[list[dict]] = None,
+) -> dict:
     """
     Inject `current_status` into a TimeEntry's serialized dict by reading
     the latest TimeEntryStatus row. The column doesn't exist on the
@@ -64,6 +69,11 @@ def _entry_dict_with_current_status(entry, *, project_ids: Optional[list[int]] =
     d["current_status"] = current.status if current else "draft"
     if project_ids is not None:
         d["distinct_project_ids"] = project_ids
+    # time_logs only included when the caller asked for them (include_logs=true
+    # on the list endpoint) — single-entry endpoints omit, callers that don't
+    # need logs avoid the bandwidth.
+    if time_logs is not None:
+        d["time_logs"] = time_logs
     return d
 
 router = APIRouter(
@@ -118,6 +128,14 @@ def read_time_entries(
     end_date: Optional[str] = Query(default=None),
     sort_by: str = Query(default="WorkDate"),
     sort_direction: str = Query(default="DESC"),
+    include_logs: bool = Query(
+        default=False,
+        description=(
+            "When true, each entry in the response includes its time_logs[]"
+            " inline. Used by the PastDayScreen team view to collapse N+1"
+            " detail round-trips into a single list fetch."
+        ),
+    ),
     current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING)),
 ):
     """
@@ -153,11 +171,24 @@ def read_time_entries(
     project_ids_by_entry = service.repo.read_distinct_project_ids_for(
         time_entry_ids=[e.id for e in results],
     )
+
+    # When the caller asks for logs (PastDayScreen team view), fetch them all
+    # in a single batch sproc keyed on the page's entry IDs and group client-
+    # side. Avoids the N detail round-trips the React page was doing.
+    logs_by_entry: dict[int, list[dict]] = {}
+    if include_logs and results:
+        from entities.time_entry.persistence.time_log_repo import TimeLogRepository
+        entry_ids = [e.id for e in results if e.id is not None]
+        all_logs = TimeLogRepository().read_by_time_entry_ids(entry_ids)
+        for log in all_logs:
+            logs_by_entry.setdefault(log.time_entry_id, []).append(log.to_dict())
+
     return list_response(
         data=[
             _entry_dict_with_current_status(
                 entry,
                 project_ids=project_ids_by_entry.get(entry.id, []),
+                time_logs=logs_by_entry.get(entry.id, []) if include_logs else None,
             )
             for entry in results
         ],

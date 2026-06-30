@@ -71,7 +71,14 @@ async def run_agent(
     )
 
     # 5. Drive the persistent session
-    transport = get_transport(eff_provider)
+    if eff_provider == "cascade":
+        # Build a per-agent-laddered cascade transport (cheapest-first with
+        # per-turn fallback). Built directly rather than via the registry so it
+        # carries this agent's ladder.
+        from intelligence.transport.cascade import CascadeTransport
+        transport = CascadeTransport(ladder=agent.ladder)
+    else:
+        transport = get_transport(eff_provider)
     async for ev in run_session(
         transport=transport,
         provider=eff_provider,

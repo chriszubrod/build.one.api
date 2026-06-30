@@ -11,10 +11,21 @@ from intelligence.transport.base import Transport
 from intelligence.transport.foundry import FoundryTransport
 
 
+def _cascade_factory() -> Transport:
+    # Deferred import: CascadeTransport -> cascade.core -> this registry, so a
+    # top-level import here would be circular. Building it lazily is fine.
+    from intelligence.transport.cascade import CascadeTransport
+    return CascadeTransport()
+
+
 _providers: dict[str, Callable[[], Transport]] = {
     "anthropic": AnthropicTransport,
     # Azure AI Foundry — OpenAI-compatible surface for DeepSeek + GPT-5.4 family.
     "foundry": FoundryTransport,
+    # Cheapest-first meta-transport (per-turn fallback over the default ladder).
+    # run_agent builds a per-agent-laddered instance directly; this factory
+    # serves get_transport("cascade") with the default ladder.
+    "cascade": _cascade_factory,
 }
 
 

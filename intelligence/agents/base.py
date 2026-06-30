@@ -17,7 +17,11 @@ class Agent:
     system_prompt: str
     tools: tuple[str, ...]          # tool names; resolved via tools.registry
     model: str
-    provider: str                    # "anthropic", etc. — keyed into transport.registry
+    provider: str                    # "anthropic" | "foundry" | "cascade" — keyed into transport.registry
     credentials_key: str             # config key prefix for this agent's login creds
     budget: BudgetPolicy = field(default_factory=BudgetPolicy)
     description: Optional[str] = None  # optional — shown in admin/debug UIs
+    # When provider == "cascade", the per-agent ladder of (provider, model)
+    # Rungs the CascadeTransport walks cheapest-first. None -> the default
+    # aggressive ladder. Ignored for non-cascade providers.
+    ladder: Optional[tuple] = None

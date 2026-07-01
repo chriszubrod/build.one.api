@@ -1,5 +1,27 @@
 # Session Notes
 
+## Session: Box Excel — immune-formula conversion of all 23 budget trackers (2026-07-01)
+
+Diagnosed + fixed an active corruption bug: line-item inserts into the Box budget-tracker workbooks were silently corrupting the DETAILS tab (and downstream) formulas.
+
+**Root cause:** openpyxl `ws.insert_rows()` is **NOT formula-aware** — it shifts cells down but never rewrites a single formula reference (unlike Excel's UI insert or MS Graph, which rewrite affected refs). Box has no cell/range API, so `apply_rows_to_details` is pure download→openpyxl-edit→upload — meaning every Bill/Expense/VendorCredit insert drifted the bounded-range subtotals + comma-list grand total. The SharePoint (MS Graph) copies were fine; only the Box (openpyxl) copies corrupted.
+
+**Fix chosen (Chris): position-independent "immune" formulas** via a scripted converter, applied per-workbook (download → convert → verify → WOPI-lock check → `upload_file_version` → re-download re-verify; version history = per-file rollback):
+- Subtotal `=SUM(N4:N32)` → `=SUMIFS(N:N,$B:$B,<cat>,$E:$E,"<>SUBTOTAL")` (keyed on the col-B category integer — the one thing inserts don't corrupt).
+- Grand total comma-list → `=SUMIF($E:$E,"SUBTOTAL",F:F)`.
+- Per-row budget lookup `…,DETAILS!D4)` → `…,INDEX($D:$D,ROW()))`.
+- Reconciliation "draws block" → INDEX/MATCH label-anchored + relative `ROW()`-offset forms.
+
+**Self-healing:** the conversion REPAIRED existing corruption. **128 subtotal errors** across 13 workbooks + **grand-total drift on 15/23** (some understated by millions — the 68-cell comma-list had drifted to reference only 4–7 subtotal rows; proof: OHR2-GUEST Excel-cached at $44,378.78 vs true $873,914.37). Verified `SUMIF(SUBTOTAL)` == sum of all line items (0 orphans). **Downstream tabs use immune whole-column refs (0 fragile refs, all 23)** → client-facing draws/SUMMARY were never affected; corruption was confined to DETAILS display cells.
+
+**Proven safe:** ran the real `apply_rows_to_details` against a converted workbook → 0 of 668 formulas changed. So the drain was un-paused (`PAUSE_BOX_DRAIN=false`) with no code deploy needed; the 4 backlog rows drained clean.
+
+**Excluded / flagged:** 4 workbooks (CBT/CC/ML/MR2-STABLES) are an OLDER template (budget col E, amount col M, no SUBTOTAL rows) — incompatible with the writer, flagged for template migration. HP2/TB3 ad-hoc `SUM(range)` helpers in cols P/Q/R/S left as-is. EVR labels: cost of construction = grand total − cats 90/95/99.
+
+**Code change (committed d7ec0e6 on feat/model-cascade — NOT on master/prod yet):** `_load_workbook_resilient()` in `integrations/box/excel/business/workbook_editor.py` — strips openpyxl-hostile autofilters ("Value must be either numerical or a string containing a wildcard") on parse-failure only, preserving filters otherwise. Wired into both load sites. Verified: py_compile + autofilter preservation on all 23 + hostile-autofilter recovery + module self-test.
+
+**Open:** 1 stale Box outbox dead-letter (Id 8, invoice→update_box_excel from 2026-06-19) — mis-routed pre-existing artifact, inert. Full detail: umbrella memory `project_box_excel_immune_formulas.md`.
+
 ## Session: Time-entry email notifications — daily per-worker digest (2026-06-16)
 
 Built server-side email notifications for time tracking. After reviewing the TimeEntry/TimeLog write paths, the design landed on a **once-a-morning per-worker digest of the prior day** (Chris's call) rather than per-event email — iOS fires multiple writes per clock-in/out, so per-event would be noisy, and a consolidated next-morning summary is the better correctness-confirmation artifact. It also moves the work to a scheduled sweep with no hooks in the hot write paths.

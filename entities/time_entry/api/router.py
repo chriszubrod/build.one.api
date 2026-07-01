@@ -41,11 +41,20 @@ def _entry_dict_with_current_status(
     *,
     project_ids: Optional[list[int]] = None,
     time_logs: Optional[list[dict]] = None,
+    current_status: Optional[str] = None,
 ) -> dict:
     """
     Inject `current_status` into a TimeEntry's serialized dict by reading
     the latest TimeEntryStatus row. The column doesn't exist on the
     TimeEntry table itself — status lives in TimeEntryStatus history.
+
+    Two call shapes:
+
+    - `current_status` supplied: caller pre-fetched statuses in a single
+      batch sproc (list endpoint's happy path). No per-entry DB call.
+    - `current_status` omitted: helper falls back to read_current per
+      entry. Used by submit/approve/reject single-entry endpoints where
+      the batch shape doesn't apply.
 
     The status sproc enforces Phase-3 scope: with NULL ActorUserId AND
     NULL ActorIsSystemAdmin it returns zero rows, which would silently
@@ -62,11 +71,14 @@ def _entry_dict_with_current_status(
     Single-entry endpoints can omit it; the field stays absent.
     """
     d = entry.to_dict()
-    current = TimeEntryStatusService().repo.read_current(
-        time_entry_id=entry.id,
-        actor_is_system_admin=True,
-    )
-    d["current_status"] = current.status if current else "draft"
+    if current_status is not None:
+        d["current_status"] = current_status
+    else:
+        current = TimeEntryStatusService().repo.read_current(
+            time_entry_id=entry.id,
+            actor_is_system_admin=True,
+        )
+        d["current_status"] = current.status if current else "draft"
     if project_ids is not None:
         d["distinct_project_ids"] = project_ids
     # time_logs only included when the caller asked for them (include_logs=true
@@ -162,25 +174,29 @@ def read_time_entries(
         start_date=start_date,
         end_date=end_date,
     )
-    # Inject current_status into every entry — see _entry_dict_with_current_status
-    # for the why. N+1 lookup is acceptable at typical list sizes; bump to a
-    # batched fetch if the list ever grows materially.
-    # Batch-fetch distinct ProjectIds per entry for the list-page Project
-    # column (replaces an N+1 TimeLog read; backed by sproc
-    # ReadDistinctProjectIdsByTimeEntryIds).
+    # Batch-fetch three per-entry lookups in one sproc call each:
+    #   1. current_status (was N+1 via read_current-per-entry; migration 013)
+    #   2. distinct_project_ids for the Project column (migration 010)
+    #   3. time_logs when include_logs=true (migration 012, PastDayScreen)
+    # At page_size=50 this cuts what used to be ~50 status sprocs + 1 list +
+    # 1 count down to 4 round-trips total. See _entry_dict_with_current_status
+    # for why status has to be a separate lookup (lives in TimeEntryStatus,
+    # not TimeEntry).
+    entry_ids = [e.id for e in results if e.id is not None]
     project_ids_by_entry = service.repo.read_distinct_project_ids_for(
-        time_entry_ids=[e.id for e in results],
+        time_entry_ids=entry_ids,
+    )
+    from entities.time_entry.persistence.time_entry_status_repo import (
+        TimeEntryStatusRepository,
+    )
+    current_status_by_entry = TimeEntryStatusRepository().read_current_by_time_entry_ids(
+        entry_ids,
     )
 
-    # When the caller asks for logs (PastDayScreen team view), fetch them all
-    # in a single batch sproc keyed on the page's entry IDs and group client-
-    # side. Avoids the N detail round-trips the React page was doing.
     logs_by_entry: dict[int, list[dict]] = {}
-    if include_logs and results:
+    if include_logs and entry_ids:
         from entities.time_entry.persistence.time_log_repo import TimeLogRepository
-        entry_ids = [e.id for e in results if e.id is not None]
-        all_logs = TimeLogRepository().read_by_time_entry_ids(entry_ids)
-        for log in all_logs:
+        for log in TimeLogRepository().read_by_time_entry_ids(entry_ids):
             logs_by_entry.setdefault(log.time_entry_id, []).append(log.to_dict())
 
     return list_response(
@@ -189,6 +205,11 @@ def read_time_entries(
                 entry,
                 project_ids=project_ids_by_entry.get(entry.id, []),
                 time_logs=logs_by_entry.get(entry.id, []) if include_logs else None,
+                current_status=(
+                    current_status_by_entry[entry.id].status
+                    if entry.id in current_status_by_entry
+                    else "draft"
+                ),
             )
             for entry in results
         ],
@@ -227,21 +248,56 @@ def read_time_entry(
     current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING)),
 ):
     """
-    Read a single time entry by public ID, including nested time logs and status history.
+    Read a single time entry by public ID, including nested time logs,
+    status history, and billed lineage.
+
+    Perf note (2026-07-01): the prior shape called
+    TimeLogService.read_by_time_entry_public_id and
+    TimeEntryStatusService.read_by_time_entry_public_id, each of which
+    re-resolved public_id -> internal id via ReadTimeEntryByPublicId
+    before its real query — 5 sprocs total. Plus the React TimeEntryView
+    made a separate GET /billed-lineage right after, adding a 6th sproc
+    and a network round-trip. Now: read the parent once, then hit the
+    child repos with the resolved id directly, and fold billed_lineage
+    into the same response. 6 sprocs -> 4 sprocs + one round-trip saved
+    on the web.
     """
+    from entities.time_entry.business.service import _actor_scope
+    from entities.time_entry.persistence.repo import TimeEntryRepository
+    from entities.time_entry.persistence.time_log_repo import TimeLogRepository
+    from entities.time_entry.persistence.time_entry_status_repo import (
+        TimeEntryStatusRepository,
+    )
+
     service = TimeEntryService()
     entry = service.read_by_public_id(public_id=public_id)
     if not entry:
         raise_not_found("Time entry")
 
-    # Include nested time logs and status history
-    time_logs = TimeLogService().read_by_time_entry_public_id(time_entry_public_id=public_id)
-    status_history = TimeEntryStatusService().read_by_time_entry_public_id(time_entry_public_id=public_id)
+    actor_user_id, actor_is_admin, actor_can_view_team = _actor_scope()
+    # Reuse the parent read's access check by calling the child readers
+    # with the same scope, using entry.id directly (no re-lookup).
+    time_logs = TimeLogRepository().read_by_time_entry_id(
+        time_entry_id=entry.id,
+        actor_user_id=actor_user_id,
+        actor_is_system_admin=actor_is_admin,
+        actor_can_view_team=actor_can_view_team,
+    )
+    status_history = TimeEntryStatusRepository().read_by_time_entry_id(
+        time_entry_id=entry.id,
+        actor_user_id=actor_user_id,
+        actor_is_system_admin=actor_is_admin,
+        actor_can_view_team=actor_can_view_team,
+    )
+    billed_lineage = TimeEntryRepository().read_billed_lineage(
+        time_entry_id=int(entry.id),
+    )
 
     result = entry.to_dict()
     result["time_logs"] = [log.to_dict() for log in time_logs]
     result["status_history"] = [s.to_dict() for s in status_history]
     result["current_status"] = status_history[-1].status if status_history else None
+    result["billed_lineage"] = billed_lineage
 
     return item_response(result)
 

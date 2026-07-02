@@ -310,8 +310,14 @@ class ContractLaborBillService:
                 if not billing_period:
                     billing_period = datetime.now().strftime("%Y-%m-%d")
 
+                # Bill.TotalAmount is A/P — what we owe the vendor (cost). The QBO
+                # push sums line-item Amount (cost) into the QBO bill total, so the
+                # header must match Amount, not the marked-up Price. Price is what
+                # we later charge the client via Invoice — it never touches QBO A/P.
+                # (Prior code summed .price, producing a header ~1+markup off the
+                # line-item cost and drift on every reconciliation report.)
                 total_amount = sum(
-                    Decimal(str(item["line_item"].price or 0)) for item in items
+                    Decimal(str(item["line_item"].amount or 0)) for item in items
                     if item["line_item"].is_billable is not False
                 )
                 invoice_number = self.generate_invoice_number(billing_period, project_abbr)
@@ -1006,8 +1012,14 @@ class ContractLaborBillService:
         elements.append(details_table)
         elements.append(Spacer(1, 20))
 
-        # Line items table
-        line_items_header = ['DATE', 'SERVICE', 'DESCRIPTION', 'AMOUNT']
+        # Line items table.
+        # Column header is "PRICE" because the values in it are BillLineItem.price
+        # (per-entry cost × 1+markup) — see line 1034's `float(li.price or 0)`.
+        # Bill.TotalAmount, by contrast, is A/P (cost) — the summed line-item
+        # Amount, not Price. The two are DIFFERENT numbers on the same document;
+        # labeling this column "Amount" caused confusion during the 2026-07-02
+        # completion review.
+        line_items_header = ['DATE', 'SERVICE', 'DESCRIPTION', 'PRICE']
         line_items_data = [line_items_header]
 
         # Style for wrapping description text

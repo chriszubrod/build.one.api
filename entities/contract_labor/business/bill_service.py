@@ -196,6 +196,23 @@ class ContractLaborBillService:
         project_groups = {}
         entry_ids_by_project = {}
 
+        # Compute the period key for a given date. Bi-monthly periods:
+        # day 1-15  → period ending on the 15th of that month
+        # day 16-end → period ending on the last day of that month
+        # Returns YYYY-MM-DD of the period END; this doubles as bill_date
+        # and drives the YYYY.MM.DD.<project> invoice_number.
+        def _period_end_for(date_str: Optional[str]) -> Optional[str]:
+            if not date_str:
+                return None
+            try:
+                d = datetime.strptime(date_str[:10], "%Y-%m-%d")
+                if d.day <= 15:
+                    return d.replace(day=15).strftime("%Y-%m-%d")
+                last = monthrange(d.year, d.month)[1]
+                return d.replace(day=last).strftime("%Y-%m-%d")
+            except Exception:
+                return None
+
         for entry in vendor_entries:
             line_items = self.line_item_repo.read_by_contract_labor_id(contract_labor_id=entry.id)
             entry_added = False
@@ -211,7 +228,16 @@ class ContractLaborBillService:
                 if project_id_filter is not None and li_project_id != project_id_filter:
                     continue
 
-                group_key = li_project_id  # None for overhead items
+                # Group by (project, billing_period_end). The period is
+                # derived from li.line_date (fallback to entry.work_date)
+                # per Chris' rule — 1st-15th = first half, 16th-eom = second
+                # half. Prevents multiple periods collapsing into one bill,
+                # which is what happened before this fix. Note: overhead
+                # lines (project=None) still group per-period.
+                period_end = _period_end_for(
+                    str(li.line_date) if li.line_date else (str(entry.work_date) if entry.work_date else None)
+                )
+                group_key = (li_project_id, period_end)  # None-safe on either
 
                 if group_key not in project_groups:
                     project_groups[group_key] = []
@@ -222,6 +248,7 @@ class ContractLaborBillService:
                     "entry": entry,
                     "project": project_map.get(li_project_id) if li_project_id else None,
                     "scc": scc_map.get(li.sub_cost_code_id),
+                    "period_end": period_end,
                 })
                 entry_ids_by_project[group_key].add(entry.id)
                 entry_added = True
@@ -236,11 +263,11 @@ class ContractLaborBillService:
                         f"no line items with a project assigned"
                     )
 
-        # Count how many project groups each entry participates in. Multi-
-        # project CLs (a single day split across two or more projects) will
-        # generate one Bill per project — storing a single BLI id on the
-        # parent's `bill_line_item_id` would silently overwrite whichever
-        # project's linkage came second. For those, leave the parent field
+        # Count how many bill-groups each entry participates in. A CL that
+        # lands in multiple (project × period) groups is "split" across
+        # bills — storing a single BLI id on the parent's
+        # `bill_line_item_id` would silently overwrite whichever
+        # group's linkage came last. For those, leave the parent field
         # NULL and rely on the per-line `ContractLaborLineItem.BillLineItemId`
         # FK (set below at update_by_id) as the authoritative linkage.
         entry_project_count: dict[int, int] = {}
@@ -248,8 +275,13 @@ class ContractLaborBillService:
             for eid in eid_set:
                 entry_project_count[eid] = entry_project_count.get(eid, 0) + 1
 
-        # Generate a bill for each project (project_id=None means overhead)
-        for project_id, items in project_groups.items():
+        # Generate a bill per (project, billing_period) group. project_id=None
+        # means overhead. `period_end` is the derived last day of the period
+        # (15th or end-of-month) and doubles as bill_date + invoice_number
+        # segment, so lines from work spanning two half-months land on two
+        # separate bills.
+        for group_key, items in project_groups.items():
+            project_id, group_period = group_key
             # Populated when we take the edit path (existing bill found);
             # purged only after successful new attachment upload so a
             # failure mid-flow leaves the reviewer with the prior PDF.
@@ -267,8 +299,14 @@ class ContractLaborBillService:
                     project_abbr = "OVERHEAD"
                     memo = "Contract Labor - Overhead"
 
-                first_entry = items[0]["entry"]
-                billing_period = first_entry.billing_period_start or first_entry.work_date
+                # Bill date IS the period end (per Chris' bi-monthly rule).
+                # Fall back to the first entry's fields only when the group's
+                # computed period is missing (unexpected — every LI has a
+                # line_date or entry.work_date to derive from).
+                billing_period = group_period
+                if not billing_period:
+                    first_entry = items[0]["entry"]
+                    billing_period = first_entry.billing_period_start or first_entry.work_date
                 if not billing_period:
                     billing_period = datetime.now().strftime("%Y-%m-%d")
 
@@ -483,7 +521,7 @@ class ContractLaborBillService:
                     logger.error(f"Failed to upload PDF or create attachment: {e}")
                     result["errors"].append(f"Failed to upload PDF for {invoice_number}: {str(e)}")
 
-                for entry_id in entry_ids_by_project[project_id]:
+                for entry_id in entry_ids_by_project[group_key]:
                     entry = self.cl_repo.read_by_id(id=entry_id)
                     if not entry:
                         continue
@@ -518,8 +556,8 @@ class ContractLaborBillService:
                         result["entries_billed"] += 1
 
             except Exception as e:
-                logger.exception(f"Error generating bill for project {project_id}")
-                result["errors"].append(f"Error generating bill for project {project_id}: {str(e)}")
+                logger.exception(f"Error generating bill for project {project_id} period {group_period}")
+                result["errors"].append(f"Error generating bill for project {project_id} period {group_period}: {str(e)}")
 
         return result
 

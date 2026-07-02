@@ -49,6 +49,8 @@ class ContractLaborPDFService:
         self.vendor_service = VendorService()
         self.project_service = ProjectService()
         self.sub_cost_code_service = SubCostCodeService()
+        from entities.contract_labor.persistence.line_item_repo import ContractLaborLineItemRepository
+        self.line_item_repo = ContractLaborLineItemRepository()
 
     def generate_pdfs_for_bill(self, bill_public_id: str) -> dict:
         """
@@ -472,11 +474,19 @@ class ContractLaborPDFService:
             if billing_period_start:
                 entries = [e for e in entries if e.billing_period_start == billing_period_start]
             
-            # Group by bill_line_item_id to find unique bills
-            bill_line_item_ids = set()
+            # Group by bill_line_item_id to find unique bills. Parent's
+            # `bill_line_item_id` is only populated for single-project CLs;
+            # multi-project CLs carry the linkage on the child LI's
+            # BillLineItemId, so we walk both.
+            bill_line_item_ids: set[int] = set()
             for entry in entries:
                 if entry.bill_line_item_id:
                     bill_line_item_ids.add(entry.bill_line_item_id)
+                for li in self.line_item_repo.read_by_contract_labor_id(
+                    contract_labor_id=entry.id
+                ):
+                    if li.bill_line_item_id:
+                        bill_line_item_ids.add(li.bill_line_item_id)
             
             # Get unique bill IDs
             bill_ids = set()

@@ -160,9 +160,12 @@ class ContractLaborBillService:
             result["errors"].append(f"Vendor with ID {vendor_id} not found")
             return result
 
-        # Get ready entries for this vendor, filtered by billing period if provided
+        # Get ready entries for this vendor, filtered by billing period if
+        # provided. Match on `vendor_id` (the CL's real vendor FK, set by the
+        # aggregator or the vendor-backfill sweep) — the legacy
+        # `bill_vendor_id` override is NULL for almost every row now.
         ready_entries = self.cl_service.read_by_status(status="ready", billing_period_start=billing_period_start)
-        vendor_entries = [e for e in ready_entries if e.bill_vendor_id == vendor_id]
+        vendor_entries = [e for e in ready_entries if e.vendor_id == vendor_id]
 
         if not vendor_entries:
             result["errors"].append("No ready entries found for this vendor")
@@ -208,8 +211,24 @@ class ContractLaborBillService:
                     f"no line items with a project assigned"
                 )
 
+        # Count how many project groups each entry participates in. Multi-
+        # project CLs (a single day split across two or more projects) will
+        # generate one Bill per project — storing a single BLI id on the
+        # parent's `bill_line_item_id` would silently overwrite whichever
+        # project's linkage came second. For those, leave the parent field
+        # NULL and rely on the per-line `ContractLaborLineItem.BillLineItemId`
+        # FK (set below at update_by_id) as the authoritative linkage.
+        entry_project_count: dict[int, int] = {}
+        for eid_set in entry_ids_by_project.values():
+            for eid in eid_set:
+                entry_project_count[eid] = entry_project_count.get(eid, 0) + 1
+
         # Generate a bill for each project (project_id=None means overhead)
         for project_id, items in project_groups.items():
+            # Populated when we take the edit path (existing bill found);
+            # purged only after successful new attachment upload so a
+            # failure mid-flow leaves the reviewer with the prior PDF.
+            orphan_attachment_ids: set[int] = set()
             try:
                 if project_id is not None:
                     project = project_map.get(project_id)
@@ -263,7 +282,15 @@ class ContractLaborBillService:
                     if not bill:
                         result["errors"].append(f"Row version conflict updating bill {invoice_number}")
                         continue
-                    # Clean up existing BillLineItems and their attachment links
+                    # Clean up existing BillLineItems and their attachment
+                    # links. We MUST delete the BLIA link + BLI rows (FK
+                    # from CL) up front to make room for the recreation.
+                    # But the Attachment records themselves — which own the
+                    # underlying blob file — are held back and only purged
+                    # AFTER the new PDF + Attachment have been created and
+                    # linked successfully. If any downstream step fails,
+                    # the old attachments survive and the reviewer can
+                    # still see the prior PDF.
                     existing_blis = self.bill_line_item_service.read_by_bill_id(bill.id)
                     blia_service = BillLineItemAttachmentService()
                     orphan_attachment_ids = set()
@@ -280,13 +307,9 @@ class ContractLaborBillService:
                             cl_entry.bill_line_item_id = None
                             self.cl_repo.update_by_id(cl_entry)
                         self.bill_line_item_service.repo.delete_by_id(bli.id)
-                    for att_id in orphan_attachment_ids:
-                        try:
-                            att = AttachmentService().read_by_id(id=att_id)
-                            if att:
-                                AttachmentService().delete_by_public_id(public_id=att.public_id)
-                        except Exception:
-                            logger.warning(f"Could not delete orphan attachment {att_id}")
+                    # Deferred: orphan Attachment records + their blobs.
+                    # Purged only after successful new-attachment creation
+                    # below (search for "orphan_attachment_ids" purge).
 
                 entry_id_to_first_bli_id = {}
                 created_blis_this_project = []
@@ -411,6 +434,17 @@ class ContractLaborBillService:
                             bill_line_item_public_id=bli.public_id,
                             attachment_public_id=attachment.public_id,
                         )
+                    # New PDF is up + linked. Safe to purge the old
+                    # attachments from the prior generation (edit path
+                    # only — orphan_attachment_ids is empty when we
+                    # created the bill fresh).
+                    for att_id in orphan_attachment_ids:
+                        try:
+                            att = AttachmentService().read_by_id(id=att_id)
+                            if att:
+                                AttachmentService().delete_by_public_id(public_id=att.public_id)
+                        except Exception:
+                            logger.warning(f"Could not delete orphan attachment {att_id}")
                 except Exception as e:
                     logger.error(f"Failed to upload PDF or create attachment: {e}")
                     result["errors"].append(f"Failed to upload PDF for {invoice_number}: {str(e)}")
@@ -420,7 +454,14 @@ class ContractLaborBillService:
                     if not entry:
                         continue
                     entry.status = "billed"
-                    entry.bill_line_item_id = entry_id_to_first_bli_id.get(entry_id)
+                    # Single-project CL → parent's bill_line_item_id is
+                    # unambiguous; keep it for legacy callers. Multi-project
+                    # → leave NULL; child LI.BillLineItemId carries the
+                    # per-project truth.
+                    if entry_project_count.get(entry_id, 0) <= 1:
+                        entry.bill_line_item_id = entry_id_to_first_bli_id.get(entry_id)
+                    else:
+                        entry.bill_line_item_id = None
                     updated = self.cl_repo.update_by_id(entry)
                     if updated:
                         result["entries_billed"] += 1
@@ -456,45 +497,70 @@ class ContractLaborBillService:
             if not entry:
                 continue
 
-            # Find the bill: try BillLineItemId first, fall back to bill_number + bill_vendor_id
-            bill = None
+            # Collect every Bill referenced by this CL. Sources in preference
+            # order:
+            #   1. Parent's `bill_line_item_id` (single-project fast-path)
+            #   2. Every child ContractLaborLineItem.BillLineItemId
+            #      (authoritative; multi-project CLs need this — the parent
+            #      is now deliberately NULL for those.)
+            #   3. Legacy fallback: bill_number + vendor_id lookup.
+            entry_line_items = self.line_item_repo.read_by_contract_labor_id(
+                contract_labor_id=entry.id
+            )
+            candidate_bli_ids: set[int] = set()
             if entry.bill_line_item_id:
-                bli = bill_line_item_service.read_by_id(id=entry.bill_line_item_id)
+                candidate_bli_ids.add(entry.bill_line_item_id)
+            for li in entry_line_items:
+                if li.bill_line_item_id:
+                    candidate_bli_ids.add(li.bill_line_item_id)
+
+            entry_bills: list = []
+            for bli_id in candidate_bli_ids:
+                bli = bill_line_item_service.read_by_id(id=bli_id)
                 if bli and bli.bill_id:
-                    bill = self.bill_service.read_by_id(id=bli.bill_id)
+                    b = self.bill_service.read_by_id(id=bli.bill_id)
+                    if b and all(existing.id != b.id for existing in entry_bills):
+                        entry_bills.append(b)
 
-            if not bill and entry.bill_number and entry.bill_vendor_id:
-                bill = self.bill_service.repo.read_by_bill_number_and_vendor_id(
-                    bill_number=entry.bill_number, vendor_id=entry.bill_vendor_id,
+            if not entry_bills and entry.bill_number and entry.vendor_id:
+                b = self.bill_service.repo.read_by_bill_number_and_vendor_id(
+                    bill_number=entry.bill_number, vendor_id=entry.vendor_id,
                 )
+                if b:
+                    entry_bills.append(b)
 
-            if not bill:
+            if not entry_bills:
                 continue
 
-            bill_id = bill.id
-            if bill_id not in bills:
-                vendor = vendor_map.get(bill.vendor_id)
-                bills[bill_id] = {
-                    "bill": bill,
-                    "vendor": vendor,
-                    "project_groups": {},
-                }
+            for bill in entry_bills:
+                bill_id = bill.id
+                if bill_id not in bills:
+                    vendor = vendor_map.get(bill.vendor_id)
+                    bills[bill_id] = {
+                        "bill": bill,
+                        "vendor": vendor,
+                        "project_groups": {},
+                    }
 
-            # Get line items for this entry and add to project groups
-            line_items = self.line_item_repo.read_by_contract_labor_id(contract_labor_id=entry.id)
-            for li in line_items:
-                project_id = li.project_id
-                group_key = project_id  # None for overhead
+                # Only add this entry's lines that belong to THIS bill (i.e.
+                # whose BLI parent bill matches). Prevents multi-project CLs
+                # from double-rendering every line under both bills.
+                for li in entry_line_items:
+                    if li.bill_line_item_id:
+                        bli = bill_line_item_service.read_by_id(id=li.bill_line_item_id)
+                        if not bli or bli.bill_id != bill_id:
+                            continue
 
-                if group_key not in bills[bill_id]["project_groups"]:
-                    bills[bill_id]["project_groups"][group_key] = []
-
-                bills[bill_id]["project_groups"][group_key].append({
-                    "line_item": li,
-                    "entry": entry,
-                    "project": project_map.get(project_id) if project_id else None,
-                    "scc": scc_map.get(li.sub_cost_code_id),
-                })
+                    project_id = li.project_id
+                    group_key = project_id  # None for overhead
+                    if group_key not in bills[bill_id]["project_groups"]:
+                        bills[bill_id]["project_groups"][group_key] = []
+                    bills[bill_id]["project_groups"][group_key].append({
+                        "line_item": li,
+                        "entry": entry,
+                        "project": project_map.get(project_id) if project_id else None,
+                        "scc": scc_map.get(li.sub_cost_code_id),
+                    })
 
         if not bills:
             return {"error": "No billed entries with linked bills found for the selected records"}
@@ -574,9 +640,11 @@ class ContractLaborBillService:
         if not vendor:
             return {"error": f"Vendor with ID {vendor_id} not found"}
 
-        # Get ready entries for this vendor, filtered by billing period if provided
+        # Get ready entries for this vendor, filtered by billing period if
+        # provided. Match on `vendor_id` (same rationale as
+        # generate_bills_for_vendor above).
         ready_entries = self.cl_service.read_by_status(status="ready", billing_period_start=billing_period_start)
-        vendor_entries = [e for e in ready_entries if e.bill_vendor_id == vendor_id]
+        vendor_entries = [e for e in ready_entries if e.vendor_id == vendor_id]
 
         if not vendor_entries:
             return {"error": "No ready entries found for this vendor"}

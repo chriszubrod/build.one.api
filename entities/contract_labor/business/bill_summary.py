@@ -38,11 +38,16 @@ def build_bills_summary(billing_period: Optional[str] = None) -> list[dict[str, 
 
     vendor_groups: dict[Any, dict[str, Any]] = {}
     for entry in ready_entries:
-        vendor_key = entry.bill_vendor_id or f"employee:{entry.employee_name}"
+        # Group by the real vendor FK. `bill_vendor_id` is the legacy override
+        # field that's NULL on almost every row post-aggregator rewrite; using
+        # it as the key silently drops every properly-bound CL into the
+        # `employee:<name>` fallback bucket (which the React /labor/bills
+        # filter then excludes via `vendor_id !== null`).
+        vendor_key = entry.vendor_id or f"employee:{entry.employee_name}"
 
         if vendor_key not in vendor_groups:
             vendor_groups[vendor_key] = {
-                "vendor_id": entry.bill_vendor_id,
+                "vendor_id": entry.vendor_id,
                 "vendor_name": None,
                 "employee_name": entry.employee_name,
                 "line_items": [],

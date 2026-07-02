@@ -41,6 +41,14 @@ class ContractLaborRepository:
         if not row:
             return None
 
+        # Parse comma-separated id lists surfaced by list sprocs
+        # (ReadContractLaborsByStatus) into python lists. Missing on
+        # single-fetch endpoints — defaults to [].
+        def _split_ids(raw) -> list[int]:
+            if raw is None or raw == "":
+                return []
+            return [int(x) for x in str(raw).split(",") if x]
+
         try:
             return ContractLabor(
                 id=row.Id,
@@ -80,6 +88,8 @@ class ContractLaborRepository:
                 import_batch_id=getattr(row, "ImportBatchId", None),
                 source_file=getattr(row, "SourceFile", None),
                 source_row=getattr(row, "SourceRow", None),
+                line_item_project_ids=_split_ids(getattr(row, "LineItemProjectIds", None)),
+                line_item_sub_cost_code_ids=_split_ids(getattr(row, "LineItemSubCostCodeIds", None)),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during contract labor mapping: {error}")

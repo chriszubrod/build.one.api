@@ -1,5 +1,5 @@
 # Python Standard Library Imports
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Optional
 from decimal import Decimal
 import base64
@@ -69,6 +69,14 @@ class ContractLabor:
     # via a LEFT JOIN. Lets the React Edit page link to / fetch the source
     # TimeEntry's TimeLog rows for the "Time Log Details" section.
     source_time_entry_public_id: Optional[str] = None
+
+    # Distinct non-NULL ProjectIds / SubCostCodeIds aggregated across all
+    # child ContractLaborLineItem rows — populated only by list sprocs
+    # (`ReadContractLaborsByStatus` today) so the React /labor/list search
+    # haystack can match multi-project CLs where the parent cl.ProjectId
+    # is NULL (Migration 009). Empty list on single-fetch endpoints.
+    line_item_project_ids: list[int] = field(default_factory=list)
+    line_item_sub_cost_code_ids: list[int] = field(default_factory=list)
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

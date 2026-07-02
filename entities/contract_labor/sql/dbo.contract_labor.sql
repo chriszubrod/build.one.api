@@ -518,6 +518,12 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
+    -- LineItemProjectIds / LineItemSubCostCodeIds are comma-separated
+    -- strings of DISTINCT non-NULL ids from the child line items. Powers
+    -- the React /labor/list search haystack so multi-project CLs (where
+    -- cl.ProjectId itself is NULL per Migration 009) still match on
+    -- their per-line project name / SCC number. Empty string when the
+    -- CL has no lines with a set id.
     SELECT
         cl.[Id],
         cl.[PublicId],
@@ -549,7 +555,23 @@ BEGIN
         cl.[BillNumber],
         cl.[ImportBatchId],
         cl.[SourceFile],
-        cl.[SourceRow]
+        cl.[SourceRow],
+        (
+            SELECT STRING_AGG(CAST(t.pid AS NVARCHAR(20)), ',')
+            FROM (
+                SELECT DISTINCT li.[ProjectId] AS pid
+                FROM dbo.[ContractLaborLineItem] li
+                WHERE li.[ContractLaborId] = cl.[Id] AND li.[ProjectId] IS NOT NULL
+            ) t
+        ) AS [LineItemProjectIds],
+        (
+            SELECT STRING_AGG(CAST(t.sid AS NVARCHAR(20)), ',')
+            FROM (
+                SELECT DISTINCT li.[SubCostCodeId] AS sid
+                FROM dbo.[ContractLaborLineItem] li
+                WHERE li.[ContractLaborId] = cl.[Id] AND li.[SubCostCodeId] IS NOT NULL
+            ) t
+        ) AS [LineItemSubCostCodeIds]
     FROM dbo.[ContractLabor] cl
     LEFT JOIN dbo.[Vendor] v ON cl.[VendorId] = v.[Id]
     WHERE cl.[Status] = @Status

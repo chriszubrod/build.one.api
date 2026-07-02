@@ -140,11 +140,36 @@ class ReviewService:
                     ContractLaborReviewNotificationService,
                 )
 
-                cl = ContractLaborService().repo.read_by_id(contract_labor_id)
+                cl_service = ContractLaborService()
+                cl = cl_service.repo.read_by_id(contract_labor_id)
                 if cl is not None:
                     ContractLaborReviewNotificationService().enqueue_drafts(
                         contract_labor=cl,
                     )
+                    # Advance CL.Status from pending_review → submitted
+                    # on the initial Submit transition so the row moves
+                    # out of the author's Pending queue and into the
+                    # Submitted queue. Failure-isolated (log, don't roll
+                    # back the Review row). Idempotent: only flips when
+                    # the current status is 'pending_review'; any other
+                    # value (submitted/ready/billed) is left alone so
+                    # reruns or race conditions are safe.
+                    # NOTE: this is the interim shim; full vocab rename
+                    # (pending_review → draft; ready → approved;
+                    # billed → completed) will land in a follow-up.
+                    if cl.status == "pending_review":
+                        try:
+                            existing = cl_service.repo.read_by_id(contract_labor_id)
+                            if existing is not None and existing.status == "pending_review":
+                                existing.status = "submitted"
+                                cl_service.repo.update_by_id(existing)
+                        except Exception:
+                            logger.exception(
+                                "Failed to advance CL.status pending_review → submitted "
+                                "(contract_labor_id=%s, review_id=%s)",
+                                contract_labor_id,
+                                review.id,
+                            )
             except Exception:
                 logger.exception(
                     "Failed to enqueue ContractLabor review-submit drafts "

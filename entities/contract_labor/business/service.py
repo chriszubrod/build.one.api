@@ -420,13 +420,16 @@ class ContractLaborService:
             )
 
         # Status guard — surfaced here so the agent can produce a
-        # specific human-readable failure ('CL has advanced past
-        # pending_review; reviewer decisions cannot be applied').
-        # Mirrors Bill's draft guard at service.py:1062.
-        if cl.status != 'pending_review':
+        # specific human-readable failure. Reviewer decisions can be
+        # applied while the CL is in an editable-by-reviewer state:
+        # - `pending_review` (legacy pre-vocab-shim state)
+        # - `submitted` (post-shim: CL flipped on initial Submit)
+        # Anything past that (`ready` / `billed`) is closed to reviewer
+        # replies. Mirrors Bill's draft guard at service.py:1062.
+        if cl.status not in ('pending_review', 'submitted'):
             raise ValueError(
                 f"ContractLabor {contract_labor_public_id} is no longer "
-                f"pending_review (current status: {cl.status!r}); reviewer "
+                f"reviewable (current status: {cl.status!r}); reviewer "
                 f"decisions cannot be applied. The human must edit directly."
             )
 

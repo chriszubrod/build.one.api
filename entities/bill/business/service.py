@@ -799,14 +799,20 @@ class BillService:
                 # Get SubCostCode if available
                 sub_cost_code = None
                 sub_cost_code_number = ""
+                sub_cost_code_name = ""
                 if line_item.sub_cost_code_id:
                     sub_cost_code = self.sub_cost_code_service.read_by_id(id=str(line_item.sub_cost_code_id))
                     if sub_cost_code:
                         sub_cost_code_number = sub_cost_code.number or ""
-                
+                        sub_cost_code_name = sub_cost_code.name or ""
+
                 # Generate filename
                 # When bill has >1 line item: {Project} - {Vendor} - {BillNumber} - Multiple See Image - {Amount} - {Date}
-                # Otherwise: {Project.Name} - {Vendor} - {Bill.Number} - {Description} - {SubCostCode.Number} - {Price} - {BillDate}
+                # Otherwise: {Project.Name} - {Vendor} - {Bill.Number} - {SubCostCode.Name} - {SubCostCode.Number} - {Price} - {BillDate}
+                # (Previously used {line_item.description}, which is unbounded — a Contract Labor
+                #  line rolling up N days of tasks blew past SharePoint's 400-char URL-path
+                #  limit and dead-lettered the upload. SubCostCode.Name is bounded and enough
+                #  human-scannable context; the full description lives in the PDF anyway.)
                 project_abbreviation = project.name or ""
                 vendor_abbreviation = vendor.abbreviation or vendor.name or ""
                 bill_number = bill.bill_number or ""
@@ -837,14 +843,13 @@ class BillService:
                         bill_date
                     ]
                 else:
-                    description = line_item.description or ""
                     price = str(line_item.price) if line_item.price is not None else ""
                     bill_date = bill.bill_date[:10] if bill.bill_date else ""  # YYYY-MM-DD for single-line (original)
                     filename_parts = [
                         project_abbreviation,
                         vendor_abbreviation,
                         bill_number,
-                        description,
+                        sub_cost_code_name,
                         sub_cost_code_number,
                         price,
                         bill_date
@@ -2505,10 +2510,12 @@ class BillService:
 
                     # Get SubCostCode for filename
                     sub_cost_code_number = ""
+                    sub_cost_code_name = ""
                     if line_item.sub_cost_code_id:
                         sub_cost_code = self.sub_cost_code_service.read_by_id(id=str(line_item.sub_cost_code_id))
                         if sub_cost_code:
                             sub_cost_code_number = sub_cost_code.number or ""
+                            sub_cost_code_name = sub_cost_code.name or ""
                     
                     # Generate SharePoint filename using final Bill/BillLineItem values
                     # When bill has >1 line item: {Project} - {Vendor} - {BillNumber} - Multiple See Image - {Amount} - {Date}
@@ -2550,12 +2557,16 @@ class BillService:
                             bill_date
                         ]
                     else:
-                        description = line_item.description or ""
+                        # Single-line: use SubCostCode.Name (bounded) instead of
+                        # line_item.description (unbounded). See sibling comment
+                        # in _upload_attachments_to_module_folder above for context —
+                        # a Contract Labor line rolling up N days of tasks used to
+                        # blow past SharePoint's 400-char URL-path limit.
                         filename_parts = [
                             project_identifier,
                             vendor_abbreviation,
                             bill_number,
-                            description,
+                            sub_cost_code_name,
                             sub_cost_code_number,
                             price,
                             bill_date

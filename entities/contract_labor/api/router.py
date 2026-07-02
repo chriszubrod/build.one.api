@@ -284,6 +284,47 @@ def read_contract_labor_vendor_config(
     return item_response(payload)
 
 
+@router.get("/effective-rate")
+def read_contract_labor_effective_rate(
+    vendor_id: int = Query(..., description="Contract-labor vendor Id."),
+    project_id: Optional[int] = Query(
+        default=None,
+        description="Project Id; NULL/omitted returns the vendor default.",
+    ),
+    current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR)),
+):
+    """Effective hourly rate + markup for a (Vendor, Project) pair.
+
+    Thin wrapper around `dbo.ReadEffectiveRateForVendorProject` — the same
+    sproc the aggregator uses when writing per-line-item Rate/Markup on
+    TimeEntry submission. Consumed by the React "Add line item" flow so
+    picking a project auto-populates rate + markup from the DB source of
+    truth (Vendor.Markup default + VendorProjectRate overrides).
+
+    Returns:
+        {"data": {"hourly_rate": str|null, "markup": str|null,
+                  "rate_source": "override"|"default"|"none"}}
+        Decimals are transported as strings to preserve precision.
+    """
+    from shared.database import call_procedure, get_connection
+
+    with get_connection() as conn:
+        cur = conn.cursor()
+        call_procedure(
+            cursor=cur,
+            name="ReadEffectiveRateForVendorProject",
+            params={"VendorId": vendor_id, "ProjectId": project_id},
+        )
+        row = cur.fetchone()
+    if row is None:
+        return item_response({"hourly_rate": None, "markup": None, "rate_source": "none"})
+    return item_response({
+        "hourly_rate": str(row.HourlyRate) if row.HourlyRate is not None else None,
+        "markup": str(row.Markup) if row.Markup is not None else None,
+        "rate_source": row.RateSource,
+    })
+
+
 @router.get("/bills-summary")
 def read_contract_labor_bills_summary(
     billing_period: Optional[str] = None,

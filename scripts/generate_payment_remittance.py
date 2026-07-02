@@ -108,6 +108,22 @@ def fetch_payment_batch(doc_number: str) -> Dict[str, Any]:
             ).get("Bill", []):
                 bill_by_id[str(b["Id"])] = b
 
+        # Resolve linked VendorCredit numbers + dates (applied credits reduce the payment;
+        # net = sum(bills) - sum(credits) = BillPayment.TotalAmt).
+        credit_ids = sorted({
+            str(lt["TxnId"])
+            for p in payments_raw for line in (p.get("Line") or [])
+            for lt in (line.get("LinkedTxn") or [])
+            if lt.get("TxnType") == "VendorCredit" and lt.get("TxnId")
+        })
+        credit_by_id: Dict[str, Dict[str, Any]] = {}
+        if credit_ids:
+            cid_list = ",".join(f"'{c}'" for c in credit_ids)
+            for cr in _qbo_query(
+                client, f"select Id, DocNumber, TxnDate, TotalAmt from VendorCredit where Id in ({cid_list})"
+            ).get("VendorCredit", []):
+                credit_by_id[str(cr["Id"])] = cr
+
         # Each vendor's QBO PrimaryEmailAddr (fallback email source after local Contacts).
         vendor_qbo_ids = sorted({str(p["VendorRef"]["value"]) for p in payments_raw})
         vendor_email_by_id: Dict[str, Optional[str]] = {}
@@ -124,14 +140,27 @@ def fetch_payment_batch(doc_number: str) -> Dict[str, Any]:
         for line in p.get("Line") or []:
             amt = _money(line.get("Amount"))
             for lt in line.get("LinkedTxn") or []:
-                if lt.get("TxnType") != "Bill":
-                    continue
-                b = bill_by_id.get(str(lt.get("TxnId")), {})
-                lines.append({
-                    "bill_number": str(b.get("DocNumber") or lt.get("TxnId")),
-                    "bill_date": b.get("TxnDate"),
-                    "amount": amt,
-                })
+                ttype = lt.get("TxnType")
+                tid = str(lt.get("TxnId"))
+                if ttype == "Bill":
+                    b = bill_by_id.get(tid, {})
+                    lines.append({
+                        "kind": "bill",
+                        "bill_number": str(b.get("DocNumber") or tid),
+                        "bill_date": b.get("TxnDate"),
+                        "amount": amt,
+                    })
+                elif ttype == "VendorCredit":
+                    cr = credit_by_id.get(tid, {})
+                    docn = str(cr.get("DocNumber") or tid)
+                    # Label as a credit memo, but don't double up if the number already says "CM"/"CR".
+                    label = docn if docn.upper().startswith(("CM", "CR")) else f"CM {docn}"
+                    lines.append({
+                        "kind": "credit",
+                        "bill_number": label,
+                        "bill_date": cr.get("TxnDate"),
+                        "amount": -amt,  # credit reduces the net paid
+                    })
         vqid = str(p["VendorRef"]["value"])
         payments.append({
             "vendor": p["VendorRef"]["name"],
@@ -175,6 +204,11 @@ def _date_long(iso: Optional[str]) -> str:
 
 def _usd(d: Decimal) -> str:
     return f"${d:,.2f}"
+
+
+def _money_cell(d: Decimal) -> str:
+    """Currency for a PDF table cell; negatives (credits) in accounting parens: $(8,203.81)."""
+    return f"$({abs(d):,.2f})" if d < 0 else f"${d:,.2f}"
 
 
 def _bill_sort_key(bill_number: str):
@@ -226,9 +260,13 @@ def render_pdf(payer: str, payment: Dict[str, Any]) -> bytes:
     el += [mt, Spacer(1, 14)]
 
     data: List[List[str]] = [["Bill", "Date", "Amount"]]
-    for ln in sorted(payment["lines"], key=lambda l: _bill_sort_key(l["bill_number"])):
-        data.append([ln["bill_number"], _date_short(ln["bill_date"]), _usd(ln["amount"])])
-    data.append(["", "Total", _usd(payment["total"])])
+    bills = [ln for ln in payment["lines"] if ln.get("kind") != "credit"]
+    credits = [ln for ln in payment["lines"] if ln.get("kind") == "credit"]
+    for ln in sorted(bills, key=lambda l: _bill_sort_key(l["bill_number"])):
+        data.append([ln["bill_number"], _date_short(ln["bill_date"]), _money_cell(ln["amount"])])
+    for ln in sorted(credits, key=lambda l: _bill_sort_key(l["bill_number"])):
+        data.append([ln["bill_number"], _date_short(ln["bill_date"]), _money_cell(ln["amount"])])
+    data.append(["", "Total", _money_cell(payment["total"])])
     n = len(data)
     t = Table(data, colWidths=[1.6 * inch, 1.3 * inch, 1.6 * inch])
     t.hAlign = "LEFT"
@@ -510,7 +548,10 @@ def main() -> None:
             fh.write(pdf)
         sum_lines = sum((ln["amount"] for ln in p["lines"]), Decimal("0"))
         flag = "" if sum_lines == p["total"] else f"  !! lines sum {sum_lines} != total {p['total']}"
-        print(f"• {p['vendor']}: {len(p['lines'])} bill(s), total {_usd(p['total'])}{flag}")
+        n_bill = sum(1 for ln in p["lines"] if ln.get("kind") != "credit")
+        n_cr = sum(1 for ln in p["lines"] if ln.get("kind") == "credit")
+        credit_note = f" + {n_cr} credit(s)" if n_cr else ""
+        print(f"• {p['vendor']}: {n_bill} bill(s){credit_note}, total {_usd(p['total'])}{flag}")
         print(f"    -> {local_path}")
 
         if args.draft_emails:

@@ -314,10 +314,15 @@ class ContractLaborBillService:
                 # push sums line-item Amount (cost) into the QBO bill total, so the
                 # header must match Amount, not the marked-up Price. Price is what
                 # we later charge the client via Invoice — it never touches QBO A/P.
-                # (Prior code summed .price, producing a header ~1+markup off the
-                # line-item cost and drift on every reconciliation report.)
+                # ContractLaborLineItem has no persisted `amount` column —
+                # it's Hours × Rate (pre-markup); Price is the same × (1+Markup).
+                # Compute from the primitives instead of assuming a field.
                 total_amount = sum(
-                    Decimal(str(item["line_item"].amount or 0)) for item in items
+                    (
+                        Decimal(str(item["line_item"].hours or 0))
+                        * Decimal(str(item["line_item"].rate or 0))
+                    )
+                    for item in items
                     if item["line_item"].is_billable is not False
                 )
 

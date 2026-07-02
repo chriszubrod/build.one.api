@@ -287,6 +287,14 @@ class ContractLaborBillService:
                 is_edit = bill is not None
 
                 if bill is None:
+                    # `require_attachment=False`: the universal rule that
+                    # a Bill needs an attachment at create-time is aimed at
+                    # human/agent-driven creation from a source PDF. This
+                    # flow SYNTHESIZES the PDF from ready CL entries after
+                    # the Bill + BLIs exist (see PDF generation below), so
+                    # we take the same escape hatch QBO-pull uses. The
+                    # PDF + Attachment + BLIA link are created a few
+                    # dozen lines down.
                     bill = self.bill_service.create(
                         vendor_public_id=vendor.public_id,
                         bill_date=billing_period,
@@ -295,6 +303,7 @@ class ContractLaborBillService:
                         total_amount=total_amount,
                         memo=memo,
                         is_draft=True,
+                        require_attachment=False,
                     )
                     result["bills_created"] += 1
                 else:

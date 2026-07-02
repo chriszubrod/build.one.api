@@ -131,18 +131,33 @@ class ContractLaborBillService:
         except Exception:
             return f"{billing_period.replace('-', '.')}.{project_abbreviation}"
 
-    def generate_bills_for_vendor(self, vendor_id: int, billing_period_start: Optional[str] = None) -> dict:
+    def generate_bills_for_vendor(
+        self,
+        vendor_id: int,
+        billing_period_start: Optional[str] = None,
+        project_id_filter: Optional[int] = None,
+    ) -> dict:
         """
-        Generate bills for all ready entries for a vendor.
-        Groups by project and creates one bill per project.
-        
-        Returns dict with:
-        - bills_created: number of new bills created
-        - bills_updated: number of existing bills updated
-        - line_items_created: number of bill line items created
-        - entries_billed: number of contract labor entries marked as billed
-        - pdf_urls: list of PDF URLs
-        - errors: list of error messages
+        Generate bills for a vendor's ready entries. Groups by project and
+        creates one Bill per project (or one Bill scoped to a single project
+        when `project_id_filter` is supplied — a multi-project CL then only
+        contributes its lines matching that project; its other lines stay
+        `ready` for a later run).
+
+        Args:
+            vendor_id: the CL's real Vendor FK.
+            billing_period_start: optional YYYY-MM-DD; passes through to the
+                by-status sproc.
+            project_id_filter: optional Project FK to restrict billing to a
+                single project. When set, only line items whose ProjectId
+                matches are billed; a CL is only transitioned to `billed`
+                if EVERY one of its lines is now linked to a BillLineItem.
+                Multi-project CLs with lines on other projects remain
+                `ready` for a later pass. Named `_filter` to avoid
+                colliding with the `project_id` iterator variable in the
+                per-project loop below.
+
+        Returns dict with counts + `pdf_urls` + `errors`.
         """
         result = {
             "bills_created": 0,
@@ -181,16 +196,22 @@ class ContractLaborBillService:
         project_groups = {}
         entry_ids_by_project = {}
 
-        all_entry_ids = {entry.id for entry in vendor_entries}
         for entry in vendor_entries:
             line_items = self.line_item_repo.read_by_contract_labor_id(contract_labor_id=entry.id)
             entry_added = False
             for li in line_items:
-                project_id = li.project_id
-                if not project_id and not li.is_overhead:
+                li_project_id = li.project_id
+                if not li_project_id and not li.is_overhead:
                     continue  # Skip line items without a project (unless overhead)
 
-                group_key = project_id  # None for overhead items
+                # Project scope filter — when the caller passes
+                # project_id_filter, skip every line item on a different
+                # project. Overhead (li_project_id=None) is included only
+                # if the caller didn't supply a filter.
+                if project_id_filter is not None and li_project_id != project_id_filter:
+                    continue
+
+                group_key = li_project_id  # None for overhead items
 
                 if group_key not in project_groups:
                     project_groups[group_key] = []
@@ -199,17 +220,21 @@ class ContractLaborBillService:
                 project_groups[group_key].append({
                     "line_item": li,
                     "entry": entry,
-                    "project": project_map.get(project_id) if project_id else None,
+                    "project": project_map.get(li_project_id) if li_project_id else None,
                     "scc": scc_map.get(li.sub_cost_code_id),
                 })
                 entry_ids_by_project[group_key].add(entry.id)
                 entry_added = True
 
             if not entry_added:
-                result["errors"].append(
-                    f"Entry ID {entry.id} ({entry.employee_name}, {entry.work_date}) skipped: "
-                    f"no line items with a project assigned"
-                )
+                # Only report as an error when we WEREN'T project-filtering
+                # — a filtered run legitimately skips entries with no
+                # matching line, that's expected, not an error.
+                if project_id_filter is None:
+                    result["errors"].append(
+                        f"Entry ID {entry.id} ({entry.employee_name}, {entry.work_date}) skipped: "
+                        f"no line items with a project assigned"
+                    )
 
         # Count how many project groups each entry participates in. Multi-
         # project CLs (a single day split across two or more projects) will
@@ -453,7 +478,24 @@ class ContractLaborBillService:
                     entry = self.cl_repo.read_by_id(id=entry_id)
                     if not entry:
                         continue
-                    entry.status = "billed"
+
+                    # Decide whether this CL is now FULLY billed. In a
+                    # project-scoped run a multi-project CL may still have
+                    # unbilled lines on other projects — those need a later
+                    # pass, so keep the parent `ready`. Full-vendor run
+                    # (project_id filter is None) always transitions.
+                    fully_billed = True
+                    if project_id_filter is not None:
+                        current_lis = self.line_item_repo.read_by_contract_labor_id(
+                            contract_labor_id=entry_id
+                        )
+                        fully_billed = all(
+                            li.bill_line_item_id is not None for li in current_lis
+                        )
+
+                    if fully_billed:
+                        entry.status = "billed"
+
                     # Single-project CL → parent's bill_line_item_id is
                     # unambiguous; keep it for legacy callers. Multi-project
                     # → leave NULL; child LI.BillLineItemId carries the
@@ -463,7 +505,7 @@ class ContractLaborBillService:
                     else:
                         entry.bill_line_item_id = None
                     updated = self.cl_repo.update_by_id(entry)
-                    if updated:
+                    if updated and fully_billed:
                         result["entries_billed"] += 1
 
             except Exception as e:

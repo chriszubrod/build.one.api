@@ -845,14 +845,28 @@ async def generate_all_pdfs(
 
 
 @router.post("/generate-bills/{vendor_id}")
-def generate_bills_for_vendor(vendor_id: int, billing_period: Optional[str] = None, current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_create"))):
-    """
-    Generate bills for ready entries for a vendor within a billing period.
+def generate_bills_for_vendor(
+    vendor_id: int,
+    billing_period: Optional[str] = None,
+    project_id: Optional[int] = Query(
+        default=None,
+        description="Restrict billing to a single Project.Id. When set, only line items on this project are billed; multi-project CLs keep their non-matching lines ready for a later run.",
+    ),
+    current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_create")),
+):
+    """Generate bills for ready entries for a vendor within a billing period.
+
+    Optional `project_id` scopes the run to a single project — used for
+    programmatic per-project generation (no web UI wired to it today).
     """
     try:
         from entities.contract_labor.business.bill_service import ContractLaborBillService
         bill_service = ContractLaborBillService()
-        result = bill_service.generate_bills_for_vendor(vendor_id=vendor_id, billing_period_start=billing_period)
+        result = bill_service.generate_bills_for_vendor(
+            vendor_id=vendor_id,
+            billing_period_start=billing_period,
+            project_id_filter=project_id,
+        )
         return item_response(result)
     except Exception as e:
         logger.exception("Error generating bills for vendor")

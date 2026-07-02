@@ -314,6 +314,18 @@ class ContractLaborBillService:
                     Decimal(str(item["line_item"].price or 0)) for item in items
                     if item["line_item"].is_billable is not False
                 )
+
+                # No billable dollars in this (vendor, project, period) group
+                # → don't spawn an empty $0 Bill (with its orphan Attachment
+                # + PDF). Common when a CL slice for this period is a single
+                # non-billable data-only line (e.g. a zero-hour placeholder).
+                if total_amount == 0:
+                    result["errors"].append(
+                        f"Skipped empty bill for {vendor.name} · "
+                        f"{project_abbr} · {billing_period} — no billable amount."
+                    )
+                    continue
+
                 invoice_number = self.generate_invoice_number(billing_period, project_abbr)
                 due_date = self.get_due_date(billing_period)
 

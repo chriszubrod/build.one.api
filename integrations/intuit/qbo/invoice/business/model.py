@@ -36,6 +36,11 @@ class QboInvoiceLine:
     service_date: Optional[str]
     discount_rate: Optional[Decimal]
     discount_amt: Optional[Decimal]
+    # First LinkedTxn entry from the QBO line (deterministic source-linkage key:
+    # InvoiceLine -> ReimburseCharge -> source Bill/Purchase). None for legacy
+    # rows pulled before 2026-07 and for lines with no linked transaction.
+    linked_txn_type: Optional[str] = None
+    linked_txn_id: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

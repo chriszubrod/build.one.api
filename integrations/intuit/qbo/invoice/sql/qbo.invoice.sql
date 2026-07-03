@@ -107,8 +107,24 @@ CREATE TABLE [qbo].[InvoiceLine]
     [ServiceDate] NVARCHAR(50) NULL,
     [DiscountRate] DECIMAL(18,6) NULL,
     [DiscountAmt] DECIMAL(18,6) NULL,
+    -- First LinkedTxn entry from the QBO invoice line (e.g. 'ReimburseCharge' + id).
+    -- Deterministic source-linkage key: InvoiceLine -> ReimburseCharge -> Bill/Purchase.
+    [LinkedTxnType] NVARCHAR(64) NULL,
+    [LinkedTxnId] NVARCHAR(50) NULL,
     CONSTRAINT [FK_QboInvoiceLine_QboInvoice] FOREIGN KEY ([QboInvoiceId]) REFERENCES [qbo].[Invoice]([Id]) ON DELETE CASCADE
 );
+END
+GO
+
+-- Additive migration for pre-existing deployments (2026-07-03): line-level LinkedTxn capture.
+IF OBJECT_ID('qbo.InvoiceLine', 'U') IS NOT NULL AND COL_LENGTH('qbo.InvoiceLine', 'LinkedTxnType') IS NULL
+BEGIN
+    ALTER TABLE [qbo].[InvoiceLine] ADD [LinkedTxnType] NVARCHAR(64) NULL;
+END
+GO
+IF OBJECT_ID('qbo.InvoiceLine', 'U') IS NOT NULL AND COL_LENGTH('qbo.InvoiceLine', 'LinkedTxnId') IS NULL
+BEGIN
+    ALTER TABLE [qbo].[InvoiceLine] ADD [LinkedTxnId] NVARCHAR(50) NULL;
 END
 GO
 
@@ -746,7 +762,9 @@ CREATE OR ALTER PROCEDURE CreateQboInvoiceLine
     @TaxCodeRefName NVARCHAR(500),
     @ServiceDate NVARCHAR(50),
     @DiscountRate DECIMAL(18,6),
-    @DiscountAmt DECIMAL(18,6)
+    @DiscountAmt DECIMAL(18,6),
+    @LinkedTxnType NVARCHAR(64) = NULL,
+    @LinkedTxnId NVARCHAR(50) = NULL
 )
 AS
 BEGIN
@@ -761,7 +779,7 @@ BEGIN
         [Description], [Amount], [DetailType], [ItemRefValue], [ItemRefName],
         [ClassRefValue], [ClassRefName], [Qty], [UnitPrice],
         [TaxCodeRefValue], [TaxCodeRefName], [ServiceDate],
-        [DiscountRate], [DiscountAmt]
+        [DiscountRate], [DiscountAmt], [LinkedTxnType], [LinkedTxnId]
     )
     OUTPUT
         INSERTED.[Id],
@@ -785,13 +803,15 @@ BEGIN
         INSERTED.[TaxCodeRefName],
         INSERTED.[ServiceDate],
         INSERTED.[DiscountRate],
-        INSERTED.[DiscountAmt]
+        INSERTED.[DiscountAmt],
+        INSERTED.[LinkedTxnType],
+        INSERTED.[LinkedTxnId]
     VALUES (
         @Now, @Now, @QboInvoiceId, @QboLineId, @LineNum,
         @Description, @Amount, @DetailType, @ItemRefValue, @ItemRefName,
         @ClassRefValue, @ClassRefName, @Qty, @UnitPrice,
         @TaxCodeRefValue, @TaxCodeRefName, @ServiceDate,
-        @DiscountRate, @DiscountAmt
+        @DiscountRate, @DiscountAmt, @LinkedTxnType, @LinkedTxnId
     );
 
     COMMIT TRANSACTION;
@@ -831,7 +851,9 @@ BEGIN
         [TaxCodeRefName],
         [ServiceDate],
         [DiscountRate],
-        [DiscountAmt]
+        [DiscountAmt],
+        [LinkedTxnType],
+        [LinkedTxnId]
     FROM [qbo].[InvoiceLine]
     WHERE [QboInvoiceId] = @QboInvoiceId
     ORDER BY [LineNum] ASC;
@@ -874,7 +896,9 @@ BEGIN
         [TaxCodeRefName],
         [ServiceDate],
         [DiscountRate],
-        [DiscountAmt]
+        [DiscountAmt],
+        [LinkedTxnType],
+        [LinkedTxnId]
     FROM [qbo].[InvoiceLine]
     WHERE [QboInvoiceId] = @QboInvoiceId AND [QboLineId] = @QboLineId;
 
@@ -903,7 +927,9 @@ CREATE OR ALTER PROCEDURE UpdateQboInvoiceLineById
     @TaxCodeRefName NVARCHAR(500),
     @ServiceDate NVARCHAR(50),
     @DiscountRate DECIMAL(18,6),
-    @DiscountAmt DECIMAL(18,6)
+    @DiscountAmt DECIMAL(18,6),
+    @LinkedTxnType NVARCHAR(64) = NULL,
+    @LinkedTxnId NVARCHAR(50) = NULL
 )
 AS
 BEGIN
@@ -930,7 +956,13 @@ BEGIN
         [TaxCodeRefName] = CASE WHEN @TaxCodeRefName IS NULL THEN [TaxCodeRefName] ELSE @TaxCodeRefName END,
         [ServiceDate] = CASE WHEN @ServiceDate IS NULL THEN [ServiceDate] ELSE @ServiceDate END,
         [DiscountRate] = CASE WHEN @DiscountRate IS NULL THEN [DiscountRate] ELSE @DiscountRate END,
-        [DiscountAmt] = CASE WHEN @DiscountAmt IS NULL THEN [DiscountAmt] ELSE @DiscountAmt END
+        [DiscountAmt] = CASE WHEN @DiscountAmt IS NULL THEN [DiscountAmt] ELSE @DiscountAmt END,
+        -- LinkedTxn columns MIRROR QBO state (deterministic linkage key) and are
+        -- deliberately NOT NULL-guarded: when QBO removes a line's LinkedTxn the
+        -- pull must clear ours, or stale linkage resolves to a source QBO no
+        -- longer bills. The repo always passes both params explicitly.
+        [LinkedTxnType] = @LinkedTxnType,
+        [LinkedTxnId] = @LinkedTxnId
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -953,7 +985,9 @@ BEGIN
         INSERTED.[TaxCodeRefName],
         INSERTED.[ServiceDate],
         INSERTED.[DiscountRate],
-        INSERTED.[DiscountAmt]
+        INSERTED.[DiscountAmt],
+        INSERTED.[LinkedTxnType],
+        INSERTED.[LinkedTxnId]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;

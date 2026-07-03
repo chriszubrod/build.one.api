@@ -282,6 +282,20 @@ class QboInvoiceService:
             service_date = None
             discount_rate = None
             discount_amt = None
+
+            # First LinkedTxn entry — the deterministic source-linkage key
+            # (typically TxnType='ReimburseCharge' for lines created from
+            # billable expenses; the RC's own LinkedTxn names the source
+            # Bill/Purchase). Stored so reconciliation can resolve invoice
+            # lines to local sources by ID instead of fingerprinting.
+            linked_txn_type = None
+            linked_txn_id = None
+            line_linked = getattr(line, "linked_txn", None)
+            if line_linked:
+                first_linked = line_linked[0]
+                linked_txn_type = getattr(first_linked, "txn_type", None)
+                raw_txn_id = getattr(first_linked, "txn_id", None)
+                linked_txn_id = str(raw_txn_id) if raw_txn_id else None
             
             if line.detail_type == "SalesItemLineDetail" and line.sales_item_line_detail:
                 detail = line.sales_item_line_detail
@@ -333,6 +347,8 @@ class QboInvoiceService:
                     service_date=service_date,
                     discount_rate=discount_rate,
                     discount_amt=discount_amt,
+                    linked_txn_type=linked_txn_type,
+                    linked_txn_id=linked_txn_id,
                 )
             else:
                 new_line = self.line_repo.create(
@@ -353,6 +369,8 @@ class QboInvoiceService:
                     service_date=service_date,
                     discount_rate=discount_rate,
                     discount_amt=discount_amt,
+                    linked_txn_type=linked_txn_type,
+                    linked_txn_id=linked_txn_id,
                 )
                 # Update cache so a retry or second pass on the same invoice doesn't duplicate the line
                 if existing_lines_map is not None and line.id:

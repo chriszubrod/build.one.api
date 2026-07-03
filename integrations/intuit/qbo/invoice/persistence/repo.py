@@ -468,6 +468,8 @@ class QboInvoiceLineRepository:
                 service_date=getattr(row, "ServiceDate", None),
                 discount_rate=Decimal(str(getattr(row, "DiscountRate"))) if getattr(row, "DiscountRate", None) is not None else None,
                 discount_amt=Decimal(str(getattr(row, "DiscountAmt"))) if getattr(row, "DiscountAmt", None) is not None else None,
+                linked_txn_type=getattr(row, "LinkedTxnType", None),
+                linked_txn_id=getattr(row, "LinkedTxnId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during qbo invoice line mapping: {error}")
@@ -496,6 +498,8 @@ class QboInvoiceLineRepository:
         service_date: Optional[str],
         discount_rate: Optional[Decimal],
         discount_amt: Optional[Decimal],
+        linked_txn_type: Optional[str] = None,
+        linked_txn_id: Optional[str] = None,
     ) -> QboInvoiceLine:
         """
         Create a new QboInvoiceLine.
@@ -522,6 +526,8 @@ class QboInvoiceLineRepository:
                         "ServiceDate": service_date,
                         "DiscountRate": float(discount_rate) if discount_rate is not None else None,
                         "DiscountAmt": float(discount_amt) if discount_amt is not None else None,
+                        "LinkedTxnType": linked_txn_type,
+                        "LinkedTxnId": linked_txn_id,
                     }
                     call_procedure(
                         cursor=cursor,
@@ -629,6 +635,8 @@ class QboInvoiceLineRepository:
         service_date: Optional[str],
         discount_rate: Optional[Decimal],
         discount_amt: Optional[Decimal],
+        linked_txn_type: Optional[str] = None,
+        linked_txn_id: Optional[str] = None,
     ) -> Optional[QboInvoiceLine]:
         """
         Update a QboInvoiceLine by ID.
@@ -655,6 +663,8 @@ class QboInvoiceLineRepository:
                         "ServiceDate": service_date,
                         "DiscountRate": float(discount_rate) if discount_rate is not None else None,
                         "DiscountAmt": float(discount_amt) if discount_amt is not None else None,
+                        "LinkedTxnType": linked_txn_type,
+                        "LinkedTxnId": linked_txn_id,
                     }
                     call_procedure(
                         cursor=cursor,

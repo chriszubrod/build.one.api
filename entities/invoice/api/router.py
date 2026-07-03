@@ -725,10 +725,16 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
       - Only rows with a DATE value (col I) and NO Draw Request Date (col H)
         are considered unbilled and included.
 
-    Matching strategy:
-      - Source column M: "Bill" → Bill in our system; anything else → Expense.
-      - Bills: match by INVOICE # (col K) against DB ParentNumber (BillNumber).
-      - Expenses: INVOICE # won't reliably match; match by Description + Billable amount.
+    Matching strategy (tiered):
+      - Tier 0: column-Z source public_id (the reconciliation key written by the
+        Bill/Expense Excel syncs) — deterministic; preferred whenever Z is populated.
+      - Tier 1 (fallback): Source column M: "Bill" → Bill in our system; anything
+        else → Expense. Bills match by INVOICE # (col K) against DB ParentNumber;
+        Expenses match by Description + Billable amount.
+
+    Direction B: rows whose DRAW REQUEST (col H) already carries THIS invoice's
+    number but whose column-Z key is NOT one of this invoice's source lines are
+    returned in `already_tagged` (surface-only — they reflect prior manual edits).
     """
     from collections import defaultdict
     from entities.invoice_line_item.business.service import InvoiceLineItemService
@@ -828,16 +834,38 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
         v = cell(row, key)
         return v is not None and str(v).strip() != ""
 
-    # Parse worksheet rows: only unbilled (has DATE, no DRAW REQUEST DATE)
+    def _tag_matches(tag: str, num: str) -> bool:
+        # Column H is written as a string but Graph coerces numeric-looking
+        # values ('004' → 4, '22' → 22.0), so exact compare alone would drop
+        # already-tagged rows for numeric invoice numbers.
+        if not tag or not num:
+            return False
+        if tag == num:
+            return True
+        try:
+            return float(tag) == float(num)
+        except (ValueError, TypeError):
+            return False
+
+    # Parse worksheet rows. Unbilled rows (DATE set, no DRAW REQUEST) feed the
+    # matching tiers; rows already tagged with THIS invoice's number feed the
+    # Direction-B check. Rows tagged with a different invoice are excluded.
+    inv_num = (invoice.invoice_number or "").strip()
     ws_bills = []
     ws_expenses = []
+    ws_tagged = []
     for row_idx, row in enumerate(data_rows, start=header_row_idx + 2):
         if not has_value(row, "date"):
             continue
-        if has_value(row, "draw_request_date"):
-            continue
+
+        z_pid = ""
+        if len(row) > 25 and row[25] is not None:
+            z_val = str(row[25]).strip()
+            if len(z_val) == 36:
+                z_pid = z_val.lower()
 
         source = cell_str(row, "source").lower()
+        draw_tag = cell_str(row, "draw_request_date")
         entry = {
             "row": row_idx,
             "invoice_num": cell_str(row, "invoice_num"),
@@ -847,7 +875,13 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
             "date": cell_str(row, "date"),
             "source": "Bill" if source == "bill" else "Expense",
             "sub_cost_code": cell_str(row, "sub_cost_code"),
+            "z": z_pid,
         }
+
+        if draw_tag:
+            if _tag_matches(draw_tag, inv_num):
+                ws_tagged.append(entry)
+            continue
 
         if source == "bill":
             ws_bills.append(entry)
@@ -867,7 +901,104 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
     db_only = []
     ws_only = []
 
-    # ── Bills: match by INVOICE # ──
+    _SOURCE_LABEL = {
+        "BillLineItem": "Bill",
+        "ExpenseLineItem": "Expense",
+        "BillCreditLineItem": "Expense",
+    }
+
+    def _db_amt(li) -> float:
+        # DB-side mirror of the worksheet's column-N rule: Price, falling back
+        # to Amount when Price is NULL (QBO-pulled account-based lines carry
+        # Amount only — the sheet shows Amount for them, so the comparison
+        # must too or every such line reports a false mismatch).
+        val = li.get("price")
+        if val is None:
+            val = li.get("amount") or 0
+        return round(float(val), 2)
+
+    # ── Tier 0: column-Z source public_id (deterministic) ──
+    db_by_source_pid_all = defaultdict(list)
+    for li in db_bills + db_expenses:
+        spid = (li.get("source_line_public_id") or "").lower()
+        if spid:
+            db_by_source_pid_all[spid].append(li)
+
+    # Duplicate source-linked lines (two invoice lines sharing one source) are
+    # a data bug this endpoint exists to SURFACE — exclude them from Tier 0 so
+    # they fall through to the heuristic tiers / db_only, and report them.
+    duplicate_source_lines = []
+    db_by_source_pid = {}
+    for spid, lis in db_by_source_pid_all.items():
+        if len(lis) == 1:
+            db_by_source_pid[spid] = lis[0]
+        else:
+            duplicate_source_lines.append({
+                "source_public_id": spid,
+                "count": len(lis),
+                "descriptions": [x.get("description") or "" for x in lis],
+                "amounts": [_db_amt(x) for x in lis],
+            })
+
+    def _tier0_entry(li, r):
+        db_price = _db_amt(li)
+        ws_amt = round(r["billable"], 2)
+        return db_price, ws_amt, {
+            "ref": li.get("parent_number") or r["invoice_num"] or "—",
+            "source": _SOURCE_LABEL.get(li.get("source_type"), "Expense"),
+            "date": li.get("source_date") or r.get("date", ""),
+            "vendor": li.get("vendor_name") or r.get("payable_to", ""),
+            "description": li.get("description") or r.get("description", ""),
+            "cost_code": li.get("sub_cost_code_number") or r.get("sub_cost_code", ""),
+            "db_total": db_price,
+            "ws_total": ws_amt,
+            "difference": round(db_price - ws_amt, 2),
+            "match_key": "public_id",
+        }
+
+    z_matched_pids = set()
+    for pool in (ws_bills, ws_expenses):
+        remaining = []
+        for r in pool:
+            li = db_by_source_pid.get(r["z"]) if r["z"] else None
+            if li is None or r["z"] in z_matched_pids:
+                remaining.append(r)
+                continue
+            z_matched_pids.add(r["z"])
+            db_price, ws_amt, entry = _tier0_entry(li, r)
+            (matched if abs(db_price - ws_amt) < 0.01 else mismatched).append(entry)
+        pool[:] = remaining
+
+    # ── Tagged rows (H already carries this invoice's number) ──
+    # A Z-hit is a reconciled row: count it tagged_ok, still compare amounts so
+    # drift on already-billed rows surfaces, and prune its DB line from the
+    # pools so Tier 1 doesn't re-report it as db_only. A Z-miss is Direction B.
+    already_tagged = []
+    tagged_ok_count = 0
+    for r in ws_tagged:
+        li = db_by_source_pid.get(r["z"]) if r["z"] else None
+        if li is not None and r["z"] not in z_matched_pids:
+            z_matched_pids.add(r["z"])
+            tagged_ok_count += 1
+            db_price, ws_amt, entry = _tier0_entry(li, r)
+            entry["tagged"] = True
+            (matched if abs(db_price - ws_amt) < 0.01 else mismatched).append(entry)
+        else:
+            already_tagged.append({
+                "row": r["row"],
+                "ref": r["invoice_num"] or r["description"] or "—",
+                "source": r["source"],
+                "date": r.get("date", ""),
+                "vendor": r.get("payable_to", ""),
+                "description": r.get("description", ""),
+                "ws_total": round(r["billable"], 2),
+            })
+
+    if z_matched_pids:
+        db_bills = [li for li in db_bills if (li.get("source_line_public_id") or "").lower() not in z_matched_pids]
+        db_expenses = [li for li in db_expenses if (li.get("source_line_public_id") or "").lower() not in z_matched_pids]
+
+    # ── Tier 1 fallback — Bills: match by INVOICE # ──
     ws_bills_by_ref = defaultdict(list)
     for r in ws_bills:
         if r["invoice_num"]:
@@ -884,7 +1015,7 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
         in_db = db_bills_by_ref.get(ref)
         in_ws = ws_bills_by_ref.get(ref)
 
-        db_total = round(sum(float(li.get("price") or 0) for li in in_db), 2) if in_db else 0.0
+        db_total = round(sum(_db_amt(li) for li in in_db), 2) if in_db else 0.0
         ws_total = round(sum(r["billable"] for r in in_ws), 2) if in_ws else 0.0
 
         first_db = in_db[0] if in_db else {}
@@ -914,7 +1045,7 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
 
     for li in db_expenses:
         db_desc = (li.get("description") or "").strip().lower()
-        db_price = round(float(li.get("price") or 0), 2)
+        db_price = _db_amt(li)
 
         found = None
         for i, ws_row in enumerate(ws_exp_unmatched):
@@ -943,7 +1074,7 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
 
     for li in db_exp_unmatched:
         ref_label = li.get("parent_number") or li.get("description") or "—"
-        db_price = round(float(li.get("price") or 0), 2)
+        db_price = _db_amt(li)
         db_only.append({
             "ref": ref_label,
             "source": "Expense",
@@ -976,6 +1107,10 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
         "mismatched": mismatched,
         "db_only": db_only,
         "ws_only": ws_only,
+        "z_matched_count": len(z_matched_pids),
+        "tagged_ok_count": tagged_ok_count,
+        "already_tagged": already_tagged,
+        "duplicate_source_lines": duplicate_source_lines,
     })
 
 

@@ -25,6 +25,7 @@ DRIFT_MISSING_MAPPING = "missing_mapping"            # low — create mapping ro
 DRIFT_FIELD_MISMATCH = "field_mismatch"              # medium — needs field-level source-of-truth rules (task #19)
 DRIFT_DUPLICATE_MAPPING = "duplicate_mapping"        # high — data bug; never auto-unlink
 DRIFT_QBO_VOIDED = "qbo_voided"                      # low — mark local as void (task #21 work)
+DRIFT_INVOICE_DRAW_MISMATCH = "invoice_draw_mismatch"  # medium — customer-invoice ↔ QBO/billing-state drift
 
 
 SEVERITY_BY_DRIFT = {
@@ -35,6 +36,7 @@ SEVERITY_BY_DRIFT = {
     DRIFT_FIELD_MISMATCH: "medium",
     DRIFT_DUPLICATE_MAPPING: "high",
     DRIFT_QBO_VOIDED: "low",
+    DRIFT_INVOICE_DRAW_MISMATCH: "medium",
 }
 
 
@@ -124,6 +126,129 @@ class ReconciliationService:
                 "event_name": "qbo.reconcile.run.completed",
                 "operation_name": "qbo.reconcile.bill",
                 "entity_type": "Bill",
+                "realm_id": realm_id,
+                "reconcile_run_id": run_id,
+                "auto_fixed": counts["auto_fixed"],
+                "flagged": counts["flagged"],
+                "errors": counts["errors"],
+            },
+        )
+        return {"run_id": run_id, **counts}
+
+    def reconcile_invoice_draws(self, realm_id: str) -> dict:
+        """
+        Daily DB-side invariant check for customer invoices (the InvoiceAgent
+        reconciliation invariant, checked between runs):
+
+        For every QBO-mapped dbo.Invoice:
+          1. dbo.Invoice.TotalAmount == qbo.Invoice.TotalAmt (±0.01)
+          2. dbo.InvoiceLineItem count == qbo.InvoiceLine count
+          3. Completed (IsDraft=0) invoices have no unlinked ('Manual') lines
+          4. Completed invoices' source-linked lines all have IsBilled=1
+
+        Pure SQL — no Graph/QBO calls — so drift from QBO-side edits or missed
+        Step-8 runs is flagged within a day instead of at the next invoice run.
+        Writes AT MOST ONE summary issue per run (never per-invoice rows — the
+        legacy pull corpus is all-Manual by construction and would flood the
+        table daily). Never auto-fixes: billing state is human territory.
+        """
+        from shared.database import get_connection
+
+        run_id = str(uuid.uuid4())
+        counts = {"auto_fixed": 0, "flagged": 0, "errors": 0}
+        logger.info(
+            "qbo.reconcile.run.started",
+            extra={
+                "event_name": "qbo.reconcile.run.started",
+                "operation_name": "qbo.reconcile.invoice_draw",
+                "entity_type": "Invoice",
+                "realm_id": realm_id,
+                "reconcile_run_id": run_id,
+            },
+        )
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT i.Id, CAST(i.PublicId AS NVARCHAR(50)) AS PublicId,
+                           i.InvoiceNumber, i.TotalAmount, i.IsDraft,
+                           qi.QboId, qi.TotalAmt,
+                           (SELECT COUNT(*) FROM dbo.InvoiceLineItem x WHERE x.InvoiceId = i.Id) AS DboLines,
+                           (SELECT COUNT(*) FROM qbo.InvoiceLine ql WHERE ql.QboInvoiceId = qi.Id) AS QboLines,
+                           (SELECT COUNT(*) FROM dbo.InvoiceLineItem x
+                              WHERE x.InvoiceId = i.Id AND x.SourceType = 'Manual') AS ManualLines,
+                           (SELECT COUNT(*) FROM dbo.InvoiceLineItem x
+                              LEFT JOIN dbo.BillLineItem b ON b.Id = x.BillLineItemId
+                              LEFT JOIN dbo.ExpenseLineItem e ON e.Id = x.ExpenseLineItemId
+                              LEFT JOIN dbo.BillCreditLineItem c ON c.Id = x.BillCreditLineItemId
+                            WHERE x.InvoiceId = i.Id
+                              AND x.SourceType IN ('BillLineItem','ExpenseLineItem','BillCreditLineItem')
+                              AND COALESCE(b.IsBilled, e.IsBilled, c.IsBilled, 0) = 0) AS UnbilledSources
+                    FROM qbo.InvoiceInvoice map
+                    JOIN dbo.Invoice i ON i.Id = map.InvoiceId
+                    JOIN qbo.Invoice qi ON qi.Id = map.QboInvoiceId
+                    WHERE qi.RealmId = ?
+                    """,
+                    realm_id,
+                )
+                # Anti-flood: this detector writes AT MOST ONE summary issue per
+                # run (the reconcile_bills pattern — a per-invoice flag here would
+                # re-insert one row per invoice per day with no dedupe, and the
+                # legacy pull corpus is all-Manual by construction, so the
+                # unlinked/unbilled invariants match hundreds of historical
+                # invoices that were never run through the reconciliation flow).
+                qbo_drift = []          # invariants 1+2 — real QBO divergence, per-invoice detail
+                unlinked_invoices = 0   # invariant 3 — aggregate only (legacy corpus is noisy)
+                unbilled_invoices = 0   # invariant 4 — aggregate only
+                for row in cursor.fetchall():
+                    dbo_total = float(row.TotalAmount) if row.TotalAmount is not None else 0.0
+                    qbo_total = float(row.TotalAmt) if row.TotalAmt is not None else 0.0
+                    invoice_problems = []
+                    if abs(dbo_total - qbo_total) >= 0.01:
+                        invoice_problems.append(f"total dbo={dbo_total:.2f} qbo={qbo_total:.2f}")
+                    if row.DboLines != row.QboLines:
+                        invoice_problems.append(f"lines dbo={row.DboLines} qbo={row.QboLines}")
+                    if invoice_problems:
+                        qbo_drift.append(f"{row.InvoiceNumber} ({', '.join(invoice_problems)})")
+                    if not row.IsDraft and row.ManualLines:
+                        unlinked_invoices += 1
+                    if not row.IsDraft and row.UnbilledSources:
+                        unbilled_invoices += 1
+
+                if qbo_drift or unlinked_invoices or unbilled_invoices:
+                    counts["flagged"] += 1
+                    drift_head = qbo_drift[:20]
+                    drift_txt = (
+                        f"QBO drift on {len(qbo_drift)} invoice(s): " + "; ".join(drift_head)
+                        + (f"; and {len(qbo_drift) - 20} more" if len(qbo_drift) > 20 else "")
+                    ) if qbo_drift else "no QBO total/line drift"
+                    self._record_issue(
+                        drift_type=DRIFT_INVOICE_DRAW_MISMATCH,
+                        action="flagged",
+                        entity_type="Invoice",
+                        realm_id=realm_id,
+                        details=(
+                            f"Daily invoice-draw summary: {drift_txt}. "
+                            f"Completed invoices with unlinked (Manual) lines: {unlinked_invoices}. "
+                            f"Completed invoices with un-billed source lines: {unbilled_invoices}."
+                        ),
+                        reconcile_run_id=run_id,
+                        severity_override="low" if not qbo_drift else None,
+                    )
+        except Exception:
+            logger.exception(
+                "qbo.reconcile.detector.failed",
+                extra={"detector": "invoice_draw_mismatch", "reconcile_run_id": run_id},
+            )
+            counts["errors"] += 1
+
+        logger.info(
+            "qbo.reconcile.run.completed",
+            extra={
+                "event_name": "qbo.reconcile.run.completed",
+                "operation_name": "qbo.reconcile.invoice_draw",
+                "entity_type": "Invoice",
                 "realm_id": realm_id,
                 "reconcile_run_id": run_id,
                 "auto_fixed": counts["auto_fixed"],

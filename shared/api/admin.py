@@ -333,7 +333,9 @@ async def reconcile_qbo_router():
         auth = QboAuthService().ensure_valid_token()
         if not auth or not auth.realm_id:
             return {"skipped": True, "reason": "no valid QBO auth"}
-        ReconciliationService().reconcile_bills(realm_id=auth.realm_id)
+        service = ReconciliationService()
+        service.reconcile_bills(realm_id=auth.realm_id)
+        service.reconcile_invoice_draws(realm_id=auth.realm_id)
         return {"reconciled": True, "realm_id": auth.realm_id}
 
     return await _timed("reconcile.qbo", _run)

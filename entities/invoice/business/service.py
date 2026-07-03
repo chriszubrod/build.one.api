@@ -527,7 +527,7 @@ class InvoiceService:
             # Column H = index 7 absolute; relative to range start:
             h_col_relative = col_letter_to_index("H") - start_col_index
 
-            if z_col_relative < 0 or z_col_relative >= len(worksheet_values[0]) if worksheet_values else True:
+            if z_col_relative < 0 or z_col_relative >= len(worksheet_values[0]):
                 return {"success": False, "message": "Column Z (reconciliation key) is outside the used range", "synced_count": 0, "errors": []}
 
             # Build a lookup: source_public_id → worksheet row number (1-based, absolute)
@@ -538,26 +538,29 @@ class InvoiceService:
                     if cell_val and isinstance(cell_val, str) and len(cell_val) == 36:
                         key_to_row[cell_val.lower()] = start_row_num + row_idx
 
-            # Collect source public_ids for each line item
+            from entities.bill_line_item.business.service import BillLineItemService
+            from entities.expense_line_item.business.service import ExpenseLineItemService
+            from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+
+            # Pass 1 — resolve each line item's source public_id to a worksheet
+            # row. No Graph calls here; only DB reads.
             errors = []
             synced_count = 0
             invoice_number = invoice.invoice_number or ""
+            row_targets: dict = {}  # ws_row (1-based) → line_item (for error attribution)
 
             for line_item in line_items:
                 source_public_id = None
                 try:
                     if line_item.source_type == "BillLineItem" and line_item.bill_line_item_id:
-                        from entities.bill_line_item.business.service import BillLineItemService
                         bill_li = BillLineItemService().read_by_id(line_item.bill_line_item_id)
                         source_public_id = str(bill_li.public_id) if bill_li else None
 
                     elif line_item.source_type == "ExpenseLineItem" and line_item.expense_line_item_id:
-                        from entities.expense_line_item.business.service import ExpenseLineItemService
                         expense_li = ExpenseLineItemService().read_by_id(line_item.expense_line_item_id)
                         source_public_id = str(expense_li.public_id) if expense_li else None
 
                     elif line_item.source_type == "BillCreditLineItem" and line_item.bill_credit_line_item_id:
-                        from entities.bill_credit_line_item.business.service import BillCreditLineItemService
                         credit_li = BillCreditLineItemService().read_by_id(line_item.bill_credit_line_item_id)
                         source_public_id = str(credit_li.public_id) if credit_li else None
 
@@ -570,27 +573,74 @@ class InvoiceService:
                         logger.info(f"No worksheet row found for source public_id {source_public_id} (InvoiceLineItem {line_item.id})")
                         continue
 
-                    # Update column H ("DRAW REQUEST") in this row
-                    cell_address = f"H{ws_row}"
+                    row_targets[ws_row] = line_item
+
+                except Exception as e:
+                    logger.error(f"Error resolving InvoiceLineItem {line_item.id} source row: {e}")
+                    errors.append({"line_item_id": line_item.id, "error": str(e)})
+
+            # Pass 2 — write column H in contiguous-run batches: one Graph call
+            # per run of adjacent rows instead of one per line. Rows written by
+            # the Bill/Expense sync cluster inside cost-code blocks, so a large
+            # invoice typically collapses to a handful of calls (previously one
+            # call per line ≈ 3-4 minutes on a 45-line invoice).
+            def _contiguous_runs(rows: list) -> list:
+                runs, run = [], []
+                for r in rows:
+                    if run and r != run[-1] + 1:
+                        runs.append(run)
+                        run = []
+                    run.append(r)
+                if run:
+                    runs.append(run)
+                return runs
+
+            for run in _contiguous_runs(sorted(row_targets)):
+                range_address = f"H{run[0]}" if len(run) == 1 else f"H{run[0]}:H{run[-1]}"
+                run_values = [[invoice_number] for _ in run]
+                try:
                     update_result = update_excel_range(
                         drive_id=drive.drive_id,
                         item_id=driveitem.item_id,
                         worksheet_name=worksheet_name,
-                        range_address=cell_address,
-                        values=[[invoice_number]],
+                        range_address=range_address,
+                        values=run_values,
                         session_id=session_id,
                     )
-                    if update_result.get("status_code") == 200:
-                        synced_count += 1
-                        logger.info(f"Updated {cell_address} = '{invoice_number}' for source {source_public_id}")
-                    else:
-                        err = f"Failed to update {cell_address}: {update_result.get('message')}"
-                        logger.error(err)
-                        errors.append({"line_item_id": line_item.id, "error": err})
-
                 except Exception as e:
-                    logger.error(f"Error syncing InvoiceLineItem {line_item.id} to Excel: {e}")
-                    errors.append({"line_item_id": line_item.id, "error": str(e)})
+                    update_result = {"status_code": None, "message": str(e)}
+
+                if update_result.get("status_code") == 200:
+                    synced_count += len(run)
+                    logger.info(f"Updated {range_address} = '{invoice_number}' ({len(run)} row(s))")
+                    continue
+
+                # Batch write failed — fall back to per-row writes so one bad
+                # cell can't lose the whole run, and errors stay per-line.
+                logger.warning(
+                    f"Batch update {range_address} failed ({update_result.get('message')}); "
+                    f"falling back to per-row writes"
+                )
+                for ws_row in run:
+                    line_item = row_targets[ws_row]
+                    try:
+                        single_result = update_excel_range(
+                            drive_id=drive.drive_id,
+                            item_id=driveitem.item_id,
+                            worksheet_name=worksheet_name,
+                            range_address=f"H{ws_row}",
+                            values=[[invoice_number]],
+                            session_id=session_id,
+                        )
+                        if single_result.get("status_code") == 200:
+                            synced_count += 1
+                        else:
+                            err = f"Failed to update H{ws_row}: {single_result.get('message')}"
+                            logger.error(err)
+                            errors.append({"line_item_id": line_item.id, "error": err})
+                    except Exception as e:
+                        logger.error(f"Error syncing InvoiceLineItem {line_item.id} to Excel: {e}")
+                        errors.append({"line_item_id": line_item.id, "error": str(e)})
 
             return {
                 "success": not errors,

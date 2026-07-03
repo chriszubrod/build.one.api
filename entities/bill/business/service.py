@@ -2107,7 +2107,12 @@ class BillService:
                             bill.bill_number or "",                                      # K: Bill Number
                             line_item.description or "",                                 # L: Description
                             "Bill",                                                      # M: Type
-                            float(line_item.price) if line_item.price is not None else 0, # N: Price (numeric for Excel formulas)
+                            # N: prefer Price; fall back to Amount when Price is NULL so
+                            # QBO-pulled account-based lines don't land as $0 (same rule
+                            # as sync_bills_batch_to_excel).
+                            float(line_item.price) if line_item.price is not None
+                            else float(line_item.amount) if getattr(line_item, "amount", None) is not None
+                            else 0,
                             "", "", "", "", "", "", "", "", "", "", "",                   # O-Y: Empty
                             str(line_item.public_id) if line_item.public_id else ""      # Z: Reconciliation key
                         ]

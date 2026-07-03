@@ -48,6 +48,7 @@ def enrich_line_items(line_items) -> list[dict]:
             placeholders = ",".join("?" * len(bill_ids))
             cursor.execute(f"""
                 SELECT bli.Id,
+                       bli.PublicId AS SourceLinePublicId,
                        b.BillNumber AS ParentNumber,
                        b.PublicId AS ParentPublicId,
                        b.BillDate AS SourceDate,
@@ -71,6 +72,7 @@ def enrich_line_items(line_items) -> list[dict]:
             """, bill_ids)
             for row in cursor.fetchall():
                 bill_map[row.Id] = {
+                    "source_line_public_id": str(row.SourceLinePublicId) if row.SourceLinePublicId else "",
                     "parent_number": row.ParentNumber or "",
                     "parent_public_id": str(row.ParentPublicId) if row.ParentPublicId else "",
                     "source_date": row.SourceDate.strftime("%m-%d-%Y") if row.SourceDate else "",
@@ -86,6 +88,7 @@ def enrich_line_items(line_items) -> list[dict]:
             placeholders = ",".join("?" * len(expense_ids))
             cursor.execute(f"""
                 SELECT eli.Id,
+                       eli.PublicId AS SourceLinePublicId,
                        e.ReferenceNumber AS ParentNumber,
                        e.PublicId AS ParentPublicId,
                        e.ExpenseDate AS SourceDate,
@@ -110,6 +113,7 @@ def enrich_line_items(line_items) -> list[dict]:
             """, expense_ids)
             for row in cursor.fetchall():
                 expense_map[row.Id] = {
+                    "source_line_public_id": str(row.SourceLinePublicId) if row.SourceLinePublicId else "",
                     "parent_number": row.ParentNumber or "",
                     "parent_public_id": str(row.ParentPublicId) if row.ParentPublicId else "",
                     "source_date": row.SourceDate.strftime("%m-%d-%Y") if row.SourceDate else "",
@@ -126,6 +130,7 @@ def enrich_line_items(line_items) -> list[dict]:
             placeholders = ",".join("?" * len(credit_ids))
             cursor.execute(f"""
                 SELECT bcli.Id,
+                       bcli.PublicId AS SourceLinePublicId,
                        bc.CreditNumber AS ParentNumber,
                        bc.PublicId AS ParentPublicId,
                        bc.CreditDate AS SourceDate,
@@ -149,6 +154,7 @@ def enrich_line_items(line_items) -> list[dict]:
             """, credit_ids)
             for row in cursor.fetchall():
                 credit_map[row.Id] = {
+                    "source_line_public_id": str(row.SourceLinePublicId) if row.SourceLinePublicId else "",
                     "parent_number": row.ParentNumber or "",
                     "parent_public_id": str(row.ParentPublicId) if row.ParentPublicId else "",
                     "source_date": row.SourceDate.strftime("%m-%d-%Y") if row.SourceDate else "",
@@ -167,6 +173,7 @@ def enrich_line_items(line_items) -> list[dict]:
             placeholders = ",".join("?" * len(employee_labor_ids))
             cursor.execute(f"""
                 SELECT elli.Id,
+                       elli.PublicId AS SourceLinePublicId,
                        el.PublicId AS ParentPublicId,
                        el.WorkDate AS SourceDate,
                        e.Firstname + ' ' + e.Lastname AS VendorName,
@@ -185,6 +192,7 @@ def enrich_line_items(line_items) -> list[dict]:
                     # ID like Bill.BillNumber. Falls back to "" so the TOC renders
                     # a blank cell rather than failing.
                     "parent_number": "",
+                    "source_line_public_id": str(row.SourceLinePublicId) if row.SourceLinePublicId else "",
                     "parent_public_id": str(row.ParentPublicId) if row.ParentPublicId else "",
                     "source_date": row.SourceDate.strftime("%m-%d-%Y") if row.SourceDate else "",
                     "vendor_name": row.VendorName or "",

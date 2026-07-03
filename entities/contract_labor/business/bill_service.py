@@ -310,18 +310,33 @@ class ContractLaborBillService:
                 if not billing_period:
                     billing_period = datetime.now().strftime("%Y-%m-%d")
 
-                # Bill.TotalAmount is A/P — what we owe the vendor (cost). The QBO
-                # push sums line-item Amount (cost) into the QBO bill total, so the
-                # header must match Amount, not the marked-up Price. Price is what
-                # we later charge the client via Invoice — it never touches QBO A/P.
-                # ContractLaborLineItem has no persisted `amount` column —
-                # it's Hours × Rate (pre-markup); Price is the same × (1+Markup).
-                # Compute from the primitives instead of assuming a field.
-                total_amount = sum(
+                # Two totals — the Bill entity and the PDF want DIFFERENT numbers:
+                #
+                #   Bill.TotalAmount = A/P (what we owe the vendor, i.e. COST).
+                #     QBO sums line-item Amount (cost) as the bill total, so the
+                #     header must match cost, never the marked-up Price.
+                #     Price flows into Invoice (what we bill the client) later —
+                #     it never touches QBO A/P.
+                #     `ContractLaborLineItem` has no persisted `amount` column;
+                #     Amount = Hours × Rate (pre-markup). Compute from primitives.
+                #
+                #   PDF Balance Due = Price (marked-up, client-facing). The PDF
+                #     is generated once at bill creation and lives on Box as the
+                #     draw-request document; per Chris' 2026-07-02 call, the PDF
+                #     reflects Price throughout (per-line PRICE column already
+                #     does — Balance Due row must match). Older code reused a
+                #     single `total_amount` for both, producing PDFs where the
+                #     Balance Due (cost) didn't match the PRICE column sum.
+                total_amount_cost = sum(
                     (
                         Decimal(str(item["line_item"].hours or 0))
                         * Decimal(str(item["line_item"].rate or 0))
                     )
+                    for item in items
+                    if item["line_item"].is_billable is not False
+                )
+                total_amount_pdf = sum(
+                    Decimal(str(item["line_item"].price or 0))
                     for item in items
                     if item["line_item"].is_billable is not False
                 )
@@ -330,7 +345,7 @@ class ContractLaborBillService:
                 # → don't spawn an empty $0 Bill (with its orphan Attachment
                 # + PDF). Common when a CL slice for this period is a single
                 # non-billable data-only line (e.g. a zero-hour placeholder).
-                if total_amount == 0:
+                if total_amount_cost == 0:
                     result["errors"].append(
                         f"Skipped empty bill for {vendor.name} · "
                         f"{project_abbr} · {billing_period} — no billable amount."
@@ -361,7 +376,7 @@ class ContractLaborBillService:
                         bill_date=billing_period,
                         due_date=due_date,
                         bill_number=invoice_number,
-                        total_amount=total_amount,
+                        total_amount=total_amount_cost,
                         memo=memo,
                         is_draft=True,
                         require_attachment=False,
@@ -371,7 +386,7 @@ class ContractLaborBillService:
                     result["bills_updated"] += 1
                     bill.bill_date = billing_period
                     bill.due_date = due_date
-                    bill.total_amount = total_amount
+                    bill.total_amount = total_amount_cost
                     bill.memo = memo
                     bill = self.bill_service.repo.update_by_id(bill)
                     if not bill:
@@ -524,7 +539,7 @@ class ContractLaborBillService:
                     invoice_number=invoice_number,
                     bill_date=billing_period,
                     due_date=due_date,
-                    total_amount=float(total_amount),
+                    total_amount=float(total_amount_pdf),
                     line_items=items,
                 )
                 try:

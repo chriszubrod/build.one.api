@@ -468,18 +468,42 @@ class ContractLaborBillService:
 
                         for item in group:
                             li = item["line_item"]
+                            # Re-read the LI immediately before update so we
+                            # use the CURRENT row_version. The cached
+                            # `li.row_version_bytes` was captured at loop-
+                            # top by `read_by_contract_labor_id`; if the
+                            # LI has been touched by anything between then
+                            # and now (edit-path BLI recreation, a
+                            # concurrent React save, a prior partial run
+                            # that made it partway), the cached token is
+                            # stale and the optimistic-concurrency check
+                            # fails. Re-reading closes that window without
+                            # weakening the concurrency guarantee — we
+                            # STILL send a row_version, just a fresh one.
+                            fresh_li = self.line_item_repo.read_by_id(id=li.id)
+                            if fresh_li is None:
+                                # LI vanished between load and update
+                                # (deleted concurrently). Log and skip;
+                                # the BLI it would have linked to is
+                                # already committed and covers other lines
+                                # in this SCC group.
+                                logger.warning(
+                                    f"ContractLaborLineItem {li.id} disappeared "
+                                    f"during generate-bills; skipping FK linkage"
+                                )
+                                continue
                             self.line_item_repo.update_by_id(
-                                id=li.id,
-                                row_version=li.row_version_bytes,
-                                line_date=li.line_date,
-                                project_id=li.project_id,
-                                sub_cost_code_id=li.sub_cost_code_id,
-                                description=li.description,
-                                hours=li.hours,
-                                rate=li.rate,
-                                markup=li.markup,
-                                price=li.price,
-                                is_billable=li.is_billable if li.is_billable is not None else True,
+                                id=fresh_li.id,
+                                row_version=fresh_li.row_version_bytes,
+                                line_date=fresh_li.line_date,
+                                project_id=fresh_li.project_id,
+                                sub_cost_code_id=fresh_li.sub_cost_code_id,
+                                description=fresh_li.description,
+                                hours=fresh_li.hours,
+                                rate=fresh_li.rate,
+                                markup=fresh_li.markup,
+                                price=fresh_li.price,
+                                is_billable=fresh_li.is_billable if fresh_li.is_billable is not None else True,
                                 bill_line_item_id=bli.id,
                             )
                             entry_id = item["entry"].id

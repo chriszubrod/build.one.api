@@ -138,9 +138,8 @@ class CreateInvoiceArgs(BaseModel):
     invoice_number: str = Field(
         description=(
             "Invoice number (<=50 chars). Often follows a per-project "
-            "sequence; the existing `/get/invoice/next-number/{project_"
-            "public_id}` endpoint can suggest one (not currently wired "
-            "as an agent tool)."
+            "sequence; call the `get_next_invoice_number` tool first to "
+            "suggest one."
         ),
     )
     payment_term_public_id: Optional[str] = Field(
@@ -182,12 +181,11 @@ create_invoice = Tool(
     name="create_invoice",
     description=(
         "Create a NEW DRAFT INVOICE with no line items. REQUIRES USER "
-        "APPROVAL. The invoice becomes a draft (IsDraft=true) — line "
-        "items are added separately (via the UI today; the project's "
-        "billable bill/expense/credit lines roll into invoice lines "
-        "via a workflow that's a v2 tool set). Once lines are in, use "
-        "`complete_invoice` to finalize. If the user names a project, "
-        "resolve via `search_projects` first."
+        "APPROVAL. The invoice becomes a draft (IsDraft=true) — add "
+        "line items afterward with `add_invoice_line_items`, picking "
+        "candidates from `get_billable_items_for_invoice`. Once lines "
+        "are in, use `complete_invoice` to finalize. If the user names "
+        "a project, resolve via `search_projects` first."
     ),
     input_schema=input_schema_from(CreateInvoiceArgs),
     handler=_create_invoice,

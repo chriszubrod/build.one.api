@@ -267,6 +267,33 @@ async def time_tracking_auto_submit_prior_day_router(work_date: Optional[str] = 
     return await _timed("time_autosubmit.prior_day", _run)
 
 
+@router.post("/time-tracking/auto-submit-stale-drafts", dependencies=[Depends(_require_drain_secret)])
+async def time_tracking_auto_submit_stale_drafts_router():
+    """
+    Deterministic sweep of EVERY prior-day draft TimeEntry (NO LLM). Runs
+    the same validate-completeness / submit-clean / flag-rest pipeline as
+    the single-day sweep, but the top query is "all drafts with WorkDate <
+    today-in-business-tz" instead of "drafts for yesterday only".
+
+    Fixes the hole in the prior-day sweep: entries created AFTER their
+    day's sweep window (offline sync, next-day iOS submit, late manual
+    entry) previously sat as draft forever. Now each daily run catches
+    everything that has piled up.
+
+    Runs as system admin via the drain-secret guard. Honors
+    TIME_AUTOSUBMIT_MODE (off = no-op | dry_run = report only | on =
+    execute). Idempotent across runs — after the first successful sweep,
+    subsequent runs only see whatever new stragglers arrived since.
+
+    Called once daily by the scheduler's `auto_submit_stale_drafts` timer.
+    """
+    def _run() -> dict[str, Any]:
+        from entities.time_entry.business.auto_submit_service import TimeEntryAutoSubmitService
+        return TimeEntryAutoSubmitService().run_for_stale_drafts()
+
+    return await _timed("time_autosubmit.stale_drafts", _run)
+
+
 # --- QBO pulls ------------------------------------------------------------- #
 
 

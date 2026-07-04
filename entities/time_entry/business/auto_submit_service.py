@@ -42,6 +42,72 @@ class TimeEntryAutoSubmitService:
     def run_for_prior_day(self) -> dict:
         return self.run_for_work_date(self._yesterday_business_date())
 
+    def run_for_stale_drafts(self) -> dict:
+        """Sweep EVERY prior-day draft, not just yesterday's.
+
+        The old run_for_prior_day only processes yesterday-in-business-tz.
+        If a worker enters a draft after the sweep fires (offline sync,
+        next-day catch-up, manual entry days later), the entry sits in
+        draft forever — the daily timer never revisits that date. This
+        entry point closes that hole: any draft with WorkDate < today
+        (business tz) gets evaluated on every run.
+
+        Reuses run_for_work_date() per unique stale date so all
+        per-worker-day guarantees (dup-safety, richest-clean-wins,
+        actor context, mode gating) hold unchanged. First run in prod
+        will submit the built-up backlog of missed days in one pass.
+
+        Mode gating (off / dry_run / on) still applies via
+        Settings.time_autosubmit_mode; dry_run returns the report
+        without writing.
+        """
+        from config import Settings
+        mode = (Settings().time_autosubmit_mode or "off").strip().lower()
+        if mode not in ("dry_run", "on"):
+            logger.info("time_autosubmit_stale.disabled mode=%s", mode)
+            return {"status": "disabled", "mode": mode, "dates_swept": [],
+                    "submitted": 0, "flagged": 0, "skipped_test": 0,
+                    "excluded_dup": 0, "submitted_unaggregated": 0, "errors": 0,
+                    "per_day": []}
+
+        business_today = datetime.now(self._business_tz()).date()
+        dates = self._read_stale_draft_dates(business_today)
+
+        totals = {"submitted": 0, "flagged": 0, "skipped_test": 0,
+                  "excluded_dup": 0, "submitted_unaggregated": 0, "errors": 0}
+        per_day = []
+        all_actions: list[dict] = []
+
+        for d in dates:
+            iso = d.isoformat() if hasattr(d, "isoformat") else str(d)
+            result = self.run_for_work_date(iso)
+            per_day.append({
+                "work_date": iso,
+                "submitted": result.get("submitted", 0),
+                "flagged": result.get("flagged", 0),
+                "skipped_test": result.get("skipped_test", 0),
+                "excluded_dup": result.get("excluded_dup", 0),
+                "submitted_unaggregated": result.get("submitted_unaggregated", 0),
+                "errors": result.get("errors", 0),
+            })
+            for k in totals:
+                totals[k] += result.get(k, 0)
+            all_actions.extend(result.get("actions", []))
+
+        summary = {
+            "status": "ok",
+            "mode": mode,
+            "dates_swept": [d.isoformat() if hasattr(d, "isoformat") else str(d)
+                            for d in dates],
+            **totals,
+            "per_day": per_day,
+            "actions": all_actions[:200],
+            "actions_truncated": len(all_actions) > 200,
+        }
+        logger.info("time_autosubmit_stale.sweep_complete %s",
+                    {k: v for k, v in summary.items() if k not in ("actions", "per_day")})
+        return summary
+
     def run_for_work_date(self, work_date: str) -> dict:
         from config import Settings
 
@@ -240,6 +306,36 @@ class TimeEntryAutoSubmitService:
                     "status": r[3],
                 })
             return rows
+
+    @staticmethod
+    def _read_stale_draft_dates(business_today) -> list:
+        """Distinct WorkDates < business_today that still have at least one
+        entry whose current (latest) status is 'draft'. Ordered oldest→newest
+        so the sweep processes the longest-stalled days first — clearer log
+        output + safer if we later add a per-run time cap.
+
+        Returns dates as SQL-server date objects; caller isoformats them.
+        """
+        from shared.database import get_connection
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT DISTINCT te.WorkDate
+                FROM dbo.TimeEntry te
+                OUTER APPLY (
+                    SELECT TOP 1 s.Status
+                    FROM dbo.TimeEntryStatus s
+                    WHERE s.TimeEntryId = te.Id
+                    ORDER BY s.CreatedDatetime DESC, s.Id DESC
+                ) cs
+                WHERE cs.Status = 'draft'
+                  AND te.WorkDate < ?
+                ORDER BY te.WorkDate ASC
+                """,
+                (business_today,),
+            )
+            return [r[0] for r in cur.fetchall()]
 
     @staticmethod
     def _read_user_info(user_ids: set) -> dict:

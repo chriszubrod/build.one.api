@@ -83,6 +83,7 @@ At the start of each session, read SESSION_NOTES.md for historical context.
 
 - **Entity pattern**: `entities/{name}/` with `api/`, `business/`, `persistence/`, `sql/` sub-packages. `web/` subpackages are gone as of Wave E5 — React owns the UI.
 - **SQL**: All DB access via stored procedures (pyodbc). Migrations run with `python scripts/run_sql.py path/to/file.sql`
+- **Migrations that redefine sprocs MUST port the change into the entity's base SQL file in the same commit.** Base files use `CREATE OR ALTER` and get re-run routinely — an unported migration is silently reverted by the next base re-run, and an unapplied migration leaves prod sprocs behind the Python repo layer (pyodbc parameter errors). Incident: `CreateInvoiceLineItem` lacked `@EmployeeLaborLineItemId` in prod through WVA-17/WVA-18 (2026-07) because migration `001_2026_05_27_employee_labor_source.sql` was neither applied nor ported; base file made canonical 2026-07-06. New sproc params take `= NULL` defaults so older callers stay safe.
 - **Concurrency**: SQL Server ROWVERSION columns with base64 encoding for transport
 - **UI**: all UI is React (`build.one.web`). No server-rendered templates, no `templates/` directory. API routes return JSON only.
 - **Workflow engine**: ProcessEngine for main entity CRUD; lightweight child entities use direct CRUD

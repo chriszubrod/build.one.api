@@ -2,7 +2,7 @@
 
 > **Canonical location:** `build.one.api/entities/invoice/intelligence/prompt.md` — the ONLY invoice prompt.
 > **Loaded by:** `intelligence/agents/invoice_specialist/definition.py` (as the invoice_specialist system prompt) **and** read at the start of every interactive InvoiceAgent session. There is deliberately no second prompt file; if you find one elsewhere, it is stale — this file wins.
-> **Last verified against code:** 2026-07-03 (full claim-by-claim audit; every service/connector/SQL reference below was checked against the codebase on that date). When editing this file, re-verify the code references you touch and update this date.
+> **Last verified against code:** 2026-07-06 (full claim-by-claim audit; every service/connector/SQL reference below was checked against the codebase on that date). When editing this file, re-verify the code references you touch and update this date.
 
 ---
 
@@ -590,9 +590,13 @@ After onboarding, the new `dbo.BillCredit` + `dbo.BillCreditLineItem` rows exist
 
 > **Note — a fourth SourceType exists:** `EmployeeLaborLineItem` (labor billing; TOC label "EmpLabor"). Labor lines are local-first (no QBO source transaction, no vendor PDF — they render in the packet TOC without an attachment page and are exempt from CRITICAL #5). They do not participate in Step 4 linkage or the fingerprint queries; if one appears on a QBO-pulled invoice's line set unexpectedly, surface it.
 
-### 4.0 — Deterministic resolution via LinkedTxn (preferred; fingerprint is the fallback)
+### 4.0 — Fingerprint matching is the STANDING PRIMARY strategy (inverted 2026-07-04, WVA-18)
 
-Since 2026-07-03 the pull sync stores each QBO invoice line's first LinkedTxn in staging (`qbo.InvoiceLine.LinkedTxnType` / `LinkedTxnId`). Lines created in QBO from billable expenses carry `LinkedTxnType='ReimburseCharge'`, and the ReimburseCharge's own LinkedTxn names the source Bill/Purchase — an ID chain that replaces fuzzy matching:
+Field result from WVA-18: the LinkedTxn/ReimburseCharge chain resolved **0 of 135** lines. **QBO drops the ReimburseCharge's reverse LinkedTxn back-pointer to its source once the RC is consumed by an invoice (`HasBeenInvoiced=true`)** — and this playbook, by design, runs AFTER the user completes the invoice in QBO, so the RC→source hop is structurally unavailable on every run (not WVA-18-specific; see KI-32). The fingerprint queries in 4.1 are therefore the standing primary linkage method; the LinkedTxn chain below is an opportunistic assist, usable only on a QBO invoice that is still Draft, plus a grouping aid.
+
+### 4.0a — LinkedTxn / ReimburseCharge chain (draft-window assist + markup grouping only)
+
+The pull sync stores each QBO invoice line's first LinkedTxn in staging (`qbo.InvoiceLine.LinkedTxnType` / `LinkedTxnId`, since 2026-07-03). Lines created from billable expenses carry `LinkedTxnType='ReimburseCharge'`; while the QBO invoice is still **Draft**, the RC's own LinkedTxn still names the source Bill/Purchase:
 
 ```sql
 SELECT Id, LineNum, Amount, Description, LinkedTxnType, LinkedTxnId
@@ -629,13 +633,13 @@ for rc in rcs:
             break
 ```
 
-Then for each invoice line with `LinkedTxnType='ReimburseCharge'`: `rc_map[LinkedTxnId]` gives the source QBO transaction → find its staging row (`qbo.Purchase WHERE QboId = ? AND RealmId = ?` or `qbo.Bill ...`) → match the specific source line **within that one transaction** by amount (`ABS(line.Amount - invoice_line.Amount) < 0.01` — scoped to a single transaction this is effectively exact) → hop the mapping table (`qbo.PurchaseLineExpenseLineItem` / `qbo.BillLineItemBillLine`) to the dbo line. Lines with `LinkedTxnType IN ('Bill','Purchase')` (no RC intermediary) resolve the same way minus the rc_map hop.
+Then for each invoice line with `LinkedTxnType='ReimburseCharge'`: `rc_map[LinkedTxnId]` gives the source QBO transaction → find its staging row (`qbo.Purchase WHERE QboId = ? AND RealmId = ?` or `qbo.Bill ...`) → match the specific source line **within that one transaction** by amount → hop the mapping table (`qbo.PurchaseLineExpenseLineItem` / `qbo.BillLineItemBillLine`) to the dbo line. Lines with `LinkedTxnType IN ('Bill','Purchase')` (no RC intermediary) resolve the same way minus the rc_map hop.
+
+**Expect `rc_map` to come back empty on a completed invoice** (the normal case for this playbook) — do not treat 0 resolutions as an error; proceed to 4.1. What retains value post-invoicing: the **line-level** `LinkedTxnId` in staging, when populated, deterministically GROUPS lines that share a ReimburseCharge — the amount line and its markup sibling — even when the source can't be resolved through it. Use it for markup pairing before falling back to the description/rate pattern.
 
 **Markup lines (two-line QBO shape — see "Why the invoice is created in QBO first"):** QBO posts markup as its own line. Check its LinkedTxn first — it frequently carries the same ReimburseCharge id as its sibling; if so, pair them mechanically. If the markup line has no LinkedTxn, pair by pattern (description names the markup/percent; amount ≈ sibling amount × rate). Either way, classify it as a **derivative of the sibling billed line** and present it pre-classified in the Phase 1 gap report — not as an open Manual-line question.
 
-Lines still unresolved after 4.0 (legacy rows, no LinkedTxn, typed-in lines) fall through to the fingerprint queries below.
-
-### 4.1 — Fingerprint fallback
+### 4.1 — Fingerprint matching (primary)
 
 Read both sides:
 
@@ -1103,6 +1107,8 @@ Stop and surface to the user before proceeding when:
 29. **KI-29 — Box workbook WOPI lock**: if the workbook is open in Box's editor, `update_box_excel` rows defer (stay non-terminal). Ask the user to close it. Formula safety: all 23 mapped workbooks migrated to position-independent ("immune") formulas 2026-07-01 (openpyxl `insert_rows` is not formula-aware); 4 old-template workbooks were flagged for migration — inserts into an unmigrated workbook can corrupt subtotals. If a target workbook is on the old template, halt and surface.
 30. **KI-30 — Box is forward-only and mapping-gated**: only mapped projects mirror; never back-fill old entities into Box (no dedup against hand-filed documents). An unmapped project is a legitimate skip — but per Step 1c it must be acknowledged, not discovered.
 31. **KI-31 — Box drain is budgeted and pausable**: ~20 rows / 20s per 30s tick; large 7b batches take multiple ticks. `PAUSE_BOX_DRAIN` on the API pauses it server-side — if rows sit `pending` unusually long, check that flag before debugging.
+32. **KI-32 — QBO drops the ReimburseCharge reverse LinkedTxn once `HasBeenInvoiced=true`** (WVA-18, 2026-07-04: 0/135 lines resolved via the RC chain). Since this playbook runs after the user completes the invoice in QBO, RC→source resolution is structurally unavailable during a normal run — it works only on Draft QBO invoices. Fingerprint (Step 4.1) is the standing primary; the line-level staging `LinkedTxnId` still groups amount+markup siblings when present. A durable deterministic path would require capturing ReimburseCharges into staging while they are still un-invoiced — see `TODO.md` "Invoice pull-sync follow-ups".
+33. **KI-33 — Sproc drift between repo kwargs and deployed sprocs** (WVA-17 + WVA-18: `CreateInvoiceLineItem` lacked `@EmployeeLaborLineItemId` in prod; the 2026-05-27 migration was never applied AND the base entity SQL file was never ported, so any base re-run would also revert it). Symptom: pyodbc parameter errors on every pull-sync ILI create. Fixed 2026-07-06 — the base file `entities/invoice_line_item/sql/dbo.invoice_line_item.sql` is now canonical (migration ported in, params defaulted `= NULL`) and was applied to prod. If a similar drift recurs on any entity: re-run that entity's BASE SQL file (bases must carry every migration's sproc changes — repo convention since 2026-07-06); monkey-patching the repo to strip kwargs is session-scoped triage only.
 
 ---
 

@@ -13,6 +13,7 @@ from decimal import Decimal
 from entities.invoice.api.schemas import InvoiceCreate, InvoiceUpdate
 from entities.invoice.business.service import InvoiceService
 from shared.api.responses import list_response, item_response, raise_not_found
+from shared.pdf_utils import fit_page_to_letter
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -27,16 +28,25 @@ def _toc_signed_amount(row: dict) -> Optional[float]:
     """
     Return the row's display amount as a float, with the correct sign for credits.
 
-    The InvoiceInvoiceConnector stores `dbo.InvoiceLineItem.Price` as a positive
-    magnitude even for credit-sourced lines, while `Amount` retains the negative
-    QBO sign. Prefer Price for non-credit lines (it carries markup when
-    applicable), but negate it for credit lines so the TOC + subtotals reflect
-    the customer-facing reduction. Two credit shapes:
+    Prefer `billed_price` — the SOURCE line's marked-up, client-billed price
+    (BillLineItem.Price / ExpenseLineItem.Price = Amount + Markup). It is what
+    the customer is actually charged and what the Bill's own detail page shows.
+    We can't read markup off the InvoiceLineItem itself: the QBO invoice splits
+    each line's markup into a separate Manual line (excluded from the TOC), so
+    `dbo.InvoiceLineItem.Price`/`Amount` carry only the un-marked-up base.
+
+    Fall back to the ILI's own `price` then `amount` for sources with no
+    marked-up Price column (BillCreditLineItem, EmployeeLaborLineItem). The
+    InvoiceInvoiceConnector stores `Price` as a positive magnitude even for
+    credit-sourced lines while `Amount` keeps the negative QBO sign, so we
+    negate below for credit shapes to reflect the customer-facing reduction:
       - BillCreditLineItem source (VendorCredit / credit memo)
       - ExpenseLineItem whose parent `Expense.IsCredit = True` (expense refund;
         Expense table doubles as the ExpenseRefund concept)
     """
-    p = row.get("price")
+    p = row.get("billed_price")
+    if p is None:  # only a MISSING price falls back; a legitimate $0 stays $0
+        p = row.get("price")
     if p is None:
         p = row.get("amount")
     if p is None:
@@ -80,8 +90,9 @@ def _consolidate_basic_toc_rows(rows: list[dict]) -> list[dict]:
     """
     Consolidate line items from the same source bill/expense into one row.
     Groups by (source_type, parent_number, vendor_name, source_date).
-    Single-item groups: keep original description and type label.
-    Multi-item groups: description="Multiple", type_label="See Image", price=sum.
+    Single-item groups: keep the item's sub cost code name and type label.
+    Multi-item groups: sub_cost_code_name = the shared SCC name if uniform else
+    "Multiple See Image", type_label from source, price=sum.
     Manual lines (no parent_number) are never consolidated — each stays its own row.
     """
     from itertools import groupby
@@ -107,11 +118,16 @@ def _consolidate_basic_toc_rows(rows: list[dict]) -> list[dict]:
         else:
             total_price = sum((_toc_signed_amount(r) or 0) for r in group)
             first = group[0]
+            # Consolidated SCC label: the shared sub cost code name if every
+            # item in the group maps to the same one, else "Multiple See Image".
+            scc_names = {(r.get("sub_cost_code_name") or "").strip() for r in group}
+            scc_names.discard("")
+            scc_label = next(iter(scc_names)) if len(scc_names) == 1 else "Multiple See Image"
             consolidated.append({
                 "source_date": first.get("source_date", ""),
                 "vendor_name": first.get("vendor_name", ""),
                 "parent_number": first.get("parent_number", ""),
-                "description": "Multiple See Image",
+                "sub_cost_code_name": scc_label,
                 "source_type": first.get("source_type", ""),
                 "price": total_price,
                 "type_label": _toc_source_label(first.get("source_type", "")),
@@ -151,6 +167,7 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
     )
 
     # Columns: Date(65) Vendor(110) Invoice(80) Description(120) Type(52) Amount(77) = 504pt
+    # The "Description" column shows the sub cost code name (not the work paragraph).
     # Date/Invoice/Type/Amount sized to fit content on one line; Vendor/Description wrap.
     col_widths = [65, 110, 80, 120, 52, 77]
     headers = [
@@ -167,7 +184,9 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
             r.get("source_date", ""),
             W(r.get("vendor_name", "")),
             r.get("parent_number", ""),
-            W(r.get("description", "") or ""),
+            # Prefer the sub cost code name; fall back to the work-description
+            # so the column is never blank when a source line has no SCC.
+            W(r.get("sub_cost_code_name") or r.get("description") or ""),
             r.get("type_label", ""),
             amt_str,
         ])
@@ -249,6 +268,7 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
     )
 
     # Columns: CostCode(45) Date(62) Vendor(95) Invoice(78) Description(100) Type(52) Amount(72) = 504pt
+    # The "Description" column shows the sub cost code name (not the work paragraph).
     # Date/Invoice/Type/Amount sized to fit content on one line; Vendor/Description wrap.
     col_widths = [45, 62, 95, 78, 100, 52, 72]
     headers = [
@@ -270,7 +290,9 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
                 r.get("source_date", ""),
                 W(r.get("vendor_name", "")),
                 r.get("parent_number", ""),
-                W(r.get("description", "") or ""),
+                # Prefer the sub cost code name; fall back to the work-description
+                # so the column is never blank when a source line has no SCC.
+                W(r.get("sub_cost_code_name") or r.get("description") or ""),
                 _toc_source_label(r.get("source_type", "")),
                 amt_str,
             ])
@@ -586,7 +608,7 @@ def _generate_invoice_packet(public_id: str):
             content, _ = storage.download_file(att.blob_url)
             reader = PdfReader(io.BytesIO(content))
             for page in reader.pages:
-                writer.add_page(page)
+                writer.add_page(fit_page_to_letter(page))
         except Exception as e:
             logger.warning(f"Skipping attachment {att.public_id}: {e}")
             skipped += 1

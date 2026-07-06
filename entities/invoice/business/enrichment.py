@@ -55,6 +55,7 @@ def enrich_line_items(line_items) -> list[dict]:
                        v.Name AS VendorName,
                        scc.Number AS SccNumber, scc.Name AS SccName,
                        cc.Number AS CcNumber, cc.Name AS CcName,
+                       bli.Price AS BilledPrice,
                        att_first.PublicId AS AttachmentPublicId
                 FROM dbo.BillLineItem bli
                 JOIN dbo.Bill b ON b.Id = bli.BillId
@@ -81,6 +82,13 @@ def enrich_line_items(line_items) -> list[dict]:
                     "sub_cost_code_name": row.SccName or "",
                     "cost_code_number": row.CcNumber or "",
                     "cost_code_name": row.CcName or "",
+                    # Client-billed (marked-up) price of the SOURCE line. The
+                    # TOC prefers this over the InvoiceLineItem's own Price/Amount
+                    # because markup is split into separate Manual lines on the
+                    # QBO invoice (excluded from the TOC) — so the ILI carries
+                    # only the un-marked-up base. bli.Price = Amount + Markup,
+                    # matching what the Bill's own detail page shows.
+                    "billed_price": float(row.BilledPrice) if row.BilledPrice is not None else None,
                     "attachment_public_id": str(row.AttachmentPublicId) if row.AttachmentPublicId else "",
                 }
 
@@ -96,6 +104,7 @@ def enrich_line_items(line_items) -> list[dict]:
                        v.Name AS VendorName,
                        scc.Number AS SccNumber, scc.Name AS SccName,
                        cc.Number AS CcNumber, cc.Name AS CcName,
+                       eli.Price AS BilledPrice,
                        att_first.PublicId AS AttachmentPublicId
                 FROM dbo.ExpenseLineItem eli
                 JOIN dbo.Expense e ON e.Id = eli.ExpenseId
@@ -122,6 +131,9 @@ def enrich_line_items(line_items) -> list[dict]:
                     "sub_cost_code_name": row.SccName or "",
                     "cost_code_number": row.CcNumber or "",
                     "cost_code_name": row.CcName or "",
+                    # See BillLineItem note above — eli.Price = Amount + Markup,
+                    # the client-billed price the TOC should display.
+                    "billed_price": float(row.BilledPrice) if row.BilledPrice is not None else None,
                     "attachment_public_id": str(row.AttachmentPublicId) if row.AttachmentPublicId else "",
                     "is_credit": bool(row.IsCredit),
                 }
@@ -240,6 +252,9 @@ def enrich_line_items(line_items) -> list[dict]:
         li_dict.setdefault("sub_cost_code_name", "")
         li_dict.setdefault("cost_code_number", "")
         li_dict.setdefault("cost_code_name", "")
+        # Sources without a marked-up Price column (BillCredit, EmployeeLabor)
+        # leave this None → the TOC falls back to the ILI's own Price/Amount.
+        li_dict.setdefault("billed_price", None)
         li_dict.setdefault("attachment_public_id", "")
         li_dict.update(enrichment)
 

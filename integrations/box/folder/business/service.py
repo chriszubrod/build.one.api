@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import re
 from typing import List, Optional
 
 # Third-party Imports
@@ -172,6 +173,114 @@ class BoxProjectFolderService:
         return self.project_folder_repo.read_by_project_id_and_doc_class(
             project_id, doc_class
         )
+
+    def read_or_create_child_folder(
+        self,
+        *,
+        client: BoxHttpClient,
+        parent_box_folder_id: str,
+        folder_name: str,
+    ) -> dict:
+        """
+        Idempotent read-or-create for a child folder under a mapped project
+        folder. Used to build per-invoice subfolders under a project's
+        "15 - Draw Requests" mapping (mirroring the SharePoint
+        `read_or_create_folder` contract at
+        `entities/invoice/business/service.py` around line 1023).
+
+        Sanitizes the folder name against the same character set SharePoint
+        strips (`<>:"/\\|?*`) so subfolder names match byte-for-byte across
+        both integrations. Returns `{"box_folder_id","name"}`.
+
+        Strategy (create-first, not read-first):
+          1. Call `create_folder`. This is the common success path when the
+             subfolder doesn't exist yet.
+          2. On 409 conflict (already exists — either from a prior run or a
+             racing worker), parse `context_info.conflicts` for the existing
+             folder id and return that. The conflict path is expected on
+             re-runs and is not an error state; it logs at info level.
+
+        The create-first shape (rather than "list children, else create") is
+        deliberate: the Box CCG service account can WRITE into a mapped
+        parent folder but is often DENIED on folder READ / list operations
+        (Box treats folder listing as a stricter permission scope than
+        content upload). A read-first approach would 404 on every run in
+        that configuration; create-first works with either scope.
+
+        Subfolders are NOT persisted into `[box].[Folder]` or
+        `[box].[ProjectFolder]`. Those tables model per-project ROOTS keyed by
+        `(ProjectId, DocClass)`; a per-invoice subfolder is a routing target,
+        not a durable project mapping. Storing it there would violate the
+        one-mapping-per-doc-class invariant `map_project` enforces at
+        lines 92-104 above.
+        """
+        sanitized = re.sub(r'[<>:"/\\|?*]', "_", folder_name.strip())
+        if not sanitized:
+            raise ValueError(f"folder_name sanitized to empty: {folder_name!r}")
+
+        try:
+            created = client.create_folder(
+                parent_box_folder_id,
+                sanitized,
+                operation_name="box.folder.child.create",
+            )
+            return {
+                "box_folder_id": str(created["id"]),
+                "name": created.get("name") or sanitized,
+                "created": True,
+            }
+        except BoxConflictError as error:
+            conflict_id = self._extract_conflict_folder_id(error)
+            if not conflict_id:
+                # Permission-limited 409 bodies can omit context_info.conflicts
+                # — exactly the CCG write-only scope create-first exists for.
+                # Surface an actionable error before re-raising: without the
+                # id every subsequent run of this invoice skips its line PDFs.
+                logger.error(
+                    "box.folder.child.conflict_unrecoverable",
+                    extra={
+                        "event_name": "box.folder.child.conflict_unrecoverable",
+                        "parent_box_folder_id": str(parent_box_folder_id),
+                        "folder_name": sanitized,
+                        "remedy": (
+                            "Box returned 409 without a conflict id — grant the CCG "
+                            "service account read scope on the parent folder, or look "
+                            "up the subfolder id in the Box UI and upload manually."
+                        ),
+                    },
+                )
+                raise
+            logger.info(
+                "box.folder.child.exists",
+                extra={
+                    "event_name": "box.folder.child.exists",
+                    "parent_box_folder_id": str(parent_box_folder_id),
+                    "folder_name": sanitized,
+                    "box_folder_id": conflict_id,
+                },
+            )
+            return {
+                "box_folder_id": conflict_id,
+                "name": sanitized,
+                "created": False,
+            }
+
+    @staticmethod
+    def _extract_conflict_folder_id(error: BoxConflictError) -> Optional[str]:
+        """
+        Pull the conflicting folder id out of `context_info.conflicts`. Box
+        returns either a dict or a single-element list depending on the
+        endpoint — mirrors the file-conflict shape at
+        `integrations/box/file/business/service.py::_extract_conflict_file_id`.
+        """
+        context_info = error.context_info or {}
+        conflicts = context_info.get("conflicts")
+        if isinstance(conflicts, list):
+            conflicts = conflicts[0] if conflicts else None
+        if isinstance(conflicts, dict):
+            folder_id = conflicts.get("id")
+            return str(folder_id) if folder_id else None
+        return None
 
     def list_mappings(self) -> List[dict]:
         """All Project → Box-folder mappings (joined to Folder + Project name)."""

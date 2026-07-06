@@ -676,14 +676,18 @@ def _enqueue_box_packet_upload(invoice, attachment, blob_url: str, filename: str
     Enqueue a Box upload for the invoice packet attachment.
 
     Uses the invoice's project for the Box folder mapping; unmapped (or
-    missing) project → skip with an info log. Additive + failure-isolated —
-    any exception is logged and swallowed so Box can never affect the
-    packet flow.
+    missing) project → skip with an info log. Resolves (or idempotently
+    creates) a per-invoice subfolder under the mapped 15-Draw Requests root,
+    mirroring the SharePoint per-invoice subfolder at
+    `entities/invoice/business/service.py::_upload_to_sharepoint` (lines
+    1016-1030). Additive + failure-isolated — any exception is logged and
+    swallowed so Box can never affect the packet flow.
     """
     import os as _os
     if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
         return  # gate closed — skip the DB legwork, not just the enqueue
     try:
+        from integrations.box.base.client import BoxHttpClient
         from integrations.box.folder.business.service import (
             BoxProjectFolderService,
             DOC_CLASS_DRAW_REQUESTS,
@@ -695,25 +699,51 @@ def _enqueue_box_packet_upload(invoice, attachment, blob_url: str, filename: str
             return
         # Customer invoice packets file to the project's "15 - Draw Requests"
         # ('draw_requests') folder — distinct from vendor AP docs (14-Invoices).
-        mapping = BoxProjectFolderService().read_mapping_by_project_id_and_class(
+        folder_service = BoxProjectFolderService()
+        mapping = folder_service.read_mapping_by_project_id_and_class(
             invoice.project_id, DOC_CLASS_DRAW_REQUESTS
         )
         if mapping is None:
             logger.info(f"box.enqueue.skipped_unmapped_project project_id={invoice.project_id} doc_class=draw_requests")
             return
-        BoxOutboxService().enqueue_box_upload(
+
+        # Resolve the per-invoice subfolder. On failure, SKIP (same as the
+        # line PDFs) — no flat-root fallback: Box 409 recovery is per-folder,
+        # so a root copy could never be re-versioned by a later subfolder
+        # upload, leaving a permanently stale packet a reviewer might send to
+        # the customer. POST /sync/invoice/{id}/box re-delivers once the
+        # subfolder resolves (the outbox coalesce refreshes stale targets).
+        subfolder_name = invoice.invoice_number or str(invoice.public_id)
+        try:
+            with BoxHttpClient() as client:
+                subfolder = folder_service.read_or_create_child_folder(
+                    client=client,
+                    parent_box_folder_id=mapping["box_folder_id"],
+                    folder_name=subfolder_name,
+                )
+            target_folder_id = subfolder["box_folder_id"]
+        except Exception as sub_err:
+            logger.warning(
+                f"box.subfolder.create.failed invoice={invoice.public_id} "
+                f"parent={mapping['box_folder_id']} name={subfolder_name!r}: {sub_err}. "
+                f"Packet upload skipped — repair via POST /sync/invoice/{{id}}/box."
+            )
+            return None
+
+        return BoxOutboxService().enqueue_box_upload(
             entity_type="invoice",
             entity_public_id=str(invoice.public_id),
             doc_kind="packet",
             blob_path=blob_url,
             filename=filename,
             content_type="application/pdf",
-            box_folder_id=mapping["box_folder_id"],
+            box_folder_id=target_folder_id,
             attachment_id=attachment.id,
             project_id=invoice.project_id,
         )
     except Exception as e:
         logger.warning(f"box.enqueue.failed invoice={invoice.public_id}: {e}")
+        return None
 
 
 @router.get("/get/invoice/{public_id}/reconcile")
@@ -1189,6 +1219,93 @@ def sync_invoice_sharepoint_router(public_id: str, current_user: dict = Depends(
 
     logger.info(f"SharePoint re-sync complete for invoice {public_id}: {result.get('message')}")
     return item_response(result)
+
+
+@router.post("/sync/invoice/{public_id}/box")
+def sync_invoice_box_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_complete"))):
+    """
+    Re-run the Box mirror for a completed invoice: enqueue per-line-item
+    supporting PDFs into `15-Draw Requests/<invoice#>/` and re-enqueue the
+    packet PDF into the same subfolder.
+
+    Symmetric to `POST /sync/invoice/{public_id}/sharepoint`. Useful when:
+      * `ALLOW_BOX_WRITES` was off at completion time
+      * a project's Box `draw_requests` folder was not mapped yet
+      * a prior run predated per-invoice-subfolder support and files landed
+        flat in the root of "15 - Draw Requests"
+
+    Additive + idempotent (subfolder is read-or-created; file uploads
+    409-recover via the `[box].[File]` ownership registry).
+    """
+    from entities.invoice_line_item.business.service import InvoiceLineItemService
+
+    service = InvoiceService()
+    invoice = service.read_by_public_id(public_id=public_id)
+    if not invoice:
+        raise_not_found("Invoice")
+    if invoice.is_draft:
+        # The draw-requests tree is customer-facing; a draft's number/prices
+        # are in flux and would strand a stale (or GUID-named) subfolder with
+        # wrong-priced PDFs and no cleanup path (Box mirror is forward-only).
+        raise HTTPException(
+            status_code=400,
+            detail="Invoice is a draft — complete it before pushing to Box.",
+        )
+
+    line_items = InvoiceLineItemService().read_by_invoice_id(invoice_id=invoice.id)
+
+    # 1. Line-item PDFs. Failure-isolated inside the helper; the summary is
+    # surfaced so a structural failure is distinguishable from success.
+    line_result = service._enqueue_box_line_pdfs(invoice=invoice, line_items=line_items)
+
+    # 2. Packet PDF. Look up the current packet attachment on this invoice
+    # (category='invoice_packet'); if none exists, the packet has never been
+    # generated + the caller should hit `/generate/invoice/{public_id}/packet`
+    # first (or `complete_invoice`, which regenerates).
+    from entities.invoice_attachment.business.service import InvoiceAttachmentService
+    from entities.attachment.business.service import AttachmentService
+    packet_att = None
+    try:
+        links = InvoiceAttachmentService().read_by_invoice_id(invoice_id=invoice.id)
+        att_svc = AttachmentService()
+        for link in links:
+            if not link.attachment_id:
+                continue
+            candidate = att_svc.read_by_id(link.attachment_id)
+            if candidate and candidate.category == "invoice_packet" and candidate.blob_url:
+                packet_att = candidate
+                break
+    except Exception as e:
+        logger.warning(f"sync_invoice_box: packet lookup failed for {public_id}: {e}")
+
+    packet_row = None
+    if packet_att:
+        packet_row = _enqueue_box_packet_upload(
+            invoice=invoice,
+            attachment=packet_att,
+            blob_url=packet_att.blob_url,
+            filename=packet_att.filename or f"Invoice-{invoice.invoice_number or public_id}-Packet.pdf",
+        )
+    else:
+        logger.info(
+            f"sync_invoice_box: no packet attachment found for invoice {public_id}; "
+            f"line PDFs enqueued but packet upload skipped. Call /generate/invoice/{public_id}/packet first."
+        )
+
+    if not line_result.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Box line-PDF enqueue failed: {line_result.get('reason')}",
+        )
+
+    return item_response({
+        "status_code": 200,
+        "message": "Box re-sync enqueued",
+        "line_pdfs_enqueued": line_result.get("enqueued", 0),
+        "line_pdfs_skipped": line_result.get("skipped", 0),
+        "line_pdfs_reason": line_result.get("reason"),
+        "packet_enqueued": packet_row is not None,
+    })
 
 
 @router.post("/sync/invoice/{public_id}/qbo")

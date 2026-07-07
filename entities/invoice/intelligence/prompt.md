@@ -183,6 +183,7 @@ This playbook invokes private methods (`_mark_source_as_billed`, `_upload_to_sha
 
 - **Interactive (default):** every Halt-and-ask condition halts. No exceptions.
 - **Pre-authorized batch:** ONLY if the user explicitly pre-authorizes it at run start ("proceed past X and report"), specific halt conditions may be converted to proceed-and-surface-in-final-report. The authorization must name the condition (e.g. "proceed past unclassified Manual lines"); absent that, halt. Attachment-missing **source-linked** lines are never batchable — they always halt (shared invariant 3).
+- **Local-only draw (unmapped project):** first-class mode for a first-ever draw on a project with no external mappings (no `ms.DriveItemProjectExcel`, no `ms.DriveItemProjectModule`, no Box mappings — OVH-01, 2026-07-06, was the first). Scope: create the QBO mapping if missing (Step 1 heal) → pull `dbo.Invoice` (Steps 2–3) → link lines (Step 4) → coverage pre-flight + packet (Step 5) → mark IsBilled (Step 8) → **skip Steps 6/7/9 entirely** (no SharePoint or Box targets exist). Every skipped external target is an **acknowledged decision recorded in the Phase 2 batch and the Step 10 report** — never a silent no-op. The Step 10 matrix drops the worksheet/Box rows and keeps QBO↔dbo↔IsBilled↔packet.
 
 ## Run shape — audit everything first, halt ONCE
 
@@ -269,7 +270,7 @@ A line item cannot be billed on an invoice without an attachment for support. Th
 - Verify this **before Step 5** (packet generation). The packet generator silently skips lines without attachments — that's the wrong signal to act on; treat the absence at the source as the blocker.
 - If QBO is the only place the document exists, run `QboAttachableService().sync_attachables_for_bill(realm_id=..., bill_qbo_id=..., sync_to_modules=True)` / `sync_attachables_for_purchase` / `sync_attachables_for_vendor_credit` for the source's QBO id before halting — it may just be a sync gap. **These service methods were fixed (verified 2026-07-03)**: they now pull the full realm attachable list once (cached per service instance) and filter in-memory on an EXACT `(entity_ref_type, entity_ref_value)` match — a per-entity `0` from the *service* is now trustworthy for that entity. (The underlying client method `query_attachables_for_entity` is still broken — see KI-28 — don't call it directly.)
 - **Exact-type matching cuts both ways:** a receipt the QBO user attached to the customer **Invoice** (or a sibling Purchase/Bill) will NOT be found by `sync_attachables_for_bill` on the source Bill. Before concluding a document is missing anywhere, pull **all** attachables (`QboAttachableClient.query_all_attachables()`, paginated) and filter in app code on each one's `attachable_ref`. The invoice's own `AttachableRef` set is effectively the authoritative source→document map — cross-check your Step 4 fingerprint matches against it. A line whose receipt lives on a different transaction is NOT a blocker — onboard that transaction (Step 3b / 3d) and link it.
-- **A genuinely doc-less line can be resolved without halting** if the user can supply the PDF locally. Upload it (`AzureBlobStorage().upload_file` + `AttachmentService.create`, mirroring `POST /upload/attachment`), then link via `BillLineItemAttachmentService` / `ExpenseLineItemAttachmentService` / `BillCreditLineItemAttachmentService.create`. Only halt for the user-attach-upstream loop when no document exists anywhere (QBO *or* local).
+- **A genuinely doc-less line can be resolved without halting** if the user can supply the PDF locally. **Standard recovery (OVH-01): check the operator's `~/Downloads` for PDFs staged by document number** (`457366.pdf`, etc.) — the operator often has the doc even when QBO's exact-type match can't find it (attached to the Invoice instead of the source). **Visually confirm the PDF matches the charge before linking.** Upload via the canonical `/upload/attachment` path (compact → hash-dedup → blob → `AttachmentService.create`), then link with the matching `BillLineItemAttachmentService` / `ExpenseLineItemAttachmentService` / `BillCreditLineItemAttachmentService.create`. Only halt for the user-attach-upstream loop when no document exists anywhere (QBO *or* local).
 
 ### 6. Every billable line item MUST have a SubCostCode on its source
 
@@ -324,7 +325,15 @@ JOIN qbo.Customer c ON c.Id = cp.QboCustomerId
 WHERE cp.ProjectId = ?;
 ```
 
-Capture `project_id`, `realm_id`, `customer_ref_value`. **Halt** if no QBO mapping — the project must be linked first.
+Capture `project_id`, `realm_id`, `customer_ref_value`. **If no QBO mapping**: when a `qbo.Customer` row already exists for this project's customer (common — the invoice's `CustomerRefValue` points straight at it), the heal is a one-liner; only halt when no matching `qbo.Customer` exists at all:
+
+```python
+from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
+# qbo_customer_id is the qbo.Customer ROW Id (internal BIGINT) — NOT the QBO string id (CRITICAL #1)
+CustomerProjectConnector().create_mapping(project_id=project_id, qbo_customer_id=qbo_customer_row_id)
+```
+
+Then proceed (the Step 3a direct-connector invocation works immediately after). Verified against `CustomerProjectConnector.create_mapping(project_id: int, qbo_customer_id: int)` 2026-07-06 (OVH-01).
 
 **1b. Duplicate-Project screen (mandatory, every run).** The duplicate-`dbo.Project` pattern (same `Name`, `Abbreviation=NULL`, created off-hours, with `qbo.CustomerProject` re-pointed at the dup) has hit HP2 (id=137), BR-MAIN (id=142), and HP (id=161) at roughly biweekly cadence — see KI-21. Screen for it now, not when SharePoint upload fails:
 
@@ -637,7 +646,12 @@ Then for each invoice line with `LinkedTxnType='ReimburseCharge'`: `rc_map[Linke
 
 **Expect `rc_map` to come back empty on a completed invoice** (the normal case for this playbook) — do not treat 0 resolutions as an error; proceed to 4.1. What retains value post-invoicing: the **line-level** `LinkedTxnId` in staging, when populated, deterministically GROUPS lines that share a ReimburseCharge — the amount line and its markup sibling — even when the source can't be resolved through it. Use it for markup pairing before falling back to the description/rate pattern.
 
-**Markup lines (two-line QBO shape — see "Why the invoice is created in QBO first"):** QBO posts markup as its own line. Check its LinkedTxn first — it frequently carries the same ReimburseCharge id as its sibling; if so, pair them mechanically. If the markup line has no LinkedTxn, pair by pattern (description names the markup/percent; amount ≈ sibling amount × rate). Either way, classify it as a **derivative of the sibling billed line** and present it pre-classified in the Phase 1 gap report — not as an open Manual-line question.
+**Markup lines (two-line QBO shape — see "Why the invoice is created in QBO first"):** QBO posts markup as its own line. Check its LinkedTxn first — it frequently carries the same ReimburseCharge id as its sibling; if so, pair them mechanically. If the markup line has no LinkedTxn, pair by pattern (description names the markup/percent; amount ≈ sibling amount × rate). Either way, classify it as a **derivative of the sibling billed line** and present it pre-classified in the Phase 1 gap report — not as an open Manual-line question. **Never halt on a paired markup line.**
+
+**Contract-labor lines (verified end-to-end on OVH-01, 2026-07-06):** QBO posts each CL item as a labor line (item `65.2 Miscellaneous Labor`, `LinkedTxnType='ReimburseCharge'`) plus a separate markup line (blank ItemRef, description `"NN% markup for …"`, and the **same `LinkedTxnId` as its sibling** — the pairing key). Handling:
+- The **labor lines** fingerprint (or dbo-direct-link, see 4.1) to CL `BillLineItem`s.
+- The **markup lines** stay Manual derivatives: no source, the packet legitimately skips them, and the sibling labor line's PDF is their supporting document.
+- Amounts reconcile because the local CL `BillLineItem.Price = amount + markup` — e.g. a $120-labor + $60-markup local line becomes two QBO lines summing to the $180 price. The Step 10 money invariant still balances.
 
 ### 4.1 — Fingerprint matching (primary)
 
@@ -686,10 +700,25 @@ FROM qbo.VendorCreditLine vcl
 JOIN qbo.VendorCredit qvc ON qvc.Id = vcl.QboVendorCreditId
 JOIN qbo.VendorCreditLineItemBillCreditLineItem map ON map.QboVendorCreditLineId = vcl.Id
 WHERE qvc.RealmId = ? AND vcl.CustomerRefValue = ?
-  AND ABS(vcl.Amount - ?) < 0.01
+  AND ABS(ABS(vcl.Amount) - ABS(?)) < 0.01   -- sign-insensitive: VendorCreditLine.Amount is stored
+                                             -- POSITIVE while the credit's qbo.InvoiceLine.Amount is
+                                             -- NEGATIVE (KI-34, OVH-01) — compare magnitudes
   AND COALESCE(vcl.Description, N'') = COALESCE(?, N'')
   AND CAST(qvc.TxnDate AS DATE) = ?;
 ```
+
+**Locally-originated bills may have NO qbo line mappings (KI-35):** contract-labor bills (BillNumber like `2026.03.31.OVH`) are generated in Build.One — they often carry attachments + SCC in `dbo` but no `qbo.BillLineItemBillLine` rows, so the mapping-table hop above returns nothing. Two valid paths: (a) run `scripts/sync_qbo_bill.py` — the bill connector's update path backfills the qbo line mappings (verified: `_sync_line_items` → `line_connector.create_mapping`); or (b) **link directly against `dbo.BillLineItem`** — unique in practice on:
+
+```sql
+SELECT bli.Id
+FROM dbo.BillLineItem bli
+JOIN dbo.Bill b ON b.Id = bli.BillId
+WHERE ABS(bli.Amount - ?) < 0.01
+  AND COALESCE(bli.Description, N'') = COALESCE(?, N'')
+  AND CAST(b.BillDate AS DATE) = ?;   -- = qbo.InvoiceLine.ServiceDate
+```
+
+(b) is the standing fallback whenever qbo mappings are absent — it needs no staging round-trip.
 
 For ambiguous descriptions (e.g. multiple "Stone Materials"), align by `LineNum` order — `qbo.InvoiceLine.LineNum` and `dbo.InvoiceLineItem.Id` are both insertion-ordered, so qil[i] ↔ ili[i].
 
@@ -753,7 +782,7 @@ from entities.invoice.api.router import _generate_invoice_packet
 result = _generate_invoice_packet('<dbo.Invoice.PublicId>')
 ```
 
-Verify `result['data']['skipped'] == 0` and `page_count > 0`. `skipped > 0` after a passing coverage check means an attachment record exists but its blob is unreadable — halt and surface.
+Verify `result['data']['skipped'] == 0` and `page_count > 0`. `skipped > 0` after a passing coverage check means an attachment record exists but its blob is unreadable — halt and surface. **`skipped` counts only source-linked lines**: derivative Manual (markup) lines are excluded from the packet up front and do NOT count — a passing CL invoice legitimately shows `skipped=0` even with many markup lines that have no packet page (their sibling labor line's PDF is the support). Don't misread that as missing coverage.
 
 **Box packet verification:** if the project has a `draw_requests` folder mapping (Step 1c), confirm the packet's `upload_box_file` row was enqueued and drains to `done`:
 
@@ -1050,6 +1079,27 @@ Then report the narrative details:
 
 ---
 
+## Delta re-run — the operator edited the QBO invoice after a completed run
+
+Iterated twice on OVH-01. The principle is **snapshot-then-diff so only genuinely-changed lines are touched** — never a blind full re-run:
+
+1. **Baseline snapshot** the current `dbo` state: `dbo.InvoiceLineItem` rows (Id, SourceType, FKs, Amount) + `qbo.InvoiceLineItemInvoiceLine` mappings + source `IsBilled` flags.
+2. **Targeted re-sync**: `sync_qbo_invoice.py` always; `sync_qbo_bill.py` / `sync_qbo_purchase.py` / `sync_qbo_vendorcredit.py` only as the NEW lines require.
+3. **Diff vs baseline** to isolate added / amount-changed lines (expect KI-22 phantoms on large multi-line adds — apply its recovery before proceeding).
+4. Connector creates the new `dbo` lines (Step 3a direct invocation if the incremental sync didn't propagate).
+5. **Link the new lines + re-link any amount-reset lines** (the connector's amount-only gate flips changed lines back to `Manual` and un-bills their old source — those need fresh Step 4 linkage; untouched lines keep their linkage).
+6. Coverage pre-flight (Step 5 query) over the full line set → mark IsBilled for the new/re-linked sources (Step 8) → regenerate packet → re-export per the run mode (full external sync, or local-only).
+
+## Branded cover page (`000 - <INV> - Invoice.pdf`) — out of scope for auto-generation
+
+The draw cover is a **hand-maintained Excel export**, not a playbook artifact. What the run must know about it (OVH-01):
+
+- Its category subtotals roll up by **parent CostCode**, with markup lines attributed to their **sibling labor line's CostCode** (paired via the shared ReimburseCharge) — that's how cover categories reconcile to the packet total.
+- A **Builder's Fee = Subtotal × rate** is a cover-only top line with **no packet line item and no attachment** — the cover Total intentionally exceeds the itemized packet total by that amount. **Flag the gap when present**; it is not a reconciliation failure.
+- **Tooling caution if ever asked to edit the cover PDF:** do NOT regenerate branded PDFs from scratch — embedded fonts (e.g. Cambria) won't match, and subset fonts omit unused glyphs (OVH-01: the bold subset lacked digits 1/9). Edit the original's content stream in place, and never overwrite the operator's source file — back it up first.
+
+---
+
 ## Halt-and-ask conditions
 
 Stop and surface to the user before proceeding when:
@@ -1097,7 +1147,7 @@ Stop and surface to the user before proceeding when:
 19. **KI-19 (formerly first #20) — Pre-existing `dbo.Bill` without QBO mapping needs Step 3b.i, not Step 3b** — the uniqueness-conflict error names the existing Bill; backfill the two mapping rows directly (OHR2-35 / Harpeth Painting 6418, 2026-06-05).
 20. **KI-20 (formerly first #21) — `Manual` lines with no QBO source remain after Step 4** (OHR2-35: 5 of 30 lines, incl. negative credit adjustments typed straight into the invoice tray). Halt per CRITICAL #5; under an explicit pre-authorized batch run (Run modes), proceed-and-surface: packet skips them, DETAILS shows fewer H-tags than lines — the final report must call each one out for the user to either create the missing sources in QBO + re-run, or accept.
 21. **KI-21 (formerly second #19 + #23) — Duplicate `dbo.Project` rows (same Name, `Abbreviation=NULL`) with `qbo.CustomerProject` re-pointed** — recurring ~biweekly (HP2 id=137 2026-05-15; BR-MAIN id=142 2026-05-28; HP id=161 2026-06-01). Now screened in Step 1b every run. Heal: repoint `qbo.CustomerProject.ProjectId` to the original, `UPDATE dbo.Invoice SET ProjectId=<original>` if dragged, audit references (`dbo.Invoice`, `qbo.CustomerProject`, `ms.DriveItemProjectModule`, `ms.DriveItemProjectExcel`, `box.ProjectWorkbook`, `box.ProjectFolder`, `dbo.UserProject`, `dbo.ProjectAddress`, `dbo.BillLineItem`, `dbo.ExpenseLineItem`, `dbo.BillCreditLineItem`, `dbo.ContractLaborLineItem`), then delete the dup. Root cause unconfirmed (suspect project_specialist create or QBO Customer rename). Two guards now exist: the QBO customer connector name-matches before creating (since ~2026-05-28), and `ProjectService.create` rejects same-Name duplicates outright (2026-07-03, all callers — verify deployed). Keep the Step 1b screen until a full month passes with no recurrence.
-22. **KI-22 (formerly second #20) — `InvoiceInvoiceConnector` re-run UNIQUE-collision (`UQ_InvoiceLineItemInvoiceLine_QboInvoiceLineId`)** — largely closed (staging upsert now cleans stale mappings; Manual lines re-adopted), but duplicates can still arise for source-linked lines when QBO regenerates line ids. Cleanup before re-fingerprinting: `DELETE FROM dbo.InvoiceLineItem WHERE InvoiceId = ? AND Id NOT IN (SELECT InvoiceLineItemId FROM qbo.InvoiceLineItemInvoiceLine map JOIN qbo.InvoiceLine il ON il.Id = map.QboInvoiceLineId WHERE il.QboInvoiceId = ?)`, verify count+sum, then re-run Step 4 per CRITICAL #4. (HP2-09 / Q44862, 2026-05-15.)
+22. **KI-22 (formerly second #20) — `InvoiceInvoiceConnector` re-run duplicates pre-existing lines** — RELIABLY triggers on large multi-line adds to an already-pulled invoice (OVH-01, 2026-07-06: connector failed to find the existing mapped ILIs and duplicated ALL pre-existing lines; `UQ_InvoiceLineItemInvoiceLine_QboInvoiceLineId` violations → N unmapped phantom rows). Recovery that works: **the mapped set is authoritative** (its sum equals the QBO total) — (1) delete the unmapped phantoms: `DELETE FROM dbo.InvoiceLineItem WHERE InvoiceId = ? AND Id NOT IN (SELECT InvoiceLineItemId FROM qbo.InvoiceLineItemInvoiceLine map JOIN qbo.InvoiceLine il ON il.Id = map.QboInvoiceLineId WHERE il.QboInvoiceId = ?)`; (2) re-verify count + sum vs `qbo.Invoice`; (3) **full re-link keyed by `qbo.InvoiceLine.LineNum`** through `qbo.InvoiceLineItemInvoiceLine` (the mapping gives ILI↔qbo-line pairs; LineNum orders them deterministically) per CRITICAL #4. (First: HP2-09, 2026-05-15; hardened recipe: OVH-01.)
 23. **KI-23 (formerly second #21) — Orphan-ELI cascade on mid-cycle re-sync** — now conditional (see CRITICAL #6 step 4): staging updates in place when QBO keeps line ids; the orphan + dropped-ELA cascade appears only on id regeneration (MR2-MAIN-07 / Home Depot 67915, 2026-05-19). Recovery: patch-in-place recipe in CRITICAL #6, recovery-loop item 4. Bill-side analog via `FK_InvoiceLineItem_BillLineItem`.
 24. **KI-24 (formerly #22) — `Cost of construction:NEED TO CATEGORIZE`** is QBO's bucket for uncategorized lines (staging symptom: `ItemRefValue IS NULL` + that `AccountRefName`). Pre-empt CRITICAL #6 halts by auditing `SubCostCodeId IS NULL` whenever a Home Depot / Lowe's / Amazon-style receipt is on the invoice.
 25. **KI-25 (formerly #24) — Attachable duplicates defeat `sync_purchase_attachments_to_expense_line_items`** (BR-MAIN-24, 2026-05-28): two `qbo.Attachable` rows for the same attachable id → 0 linked. Manual fallback: `ExpenseLineItemAttachmentService().create(...)` / `BillCreditLineItemAttachmentService().create(...)`.
@@ -1109,6 +1159,8 @@ Stop and surface to the user before proceeding when:
 31. **KI-31 — Box drain is budgeted and pausable**: ~20 rows / 20s per 30s tick; large 7b batches take multiple ticks. `PAUSE_BOX_DRAIN` on the API pauses it server-side — if rows sit `pending` unusually long, check that flag before debugging.
 32. **KI-32 — QBO drops the ReimburseCharge reverse LinkedTxn once `HasBeenInvoiced=true`** (WVA-18, 2026-07-04: 0/135 lines resolved via the RC chain). Since this playbook runs after the user completes the invoice in QBO, RC→source resolution is structurally unavailable during a normal run — it works only on Draft QBO invoices. Fingerprint (Step 4.1) is the standing primary; the line-level staging `LinkedTxnId` still groups amount+markup siblings when present. A durable deterministic path would require capturing ReimburseCharges into staging while they are still un-invoiced — see `TODO.md` "Invoice pull-sync follow-ups".
 33. **KI-33 — Sproc drift between repo kwargs and deployed sprocs** (WVA-17 + WVA-18: `CreateInvoiceLineItem` lacked `@EmployeeLaborLineItemId` in prod; the 2026-05-27 migration was never applied AND the base entity SQL file was never ported, so any base re-run would also revert it). Symptom: pyodbc parameter errors on every pull-sync ILI create. Fixed 2026-07-06 — the base file `entities/invoice_line_item/sql/dbo.invoice_line_item.sql` is now canonical (migration ported in, params defaulted `= NULL`) and was applied to prod. If a similar drift recurs on any entity: re-run that entity's BASE SQL file (bases must carry every migration's sproc changes — repo convention since 2026-07-06); monkey-patching the repo to strip kwargs is session-scoped triage only.
+34. **KI-34 — VendorCredit fingerprint sign mismatch** (OVH-01, 2026-07-06): `qbo.VendorCreditLine.Amount` is stored POSITIVE while the credit's `qbo.InvoiceLine.Amount` is NEGATIVE — a signed `ABS(vcl.Amount - ?)` never matches. The Step 4.1 VendorCredit query compares magnitudes (`ABS(ABS(vcl.Amount) - ABS(?))`).
+35. **KI-35 — Locally-originated bills (contract labor) have no `qbo.BillLineItemBillLine` mappings** — the standard mapping-hop fingerprint returns nothing even though the dbo side has attachments + SCC. Backfill via `sync_qbo_bill.py`, or use the direct-dbo link fallback in Step 4.1 (Amount + Description + `Bill.BillDate = qbo.InvoiceLine.ServiceDate`). (OVH-01, 2026-07-06.)
 
 ---
 

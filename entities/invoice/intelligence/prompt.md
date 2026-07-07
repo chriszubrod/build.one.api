@@ -203,6 +203,7 @@ Serial halts are the dominant cost of a run: discovering gaps one step at a time
 | Missing attachment / NULL SCC | CRITICAL #5 / #6 recovery, per line |
 | Price NULL on enqueue candidates | `SET Price = Amount` list |
 | Multi-line Expense in batch | Expected stray-row plan + cancel window |
+| Blank col-B (Cost Code) rows in the Box DETAILS, esp. stamped on this draw | KI-36 fill-in-place remediation before trusting AIA tabs |
 
 **Phase 2 — ONE decision batch.** Present the full report; get every decision and both write-gate authorizations in a single interaction.
 
@@ -307,6 +308,8 @@ Box (`integrations/box/`, live 2026-06-16) mirrors the two MS write pipelines pe
 | Bill/Expense/BillCredit DETAILS row insert (Step 7b) | `{Bill,Expense}Service()._enqueue_box_excel(...)` / `BillCreditCompleteService()._enqueue_box_excel(...)` → `update_box_excel` outbox row → drain re-fetches the entity, rebuilds rows, openpyxl-edits the Box workbook's DETAILS tab (column-Z public_id idempotency), uploads a new file version. |
 | Invoice column-H DRAW stamp (Step 7d) | `InvoiceService()._enqueue_box_excel(invoice=..., project_id=...)` → stamp-only `update_box_excel` row (column H on rows matched by col-Z; no inserts). |
 | Line-item attachment PDFs to SharePoint (Step 9) | `BillService()._enqueue_box_uploads(bill=..., line_items=...)` / `ExpenseService()._enqueue_box_uploads(expense=..., line_items=..., doc_kind="attachment")` / `BillCreditCompleteService()._enqueue_box_uploads(bill_credit=..., line_items=...)` → project's Box **"14 - Invoices"** folder (`upload_box_file` rows; deterministic identity-embedded filenames, 409 → re-version, sha1 verify). |
+
+**SCC gate feeds this mirror (CRITICAL #6 ties in):** a line synced to the Box workbook without a `SubCostCodeId` lands with a blank col-B (Cost Code), strands at the bottom of DETAILS, and the col-Z idempotency key then **freezes it blank forever** — later re-syncs skip it as "already present" even after the line is GL-coded. Blank-B rows are invisible to the cost-code-keyed G702/G703/Draw tabs while still counted by the draw's whole-column ledger total, silently under-reporting the client-signed AIA form (KI-36). Never let a line reach Box Excel sync uncoded.
 
 Mappings are per-project: `[box].[ProjectWorkbook]` (one workbook per project; `BoxFileId` + `WorksheetName`, default `DETAILS`) and `[box].[ProjectFolder]` (one folder per `(ProjectId, DocClass)`; DocClass ∈ `'invoices'` | `'draw_requests'`; a Box folder may be SHARED across sub-unit projects, so `BoxFolderId` is deliberately not unique). **Forward-only**: only new completions push; never back-fill old entities into Box (no dedup against hand-filed docs).
 
@@ -1029,6 +1032,8 @@ qbo.InvoiceLine set  ==  dbo.InvoiceLineItem set  ==  H-tagged DETAILS rows (Sha
 SUM(qbo lines) == qbo.Invoice.TotalAmt == dbo.Invoice.TotalAmount == SUM(dbo ILI Amount)
 ```
 
+**Money authority:** QBO/dbo is authoritative; the DETAILS worksheet total is **advisory** — it can carry small rounding (WVA-18: $84,450.02 DETAILS vs $84,450.04 QBO) and, per KI-36, can under-report a draw entirely on the AIA tabs. A worksheet-vs-QBO cent-level difference is noted, not a halt; an AIA-tab-vs-ledger difference is a KI-36 investigation.
+
 Compute the matrix inputs in one query plus the Step 6 worksheet read and a `box.Outbox` scan:
 
 ```sql
@@ -1061,6 +1066,7 @@ Present it as a pass/fail matrix — every row must pass before the run is decla
 | Sourced lines == H-tagged DETAILS rows (col-Z matched) | = | | |
 | Sourced lines == IsBilled sources | = | | |
 | Box outbox rows for run all `done` (or project unmapped-acknowledged) | ✓ | | |
+| Box workbook (when mapped): draw ledger total (`SUMIFS(N:N, H:H, "<draw>")`) == AIA tab total (cost-code-keyed `SUMIFS`) | = (KI-36 if not) | | |
 | Packet pages > 0, skipped == 0 | ✓ | | |
 | Manual lines all classified (derivative/accepted) | ✓ | | |
 
@@ -1161,6 +1167,7 @@ Stop and surface to the user before proceeding when:
 33. **KI-33 — Sproc drift between repo kwargs and deployed sprocs** (WVA-17 + WVA-18: `CreateInvoiceLineItem` lacked `@EmployeeLaborLineItemId` in prod; the 2026-05-27 migration was never applied AND the base entity SQL file was never ported, so any base re-run would also revert it). Symptom: pyodbc parameter errors on every pull-sync ILI create. Fixed 2026-07-06 — the base file `entities/invoice_line_item/sql/dbo.invoice_line_item.sql` is now canonical (migration ported in, params defaulted `= NULL`) and was applied to prod. If a similar drift recurs on any entity: re-run that entity's BASE SQL file (bases must carry every migration's sproc changes — repo convention since 2026-07-06); monkey-patching the repo to strip kwargs is session-scoped triage only.
 34. **KI-34 — VendorCredit fingerprint sign mismatch** (OVH-01, 2026-07-06): `qbo.VendorCreditLine.Amount` is stored POSITIVE while the credit's `qbo.InvoiceLine.Amount` is NEGATIVE — a signed `ABS(vcl.Amount - ?)` never matches. The Step 4.1 VendorCredit query compares magnitudes (`ABS(ABS(vcl.Amount) - ABS(?))`).
 35. **KI-35 — Locally-originated bills (contract labor) have no `qbo.BillLineItemBillLine` mappings** — the standard mapping-hop fingerprint returns nothing even though the dbo side has attachments + SCC. Backfill via `sync_qbo_bill.py`, or use the direct-dbo link fallback in Step 4.1 (Amount + Description + `Bill.BillDate = qbo.InvoiceLine.ServiceDate`). (OVH-01, 2026-07-06.)
+36. **KI-36 — Box DETAILS blank-cost-code rows silently corrupt AIA forms** (systemic; found reconciling WVA-18, 2026-07-06; 27-workbook audit: 1 live under-report — SHT-22 $4,030, ledger $189,478.04 vs AIA $185,448.04 — plus 4 inert stale-Z QBO leftovers). Mechanism: `build_details_rows` fills col B/C from `sub_cost_code_id` at drain time; an uncoded line (QBO-pulled account-based, or a draft completed before GL-coding) writes blank col B, strands at the bottom via the append path, and the col-Z idempotency key **freezes it** — re-syncs after GL-coding skip it as already-present. Two signatures, split by col H: (a) **B blank + H = a draw** → counted by the draw's whole-column ledger `SUMIFS(N:N, H:H, …)` but INVISIBLE to the cost-code-keyed G702/G703/Draw tabs → live under-report, the dangerous class; (b) **B blank + H blank** → inert clutter. QBO re-pull variant: a re-pulled line gets a new public_id, its new coded row stamps the draw, and the OLD row's Z dangles blank (the twin carries the money). **Detection:** compare the draw's ledger total to its AIA tab total whenever a Box workbook is mapped (Step 10 matrix row); flag, don't emit the packet on a mismatch. **Remediation:** fill col B/C **in place** on the existing DETAILS row (fill-in-place / spare-row technique — NEVER `insert_rows`, it corrupts range formulas), and never touch G702/G703 directly — they recalc from DETAILS via `fullCalcOnLoad`. Durable self-heal fix proposed in TODO.md ("Box Excel follow-ups").
 
 ---
 

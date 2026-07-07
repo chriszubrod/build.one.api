@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# hooks/post-commit — ENQUEUE ONLY. Installed per-repo via `git config core.hooksPath hooks`.
+#
+# This is the whole fix for the v1 kit's worst defects: the hook does NO heavy work and
+# NEVER runs an agent in your live checkout. It captures the pinned SHA + branch and drops
+# a durable job for the dispatcher (a separate launchd worker that runs the unit in an
+# isolated worktree). Must be instant and must never block your commit.
+#
+# Filters (so the pipeline doesn't react to itself or to out-of-scope work):
+#   * only agent/* and lane/* branches
+#   * skip the pipeline's own commits (agent author OR [skip-pipeline] in the message)
+#   * skip commits made inside the agent's own worktrees
+# REMEMBER: chmod +x this file, or git silently ignores it.
+set -uo pipefail
+
+BRANCH_PATTERN='^(agent|lane)/'
+AGENT_EMAIL='agent@build.one'
+
+toplevel="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+AGENTS_HOME="$(cd "${toplevel}/../.agents" 2>/dev/null && pwd)" || exit 0   # umbrella/.agents
+QUEUE_INCOMING="${AGENTS_HOME}/run/queue/incoming"
+FALLBACK_LOG="${AGENTS_HOME}/logs/hook.log"
+
+branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+sha="$(git rev-parse HEAD 2>/dev/null)"
+author="$(git log -1 --format=%ae 2>/dev/null)"
+msg="$(git log -1 --format=%B 2>/dev/null)"
+
+# --- filters ---
+[[ "$branch" =~ $BRANCH_PATTERN ]] || exit 0
+[[ "$author" == "$AGENT_EMAIL" ]] && exit 0
+printf '%s' "$msg" | grep -q '\[skip-pipeline\]' && exit 0
+# Skip commits made inside a LINKED worktree (the agent's isolated checkout): a linked
+# worktree's git-dir differs from the common git-dir. Belt-and-suspenders with the
+# author/skip-tag filters above.
+[[ "$(git rev-parse --git-dir 2>/dev/null)" != "$(git rev-parse --git-common-dir 2>/dev/null)" ]] && exit 0
+case "$toplevel" in
+  "${AGENTS_HOME}/run/worktrees/"*) exit 0 ;;
+esac
+
+mkdir -p "$QUEUE_INCOMING" 2>/dev/null || { echo "$(date) enqueue dir missing" >>"$FALLBACK_LOG" 2>/dev/null; exit 0; }
+
+# Write atomically: temp file in the same dir, then mv (so WatchPaths never sees a
+# half-written job). Filename is time-sortable + unique.
+id="$(date +%Y%m%d-%H%M%S)-${sha:0:8}-$$"
+tmp="${QUEUE_INCOMING}/.${id}.tmp"
+{
+  printf 'repo=%s\n' "$toplevel"
+  printf 'sha=%s\n' "$sha"
+  printf 'branch=%s\n' "$branch"
+  printf 'enqueued_at=%s\n' "$(date +%s)"
+} > "$tmp" 2>/dev/null && mv "$tmp" "${QUEUE_INCOMING}/${id}.job" 2>/dev/null
+
+exit 0

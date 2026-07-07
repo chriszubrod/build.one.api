@@ -814,7 +814,14 @@ class BillCreditCompleteService:
                         vendor_name = vendor.name or ""
                         credit_number = bill_credit.credit_number or ""
                         description = line_item.description or ""
-                        amount = Decimal(str(line_item.amount)) if line_item.amount is not None else Decimal("0")
+                        # Column N: float (Decimal is not JSON-serializable — the
+                        # Graph insert threw on every credit row, so credits never
+                        # reached DETAILS), and NEGATED: BillCreditLineItem.Amount
+                        # is stored positive, but a credit reduces the draw — the
+                        # DETAILS ledger row must carry the negative value or every
+                        # invoice with a credit overstates its draw total (HA-04:
+                        # +$411.36 overstatement across 2 credits).
+                        amount = -float(line_item.amount) if line_item.amount is not None else 0.0
 
                         row = [
                             "",                   # A: Empty

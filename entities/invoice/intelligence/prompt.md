@@ -204,6 +204,7 @@ Serial halts are the dominant cost of a run: discovering gaps one step at a time
 | Price NULL on enqueue candidates | `SET Price = Amount` list |
 | Multi-line Expense in batch | Expected stray-row plan + cancel window |
 | Blank col-B (Cost Code) rows in the Box DETAILS, esp. stamped on this draw | KI-36 fill-in-place remediation before trusting AIA tabs |
+| Same-transaction Bill-vs-Expense pair on the invoice (same/similar amount, overlapping period — vendor names may differ across brands) | KI-38 double-bill check: user confirms which line stays |
 
 **Phase 2 — ONE decision batch.** Present the full report; get every decision and both write-gate authorizations in a single interaction.
 
@@ -357,7 +358,13 @@ SELECT BoxFileId, WorksheetName FROM box.ProjectWorkbook WHERE ProjectId = ?;
 SELECT pf.DocClass, f.* FROM box.ProjectFolder pf JOIN box.Folder f ON f.Id = pf.BoxFolderId WHERE pf.ProjectId = ?;
 ```
 
-Expected for a fully-mapped project: one workbook row + two folder rows (`invoices`, `draw_requests`). If any mapping is missing, **surface it to the user now** ("this project's Box mirror will skip X — expected?") rather than discovering silent skips at Step 10. Unmapped is legitimate (~65 projects are dormant/unmapped) but must be an acknowledged state for this run.
+Expected for a fully-mapped project: one workbook row + two folder rows (`invoices`, `draw_requests`). If any mapping is missing, **surface it to the user now** ("this project's Box mirror will skip X — expected?") rather than discovering silent skips at Step 10. Unmapped is legitimate (only ~27 of 135 projects carry a SharePoint Excel mapping — unmapped is the COMMON case, not the exception) but must be an acknowledged state for this run.
+
+**1d. Distinct, higher-severity gap class — "not onboarded to document sync AT ALL"** (EASH-01, 2026-07-06): simultaneously missing `ms.DriveItemProjectExcel` + `ms.DriveItemProjectModule` + `box.ProjectWorkbook` + `box.ProjectFolder`. Categorically different from a partial/dormant Box skip — there is nothing to map, and it forces the **run-mode decision up front** (usually Local-only draw). When it occurs it is the dominant Phase 1 finding; present it first in the gap report.
+
+**Before ever proposing to "map/onboard": verify the project folder EXISTS in the active tree.** Check SharePoint + Box `"200 - Rogers Build Projects"`. If the only hit lives under an archive or other-brand tree (`"350 - Completed White Pines Projects"`, `"299 - DEAD …"`, etc.) — possibly with an incompatible old convention (no `Budget Tracker.xlsx`/DETAILS tab; `"40 - Draw Requests"`; ad-hoc dated budget files) — that is **NOT a mapping task. It is a provisioning/ownership question (which brand? re-activate or new setup?) to escalate to the user, never auto-execute.** An old-template workbook cannot be synced even if force-mapped (see KI-29's template caveat).
+
+**Discovery mechanics** (so runs don't re-derive them — EASH-01): SharePoint — from any mapped project's root DriveItem take its parent (= `200 - Rogers Build Projects`, drive 2 `b!ORGYF05…`, parent item `017ZKYN54WJ7NNIPL4HFG2N2BJNE5ZUHA3`), `list_drive_item_children` to enumerate project folders, `get_excel_worksheets` to confirm a DETAILS tab. Box — search API (address fragments like `"5866 East Ashland"`), or navigate any known 14-folder's `path_collection` up to the projects root `388262164461`. **Canonical mapping template = WVA (project 46):** `ms.DriveItem` rows (workbook + 14 + 15) + `DriveItemProjectExcel` (WorksheetName `DETAILS`) + `DriveItemProjectModule` (Bills 2 & Expenses 16 → `14 - Invoices`; Invoices 17 → `15 - Draw Requests`); `box.Folder` + `box.ProjectWorkbook` + `box.ProjectFolder` (`invoices`/`draw_requests`).
 
 ## Step 2 — Pull-sync QBO data into local staging
 
@@ -677,31 +684,38 @@ ORDER BY Id;
 Then for each `qbo.InvoiceLine`, fingerprint-match against staging. **Use `QboBillId` / `QboPurchaseId` aliases — never `BillId` / `PurchaseId`** (CRITICAL #1):
 
 ```sql
--- Try Bill first
-SELECT map.BillLineItemId
+-- Try Bill first. SourceProjectId is the cross-project guard (KI-37):
+-- a fingerprint hit whose source line is coded to a DIFFERENT project is a
+-- MIS-BILL, not a match — HA-04 shipped a $1,577.45 Walker Lumber line coded
+-- to HP2 into the HA customer packet this way. Reject when SourceProjectId
+-- IS NOT NULL and differs from the invoice's project; surface it.
+SELECT map.BillLineItemId, dbli.ProjectId AS SourceProjectId
 FROM qbo.BillLine bl
 JOIN qbo.Bill qb ON qb.Id = bl.QboBillId
 JOIN qbo.BillLineItemBillLine map ON map.QboBillLineId = bl.Id
+JOIN dbo.BillLineItem dbli ON dbli.Id = map.BillLineItemId
 WHERE qb.RealmId = ? AND bl.CustomerRefValue = ?
   AND ABS(bl.Amount - ?) < 0.01
   AND COALESCE(bl.Description, N'') = COALESCE(?, N'')
   AND CAST(qb.TxnDate AS DATE) = ?;     -- qbo.InvoiceLine.ServiceDate
 
--- If no match, try Purchase (Expense)
-SELECT map.ExpenseLineItemId
+-- If no match, try Purchase (Expense) — same cross-project guard
+SELECT map.ExpenseLineItemId, deli.ProjectId AS SourceProjectId
 FROM qbo.PurchaseLine pl
 JOIN qbo.Purchase qp ON qp.Id = pl.QboPurchaseId
 JOIN qbo.PurchaseLineExpenseLineItem map ON map.QboPurchaseLineId = pl.Id
+JOIN dbo.ExpenseLineItem deli ON deli.Id = map.ExpenseLineItemId
 WHERE qp.RealmId = ? AND pl.CustomerRefValue = ?
   AND ABS(pl.Amount - ?) < 0.01
   AND COALESCE(pl.Description, N'') = COALESCE(?, N'')
   AND CAST(qp.TxnDate AS DATE) = ?;
 
--- If no match on Bill or Purchase, try VendorCredit (BillCredit)
-SELECT map.BillCreditLineItemId
+-- If no match on Bill or Purchase, try VendorCredit (BillCredit) — same guard
+SELECT map.BillCreditLineItemId, dbcli.ProjectId AS SourceProjectId
 FROM qbo.VendorCreditLine vcl
 JOIN qbo.VendorCredit qvc ON qvc.Id = vcl.QboVendorCreditId
 JOIN qbo.VendorCreditLineItemBillCreditLineItem map ON map.QboVendorCreditLineId = vcl.Id
+JOIN dbo.BillCreditLineItem dbcli ON dbcli.Id = map.BillCreditLineItemId
 WHERE qvc.RealmId = ? AND vcl.CustomerRefValue = ?
   AND ABS(ABS(vcl.Amount) - ABS(?)) < 0.01   -- sign-insensitive: VendorCreditLine.Amount is stored
                                              -- POSITIVE while the credit's qbo.InvoiceLine.Amount is
@@ -742,6 +756,15 @@ UPDATE dbo.InvoiceLineItem
 SET BillCreditLineItemId = ?, BillLineItemId = NULL, ExpenseLineItemId = NULL,
     SourceType = 'BillCreditLineItem', ModifiedDatetime = SYSUTCDATETIME()
 WHERE Id = ?;
+```
+
+**Backfill `ProjectId` on linked sources (standard post-link step, HA-04):** lines onboarded via the connectors before the project's `qbo.CustomerProject` mapping existed — or without a line-level CustomerRef — carry `ProjectId = NULL`. MS DETAILS tolerates it (sync receives the project explicitly) but the **Box row-builder filters by `ProjectId`, so NULL-project lines silently drop from the Box workbook**. The invoice's project is authoritative for its own linked lines:
+
+```sql
+UPDATE bli SET ProjectId = ?, ModifiedDatetime = SYSUTCDATETIME()
+FROM dbo.BillLineItem bli JOIN dbo.InvoiceLineItem ili ON ili.BillLineItemId = bli.Id
+WHERE ili.InvoiceId = ? AND bli.ProjectId IS NULL;
+-- analogs for dbo.ExpenseLineItem (ili.ExpenseLineItemId) and dbo.BillCreditLineItem (ili.BillCreditLineItemId)
 ```
 
 **Verify the linkage took** by re-reading `dbo.InvoiceLineItem` and confirming `SourceType` flipped from `Manual` and the FK is set on every line.
@@ -785,7 +808,7 @@ from entities.invoice.api.router import _generate_invoice_packet
 result = _generate_invoice_packet('<dbo.Invoice.PublicId>')
 ```
 
-Verify `result['data']['skipped'] == 0` and `page_count > 0`. `skipped > 0` after a passing coverage check means an attachment record exists but its blob is unreadable — halt and surface. **`skipped` counts only source-linked lines**: derivative Manual (markup) lines are excluded from the packet up front and do NOT count — a passing CL invoice legitimately shows `skipped=0` even with many markup lines that have no packet page (their sibling labor line's PDF is the support). Don't misread that as missing coverage.
+Verify `result['data']['skipped'] == 0` and `page_count > 0`. `skipped > 0` after a passing coverage check means an attachment record exists but its blob is unreadable — halt and surface. **A shared attachment prints once per line** (e.g. one NES statement PDF supporting a current + a past-due line appears twice in the packet) — cosmetic, not a double-bill; packet-level dedup is a TODO. **`skipped` counts only source-linked lines**: derivative Manual (markup) lines are excluded from the packet up front and do NOT count — a passing CL invoice legitimately shows `skipped=0` even with many markup lines that have no packet page (their sibling labor line's PDF is the support). Don't misread that as missing coverage.
 
 **Box packet verification:** if the project has a `draw_requests` folder mapping (Step 1c), confirm the packet's `upload_box_file` row was enqueued and drains to `done`:
 
@@ -1094,7 +1117,9 @@ Iterated twice on OVH-01. The principle is **snapshot-then-diff so only genuinel
 3. **Diff vs baseline** to isolate added / amount-changed lines (expect KI-22 phantoms on large multi-line adds — apply its recovery before proceeding).
 4. Connector creates the new `dbo` lines (Step 3a direct invocation if the incremental sync didn't propagate).
 5. **Link the new lines + re-link any amount-reset lines** (the connector's amount-only gate flips changed lines back to `Manual` and un-bills their old source — those need fresh Step 4 linkage; untouched lines keep their linkage).
-6. Coverage pre-flight (Step 5 query) over the full line set → mark IsBilled for the new/re-linked sources (Step 8) → regenerate packet → re-export per the run mode (full external sync, or local-only).
+6. **Line REMOVALS don't propagate** (HA-04): removing a line in QBO deletes the `qbo.InvoiceLineItemInvoiceLine` mapping but strands the dbo ILI — detect via the Step 4 phantom-orphan query, delete via `InvoiceLineItemService().delete_by_public_id(...)`, un-bill its source (`_reset_source_as_unbilled`), and confirm `dbo.Invoice.TotalAmount` matches the new QBO total.
+7. **Partial-insert fragility** (HA-04: a mid-loop DB disconnect left 3 of 89 ILIs uninserted, and the connector's don't-re-sync-a-populated-invoice guard then refused ALL later adds): recover by invoking `InvoiceLineItemConnector().sync_from_qbo_invoice_line(invoice_id, invoice_public_id, qbo_line)` per missing line rather than fighting the header-level connector.
+8. Coverage pre-flight (Step 5 query) over the full line set → mark IsBilled for the new/re-linked sources (Step 8) → regenerate packet → re-export per the run mode (full external sync, or local-only).
 
 ## Branded cover page (`000 - <INV> - Invoice.pdf`) — out of scope for auto-generation
 
@@ -1157,7 +1182,7 @@ Stop and surface to the user before proceeding when:
 23. **KI-23 (formerly second #21) — Orphan-ELI cascade on mid-cycle re-sync** — now conditional (see CRITICAL #6 step 4): staging updates in place when QBO keeps line ids; the orphan + dropped-ELA cascade appears only on id regeneration (MR2-MAIN-07 / Home Depot 67915, 2026-05-19). Recovery: patch-in-place recipe in CRITICAL #6, recovery-loop item 4. Bill-side analog via `FK_InvoiceLineItem_BillLineItem`.
 24. **KI-24 (formerly #22) — `Cost of construction:NEED TO CATEGORIZE`** is QBO's bucket for uncategorized lines (staging symptom: `ItemRefValue IS NULL` + that `AccountRefName`). Pre-empt CRITICAL #6 halts by auditing `SubCostCodeId IS NULL` whenever a Home Depot / Lowe's / Amazon-style receipt is on the invoice.
 25. **KI-25 (formerly #24) — Attachable duplicates defeat `sync_purchase_attachments_to_expense_line_items`** (BR-MAIN-24, 2026-05-28): two `qbo.Attachable` rows for the same attachable id → 0 linked. Manual fallback: `ExpenseLineItemAttachmentService().create(...)` / `BillCreditLineItemAttachmentService().create(...)`.
-26. **KI-26 (formerly #25) — [HISTORICAL, fixed] BillCredit Excel sync missing**: `BillCreditCompleteService.sync_to_excel_workbook(bill_credit, line_items, project_id)` now exists, with Box mirror `._enqueue_box_excel(...)` — BillCredit-sourced lines auto-write to DETAILS in Step 7b. (BR-MAIN-24's $-21,000 Visual Comfort credit was added manually before the fix.)
+26. **KI-26 (formerly #25) — BillCredit Excel sync: existed but was BROKEN until 2026-07-07 (verify deployed)**: `BillCreditCompleteService.sync_to_excel_workbook(bill_credit, line_items, project_id)` wrote column N as a raw `Decimal` (not JSON-serializable — every Graph insert threw, so credits NEVER reached DETAILS) and as a POSITIVE value (a credit must be NEGATIVE in the ledger or the draw total overstates — HA-04: +$411.36 across 2 credits, inserted manually as negatives). Both fixed 2026-07-07 (float + negated, MS and Box row-builder in parity). On a pre-fix deployment: insert credit rows manually as negative values. (History: BR-MAIN-24's -$21,000 Visual Comfort credit, manual.)
 27. **KI-27 (formerly #26) — [FIXED 2026-07-03, verify deployed] `ExpenseService.sync_to_excel_workbook` now filters line items to the target `project_id`** — sibling lines on multi-line Expenses no longer leak (SSC2-04, 2026-06-12, was the stray-row source). On a pre-fix deployment: pre-flight multi-line Expenses and cancel strays immediately (`UPDATE ms.Outbox SET Status='cancelled' WHERE Id IN (...) AND Status IN ('pending','failed')` — the claim query takes BOTH); if the drain wins, fall back to 7e.
 28. **KI-28 (formerly #27) — `query_attachables_for_entity` is unreliable; use `query_all_attachables()` + app-side filter for any definitive presence check** (MR2-MAIN-08, 2026-06-02). The client method builds a QBO `WHERE` on `AttachableRef` (unsupported by QBO), falls back only on HTTP ≥ 400 — and even that fallback is a SINGLE page (max 1000 rows) in a ~19k-row realm. A `200`-with-empty silently returns 0. The *service* wrappers (`sync_attachables_for_*`) were fixed to full-list + exact in-memory filter (see CRITICAL #5) — but exact-type matching means cross-entity discovery (receipt attached to the Invoice or a sibling transaction) still requires `query_all_attachables()` + app-side `attachable_ref` iteration. The invoice's own `AttachableRef` set is the authoritative source→document map.
 29. **KI-29 — Box workbook WOPI lock**: if the workbook is open in Box's editor, `update_box_excel` rows defer (stay non-terminal). Ask the user to close it. Formula safety: all 23 mapped workbooks migrated to position-independent ("immune") formulas 2026-07-01 (openpyxl `insert_rows` is not formula-aware); 4 old-template workbooks were flagged for migration — inserts into an unmigrated workbook can corrupt subtotals. If a target workbook is on the old template, halt and surface.
@@ -1168,6 +1193,9 @@ Stop and surface to the user before proceeding when:
 34. **KI-34 — VendorCredit fingerprint sign mismatch** (OVH-01, 2026-07-06): `qbo.VendorCreditLine.Amount` is stored POSITIVE while the credit's `qbo.InvoiceLine.Amount` is NEGATIVE — a signed `ABS(vcl.Amount - ?)` never matches. The Step 4.1 VendorCredit query compares magnitudes (`ABS(ABS(vcl.Amount) - ABS(?))`).
 35. **KI-35 — Locally-originated bills (contract labor) have no `qbo.BillLineItemBillLine` mappings** — the standard mapping-hop fingerprint returns nothing even though the dbo side has attachments + SCC. Backfill via `sync_qbo_bill.py`, or use the direct-dbo link fallback in Step 4.1 (Amount + Description + `Bill.BillDate = qbo.InvoiceLine.ServiceDate`). (OVH-01, 2026-07-06.)
 36. **KI-36 — Box DETAILS blank-cost-code rows silently corrupt AIA forms** (systemic; found reconciling WVA-18, 2026-07-06; 27-workbook audit: 1 live under-report — SHT-22 $4,030, ledger $189,478.04 vs AIA $185,448.04 — plus 4 inert stale-Z QBO leftovers). Mechanism: `build_details_rows` fills col B/C from `sub_cost_code_id` at drain time; an uncoded line (QBO-pulled account-based, or a draft completed before GL-coding) writes blank col B, strands at the bottom via the append path, and the col-Z idempotency key **freezes it** — re-syncs after GL-coding skip it as already-present. Two signatures, split by col H: (a) **B blank + H = a draw** → counted by the draw's whole-column ledger `SUMIFS(N:N, H:H, …)` but INVISIBLE to the cost-code-keyed G702/G703/Draw tabs → live under-report, the dangerous class; (b) **B blank + H blank** → inert clutter. QBO re-pull variant: a re-pulled line gets a new public_id, its new coded row stamps the draw, and the OLD row's Z dangles blank (the twin carries the money). **Detection:** compare the draw's ledger total to its AIA tab total whenever a Box workbook is mapped (Step 10 matrix row); flag, don't emit the packet on a mismatch. **Remediation:** fill col B/C **in place** on the existing DETAILS row (fill-in-place / spare-row technique — NEVER `insert_rows`, it corrupts range formulas), and never touch G702/G703 directly — they recalc from DETAILS via `fullCalcOnLoad`. Durable self-heal fix proposed in TODO.md ("Box Excel follow-ups").
+37. **KI-37 — Fingerprint can accept a cross-project line (mis-bill)** (HA-04, 2026-07-07: Walker Lumber #804245, $1,577.45, coded to HP2, fingerprint-matched onto the HA invoice and reached the customer packet). Amount+description+date+CustomerRef is not sufficient — the Step 4.1 queries now return `SourceProjectId`; a hit whose source project differs from the invoice's project is REJECTED and surfaced, never linked. The Step 4.1 direct-dbo fallback must apply the same check.
+38. **KI-38 — Same transaction entered as both a Bill and an Expense = double-bill** (HA-04: Crushr "Dumpster Crush" Expense on the Ramp card and Smashin Bastins Bill #11185Q were the SAME $315 invoice — Crushr is Smashin Bastins' brand; the "expense" was the card payment of the bill; both hit the QBO invoice). Hash-dedup can't catch it (different PDFs: invoice vs paid-receipt); vendor names differ across brands. Phase 1 screens for cross-type pairs on the invoice with same/similar amounts and overlapping periods — flag for the user to pick which line survives BEFORE the packet.
+39. **KI-39 — The SharePoint and Box DETAILS workbooks do not cross-propagate** — a human's manual edit to one leaves the other silently stale (they are two physical copies of one logical ledger, synced only by our outbox writes). When their totals disagree, reconcile by column-Z public_id; treat neither as authoritative over dbo/QBO (Step 10 money-authority note). Auto-reconciliation is a TODO.
 
 ---
 

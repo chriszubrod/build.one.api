@@ -470,7 +470,6 @@ def _generate_invoice_packet(public_id: str):
     from entities.attachment.business.service import AttachmentService
     from entities.invoice_attachment.business.service import InvoiceAttachmentService
     from shared.storage import AzureBlobStorage, AzureBlobStorageError
-    from shared.database import get_connection
 
     service = InvoiceService()
     invoice = service.read_by_public_id(public_id=public_id)
@@ -513,82 +512,32 @@ def _generate_invoice_packet(public_id: str):
     expanded_toc_rows = sorted(toc_items, key=_expanded_sort_key)
     expanded_toc_bytes = _build_toc_expanded_pdf(expanded_toc_rows)
 
-    bill_ids = []
-    expense_ids = []
-    credit_ids = []
-    for li in line_items:
-        if li.source_type == "BillLineItem" and li.bill_line_item_id:
-            bill_ids.append(li.bill_line_item_id)
-        elif li.source_type == "ExpenseLineItem" and li.expense_line_item_id:
-            expense_ids.append(li.expense_line_item_id)
-        elif li.source_type == "BillCreditLineItem" and li.bill_credit_line_item_id:
-            credit_ids.append(li.bill_credit_line_item_id)
+    # Attachment pages follow the basic TOC's row order exactly: walk the
+    # already-sorted TOC rows and take each line's attachment (first-seen wins —
+    # many lines, e.g. contract-labor, share one document). Deriving the order
+    # from basic_toc_rows instead of a separate per-parent query keeps the pages
+    # in the same sequence the reader sees in the TOC, and includes every
+    # distinct per-line document (a per-parent MIN(AttachmentId) grouping would
+    # drop extra documents on bills whose lines carry different PDFs).
+    seen_attachment_public_ids: set = set()
+    ordered_attachment_public_ids = []
+    for r in basic_toc_rows:
+        apid = r.get("attachment_public_id") or ""
+        if apid and apid not in seen_attachment_public_ids:
+            seen_attachment_public_ids.add(apid)
+            ordered_attachment_public_ids.append(apid)
 
-    # Collect (type_order, vendor_name_lower, attachment_id) for deterministic ordering:
-    # Bill (0) → BillCredit (1) → Expense (2), then vendor name ascending within each type.
-    ordered_entries = []  # list of (type_order, vendor_name_lower, attachment_id)
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        if bill_ids:
-            ph = ",".join("?" * len(bill_ids))
-            cursor.execute(f"""
-                SELECT MIN(blia.AttachmentId) AS AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
-                FROM dbo.BillLineItemAttachment blia
-                JOIN dbo.BillLineItem bli ON bli.Id = blia.BillLineItemId
-                JOIN dbo.Bill b ON b.Id = bli.BillId
-                LEFT JOIN dbo.Vendor v ON v.Id = b.VendorId
-                WHERE blia.BillLineItemId IN ({ph})
-                GROUP BY b.Id, LOWER(ISNULL(v.Name, ''))
-            """, bill_ids)
-            for row in cursor.fetchall():
-                ordered_entries.append((0, row.VendorNameLower, row.AttachmentId))
-        if credit_ids:
-            ph = ",".join("?" * len(credit_ids))
-            cursor.execute(f"""
-                SELECT MIN(bclia.AttachmentId) AS AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
-                FROM dbo.BillCreditLineItemAttachment bclia
-                JOIN dbo.BillCreditLineItem bcli ON bcli.Id = bclia.BillCreditLineItemId
-                JOIN dbo.BillCredit bc ON bc.Id = bcli.BillCreditId
-                LEFT JOIN dbo.Vendor v ON v.Id = bc.VendorId
-                WHERE bclia.BillCreditLineItemId IN ({ph})
-                GROUP BY bc.Id, LOWER(ISNULL(v.Name, ''))
-            """, credit_ids)
-            for row in cursor.fetchall():
-                ordered_entries.append((1, row.VendorNameLower, row.AttachmentId))
-        if expense_ids:
-            ph = ",".join("?" * len(expense_ids))
-            cursor.execute(f"""
-                SELECT MIN(elia.AttachmentId) AS AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
-                FROM dbo.ExpenseLineItemAttachment elia
-                JOIN dbo.ExpenseLineItem eli ON eli.Id = elia.ExpenseLineItemId
-                JOIN dbo.Expense e ON e.Id = eli.ExpenseId
-                LEFT JOIN dbo.Vendor v ON v.Id = e.VendorId
-                WHERE elia.ExpenseLineItemId IN ({ph})
-                GROUP BY e.Id, LOWER(ISNULL(v.Name, ''))
-            """, expense_ids)
-            for row in cursor.fetchall():
-                ordered_entries.append((2, row.VendorNameLower, row.AttachmentId))
-        cursor.close()
-
-    if not ordered_entries:
+    if not ordered_attachment_public_ids:
         raise HTTPException(status_code=400, detail="No PDF attachments found on line items")
 
-    ordered_entries.sort(key=lambda x: (x[0], x[1]))
-    seen_attachment_ids: set = set()
-    deduped_entries = []
-    for entry in ordered_entries:
-        if entry[2] not in seen_attachment_ids:
-            seen_attachment_ids.add(entry[2])
-            deduped_entries.append(entry)
-    attachment_ids = [x[2] for x in deduped_entries]
-
     att_service = AttachmentService()
-    att_list = att_service.read_by_ids(attachment_ids)
-    if not att_list:
+    attachments_sorted = []
+    for apid in ordered_attachment_public_ids:
+        att = att_service.read_by_public_id(public_id=apid)
+        if att:
+            attachments_sorted.append(att)
+    if not attachments_sorted:
         raise HTTPException(status_code=400, detail="No attachment records found")
-
-    att_map = {a.id: a for a in att_list}
-    attachments_sorted = [att_map[aid] for aid in attachment_ids if aid in att_map]
 
     storage = AzureBlobStorage()
     writer = PdfWriter()

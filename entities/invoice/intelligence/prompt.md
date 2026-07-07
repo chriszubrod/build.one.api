@@ -2,7 +2,7 @@
 
 > **Canonical location:** `build.one.api/entities/invoice/intelligence/prompt.md` — the ONLY invoice prompt.
 > **Loaded by:** `intelligence/agents/invoice_specialist/definition.py` (as the invoice_specialist system prompt) **and** read at the start of every interactive InvoiceAgent session. There is deliberately no second prompt file; if you find one elsewhere, it is stale — this file wins.
-> **Last verified against code:** 2026-07-06 (full claim-by-claim audit; every service/connector/SQL reference below was checked against the codebase on that date). When editing this file, re-verify the code references you touch and update this date.
+> **Last verified against code:** 2026-07-07 (full claim-by-claim audit; every service/connector/SQL reference below was checked against the codebase on that date). When editing this file, re-verify the code references you touch and update this date.
 
 ---
 
@@ -814,7 +814,7 @@ from entities.invoice.api.router import _generate_invoice_packet
 result = _generate_invoice_packet('<dbo.Invoice.PublicId>')
 ```
 
-Verify `result['data']['skipped'] == 0` and `page_count > 0`. `skipped > 0` after a passing coverage check means an attachment record exists but its blob is unreadable — halt and surface. **A shared attachment prints once per line** (e.g. one NES statement PDF supporting a current + a past-due line appears twice in the packet) — cosmetic, not a double-bill; packet-level dedup is a TODO. **`skipped` counts only source-linked lines**: derivative Manual (markup) lines are excluded from the packet up front and do NOT count — a passing CL invoice legitimately shows `skipped=0` even with many markup lines that have no packet page (their sibling labor line's PDF is the support). Don't misread that as missing coverage.
+Verify `result['data']['skipped'] == 0` and `page_count > 0`. `skipped > 0` after a passing coverage check means an attachment record exists but its blob is unreadable — halt and surface. **Attachment pages follow the basic (first) TOC's row order** — the generator walks the sorted TOC rows and appends each line's document at its first occurrence (2026-07-07; the expanded TOC regroups by cost code, so a multi-cost-code document can't also match that order). Dedupe is by Attachment row: one Attachment linked to many lines prints once, but the same document uploaded as SEPARATE Attachment rows prints once per row (e.g. the NES statement PDF attached independently to a current + a past-due bill appears twice) — cosmetic, not a double-bill; content-level dedup is a TODO. **`skipped` counts only source-linked lines**: derivative Manual (markup) lines are excluded from the packet up front and do NOT count — a passing CL invoice legitimately shows `skipped=0` even with many markup lines that have no packet page (their sibling labor line's PDF is the support). Don't misread that as missing coverage.
 
 **Box packet verification:** if the project has a `draw_requests` folder mapping (Step 1c), confirm the packet's `upload_box_file` row was enqueued and drains to `done`:
 

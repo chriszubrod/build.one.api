@@ -514,7 +514,7 @@ def parse_email_overrides(values: Optional[List[str]]) -> Dict[str, List[str]]:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Generate (and optionally upload) payment remittance PDFs from a QBO BillPayment.")
     ap.add_argument("doc_number", help="QBO BillPayment.DocNumber (the payment/ACH number)")
-    ap.add_argument("--out-dir", default="/Users/chris/Applications/build.one/_remittance_out",
+    ap.add_argument("--out-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "_remittance_out"),
                     help="Local folder for generated PDFs (default: %(default)s)")
     ap.add_argument("--upload", action="store_true", help="Upload each PDF to Box (prod write; needs ALLOW_BOX_WRITES=true).")
     ap.add_argument("--draft-emails", action="store_true",

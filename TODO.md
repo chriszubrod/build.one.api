@@ -2,6 +2,23 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## 🔴 P0 — QBO→dbo bill onboarding is minting header-only "zombie" bills in prod (2026-07-07)
+
+Surfaced running the BR-MAIN-26 InvoiceAgent playbook: **30 `dbo.Bill` rows were created 2026-07-07 19:16–21:32 UTC as headers only — correct `TotalAmount` + `qbo.BillBill` parent map, but ZERO `dbo.BillLineItem` rows.** Only 4 bills created that day had line items. The invoice's 22 source bills were mostly in this state, so nothing linked/reconciled until repaired.
+
+- **Root cause / mechanism.** `BillBillConnector.sync_from_qbo_bill` ([integrations/intuit/qbo/bill/connector/bill/business/service.py](integrations/intuit/qbo/bill/connector/bill/business/service.py)) commits the header (`BillService.create`) + `qbo.BillBill` mapping in separate service-layer transactions, then calls `_sync_line_items`, which **raises** if any line fails to project. The raise leaves a committed header + parent-map with no lines and no `qbo.BillLineItemBillLine` — a zombie. **Line creation works fine from the current local checkout** (re-ran `BillLineItemConnector.sync_from_qbo_bill_line` per line → clean BLI with SCC + Price + Project every time), so the failure is **prod-side**: the deployed API code (or its container tag — see `docs/runbooks/deploy-tag-pinned.md`) is behind, throwing on the line-create path. **The prod scheduler's periodic bill sync will keep producing zombies until the prod image is redeployed.** First action: diff deployed image vs `main`, redeploy `:latest`, confirm a fresh QBO bill onboards WITH lines.
+- [ ] **Fix + redeploy prod** so `_sync_line_items` succeeds (root cause above). Consider making header-create + line-create atomic (or a compensating cleanup) so a future line-failure doesn't strand a header-only bill.
+- [ ] **Repair the 14 still-broken zombie bills** (BR-MAIN-26's 16 already repaired this session). Detection query:
+  ```sql
+  SELECT b.Id, b.BillNumber, b.TotalAmount, v.Name
+  FROM dbo.Bill b LEFT JOIN dbo.Vendor v ON v.Id = b.VendorId
+  WHERE NOT EXISTS (SELECT 1 FROM dbo.BillLineItem WHERE BillId = b.Id)
+    AND EXISTS (SELECT 1 FROM qbo.BillBill bb WHERE bb.BillId = b.Id);
+  ```
+  Still-broken as of 2026-07-07 (all `qboMap=1`, 0 lines): `19271` Ferguson #SC80489 $120.15 · `19290` Integrated Power #14714 $29,632.50 · `19291` Liaison Home Automation #9953 $24,358.81 · `19292` The Clean Living Co #794 $9,413.56 · `19293` The Iron Grove #2480 $9,359.00 · `19294` SledgeCraft #107836 $1,293.82 · `19295` SledgeCraft #107840 $493.26 · `19296` Siteworks #26-0161 $53,577.25 · `19297` Green Acres #21028 $28,000.00 · `19299` SavATree #001927012 $406.00 · `19300` Southern Staircase #ISA000010726 $906.95 · `19301` Cobra #C10659 $2,182.50 · `19302` Alley-Cassetty #000655919 $28.32 · `19303` Walker Lumber #226574 $615.31.
+  **Repair recipe** (per zombie bill, from the current checkout, under `set_authz_context(is_system_admin=True)`): resolve `dbo.Bill.Id` via `qbo.BillBill.BillId`, then for each `qbo.BillLine` on the mapped `qbo.Bill` call `BillLineItemConnector().sync_from_qbo_bill_line(dbo_bill_id, qbo_line)` — it creates the BLI (SCC from ItemRef, Price=Amount, Project from CustomerRef) **and** the `qbo.BillLineItemBillLine` mapping. Verify each bill's `SUM(BLI.Amount) == Bill.TotalAmount` afterward. These are QBO-onboarded bills → lines project but **attachments do not**; only pull QBO attachables if/when a bill is invoiced (CRITICAL #5). Draft-collision variant (a promoted email-intake draft already holds the number) → Step 3b.i of the invoice playbook.
+- [ ] **Audit scope beyond 2026-07-07.** The detection query is date-agnostic — run it unbounded to catch zombies from earlier failure windows, and add it (or a `qbo.ReconciliationIssue` check) to the daily QBO reconcile so future zombies are flagged automatically instead of discovered mid-invoice-run.
+
 ## Contract-labor billing → QBO follow-ups (2026-07-06)
 
 Surfaced while billing OVH / BR-MAIN contract-labor and pushing to QBO.

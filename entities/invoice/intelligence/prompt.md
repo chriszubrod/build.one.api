@@ -2,7 +2,7 @@
 
 > **Canonical location:** `build.one.api/entities/invoice/intelligence/prompt.md` — the ONLY invoice prompt.
 > **Loaded by:** `intelligence/agents/invoice_specialist/definition.py` (as the invoice_specialist system prompt) **and** read at the start of every interactive InvoiceAgent session. There is deliberately no second prompt file; if you find one elsewhere, it is stale — this file wins.
-> **Last verified against code:** 2026-07-07 (full claim-by-claim audit; every service/connector/SQL reference below was checked against the codebase on that date). When editing this file, re-verify the code references you touch and update this date.
+> **Last verified against code:** 2026-07-08 (full claim-by-claim audit; every service/connector/SQL reference below was checked against the codebase on that date). When editing this file, re-verify the code references you touch and update this date.
 
 ---
 
@@ -173,11 +173,12 @@ Practical consequence for Step 4: expect **markup lines as separate QBO lines**.
 
 ## Direct-call guardrails (read before running any recipe)
 
-This playbook invokes private methods (`_mark_source_as_billed`, `_upload_to_sharepoint`, `_enqueue_box_excel`, `_enqueue_box_uploads`, `_generate_invoice_packet`) and occasionally patches services. Code moves under this file:
+This playbook invokes private methods (`_mark_source_as_billed`, `_upload_to_sharepoint`, `_enqueue_box_excel`, `_enqueue_box_line_pdfs`, `_generate_invoice_packet`) and occasionally patches services. Code moves under this file:
 
 - **Before any direct private-method or connector call, check the signature**: `import inspect; print(inspect.signature(Target))`. If it differs from what this playbook shows, HALT and reconcile against the code — do not guess.
 - **Any monkey-patch must be restored in `try/finally`** in the same block that applies it. Never leave a patched service for the rest of the session.
 - **Declare system-admin intent first.** Every script/session that calls connectors or services directly must run `assert_cli_system_admin()` (from `scripts/sync_helper.py`) or `set_authz_context(user_id=None, company_id=None, is_system_admin=True)` (from `shared.authz`) before ANY service call — otherwise every guarded read fails with `EntityNotAccessibleError` (see KI-18).
+- **Client gotcha:** `integrations.ms.sharepoint.external.client.list_drive_item_children` returns children under the **`items`** key, not `value` (the raw Graph key). Reading `result["value"]` yields a false "folder is empty" (BR-MAIN-26).
 
 ## Run modes
 
@@ -195,7 +196,7 @@ This playbook invokes private methods (`_mark_source_as_billed`, `_upload_to_sha
 
 Serial halts are the dominant cost of a run: discovering gaps one step at a time turns one invoice into many user round-trips. Structure every run as three phases:
 
-**Phase 1 — read-only audit (no external writes, no user interaction).** Run Steps 1 (incl. 1b/1c), 2, and 3 (diagnose 3a–3d needs; do NOT execute recoveries yet), then Step 4 as a **dry-run** (run the fingerprint SELECTs, record proposed matches, apply NO UPDATEs), then the Step 5 coverage query against the *proposed* matches, the KI-16 Price-NULL check, and the KI-27 multi-line-Expense check. Collect every gap into one report:
+**Phase 1 — read-only audit (no external writes, no user interaction).** Run Steps 1 (incl. 1b/1c), 2, and 3 (diagnose 3a–3d needs; do NOT execute recoveries yet), then Step 4 as a **dry-run** (run the fingerprint SELECTs, record proposed matches, apply NO UPDATEs), then the Step 5 coverage query against the *proposed* matches, the KI-16 Price-NULL check, the KI-27 multi-line-Expense check, and the KI-40 attachment page-audit (flag every linked attachment with >1 page for content spot-check). Collect every gap into one report:
 
 | Gap class | Proposed resolution |
 |---|---|
@@ -203,6 +204,8 @@ Serial halts are the dominant cost of a run: discovering gaps one step at a time
 | Missing Box mapping (1c) | Acknowledge skip, or map first |
 | Stale/duplicate dbo.Invoice (3) | Step 3a reset |
 | Unmapped source Bill / BillCredit (4 dry-run) | Step 3b / 3b.i / 3d onboarding |
+| Zombie header-only Bill (qbo.BillBill mapped, ZERO BillLineItems) | Step 3b.ii line re-sync (BR-MAIN-26 hit 16 of these) |
+| Multi-page linked attachment (KI-40 risk surface) | Visual spot-check for foreign-project pages; trim + re-link if contaminated |
 | Ambiguous fingerprint match | Proposed LineNum-order resolution for confirmation |
 | Manual line — markup pattern | Pre-classified as derivative of sibling (confirm) |
 | Manual line — no pattern | User classifies or removes |
@@ -276,7 +279,7 @@ A line item cannot be billed on an invoice without an attachment for support. Th
 - Every source-linked line (Bill / Expense / BillCredit) must resolve to at least one attachment file (`dbo.BillLineItemAttachment` / `dbo.ExpenseLineItemAttachment` / `dbo.BillCreditLineItemAttachment`). If a source line has no attachment, **halt** — do not generate the packet, do not write column H, do not upload to SharePoint or Box. Surface the offending line and ask the user to attach the supporting document upstream, then re-run.
 - `Manual` lines with no underlying transaction (typed directly into the QBO invoice tray) are also blockers under this rule unless the user explicitly confirms the line is a derivative of another billed line on the same invoice (e.g., a separate `"X% markup for Y"` line). Surface every Manual line and ask the user to classify before proceeding (batchable only under an explicit pre-authorization — see Run modes).
 - Verify this **before Step 5** (packet generation). The packet generator silently skips lines without attachments — that's the wrong signal to act on; treat the absence at the source as the blocker.
-- If QBO is the only place the document exists, run `QboAttachableService().sync_attachables_for_bill(realm_id=..., bill_qbo_id=..., sync_to_modules=True)` / `sync_attachables_for_purchase` / `sync_attachables_for_vendor_credit` for the source's QBO id before halting — it may just be a sync gap. **These service methods were fixed (verified 2026-07-03)**: they now pull the full realm attachable list once (cached per service instance) and filter in-memory on an EXACT `(entity_ref_type, entity_ref_value)` match — a per-entity `0` from the *service* is now trustworthy for that entity. (The underlying client method `query_attachables_for_entity` is still broken — see KI-28 — don't call it directly.)
+- If QBO is the only place the document exists, run `QboAttachableService().sync_attachables_for_bill(realm_id=..., bill_qbo_id=..., sync_to_modules=True)` / `sync_attachables_for_purchase` / `sync_attachables_for_vendor_credit` for the source's QBO id before halting — it may just be a sync gap. **These service methods were fixed (verified 2026-07-03)**: they now pull the full realm attachable list once (cached per service instance) and filter in-memory on an EXACT `(entity_ref_type, entity_ref_value)` match — a per-entity `0` from the *service* is now trustworthy for that entity. **Batch cost note (BR-MAIN-26):** the realm list is ~19k rows and the first pull takes ~6 minutes — for a multi-bill run, instantiate ONE `QboAttachableService()` and reuse it for every bill (the cache is per-instance; a fresh instance per bill re-pays the ~6 min every time). (The underlying client method `query_attachables_for_entity` is still broken — see KI-28 — don't call it directly.)
 - **Exact-type matching cuts both ways:** a receipt the QBO user attached to the customer **Invoice** (or a sibling Purchase/Bill) will NOT be found by `sync_attachables_for_bill` on the source Bill. Before concluding a document is missing anywhere, pull **all** attachables (`QboAttachableClient.query_all_attachables()`, paginated) and filter in app code on each one's `attachable_ref`. The invoice's own `AttachableRef` set is effectively the authoritative source→document map — cross-check your Step 4 fingerprint matches against it. A line whose receipt lives on a different transaction is NOT a blocker — onboard that transaction (Step 3b / 3d) and link it.
 - **A genuinely doc-less line can be resolved without halting** if the user can supply the PDF locally. **Standard recovery (OVH-01): check the operator's `~/Downloads` for PDFs staged by document number** (`457366.pdf`, etc.) — the operator often has the doc even when QBO's exact-type match can't find it (attached to the Invoice instead of the source). **Visually confirm the PDF matches the charge before linking.** Upload via the canonical `/upload/attachment` path (compact → hash-dedup → blob → `AttachmentService.create`), then link with the matching `BillLineItemAttachmentService` / `ExpenseLineItemAttachmentService` / `BillCreditLineItemAttachmentService.create`. Only halt for the user-attach-upstream loop when no document exists anywhere (QBO *or* local).
 
@@ -311,10 +314,10 @@ Box (`integrations/box/`, live 2026-06-16) mirrors the two MS write pipelines pe
 
 | MS / SharePoint action | Box mirror (this playbook must trigger it explicitly) |
 |---|---|
-| Packet upload to SharePoint (Step 9) | Packet → project's Box **"15 - Draw Requests"** folder. Enqueued automatically **inside `_generate_invoice_packet`** (Step 5) — which is why `ALLOW_BOX_WRITES` must be set before Step 5. |
+| Packet upload to SharePoint (Step 9) | Packet → per-invoice subfolder `15 - Draw Requests/<invoice_number>/` in Box. Enqueued automatically **inside `_generate_invoice_packet`** (Step 5) — which is why `ALLOW_BOX_WRITES` must be set before Step 5. |
 | Bill/Expense/BillCredit DETAILS row insert (Step 7b) | `{Bill,Expense}Service()._enqueue_box_excel(...)` / `BillCreditCompleteService()._enqueue_box_excel(...)` → `update_box_excel` outbox row → drain re-fetches the entity, rebuilds rows, openpyxl-edits the Box workbook's DETAILS tab (column-Z public_id idempotency), uploads a new file version. |
 | Invoice column-H DRAW stamp (Step 7d) | `InvoiceService()._enqueue_box_excel(invoice=..., project_id=...)` → stamp-only `update_box_excel` row (column H on rows matched by col-Z; no inserts). |
-| Line-item attachment PDFs to SharePoint (Step 9) | `BillService()._enqueue_box_uploads(bill=..., line_items=...)` / `ExpenseService()._enqueue_box_uploads(expense=..., line_items=..., doc_kind="attachment")` / `BillCreditCompleteService()._enqueue_box_uploads(bill_credit=..., line_items=...)` → project's Box **"14 - Invoices"** folder (`upload_box_file` rows; deterministic identity-embedded filenames, 409 → re-version, sha1 verify). |
+| Line-item attachment PDFs to SharePoint (Step 9) | `InvoiceService()._enqueue_box_line_pdfs(invoice=..., line_items=...)` → per-invoice subfolder under the project's Box **"15 - Draw Requests"** folder, alongside the packet (`upload_box_file` rows; SP-matching filenames + `-{8hex}` identity suffix; subfolder-create failure = skip, never flat-root fallback). **Do NOT use `BillService`/`ExpenseService`/`BillCreditCompleteService._enqueue_box_uploads` here** — those are hardwired to the "14 - Invoices" AP archive, which is correct for those entities' OWN completions but misfiles invoice-draw support (BR-MAIN-26, 2026-07-07: 22 line docs landed in 14 - Invoices and had to be moved by hand). |
 
 **SCC gate feeds this mirror (CRITICAL #6 ties in):** a line synced to the Box workbook without a `SubCostCodeId` lands with a blank col-B (Cost Code), strands at the bottom of DETAILS, and the col-Z idempotency key then **freezes it blank forever** — later re-syncs skip it as "already present" even after the line is GL-coded. Blank-B rows are invisible to the cost-code-keyed G702/G703/Draw tabs while still counted by the draw's whole-column ledger total, silently under-reporting the client-signed AIA form (KI-36). Never let a line reach Box Excel sync uncoded.
 
@@ -400,6 +403,8 @@ WHERE DocNumber = ? AND CustomerRefValue = ?;
 ```
 
 Both must return a row. Check `dbo.Invoice.TotalAmount == qbo.Invoice.TotalAmt` and `dbo.Invoice.InvoiceDate == qbo.Invoice.TxnDate`. If they disagree, the connector likely didn't propagate a recent QBO edit — proceed to **Step 3a**.
+
+**Staging-current-but-no-dbo-row is a normal state, not an error** (BR-MAIN-26, 2026-07-07): the scheduler's periodic invoice pull can refresh `qbo.Invoice`/`qbo.InvoiceLine` staging yet report `module_synced=0`, leaving no `dbo.Invoice`. Create it with the direct connector call — same shape as Step 3a part 3 (`InvoiceInvoiceConnector().sync_from_qbo_invoice(qbo_inv, qbo_lines)` under system-admin authz), no deletes needed.
 
 **Adopt-guard (verified 2026-07-03):** the connector now gap-detects before creating a `-N` suffixed duplicate — when a local invoice with the same (project, InvoiceNumber) exists AND its total (±$0.01) + txn date match the QBO invoice, the connector **adopts it in place** (and re-projects lines only when the adopted invoice is empty). Suffixed duplicates now arise only when the header genuinely differs. If you find duplicates with `-2` / `-3` suffixes, **halt and surface to user before any cleanup**.
 
@@ -536,6 +541,23 @@ with get_connection() as conn:
 Step 4 will now resolve the invoice line(s) referencing this bill. Do NOT pull a fresh QBO attachable for this variant — the existing `dbo.Bill` already has its `BillLineItemAttachment` rows from the original intake.
 
 **Sub-case: draft-collision blocker.** If the conflict names a **draft** `dbo.Bill` (email/bill_folder pipeline), recovery: (a) promote the draft — `UPDATE dbo.Bill SET IsDraft = 0 WHERE Id = ?`; (b) set `Price = Amount` on its line items (prevents the KI-16 $0 row in DETAILS); (c) **set `SubCostCodeId` on each line item** — pipeline drafts almost always land with `SubCostCodeId = NULL`. Resolve the SCC from the matching `qbo.BillLine.ItemRefValue` via `qbo.Item qi JOIN qbo.ItemSubCostCode m ON m.QboItemId = qi.Id JOIN dbo.SubCostCode scc ON scc.Id = m.SubCostCodeId WHERE qi.QboId = <ItemRefValue> AND qi.RealmId = ?`, then `UPDATE dbo.BillLineItem SET SubCostCodeId = ? WHERE Id = ?`. Skipping this fails the Step 5 coverage check (CRITICAL #6). (d) insert the `qbo.BillBill` + `qbo.BillLineItemBillLine` mapping rows as above. (First systematically hit on HP-24, 2026-06-01 — all 5 draft-adoption bills had NULL SubCostCode.)
+
+### Step 3b.ii — Variant: zombie header-only Bill (parent mapped, ZERO line items)
+
+**Signature** (distinct from 3b "no dbo.Bill" and 3b.i "unmapped existing Bill"): the `dbo.Bill` exists with the correct `TotalAmount` AND a `qbo.BillBill` mapping — but has **zero `dbo.BillLineItem` rows** and no `qbo.BillLineItemBillLine` mappings. Root cause: `BillBillConnector.sync_from_qbo_bill` commits the header + parent map, then `_sync_line_items` raises and strands them (prod-side defect — see the P0 entry in `TODO.md` for the fleet-wide detection query; the prod scheduler keeps minting these until the prod image is fixed, so EXPECT them on fresh QBO bills). BR-MAIN-26 (2026-07-07) hit 16 — Phase 1 must screen every source bill for this before Step 4, since a line-less bill can't fingerprint-match anything.
+
+**Repair** (per zombie, under `set_authz_context(is_system_admin=True)`; verified BR-MAIN-26):
+
+```python
+from integrations.intuit.qbo.bill.connector.bill_line_item.business.service import BillLineItemConnector
+# dbo_bill_id via qbo.BillBill.BillId for the mapped qbo.Bill row
+# qbo_lines = QboBillLine rows for that qbo.Bill (ORDER BY LineNum)
+connector = BillLineItemConnector()
+for qbo_line in qbo_lines:
+    connector.sync_from_qbo_bill_line(dbo_bill_id, qbo_line)
+```
+
+Each call creates the BLI (SCC from ItemRef, `Price = Amount`, Project from the line's CustomerRef) **and** the `qbo.BillLineItemBillLine` mapping. Verify `SUM(BLI.Amount) == Bill.TotalAmount` per repaired bill. Attachments do NOT project with the lines — pull QBO attachables only when the bill is actually invoiced (CRITICAL #5).
 
 ### Step 3c — Heal split-staging duplicates (situational, NOT every-run)
 
@@ -807,6 +829,8 @@ Halt on either gap:
 - Zero attachments on a source-linked row → **halt** per CRITICAL #5 (after the sync-attachables + `query_all_attachables` checks there).
 - `*Scc` NULL on a source-linked row → **halt** per CRITICAL #6 (force-pull + upsert recovery loop there).
 
+**Page-content check (KI-40):** presence is not enough — the packet merges ALL pages of every linked attachment. If the Phase-1 page-audit flagged any multi-page attachment and it hasn't been cleared yet, resolve it (spot-check / trim + re-link) BEFORE generating; a combined multi-invoice vendor scan puts another project's invoice into this customer's packet.
+
 Only after the combined coverage check passes — and with **both write gates already set** (the packet generator enqueues the Box packet push internally; gate closed = silent skip):
 
 ```python
@@ -1029,27 +1053,20 @@ result = InvoiceService()._upload_to_sharepoint(invoice=invoice, line_items=line
 # (a line with N attachments counts N — not "lines with attachments").
 ```
 
-**Box (parallel):** the packet itself was already enqueued to the `draw_requests` folder at Step 5. Push the line-item attachment PDFs to the project's `invoices` folder — one call per source parent:
+**Box (parallel):** the packet itself was already enqueued to the `draw_requests` folder at Step 5. Push the line-item attachment PDFs into the SAME per-invoice subfolder with the invoice-owned uploader — ONE call covers all source types (it walks the invoice's own line links, same 4-SELECT metadata as SharePoint):
 
 ```python
-from entities.bill.business.service import BillService
-from entities.expense.business.service import ExpenseService
-from entities.bill_credit.business.complete_service import BillCreditCompleteService
-from entities.bill_line_item.business.service import BillLineItemService
-
-for dbo_bill_id in source_bill_ids:            # distinct dbo.Bill.Id from Step 4 linkage
-    bill = BillService().read_by_id(id=dbo_bill_id)
-    blis = BillLineItemService().read_by_bill_id(bill_id=dbo_bill_id)
-    BillService()._enqueue_box_uploads(bill=bill, line_items=blis)
-
-for expense, elis in source_expenses:          # analog for Expense sources
-    ExpenseService()._enqueue_box_uploads(expense=expense, line_items=elis, doc_kind="attachment")
-
-for bill_credit, bclis in source_bill_credits: # analog for BillCredit sources
-    BillCreditCompleteService()._enqueue_box_uploads(bill_credit=bill_credit, line_items=bclis)
+result = InvoiceService()._enqueue_box_line_pdfs(invoice=invoice, line_items=line_items)
+# Verify: result == {"success": True, "enqueued": N, "skipped": 0, "reason": None}
+# reason values on skip: "writes_disabled" (gate not set), "unmapped_project"
+# (no (project, 'draw_requests') mapping — acknowledged skip per Step 1c),
+# "subfolder: ..." (create failed — halt; it deliberately does NOT fall back
+# to the flat draw-requests root).
 ```
 
-Enqueues are one row per unique (project, attachment) pair (`upload_box_file`); unmapped projects skip with an info log. Poll `box.Outbox` to terminal per 7c. Uploads use deterministic identity-embedded filenames — re-runs re-version the same file rather than duplicating.
+Filenames match the SharePoint names plus a deterministic `-{8hex}` identity suffix; re-runs re-version the same file. Poll `box.Outbox` to terminal per 7c — filter `Kind='upload_box_file' AND EntityType='invoice' AND EntityPublicId='<invoice>'`; the packet row and the line rows share that scope, so expect `enqueued + 1` rows (`doc_kind` is inside the JSON `Payload`, not a column — `Payload LIKE '%"doc_kind": "line_attachment"%'` to split them).
+
+> **Never route invoice-draw support through `BillService`/`ExpenseService`/`BillCreditCompleteService()._enqueue_box_uploads`.** Those enqueue to the project's **"14 - Invoices"** AP archive — correct when a Bill/Expense/BillCredit completes on its own, wrong for a draw (BR-MAIN-26, 2026-07-07: all 22 supporting PDFs misfiled into 14 - Invoices; SharePoint was correct because `_upload_to_sharepoint` has always been invoice-owned). If a past invoice's line docs are sitting in 14 - Invoices, this is why — move them to `15 - Draw Requests/<invoice_number>/` and re-check the outbox registry.
 
 ## Step 10 — Final reconciliation report + five-system invariant matrix
 
@@ -1202,6 +1219,7 @@ Stop and surface to the user before proceeding when:
 37. **KI-37 — Fingerprint can accept a cross-project line (mis-bill)** (HA-04, 2026-07-07: Walker Lumber #804245, $1,577.45, coded to HP2, fingerprint-matched onto the HA invoice and reached the customer packet). Amount+description+date+CustomerRef is not sufficient — the Step 4.1 queries now return `SourceProjectId`; a hit whose source project differs from the invoice's project is REJECTED and surfaced, never linked. The Step 4.1 direct-dbo fallback must apply the same check.
 38. **KI-38 — Same transaction entered as both a Bill and an Expense = double-bill** (HA-04: Crushr "Dumpster Crush" Expense on the Ramp card and Smashin Bastins Bill #11185Q were the SAME $315 invoice — Crushr is Smashin Bastins' brand; the "expense" was the card payment of the bill; both hit the QBO invoice). Hash-dedup can't catch it (different PDFs: invoice vs paid-receipt); vendor names differ across brands. Phase 1 screens for cross-type pairs on the invoice with same/similar amounts and overlapping periods — flag for the user to pick which line survives BEFORE the packet.
 39. **KI-39 — The SharePoint and Box DETAILS workbooks do not cross-propagate** — a human's manual edit to one leaves the other silently stale (they are two physical copies of one logical ledger, synced only by our outbox writes). When their totals disagree, reconcile by column-Z public_id; treat neither as authoritative over dbo/QBO (Step 10 money-authority note). Auto-reconciliation is a TODO.
+40. **KI-40 — A combined multi-invoice QBO attachable leaks a DIFFERENT project's invoice into the customer packet** (BR-MAIN-26, 2026-07-07: the Rogers Group attachable was a 2-page scan bundling invoice 0051135217 for BR-MAIN AND 0051135218 for TB3, $810.41, PO "917 TYNE BLVD"; the packet includes ALL pages of every linked attachment, so the TB3 page shipped on BR-MAIN's packet — caught by the operator on the finished PDF). This is a page-level failure mode NO existing guard covers: KI-37 rejects a cross-project SOURCE LINE, and CRITICAL #5 checks only attachment PRESENCE. **Detection (Phase 1):** flag every linked attachment whose PDF has >1 page for a visual spot-check — multi-page vendor scans are the risk surface — and where feasible scan each attachment's text for an invoice-number / PO / ship-to marker that doesn't belong to this invoice's project (the invoice's own project address is authoritative). **Remediation (verified on BR-MAIN-26):** extract the correct page(s) with `pypdf` into a trimmed PDF; upload it via the canonical `POST /upload/attachment` path (never a raw `dbo.Attachment` INSERT); re-link the source line to the new attachment and drop the combined one from that line; regenerate the packet and re-verify page count.
 
 ---
 
@@ -1213,6 +1231,6 @@ Stop and surface to the user before proceeding when:
 - Writes column H (DRAW REQUEST) in DETAILS (SharePoint, direct) and in the Box workbook (stamp row via `box.Outbox`).
 - Flips `dbo.BillLineItem.IsBilled` / `dbo.ExpenseLineItem.IsBilled` / `dbo.BillCreditLineItem.IsBilled` to `True` for every linked source (Step 8).
 - Uploads packet + supporting PDFs to SharePoint.
-- Enqueues `box.Outbox` rows: packet → Box `15 - Draw Requests` (Step 5), DETAILS mirror edits + draw stamp (Step 7), attachment PDFs → Box `14 - Invoices` (Step 9). Box uploads create/re-version files in the project's Box folders.
+- Enqueues `box.Outbox` rows: packet → Box `15 - Draw Requests/<invoice_number>/` (Step 5), DETAILS mirror edits + draw stamp (Step 7), line-item attachment PDFs → the same `15 - Draw Requests/<invoice_number>/` subfolder (Step 9, `_enqueue_box_line_pdfs`). Box uploads create/re-version files in the project's Box folders. (Nothing in this playbook writes to `14 - Invoices` — that folder belongs to Bill/Expense/BillCredit own-completion pushes.)
 - Recovery paths (3a/3b.i/3c, 7e, CRITICAL #6) additionally delete/insert staging mappings, dbo line items, and blank worksheet rows — each gated on explicit user authorization.
 - **Does NOT push** anything to QBO — `BillableStatus` on the QBO line stays as-is. Accepted drift; a future run can't double-bill (Step 4 fingerprint + Step 6 Direction B both catch it).

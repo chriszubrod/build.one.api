@@ -7,7 +7,9 @@ import time
 from typing import Any, Optional
 
 # Third-party Imports
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, status
+from functools import partial
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, status
 
 # Local Imports
 import config
@@ -343,8 +345,25 @@ def _qbo_sync_fn(entity: str):
     raise HTTPException(status_code=400, detail=f"Unknown QBO entity: {entity}")
 
 
+# Entities whose sync function accepts a `sync_attachments` kwarg. Others pull
+# no per-record attachments, so the `attachments` query param is a no-op there.
+_QBO_ENTITIES_WITH_ATTACHMENTS = {"bill", "vendorcredit"}
+
+
 @router.post("/sync/qbo/{entity}", dependencies=[Depends(_require_drain_secret)])
-async def sync_qbo_router(entity: str = Path(...)):
+async def sync_qbo_router(
+    entity: str = Path(...),
+    attachments: bool = Query(
+        True,
+        description=(
+            "For bill/vendorcredit only: when false, skip the per-record QBO "
+            "Attachable API pull. Use to clear a slow/stuck backlog quickly — an "
+            "attachment-free pass completes well under the 240s gateway timeout and "
+            "advances the watermark. Consistent with the 'don't pull QBO attachables "
+            "for onboarded bills until invoiced' rule. No-op for other entities."
+        ),
+    ),
+):
     """
     Run a single QBO sync script (pull from QBO → local DB). Entities:
     bill, invoice, purchase, vendorcredit, vendor, customer, item, account,
@@ -356,6 +375,8 @@ async def sync_qbo_router(entity: str = Path(...)):
             detail=f"Invalid entity '{entity}'. Valid: {', '.join(sorted(VALID_QBO_ENTITIES))}",
         )
     sync_fn = _qbo_sync_fn(entity)
+    if not attachments and entity in _QBO_ENTITIES_WITH_ATTACHMENTS:
+        sync_fn = partial(sync_fn, sync_attachments=False)
     return await _timed(f"sync.qbo.{entity}", sync_fn)
 
 

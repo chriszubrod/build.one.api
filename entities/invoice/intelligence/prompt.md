@@ -190,7 +190,7 @@ This playbook invokes private methods (`_mark_source_as_billed`, `_upload_to_sha
 
 - **One session per invoice.** Each run is its own session, triggered as `"<INVOICE-##> / <date>"` (or invoice number + project abbreviation). Re-runs of a grown invoice are new sessions using the Delta re-run section.
 - **Sessions open at the umbrella root** (`/Users/chris/Applications/build.one/`) with the full path to this file — that's deliberate (the umbrella auto-loads the invoice memory set). All shell recipes in this playbook assume `build.one.api/` as the working directory: **`cd` into the sub-repo before any `.venv/bin/python`, `scripts/`, or git command.** Relative paths from the umbrella fail with "no such file or directory".
-- **Parallel sessions: different projects only.** Per-project surfaces (workbooks, folders, dbo writes, write gates) are disjoint and safe. **Never two sessions on the same project.** The one shared surface is Step 2's realm-global pull-sync — **stagger Step 2** (let the first session pull; a later session's pull is a fast incremental no-op; simultaneous same-script runs race the `dbo.Sync` watermark). Expect slower Step 7c waits under parallelism (shared QBO throttle + the ~20-rows/20s Box drain budget).
+- **Parallel sessions: different projects only.** Per-project surfaces (workbooks, folders, dbo writes, write gates) are disjoint and safe. **Never two sessions on the same project.** Sessions run **no realm-global pulls** (Step 2 single-writer model, 2026-07-09 — the old every-session-pulls-everything Step 2 made simultaneous sessions race the shared `dbo.Sync` watermarks and fail): the scheduler owns realm staging; each session runs only its own project-scoped invoice pull (2b) and, rarely, a tight date-window gap-fill (2c — the one shared write left; don't overlap windows across sessions). No staggering needed beyond that. Expect slower Step 7c waits under parallelism (shared QBO throttle + the ~20-rows/20s Box drain budget), and KI-44 volatile-field discipline applies throughout.
 
 ## Run shape — audit everything first, halt ONCE
 
@@ -375,19 +375,33 @@ Expected for a fully-mapped project: one workbook row + two folder rows (`invoic
 
 **Discovery mechanics** (so runs don't re-derive them — EASH-01): SharePoint — from any mapped project's root DriveItem take its parent (= `200 - Rogers Build Projects`, drive 2 `b!ORGYF05…`, parent item `017ZKYN54WJ7NNIPL4HFG2N2BJNE5ZUHA3`), `list_drive_item_children` to enumerate project folders, `get_excel_worksheets` to confirm a DETAILS tab. Box — search API (address fragments like `"5866 East Ashland"`), or navigate any known 14-folder's `path_collection` up to the projects root `388262164461`. **Canonical mapping template = WVA (project 46):** `ms.DriveItem` rows (workbook + 14 + 15) + `DriveItemProjectExcel` (WorksheetName `DETAILS`) + `DriveItemProjectModule` (Bills 2 & Expenses 16 → `14 - Invoices`; Invoices 17 → `15 - Draw Requests`); `box.Folder` + `box.ProjectWorkbook` + `box.ProjectFolder` (`invoices`/`draw_requests`).
 
-## Step 2 — Pull-sync QBO data into local staging
+## Step 2 — Verify staging freshness; pull ONLY project-scoped (single-writer model, 2026-07-09)
 
-Run all four **concurrently** from `build.one.api/` (token refresh is serialized server-side via `qbo_app_lock`, and each script owns its own `dbo.Sync` watermark, so parallel runs are safe):
+**Sessions are NOT realm-global sync writers.** The prod scheduler already pulls bill / invoice / purchase / vendorcredit on its own timers (~15-min cadence) and owns every `dbo.Sync` watermark. The old Step 2 (each session runs all four unscoped sync scripts) made every session a realm-global writer: N parallel sessions + the scheduler all raced the same per-entity watermarks and re-processed the same staging rows — on 2026-07-09 several sessions started back-to-back ALL failed this way. **Never run an unscoped `sync_qbo_*.py` inside a session.**
 
-```bash
-.venv/bin/python scripts/sync_qbo_bill.py &
-.venv/bin/python scripts/sync_qbo_purchase.py &
-.venv/bin/python scripts/sync_qbo_vendorcredit.py &
-.venv/bin/python scripts/sync_qbo_invoice.py &
-wait
+**2a. Freshness check — read-only; this is the whole of Step 2 on the normal path:**
+
+```sql
+SELECT Entity, LastSyncDatetime
+FROM dbo.[Sync]
+WHERE Provider = 'qbo' AND Entity IN ('bill', 'invoice', 'purchase', 'vendorcredit');
 ```
 
-Each is incremental, driven by its watermark in `dbo.Sync`. Check each exit status — a failed pull invalidates the Phase 1 audit for that entity type.
+All four watermarks within ~20 minutes of now → staging is current; proceed to Step 3 with **zero pulls**. A watermark stalled beyond ~30 minutes means the scheduler's pull is unhealthy — **surface it as a gap, don't paper over it with a local unscoped pull** (that re-introduces the race; see TODO.md for known watermark-stall causes, e.g. the bounded-pull P0).
+
+**2b. Project-scoped invoice pull** — run when this invoice was created/edited in QBO more recently than the `invoice` watermark:
+
+```bash
+cd /Users/chris/Applications/build.one/build.one.api && \
+  .venv/bin/python scripts/sync_qbo_invoice.py --project "<project name>"
+```
+
+`--project` substring-matches `dbo.Project.Name` (must be unique) and resolves CustomerProject → QboCustomer → CustomerRef, filtering the QBO query itself; **scoped runs automatically skip the watermark update** (`skip_sync_record_update or customer_ref` in the script), and different projects touch disjoint `qbo.Invoice` rows — **parallel-safe across sessions by construction**. If resolution fails with "no CustomerProject mapping," that's the Step 1 heal (and KI-43) — fix the mapping first.
+
+**2c. Source gap-fill — the rare exception.** A `qbo.Bill` / `qbo.Purchase` / `qbo.VendorCredit` row your lines need is missing from staging:
+
+- Source created/edited in QBO within the last few minutes → **wait for the next scheduler tick (≤15 min)** and re-check. Waiting is cheaper and safer than pulling.
+- Genuinely absent (older than the watermark) → tight date-window pull that leaves the watermark alone: `.venv/bin/python scripts/sync_qbo_bill.py --start-date <txn±1d> --end-date <txn±1d> --skip-sync-update --skip-attachments` (same flags on the purchase / vendorcredit scripts). This is the ONE remaining cross-session shared write — keep the window tight, and don't run overlapping windows from two sessions at once (worst case is redundant re-processing and a uniqueness-conflict error, not data loss — but it wastes the run).
 
 ## Step 3 — Verify the invoice landed locally
 
@@ -754,7 +768,7 @@ WHERE qvc.RealmId = ? AND vcl.CustomerRefValue = ?
   AND CAST(qvc.TxnDate AS DATE) = ?;
 ```
 
-**Locally-originated bills may have NO qbo line mappings (KI-35):** contract-labor bills (BillNumber like `2026.03.31.OVH`) are generated in Build.One — they often carry attachments + SCC in `dbo` but no `qbo.BillLineItemBillLine` rows, so the mapping-table hop above returns nothing. Two valid paths: (a) run `scripts/sync_qbo_bill.py` — the bill connector's update path backfills the qbo line mappings (verified: `_sync_line_items` → `line_connector.create_mapping`); or (b) **link directly against `dbo.BillLineItem`** — unique in practice on:
+**Locally-originated bills may have NO qbo line mappings (KI-35):** contract-labor bills (BillNumber like `2026.03.31.OVH`) are generated in Build.One — they often carry attachments + SCC in `dbo` but no `qbo.BillLineItemBillLine` rows, so the mapping-table hop above returns nothing. Two valid paths: (a) run `scripts/sync_qbo_bill.py` **scoped per Step 2c** (`--start-date/--end-date` = the CL bill's BillDate, `--skip-sync-update --skip-attachments` — never unscoped) — the bill connector's update path backfills the qbo line mappings (verified: `_sync_line_items` → `line_connector.create_mapping`); or (b) **link directly against `dbo.BillLineItem`** — unique in practice on:
 
 ```sql
 SELECT bli.Id
@@ -1138,7 +1152,7 @@ Then report the narrative details:
 Iterated twice on OVH-01. The principle is **snapshot-then-diff so only genuinely-changed lines are touched** — never a blind full re-run:
 
 1. **Baseline snapshot** the current `dbo` state: `dbo.InvoiceLineItem` rows (Id, SourceType, FKs, Amount) + `qbo.InvoiceLineItemInvoiceLine` mappings + source `IsBilled` flags.
-2. **Targeted re-sync**: `sync_qbo_invoice.py` always; `sync_qbo_bill.py` / `sync_qbo_purchase.py` / `sync_qbo_vendorcredit.py` only as the NEW lines require.
+2. **Targeted re-sync**: `sync_qbo_invoice.py --project "<name>"` always (scoped, watermark-safe — Step 2b); source scripts only as the NEW lines require, via the Step 2c gap-fill rule (tight date window + `--skip-sync-update --skip-attachments`). Never unscoped.
 3. **Diff vs baseline** to isolate added / amount-changed lines (expect KI-22 phantoms on large multi-line adds — apply its recovery before proceeding).
 4. Connector creates the new `dbo` lines (Step 3a direct invocation if the incremental sync didn't propagate).
 5. **Link the new lines + re-link any amount-reset lines** (the connector's amount-only gate flips changed lines back to `Manual` and un-bills their old source — those need fresh Step 4 linkage; untouched lines keep their linkage).
@@ -1216,7 +1230,7 @@ Stop and surface to the user before proceeding when:
 32. **KI-32 — QBO drops the ReimburseCharge reverse LinkedTxn once `HasBeenInvoiced=true`** (WVA-18, 2026-07-04: 0/135 lines resolved via the RC chain). Since this playbook runs after the user completes the invoice in QBO, RC→source resolution is structurally unavailable during a normal run — it works only on Draft QBO invoices. Fingerprint (Step 4.1) is the standing primary; the line-level staging `LinkedTxnId` still groups amount+markup siblings when present. A durable deterministic path would require capturing ReimburseCharges into staging while they are still un-invoiced — see `TODO.md` "Invoice pull-sync follow-ups".
 33. **KI-33 — Sproc drift between repo kwargs and deployed sprocs** (WVA-17 + WVA-18: `CreateInvoiceLineItem` lacked `@EmployeeLaborLineItemId` in prod; the 2026-05-27 migration was never applied AND the base entity SQL file was never ported, so any base re-run would also revert it). Symptom: pyodbc parameter errors on every pull-sync ILI create. Fixed 2026-07-06 — the base file `entities/invoice_line_item/sql/dbo.invoice_line_item.sql` is now canonical (migration ported in, params defaulted `= NULL`) and was applied to prod. If a similar drift recurs on any entity: re-run that entity's BASE SQL file (bases must carry every migration's sproc changes — repo convention since 2026-07-06); monkey-patching the repo to strip kwargs is session-scoped triage only.
 34. **KI-34 — VendorCredit fingerprint sign mismatch** (OVH-01, 2026-07-06): `qbo.VendorCreditLine.Amount` is stored POSITIVE while the credit's `qbo.InvoiceLine.Amount` is NEGATIVE — a signed `ABS(vcl.Amount - ?)` never matches. The Step 4.1 VendorCredit query compares magnitudes (`ABS(ABS(vcl.Amount) - ABS(?))`).
-35. **KI-35 — Locally-originated bills (contract labor) have no `qbo.BillLineItemBillLine` mappings** — the standard mapping-hop fingerprint returns nothing even though the dbo side has attachments + SCC. Backfill via `sync_qbo_bill.py`, or use the direct-dbo link fallback in Step 4.1 (Amount + Description + `Bill.BillDate = qbo.InvoiceLine.ServiceDate`). (OVH-01, 2026-07-06.)
+35. **KI-35 — Locally-originated bills (contract labor) have no `qbo.BillLineItemBillLine` mappings** — the standard mapping-hop fingerprint returns nothing even though the dbo side has attachments + SCC. Backfill via `sync_qbo_bill.py` scoped per Step 2c (date-window + `--skip-sync-update`), or use the direct-dbo link fallback in Step 4.1 (Amount + Description + `Bill.BillDate = qbo.InvoiceLine.ServiceDate`). (OVH-01, 2026-07-06.)
 36. **KI-36 — Box DETAILS blank-cost-code rows silently corrupt AIA forms** (systemic; found reconciling WVA-18, 2026-07-06; 27-workbook audit: 1 live under-report — SHT-22 $4,030, ledger $189,478.04 vs AIA $185,448.04 — plus 4 inert stale-Z QBO leftovers). Mechanism: `build_details_rows` fills col B/C from `sub_cost_code_id` at drain time; an uncoded line (QBO-pulled account-based, or a draft completed before GL-coding) writes blank col B, strands at the bottom via the append path, and the col-Z idempotency key **freezes it** — re-syncs after GL-coding skip it as already-present. Two signatures, split by col H: (a) **B blank + H = a draw** → counted by the draw's whole-column ledger `SUMIFS(N:N, H:H, …)` but INVISIBLE to the cost-code-keyed G702/G703/Draw tabs → live under-report, the dangerous class; (b) **B blank + H blank** → inert clutter. QBO re-pull variant: a re-pulled line gets a new public_id, its new coded row stamps the draw, and the OLD row's Z dangles blank (the twin carries the money). **Detection:** compare the draw's ledger total to its AIA tab total whenever a Box workbook is mapped (Step 10 matrix row); flag, don't emit the packet on a mismatch. **Remediation:** fill col B/C **in place** on the existing DETAILS row (fill-in-place / spare-row technique — NEVER `insert_rows`, it corrupts range formulas), and never touch G702/G703 directly — they recalc from DETAILS via `fullCalcOnLoad`. Durable self-heal fix proposed in TODO.md ("Box Excel follow-ups").
 37. **KI-37 — Fingerprint can accept a cross-project line (mis-bill)** (HA-04, 2026-07-07: Walker Lumber #804245, $1,577.45, coded to HP2, fingerprint-matched onto the HA invoice and reached the customer packet). Amount+description+date+CustomerRef is not sufficient — the Step 4.1 queries now return `SourceProjectId`; a hit whose source project differs from the invoice's project is REJECTED and surfaced, never linked. The Step 4.1 direct-dbo fallback must apply the same check.
 38. **KI-38 — Same transaction entered as both a Bill and an Expense = double-bill** (HA-04: Crushr "Dumpster Crush" Expense on the Ramp card and Smashin Bastins Bill #11185Q were the SAME $315 invoice — Crushr is Smashin Bastins' brand; the "expense" was the card payment of the bill; both hit the QBO invoice). Hash-dedup can't catch it (different PDFs: invoice vs paid-receipt); vendor names differ across brands. Phase 1 screens for cross-type pairs on the invoice with same/similar amounts and overlapping periods — flag for the user to pick which line survives BEFORE the packet.

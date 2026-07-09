@@ -2,6 +2,14 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## 🟠 MS/SharePoint DriveItem upload failing repeatedly + mislabeled as DB error (2026-07-09)
+
+Surfaced during a SQL-DTU capacity review — which came back **clear**: Basic tier is fine (5.6% mean DTU, 36% storage, **0** deadlocks / **0** connection-failures over 24h; the lone 100% DTU blip was that day's ACR-incident backlog). So the steady App Insights `DatabaseOperationError`s (~2/min, pre-date the 2026-07-09 ACR incident) are **not** a DB-capacity problem — they're **SharePoint DriveItem upload failures** mis-typed as DB errors.
+
+- **Symptom.** `AppExceptions` on the `buildone` role: ~85 in 45 min of `ms.outbox.upload.link_failed`, one every ~30s (matches the `drain_ms_outbox` cadence → the same row(s) retrying each tick, **not** dead-lettering). Stack originates in `integrations/ms/sharepoint/driveitem*`. This is what makes `POST /api/v1/admin/outbox/drain/ms` run long (avg ~13s, max ~47s) and blow the scheduler's 60s (`REQUEST_TIMEOUT_SECONDS`) client budget → logged as failed scheduler invocations.
+- [ ] **Investigate the failing MS upload.** Pull the full traceback / inner exception (truncated in summaries — `AppExceptions.Details[0].rawStack` has it) for the real Graph error (403 perm / 404 path / 400 name / token). Prime suspect: the known SharePoint 400-char URL / filename-length limit (see `project_invoice_sharepoint_filename_length` memory) on a specific row. Identify the stuck `[ms].[Outbox]` row(s) (`Kind` upload/link, `Status IN ('pending','failed')`), determine why they never dead-letter (5-attempt cap not tripping? `ReadyAfter` debounce resetting attempts?), then fix or dead-letter.
+- [ ] **Fix the exception-type mislabel.** `ms.outbox.upload.link_failed` is raised/wrapped as `type":"DatabaseOperationError"`. A SharePoint failure surfacing as a DB error pollutes DB-error signals and nearly mis-routed this DTU review toward a needless SQL tier bump. Re-type it as an MS/integration error so `AppExceptions` triage stays honest.
+
 ## Box outbox drain — hardening (2026-07-08)
 
 Surfaced by a `drain_box_outbox` alert during a transient Box **503 `unavailable`** window on `box.excel.upload_version`. Box recovered on its own and nothing was lost, but the incident exposed two config smells that will re-bite on the next slow-Box spell:

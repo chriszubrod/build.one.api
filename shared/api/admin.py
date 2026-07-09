@@ -32,7 +32,7 @@ VALID_QBO_ENTITIES = {
 }
 
 
-def _require_drain_secret(x_drain_secret: Optional[str] = Header(default=None, alias="X-Drain-Secret")) -> None:
+async def _require_drain_secret(x_drain_secret: Optional[str] = Header(default=None, alias="X-Drain-Secret")) -> None:
     """
     Validate the caller presented the shared drain secret. Used for machine-
     to-machine calls from the scheduler Function App. Fails closed when the
@@ -48,6 +48,17 @@ def _require_drain_secret(x_drain_secret: Optional[str] = Header(default=None, a
     after a leak was found where a regressed auth path silently fell through
     to "no actor → show everything" for user-facing requests. Drain-secret
     callers explicitly declare system intent here instead.
+
+    MUST stay `async` (2026-07-09): the `set_authz_context` below writes
+    ContextVars, and FastAPI runs *sync* dependencies in an anyio threadpool
+    worker whose context is discarded on return — so a sync version sets the
+    system-admin flag on a throwaway thread and the route handler never sees
+    it. As an async dependency it runs in the request's own coroutine context,
+    so the flag persists into the handler and is copied into the sync worker by
+    `_timed`'s `asyncio.to_thread`. Regressing this to `def` silently reverts
+    every guarded-read drain endpoint (QBO sync, reconcile) to failing with
+    `EntityNotAccessibleError` on every row. (Incident: nightly QBO bill/purchase
+    sync dead-looped + browned out the API, 2026-07-08/09.)
     """
     configured = (config.Settings().drain_secret or "").strip()
     if not configured:

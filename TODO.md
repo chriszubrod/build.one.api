@@ -2,6 +2,13 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## Box outbox drain — hardening (2026-07-08)
+
+Surfaced by a `drain_box_outbox` alert during a transient Box **503 `unavailable`** window on `box.excel.upload_version`. Box recovered on its own and nothing was lost, but the incident exposed two config smells that will re-bite on the next slow-Box spell:
+
+- [ ] **Retry budget is self-defeating for Excel uploads.** A single hung `upload_version` attempt ran ~40s before Box returned 503, which exhausted the ~40s retry budget in *one* attempt (`remaining_budget_seconds=0.0`) — so a genuinely transient blip dead-letters with effectively zero retries. Either raise the Excel-upload retry budget or cap the per-request timeout so one slow response doesn't consume the whole budget. (`integrations/box/base/retry.py::execute_with_retry`.)
+- [ ] **30s drain cadence vs ~40s lock hold → self-inflicted lock-timeout noise.** While a slow upload holds the `box_outbox_drain` applock (~40s), the next 30s timer ticks fail with `box.lock.timeout` (`integrations/box/base/locking.py`) and count as failed scheduler requests — amplifying the failure rate and tripping `buildone-sched-failed-invocations` faster than the real error count warrants. A lock-timeout means "another tick is still working," not a failure; don't count it as one (or align the drain cadence / lock-wait to the real upload duration).
+
 ## 🔴 P0 — QBO sync HTTP path runs without system-admin authz context → poison-batch retry loop (2026-07-08)
 
 Surfaced investigating two `buildone-sched-failed-invocations` Azure alerts (23:25 UTC 2026-07-08). Only `sync_qbo_bill` + `sync_qbo_purchase` timers fail; the other 17 are healthy. **Very likely the same prod incident as the zombie-bills P0 below** — the failing batch is the identical bill IDs (`19271`, `19290`–`19303`, …; QBO IDs 19259–19318), and the failure is an access-guard denial *during* the sync, which explains the header-only zombies without needing a stale-image theory.

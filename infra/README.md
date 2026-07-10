@@ -55,14 +55,28 @@ Alerting was built out 2026-06-16 (action group `buildone-ops-ag` →
   SQL tier-bump trigger (finding #1).
 - `buildone-sql-dtu-high` — `dtu_consumption_percent` avg > **80%** over 1h.
 
+**Metric alerts (scheduler Function App):**
+- `buildone-sched-no-execution` — `AlwaysReadyFunctionExecutionCount` **total <1 in 15m** (Sev1):
+  the real "timers stopped / Flex scale-to-zero" signal. **Platform metric — immune to `host.json`
+  logLevel** and free (no Log Analytics ingestion). Created 2026-07-10 to replace the retired
+  requests-based alert (below).
+
 **Log alerts (App Insights):**
 - `buildone-sched-failed-invocations` — scheduler `requests` with `success==false`,
-  **>5 in 15m** (Sev2).
-- `buildone-sched-no-invocations` — scheduler `requests` **count <1 in 15m** (Sev1):
-  catches the Flex scale-to-zero / missed-tick failure mode.
+  **>5 in 15m** (Sev2). (Failures log at Error level, so they survive `Host.Results:Warning`.)
 - `buildone-outbox-dead-letter` — API `traces` matching `outbox.row.dead_lettered`,
   **>0 in 1h** (Sev2): a qbo/ms/box write that permanently failed (incl. the
   critical "bill never reached the client Excel" case).
+- `buildone-la-ingestion-high` — Log Analytics ingestion **>1.5 GB/day** (Sev3); cost guardrail
+  added in the 2026-07-09 review.
+
+> **Retired 2026-07-10 — `buildone-sched-no-invocations`** (scheduler `requests` count <1 in 15m).
+> The 2026-07-09 cost trim set `Host.Results: Warning` in the scheduler `host.json`; that category
+> emits the *request* telemetry for **successful** executions, so at Warning it's suppressed — the
+> alert fired continuously while the scheduler ran perfectly (~840 exec/hr). **Ground-truth check
+> before ever treating this alert as an outage:** `az monitor metrics list --resource <build-one-scheduler>
+> --metric AlwaysReadyFunctionExecutionCount` — if >0, timers ARE firing and it's a telemetry issue,
+> not an outage. (Do NOT restart/republish on the requests signal alone.)
 
 **Still open (needs a code change, not just an alert):** a signal when a *critical*
 `[*].[ReconciliationIssue]` row is created — there's no queryable log emitted at

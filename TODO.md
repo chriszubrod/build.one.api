@@ -2,6 +2,27 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## ⚠️ LANDMINE — the production line is `feat/model-cascade`, NOT `master` (verified 2026-07-10)
+
+Prod (`buildone:latest`) runs **`4b13d1f`**, which lives on **`feat/model-cascade`** — verified by matching the `:latest` ACR manifest digest to the `4b13d1f` tag digest (`sha256:51b7…e557c3`). The cascade/Foundry feature (`cc3965c` "flip fleet to cascade") is an **ancestor of `4b13d1f`, i.e. already live in prod**.
+
+`master` (`b5b369b`) is a **divergent, UN-deployed** branch: it is missing **61 commits** that are live in prod (including the entire cascade/Foundry feature) and carries 16 of its own. `git merge-base --is-ancestor b5b369b feat/model-cascade` → **false** (they forked). **Running `az acr build` from `master` would silently regress prod hard.** Deploy the API only from `feat/model-cascade` (or a branch cut off it). Reconciling `master` ↔ `feat/model-cascade` is a separate cleanup unit — until then, treat `master` as poison for deploys.
+
+## Auth cross-site "hourly re-login" fix → Path B (custom API domain `api.bld-one.com`) — IN PROGRESS, deploy HELD (2026-07-10)
+
+Fixes the forced-re-login-~hourly bug (web `TODO.md` Phase 0.5). **Path A (SameSite=Lax→None) was built then REVERTED**: Codex Pass-1 confirmed a **P1** — even with cookies transmitting cross-site, the CSRF double-submit can't be satisfied because the web (`app.bld-one.com`) can't read the host-only `token.csrf` cookie set on the API host to echo it as `X-CSRF-Token` → `_require_csrf` 403s. Path A only trades a 401 for a 403. Pivoted to **Path B** (same-site via shared eTLD+1 `bld-one.com`).
+
+**Done + verified:**
+- DNS (Squarespace): `api` CNAME → `buildone-…azurewebsites.net` + `asuid.api` TXT (ownership proof) — both resolve.
+- `api.bld-one.com` custom hostname bound to the `buildone` App Service + free managed TLS cert provisioned & bound (SniEnabled, thumbprint `0A44A6FB79C6336A58D861D382CCFB7AF3765E79`); `https://api.bld-one.com/openapi.json` serves 200 (604 paths).
+- API code: commit **`1294d1f`** on `feat/model-cascade` (**NOT pushed/deployed**) scopes ONLY the non-HttpOnly `token.csrf` cookie to `Domain=bld-one.com` (prod-only via the secure gate; dev stays host-only) so `app.bld-one.com` can read it for the double-submit; access/refresh stay HttpOnly host-only; SameSite stays `lax`. Codex Pass-1 **PASS**.
+
+**Remaining (all Gate 2, held per owner 2026-07-10):**
+1. Deploy API from `feat/model-cascade`: push → `az acr build --registry buildone --image buildone:latest --image buildone:<sha> --file Dockerfile .` → `az webapp restart -n buildone -g buildone_group` → verify `:latest` digest moved.
+2. Flip web `VITE_API_BASE_URL` → `https://api.bld-one.com` (scope around the 2 dirty WIP files on `feat/buildone-orchestrator`), commit/push, `npm run build`, SWA deploy.
+3. Verify on `app.bld-one.com`: refresh survives >60 min, logout clears; confirm prod `CORS_ALLOW_ORIGINS` includes `https://app.bld-one.com`.
+- **Order matters:** the API deploy MUST precede the web flip (web-first against the old code → 403 on refresh).
+
 ## 🟠 OHR2-CHAPEL-09 follow-ups (2026-07-09) — code/guard items from the $925.54 double-bill debrief
 
 Playbook side already shipped (KI-41..44, Step 3a pre-delete checklist, Delta-re-run removal checklist, Phase-1 duplicate-pair + page-audit screens). These are the code/guard halves, in priority order:

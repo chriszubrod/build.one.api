@@ -20,7 +20,7 @@ vendor_specialist = Agent(
         "delete_vendor",
     ),
     model="claude-sonnet-4-6",
-    provider="anthropic",
+    provider="cascade",
     credentials_key="vendor_agent",
     budget=BudgetPolicy(max_turns=12, max_tokens=150_000),
     description="Specialist for Vendors — search-only reads + approval-gated CRUD (soft delete).",

@@ -380,19 +380,16 @@ class MsOutboxWorker:
                 content_type=content_type,
             )
             self._raise_if_external_error(row, result)
-            uploaded_item = result.get("item") if isinstance(result, dict) else None
-            self._link_attachment_if_requested(payload, uploaded_item)
             return
 
         # Large file: upload-session with checkpointed chunks.
-        uploaded_item = self._upload_large_file_with_resume(
+        self._upload_large_file_with_resume(
             row=row,
             payload=payload,
             content=content,
             total_size=total_size,
             content_type=content_type,
         )
-        self._link_attachment_if_requested(payload, uploaded_item)
 
     def _upload_large_file_with_resume(
         self,
@@ -774,48 +771,6 @@ class MsOutboxWorker:
         if 500 <= status_code < 600:
             raise MsServerError(message, http_status=status_code)
         raise MsUnexpectedError(message, http_status=status_code)
-
-    @staticmethod
-    def _link_attachment_if_requested(
-        payload: Dict[str, Any],
-        uploaded_item: Optional[Dict[str, Any]],
-    ) -> None:
-        """
-        If the payload specifies `attachment_id`, link the uploaded DriveItem
-        back to the Attachment record. Failure is non-fatal — the upload has
-        succeeded and we don't want to dead-letter over a linking issue.
-        """
-        attachment_id = payload.get("attachment_id")
-        if not attachment_id or not uploaded_item:
-            return
-        ms_driveitem_id = uploaded_item.get("item_id") or uploaded_item.get("id")
-        if not ms_driveitem_id:
-            logger.warning(
-                "ms.outbox.upload.link_skipped_no_item_id",
-                extra={
-                    "event_name": "ms.outbox.upload.link_skipped_no_item_id",
-                    "attachment_id": attachment_id,
-                },
-            )
-            return
-        try:
-            from integrations.ms.sharepoint.driveitem.connector.attachment.business.service import (
-                DriveItemAttachmentConnector,
-            )
-
-            DriveItemAttachmentConnector().link_driveitem_to_attachment(
-                attachment_id=attachment_id,
-                ms_driveitem_id=ms_driveitem_id,
-            )
-        except Exception:
-            logger.exception(
-                "ms.outbox.upload.link_failed",
-                extra={
-                    "event_name": "ms.outbox.upload.link_failed",
-                    "attachment_id": attachment_id,
-                    "ms_driveitem_id": ms_driveitem_id,
-                },
-            )
 
     @staticmethod
     def _fetch_blob(blob_path: str) -> bytes:

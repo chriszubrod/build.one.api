@@ -271,6 +271,76 @@ class BoxHttpClient:
             operation_name=operation_name,
         )
 
+    def create_folder(
+        self,
+        parent_folder_id: Union[str, int],
+        name: str,
+        *,
+        timeout_tier: str = "A",
+        operation_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a subfolder under `parent_folder_id` via `POST /folders`.
+
+        A name collision raises BoxConflictError with the existing folder id
+        under `context_info.conflicts` — same shape as the file-upload 409
+        path. Callers doing idempotent read-or-create should catch that and
+        extract the id (see BoxProjectFolderService.read_or_create_child_folder).
+        """
+        return self.post(
+            "folders",
+            json_body={"name": name, "parent": {"id": str(parent_folder_id)}},
+            timeout_tier=timeout_tier,
+            operation_name=operation_name or "box.folder.create",
+        )
+
+    def find_folder_child_by_name(
+        self,
+        parent_folder_id: Union[str, int],
+        name: str,
+        *,
+        timeout_tier: str = "A",
+        operation_name: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Return `{"id","name","type"}` for a child folder of `parent_folder_id`
+        whose name matches `name` exactly (case-sensitive — Box treats folder
+        names as case-sensitive on the API even when the UI presents them
+        case-insensitively). Returns None if no such folder exists.
+
+        Uses `GET /folders/{id}/items` with `fields=id,name,type`. Callers doing
+        read-or-create should prefer this over blind `create_folder` + 409 to
+        keep the log stream clean of expected-conflict noise.
+        """
+        # Box's `usemarker=false` (default) pagination is `offset`-based.
+        # limit=1000 is the API max — WVA-scale projects have at most a few
+        # dozen invoice subfolders, so one page is enough today; we still
+        # loop defensively in case a project ever grows past 1000 children.
+        offset = 0
+        page_size = 1000
+        while True:
+            result = self.get(
+                f"folders/{parent_folder_id}/items",
+                params={
+                    "fields": "id,name,type",
+                    "limit": page_size,
+                    "offset": offset,
+                },
+                timeout_tier=timeout_tier,
+                operation_name=operation_name or "box.folder.list_children",
+            )
+            entries = result.get("entries") or []
+            for entry in entries:
+                if (
+                    entry.get("type") == "folder"
+                    and entry.get("name") == name
+                ):
+                    return entry
+            total = result.get("total_count", 0)
+            offset += len(entries)
+            if not entries or offset >= total:
+                return None
+
     def upload_file(
         self,
         folder_id: Union[str, int],

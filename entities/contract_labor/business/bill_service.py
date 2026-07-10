@@ -310,30 +310,53 @@ class ContractLaborBillService:
                 if not billing_period:
                     billing_period = datetime.now().strftime("%Y-%m-%d")
 
-                # Bill.TotalAmount is A/P — what we owe the vendor (cost). The QBO
-                # push sums line-item Amount (cost) into the QBO bill total, so the
-                # header must match Amount, not the marked-up Price. Price is what
-                # we later charge the client via Invoice — it never touches QBO A/P.
-                # ContractLaborLineItem has no persisted `amount` column —
-                # it's Hours × Rate (pre-markup); Price is the same × (1+Markup).
-                # Compute from the primitives instead of assuming a field.
-                total_amount = sum(
+                # Two totals — the Bill entity and the PDF want DIFFERENT numbers:
+                #
+                #   Bill.TotalAmount = A/P (what we owe the vendor, i.e. COST).
+                #     QBO sums line-item Amount (cost) as the bill total, so the
+                #     header must match cost, never the marked-up Price.
+                #     Price flows into Invoice (what we bill the client) later —
+                #     it never touches QBO A/P.
+                #     `ContractLaborLineItem` has no persisted `amount` column;
+                #     Amount = Hours × Rate (pre-markup). Compute from primitives.
+                #
+                #   PDF Balance Due = Price (marked-up, client-facing). The PDF
+                #     is generated once at bill creation and lives on Box as the
+                #     draw-request document; per Chris' 2026-07-02 call, the PDF
+                #     reflects Price throughout (per-line PRICE column already
+                #     does — Balance Due row must match). Older code reused a
+                #     single `total_amount` for both, producing PDFs where the
+                #     Balance Due (cost) didn't match the PRICE column sum.
+                # Bill.TotalAmount (A/P) = Σ Hours×Rate over ALL lines,
+                # billable AND non-billable — we pay the contractor for every
+                # logged hour. Non-billable hours are cost we absorb rather
+                # than pass to the client; they still hit vendor A/P.
+                total_amount_cost = sum(
                     (
                         Decimal(str(item["line_item"].hours or 0))
                         * Decimal(str(item["line_item"].rate or 0))
                     )
                     for item in items
+                )
+                # PDF Balance Due (client-facing draw request) = Σ Price of
+                # BILLABLE lines only. Non-billable lines render at $0.00 on
+                # the PDF (they aren't billed to the client) but do count in
+                # the A/P total above.
+                total_amount_pdf = sum(
+                    Decimal(str(item["line_item"].price or 0))
+                    for item in items
                     if item["line_item"].is_billable is not False
                 )
 
-                # No billable dollars in this (vendor, project, period) group
+                # Zero total COST in this (vendor, project, period) group
                 # → don't spawn an empty $0 Bill (with its orphan Attachment
-                # + PDF). Common when a CL slice for this period is a single
-                # non-billable data-only line (e.g. a zero-hour placeholder).
-                if total_amount == 0:
+                # + PDF). This now fires only for a genuine 0-hour/0-rate
+                # placeholder — a purely non-billable slice with real hours
+                # HAS cost (A/P) and correctly produces a NotBillable bill.
+                if total_amount_cost == 0:
                     result["errors"].append(
                         f"Skipped empty bill for {vendor.name} · "
-                        f"{project_abbr} · {billing_period} — no billable amount."
+                        f"{project_abbr} · {billing_period} — zero cost (no hours)."
                     )
                     continue
 
@@ -361,7 +384,7 @@ class ContractLaborBillService:
                         bill_date=billing_period,
                         due_date=due_date,
                         bill_number=invoice_number,
-                        total_amount=total_amount,
+                        total_amount=total_amount_cost,
                         memo=memo,
                         is_draft=True,
                         require_attachment=False,
@@ -371,7 +394,7 @@ class ContractLaborBillService:
                     result["bills_updated"] += 1
                     bill.bill_date = billing_period
                     bill.due_date = due_date
-                    bill.total_amount = total_amount
+                    bill.total_amount = total_amount_cost
                     bill.memo = memo
                     bill = self.bill_service.repo.update_by_id(bill)
                     if not bill:
@@ -409,42 +432,49 @@ class ContractLaborBillService:
                 entry_id_to_first_bli_id = {}
                 created_blis_this_project = []
                 line_items_created_this_project = 0
-                # Group by SubCostCode so we can consolidate into one BillLineItem per SubCostCode
+                # Group by (SubCostCode, is_billable) so billable and
+                # non-billable lines consolidate SEPARATELY — they carry a
+                # different QBO BillableStatus and only billable lines get the
+                # client markup. Both get a BillLineItem (we owe the vendor
+                # for non-billable hours too); non-billable ones push to QBO
+                # as NotBillable with no markup.
                 by_scc = {}
                 for item in items:
                     li = item["line_item"]
-                    scc_id = li.sub_cost_code_id
-                    key = (scc_id,)  # tuple so None is valid key
+                    billable_flag = li.is_billable is not False
+                    key = (li.sub_cost_code_id, billable_flag)  # tuple; None scc is valid
                     if key not in by_scc:
                         by_scc[key] = []
                     by_scc[key].append(item)
 
                 try:
-                    for (scc_id,), group in by_scc.items():
+                    for (scc_id, billable_flag), group in by_scc.items():
                         first_item = group[0]
                         li_first = first_item["line_item"]
                         scc = first_item["scc"]
-                        scc_amount = Decimal("0")
-                        scc_price = Decimal("0")
-                        any_billable = False
+                        scc_cost = Decimal("0")   # Σ Hours×Rate — A/P we owe the vendor
+                        scc_price = Decimal("0")  # Σ client Price (marked-up); == cost when non-billable
                         for item in group:
                             li = item["line_item"]
-                            if li.is_billable is not False:
-                                markup_val = Decimal(str(li.markup or 0))
-                                price = Decimal(str(li.price or 0))
-                                amount = price / (Decimal("1") + markup_val) if markup_val else price
-                                scc_amount += amount
-                                scc_price += price
-                                any_billable = True
+                            cost = Decimal(str(li.hours or 0)) * Decimal(str(li.rate or 0))
+                            scc_cost += cost
+                            if billable_flag:
+                                scc_price += Decimal(str(li.price or 0))
+                            else:
+                                # Non-billable: no client markup — the line's
+                                # "price" is irrelevant (never invoiced to the
+                                # client), so price == cost on the BLI.
+                                scc_price += cost
 
                         description = (scc.description if scc else None) or li_first.description or ""
 
-                        # Skip creating a BillLineItem if all items in this group are non-billable
-                        if not any_billable:
+                        # A group with zero cost (0-hour / 0-rate placeholder)
+                        # creates nothing — nothing owed, nothing to bill.
+                        if scc_cost == 0:
                             continue
 
-                        if scc_amount:
-                            effective_markup = (scc_price - scc_amount) / scc_amount
+                        if billable_flag and scc_cost:
+                            effective_markup = (scc_price - scc_cost) / scc_cost
                         else:
                             effective_markup = Decimal("0")
 
@@ -454,9 +484,9 @@ class ContractLaborBillService:
                             project_public_id=project.public_id if project else None,
                             description=description,
                             quantity=1,
-                            rate=scc_amount,
-                            amount=scc_amount,
-                            is_billable=any_billable,
+                            rate=scc_cost,
+                            amount=scc_cost,
+                            is_billable=billable_flag,
                             is_billed=False,
                             markup=effective_markup,
                             price=scc_price,
@@ -524,7 +554,7 @@ class ContractLaborBillService:
                     invoice_number=invoice_number,
                     bill_date=billing_period,
                     due_date=due_date,
-                    total_amount=float(total_amount),
+                    total_amount=float(total_amount_pdf),
                     line_items=items,
                 )
                 try:

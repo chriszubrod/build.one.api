@@ -199,6 +199,75 @@ def _sanitize_workbook_bytes(file_bytes: bytes) -> bytes:
         return file_bytes
 
 
+def _strip_autofilters(file_bytes: bytes) -> bytes:
+    """
+    Return `file_bytes` with every `<autoFilter>` element removed from the
+    worksheet parts. openpyxl raises on certain human-applied autofilters it
+    can't parse ("Value must be either numerical or a string containing a
+    wildcard"), refusing the whole workbook; Excel / Excel-for-web tolerate
+    them. The filter is a view convenience, not data — and Excel re-offers
+    filtering on the columns regardless — so dropping it is safe. Best-effort:
+    any failure (not a zip / read error) returns the original bytes unchanged;
+    a workbook with no autofilters is returned byte-identical.
+    """
+    import re
+    import zipfile
+
+    try:
+        af = re.compile(rb"<autoFilter\b.*?</autoFilter>", re.DOTALL)
+        af_selfclose = re.compile(rb"<autoFilter\b[^>]*/>")
+        with zipfile.ZipFile(BytesIO(file_bytes)) as zin:
+            members = zin.infolist()
+            payloads: Dict[str, bytes] = {}
+            changed = False
+            for item in members:
+                data = zin.read(item.filename)
+                if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
+                    stripped = af_selfclose.sub(b"", af.sub(b"", data))
+                    if stripped != data:
+                        changed = True
+                        data = stripped
+                payloads[item.filename] = data
+            if not changed:
+                return file_bytes
+            out = BytesIO()
+            with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+                for item in members:
+                    zout.writestr(item, payloads[item.filename])
+            return out.getvalue()
+    except Exception as error:
+        logger.warning(
+            "box.excel.strip_autofilters_skipped",
+            extra={"event_name": "box.excel.strip_autofilters_skipped", "error_class": type(error).__name__},
+        )
+        return file_bytes
+
+
+def _load_workbook_resilient(file_bytes: bytes, **load_kwargs):
+    """
+    `load_workbook` that survives openpyxl-hostile autofilters. A direct load is
+    tried first so cleanly-loading workbooks keep their autofilters untouched;
+    only if that raises are the autofilters stripped and the load retried. If
+    there were no autofilters to strip, the original error propagates.
+    """
+    from openpyxl import load_workbook
+
+    try:
+        return load_workbook(BytesIO(file_bytes), **load_kwargs)
+    except Exception as error:
+        stripped = _strip_autofilters(file_bytes)
+        if stripped == file_bytes:
+            raise
+        logger.info(
+            "box.excel.autofilter_stripped_for_load",
+            extra={
+                "event_name": "box.excel.autofilter_stripped_for_load",
+                "error_class": type(error).__name__,
+            },
+        )
+        return load_workbook(BytesIO(stripped), **load_kwargs)
+
+
 def _cell_value_for_write(value: Any) -> Any:
     """
     Coerce a row element into something openpyxl can write without precision
@@ -357,13 +426,12 @@ def apply_rows_to_details(
     Returns {"bytes": <bytes>|None, "applied": int, "skipped": int}.
     bytes is None iff applied == 0 (all keys already present).
     """
-    from openpyxl import load_workbook
-
     # Real workbooks carry openpyxl-hostile cruft (error-valued print-title /
     # defined names) that Excel tolerates but openpyxl refuses to load. Strip it
-    # first; a clean workbook is returned byte-identical (no-op).
+    # first; a clean workbook is returned byte-identical (no-op). Unparseable
+    # human-applied autofilters are stripped on-demand by the resilient loader.
     file_bytes = _sanitize_workbook_bytes(file_bytes)
-    wb = load_workbook(BytesIO(file_bytes), data_only=False)
+    wb = _load_workbook_resilient(file_bytes, data_only=False)
 
     # fullCalcOnLoad: the builder must use whatever attribute the installed
     # openpyxl exposes. 3.1.x exposes wb.calculation.fullCalcOnLoad
@@ -509,10 +577,8 @@ def stamp_columns_by_key(
     if not updates:
         return {"bytes": None, "applied": 0, "skipped": 0, "matched": 0}
 
-    from openpyxl import load_workbook
-
     file_bytes = _sanitize_workbook_bytes(file_bytes)
-    wb = load_workbook(BytesIO(file_bytes), data_only=False)
+    wb = _load_workbook_resilient(file_bytes, data_only=False)
 
     try:
         wb.calculation.fullCalcOnLoad = True

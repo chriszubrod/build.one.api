@@ -7,7 +7,9 @@ import time
 from typing import Any, Optional
 
 # Third-party Imports
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, status
+from functools import partial
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, status
 
 # Local Imports
 import config
@@ -32,7 +34,7 @@ VALID_QBO_ENTITIES = {
 }
 
 
-def _require_drain_secret(x_drain_secret: Optional[str] = Header(default=None, alias="X-Drain-Secret")) -> None:
+async def _require_drain_secret(x_drain_secret: Optional[str] = Header(default=None, alias="X-Drain-Secret")) -> None:
     """
     Validate the caller presented the shared drain secret. Used for machine-
     to-machine calls from the scheduler Function App. Fails closed when the
@@ -48,6 +50,17 @@ def _require_drain_secret(x_drain_secret: Optional[str] = Header(default=None, a
     after a leak was found where a regressed auth path silently fell through
     to "no actor → show everything" for user-facing requests. Drain-secret
     callers explicitly declare system intent here instead.
+
+    MUST stay `async` (2026-07-09): the `set_authz_context` below writes
+    ContextVars, and FastAPI runs *sync* dependencies in an anyio threadpool
+    worker whose context is discarded on return — so a sync version sets the
+    system-admin flag on a throwaway thread and the route handler never sees
+    it. As an async dependency it runs in the request's own coroutine context,
+    so the flag persists into the handler and is copied into the sync worker by
+    `_timed`'s `asyncio.to_thread`. Regressing this to `def` silently reverts
+    every guarded-read drain endpoint (QBO sync, reconcile) to failing with
+    `EntityNotAccessibleError` on every row. (Incident: nightly QBO bill/purchase
+    sync dead-looped + browned out the API, 2026-07-08/09.)
     """
     configured = (config.Settings().drain_secret or "").strip()
     if not configured:
@@ -267,6 +280,33 @@ async def time_tracking_auto_submit_prior_day_router(work_date: Optional[str] = 
     return await _timed("time_autosubmit.prior_day", _run)
 
 
+@router.post("/time-tracking/auto-submit-stale-drafts", dependencies=[Depends(_require_drain_secret)])
+async def time_tracking_auto_submit_stale_drafts_router():
+    """
+    Deterministic sweep of EVERY prior-day draft TimeEntry (NO LLM). Runs
+    the same validate-completeness / submit-clean / flag-rest pipeline as
+    the single-day sweep, but the top query is "all drafts with WorkDate <
+    today-in-business-tz" instead of "drafts for yesterday only".
+
+    Fixes the hole in the prior-day sweep: entries created AFTER their
+    day's sweep window (offline sync, next-day iOS submit, late manual
+    entry) previously sat as draft forever. Now each daily run catches
+    everything that has piled up.
+
+    Runs as system admin via the drain-secret guard. Honors
+    TIME_AUTOSUBMIT_MODE (off = no-op | dry_run = report only | on =
+    execute). Idempotent across runs — after the first successful sweep,
+    subsequent runs only see whatever new stragglers arrived since.
+
+    Called once daily by the scheduler's `auto_submit_stale_drafts` timer.
+    """
+    def _run() -> dict[str, Any]:
+        from entities.time_entry.business.auto_submit_service import TimeEntryAutoSubmitService
+        return TimeEntryAutoSubmitService().run_for_stale_drafts()
+
+    return await _timed("time_autosubmit.stale_drafts", _run)
+
+
 # --- QBO pulls ------------------------------------------------------------- #
 
 
@@ -305,8 +345,25 @@ def _qbo_sync_fn(entity: str):
     raise HTTPException(status_code=400, detail=f"Unknown QBO entity: {entity}")
 
 
+# Entities whose sync function accepts a `sync_attachments` kwarg. Others pull
+# no per-record attachments, so the `attachments` query param is a no-op there.
+_QBO_ENTITIES_WITH_ATTACHMENTS = {"bill", "vendorcredit"}
+
+
 @router.post("/sync/qbo/{entity}", dependencies=[Depends(_require_drain_secret)])
-async def sync_qbo_router(entity: str = Path(...)):
+async def sync_qbo_router(
+    entity: str = Path(...),
+    attachments: bool = Query(
+        True,
+        description=(
+            "For bill/vendorcredit only: when false, skip the per-record QBO "
+            "Attachable API pull. Use to clear a slow/stuck backlog quickly — an "
+            "attachment-free pass completes well under the 240s gateway timeout and "
+            "advances the watermark. Consistent with the 'don't pull QBO attachables "
+            "for onboarded bills until invoiced' rule. No-op for other entities."
+        ),
+    ),
+):
     """
     Run a single QBO sync script (pull from QBO → local DB). Entities:
     bill, invoice, purchase, vendorcredit, vendor, customer, item, account,
@@ -318,6 +375,8 @@ async def sync_qbo_router(entity: str = Path(...)):
             detail=f"Invalid entity '{entity}'. Valid: {', '.join(sorted(VALID_QBO_ENTITIES))}",
         )
     sync_fn = _qbo_sync_fn(entity)
+    if not attachments and entity in _QBO_ENTITIES_WITH_ATTACHMENTS:
+        sync_fn = partial(sync_fn, sync_attachments=False)
     return await _timed(f"sync.qbo.{entity}", sync_fn)
 
 
@@ -333,7 +392,9 @@ async def reconcile_qbo_router():
         auth = QboAuthService().ensure_valid_token()
         if not auth or not auth.realm_id:
             return {"skipped": True, "reason": "no valid QBO auth"}
-        ReconciliationService().reconcile_bills(realm_id=auth.realm_id)
+        service = ReconciliationService()
+        service.reconcile_bills(realm_id=auth.realm_id)
+        service.reconcile_invoice_draws(realm_id=auth.realm_id)
         return {"reconciled": True, "realm_id": auth.realm_id}
 
     return await _timed("reconcile.qbo", _run)

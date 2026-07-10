@@ -132,6 +132,10 @@ async def run(
     ]
     total_usage = Usage()
     turn = 0
+    # Actual model used by the latest turn. Under the cascade transport this is
+    # the rung that won (may be cheaper than the agent's declared `model`); the
+    # transport reveals it via its turn_start event.
+    turn_model = model
 
     while True:
         turn += 1
@@ -139,11 +143,14 @@ async def run(
             yield Done(
                 reason="max_turns",
                 usage=total_usage,
-                cost_usd=_cost(provider, model, total_usage),
+                cost_usd=_cost(provider, turn_model, total_usage),
             )
             return
 
-        yield TurnStart(turn=turn, model=model)
+        # TurnStart is announced once the transport reveals the model actually
+        # used this turn (deferred so the cascade transport's chosen rung is
+        # reported, not the agent's declared placeholder).
+        turn_announced = False
 
         assistant_blocks: list[ContentBlock] = []
         text_buf = ""
@@ -172,6 +179,17 @@ async def run(
             tools=tool_schemas or None,
         ):
             t = ev.type
+            if t == "turn_start":
+                # The rung the transport actually used this turn.
+                turn_model = ev.model
+                if not turn_announced:
+                    yield TurnStart(turn=turn, model=turn_model)
+                    turn_announced = True
+                continue
+            # Guarantee a TurnStart precedes any text / tool / done / error event.
+            if not turn_announced:
+                yield TurnStart(turn=turn, model=turn_model)
+                turn_announced = True
             if t == "text_delta":
                 text_buf += ev.text
                 yield TextDelta(text=ev.text)
@@ -198,13 +216,18 @@ async def run(
                 yield LoopError(message=ev.message, code=ev.code)
                 errored = True
                 break
-            # turn_start from transport is swallowed; loop emits its own TurnStart
+
+        # Degenerate case: transport yielded no events at all — still announce
+        # the turn so downstream turn-row creation stays consistent.
+        if not turn_announced:
+            yield TurnStart(turn=turn, model=turn_model)
+            turn_announced = True
 
         if errored:
             yield Done(
                 reason="error",
                 usage=total_usage,
-                cost_usd=_cost(provider, model, total_usage),
+                cost_usd=_cost(provider, turn_model, total_usage),
             )
             return
 
@@ -212,7 +235,7 @@ async def run(
             turn=turn,
             usage=turn_usage,
             stop_reason=stop_reason,
-            cost_usd=_cost(provider, model, turn_usage),
+            cost_usd=_cost(provider, turn_model, turn_usage),
         )
 
         total_usage = Usage(
@@ -235,7 +258,7 @@ async def run(
             yield Done(
                 reason="max_tokens",
                 usage=total_usage,
-                cost_usd=_cost(provider, model, total_usage),
+                cost_usd=_cost(provider, turn_model, total_usage),
             )
             return
 
@@ -243,7 +266,7 @@ async def run(
             yield Done(
                 reason=stop_reason or "end_turn",
                 usage=total_usage,
-                cost_usd=_cost(provider, model, total_usage),
+                cost_usd=_cost(provider, turn_model, total_usage),
             )
             return
 

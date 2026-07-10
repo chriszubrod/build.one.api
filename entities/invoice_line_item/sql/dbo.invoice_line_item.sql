@@ -12,6 +12,7 @@ CREATE TABLE [dbo].[InvoiceLineItem]
     [BillLineItemId] BIGINT NULL,
     [ExpenseLineItemId] BIGINT NULL,
     [BillCreditLineItemId] BIGINT NULL,
+    [EmployeeLaborLineItemId] BIGINT NULL,
     [Description] NVARCHAR(MAX) NULL,
     [Amount] DECIMAL(18,2) NULL,
     [Markup] DECIMAL(18,4) NULL,
@@ -86,6 +87,27 @@ END
 GO
 
 
+-- EmployeeLabor source column (2026-05-27 migration, ported so base re-runs are self-sufficient)
+IF COL_LENGTH('dbo.[InvoiceLineItem]', 'EmployeeLaborLineItemId') IS NULL
+    ALTER TABLE [dbo].[InvoiceLineItem] ADD [EmployeeLaborLineItemId] BIGINT NULL;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_InvoiceLineItem_EmployeeLaborLineItem')
+   AND OBJECT_ID('dbo.[EmployeeLaborLineItem]', 'U') IS NOT NULL
+BEGIN
+    ALTER TABLE [dbo].[InvoiceLineItem]
+    ADD CONSTRAINT [FK_InvoiceLineItem_EmployeeLaborLineItem]
+        FOREIGN KEY ([EmployeeLaborLineItemId]) REFERENCES [dbo].[EmployeeLaborLineItem]([Id]);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_InvoiceLineItem_EmployeeLaborLineItemId' AND object_id = OBJECT_ID('dbo.InvoiceLineItem'))
+BEGIN
+    CREATE INDEX [IX_InvoiceLineItem_EmployeeLaborLineItemId]
+        ON [dbo].[InvoiceLineItem] ([EmployeeLaborLineItemId]);
+END
+GO
+
 CREATE OR ALTER PROCEDURE CreateInvoiceLineItem
 (
     @InvoiceId BIGINT,
@@ -93,6 +115,7 @@ CREATE OR ALTER PROCEDURE CreateInvoiceLineItem
     @BillLineItemId BIGINT NULL,
     @ExpenseLineItemId BIGINT NULL,
     @BillCreditLineItemId BIGINT NULL,
+    @EmployeeLaborLineItemId BIGINT = NULL,
     @SubCostCodeId BIGINT NULL,
     @Description NVARCHAR(MAX) NULL,
     @Quantity DECIMAL(18,4) NULL,
@@ -100,7 +123,8 @@ CREATE OR ALTER PROCEDURE CreateInvoiceLineItem
     @Amount DECIMAL(18,2) NULL,
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
-    @IsDraft BIT = 1
+    @IsDraft BIT = 1,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -108,27 +132,24 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[InvoiceLineItem] ([CreatedDatetime], [ModifiedDatetime], [InvoiceId], [SourceType], [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft])
+    INSERT INTO dbo.[InvoiceLineItem]
+        ([CreatedDatetime], [ModifiedDatetime], [InvoiceId], [SourceType],
+         [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
+         [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft],
+         [CreatedByUserId])
     OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
+        INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[InvoiceId],
-        INSERTED.[SourceType],
-        INSERTED.[BillLineItemId],
-        INSERTED.[ExpenseLineItemId],
-        INSERTED.[BillCreditLineItemId],
-        INSERTED.[SubCostCodeId],
-        INSERTED.[Description],
-        INSERTED.[Quantity],
-        INSERTED.[Rate],
-        INSERTED.[Amount],
-        INSERTED.[Markup],
-        INSERTED.[Price],
-        INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @InvoiceId, @SourceType, @BillLineItemId, @ExpenseLineItemId, @BillCreditLineItemId, @SubCostCodeId, @Description, @Quantity, @Rate, @Amount, @Markup, @Price, @IsDraft);
+        INSERTED.[InvoiceId], INSERTED.[SourceType],
+        INSERTED.[BillLineItemId], INSERTED.[ExpenseLineItemId], INSERTED.[BillCreditLineItemId],
+        INSERTED.[EmployeeLaborLineItemId],
+        INSERTED.[SubCostCodeId], INSERTED.[Description], INSERTED.[Quantity], INSERTED.[Rate],
+        INSERTED.[Amount], INSERTED.[Markup], INSERTED.[Price], INSERTED.[IsDraft]
+    VALUES (@Now, @Now, @InvoiceId, @SourceType,
+            @BillLineItemId, @ExpenseLineItemId, @BillCreditLineItemId, @EmployeeLaborLineItemId,
+            @SubCostCodeId, @Description, @Quantity, @Rate, @Amount, @Markup, @Price, @IsDraft,
+            COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;
@@ -139,16 +160,15 @@ CREATE OR ALTER PROCEDURE ReadInvoiceLineItems
 AS
 BEGIN
     BEGIN TRANSACTION;
-
     SELECT
         [Id], [PublicId], [RowVersion],
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [InvoiceId], [SourceType], [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId],
+        [InvoiceId], [SourceType],
+        [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
         [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft]
     FROM dbo.[InvoiceLineItem]
     ORDER BY [CreatedDatetime] DESC;
-
     COMMIT TRANSACTION;
 END;
 GO
@@ -161,16 +181,15 @@ CREATE OR ALTER PROCEDURE ReadInvoiceLineItemById
 AS
 BEGIN
     BEGIN TRANSACTION;
-
     SELECT
         [Id], [PublicId], [RowVersion],
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [InvoiceId], [SourceType], [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId],
+        [InvoiceId], [SourceType],
+        [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
         [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft]
     FROM dbo.[InvoiceLineItem]
     WHERE [Id] = @Id;
-
     COMMIT TRANSACTION;
 END;
 GO
@@ -183,16 +202,15 @@ CREATE OR ALTER PROCEDURE ReadInvoiceLineItemByPublicId
 AS
 BEGIN
     BEGIN TRANSACTION;
-
     SELECT
         [Id], [PublicId], [RowVersion],
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [InvoiceId], [SourceType], [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId],
+        [InvoiceId], [SourceType],
+        [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
         [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft]
     FROM dbo.[InvoiceLineItem]
     WHERE [PublicId] = @PublicId;
-
     COMMIT TRANSACTION;
 END;
 GO
@@ -205,17 +223,16 @@ CREATE OR ALTER PROCEDURE ReadInvoiceLineItemsByInvoiceId
 AS
 BEGIN
     BEGIN TRANSACTION;
-
     SELECT
         [Id], [PublicId], [RowVersion],
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [InvoiceId], [SourceType], [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId],
+        [InvoiceId], [SourceType],
+        [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
         [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft]
     FROM dbo.[InvoiceLineItem]
     WHERE [InvoiceId] = @InvoiceId
-    ORDER BY [CreatedDatetime] DESC;
-
+    ORDER BY [CreatedDatetime] ASC;
     COMMIT TRANSACTION;
 END;
 GO
@@ -230,6 +247,7 @@ CREATE OR ALTER PROCEDURE UpdateInvoiceLineItemById
     @BillLineItemId BIGINT NULL,
     @ExpenseLineItemId BIGINT NULL,
     @BillCreditLineItemId BIGINT NULL,
+    @EmployeeLaborLineItemId BIGINT = NULL,
     @SubCostCodeId BIGINT NULL,
     @Description NVARCHAR(MAX) NULL,
     @Quantity DECIMAL(18,4) NULL,
@@ -245,14 +263,18 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
+    -- Source FKs use CASE WHEN preserve-on-NULL so partial updates don't
+    -- orphan the link to the source line. Same pattern as existing source
+    -- columns.
     UPDATE dbo.[InvoiceLineItem]
     SET
         [ModifiedDatetime] = @Now,
         [InvoiceId] = @InvoiceId,
         [SourceType] = @SourceType,
-        [BillLineItemId] = CASE WHEN @BillLineItemId IS NULL THEN [BillLineItemId] ELSE @BillLineItemId END,
-        [ExpenseLineItemId] = CASE WHEN @ExpenseLineItemId IS NULL THEN [ExpenseLineItemId] ELSE @ExpenseLineItemId END,
-        [BillCreditLineItemId] = CASE WHEN @BillCreditLineItemId IS NULL THEN [BillCreditLineItemId] ELSE @BillCreditLineItemId END,
+        [BillLineItemId]          = CASE WHEN @BillLineItemId          IS NULL THEN [BillLineItemId]          ELSE @BillLineItemId          END,
+        [ExpenseLineItemId]       = CASE WHEN @ExpenseLineItemId       IS NULL THEN [ExpenseLineItemId]       ELSE @ExpenseLineItemId       END,
+        [BillCreditLineItemId]    = CASE WHEN @BillCreditLineItemId    IS NULL THEN [BillCreditLineItemId]    ELSE @BillCreditLineItemId    END,
+        [EmployeeLaborLineItemId] = CASE WHEN @EmployeeLaborLineItemId IS NULL THEN [EmployeeLaborLineItemId] ELSE @EmployeeLaborLineItemId END,
         [SubCostCodeId] = @SubCostCodeId,
         [Description] = @Description,
         [Quantity] = @Quantity,
@@ -267,6 +289,7 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[InvoiceId], INSERTED.[SourceType],
         INSERTED.[BillLineItemId], INSERTED.[ExpenseLineItemId], INSERTED.[BillCreditLineItemId],
+        INSERTED.[EmployeeLaborLineItemId],
         INSERTED.[SubCostCodeId], INSERTED.[Description], INSERTED.[Quantity], INSERTED.[Rate],
         INSERTED.[Amount], INSERTED.[Markup], INSERTED.[Price], INSERTED.[IsDraft]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;

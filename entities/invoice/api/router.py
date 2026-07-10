@@ -13,6 +13,7 @@ from decimal import Decimal
 from entities.invoice.api.schemas import InvoiceCreate, InvoiceUpdate
 from entities.invoice.business.service import InvoiceService
 from shared.api.responses import list_response, item_response, raise_not_found
+from shared.pdf_utils import fit_page_to_letter
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -27,16 +28,25 @@ def _toc_signed_amount(row: dict) -> Optional[float]:
     """
     Return the row's display amount as a float, with the correct sign for credits.
 
-    The InvoiceInvoiceConnector stores `dbo.InvoiceLineItem.Price` as a positive
-    magnitude even for credit-sourced lines, while `Amount` retains the negative
-    QBO sign. Prefer Price for non-credit lines (it carries markup when
-    applicable), but negate it for credit lines so the TOC + subtotals reflect
-    the customer-facing reduction. Two credit shapes:
+    Prefer `billed_price` — the SOURCE line's marked-up, client-billed price
+    (BillLineItem.Price / ExpenseLineItem.Price = Amount + Markup). It is what
+    the customer is actually charged and what the Bill's own detail page shows.
+    We can't read markup off the InvoiceLineItem itself: the QBO invoice splits
+    each line's markup into a separate Manual line (excluded from the TOC), so
+    `dbo.InvoiceLineItem.Price`/`Amount` carry only the un-marked-up base.
+
+    Fall back to the ILI's own `price` then `amount` for sources with no
+    marked-up Price column (BillCreditLineItem, EmployeeLaborLineItem). The
+    InvoiceInvoiceConnector stores `Price` as a positive magnitude even for
+    credit-sourced lines while `Amount` keeps the negative QBO sign, so we
+    negate below for credit shapes to reflect the customer-facing reduction:
       - BillCreditLineItem source (VendorCredit / credit memo)
       - ExpenseLineItem whose parent `Expense.IsCredit = True` (expense refund;
         Expense table doubles as the ExpenseRefund concept)
     """
-    p = row.get("price")
+    p = row.get("billed_price")
+    if p is None:  # only a MISSING price falls back; a legitimate $0 stays $0
+        p = row.get("price")
     if p is None:
         p = row.get("amount")
     if p is None:
@@ -80,8 +90,9 @@ def _consolidate_basic_toc_rows(rows: list[dict]) -> list[dict]:
     """
     Consolidate line items from the same source bill/expense into one row.
     Groups by (source_type, parent_number, vendor_name, source_date).
-    Single-item groups: keep original description and type label.
-    Multi-item groups: description="Multiple", type_label="See Image", price=sum.
+    Single-item groups: keep the item's sub cost code name and type label.
+    Multi-item groups: sub_cost_code_name = the shared SCC name if uniform else
+    "Multiple See Image", type_label from source, price=sum.
     Manual lines (no parent_number) are never consolidated — each stays its own row.
     """
     from itertools import groupby
@@ -107,11 +118,16 @@ def _consolidate_basic_toc_rows(rows: list[dict]) -> list[dict]:
         else:
             total_price = sum((_toc_signed_amount(r) or 0) for r in group)
             first = group[0]
+            # Consolidated SCC label: the shared sub cost code name if every
+            # item in the group maps to the same one, else "Multiple See Image".
+            scc_names = {(r.get("sub_cost_code_name") or "").strip() for r in group}
+            scc_names.discard("")
+            scc_label = next(iter(scc_names)) if len(scc_names) == 1 else "Multiple See Image"
             consolidated.append({
                 "source_date": first.get("source_date", ""),
                 "vendor_name": first.get("vendor_name", ""),
                 "parent_number": first.get("parent_number", ""),
-                "description": "Multiple See Image",
+                "sub_cost_code_name": scc_label,
                 "source_type": first.get("source_type", ""),
                 "price": total_price,
                 "type_label": _toc_source_label(first.get("source_type", "")),
@@ -151,6 +167,7 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
     )
 
     # Columns: Date(65) Vendor(110) Invoice(80) Description(120) Type(52) Amount(77) = 504pt
+    # The "Description" column shows the sub cost code name (not the work paragraph).
     # Date/Invoice/Type/Amount sized to fit content on one line; Vendor/Description wrap.
     col_widths = [65, 110, 80, 120, 52, 77]
     headers = [
@@ -167,7 +184,9 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
             r.get("source_date", ""),
             W(r.get("vendor_name", "")),
             r.get("parent_number", ""),
-            W(r.get("description", "") or ""),
+            # Prefer the sub cost code name; fall back to the work-description
+            # so the column is never blank when a source line has no SCC.
+            W(r.get("sub_cost_code_name") or r.get("description") or ""),
             r.get("type_label", ""),
             amt_str,
         ])
@@ -249,6 +268,7 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
     )
 
     # Columns: CostCode(45) Date(62) Vendor(95) Invoice(78) Description(100) Type(52) Amount(72) = 504pt
+    # The "Description" column shows the sub cost code name (not the work paragraph).
     # Date/Invoice/Type/Amount sized to fit content on one line; Vendor/Description wrap.
     col_widths = [45, 62, 95, 78, 100, 52, 72]
     headers = [
@@ -270,7 +290,9 @@ def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
                 r.get("source_date", ""),
                 W(r.get("vendor_name", "")),
                 r.get("parent_number", ""),
-                W(r.get("description", "") or ""),
+                # Prefer the sub cost code name; fall back to the work-description
+                # so the column is never blank when a source line has no SCC.
+                W(r.get("sub_cost_code_name") or r.get("description") or ""),
                 _toc_source_label(r.get("source_type", "")),
                 amt_str,
             ])
@@ -448,7 +470,6 @@ def _generate_invoice_packet(public_id: str):
     from entities.attachment.business.service import AttachmentService
     from entities.invoice_attachment.business.service import InvoiceAttachmentService
     from shared.storage import AzureBlobStorage, AzureBlobStorageError
-    from shared.database import get_connection
 
     service = InvoiceService()
     invoice = service.read_by_public_id(public_id=public_id)
@@ -491,82 +512,32 @@ def _generate_invoice_packet(public_id: str):
     expanded_toc_rows = sorted(toc_items, key=_expanded_sort_key)
     expanded_toc_bytes = _build_toc_expanded_pdf(expanded_toc_rows)
 
-    bill_ids = []
-    expense_ids = []
-    credit_ids = []
-    for li in line_items:
-        if li.source_type == "BillLineItem" and li.bill_line_item_id:
-            bill_ids.append(li.bill_line_item_id)
-        elif li.source_type == "ExpenseLineItem" and li.expense_line_item_id:
-            expense_ids.append(li.expense_line_item_id)
-        elif li.source_type == "BillCreditLineItem" and li.bill_credit_line_item_id:
-            credit_ids.append(li.bill_credit_line_item_id)
+    # Attachment pages follow the basic TOC's row order exactly: walk the
+    # already-sorted TOC rows and take each line's attachment (first-seen wins —
+    # many lines, e.g. contract-labor, share one document). Deriving the order
+    # from basic_toc_rows instead of a separate per-parent query keeps the pages
+    # in the same sequence the reader sees in the TOC, and includes every
+    # distinct per-line document (a per-parent MIN(AttachmentId) grouping would
+    # drop extra documents on bills whose lines carry different PDFs).
+    seen_attachment_public_ids: set = set()
+    ordered_attachment_public_ids = []
+    for r in basic_toc_rows:
+        apid = r.get("attachment_public_id") or ""
+        if apid and apid not in seen_attachment_public_ids:
+            seen_attachment_public_ids.add(apid)
+            ordered_attachment_public_ids.append(apid)
 
-    # Collect (type_order, vendor_name_lower, attachment_id) for deterministic ordering:
-    # Bill (0) → BillCredit (1) → Expense (2), then vendor name ascending within each type.
-    ordered_entries = []  # list of (type_order, vendor_name_lower, attachment_id)
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        if bill_ids:
-            ph = ",".join("?" * len(bill_ids))
-            cursor.execute(f"""
-                SELECT MIN(blia.AttachmentId) AS AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
-                FROM dbo.BillLineItemAttachment blia
-                JOIN dbo.BillLineItem bli ON bli.Id = blia.BillLineItemId
-                JOIN dbo.Bill b ON b.Id = bli.BillId
-                LEFT JOIN dbo.Vendor v ON v.Id = b.VendorId
-                WHERE blia.BillLineItemId IN ({ph})
-                GROUP BY b.Id, LOWER(ISNULL(v.Name, ''))
-            """, bill_ids)
-            for row in cursor.fetchall():
-                ordered_entries.append((0, row.VendorNameLower, row.AttachmentId))
-        if credit_ids:
-            ph = ",".join("?" * len(credit_ids))
-            cursor.execute(f"""
-                SELECT MIN(bclia.AttachmentId) AS AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
-                FROM dbo.BillCreditLineItemAttachment bclia
-                JOIN dbo.BillCreditLineItem bcli ON bcli.Id = bclia.BillCreditLineItemId
-                JOIN dbo.BillCredit bc ON bc.Id = bcli.BillCreditId
-                LEFT JOIN dbo.Vendor v ON v.Id = bc.VendorId
-                WHERE bclia.BillCreditLineItemId IN ({ph})
-                GROUP BY bc.Id, LOWER(ISNULL(v.Name, ''))
-            """, credit_ids)
-            for row in cursor.fetchall():
-                ordered_entries.append((1, row.VendorNameLower, row.AttachmentId))
-        if expense_ids:
-            ph = ",".join("?" * len(expense_ids))
-            cursor.execute(f"""
-                SELECT MIN(elia.AttachmentId) AS AttachmentId, LOWER(ISNULL(v.Name, '')) AS VendorNameLower
-                FROM dbo.ExpenseLineItemAttachment elia
-                JOIN dbo.ExpenseLineItem eli ON eli.Id = elia.ExpenseLineItemId
-                JOIN dbo.Expense e ON e.Id = eli.ExpenseId
-                LEFT JOIN dbo.Vendor v ON v.Id = e.VendorId
-                WHERE elia.ExpenseLineItemId IN ({ph})
-                GROUP BY e.Id, LOWER(ISNULL(v.Name, ''))
-            """, expense_ids)
-            for row in cursor.fetchall():
-                ordered_entries.append((2, row.VendorNameLower, row.AttachmentId))
-        cursor.close()
-
-    if not ordered_entries:
+    if not ordered_attachment_public_ids:
         raise HTTPException(status_code=400, detail="No PDF attachments found on line items")
 
-    ordered_entries.sort(key=lambda x: (x[0], x[1]))
-    seen_attachment_ids: set = set()
-    deduped_entries = []
-    for entry in ordered_entries:
-        if entry[2] not in seen_attachment_ids:
-            seen_attachment_ids.add(entry[2])
-            deduped_entries.append(entry)
-    attachment_ids = [x[2] for x in deduped_entries]
-
     att_service = AttachmentService()
-    att_list = att_service.read_by_ids(attachment_ids)
-    if not att_list:
+    attachments_sorted = []
+    for apid in ordered_attachment_public_ids:
+        att = att_service.read_by_public_id(public_id=apid)
+        if att:
+            attachments_sorted.append(att)
+    if not attachments_sorted:
         raise HTTPException(status_code=400, detail="No attachment records found")
-
-    att_map = {a.id: a for a in att_list}
-    attachments_sorted = [att_map[aid] for aid in attachment_ids if aid in att_map]
 
     storage = AzureBlobStorage()
     writer = PdfWriter()
@@ -586,7 +557,7 @@ def _generate_invoice_packet(public_id: str):
             content, _ = storage.download_file(att.blob_url)
             reader = PdfReader(io.BytesIO(content))
             for page in reader.pages:
-                writer.add_page(page)
+                writer.add_page(fit_page_to_letter(page))
         except Exception as e:
             logger.warning(f"Skipping attachment {att.public_id}: {e}")
             skipped += 1
@@ -676,14 +647,18 @@ def _enqueue_box_packet_upload(invoice, attachment, blob_url: str, filename: str
     Enqueue a Box upload for the invoice packet attachment.
 
     Uses the invoice's project for the Box folder mapping; unmapped (or
-    missing) project → skip with an info log. Additive + failure-isolated —
-    any exception is logged and swallowed so Box can never affect the
-    packet flow.
+    missing) project → skip with an info log. Resolves (or idempotently
+    creates) a per-invoice subfolder under the mapped 15-Draw Requests root,
+    mirroring the SharePoint per-invoice subfolder at
+    `entities/invoice/business/service.py::_upload_to_sharepoint` (lines
+    1016-1030). Additive + failure-isolated — any exception is logged and
+    swallowed so Box can never affect the packet flow.
     """
     import os as _os
     if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
         return  # gate closed — skip the DB legwork, not just the enqueue
     try:
+        from integrations.box.base.client import BoxHttpClient
         from integrations.box.folder.business.service import (
             BoxProjectFolderService,
             DOC_CLASS_DRAW_REQUESTS,
@@ -695,25 +670,51 @@ def _enqueue_box_packet_upload(invoice, attachment, blob_url: str, filename: str
             return
         # Customer invoice packets file to the project's "15 - Draw Requests"
         # ('draw_requests') folder — distinct from vendor AP docs (14-Invoices).
-        mapping = BoxProjectFolderService().read_mapping_by_project_id_and_class(
+        folder_service = BoxProjectFolderService()
+        mapping = folder_service.read_mapping_by_project_id_and_class(
             invoice.project_id, DOC_CLASS_DRAW_REQUESTS
         )
         if mapping is None:
             logger.info(f"box.enqueue.skipped_unmapped_project project_id={invoice.project_id} doc_class=draw_requests")
             return
-        BoxOutboxService().enqueue_box_upload(
+
+        # Resolve the per-invoice subfolder. On failure, SKIP (same as the
+        # line PDFs) — no flat-root fallback: Box 409 recovery is per-folder,
+        # so a root copy could never be re-versioned by a later subfolder
+        # upload, leaving a permanently stale packet a reviewer might send to
+        # the customer. POST /sync/invoice/{id}/box re-delivers once the
+        # subfolder resolves (the outbox coalesce refreshes stale targets).
+        subfolder_name = invoice.invoice_number or str(invoice.public_id)
+        try:
+            with BoxHttpClient() as client:
+                subfolder = folder_service.read_or_create_child_folder(
+                    client=client,
+                    parent_box_folder_id=mapping["box_folder_id"],
+                    folder_name=subfolder_name,
+                )
+            target_folder_id = subfolder["box_folder_id"]
+        except Exception as sub_err:
+            logger.warning(
+                f"box.subfolder.create.failed invoice={invoice.public_id} "
+                f"parent={mapping['box_folder_id']} name={subfolder_name!r}: {sub_err}. "
+                f"Packet upload skipped — repair via POST /sync/invoice/{{id}}/box."
+            )
+            return None
+
+        return BoxOutboxService().enqueue_box_upload(
             entity_type="invoice",
             entity_public_id=str(invoice.public_id),
             doc_kind="packet",
             blob_path=blob_url,
             filename=filename,
             content_type="application/pdf",
-            box_folder_id=mapping["box_folder_id"],
+            box_folder_id=target_folder_id,
             attachment_id=attachment.id,
             project_id=invoice.project_id,
         )
     except Exception as e:
         logger.warning(f"box.enqueue.failed invoice={invoice.public_id}: {e}")
+        return None
 
 
 @router.get("/get/invoice/{public_id}/reconcile")
@@ -725,10 +726,16 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
       - Only rows with a DATE value (col I) and NO Draw Request Date (col H)
         are considered unbilled and included.
 
-    Matching strategy:
-      - Source column M: "Bill" → Bill in our system; anything else → Expense.
-      - Bills: match by INVOICE # (col K) against DB ParentNumber (BillNumber).
-      - Expenses: INVOICE # won't reliably match; match by Description + Billable amount.
+    Matching strategy (tiered):
+      - Tier 0: column-Z source public_id (the reconciliation key written by the
+        Bill/Expense Excel syncs) — deterministic; preferred whenever Z is populated.
+      - Tier 1 (fallback): Source column M: "Bill" → Bill in our system; anything
+        else → Expense. Bills match by INVOICE # (col K) against DB ParentNumber;
+        Expenses match by Description + Billable amount.
+
+    Direction B: rows whose DRAW REQUEST (col H) already carries THIS invoice's
+    number but whose column-Z key is NOT one of this invoice's source lines are
+    returned in `already_tagged` (surface-only — they reflect prior manual edits).
     """
     from collections import defaultdict
     from entities.invoice_line_item.business.service import InvoiceLineItemService
@@ -828,16 +835,38 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
         v = cell(row, key)
         return v is not None and str(v).strip() != ""
 
-    # Parse worksheet rows: only unbilled (has DATE, no DRAW REQUEST DATE)
+    def _tag_matches(tag: str, num: str) -> bool:
+        # Column H is written as a string but Graph coerces numeric-looking
+        # values ('004' → 4, '22' → 22.0), so exact compare alone would drop
+        # already-tagged rows for numeric invoice numbers.
+        if not tag or not num:
+            return False
+        if tag == num:
+            return True
+        try:
+            return float(tag) == float(num)
+        except (ValueError, TypeError):
+            return False
+
+    # Parse worksheet rows. Unbilled rows (DATE set, no DRAW REQUEST) feed the
+    # matching tiers; rows already tagged with THIS invoice's number feed the
+    # Direction-B check. Rows tagged with a different invoice are excluded.
+    inv_num = (invoice.invoice_number or "").strip()
     ws_bills = []
     ws_expenses = []
+    ws_tagged = []
     for row_idx, row in enumerate(data_rows, start=header_row_idx + 2):
         if not has_value(row, "date"):
             continue
-        if has_value(row, "draw_request_date"):
-            continue
+
+        z_pid = ""
+        if len(row) > 25 and row[25] is not None:
+            z_val = str(row[25]).strip()
+            if len(z_val) == 36:
+                z_pid = z_val.lower()
 
         source = cell_str(row, "source").lower()
+        draw_tag = cell_str(row, "draw_request_date")
         entry = {
             "row": row_idx,
             "invoice_num": cell_str(row, "invoice_num"),
@@ -847,7 +876,13 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
             "date": cell_str(row, "date"),
             "source": "Bill" if source == "bill" else "Expense",
             "sub_cost_code": cell_str(row, "sub_cost_code"),
+            "z": z_pid,
         }
+
+        if draw_tag:
+            if _tag_matches(draw_tag, inv_num):
+                ws_tagged.append(entry)
+            continue
 
         if source == "bill":
             ws_bills.append(entry)
@@ -867,7 +902,104 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
     db_only = []
     ws_only = []
 
-    # ── Bills: match by INVOICE # ──
+    _SOURCE_LABEL = {
+        "BillLineItem": "Bill",
+        "ExpenseLineItem": "Expense",
+        "BillCreditLineItem": "Expense",
+    }
+
+    def _db_amt(li) -> float:
+        # DB-side mirror of the worksheet's column-N rule: Price, falling back
+        # to Amount when Price is NULL (QBO-pulled account-based lines carry
+        # Amount only — the sheet shows Amount for them, so the comparison
+        # must too or every such line reports a false mismatch).
+        val = li.get("price")
+        if val is None:
+            val = li.get("amount") or 0
+        return round(float(val), 2)
+
+    # ── Tier 0: column-Z source public_id (deterministic) ──
+    db_by_source_pid_all = defaultdict(list)
+    for li in db_bills + db_expenses:
+        spid = (li.get("source_line_public_id") or "").lower()
+        if spid:
+            db_by_source_pid_all[spid].append(li)
+
+    # Duplicate source-linked lines (two invoice lines sharing one source) are
+    # a data bug this endpoint exists to SURFACE — exclude them from Tier 0 so
+    # they fall through to the heuristic tiers / db_only, and report them.
+    duplicate_source_lines = []
+    db_by_source_pid = {}
+    for spid, lis in db_by_source_pid_all.items():
+        if len(lis) == 1:
+            db_by_source_pid[spid] = lis[0]
+        else:
+            duplicate_source_lines.append({
+                "source_public_id": spid,
+                "count": len(lis),
+                "descriptions": [x.get("description") or "" for x in lis],
+                "amounts": [_db_amt(x) for x in lis],
+            })
+
+    def _tier0_entry(li, r):
+        db_price = _db_amt(li)
+        ws_amt = round(r["billable"], 2)
+        return db_price, ws_amt, {
+            "ref": li.get("parent_number") or r["invoice_num"] or "—",
+            "source": _SOURCE_LABEL.get(li.get("source_type"), "Expense"),
+            "date": li.get("source_date") or r.get("date", ""),
+            "vendor": li.get("vendor_name") or r.get("payable_to", ""),
+            "description": li.get("description") or r.get("description", ""),
+            "cost_code": li.get("sub_cost_code_number") or r.get("sub_cost_code", ""),
+            "db_total": db_price,
+            "ws_total": ws_amt,
+            "difference": round(db_price - ws_amt, 2),
+            "match_key": "public_id",
+        }
+
+    z_matched_pids = set()
+    for pool in (ws_bills, ws_expenses):
+        remaining = []
+        for r in pool:
+            li = db_by_source_pid.get(r["z"]) if r["z"] else None
+            if li is None or r["z"] in z_matched_pids:
+                remaining.append(r)
+                continue
+            z_matched_pids.add(r["z"])
+            db_price, ws_amt, entry = _tier0_entry(li, r)
+            (matched if abs(db_price - ws_amt) < 0.01 else mismatched).append(entry)
+        pool[:] = remaining
+
+    # ── Tagged rows (H already carries this invoice's number) ──
+    # A Z-hit is a reconciled row: count it tagged_ok, still compare amounts so
+    # drift on already-billed rows surfaces, and prune its DB line from the
+    # pools so Tier 1 doesn't re-report it as db_only. A Z-miss is Direction B.
+    already_tagged = []
+    tagged_ok_count = 0
+    for r in ws_tagged:
+        li = db_by_source_pid.get(r["z"]) if r["z"] else None
+        if li is not None and r["z"] not in z_matched_pids:
+            z_matched_pids.add(r["z"])
+            tagged_ok_count += 1
+            db_price, ws_amt, entry = _tier0_entry(li, r)
+            entry["tagged"] = True
+            (matched if abs(db_price - ws_amt) < 0.01 else mismatched).append(entry)
+        else:
+            already_tagged.append({
+                "row": r["row"],
+                "ref": r["invoice_num"] or r["description"] or "—",
+                "source": r["source"],
+                "date": r.get("date", ""),
+                "vendor": r.get("payable_to", ""),
+                "description": r.get("description", ""),
+                "ws_total": round(r["billable"], 2),
+            })
+
+    if z_matched_pids:
+        db_bills = [li for li in db_bills if (li.get("source_line_public_id") or "").lower() not in z_matched_pids]
+        db_expenses = [li for li in db_expenses if (li.get("source_line_public_id") or "").lower() not in z_matched_pids]
+
+    # ── Tier 1 fallback — Bills: match by INVOICE # ──
     ws_bills_by_ref = defaultdict(list)
     for r in ws_bills:
         if r["invoice_num"]:
@@ -884,7 +1016,7 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
         in_db = db_bills_by_ref.get(ref)
         in_ws = ws_bills_by_ref.get(ref)
 
-        db_total = round(sum(float(li.get("price") or 0) for li in in_db), 2) if in_db else 0.0
+        db_total = round(sum(_db_amt(li) for li in in_db), 2) if in_db else 0.0
         ws_total = round(sum(r["billable"] for r in in_ws), 2) if in_ws else 0.0
 
         first_db = in_db[0] if in_db else {}
@@ -914,7 +1046,7 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
 
     for li in db_expenses:
         db_desc = (li.get("description") or "").strip().lower()
-        db_price = round(float(li.get("price") or 0), 2)
+        db_price = _db_amt(li)
 
         found = None
         for i, ws_row in enumerate(ws_exp_unmatched):
@@ -943,7 +1075,7 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
 
     for li in db_exp_unmatched:
         ref_label = li.get("parent_number") or li.get("description") or "—"
-        db_price = round(float(li.get("price") or 0), 2)
+        db_price = _db_amt(li)
         db_only.append({
             "ref": ref_label,
             "source": "Expense",
@@ -976,6 +1108,10 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
         "mismatched": mismatched,
         "db_only": db_only,
         "ws_only": ws_only,
+        "z_matched_count": len(z_matched_pids),
+        "tagged_ok_count": tagged_ok_count,
+        "already_tagged": already_tagged,
+        "duplicate_source_lines": duplicate_source_lines,
     })
 
 
@@ -1054,6 +1190,93 @@ def sync_invoice_sharepoint_router(public_id: str, current_user: dict = Depends(
 
     logger.info(f"SharePoint re-sync complete for invoice {public_id}: {result.get('message')}")
     return item_response(result)
+
+
+@router.post("/sync/invoice/{public_id}/box")
+def sync_invoice_box_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_complete"))):
+    """
+    Re-run the Box mirror for a completed invoice: enqueue per-line-item
+    supporting PDFs into `15-Draw Requests/<invoice#>/` and re-enqueue the
+    packet PDF into the same subfolder.
+
+    Symmetric to `POST /sync/invoice/{public_id}/sharepoint`. Useful when:
+      * `ALLOW_BOX_WRITES` was off at completion time
+      * a project's Box `draw_requests` folder was not mapped yet
+      * a prior run predated per-invoice-subfolder support and files landed
+        flat in the root of "15 - Draw Requests"
+
+    Additive + idempotent (subfolder is read-or-created; file uploads
+    409-recover via the `[box].[File]` ownership registry).
+    """
+    from entities.invoice_line_item.business.service import InvoiceLineItemService
+
+    service = InvoiceService()
+    invoice = service.read_by_public_id(public_id=public_id)
+    if not invoice:
+        raise_not_found("Invoice")
+    if invoice.is_draft:
+        # The draw-requests tree is customer-facing; a draft's number/prices
+        # are in flux and would strand a stale (or GUID-named) subfolder with
+        # wrong-priced PDFs and no cleanup path (Box mirror is forward-only).
+        raise HTTPException(
+            status_code=400,
+            detail="Invoice is a draft — complete it before pushing to Box.",
+        )
+
+    line_items = InvoiceLineItemService().read_by_invoice_id(invoice_id=invoice.id)
+
+    # 1. Line-item PDFs. Failure-isolated inside the helper; the summary is
+    # surfaced so a structural failure is distinguishable from success.
+    line_result = service._enqueue_box_line_pdfs(invoice=invoice, line_items=line_items)
+
+    # 2. Packet PDF. Look up the current packet attachment on this invoice
+    # (category='invoice_packet'); if none exists, the packet has never been
+    # generated + the caller should hit `/generate/invoice/{public_id}/packet`
+    # first (or `complete_invoice`, which regenerates).
+    from entities.invoice_attachment.business.service import InvoiceAttachmentService
+    from entities.attachment.business.service import AttachmentService
+    packet_att = None
+    try:
+        links = InvoiceAttachmentService().read_by_invoice_id(invoice_id=invoice.id)
+        att_svc = AttachmentService()
+        for link in links:
+            if not link.attachment_id:
+                continue
+            candidate = att_svc.read_by_id(link.attachment_id)
+            if candidate and candidate.category == "invoice_packet" and candidate.blob_url:
+                packet_att = candidate
+                break
+    except Exception as e:
+        logger.warning(f"sync_invoice_box: packet lookup failed for {public_id}: {e}")
+
+    packet_row = None
+    if packet_att:
+        packet_row = _enqueue_box_packet_upload(
+            invoice=invoice,
+            attachment=packet_att,
+            blob_url=packet_att.blob_url,
+            filename=packet_att.filename or f"Invoice-{invoice.invoice_number or public_id}-Packet.pdf",
+        )
+    else:
+        logger.info(
+            f"sync_invoice_box: no packet attachment found for invoice {public_id}; "
+            f"line PDFs enqueued but packet upload skipped. Call /generate/invoice/{public_id}/packet first."
+        )
+
+    if not line_result.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Box line-PDF enqueue failed: {line_result.get('reason')}",
+        )
+
+    return item_response({
+        "status_code": 200,
+        "message": "Box re-sync enqueued",
+        "line_pdfs_enqueued": line_result.get("enqueued", 0),
+        "line_pdfs_skipped": line_result.get("skipped", 0),
+        "line_pdfs_reason": line_result.get("reason"),
+        "packet_enqueued": packet_row is not None,
+    })
 
 
 @router.post("/sync/invoice/{public_id}/qbo")

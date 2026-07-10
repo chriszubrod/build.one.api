@@ -142,7 +142,11 @@ def build_details_rows(
             row[10] = bill.bill_number or ""                            # K
             row[11] = li.description or ""                              # L
             row[12] = "Bill"                                            # M
-            row[13] = _decimal_or_zero(li.price)                       # N
+            # N: prefer Price, fall back to Amount (parity with the MS-side
+            # sync — QBO-pulled account-based lines often carry no Price).
+            row[13] = _decimal_or_zero(
+                li.price if li.price is not None else getattr(li, "amount", None)
+            )                                                           # N
             row[25] = str(li.public_id) if li.public_id else ""        # Z
             rows.append(row)
         return rows
@@ -176,7 +180,10 @@ def build_details_rows(
             row[10] = expense.reference_number or ""                    # K
             row[11] = li.description or ""                              # L
             row[12] = type_label                                        # M
-            row[13] = _decimal_or_zero(li.price)                       # N
+            # N: prefer Price, fall back to Amount (parity with the MS-side sync).
+            row[13] = _decimal_or_zero(
+                li.price if li.price is not None else getattr(li, "amount", None)
+            )                                                           # N
             row[25] = str(li.public_id) if li.public_id else ""        # Z
             rows.append(row)
         return rows
@@ -212,7 +219,8 @@ def build_details_rows(
         row[12] = "Credit"                                            # M
         # BillCreditLineItem has no `price` field — col N carries `amount`
         # (verbatim from BillCreditCompleteService.sync_to_excel_workbook).
-        row[13] = _decimal_or_zero(li.amount)                         # N
+        # Negated for parity with the MS DETAILS sync: credits reduce the draw.
+        row[13] = -_decimal_or_zero(li.amount)                         # N
         row[25] = str(li.public_id) if li.public_id else ""           # Z
         rows.append(row)
     return rows

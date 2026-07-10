@@ -26,7 +26,35 @@ class ProjectService:
     def create(self, *, tenant_id: int = 1, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None, notes: Optional[str] = None) -> Project:
         """
         Create a new project.
+
+        Rejects same-Name duplicates of ACTIVE projects across ALL callers
+        (UI, agents, connectors): duplicate dbo.Project rows with identical
+        names have repeatedly hijacked qbo.CustomerProject mappings, and the
+        filtered unique index UQ_Project_Name_CustomerId_Active keys on
+        (Name, CustomerId) so a NULL-customer duplicate slips through it.
+        Deliberately preserved: reusing an ARCHIVED project's name, and two
+        different customers holding same-name active projects (the DB index
+        allows and enforces that case). The existence check is unscoped — a
+        restricted actor must not be able to create a duplicate of a project
+        they cannot see — and the error deliberately omits identifiers of
+        the existing project for the same reason.
         """
+        existing = self.repo.read_by_name(
+            name, actor_user_id=None, actor_is_system_admin=True
+        )
+        if (
+            existing
+            and str(getattr(existing, "status", "") or "").lower() == "active"
+            and (
+                customer_id is None
+                or getattr(existing, "customer_id", None) is None
+                or int(customer_id) == int(existing.customer_id)
+            )
+        ):
+            raise ValueError(
+                f"An active project named '{name}' already exists. Use the "
+                f"existing project or choose a different name."
+            )
         return self.repo.create(
             tenant_id=tenant_id,
             name=name,

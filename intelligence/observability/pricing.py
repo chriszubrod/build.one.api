@@ -48,6 +48,14 @@ PRICING: dict[str, dict[str, ModelPricing]] = {
             cache_read=0.10,
         ),
     },
+    # Azure AI Foundry (confirmed 2026-06-30). cache_write is unused — the
+    # Foundry transport doesn't create explicit caches (cache_creation = 0);
+    # cache_read reflects Azure's prompt_tokens_details.cached_tokens.
+    "foundry": {
+        "DeepSeek-V4-Flash": ModelPricing(input=0.14, output=0.28, cache_write=0.14, cache_read=0.0028),
+        "gpt-5.4-nano": ModelPricing(input=0.20, output=1.25, cache_write=0.20, cache_read=0.02),
+        "gpt-5.4-mini": ModelPricing(input=0.75, output=4.50, cache_write=0.75, cache_read=0.075),
+    },
 }
 
 
@@ -58,13 +66,20 @@ def compute_cost_usd(
     usage: Usage,
 ) -> Optional[float]:
     """Convert a Usage record to a dollar cost. Returns None if pricing is
-    unknown for the (provider, model) pair so the caller can degrade
-    gracefully (just show tokens, not $).
+    unknown for the model so the caller can degrade gracefully (show tokens,
+    not $).
+
+    Resolves by (provider, model) first; if that misses — notably when
+    provider is "cascade" and `model` is the actual rung that ran — it falls
+    back to searching all providers for the model.
     """
     by_model = PRICING.get(provider)
-    if not by_model:
-        return None
-    pricing = by_model.get(model)
+    pricing = by_model.get(model) if by_model else None
+    if pricing is None:
+        for prov_models in PRICING.values():
+            if model in prov_models:
+                pricing = prov_models[model]
+                break
     if not pricing:
         return None
 

@@ -171,6 +171,44 @@ class BillLineItemRepository:
             raise map_database_error(error)
 
     @retry_on_transient()
+    def read_box_links_by_bill_id(self, bill_id: int) -> dict[int, dict]:
+        """
+        Read per-line-item Box deep-link IDs for a given bill.
+
+        Returns a dict keyed by BillLineItemId. Each value is a dict with
+        the raw Box string IDs (and the workbook's worksheet name) for
+        building public links — or NULL entries where the line item's
+        project has no Box mapping. Service-layer URL builders consume
+        this to attach `box_folder_url` + `box_workbook_url` per row on
+        the `/get/bill_line_items/bill/{id}` response.
+
+        Powered by `dbo.ReadBillLineItemBoxLinks` (one LEFT JOIN per Box
+        table, so unmapped rows surface as NULLs rather than dropping).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadBillLineItemBoxLinks",
+                    params={"BillId": bill_id},
+                )
+                rows = cursor.fetchall()
+                result: dict[int, dict] = {}
+                for row in rows:
+                    if not row:
+                        continue
+                    result[int(row.BillLineItemId)] = {
+                        "box_invoices_folder_id": getattr(row, "BoxInvoicesFolderId", None),
+                        "box_workbook_file_id": getattr(row, "BoxWorkbookFileId", None),
+                        "box_workbook_worksheet_name": getattr(row, "BoxWorkbookWorksheetName", None),
+                    }
+                return result
+        except Exception as error:
+            logger.error(f"Error during read bill line item box links by bill ID: {error}")
+            raise map_database_error(error)
+
+    @retry_on_transient()
     def read_by_project_id(self, project_id: int) -> list[BillLineItem]:
         """
         Read all bill line items for a specific project.

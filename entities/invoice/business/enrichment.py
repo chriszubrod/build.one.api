@@ -48,12 +48,14 @@ def enrich_line_items(line_items) -> list[dict]:
             placeholders = ",".join("?" * len(bill_ids))
             cursor.execute(f"""
                 SELECT bli.Id,
+                       bli.PublicId AS SourceLinePublicId,
                        b.BillNumber AS ParentNumber,
                        b.PublicId AS ParentPublicId,
                        b.BillDate AS SourceDate,
                        v.Name AS VendorName,
                        scc.Number AS SccNumber, scc.Name AS SccName,
                        cc.Number AS CcNumber, cc.Name AS CcName,
+                       bli.Price AS BilledPrice,
                        att_first.PublicId AS AttachmentPublicId
                 FROM dbo.BillLineItem bli
                 JOIN dbo.Bill b ON b.Id = bli.BillId
@@ -71,6 +73,7 @@ def enrich_line_items(line_items) -> list[dict]:
             """, bill_ids)
             for row in cursor.fetchall():
                 bill_map[row.Id] = {
+                    "source_line_public_id": str(row.SourceLinePublicId) if row.SourceLinePublicId else "",
                     "parent_number": row.ParentNumber or "",
                     "parent_public_id": str(row.ParentPublicId) if row.ParentPublicId else "",
                     "source_date": row.SourceDate.strftime("%m-%d-%Y") if row.SourceDate else "",
@@ -79,6 +82,13 @@ def enrich_line_items(line_items) -> list[dict]:
                     "sub_cost_code_name": row.SccName or "",
                     "cost_code_number": row.CcNumber or "",
                     "cost_code_name": row.CcName or "",
+                    # Client-billed (marked-up) price of the SOURCE line. The
+                    # TOC prefers this over the InvoiceLineItem's own Price/Amount
+                    # because markup is split into separate Manual lines on the
+                    # QBO invoice (excluded from the TOC) — so the ILI carries
+                    # only the un-marked-up base. bli.Price = Amount + Markup,
+                    # matching what the Bill's own detail page shows.
+                    "billed_price": float(row.BilledPrice) if row.BilledPrice is not None else None,
                     "attachment_public_id": str(row.AttachmentPublicId) if row.AttachmentPublicId else "",
                 }
 
@@ -86,6 +96,7 @@ def enrich_line_items(line_items) -> list[dict]:
             placeholders = ",".join("?" * len(expense_ids))
             cursor.execute(f"""
                 SELECT eli.Id,
+                       eli.PublicId AS SourceLinePublicId,
                        e.ReferenceNumber AS ParentNumber,
                        e.PublicId AS ParentPublicId,
                        e.ExpenseDate AS SourceDate,
@@ -93,6 +104,7 @@ def enrich_line_items(line_items) -> list[dict]:
                        v.Name AS VendorName,
                        scc.Number AS SccNumber, scc.Name AS SccName,
                        cc.Number AS CcNumber, cc.Name AS CcName,
+                       eli.Price AS BilledPrice,
                        att_first.PublicId AS AttachmentPublicId
                 FROM dbo.ExpenseLineItem eli
                 JOIN dbo.Expense e ON e.Id = eli.ExpenseId
@@ -110,6 +122,7 @@ def enrich_line_items(line_items) -> list[dict]:
             """, expense_ids)
             for row in cursor.fetchall():
                 expense_map[row.Id] = {
+                    "source_line_public_id": str(row.SourceLinePublicId) if row.SourceLinePublicId else "",
                     "parent_number": row.ParentNumber or "",
                     "parent_public_id": str(row.ParentPublicId) if row.ParentPublicId else "",
                     "source_date": row.SourceDate.strftime("%m-%d-%Y") if row.SourceDate else "",
@@ -118,6 +131,9 @@ def enrich_line_items(line_items) -> list[dict]:
                     "sub_cost_code_name": row.SccName or "",
                     "cost_code_number": row.CcNumber or "",
                     "cost_code_name": row.CcName or "",
+                    # See BillLineItem note above — eli.Price = Amount + Markup,
+                    # the client-billed price the TOC should display.
+                    "billed_price": float(row.BilledPrice) if row.BilledPrice is not None else None,
                     "attachment_public_id": str(row.AttachmentPublicId) if row.AttachmentPublicId else "",
                     "is_credit": bool(row.IsCredit),
                 }
@@ -126,6 +142,7 @@ def enrich_line_items(line_items) -> list[dict]:
             placeholders = ",".join("?" * len(credit_ids))
             cursor.execute(f"""
                 SELECT bcli.Id,
+                       bcli.PublicId AS SourceLinePublicId,
                        bc.CreditNumber AS ParentNumber,
                        bc.PublicId AS ParentPublicId,
                        bc.CreditDate AS SourceDate,
@@ -149,6 +166,7 @@ def enrich_line_items(line_items) -> list[dict]:
             """, credit_ids)
             for row in cursor.fetchall():
                 credit_map[row.Id] = {
+                    "source_line_public_id": str(row.SourceLinePublicId) if row.SourceLinePublicId else "",
                     "parent_number": row.ParentNumber or "",
                     "parent_public_id": str(row.ParentPublicId) if row.ParentPublicId else "",
                     "source_date": row.SourceDate.strftime("%m-%d-%Y") if row.SourceDate else "",
@@ -167,6 +185,7 @@ def enrich_line_items(line_items) -> list[dict]:
             placeholders = ",".join("?" * len(employee_labor_ids))
             cursor.execute(f"""
                 SELECT elli.Id,
+                       elli.PublicId AS SourceLinePublicId,
                        el.PublicId AS ParentPublicId,
                        el.WorkDate AS SourceDate,
                        e.Firstname + ' ' + e.Lastname AS VendorName,
@@ -185,6 +204,7 @@ def enrich_line_items(line_items) -> list[dict]:
                     # ID like Bill.BillNumber. Falls back to "" so the TOC renders
                     # a blank cell rather than failing.
                     "parent_number": "",
+                    "source_line_public_id": str(row.SourceLinePublicId) if row.SourceLinePublicId else "",
                     "parent_public_id": str(row.ParentPublicId) if row.ParentPublicId else "",
                     "source_date": row.SourceDate.strftime("%m-%d-%Y") if row.SourceDate else "",
                     "vendor_name": row.VendorName or "",
@@ -232,6 +252,9 @@ def enrich_line_items(line_items) -> list[dict]:
         li_dict.setdefault("sub_cost_code_name", "")
         li_dict.setdefault("cost_code_number", "")
         li_dict.setdefault("cost_code_name", "")
+        # Sources without a marked-up Price column (BillCredit, EmployeeLabor)
+        # leave this None → the TOC falls back to the ILI's own Price/Amount.
+        li_dict.setdefault("billed_price", None)
         li_dict.setdefault("attachment_public_id", "")
         li_dict.update(enrichment)
 

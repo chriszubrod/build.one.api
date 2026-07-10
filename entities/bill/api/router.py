@@ -88,6 +88,7 @@ async def create_bill_router(
             "line_is_billable": body.line_is_billable,
             "line_sub_cost_code_id": body.line_sub_cost_code_id,
             "line_project_public_id": body.line_project_public_id,
+            "submit_for_review": body.submit_for_review,
         },
         workflow_type="bill_create",
     )
@@ -289,11 +290,27 @@ def apply_reviewer_decision_router(
 async def get_bill_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILLS))):
     """
     Read a bill by public ID.
+
+    Response also carries an optional `qbo_bill_url` — a deep link to the
+    bill in QuickBooks Online, or null if the bill hasn't been pushed to
+    QBO yet. Built server-side from the first synced line item via
+    `BillService.get_qbo_bill_url`.
     """
-    bill = await asyncio.to_thread(BillService().read_by_public_id, public_id=public_id)
-    if not bill:
+    def _fetch():
+        service = BillService()
+        bill = service.read_by_public_id(public_id=public_id)
+        if not bill:
+            return None
+        qbo_bill_url = service.get_qbo_bill_url(bill_id=bill.id)
+        return bill, qbo_bill_url
+
+    result = await asyncio.to_thread(_fetch)
+    if not result:
         raise_not_found("Bill")
-    return item_response(bill.to_dict())
+    bill, qbo_bill_url = result
+    payload = bill.to_dict()
+    payload["qbo_bill_url"] = qbo_bill_url
+    return item_response(payload)
 
 
 @router.get("/get/bill/id/{id}")

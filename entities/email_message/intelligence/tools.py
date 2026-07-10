@@ -163,6 +163,26 @@ class _OutcomeArgs(BaseModel):
             "outcome=needs_review regardless of classification."
         ),
     )
+    related_bill_public_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "PublicId (UUID) of a Bill the outcome touched (a Bill the "
+            "bill_specialist created, or one apply_reviewer_decision applied "
+            "to). When set, the correspondence forward to invoice@ renders a "
+            "clickable 'View Bill in build.one' button. Omit on outcomes that "
+            "don't bind to a single Bill."
+        ),
+    )
+    related_contract_labor_public_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "PublicId (UUID) of a ContractLabor row the outcome touched "
+            "(contract_labor_specialist created it, or a Step 1e instruction "
+            "applied to it). When set, the correspondence forward renders a "
+            "clickable 'View Contract Labor in build.one' button. Can be set "
+            "alongside related_bill_public_id (both buttons render)."
+        ),
+    )
 
 
 # ─── Read tools ──────────────────────────────────────────────────────────
@@ -317,6 +337,10 @@ async def _mark_email_outcome(args: dict, ctx: ToolContext) -> ToolResult:
         body["decided_action"] = parsed.decided_action
     if parsed.confidence is not None:
         body["confidence"] = str(parsed.confidence)
+    if parsed.related_bill_public_id:
+        body["related_bill_public_id"] = parsed.related_bill_public_id
+    if parsed.related_contract_labor_public_id:
+        body["related_contract_labor_public_id"] = parsed.related_contract_labor_public_id
     # Forward the agent's own session id so EmailMessage.AgentSessionId
     # gets linked back to this run — gives the React UI + future audits
     # a direct path from email row to transcript without grepping prose.

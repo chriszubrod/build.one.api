@@ -41,6 +41,12 @@ ALLOWED_PUSH_CLASSES = frozenset(
         ("expense", "attachment"),
         ("expense", "receipt"),
         ("invoice", "packet"),
+        # `line_attachment` is a distinct class from `attachment` so the AP
+        # filing path (bill/expense/credit → 14-Invoices) and the packet
+        # supporting-docs path (invoice's line PDFs → 15-Draw
+        # Requests/<invoice#>/) are visible independently in logs +
+        # dead-letter triage.
+        ("invoice", "line_attachment"),
     }
 )
 
@@ -144,7 +150,20 @@ class BoxOutboxService:
         # would couple outbox/ -> file/ at import time.
         from integrations.box.file.business.naming import sanitize_filename
 
-        safe_filename = sanitize_filename(filename, entity_public_id)
+        # Identity scope: entity-level by default. Line PDFs are scoped
+        # per-ATTACHMENT — an invoice fans out to many supporting PDFs, and
+        # two distinct attachments can build identical metadata filenames;
+        # an entity-scoped suffix would make them collide and the 409
+        # ownership recovery would re-version one file with the other's
+        # bytes (silently losing a document). uuid5 keeps it deterministic
+        # so retries still recover idempotently.
+        identity_source = entity_public_id
+        if doc_kind == "line_attachment" and attachment_id is not None:
+            identity_source = str(uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"box-line-attachment:{entity_public_id}:{attachment_id}",
+            ))
+        safe_filename = sanitize_filename(filename, identity_source)
 
         now = datetime.now(timezone.utc)
         ready_after = now + timedelta(seconds=ready_after_seconds)
@@ -169,9 +188,29 @@ class BoxOutboxService:
             attachment_id=attachment_id,
         )
         if existing:
+            # Latest target wins: a re-enqueue can carry a corrected folder or
+            # filename (e.g. POST /sync/invoice/{id}/box resolving the
+            # per-invoice subfolder that failed at completion time). Extending
+            # only the debounce window would drain the STALE payload and make
+            # the repair a silent no-op.
+            refreshed = existing
+            payload_refreshed = False
+            try:
+                existing_payload = json.loads(existing.payload) if existing.payload else {}
+            except (ValueError, TypeError):
+                existing_payload = {}
+            if existing_payload != payload:
+                updated_row = self.repo.update_payload(
+                    id=existing.id,
+                    row_version=existing.row_version,
+                    payload=json.dumps(payload),
+                )
+                if updated_row:
+                    refreshed = updated_row
+                    payload_refreshed = True
             updated = self.repo.update_ready_after(
-                id=existing.id,
-                row_version=existing.row_version,
+                id=refreshed.id,
+                row_version=refreshed.row_version,
                 ready_after=ready_after,
             )
             logger.info(
@@ -186,9 +225,10 @@ class BoxOutboxService:
                     "doc_kind": doc_kind,
                     "attachment_id": attachment_id,
                     "new_ready_after": ready_after.isoformat(),
+                    "payload_refreshed": payload_refreshed,
                 },
             )
-            return updated or existing
+            return updated or refreshed
 
         request_id = str(uuid.uuid4())
         created = self.repo.create(

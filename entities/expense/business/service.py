@@ -715,9 +715,26 @@ class ExpenseService:
         Mirrors BillService.sync_to_excel_workbook: idempotent via column Z
         public_id check, bottom-to-top insertion to avoid row-shift issues,
         and failed-insert → append fallback.
+
+        Only line items belonging to `project_id` are synced — a multi-line
+        Expense (e.g. one card charge covering a billable project line plus a
+        non-billable account line) must never leak sibling rows into another
+        project's DETAILS sheet. complete_expense already passes pre-grouped
+        lines, so this is a no-op there; it protects direct callers.
         """
         session_id = None
         try:
+            line_items = [
+                li for li in line_items
+                if getattr(li, "project_id", None) == project_id
+            ]
+            if not line_items:
+                return {
+                    "success": True,
+                    "message": f"No line items for project {project_id} on this expense",
+                    "synced_count": 0,
+                    "errors": [],
+                }
             from entities.bill.business.service import find_insertion_row_for_subcostcode
 
             # --- resolve workbook location ---

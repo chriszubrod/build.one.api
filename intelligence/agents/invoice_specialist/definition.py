@@ -6,7 +6,12 @@ from intelligence.loop.termination import BudgetPolicy
 from intelligence.registry import agents as agent_registry
 
 
-_PROMPT = (Path(__file__).parent / "prompt.md").read_text()
+# Canonical invoice prompt — shared with the interactive InvoiceAgent playbook.
+# There is deliberately NO prompt.md in this package: one prompt, one location
+# (entities/invoice/intelligence/prompt.md, Part 1 = this agent's surface).
+_PROMPT = (
+    Path(__file__).parents[3] / "entities" / "invoice" / "intelligence" / "prompt.md"
+).read_text()
 
 
 invoice_specialist = Agent(
@@ -34,7 +39,7 @@ invoice_specialist = Agent(
         "read_projects_by_customer_id",
     ),
     model="claude-sonnet-4-6",
-    provider="anthropic",
+    provider="cascade",
     credentials_key="invoice_agent",
     budget=BudgetPolicy(max_turns=12, max_tokens=150_000),
     description=(

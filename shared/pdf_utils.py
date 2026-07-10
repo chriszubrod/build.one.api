@@ -123,3 +123,70 @@ def compact_pdf(content: bytes) -> bytes:
     except Exception as e:
         logger.warning("PDF compaction failed, using original: %s", e)
         return content
+
+
+# US Letter in points (72dpi): 8.5in x 11in.
+LETTER_WIDTH_PT = 612.0
+LETTER_HEIGHT_PT = 792.0
+
+
+def fit_page_to_letter(src_page):
+    """
+    Normalize a PDF page onto a letter-sized (612x792pt) canvas, scaled to fit
+    while preserving aspect ratio and centered.
+
+    Receipt images get wrapped into PDFs at their native pixel dimensions (a
+    phone photo can be 40+ inches per side), so without this they render
+    enormous and inconsistent next to letter-sized pages.
+
+    Two correctness details:
+      - Geometry is measured from the CropBox, which is the region pypdf's
+        `merge_transformed_page` actually clips to; it defaults to the MediaBox
+        when no crop is set. Measuring the MediaBox instead would off-center or
+        shrink any page whose CropBox is smaller than its MediaBox.
+      - Any /Rotate is baked into the page content BEFORE measuring (via
+        `transfer_rotation_to_content`), so a landscape-rotated page is measured
+        and scaled in its VISUAL orientation and the output is a plain,
+        un-rotated portrait letter page. Re-stamping /Rotate onto the canvas
+        instead would leave rotated pages landscape and defeat uniform sizing.
+
+    A page already at letter size (CropBox == MediaBox == letter, origin 0,0) is
+    returned unchanged so it is not needlessly re-encoded.
+    """
+    from pypdf import PageObject, Transformation
+
+    # Bake rotation into content so we measure/scale the visual orientation.
+    if src_page.get("/Rotate"):
+        try:
+            src_page.transfer_rotation_to_content()
+        except Exception as e:
+            logger.warning("Could not bake page rotation, proceeding as-is: %s", e)
+
+    box = src_page.cropbox  # pypdf returns the MediaBox when no CropBox is set
+    sw = float(box.width)
+    sh = float(box.height)
+    if sw <= 0 or sh <= 0:
+        return src_page
+
+    mb = src_page.mediabox
+    already_letter = (
+        abs(sw - LETTER_WIDTH_PT) < 0.5
+        and abs(sh - LETTER_HEIGHT_PT) < 0.5
+        and abs(float(box.left)) < 0.5
+        and abs(float(box.bottom)) < 0.5
+        and abs(float(mb.width) - LETTER_WIDTH_PT) < 0.5
+        and abs(float(mb.height) - LETTER_HEIGHT_PT) < 0.5
+        and abs(float(mb.left)) < 0.5
+        and abs(float(mb.bottom)) < 0.5
+    )
+    if already_letter:
+        return src_page
+
+    scale = min(LETTER_WIDTH_PT / sw, LETTER_HEIGHT_PT / sh)
+    # Center the scaled content, normalizing any non-zero box origin.
+    tx = (LETTER_WIDTH_PT - sw * scale) / 2.0 - float(box.left) * scale
+    ty = (LETTER_HEIGHT_PT - sh * scale) / 2.0 - float(box.bottom) * scale
+
+    new_page = PageObject.create_blank_page(width=LETTER_WIDTH_PT, height=LETTER_HEIGHT_PT)
+    new_page.merge_transformed_page(src_page, Transformation().scale(scale).translate(tx, ty))
+    return new_page

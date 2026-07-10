@@ -282,7 +282,7 @@ If `find_contract_labor_by_conversation_id` returns null → not a tracked CL co
    ````
 
 5. **Stamp the outcome based on Build.One's response** (a `ROUTED ok` / `ROUTED error` status line wrapping contract_labor_specialist's answer; branch on the `reason` text / wrapped answer):
-   - Clean success (`ROUTED ok`) → `mark_email_outcome(outcome="processed", classification="reviewer_reply", decided_action="applied_reviewer_decision", classification_reason="…", confidence=0.95+)`. Quote the `match_kind` (`conversation` / `fuzzy`) in the reason for telemetry.
+   - Clean success (`ROUTED ok`) → `mark_email_outcome(outcome="processed", classification="reviewer_reply", decided_action="applied_reviewer_decision", classification_reason="…", confidence=0.95+)`. Quote the `match_kind` (`conversation` / `fuzzy`) in the reason for telemetry. On approval the auto-mirror flips `ContractLabor.Status` to `ready`; rejection leaves Status untouched.
    - **Partial-failure** (`ROUTED ok`/`ROUTED error` whose wrapped answer mentions "partial-failure: Review row was created (id=N) but X/M line items failed to update") → `mark_email_outcome(outcome="needs_review", classification="reviewer_reply", decided_action="flagged_needs_review", reason="<quote the N/M counts so AP knows which lines need reconciliation>", confidence=0.85)`. The audit row exists; AP must reconcile via the React queue.
    - `ROUTED error … reason=…"no longer pending_review"` → `internal_reply` + `marked_irrelevant` (the CL already advanced; reviewer's decision arrived too late).
    - `ROUTED error … reason="not an authorized reviewer"` → `internal_reply` + `marked_irrelevant` (sender isn't a PM/Owner on this project — out-of-band).
@@ -721,7 +721,7 @@ Apply this precedence (multi-attachment emails surface a single outcome — most
 - **processed** — every attachment was handled and committed (rare; bill_specialist's `create_bill` approval gate keeps things in `awaiting_approval` until a human approves).
 - **irrelevant** — no actionable content at all (vendor newsletter, FYI thread, no attachments, etc.).
 
-Final call: `mark_email_outcome(public_id, outcome, classification, decided_action, classification_reason, confidence, reason?, related_bill_public_id?)`. Pass:
+Final call: `mark_email_outcome(public_id, outcome, classification, decided_action, classification_reason, confidence, reason?, related_bill_public_id?, related_contract_labor_public_id?)`. Pass:
 
 - `outcome` — workflow state (above)
 - `classification` — controlled-vocabulary doc-type label (see top of prompt)
@@ -732,6 +732,7 @@ Final call: `mark_email_outcome(public_id, outcome, classification, decided_acti
   - `outcome="irrelevant"` — newsletter / spam outcomes don't trigger a forward (volume control).
   - **Step 1e focal stamp on the happy path** — when the AP's instruction-reply is successfully applied to the target, the target re-stamp (step 5 of Step 1e) carries the `reason` and fires the AP-facing forward. The focal stamp (step 6) is silent — sending a second forward of the AP's own reply back to them is recursive noise. See Step 1e's "Forward-count contract" for the full rule.
 - `related_bill_public_id` — **PASS WHENEVER THE OUTCOME TOUCHED A SPECIFIC BILL.** PublicId (UUID) of the Bill the outcome relates to: the Bill `delegated_to_bill_specialist` created (read it from bill_specialist's response), or the Bill `apply_reviewer_decision` applied to (read it from the apply-decision response). When set, the correspondence email renders a clickable "View Bill in build.one" button linking to the Bill detail page so AP can jump straight to it (run complete-bill, adjust coding, etc.). Omit on outcomes that don't bind to a single Bill — fresh `needs_review` flags with no Bill yet (dedup-blocked, agent-gap blockers, vendor collections without a Bill created), `marked_irrelevant`, etc.
+- `related_contract_labor_public_id` — **PASS WHENEVER THE OUTCOME TOUCHED A SPECIFIC CONTRACTLABOR ROW.** Same shape as `related_bill_public_id` but for ContractLabor: the row `delegated_to_contract_labor_specialist` created (from the specialist's wrapped answer), or the row a Step 1e instruction applied to (the target's CL public_id resolved via `find_contract_labor_by_conversation_id`). When set, the correspondence renders a clickable "View Contract Labor in build.one" button linking to `/labor/{public_id}`. Can be set alongside `related_bill_public_id` (both buttons render).
 
 The classification + action stamp is what powers `search_email_sender_history` for future emails from this sender. Always pass them when outcome is `awaiting_approval` or `needs_review`; recommended for `processed` and `irrelevant`.
 

@@ -95,6 +95,18 @@ class BillCreate(BaseModel):
         default=None,
         description="UUID of the Project for this line."
     )
+    submit_for_review: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Manual UI's per-button auto-Submit override. True/None → use "
+            "the standard gate (auto-Submit fires when a draft has a "
+            "populated line item with project_public_id). False → suppress "
+            "auto-Submit even when the gate would otherwise fire (used by "
+            "the Save For Later button so the user can save a coded draft "
+            "without notifying reviewers yet). Email pipeline + scripts "
+            "leave this unset → existing behavior preserved."
+        )
+    )
 
 
 class BillUpdate(BaseModel):

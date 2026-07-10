@@ -432,6 +432,15 @@ class InvoiceService:
             # so a Box hiccup never breaks invoice completion.
             self._enqueue_box_excel(invoice=finalized, project_id=invoice.project_id)
 
+            # Box mirror for the SharePoint per-line-attachment upload above:
+            # each line-item PDF referenced by the packet is enqueued into the
+            # project's "15 - Draw Requests / <invoice#> /" subfolder,
+            # matching what `_upload_to_sharepoint` writes to SP. Packet PDF
+            # itself is enqueued separately from `_generate_invoice_packet`
+            # → `_enqueue_box_packet_upload` (router.py) and lands in the
+            # same subfolder. Additive + failure-isolated — see helper doc.
+            self._enqueue_box_line_pdfs(invoice=finalized, line_items=line_items)
+
         # QBO push sync deliberately disabled — re-enable when QBO
         # invoice sync is wired end-to-end.
         qbo_result = {"success": True, "message": "Disabled", "errors": []}
@@ -527,7 +536,7 @@ class InvoiceService:
             # Column H = index 7 absolute; relative to range start:
             h_col_relative = col_letter_to_index("H") - start_col_index
 
-            if z_col_relative < 0 or z_col_relative >= len(worksheet_values[0]) if worksheet_values else True:
+            if z_col_relative < 0 or z_col_relative >= len(worksheet_values[0]):
                 return {"success": False, "message": "Column Z (reconciliation key) is outside the used range", "synced_count": 0, "errors": []}
 
             # Build a lookup: source_public_id → worksheet row number (1-based, absolute)
@@ -538,26 +547,29 @@ class InvoiceService:
                     if cell_val and isinstance(cell_val, str) and len(cell_val) == 36:
                         key_to_row[cell_val.lower()] = start_row_num + row_idx
 
-            # Collect source public_ids for each line item
+            from entities.bill_line_item.business.service import BillLineItemService
+            from entities.expense_line_item.business.service import ExpenseLineItemService
+            from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+
+            # Pass 1 — resolve each line item's source public_id to a worksheet
+            # row. No Graph calls here; only DB reads.
             errors = []
             synced_count = 0
             invoice_number = invoice.invoice_number or ""
+            row_targets: dict = {}  # ws_row (1-based) → line_item (for error attribution)
 
             for line_item in line_items:
                 source_public_id = None
                 try:
                     if line_item.source_type == "BillLineItem" and line_item.bill_line_item_id:
-                        from entities.bill_line_item.business.service import BillLineItemService
                         bill_li = BillLineItemService().read_by_id(line_item.bill_line_item_id)
                         source_public_id = str(bill_li.public_id) if bill_li else None
 
                     elif line_item.source_type == "ExpenseLineItem" and line_item.expense_line_item_id:
-                        from entities.expense_line_item.business.service import ExpenseLineItemService
                         expense_li = ExpenseLineItemService().read_by_id(line_item.expense_line_item_id)
                         source_public_id = str(expense_li.public_id) if expense_li else None
 
                     elif line_item.source_type == "BillCreditLineItem" and line_item.bill_credit_line_item_id:
-                        from entities.bill_credit_line_item.business.service import BillCreditLineItemService
                         credit_li = BillCreditLineItemService().read_by_id(line_item.bill_credit_line_item_id)
                         source_public_id = str(credit_li.public_id) if credit_li else None
 
@@ -570,27 +582,74 @@ class InvoiceService:
                         logger.info(f"No worksheet row found for source public_id {source_public_id} (InvoiceLineItem {line_item.id})")
                         continue
 
-                    # Update column H ("DRAW REQUEST") in this row
-                    cell_address = f"H{ws_row}"
+                    row_targets[ws_row] = line_item
+
+                except Exception as e:
+                    logger.error(f"Error resolving InvoiceLineItem {line_item.id} source row: {e}")
+                    errors.append({"line_item_id": line_item.id, "error": str(e)})
+
+            # Pass 2 — write column H in contiguous-run batches: one Graph call
+            # per run of adjacent rows instead of one per line. Rows written by
+            # the Bill/Expense sync cluster inside cost-code blocks, so a large
+            # invoice typically collapses to a handful of calls (previously one
+            # call per line ≈ 3-4 minutes on a 45-line invoice).
+            def _contiguous_runs(rows: list) -> list:
+                runs, run = [], []
+                for r in rows:
+                    if run and r != run[-1] + 1:
+                        runs.append(run)
+                        run = []
+                    run.append(r)
+                if run:
+                    runs.append(run)
+                return runs
+
+            for run in _contiguous_runs(sorted(row_targets)):
+                range_address = f"H{run[0]}" if len(run) == 1 else f"H{run[0]}:H{run[-1]}"
+                run_values = [[invoice_number] for _ in run]
+                try:
                     update_result = update_excel_range(
                         drive_id=drive.drive_id,
                         item_id=driveitem.item_id,
                         worksheet_name=worksheet_name,
-                        range_address=cell_address,
-                        values=[[invoice_number]],
+                        range_address=range_address,
+                        values=run_values,
                         session_id=session_id,
                     )
-                    if update_result.get("status_code") == 200:
-                        synced_count += 1
-                        logger.info(f"Updated {cell_address} = '{invoice_number}' for source {source_public_id}")
-                    else:
-                        err = f"Failed to update {cell_address}: {update_result.get('message')}"
-                        logger.error(err)
-                        errors.append({"line_item_id": line_item.id, "error": err})
-
                 except Exception as e:
-                    logger.error(f"Error syncing InvoiceLineItem {line_item.id} to Excel: {e}")
-                    errors.append({"line_item_id": line_item.id, "error": str(e)})
+                    update_result = {"status_code": None, "message": str(e)}
+
+                if update_result.get("status_code") == 200:
+                    synced_count += len(run)
+                    logger.info(f"Updated {range_address} = '{invoice_number}' ({len(run)} row(s))")
+                    continue
+
+                # Batch write failed — fall back to per-row writes so one bad
+                # cell can't lose the whole run, and errors stay per-line.
+                logger.warning(
+                    f"Batch update {range_address} failed ({update_result.get('message')}); "
+                    f"falling back to per-row writes"
+                )
+                for ws_row in run:
+                    line_item = row_targets[ws_row]
+                    try:
+                        single_result = update_excel_range(
+                            drive_id=drive.drive_id,
+                            item_id=driveitem.item_id,
+                            worksheet_name=worksheet_name,
+                            range_address=f"H{ws_row}",
+                            values=[[invoice_number]],
+                            session_id=session_id,
+                        )
+                        if single_result.get("status_code") == 200:
+                            synced_count += 1
+                        else:
+                            err = f"Failed to update H{ws_row}: {single_result.get('message')}"
+                            logger.error(err)
+                            errors.append({"line_item_id": line_item.id, "error": err})
+                    except Exception as e:
+                        logger.error(f"Error syncing InvoiceLineItem {line_item.id} to Excel: {e}")
+                        errors.append({"line_item_id": line_item.id, "error": str(e)})
 
             return {
                 "success": not errors,
@@ -605,6 +664,288 @@ class InvoiceService:
         finally:
             if session_id:
                 close_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id, session_id=session_id)
+
+    def _collect_line_attachment_rows(self, invoice, line_items: list) -> list:
+        """
+        Attachment metadata rows for every line-item attachment referenced by
+        this invoice — the SINGLE source feeding naming.build_line_pdf_filename
+        for BOTH surfaces (_upload_to_sharepoint and _enqueue_box_line_pdfs).
+        The cross-referencing contract requires identical metadata on both
+        sides, so the SQL is shared surface — do not fork per-integration.
+
+        Every InvoiceLineItem join is scoped to THIS invoice: a source line
+        can carry ILI rows on other invoices (re-bills, credits, lingering
+        drafts), and an unscoped join returns one row per matching ILI in
+        arbitrary order — stamping another invoice's price/description/SCC
+        into customer-facing filenames.
+        """
+        from shared.database import get_connection
+
+        invoice_id = int(invoice.id) if isinstance(invoice.id, str) else invoice.id
+        bill_ids = [li.bill_line_item_id for li in line_items if li.source_type == "BillLineItem" and li.bill_line_item_id]
+        expense_ids = [li.expense_line_item_id for li in line_items if li.source_type == "ExpenseLineItem" and li.expense_line_item_id]
+        credit_ids = [li.bill_credit_line_item_id for li in line_items if li.source_type == "BillCreditLineItem" and li.bill_credit_line_item_id]
+        manual_public_ids = [li.public_id for li in line_items if li.source_type == "Manual" and li.public_id]
+
+        attachment_rows = []
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            if bill_ids:
+                ph = ",".join("?" * len(bill_ids))
+                cursor.execute(f"""
+                    SELECT a.Id, a.BlobUrl, a.ContentType, a.FileExtension, a.OriginalFilename,
+                           ISNULL(v.Name, '') AS VendorName, b.BillNumber AS ParentNumber,
+                           ISNULL(ili.Description, '') AS Description,
+                           ISNULL(scc.Number, '') AS SccNumber,
+                           ili.Price,
+                           CONVERT(VARCHAR(10), b.BillDate, 120) AS SourceDate
+                    FROM dbo.BillLineItemAttachment blia
+                    JOIN dbo.Attachment a ON a.Id = blia.AttachmentId
+                    JOIN dbo.BillLineItem bli ON bli.Id = blia.BillLineItemId
+                    JOIN dbo.Bill b ON b.Id = bli.BillId
+                    LEFT JOIN dbo.Vendor v ON v.Id = b.VendorId
+                    LEFT JOIN dbo.InvoiceLineItem ili ON ili.BillLineItemId = blia.BillLineItemId AND ili.InvoiceId = ?
+                    LEFT JOIN dbo.SubCostCode scc ON scc.Id = ili.SubCostCodeId
+                    WHERE blia.BillLineItemId IN ({ph})
+                """, [invoice_id] + bill_ids)
+                for row in cursor.fetchall():
+                    attachment_rows.append({
+                        "attachment_id": row.Id, "blob_url": row.BlobUrl,
+                        "content_type": row.ContentType, "file_extension": row.FileExtension,
+                        "original_filename": row.OriginalFilename,
+                        "vendor_name": row.VendorName, "parent_number": row.ParentNumber,
+                        "description": row.Description, "scc_number": row.SccNumber,
+                        "price": row.Price, "source_date": row.SourceDate,
+                    })
+            if expense_ids:
+                ph = ",".join("?" * len(expense_ids))
+                cursor.execute(f"""
+                    SELECT a.Id, a.BlobUrl, a.ContentType, a.FileExtension, a.OriginalFilename,
+                           ISNULL(v.Name, '') AS VendorName, e.ReferenceNumber AS ParentNumber,
+                           ISNULL(ili.Description, '') AS Description,
+                           ISNULL(scc.Number, '') AS SccNumber,
+                           ili.Price,
+                           CONVERT(VARCHAR(10), e.ExpenseDate, 120) AS SourceDate
+                    FROM dbo.ExpenseLineItemAttachment elia
+                    JOIN dbo.Attachment a ON a.Id = elia.AttachmentId
+                    JOIN dbo.ExpenseLineItem eli ON eli.Id = elia.ExpenseLineItemId
+                    JOIN dbo.Expense e ON e.Id = eli.ExpenseId
+                    LEFT JOIN dbo.Vendor v ON v.Id = e.VendorId
+                    LEFT JOIN dbo.InvoiceLineItem ili ON ili.ExpenseLineItemId = elia.ExpenseLineItemId AND ili.InvoiceId = ?
+                    LEFT JOIN dbo.SubCostCode scc ON scc.Id = ili.SubCostCodeId
+                    WHERE elia.ExpenseLineItemId IN ({ph})
+                """, [invoice_id] + expense_ids)
+                for row in cursor.fetchall():
+                    attachment_rows.append({
+                        "attachment_id": row.Id, "blob_url": row.BlobUrl,
+                        "content_type": row.ContentType, "file_extension": row.FileExtension,
+                        "original_filename": row.OriginalFilename,
+                        "vendor_name": row.VendorName, "parent_number": row.ParentNumber,
+                        "description": row.Description, "scc_number": row.SccNumber,
+                        "price": row.Price, "source_date": row.SourceDate,
+                    })
+            if credit_ids:
+                ph = ",".join("?" * len(credit_ids))
+                cursor.execute(f"""
+                    SELECT a.Id, a.BlobUrl, a.ContentType, a.FileExtension, a.OriginalFilename,
+                           ISNULL(v.Name, '') AS VendorName, bc.CreditNumber AS ParentNumber,
+                           ISNULL(ili.Description, '') AS Description,
+                           ISNULL(scc.Number, '') AS SccNumber,
+                           ili.Price,
+                           CONVERT(VARCHAR(10), bc.CreditDate, 120) AS SourceDate
+                    FROM dbo.BillCreditLineItemAttachment bclia
+                    JOIN dbo.Attachment a ON a.Id = bclia.AttachmentId
+                    JOIN dbo.BillCreditLineItem bcli ON bcli.Id = bclia.BillCreditLineItemId
+                    JOIN dbo.BillCredit bc ON bc.Id = bcli.BillCreditId
+                    LEFT JOIN dbo.Vendor v ON v.Id = bc.VendorId
+                    LEFT JOIN dbo.InvoiceLineItem ili ON ili.BillCreditLineItemId = bclia.BillCreditLineItemId AND ili.InvoiceId = ?
+                    LEFT JOIN dbo.SubCostCode scc ON scc.Id = ili.SubCostCodeId
+                    WHERE bclia.BillCreditLineItemId IN ({ph})
+                """, [invoice_id] + credit_ids)
+                for row in cursor.fetchall():
+                    attachment_rows.append({
+                        "attachment_id": row.Id, "blob_url": row.BlobUrl,
+                        "content_type": row.ContentType, "file_extension": row.FileExtension,
+                        "original_filename": row.OriginalFilename,
+                        "vendor_name": row.VendorName, "parent_number": row.ParentNumber,
+                        "description": row.Description, "scc_number": row.SccNumber,
+                        "price": row.Price, "source_date": row.SourceDate,
+                    })
+            if manual_public_ids:
+                ph = ",".join("?" * len(manual_public_ids))
+                cursor.execute(f"""
+                    SELECT a.Id, a.BlobUrl, a.ContentType, a.FileExtension, a.OriginalFilename,
+                           '' AS VendorName, '' AS ParentNumber,
+                           ISNULL(ili.Description, '') AS Description,
+                           ISNULL(scc.Number, '') AS SccNumber,
+                           ili.Price, '' AS SourceDate
+                    FROM dbo.InvoiceLineItemAttachment ilia
+                    JOIN dbo.Attachment a ON a.Id = ilia.AttachmentId
+                    JOIN dbo.InvoiceLineItem ili ON ili.Id = ilia.InvoiceLineItemId
+                    LEFT JOIN dbo.SubCostCode scc ON scc.Id = ili.SubCostCodeId
+                    WHERE ili.PublicId IN ({ph}) AND ili.InvoiceId = ?
+                """, manual_public_ids + [invoice_id])
+                for row in cursor.fetchall():
+                    attachment_rows.append({
+                        "attachment_id": row.Id, "blob_url": row.BlobUrl,
+                        "content_type": row.ContentType, "file_extension": row.FileExtension,
+                        "original_filename": row.OriginalFilename,
+                        "vendor_name": row.VendorName, "parent_number": row.ParentNumber,
+                        "description": row.Description, "scc_number": row.SccNumber,
+                        "price": row.Price, "source_date": row.SourceDate,
+                    })
+            cursor.close()
+
+        return attachment_rows
+
+    def _enqueue_box_line_pdfs(self, invoice, line_items: list) -> dict:
+        """
+        Mirror of `_upload_to_sharepoint` for Box: enqueue one Box upload per
+        unique line-item attachment referenced by this invoice, all landing
+        in a per-invoice subfolder under the project's "15 - Draw Requests"
+        Box folder.
+
+        Filenames are generated by
+        `entities.invoice.business.naming.build_line_pdf_filename` from the
+        SAME metadata rows SharePoint uses, so humans can cross-reference
+        between the SP UI and the Box UI. NOT byte-for-byte: the Box outbox
+        appends a deterministic `-{8hex}` identity suffix (its idempotency
+        key) and collapses whitespace runs — Box names differ from SP names
+        by exactly that suffix.
+
+        Additive + failure-isolated:
+          - `ALLOW_BOX_WRITES != 'true'` → silent early return (matches the
+            other Box helpers).
+          - No `(project_id, 'draw_requests')` mapping → info log + return
+            (matches `_enqueue_box_packet_upload`).
+          - Subfolder-create failure → warn + return (do NOT fall back to
+            flat root; the packet's own enqueue falls back, but line PDFs
+            without a subfolder land in the same flat bucket as the packet
+            and defeat the whole point of subfoldering).
+          - Any exception in the DB SELECT loop is caught + logged so a
+            single bad row can't take down invoice completion.
+        """
+        import os as _os
+        summary = {"success": True, "enqueued": 0, "skipped": 0, "reason": None}
+        if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
+            summary["reason"] = "writes_disabled"
+            return summary
+        if not invoice.project_id:
+            summary["reason"] = "no_project"
+            return summary
+
+        # Imports in their own guard: an ImportError is a DEPLOY defect (e.g.
+        # naming.py missing from the image), not a Box runtime hiccup — it must
+        # log at ERROR with a distinct event, never blend into the generic
+        # runtime warning below where it reads as a transient failure.
+        try:
+            from integrations.box.base.client import BoxHttpClient
+            from integrations.box.folder.business.service import (
+                BoxProjectFolderService,
+                DOC_CLASS_DRAW_REQUESTS,
+            )
+            from integrations.box.outbox.business.service import BoxOutboxService
+            from entities.invoice.business.naming import build_line_pdf_filename
+        except ImportError as imp_err:
+            logger.error(
+                "box.line_pdfs.import.failed — structural deploy defect, all "
+                f"line-PDF uploads disabled: {imp_err}"
+            )
+            return {"success": False, "enqueued": 0, "skipped": 0, "reason": f"import: {imp_err}"}
+
+        try:
+            folder_service = BoxProjectFolderService()
+            mapping = folder_service.read_mapping_by_project_id_and_class(
+                invoice.project_id, DOC_CLASS_DRAW_REQUESTS
+            )
+            if mapping is None:
+                logger.info(
+                    f"box.line_pdfs.skipped_unmapped_project project_id={invoice.project_id} "
+                    f"doc_class=draw_requests"
+                )
+                summary["reason"] = "unmapped_project"
+                return summary
+
+            subfolder_name = invoice.invoice_number or str(invoice.public_id)
+            try:
+                with BoxHttpClient() as client:
+                    subfolder = folder_service.read_or_create_child_folder(
+                        client=client,
+                        parent_box_folder_id=mapping["box_folder_id"],
+                        folder_name=subfolder_name,
+                    )
+                subfolder_id = subfolder["box_folder_id"]
+            except Exception as sub_err:
+                logger.warning(
+                    f"box.line_pdfs.subfolder.create.failed invoice={invoice.public_id} "
+                    f"parent={mapping['box_folder_id']} name={subfolder_name!r}: {sub_err}"
+                )
+                return {"success": False, "enqueued": 0, "skipped": 0,
+                        "reason": f"subfolder: {sub_err}"}
+
+            invoice_number = invoice.invoice_number or str(invoice.public_id)
+
+            attachment_rows = self._collect_line_attachment_rows(
+                invoice=invoice, line_items=line_items
+            )
+
+            box_outbox = BoxOutboxService()
+            enqueued = 0
+            skipped = 0
+            seen_attachment_ids: set = set()
+            for row_data in attachment_rows:
+                att_id = row_data["attachment_id"]
+                if att_id in seen_attachment_ids:
+                    continue
+                seen_attachment_ids.add(att_id)
+                if not row_data["blob_url"]:
+                    skipped += 1
+                    continue
+
+                filename = build_line_pdf_filename(
+                    invoice_number=invoice_number,
+                    vendor_name=row_data["vendor_name"],
+                    parent_number=row_data["parent_number"],
+                    description=row_data["description"],
+                    scc_number=row_data["scc_number"],
+                    price=row_data["price"],
+                    source_date=row_data["source_date"],
+                    file_extension=row_data["file_extension"],
+                    original_filename=row_data["original_filename"],
+                    content_type=row_data["content_type"],
+                )
+                try:
+                    created = box_outbox.enqueue_box_upload(
+                        entity_type="invoice",
+                        entity_public_id=str(invoice.public_id),
+                        doc_kind="line_attachment",
+                        blob_path=row_data["blob_url"],
+                        filename=filename,
+                        content_type=row_data["content_type"] or "application/pdf",
+                        box_folder_id=subfolder_id,
+                        attachment_id=att_id,
+                        project_id=invoice.project_id,
+                    )
+                    if created is not None:
+                        enqueued += 1
+                    else:
+                        skipped += 1
+                except Exception as row_err:
+                    logger.warning(
+                        f"box.line_pdfs.enqueue.row_failed invoice={invoice.public_id} "
+                        f"attachment_id={att_id}: {row_err}"
+                    )
+
+            logger.info(
+                f"box.line_pdfs.enqueued invoice={invoice.public_id} "
+                f"subfolder={subfolder_id} enqueued={enqueued} skipped={skipped}"
+            )
+            summary["enqueued"] = enqueued
+            summary["skipped"] = skipped
+            return summary
+        except Exception as e:
+            logger.warning(f"box.line_pdfs.enqueue.failed invoice={invoice.public_id}: {e}")
+            return {"success": False, "enqueued": 0, "skipped": 0, "reason": str(e)}
 
     def _enqueue_box_excel(self, invoice, project_id: int) -> None:
         """
@@ -980,125 +1321,9 @@ class InvoiceService:
             upload_folder_item_id = folder_result["item"]["item_id"]
 
             # 2. Collect attachment metadata for all line item source types
-            bill_ids = [li.bill_line_item_id for li in line_items if li.source_type == "BillLineItem" and li.bill_line_item_id]
-            expense_ids = [li.expense_line_item_id for li in line_items if li.source_type == "ExpenseLineItem" and li.expense_line_item_id]
-            credit_ids = [li.bill_credit_line_item_id for li in line_items if li.source_type == "BillCreditLineItem" and li.bill_credit_line_item_id]
-            manual_public_ids = [li.public_id for li in line_items if li.source_type == "Manual" and li.public_id]
-
-            attachment_rows = []  # list of dicts with attachment metadata + display fields
-
-            with get_connection() as conn:
-                cursor = conn.cursor()
-
-                if bill_ids:
-                    ph = ",".join("?" * len(bill_ids))
-                    cursor.execute(f"""
-                        SELECT a.Id, a.BlobUrl, a.ContentType, a.FileExtension, a.OriginalFilename,
-                               ISNULL(v.Name, '') AS VendorName, b.BillNumber AS ParentNumber,
-                               ISNULL(ili.Description, '') AS Description,
-                               ISNULL(scc.Number, '') AS SccNumber,
-                               ili.Price,
-                               CONVERT(VARCHAR(10), b.BillDate, 120) AS SourceDate
-                        FROM dbo.BillLineItemAttachment blia
-                        JOIN dbo.Attachment a ON a.Id = blia.AttachmentId
-                        JOIN dbo.BillLineItem bli ON bli.Id = blia.BillLineItemId
-                        JOIN dbo.Bill b ON b.Id = bli.BillId
-                        LEFT JOIN dbo.Vendor v ON v.Id = b.VendorId
-                        LEFT JOIN dbo.InvoiceLineItem ili ON ili.BillLineItemId = blia.BillLineItemId
-                        LEFT JOIN dbo.SubCostCode scc ON scc.Id = ili.SubCostCodeId
-                        WHERE blia.BillLineItemId IN ({ph})
-                    """, bill_ids)
-                    for row in cursor.fetchall():
-                        attachment_rows.append({
-                            "attachment_id": row.Id, "blob_url": row.BlobUrl,
-                            "content_type": row.ContentType, "file_extension": row.FileExtension,
-                            "original_filename": row.OriginalFilename,
-                            "vendor_name": row.VendorName, "parent_number": row.ParentNumber,
-                            "description": row.Description, "scc_number": row.SccNumber,
-                            "price": row.Price, "source_date": row.SourceDate,
-                        })
-
-                if expense_ids:
-                    ph = ",".join("?" * len(expense_ids))
-                    cursor.execute(f"""
-                        SELECT a.Id, a.BlobUrl, a.ContentType, a.FileExtension, a.OriginalFilename,
-                               ISNULL(v.Name, '') AS VendorName, e.ReferenceNumber AS ParentNumber,
-                               ISNULL(ili.Description, '') AS Description,
-                               ISNULL(scc.Number, '') AS SccNumber,
-                               ili.Price,
-                               CONVERT(VARCHAR(10), e.ExpenseDate, 120) AS SourceDate
-                        FROM dbo.ExpenseLineItemAttachment elia
-                        JOIN dbo.Attachment a ON a.Id = elia.AttachmentId
-                        JOIN dbo.ExpenseLineItem eli ON eli.Id = elia.ExpenseLineItemId
-                        JOIN dbo.Expense e ON e.Id = eli.ExpenseId
-                        LEFT JOIN dbo.Vendor v ON v.Id = e.VendorId
-                        LEFT JOIN dbo.InvoiceLineItem ili ON ili.ExpenseLineItemId = elia.ExpenseLineItemId
-                        LEFT JOIN dbo.SubCostCode scc ON scc.Id = ili.SubCostCodeId
-                        WHERE elia.ExpenseLineItemId IN ({ph})
-                    """, expense_ids)
-                    for row in cursor.fetchall():
-                        attachment_rows.append({
-                            "attachment_id": row.Id, "blob_url": row.BlobUrl,
-                            "content_type": row.ContentType, "file_extension": row.FileExtension,
-                            "original_filename": row.OriginalFilename,
-                            "vendor_name": row.VendorName, "parent_number": row.ParentNumber,
-                            "description": row.Description, "scc_number": row.SccNumber,
-                            "price": row.Price, "source_date": row.SourceDate,
-                        })
-
-                if credit_ids:
-                    ph = ",".join("?" * len(credit_ids))
-                    cursor.execute(f"""
-                        SELECT a.Id, a.BlobUrl, a.ContentType, a.FileExtension, a.OriginalFilename,
-                               ISNULL(v.Name, '') AS VendorName, bc.CreditNumber AS ParentNumber,
-                               ISNULL(ili.Description, '') AS Description,
-                               ISNULL(scc.Number, '') AS SccNumber,
-                               ili.Price,
-                               CONVERT(VARCHAR(10), bc.CreditDate, 120) AS SourceDate
-                        FROM dbo.BillCreditLineItemAttachment bclia
-                        JOIN dbo.Attachment a ON a.Id = bclia.AttachmentId
-                        JOIN dbo.BillCreditLineItem bcli ON bcli.Id = bclia.BillCreditLineItemId
-                        JOIN dbo.BillCredit bc ON bc.Id = bcli.BillCreditId
-                        LEFT JOIN dbo.Vendor v ON v.Id = bc.VendorId
-                        LEFT JOIN dbo.InvoiceLineItem ili ON ili.BillCreditLineItemId = bclia.BillCreditLineItemId
-                        LEFT JOIN dbo.SubCostCode scc ON scc.Id = ili.SubCostCodeId
-                        WHERE bclia.BillCreditLineItemId IN ({ph})
-                    """, credit_ids)
-                    for row in cursor.fetchall():
-                        attachment_rows.append({
-                            "attachment_id": row.Id, "blob_url": row.BlobUrl,
-                            "content_type": row.ContentType, "file_extension": row.FileExtension,
-                            "original_filename": row.OriginalFilename,
-                            "vendor_name": row.VendorName, "parent_number": row.ParentNumber,
-                            "description": row.Description, "scc_number": row.SccNumber,
-                            "price": row.Price, "source_date": row.SourceDate,
-                        })
-
-                if manual_public_ids:
-                    ph = ",".join("?" * len(manual_public_ids))
-                    cursor.execute(f"""
-                        SELECT a.Id, a.BlobUrl, a.ContentType, a.FileExtension, a.OriginalFilename,
-                               '' AS VendorName, '' AS ParentNumber,
-                               ISNULL(ili.Description, '') AS Description,
-                               ISNULL(scc.Number, '') AS SccNumber,
-                               ili.Price, '' AS SourceDate
-                        FROM dbo.InvoiceLineItemAttachment ilia
-                        JOIN dbo.Attachment a ON a.Id = ilia.AttachmentId
-                        JOIN dbo.InvoiceLineItem ili ON ili.Id = ilia.InvoiceLineItemId
-                        LEFT JOIN dbo.SubCostCode scc ON scc.Id = ili.SubCostCodeId
-                        WHERE ili.PublicId IN ({ph})
-                    """, manual_public_ids)
-                    for row in cursor.fetchall():
-                        attachment_rows.append({
-                            "attachment_id": row.Id, "blob_url": row.BlobUrl,
-                            "content_type": row.ContentType, "file_extension": row.FileExtension,
-                            "original_filename": row.OriginalFilename,
-                            "vendor_name": row.VendorName, "parent_number": row.ParentNumber,
-                            "description": row.Description, "scc_number": row.SccNumber,
-                            "price": row.Price, "source_date": row.SourceDate,
-                        })
-
-                cursor.close()
+            attachment_rows = self._collect_line_attachment_rows(
+                invoice=invoice, line_items=line_items
+            )
 
             # 3. Upload each unique attachment
             for row_data in attachment_rows:
@@ -1111,25 +1336,20 @@ class InvoiceService:
                     errors.append({"attachment_id": att_id, "error": "Missing blob URL"})
                     continue
 
-                vendor = row_data["vendor_name"] or ""
-                parent_num = row_data["parent_number"] or ""
-                description = row_data["description"] or ""
-                scc = row_data["scc_number"] or ""
-                price_str = f"${float(row_data['price']):,.2f}" if row_data["price"] is not None else ""
-                source_date = row_data["source_date"] or ""
+                from entities.invoice.business.naming import build_line_pdf_filename
 
-                filename_parts = [invoice_number, vendor, parent_num, description, scc, price_str, source_date]
-                base_filename = re.sub(r'[<>:"/\\|?*]', '_', " - ".join(p for p in filename_parts if p))
-
-                file_extension = row_data["file_extension"] or ""
-                if not file_extension and row_data["original_filename"] and "." in (row_data["original_filename"] or ""):
-                    file_extension = row_data["original_filename"].rsplit(".", 1)[-1]
-                if not file_extension and row_data["content_type"]:
-                    file_extension = {"application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif"}.get(row_data["content_type"], "")
-                if file_extension and not file_extension.startswith("."):
-                    file_extension = "." + file_extension
-
-                sharepoint_filename = base_filename + file_extension
+                sharepoint_filename = build_line_pdf_filename(
+                    invoice_number=invoice_number,
+                    vendor_name=row_data["vendor_name"],
+                    parent_number=row_data["parent_number"],
+                    description=row_data["description"],
+                    scc_number=row_data["scc_number"],
+                    price=row_data["price"],
+                    source_date=row_data["source_date"],
+                    file_extension=row_data["file_extension"],
+                    original_filename=row_data["original_filename"],
+                    content_type=row_data["content_type"],
+                )
 
                 try:
                     file_content, metadata = storage.download_file(blob_url)
@@ -1162,7 +1382,8 @@ class InvoiceService:
                     continue
                 try:
                     file_content, _ = storage.download_file(packet_att.blob_url)
-                    packet_filename = re.sub(r'[<>:"/\\|?*]', '_', invoice_number) + " - Packet.pdf"
+                    from entities.invoice.business.naming import build_packet_filename
+                    packet_filename = build_packet_filename(invoice_number)
                     upload_result = self.driveitem_service.upload_file(
                         drive_public_id=drive.public_id,
                         parent_item_id=upload_folder_item_id,

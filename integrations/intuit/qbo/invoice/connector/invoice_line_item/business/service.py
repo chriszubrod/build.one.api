@@ -108,11 +108,44 @@ class InvoiceLineItemConnector:
             if line_item:
                 logger.info(f"Updating existing InvoiceLineItem {line_item.id} from QboInvoiceLine {qbo_invoice_line.id}")
 
+                # Preserve an established source linkage (SourceType set by the
+                # reconciliation flow) across re-pulls. The gate is AMOUNT only:
+                # QBO owns the billing-material fields, and a description edit —
+                # on either side — must not unlink a reconciled line. (Comparing
+                # descriptions here conflated local polish edits with QBO changes
+                # and unlinked lines that hadn't changed in QBO at all.)
+                existing_source_type = getattr(line_item, "source_type", None)
+                amount_changed = (
+                    self._normalize_for_fingerprint(line_item.amount)
+                    != self._normalize_for_fingerprint(amount)
+                )
+                if existing_source_type and existing_source_type != "Manual" and amount_changed:
+                    logger.warning(
+                        f"InvoiceLineItem {line_item.id} amount differs from QBO "
+                        f"({line_item.amount!r} -> {amount!r}); resetting SourceType "
+                        f"{existing_source_type!r} -> 'Manual' (re-link required)"
+                    )
+                    # The abandoned source must become billable again — otherwise
+                    # the corrected charge can never be re-billed (its old source
+                    # stays IsBilled=1 and never reappears in billable-items).
+                    try:
+                        self.invoice_service._reset_source_as_unbilled(line_item)
+                    except Exception as unbill_error:
+                        logger.warning(
+                            f"Could not un-bill abandoned source for "
+                            f"InvoiceLineItem {line_item.id}: {unbill_error}"
+                        )
+                source_type = (
+                    existing_source_type
+                    if existing_source_type and not amount_changed
+                    else "Manual"
+                )
+
                 line_item = self.invoice_line_item_service.update_by_public_id(
                     line_item.public_id,
                     row_version=line_item.row_version,
                     invoice_public_id=invoice_public_id,
-                    source_type="Manual",
+                    source_type=source_type,
                     description=description,
                     amount=Decimal(str(amount)) if amount is not None else None,
                     markup=Decimal(str(markup)) if markup is not None else None,

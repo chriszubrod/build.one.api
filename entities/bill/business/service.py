@@ -118,6 +118,17 @@ def find_insertion_row_for_subcostcode(worksheet_values: List[List[Any]], target
     return first_match_row + 2
 
 
+# ---------------------------------------------------------------------------
+# QBO deep-link URL builder.
+# ---------------------------------------------------------------------------
+# Module-level + pure so the test surface is trivial. Realm is included in the
+# query string so the link 404s cleanly (instead of opening a stranger's
+# company file) when the user's last QBO session was a different realm.
+
+def _build_qbo_bill_url(qbo_id: str, realm_id: str) -> str:
+    return f"https://app.qbo.intuit.com/app/bill?txnId={qbo_id}&realmId={realm_id}"
+
+
 class BillService:
     """
     Service for Bill entity business operations.
@@ -195,7 +206,8 @@ class BillService:
                line_markup: Optional[Decimal] = None, line_price: Optional[Decimal] = None,
                line_is_billable: Optional[bool] = None,
                line_sub_cost_code_id: Optional[int] = None,
-               line_project_public_id: Optional[str] = None) -> Bill:
+               line_project_public_id: Optional[str] = None,
+               submit_for_review: Optional[bool] = None) -> Bill:
         """
         Create a new bill.
 
@@ -458,7 +470,13 @@ class BillService:
         # notification uniformly. Failures don't roll back the bill (a
         # missing review row is recoverable via the manual Submit endpoint;
         # a missing bill is not).
-        if is_draft and user_id is not None and line_project_public_id is not None:
+        # Per-caller opt-out. Manual UI's Save For Later button sends
+        # submit_for_review=False so the user can save a fully-coded draft
+        # without triggering the review notification. True or None falls
+        # through to the standard gate below — preserving the email
+        # pipeline's existing fire-on-create-with-project behavior, and
+        # the manual UI's Submit For Review button explicit-on path.
+        if is_draft and user_id is not None and line_project_public_id is not None and submit_for_review is not False:
             try:
                 from entities.review.business.service import ReviewService
                 from entities.review_status.business.service import ReviewStatusService
@@ -575,6 +593,22 @@ class BillService:
             return None
         assert_can_access_bill(bill.id)
         return bill
+
+    def get_qbo_bill_url(self, bill_id: int) -> Optional[str]:
+        """
+        Return a clickable deep link to the bill in QuickBooks Online, or
+        None if the bill has no synced QBO counterpart yet (drafted but
+        not pushed). Realm is included so the link 404s cleanly when the
+        active QBO session belongs to a different realm.
+
+        Used by `GET /api/v1/get/bill/{public_id}` to attach
+        `qbo_bill_url` to the response.
+        """
+        assert_can_access_bill(bill_id)
+        info = self.repo.read_qbo_link_info(bill_id=bill_id)
+        if not info:
+            return None
+        return _build_qbo_bill_url(info["qbo_id"], info["qbo_realm_id"])
 
     def read_by_bill_number(self, bill_number: str) -> Optional[Bill]:
         """
@@ -1649,8 +1683,11 @@ class BillService:
         Mirrors the SharePoint module-folder upload: one enqueue per unique
         (project, attachment) pair, routed to the project's mapped Box
         folder. Projects without a Box mapping are skipped (one info log
-        per project). Additive + failure-isolated — any exception is logged
-        and swallowed so Box can never affect the completion flow.
+        per project). Filename shape MATCHES SharePoint (via the shared
+        `_build_module_filename` helper — public_ids are for blob storage
+        only per Chris' 2026-07-02 call). Additive + failure-isolated —
+        any exception is logged and swallowed so Box can never affect the
+        completion flow.
         """
         import os as _os
         if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
@@ -1665,7 +1702,12 @@ class BillService:
             folder_service = BoxProjectFolderService()
             box_outbox = BoxOutboxService()
             mapping_cache: dict = {}  # project_id -> mapping dict or None
+            project_cache: dict = {}  # project_id -> project object (for filename)
             enqueued_keys = set()  # (project_id, attachment_id)
+            bill_line_items_count = len(line_items)
+
+            # Look up vendor once per bill (needed by _build_module_filename).
+            vendor = self.vendor_service.read_by_id(id=bill.vendor_id) if bill.vendor_id else None
 
             for line_item in line_items:
                 try:
@@ -1693,12 +1735,31 @@ class BillService:
                     attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
                     if not attachment or not attachment.blob_url:
                         continue
+
+                    # Project lookup for the human-readable filename (cache per-bill).
+                    if project_id not in project_cache:
+                        project_cache[project_id] = self.project_service.read_by_id(id=str(project_id))
+                    project = project_cache[project_id]
+
+                    box_filename = self._build_module_filename(
+                        bill=bill,
+                        line_item=line_item,
+                        vendor=vendor,
+                        project=project,
+                        bill_line_items_count=bill_line_items_count,
+                        attachment=attachment,
+                    )
+                    # Fallback if the helper produced an empty base (missing vendor/
+                    # project/etc.) — never enqueue a bare `.pdf` or empty name.
+                    if not box_filename or box_filename in (".pdf", ".", "."):
+                        box_filename = attachment.original_filename or attachment.filename or "document"
+
                     box_outbox.enqueue_box_upload(
                         entity_type="bill",
                         entity_public_id=str(bill.public_id),
                         doc_kind="attachment",
                         blob_path=attachment.blob_url,
-                        filename=attachment.original_filename or attachment.filename or "document",
+                        filename=box_filename,
                         content_type=attachment.content_type or "application/octet-stream",
                         box_folder_id=mapping["box_folder_id"],
                         attachment_id=attachment.id,
@@ -2046,7 +2107,12 @@ class BillService:
                             bill.bill_number or "",                                      # K: Bill Number
                             line_item.description or "",                                 # L: Description
                             "Bill",                                                      # M: Type
-                            float(line_item.price) if line_item.price is not None else 0, # N: Price (numeric for Excel formulas)
+                            # N: prefer Price; fall back to Amount when Price is NULL so
+                            # QBO-pulled account-based lines don't land as $0 (same rule
+                            # as sync_bills_batch_to_excel).
+                            float(line_item.price) if line_item.price is not None
+                            else float(line_item.amount) if getattr(line_item, "amount", None) is not None
+                            else 0,
                             "", "", "", "", "", "", "", "", "", "", "",                   # O-Y: Empty
                             str(line_item.public_id) if line_item.public_id else ""      # Z: Reconciliation key
                         ]
@@ -2370,6 +2436,124 @@ class BillService:
             if session_id:
                 close_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id, session_id=session_id)
 
+    def _build_module_filename(
+        self,
+        *,
+        bill,
+        line_item,
+        vendor,
+        project,
+        bill_line_items_count: int,
+        attachment,
+    ) -> str:
+        """
+        Build the human-scannable filename for uploading a bill's attachment
+        to an external document store — SharePoint's `14 - Invoices` folder
+        AND Box's mapped project folder (same shape across both surfaces per
+        Chris' 2026-07-02 call: public_ids are for blob storage only, never
+        the external-facing filename).
+
+        Single-line-item bills:
+          {ProjectAbbrev} - {VendorAbbrev} - {BillNumber} - {SubCostCode.Name}
+             - {SubCostCode.Number} - {Price} - {BillDate}.{ext}
+
+        Multi-line-item bills (bill_line_items_count > 1):
+          {ProjectAbbrev} - {VendorAbbrev} - {BillNumber} - Multiple See Image
+             - {Bill.TotalAmount} - {BillDate}.{ext}
+
+        The multi-line branch collapses BOTH the SubCostCode Name and Number
+        slots into the single "Multiple See Image" placeholder — different
+        line items on the same bill may hit different SCCs, and pointing at
+        the PDF for the breakdown is safer than picking one.
+
+        Illegal chars are `_`-replaced (SharePoint/Box overlap). Extension
+        comes from attachment.file_extension → original_filename → content_type
+        in that order of fallback.
+        """
+        # Get SubCostCode
+        sub_cost_code_number = ""
+        sub_cost_code_name = ""
+        if line_item.sub_cost_code_id:
+            sub_cost_code = self.sub_cost_code_service.read_by_id(id=str(line_item.sub_cost_code_id))
+            if sub_cost_code:
+                sub_cost_code_number = sub_cost_code.number or ""
+                sub_cost_code_name = sub_cost_code.name or ""
+
+        project_identifier = ""
+        if project is not None:
+            project_identifier = project.abbreviation or project.name or ""
+        vendor_abbreviation = ""
+        if vendor is not None:
+            vendor_abbreviation = vendor.abbreviation or vendor.name or ""
+        bill_number = bill.bill_number or ""
+
+        # Price (per-line, for the single-line branch)
+        price_str = ""
+        if line_item.price is not None:
+            try:
+                price_str = f"${Decimal(str(line_item.price)):,.2f}"
+            except Exception:
+                price_str = f"${line_item.price}"
+
+        # Bill date as mm-dd-yyyy
+        bill_date_str = ""
+        if bill.bill_date:
+            try:
+                d = bill.bill_date[:10]
+                parts = d.split("-")
+                bill_date_str = f"{parts[1]}-{parts[2]}-{parts[0]}" if len(parts) == 3 else d
+            except Exception:
+                bill_date_str = bill.bill_date[:10]
+
+        if bill_line_items_count > 1:
+            amount_str = ""
+            if bill.total_amount is not None:
+                try:
+                    amount_str = f"${Decimal(str(bill.total_amount)):,.2f}"
+                except Exception:
+                    amount_str = f"${bill.total_amount}"
+            filename_parts = [
+                project_identifier,
+                vendor_abbreviation,
+                bill_number,
+                "Multiple See Image",
+                amount_str,
+                bill_date_str,
+            ]
+        else:
+            filename_parts = [
+                project_identifier,
+                vendor_abbreviation,
+                bill_number,
+                sub_cost_code_name,
+                sub_cost_code_number,
+                price_str,
+                bill_date_str,
+            ]
+        filename_parts = [p for p in filename_parts if p]
+        base_filename = " - ".join(filename_parts)
+        base_filename = re.sub(r'[<>:"/\\|?*]', '_', base_filename)
+
+        # Extension resolution: file_extension → original_filename → content_type map
+        file_extension = attachment.file_extension or ""
+        if not file_extension and attachment.original_filename and "." in attachment.original_filename:
+            file_extension = attachment.original_filename.rsplit(".", 1)[-1]
+        if not file_extension and attachment.content_type:
+            content_type_map = {
+                "application/pdf": "pdf",
+                "image/jpeg": "jpg",
+                "image/png": "png",
+                "image/gif": "gif",
+                "application/msword": "doc",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+                "application/vnd.ms-excel": "xls",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+            }
+            file_extension = content_type_map.get(attachment.content_type, "")
+        if file_extension and not file_extension.startswith("."):
+            file_extension = "." + file_extension
+        return base_filename + file_extension
+
     def _upload_attachments_to_module_folder(
         self,
         bill,
@@ -2508,97 +2692,18 @@ class BillService:
                         })
                         continue
 
-                    # Get SubCostCode for filename
-                    sub_cost_code_number = ""
-                    sub_cost_code_name = ""
-                    if line_item.sub_cost_code_id:
-                        sub_cost_code = self.sub_cost_code_service.read_by_id(id=str(line_item.sub_cost_code_id))
-                        if sub_cost_code:
-                            sub_cost_code_number = sub_cost_code.number or ""
-                            sub_cost_code_name = sub_cost_code.name or ""
-                    
-                    # Generate SharePoint filename using final Bill/BillLineItem values
-                    # When bill has >1 line item: {Project} - {Vendor} - {BillNumber} - Multiple See Image - {Amount} - {Date}
-                    project_identifier = project.abbreviation or project.name or ""
-                    vendor_abbreviation = vendor.abbreviation or vendor.name or ""
-                    bill_number = bill.bill_number or ""
-                    # Format price with $ and commas (e.g., $10,000.00)
-                    price = ""
-                    if line_item.price is not None:
-                        try:
-                            price = f"${Decimal(str(line_item.price)):,.2f}"
-                        except Exception:
-                            price = f"${line_item.price}"
-                    # Format date as mm-dd-yyyy
-                    bill_date = ""
-                    if bill.bill_date:
-                        try:
-                            date_str = bill.bill_date[:10]
-                            parts = date_str.split("-")
-                            if len(parts) == 3:
-                                bill_date = f"{parts[1]}-{parts[2]}-{parts[0]}"  # mm-dd-yyyy
-                            else:
-                                bill_date = bill.bill_date[:10]
-                        except Exception:
-                            bill_date = bill.bill_date[:10]  # Fallback to original
-                    if bill_line_items_count > 1:
-                        amount_str = ""
-                        if bill.total_amount is not None:
-                            try:
-                                amount_str = f"${Decimal(str(bill.total_amount)):,.2f}"
-                            except Exception:
-                                amount_str = f"${bill.total_amount}"
-                        filename_parts = [
-                            project_identifier,
-                            vendor_abbreviation,
-                            bill_number,
-                            "Multiple See Image",
-                            amount_str,
-                            bill_date
-                        ]
-                    else:
-                        # Single-line: use SubCostCode.Name (bounded) instead of
-                        # line_item.description (unbounded). See sibling comment
-                        # in _upload_attachments_to_module_folder above for context —
-                        # a Contract Labor line rolling up N days of tasks used to
-                        # blow past SharePoint's 400-char URL-path limit.
-                        filename_parts = [
-                            project_identifier,
-                            vendor_abbreviation,
-                            bill_number,
-                            sub_cost_code_name,
-                            sub_cost_code_number,
-                            price,
-                            bill_date
-                        ]
-                    filename_parts = [part for part in filename_parts if part]
-                    base_filename = " - ".join(filename_parts)
-                    base_filename = re.sub(r'[<>:"/\\|?*]', '_', base_filename)
-                    
-                    # Get file extension - try multiple sources
-                    file_extension = attachment.file_extension or ""
-                    if not file_extension and attachment.original_filename:
-                        # Try to extract from original filename
-                        if '.' in attachment.original_filename:
-                            file_extension = attachment.original_filename.rsplit('.', 1)[-1]
-                    if not file_extension and attachment.content_type:
-                        # Try to infer from content type
-                        content_type_map = {
-                            'application/pdf': 'pdf',
-                            'image/jpeg': 'jpg',
-                            'image/png': 'png',
-                            'image/gif': 'gif',
-                            'application/msword': 'doc',
-                            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
-                            'application/vnd.ms-excel': 'xls',
-                            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
-                        }
-                        file_extension = content_type_map.get(attachment.content_type, '')
-                    
-                    if file_extension and not file_extension.startswith("."):
-                        file_extension = "." + file_extension
-                    
-                    sharepoint_filename = base_filename + file_extension
+                    # Filename shape is shared with Box uploads — see
+                    # `_build_module_filename` docstring for the two branches
+                    # (single-line uses SubCostCode.Name; multi-line collapses to
+                    # "Multiple See Image").
+                    sharepoint_filename = self._build_module_filename(
+                        bill=bill,
+                        line_item=line_item,
+                        vendor=vendor,
+                        project=project,
+                        bill_line_items_count=bill_line_items_count,
+                        attachment=attachment,
+                    )
                     
                     # Determine content_type (needed by the worker to set upload
                     # Content-Type header). We trust `attachment.content_type`

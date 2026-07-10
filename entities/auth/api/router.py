@@ -92,6 +92,7 @@ def _log_refresh_rejection(*, surface: str, reason: str, token: Optional[str]) -
 
 def _set_auth_cookies(*, response: Response, access_token, refresh_token) -> None:
     secure_cookie = _secure_cookie_enabled()
+    csrf_domain = 'bld-one.com' if secure_cookie else None
     response.set_cookie(
         key=ACCESS_COOKIE_NAME,
         value=access_token.access_token,
@@ -119,13 +120,16 @@ def _set_auth_cookies(*, response: Response, access_token, refresh_token) -> Non
         samesite="lax",
         max_age=refresh_token.expires_in,
         path="/",
+        domain=csrf_domain,
     )
 
 
 def _clear_auth_cookies(*, response: Response) -> None:
+    secure_cookie = _secure_cookie_enabled()
+    csrf_domain = 'bld-one.com' if secure_cookie else None
     response.delete_cookie(ACCESS_COOKIE_NAME, path="/")
     response.delete_cookie(REFRESH_COOKIE_NAME, path="/")
-    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
+    response.delete_cookie(CSRF_COOKIE_NAME, path="/", domain=csrf_domain)
 
 
 @router.post("/create/auth")

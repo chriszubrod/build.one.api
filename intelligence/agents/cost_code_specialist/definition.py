@@ -29,7 +29,7 @@ cost_code_specialist = Agent(
         "delete_cost_code",
     ),
     model="claude-sonnet-4-6",
-    provider="anthropic",
+    provider="cascade",
     credentials_key="cost_code_agent",
     budget=BudgetPolicy(max_turns=10, max_tokens=120_000),
     description="Specialist for CostCode catalog + SubCostCode relationships.",

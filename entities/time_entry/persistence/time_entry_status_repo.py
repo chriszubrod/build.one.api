@@ -120,6 +120,43 @@ class TimeEntryStatusRepository:
             logger.error(f"Error during read time entry statuses by time entry ID: {error}")
             raise map_database_error(error)
 
+    def read_current_by_time_entry_ids(
+        self, time_entry_ids: list[int]
+    ) -> dict[int, TimeEntryStatus]:
+        """
+        Batch-read the current (most recent) TimeEntryStatus per TimeEntry
+        for a list of IDs in a single sproc call. Returns a dict keyed by
+        time_entry_id; entries with no status row are absent from the dict.
+
+        Unscoped by actor — same rationale as read_by_time_entry_ids on
+        TimeLogRepository: caller must have already constrained the ID set
+        (list endpoint's parent read is actor-scoped). Kills the N+1 in
+        the list endpoint's _entry_dict_with_current_status helper.
+        """
+        if not time_entry_ids:
+            return {}
+        csv = ",".join(str(int(i)) for i in time_entry_ids if i is not None)
+        if not csv:
+            return {}
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadCurrentTimeEntryStatusesByTimeEntryIds",
+                    params={"TimeEntryIds": csv},
+                )
+                out: dict[int, TimeEntryStatus] = {}
+                for row in cursor.fetchall():
+                    status = self._from_db(row)
+                    if status is None or status.time_entry_id is None:
+                        continue
+                    out[int(status.time_entry_id)] = status
+                return out
+        except Exception as error:
+            logger.error(f"Error during ReadCurrentTimeEntryStatusesByTimeEntryIds: {error}")
+            raise map_database_error(error)
+
     def read_current(
         self,
         time_entry_id: int,

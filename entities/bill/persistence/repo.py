@@ -278,6 +278,36 @@ class BillRepository:
             logger.error(f"Error during read bill by public ID: {error}")
             raise map_database_error(error)
 
+    def read_qbo_link_info(self, bill_id: int) -> Optional[dict]:
+        """
+        Read the Intuit (QboId, RealmId) for the bill's first QBO-synced
+        line item — used by the service to build a deep link to the bill
+        in the QuickBooks Online web app.
+
+        Returns None when no line item is mapped to QBO yet (i.e. the
+        bill has been drafted locally but not pushed). Powered by
+        `dbo.ReadBillQboLinkInfo`.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadBillQboLinkInfo",
+                    params={"BillId": bill_id},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                qbo_id = getattr(row, "QboId", None)
+                realm_id = getattr(row, "QboRealmId", None)
+                if not qbo_id or not realm_id:
+                    return None
+                return {"qbo_id": qbo_id, "qbo_realm_id": realm_id}
+        except Exception as error:
+            logger.error(f"Error during read bill QBO link info: {error}")
+            raise map_database_error(error)
+
     def read_by_bill_number(self, bill_number: str) -> Optional[Bill]:
         """
         Read a bill by bill number.

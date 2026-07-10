@@ -645,24 +645,7 @@ class BillCreditCompleteService:
                     synced_count += 1
                     uploaded_item = upload_result.get("item", {})
                     logger.info(f"Uploaded to SharePoint: '{sharepoint_filename}' (item_id: {uploaded_item.get('item_id')})")
-                    
-                    # Store the DriveItem-Attachment mapping for direct lookup later
-                    ms_driveitem_id = uploaded_item.get("id")
-                    if ms_driveitem_id and attachment.id:
-                        try:
-                            from integrations.ms.sharepoint.driveitem.connector.attachment.business.service import DriveItemAttachmentConnector
-                            attachment_connector = DriveItemAttachmentConnector()
-                            link_result = attachment_connector.link_driveitem_to_attachment(
-                                attachment_id=attachment.id,
-                                ms_driveitem_id=ms_driveitem_id
-                            )
-                            if link_result.get("status_code") in [200, 201]:
-                                logger.info(f"Linked attachment {attachment.id} to DriveItem {ms_driveitem_id}")
-                            else:
-                                logger.warning(f"Could not link attachment to DriveItem: {link_result.get('message')}")
-                        except Exception as link_error:
-                            logger.warning(f"Error linking attachment to DriveItem: {link_error}")
-                    
+
                 except Exception as e:
                     logger.exception(f"Error processing line item {line_item.id}")
                     errors.append({

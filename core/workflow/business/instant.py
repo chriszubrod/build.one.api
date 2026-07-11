@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 import importlib
+import inspect
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -18,6 +19,29 @@ from core.workflow.api.process_engine import TriggerContext
 from shared.authz import current_user_id
 
 logger = logging.getLogger(__name__)
+
+
+def _build_service_kwargs(method, tenant_id, kwargs):
+    """Return kwargs with tenant_id injected ONLY if the bound service method accepts it.
+
+    The instant-workflow dispatcher injects tenant_id into every create/update/delete
+    service call for tenant isolation. A method that lacks a 'tenant_id' parameter AND
+    has no **kwargs would raise TypeError on the extra keyword -> caught by the handler
+    -> router returns 400. Inspect the signature first and inject only when accepted
+    (explicit 'tenant_id' param OR a VAR_KEYWORD/**kwargs param). Otherwise return kwargs
+    unchanged. No-op for all current services (every method already accepts tenant_id).
+    """
+    try:
+        params = inspect.signature(method).parameters
+        accepts_tenant = any(
+            p.name == "tenant_id" or p.kind is inspect.Parameter.VAR_KEYWORD
+            for p in params.values()
+        )
+        if accepts_tenant:
+            return {"tenant_id": tenant_id, **kwargs}
+        return dict(kwargs)
+    except (ValueError, TypeError):
+        return {"tenant_id": tenant_id, **kwargs}
 
 
 # =============================================================================
@@ -354,9 +378,9 @@ class InstantWorkflowHandler:
             method_name = self._get_method_name(operation)
             method = getattr(service, method_name)
 
-            # Inject tenant_id from context into kwargs for tenant isolation
-            # Services should accept tenant_id as a keyword argument
-            kwargs_with_tenant = {"tenant_id": context.tenant_id, **kwargs}
+            # Inject tenant_id only if the service method accepts it (signature-aware);
+            # a method lacking tenant_id AND **kwargs would otherwise TypeError -> 400.
+            kwargs_with_tenant = _build_service_kwargs(method, context.tenant_id, kwargs)
 
             # Call the service method
             result = method(**kwargs_with_tenant)

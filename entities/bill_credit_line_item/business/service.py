@@ -28,6 +28,7 @@ class BillCreditLineItemService:
     def create(
         self,
         *,
+        tenant_id: Optional[int] = None,
         bill_credit_public_id: str,
         sub_cost_code_id: Optional[int] = None,
         project_public_id: Optional[str] = None,
@@ -171,7 +172,7 @@ class BillCreditLineItemService:
 
         return self.repo.update_by_id(existing)
 
-    def delete_by_public_id(self, public_id: str) -> Optional[BillCreditLineItem]:
+    def delete_by_public_id(self, public_id: str, *, tenant_id: Optional[int] = None) -> Optional[BillCreditLineItem]:
         """
         Delete a bill credit line item by public ID.
 

@@ -2,6 +2,10 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## 🟠 Stand up the `build.one.api` test harness (owner: SDET / `/sdet`)
+
+- [ ] **`build.one.api` has NO tests** (verified 2026-07-10: no `tests/`, no co-located `*_test.py`, no pytest config), so `python3 -m pytest` exits **5 "no tests collected"** — which the pipeline treats as warning-not-fail = a **silent pass hiding zero coverage**. Create `tests/` + `conftest.py` (fixtures/factories) so exit-5 becomes a genuine pass/fail, then backfill **risk-first: money math (`Decimal`-never-`float`) → sprocs (NULL-overwrite guard, `SET NOCOUNT ON`, no in-sproc `ROLLBACK`, FK cleanup order) → RBAC scoping (UserProject / `set_authz_context`) → QBO mappings (`BillLineItemBillLine`, `qbo.*.Id` ≠ `dbo.*.Id`)**. Regression test per Correctness-Reviewer finding going forward. Context: the other repos already have suites (ios `BuildOneTests/` ~38 per-service files · web co-located `src/**/*.test.ts` vitest · mcp `tests/` pytest) — **api + scheduler are the gap.** Full playbook: `build.one.team/prompts/test-automation.md`.
+
 ## ✅ RESOLVED 2026-07-10 — `master` reconciled to the prod line; it is now the canonical trunk
 
 The former landmine (`master` was divergent + stale and would hard-regress prod) is **fixed**. On 2026-07-10 `master` was merged with `feat/model-cascade`, resolving the whole tree to the prod lineage, so `master`'s tree is now **byte-identical** to `feat/model-cascade` and the live `:latest` commit `4b13d1f` is an **ancestor of both** (`git merge-base --is-ancestor 4b13d1f master` → true). `master`/`origin/master` are converged and safe; **deploy from `master` going forward.** `feat/model-cascade` is now a redundant mirror carrying only the in-flight Path-B work below and is **slated for retirement** once that lands on `master`.

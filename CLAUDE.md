@@ -4,6 +4,11 @@ At the start of each session, read SESSION_NOTES.md for historical context.
 
 - **Plan before coding.** Propose a step-by-step plan and wait for approval before writing any code. Do not start implementing until the plan is confirmed.
 
+## Testing
+
+- **Run the suite under the project venv, NOT system `python3`:** `./.venv/bin/python -m pytest` (Python 3.11 with `requirements.txt` installed). A bare `python3` may resolve to a system interpreter missing deps (`fastapi`, `transitions`, …) — app-importing tests then error at collection and pure-logic tests give a misleading green. `tests/conftest.py::pytest_configure` fails fast with this guidance if the wrong interpreter is used. Config: `[tool.pytest.ini_options]` in `pyproject.toml` (`testpaths=['tests']`).
+- **v1 harness (2026-07-11) is pure-logic / no-live-DB** — money math (`Decimal`-not-float), contract-labor bill math, naming, response envelopes, and the instant-workflow `tenant_id` dispatch contract. DB-integration tests (sprocs/pyodbc) are a separate future unit.
+
 ## Architecture Decisions (April 2026)
 
 - **Multi-repo structure.** The project is split into three repos under `/Users/chris/Applications/build.one/`: `build.one.api` (this repo), `build.one.web` (React frontend), `build.one.ios` (iOS app). Each is an independent GitHub repo.

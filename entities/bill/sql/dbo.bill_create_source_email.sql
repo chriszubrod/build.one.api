@@ -48,7 +48,7 @@ BEGIN
         INSERTED.[IntakeSource],
         INSERTED.[IntakeSourceDetail],
         INSERTED.[SourceEmailMessageId]
-    VALUES (@Now, @Now, @VendorId, @PaymentTermId, @BillDate, @DueDate,
+    VALUES (@Now, @Now, @VendorId, @PaymentTermId, @BillDate, @BillDate,
             @BillNumber, @TotalAmount, @Memo, @IsDraft, @IntakeSource,
             @IntakeSourceDetail, @SourceEmailMessageId,
             COALESCE(@CreatedByUserId, 17));

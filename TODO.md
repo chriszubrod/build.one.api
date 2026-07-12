@@ -790,7 +790,7 @@ Follow-ups / post-purge:
 - [ ] Remove `apscheduler` from `requirements.txt` and `requirements-prod.txt`
 - [ ] Memory savings: probably 50–100 MB per worker after the scheduler imports are gone
 - [ ] Keep `ENABLE_SCHEDULER` env var for at least one more deploy cycle so rollback is still available; remove the code+flag together
-- [ ] Delete duplicate `read_paginated`/`count` in `entities/bill/persistence/repo.py` (lines 123 & 328, 161 & 369). The first definition of each is dead code — the second wins due to Python attribute order
+- [x] Delete duplicate `read_paginated`/`count` in `entities/bill/persistence/repo.py` (lines 123 & 328, 161 & 369). The first definition of each is dead code — the second wins due to Python attribute order — **DONE 2026-07-12:** deleted the dead first defs (`get_connection()` versions); live `_conn_ctx` supersets kept (retain `ActorUserId`/`ActorIsSystemAdmin` UserProject scoping). AST regression test `tests/test_bill_repo_no_shadowed_methods.py` locks against re-introduction. Codex xhigh review PASS (behavior-preserving confirmed).
 
 ## Box Excel follow-ups (2026-07-06)
 

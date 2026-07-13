@@ -135,6 +135,128 @@ class ReconciliationService:
         )
         return {"run_id": run_id, **counts}
 
+    def reconcile_purchases(self, realm_id: str) -> dict:
+        """
+        Full-scan reconciliation for Purchases (Expenses).
+
+        Detectors run in this order:
+          1. qbo_missing_locally — auto-fix (pull)
+          2. qbo_voided — flag local Expenses whose QBO counterpart no longer exists
+        """
+        run_id = str(uuid.uuid4())
+        logger.info(
+            "qbo.reconcile.run.started",
+            extra={
+                "event_name": "qbo.reconcile.run.started",
+                "operation_name": "qbo.reconcile.purchase",
+                "entity_type": "Purchase",
+                "realm_id": realm_id,
+                "reconcile_run_id": run_id,
+            },
+        )
+
+        counts = {"auto_fixed": 0, "flagged": 0, "errors": 0}
+
+        try:
+            d1 = self._reconcile_purchase_qbo_missing_locally(
+                realm_id=realm_id, run_id=run_id
+            )
+            for key in ("auto_fixed", "flagged", "errors"):
+                counts[key] += d1.get(key, 0)
+        except Exception:
+            logger.exception("qbo.reconcile.detector.failed",
+                             extra={"detector": "purchase_qbo_missing_locally",
+                                    "reconcile_run_id": run_id})
+            counts["errors"] += 1
+
+        try:
+            d2 = self._reconcile_purchase_qbo_voided(
+                realm_id=realm_id, run_id=run_id
+            )
+            for key in ("auto_fixed", "flagged", "errors"):
+                counts[key] += d2.get(key, 0)
+        except Exception:
+            logger.exception("qbo.reconcile.detector.failed",
+                             extra={"detector": "purchase_qbo_voided",
+                                    "reconcile_run_id": run_id})
+            counts["errors"] += 1
+
+        logger.info(
+            "qbo.reconcile.run.completed",
+            extra={
+                "event_name": "qbo.reconcile.run.completed",
+                "operation_name": "qbo.reconcile.purchase",
+                "entity_type": "Purchase",
+                "realm_id": realm_id,
+                "reconcile_run_id": run_id,
+                "auto_fixed": counts["auto_fixed"],
+                "flagged": counts["flagged"],
+                "errors": counts["errors"],
+            },
+        )
+        return {"run_id": run_id, **counts}
+
+    def reconcile_vendor_credits(self, realm_id: str) -> dict:
+        """
+        Full-scan reconciliation for VendorCredits (BillCredits).
+
+        Detectors run in this order:
+          1. qbo_missing_locally — auto-fix (pull)
+          2. qbo_voided — flag local BillCredits whose QBO counterpart no longer exists
+        """
+        run_id = str(uuid.uuid4())
+        logger.info(
+            "qbo.reconcile.run.started",
+            extra={
+                "event_name": "qbo.reconcile.run.started",
+                "operation_name": "qbo.reconcile.vendor_credit",
+                "entity_type": "VendorCredit",
+                "realm_id": realm_id,
+                "reconcile_run_id": run_id,
+            },
+        )
+
+        counts = {"auto_fixed": 0, "flagged": 0, "errors": 0}
+
+        try:
+            d1 = self._reconcile_vendor_credit_qbo_missing_locally(
+                realm_id=realm_id, run_id=run_id
+            )
+            for key in ("auto_fixed", "flagged", "errors"):
+                counts[key] += d1.get(key, 0)
+        except Exception:
+            logger.exception("qbo.reconcile.detector.failed",
+                             extra={"detector": "vendor_credit_qbo_missing_locally",
+                                    "reconcile_run_id": run_id})
+            counts["errors"] += 1
+
+        try:
+            d2 = self._reconcile_vendor_credit_qbo_voided(
+                realm_id=realm_id, run_id=run_id
+            )
+            for key in ("auto_fixed", "flagged", "errors"):
+                counts[key] += d2.get(key, 0)
+        except Exception:
+            logger.exception("qbo.reconcile.detector.failed",
+                             extra={"detector": "vendor_credit_qbo_voided",
+                                    "reconcile_run_id": run_id})
+            counts["errors"] += 1
+
+        logger.info(
+            "qbo.reconcile.run.completed",
+            extra={
+                "event_name": "qbo.reconcile.run.completed",
+                "operation_name": "qbo.reconcile.vendor_credit",
+                "entity_type": "VendorCredit",
+                "realm_id": realm_id,
+                "reconcile_run_id": run_id,
+                "auto_fixed": counts["auto_fixed"],
+                "flagged": counts["flagged"],
+                "errors": counts["errors"],
+            },
+        )
+        return {"run_id": run_id, **counts}
+
     def reconcile_invoice_draws(self, realm_id: str) -> dict:
         """
         Daily DB-side invariant check for customer invoices (the InvoiceAgent
@@ -467,6 +589,350 @@ class ReconciliationService:
                     logger.exception(
                         f"qbo.reconcile.bill_qbo_voided.detector_error for "
                         f"qbo_id={local_qbo_bill.qbo_id}"
+                    )
+
+        return {"auto_fixed": 0, "flagged": flagged, "errors": errors}
+
+    def _reconcile_purchase_qbo_missing_locally(self, realm_id: str, run_id: str) -> dict:
+        """
+        Full-scan QBO for all Purchases. For any QBO Purchase not mapped locally,
+        pull it into the local cache via the existing sync_from_qbo flow
+        and record an auto-fix issue.
+        """
+        from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
+        from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
+        from integrations.intuit.qbo.purchase.connector.expense.business.service import (
+            PurchaseExpenseConnector,
+        )
+        from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import (
+            PurchaseExpenseRepository,
+        )
+        from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
+
+        autofix_enabled = os.getenv("QBO_RECONCILE_PURCHASE_AUTOFIX", "false").strip().lower() == "true"
+
+        mapping_repo = PurchaseExpenseRepository()
+        qbo_purchase_repo = QboPurchaseRepository()
+        qbo_purchase_service = QboPurchaseService()
+        connector = PurchaseExpenseConnector()
+
+        auto_fixed = 0
+        errors = 0
+        missing = 0
+        skipped_unmapped = 0
+
+        with QboPurchaseClient(realm_id=realm_id) as client:
+            qbo_purchases = client.query_all_purchases()
+
+        logger.info(
+            f"Reconciliation fetched {len(qbo_purchases)} purchases from QBO for realm {realm_id} "
+            f"(autofix_enabled={autofix_enabled})"
+        )
+
+        for qbo_purchase in qbo_purchases:
+            try:
+                local = qbo_purchase_repo.read_by_qbo_id(qbo_purchase.id)
+                if local:
+                    mapping = mapping_repo.read_by_qbo_purchase_id(local.id)
+                    if mapping:
+                        continue
+
+                missing += 1
+                if not autofix_enabled:
+                    continue
+
+                try:
+                    local_purchase, lines = qbo_purchase_service.upsert_from_external(
+                        qbo_purchase, realm_id
+                    )
+                    connector.sync_from_qbo_purchase(
+                        qbo_purchase=local_purchase, qbo_purchase_lines=lines
+                    )
+                    auto_fixed += 1
+                    self._record_issue(
+                        drift_type=DRIFT_QBO_MISSING_LOCALLY,
+                        action="auto_fixed",
+                        entity_type="Expense",
+                        qbo_id=qbo_purchase.id,
+                        realm_id=realm_id,
+                        details=f"Pulled QBO Purchase {qbo_purchase.id} into local cache via reconciliation.",
+                        reconcile_run_id=run_id,
+                    )
+                except ValueError as data_error:
+                    skipped_unmapped += 1
+                    logger.info(
+                        f"Reconciliation skipped QBO Purchase {qbo_purchase.id} "
+                        f"(unfixable data issue): {data_error}"
+                    )
+                except Exception as error:
+                    errors += 1
+                    logger.exception(
+                        f"Reconciliation auto-fix failed for QBO Purchase {qbo_purchase.id}"
+                    )
+                    self._record_issue(
+                        drift_type=DRIFT_QBO_MISSING_LOCALLY,
+                        action="flagged",
+                        severity_override="high",
+                        entity_type="Expense",
+                        qbo_id=qbo_purchase.id,
+                        realm_id=realm_id,
+                        details=(
+                            f"Auto-fix failed during reconciliation: {type(error).__name__}: {error}"
+                        ),
+                        reconcile_run_id=run_id,
+                    )
+            except Exception:
+                errors += 1
+                logger.exception(
+                    f"Reconciliation error processing QBO Purchase {getattr(qbo_purchase, 'id', '?')}"
+                )
+
+        if missing and not autofix_enabled:
+            self._record_issue(
+                drift_type=DRIFT_QBO_MISSING_LOCALLY,
+                action="flagged",
+                severity_override="low",
+                entity_type="Expense",
+                qbo_id=None,
+                realm_id=realm_id,
+                details=(
+                    f"{missing} QBO Purchase(s) are not projected locally. Auto-backfill is "
+                    f"disabled (QBO_RECONCILE_PURCHASE_AUTOFIX=false); set it true to backfill."
+                ),
+                reconcile_run_id=run_id,
+            )
+
+        return {
+            "auto_fixed": auto_fixed,
+            "missing": missing,
+            "skipped_unmapped": skipped_unmapped,
+            "flagged": errors,
+            "errors": errors,
+        }
+
+    def _reconcile_purchase_qbo_voided(self, realm_id: str, run_id: str) -> dict:
+        """
+        Detect QBO Purchases that have been deleted/voided on the QBO side but
+        still exist in our local cache.
+        """
+        from integrations.intuit.qbo.base.errors import QboNotFoundError
+        from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
+        from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import (
+            PurchaseExpenseRepository,
+        )
+        from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
+
+        mapping_repo = PurchaseExpenseRepository()
+        qbo_purchase_repo = QboPurchaseRepository()
+
+        all_qbo_purchases = qbo_purchase_repo.read_by_realm_id(realm_id)
+
+        flagged = 0
+        errors = 0
+
+        with QboPurchaseClient(realm_id=realm_id) as client:
+            for local in all_qbo_purchases:
+                if not local.qbo_id:
+                    continue
+                mapping = mapping_repo.read_by_qbo_purchase_id(local.id)
+                if not mapping:
+                    continue
+
+                try:
+                    client.get_purchase(local.qbo_id)
+                except QboNotFoundError:
+                    flagged += 1
+                    self._record_issue(
+                        drift_type=DRIFT_QBO_VOIDED,
+                        action="flagged",
+                        entity_type="Expense",
+                        qbo_id=local.qbo_id,
+                        realm_id=realm_id,
+                        details=(
+                            f"QBO Purchase {local.qbo_id} is mapped locally "
+                            f"(local QboPurchase id={local.id}, mapped to "
+                            f"Expense id={mapping.expense_id}) but returns 404 from QBO. "
+                            f"Likely voided or deleted on the QBO side. Review "
+                            f"before taking action — downstream invoices may "
+                            f"reference this expense."
+                        ),
+                        reconcile_run_id=run_id,
+                    )
+                except Exception:
+                    errors += 1
+                    logger.exception(
+                        f"qbo.reconcile.purchase_qbo_voided.detector_error for "
+                        f"qbo_id={local.qbo_id}"
+                    )
+
+        return {"auto_fixed": 0, "flagged": flagged, "errors": errors}
+
+    def _reconcile_vendor_credit_qbo_missing_locally(self, realm_id: str, run_id: str) -> dict:
+        """
+        Full-scan QBO for all VendorCredits. For any QBO VendorCredit not mapped locally,
+        pull it into the local cache via the existing sync_from_qbo flow
+        and record an auto-fix issue.
+        """
+        from integrations.intuit.qbo.vendorcredit.external.client import QboVendorCreditClient
+        from integrations.intuit.qbo.vendorcredit.business.service import QboVendorCreditService
+        from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import (
+            VendorCreditBillCreditConnector,
+        )
+        from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
+            VendorCreditBillCreditMappingRepository,
+        )
+        from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
+
+        autofix_enabled = os.getenv("QBO_RECONCILE_VENDORCREDIT_AUTOFIX", "false").strip().lower() == "true"
+
+        mapping_repo = VendorCreditBillCreditMappingRepository()
+        qbo_vc_repo = QboVendorCreditRepository()
+        qbo_vc_service = QboVendorCreditService()
+        connector = VendorCreditBillCreditConnector()
+
+        auto_fixed = 0
+        errors = 0
+        missing = 0
+        skipped_unmapped = 0
+
+        with QboVendorCreditClient(realm_id=realm_id) as client:
+            qbo_vcs = client.query_all_vendor_credits()
+
+        logger.info(
+            f"Reconciliation fetched {len(qbo_vcs)} vendor credits from QBO for realm {realm_id} "
+            f"(autofix_enabled={autofix_enabled})"
+        )
+
+        for vc in qbo_vcs:
+            try:
+                local = qbo_vc_repo.read_by_qbo_id_and_realm_id(vc.id, realm_id)
+                if local:
+                    mapping = mapping_repo.read_by_qbo_vendor_credit_id(local.id)
+                    if mapping:
+                        continue
+
+                missing += 1
+                if not autofix_enabled:
+                    continue
+
+                try:
+                    local_vc, lines = qbo_vc_service.upsert_from_external(vc, realm_id)
+                    connector.sync_from_qbo_vendor_credit(local_vc, lines)
+                    auto_fixed += 1
+                    self._record_issue(
+                        drift_type=DRIFT_QBO_MISSING_LOCALLY,
+                        action="auto_fixed",
+                        entity_type="BillCredit",
+                        qbo_id=vc.id,
+                        realm_id=realm_id,
+                        details=f"Pulled QBO VendorCredit {vc.id} into local cache via reconciliation.",
+                        reconcile_run_id=run_id,
+                    )
+                except ValueError as data_error:
+                    skipped_unmapped += 1
+                    logger.info(
+                        f"Reconciliation skipped QBO VendorCredit {vc.id} "
+                        f"(unfixable data issue): {data_error}"
+                    )
+                except Exception as error:
+                    errors += 1
+                    logger.exception(
+                        f"Reconciliation auto-fix failed for QBO VendorCredit {vc.id}"
+                    )
+                    self._record_issue(
+                        drift_type=DRIFT_QBO_MISSING_LOCALLY,
+                        action="flagged",
+                        severity_override="high",
+                        entity_type="BillCredit",
+                        qbo_id=vc.id,
+                        realm_id=realm_id,
+                        details=(
+                            f"Auto-fix failed during reconciliation: {type(error).__name__}: {error}"
+                        ),
+                        reconcile_run_id=run_id,
+                    )
+            except Exception:
+                errors += 1
+                logger.exception(
+                    f"Reconciliation error processing QBO VendorCredit {getattr(vc, 'id', '?')}"
+                )
+
+        if missing and not autofix_enabled:
+            self._record_issue(
+                drift_type=DRIFT_QBO_MISSING_LOCALLY,
+                action="flagged",
+                severity_override="low",
+                entity_type="BillCredit",
+                qbo_id=None,
+                realm_id=realm_id,
+                details=(
+                    f"{missing} QBO VendorCredit(s) are not projected locally. Auto-backfill is "
+                    f"disabled (QBO_RECONCILE_VENDORCREDIT_AUTOFIX=false); set it true to backfill."
+                ),
+                reconcile_run_id=run_id,
+            )
+
+        return {
+            "auto_fixed": auto_fixed,
+            "missing": missing,
+            "skipped_unmapped": skipped_unmapped,
+            "flagged": errors,
+            "errors": errors,
+        }
+
+    def _reconcile_vendor_credit_qbo_voided(self, realm_id: str, run_id: str) -> dict:
+        """
+        Detect QBO VendorCredits that have been deleted/voided on the QBO side but
+        still exist in our local cache.
+        """
+        from integrations.intuit.qbo.base.errors import QboNotFoundError
+        from integrations.intuit.qbo.vendorcredit.external.client import QboVendorCreditClient
+        from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
+            VendorCreditBillCreditMappingRepository,
+        )
+        from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
+
+        mapping_repo = VendorCreditBillCreditMappingRepository()
+        qbo_vc_repo = QboVendorCreditRepository()
+
+        all_qbo_vcs = qbo_vc_repo.read_by_realm_id(realm_id)
+
+        flagged = 0
+        errors = 0
+
+        with QboVendorCreditClient(realm_id=realm_id) as client:
+            for local in all_qbo_vcs:
+                if not local.qbo_id:
+                    continue
+                mapping = mapping_repo.read_by_qbo_vendor_credit_id(local.id)
+                if not mapping:
+                    continue
+
+                try:
+                    client.get_vendor_credit(local.qbo_id)
+                except QboNotFoundError:
+                    flagged += 1
+                    self._record_issue(
+                        drift_type=DRIFT_QBO_VOIDED,
+                        action="flagged",
+                        entity_type="BillCredit",
+                        qbo_id=local.qbo_id,
+                        realm_id=realm_id,
+                        details=(
+                            f"QBO VendorCredit {local.qbo_id} is mapped locally "
+                            f"(local QboVendorCredit id={local.id}, mapped to "
+                            f"BillCredit id={mapping.bill_credit_id}) but returns 404 from QBO. "
+                            f"Likely voided or deleted on the QBO side. Review "
+                            f"before taking action — downstream invoices may "
+                            f"reference this bill credit."
+                        ),
+                        reconcile_run_id=run_id,
+                    )
+                except Exception:
+                    errors += 1
+                    logger.exception(
+                        f"qbo.reconcile.vendor_credit_qbo_voided.detector_error for "
+                        f"qbo_id={local.qbo_id}"
                     )
 
         return {"auto_fixed": 0, "flagged": flagged, "errors": errors}

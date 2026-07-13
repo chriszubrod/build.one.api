@@ -272,7 +272,16 @@ def _register_qbo_reconcile_jobs(scheduler) -> None:
         if not auth or not auth.realm_id:
             logger.warning("qbo.reconcile.bill.skipped: no valid QBO auth")
             return
-        ReconciliationService().reconcile_bills(realm_id=auth.realm_id)
+        svc = ReconciliationService()
+        for name, fn in (
+            ("bill", svc.reconcile_bills),
+            ("purchase", svc.reconcile_purchases),
+            ("vendor_credit", svc.reconcile_vendor_credits),
+        ):
+            try:
+                fn(realm_id=auth.realm_id)
+            except Exception:
+                logger.exception(f"qbo.reconcile.{name}.tick_failed")
 
     async def _reconcile_bills() -> None:
         try:

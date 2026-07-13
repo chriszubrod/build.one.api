@@ -87,6 +87,18 @@ class QboVendorCreditService:
 
         return synced
 
+    def upsert_from_external(
+        self, qbo_vc: QboVendorCreditSchema, realm_id: str,
+    ) -> tuple[QboVendorCredit, List[QboVendorCreditLine]]:
+        """Persist an external-schema QboVendorCredit (+ its inline lines) into the local cache
+        and return the stored dataclass form. Mirrors QboPurchaseService.upsert_from_external so the
+        reconciliation detector can use the same two-step (persist -> project) shape as Bill/Purchase."""
+        local_vc = self._upsert_vendor_credit(qbo_vc, realm_id)
+        if qbo_vc.line:
+            self._upsert_vendor_credit_lines(local_vc.id, qbo_vc.line)
+        lines = self.repo.read_lines_by_vendor_credit_id(local_vc.id)
+        return local_vc, lines
+
     def _reconcile_deleted_vendor_credits(self, realm_id: str, qbo_vcs: list) -> int:
         """
         Delete local records for QBO vendor credits that no longer exist in QBO.

@@ -399,7 +399,7 @@ async def sync_qbo_router(
 
 @router.post("/reconcile/qbo", dependencies=[Depends(_require_drain_secret)])
 async def reconcile_qbo_router():
-    """Run the QBO daily reconciliation (Bill detector today; more later)."""
+    """Run the QBO daily reconciliation (Bill, Purchase, VendorCredit + invoice-draw detectors)."""
     def _run() -> dict[str, Any]:
         from integrations.intuit.qbo.auth.business.service import QboAuthService
         from integrations.intuit.qbo.reconciliation.business.service import ReconciliationService
@@ -407,8 +407,18 @@ async def reconcile_qbo_router():
         if not auth or not auth.realm_id:
             return {"skipped": True, "reason": "no valid QBO auth"}
         service = ReconciliationService()
-        service.reconcile_bills(realm_id=auth.realm_id)
-        service.reconcile_invoice_draws(realm_id=auth.realm_id)
+        # Each reconciler is an independent full-scan over a disjoint entity type;
+        # isolate them so one entity's failure never aborts the others.
+        for name, fn in (
+            ("bill", service.reconcile_bills),
+            ("purchase", service.reconcile_purchases),
+            ("vendor_credit", service.reconcile_vendor_credits),
+            ("invoice_draw", service.reconcile_invoice_draws),
+        ):
+            try:
+                fn(realm_id=auth.realm_id)
+            except Exception:
+                logger.exception(f"qbo.reconcile.{name}.failed")
         return {"reconciled": True, "realm_id": auth.realm_id}
 
     return await _timed("reconcile.qbo", _run)

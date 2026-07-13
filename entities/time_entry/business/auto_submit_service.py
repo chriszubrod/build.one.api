@@ -10,6 +10,20 @@ logger = logging.getLogger(__name__)
 # + the MCP flag tool). Everything else is medium.
 _HIGH_REASONS = frozenset({"over_12_hours", "future_dated", "no_time_logs"})
 
+# Named lock so any future contender (manual re-run, MCP trigger, second timer)
+# serializes against the daily sweep — a byte-identical string is the whole
+# point of a named lock, so it lives in one place. (Mirrors the
+# DRAIN_LOCK_NAME convention on the outbox workers.)
+AUTOSUBMIT_LOCK_NAME = "time_autosubmit_sweep"
+
+# The six per-run counters, all zero. Spread into the early-return shapes
+# (disabled / skipped) and copied for the mutable running total so a new
+# counter is added in exactly one place.
+_ZERO_COUNTERS = {
+    "submitted": 0, "flagged": 0, "skipped_test": 0,
+    "excluded_dup": 0, "submitted_unaggregated": 0, "errors": 0,
+}
+
 
 class TimeEntryAutoSubmitService:
     """
@@ -66,15 +80,12 @@ class TimeEntryAutoSubmitService:
         if mode not in ("dry_run", "on"):
             logger.info("time_autosubmit_stale.disabled mode=%s", mode)
             return {"status": "disabled", "mode": mode, "dates_swept": [],
-                    "submitted": 0, "flagged": 0, "skipped_test": 0,
-                    "excluded_dup": 0, "submitted_unaggregated": 0, "errors": 0,
-                    "per_day": []}
+                    **_ZERO_COUNTERS, "per_day": []}
 
         business_today = datetime.now(self._business_tz()).date()
         dates = self._read_stale_draft_dates(business_today)
 
-        totals = {"submitted": 0, "flagged": 0, "skipped_test": 0,
-                  "excluded_dup": 0, "submitted_unaggregated": 0, "errors": 0}
+        totals = dict(_ZERO_COUNTERS)
         per_day = []
         all_actions: list[dict] = []
 
@@ -116,9 +127,22 @@ class TimeEntryAutoSubmitService:
         if mode not in ("dry_run", "on"):
             logger.info("time_autosubmit.disabled mode=%s work_date=%s", mode, work_date)
             return {"status": "disabled", "mode": mode, "work_date": work_date,
-                    "submitted": 0, "flagged": 0, "skipped_test": 0,
-                    "excluded_dup": 0, "submitted_unaggregated": 0, "errors": 0}
+                    **_ZERO_COUNTERS}
 
+        # Serialize the sweep across processes so a manual ?work_date= re-run
+        # overlapping the daily timer (or two overlapping runs) can't double-
+        # write submitted rows / double-enqueue review notifications.
+        # timeout_ms=0 => skip immediately if another sweep holds the lock;
+        # never block/wait. The 'off/disabled' no-op above stays lock-free.
+        from shared.db_lock import app_lock
+        with app_lock(AUTOSUBMIT_LOCK_NAME, timeout_ms=0) as acquired:
+            if not acquired:
+                logger.info("time_autosubmit.skipped_locked work_date=%s", work_date)
+                return {"status": "skipped", "reason": "already_running",
+                        "mode": mode, "work_date": work_date, **_ZERO_COUNTERS}
+            return self._sweep_work_date(work_date, mode)
+
+    def _sweep_work_date(self, work_date: str, mode: str) -> dict:
         actor_id = self._resolve_actor_id()
         from shared.authz.context import set_authz_context
 

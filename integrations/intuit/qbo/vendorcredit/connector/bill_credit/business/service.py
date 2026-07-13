@@ -13,6 +13,7 @@ from entities.bill_credit.business.model import BillCredit
 from entities.bill_credit_line_item.business.service import BillCreditLineItemService
 from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
+from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,18 @@ class VendorCreditBillCreditConnector:
                 )
                 
                 # Step 5: Sync line items
-                self._sync_line_items(bill_credit.id, bill_credit.public_id, qbo_lines)
+                # Compensating rollback — a permanent line failure must not leave a header-only
+                # zombie; delete the just-created header + mapping and re-raise (watermark holds;
+                # re-pull is idempotent).
+                try:
+                    self._sync_line_items(bill_credit.id, bill_credit.public_id, qbo_lines)
+                except Exception:
+                    rollback_orphan_header(
+                        delete_header=lambda: self.bill_credit_service.delete_by_public_id(bill_credit.public_id),
+                        delete_mapping=lambda: self.mapping_repo.delete_by_qbo_vendor_credit_id(qbo_vc.id),
+                        entity_label='BillCredit', entity_id=bill_credit.id,
+                    )
+                    raise
                 
                 logger.info(f"Created BillCredit {bill_credit.public_id} from VendorCredit {qbo_vc.qbo_id}")
             

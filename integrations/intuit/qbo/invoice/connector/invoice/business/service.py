@@ -260,9 +260,17 @@ class InvoiceInvoiceConnector:
                 )
             raise
 
-        # Sync line items for new invoice
+        # Sync line items for new invoice.
+        # NOTE: unlike the Bill/Expense/BillCredit connectors, this NEW-invoice path has NO
+        # compensating rollback because _sync_line_items below SWALLOWS per-line failures
+        # (never raises) — so it cannot strand a header-only "zombie" invoice via that path.
+        # If _sync_line_items is ever changed to RAISE on line failure (to match the
+        # fail-atomic philosophy of the other three connectors), this path MUST adopt
+        # integrations.intuit.qbo.base.compensation.rollback_orphan_header (delete the
+        # just-created header + qbo.InvoiceInvoice mapping, then re-raise) or it will
+        # reintroduce the zombie-invoice bug. See U-006.
         self._sync_line_items(invoice_id, invoice.public_id, qbo_invoice_lines)
-        
+
         return invoice
 
     def _get_project_public_id(self, qbo_customer_ref_value: str) -> Optional[str]:
@@ -331,6 +339,9 @@ class InvoiceInvoiceConnector:
             try:
                 line_connector.sync_from_qbo_invoice_line(invoice_id, invoice_public_id, qbo_line)
             except Exception as e:
+                # LOAD-BEARING: swallowing (not raising) is what keeps the NEW-invoice path
+                # zombie-safe without a compensating rollback (see the create-path note above /
+                # U-006). Do not change this to raise without adding rollback_orphan_header there.
                 logger.error(f"Failed to sync QboInvoiceLine {qbo_line.id} to InvoiceLineItem: {e}")
 
     def create_mapping(self, invoice_id: int, qbo_invoice_id: int) -> InvoiceInvoice:

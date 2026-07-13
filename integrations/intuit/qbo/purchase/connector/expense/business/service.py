@@ -16,6 +16,7 @@ from entities.expense.business.model import Expense
 from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
+from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +149,22 @@ class PurchaseExpenseConnector:
                 f"Failed to create PurchaseExpense mapping for QboPurchase {qbo_purchase.id}: {e}"
             ) from e
         
-        # Sync line items for new expense
-        self._sync_line_items(expense_id, expense.public_id, qbo_purchase_lines)
+        # Compensating rollback — a permanent line failure must not leave a header-only zombie;
+        # delete the just-created header + qbo.PurchaseExpense mapping and re-raise (watermark
+        # holds; re-pull is idempotent).
+        try:
+            self._sync_line_items(expense_id, expense.public_id, qbo_purchase_lines)
+        except Exception:
+            def _delete_expense_mapping():
+                _m = self.mapping_repo.read_by_expense_id(expense_id)
+                if _m:
+                    self.mapping_repo.delete_by_id(_m.id)
+            rollback_orphan_header(
+                delete_header=lambda: self.expense_service.delete_by_public_id(expense.public_id),
+                delete_mapping=_delete_expense_mapping,
+                entity_label='Expense', entity_id=expense_id,
+            )
+            raise
         
         return expense
 

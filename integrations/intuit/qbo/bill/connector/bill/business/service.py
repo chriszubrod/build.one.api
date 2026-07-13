@@ -32,6 +32,7 @@ from entities.bill.business.model import Bill
 from entities.bill_line_item.business.service import BillLineItemService
 from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
+from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 
 logger = logging.getLogger(__name__)
 
@@ -166,8 +167,22 @@ class BillBillConnector:
         except ValueError as e:
             logger.warning(f"Could not create mapping: {e}")
         
-        # Sync line items for new bill
-        self._sync_line_items(bill_id, qbo_bill_lines)
+        # Compensating rollback — a permanent line failure must not leave a header-only zombie;
+        # delete the just-created header + qbo.BillBill mapping and re-raise (watermark holds;
+        # re-pull is idempotent).
+        try:
+            self._sync_line_items(bill_id, qbo_bill_lines)
+        except Exception:
+            def _delete_bill_mapping():
+                _m = self.mapping_repo.read_by_bill_id(bill_id)
+                if _m:
+                    self.mapping_repo.delete_by_id(_m.id)
+            rollback_orphan_header(
+                delete_header=lambda: self.bill_service.delete_by_public_id(bill.public_id),
+                delete_mapping=_delete_bill_mapping,
+                entity_label='Bill', entity_id=bill_id,
+            )
+            raise
         
         return bill
 

@@ -16,6 +16,17 @@ from typing import Optional
 # whitespace runs — a Box name equals its SP counterpart plus that suffix.
 _FILENAME_SANITIZE_RE = re.compile(r'[<>:"/\\|?*]')
 
+# SharePoint rejects uploads whose DECODED URL path exceeds 400 characters
+# (site + library + per-invoice subfolder prefix runs ~110+). Contract-labor
+# line descriptions are multi-sentence narratives, so an uncapped description
+# blew the limit on 16 of OHR2-36's files (2026-07-13) — the packet uploaded
+# but those line PDFs failed. Cap the description component, plus a hard
+# safety cap on the whole base name; the cap lives HERE so SharePoint and Box
+# stay name-identical (the shared-name contract in build_line_pdf_filename's
+# docstring).
+_DESCRIPTION_MAX_CHARS = 120
+_BASE_FILENAME_MAX_CHARS = 200
+
 # Content-type → extension fallback for attachments whose stored
 # FileExtension + OriginalFilename are both empty. Mirrors the mapping at
 # entities/invoice/business/service.py in _upload_to_sharepoint.
@@ -51,7 +62,10 @@ def build_line_pdf_filename(
 
     Shape: `<invoice#> - <vendor> - <parent#> - <description> - <scc> -
     $<price> - <source date>.<ext>`. Empty parts are omitted (no double
-    " - " separators). Reserved characters are replaced with `_`.
+    " - " separators). Reserved characters are replaced with `_`. The
+    description is clipped to _DESCRIPTION_MAX_CHARS and the base name to
+    _BASE_FILENAME_MAX_CHARS (SharePoint's 400-char decoded-URL-path limit;
+    see the constants' comment).
 
     Shared between:
       - entities/invoice/business/service.py::_upload_to_sharepoint
@@ -68,11 +82,15 @@ def build_line_pdf_filename(
         except (TypeError, ValueError):
             price_str = ""
 
+    desc = (description or "").strip()
+    if len(desc) > _DESCRIPTION_MAX_CHARS:
+        desc = desc[:_DESCRIPTION_MAX_CHARS].rstrip()
+
     filename_parts = [
         invoice_number or "",
         vendor_name or "",
         parent_number or "",
-        description or "",
+        desc,
         scc_number or "",
         price_str,
         source_date or "",
@@ -80,6 +98,8 @@ def build_line_pdf_filename(
     base_filename = sanitize_for_filename(
         " - ".join(part for part in filename_parts if part)
     )
+    if len(base_filename) > _BASE_FILENAME_MAX_CHARS:
+        base_filename = base_filename[:_BASE_FILENAME_MAX_CHARS].rstrip(" -")
 
     ext = (file_extension or "").strip()
     if not ext and original_filename and "." in original_filename:

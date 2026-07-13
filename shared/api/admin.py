@@ -377,7 +377,21 @@ async def sync_qbo_router(
     sync_fn = _qbo_sync_fn(entity)
     if not attachments and entity in _QBO_ENTITIES_WITH_ATTACHMENTS:
         sync_fn = partial(sync_fn, sync_attachments=False)
-    return await _timed(f"sync.qbo.{entity}", sync_fn)
+    envelope = await _timed(f"sync.qbo.{entity}", sync_fn)
+    inner = envelope.get("result")
+    inner_status = inner.get("status_code") if isinstance(inner, dict) else None
+    if isinstance(inner_status, int) and inner_status >= 400:
+        detail_result = inner.get("result") if isinstance(inner, dict) else None
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "job": f"sync.qbo.{entity}",
+                "duration_ms": envelope.get("duration_ms"),
+                "upstream_status": inner_status,
+                "error": detail_result.get("error") if isinstance(detail_result, dict) else None,
+            },
+        )
+    return envelope
 
 
 # --- Reconciliation -------------------------------------------------------- #

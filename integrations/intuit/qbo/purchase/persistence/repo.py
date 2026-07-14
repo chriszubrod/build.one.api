@@ -614,6 +614,112 @@ class QboPurchaseLineRepository:
             logger.error(f"Error during delete qbo purchase line by ID: {error}")
             raise map_database_error(error)
 
+    def _expense_coding_queue_row_to_dict(self, row: pyodbc.Row) -> dict:
+        coding_item_public_id = getattr(row, "CodingItemPublicId", None)
+        suggestion_confidence = getattr(row, "SuggestionConfidence", None)
+        line_amount = getattr(row, "LineAmount", None)
+        total_amt = getattr(row, "TotalAmt", None)
+        claimed_at = getattr(row, "ClaimedAt", None)
+        return {
+            "qbo_purchase_id": getattr(row, "QboPurchaseId", None),
+            "qbo_purchase_public_id": (
+                str(row.QboPurchasePublicId) if getattr(row, "QboPurchasePublicId", None) else None
+            ),
+            "qbo_purchase_qbo_id": getattr(row, "QboPurchaseQboId", None),
+            "sync_token": getattr(row, "SyncToken", None),
+            "realm_id": getattr(row, "RealmId", None),
+            "vendor_qbo_id": getattr(row, "VendorQboId", None),
+            "vendor_name": getattr(row, "VendorName", None),
+            "credit": getattr(row, "Credit", None),
+            "total_amt": Decimal(str(total_amt)) if total_amt is not None else None,
+            "txn_date": getattr(row, "TxnDate", None),
+            "doc_number": getattr(row, "DocNumber", None),
+            "private_note": getattr(row, "PrivateNote", None),
+            "qbo_purchase_line_id": getattr(row, "QboPurchaseLineId", None),
+            "qbo_line_id": getattr(row, "QboLineId", None),
+            "line_num": getattr(row, "LineNum", None),
+            "line_amount": Decimal(str(line_amount)) if line_amount is not None else None,
+            "line_description": getattr(row, "LineDescription", None),
+            "coding_item_public_id": str(coding_item_public_id) if coding_item_public_id else None,
+            "coding_status": getattr(row, "CodingStatus", None),
+            "suggested_project_id": getattr(row, "SuggestedProjectId", None),
+            "suggested_sub_cost_code_id": getattr(row, "SuggestedSubCostCodeId", None),
+            "suggested_description": getattr(row, "SuggestedDescription", None),
+            "suggestion_source": getattr(row, "SuggestionSource", None),
+            "suggestion_reason": getattr(row, "SuggestionReason", None),
+            "suggestion_confidence": (
+                Decimal(str(suggestion_confidence)) if suggestion_confidence is not None else None
+            ),
+            "confirmed_project_id": getattr(row, "ConfirmedProjectId", None),
+            "confirmed_sub_cost_code_id": getattr(row, "ConfirmedSubCostCodeId", None),
+            "confirmed_description": getattr(row, "ConfirmedDescription", None),
+            "flag_reason": getattr(row, "FlagReason", None),
+            "claimed_by_user_id": getattr(row, "ClaimedByUserId", None),
+            "claimed_at": claimed_at.isoformat() if claimed_at is not None else None,
+        }
+
+    def read_expense_coding_queue(self, realm_id: Optional[str] = None) -> List[dict]:
+        """Read strict 58999 NEED TO CATEGORIZE purchase lines with coding item state."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadExpenseCodingQueue",
+                        params={"RealmId": realm_id},
+                    )
+                    rows = cursor.fetchall()
+                    return [self._expense_coding_queue_row_to_dict(row) for row in rows if row]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read expense coding queue: {error}")
+            raise map_database_error(error)
+
+    def read_expense_coding_metrics(
+        self,
+        realm_id: Optional[str] = None,
+        since_days: Optional[int] = None,
+    ) -> dict:
+        """Scalar metrics for the expense coding queue and instrumentation rows."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadExpenseCodingMetrics",
+                        params={"RealmId": realm_id, "SinceDays": since_days},
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        return {}
+                    return {
+                        "total_target_lines": getattr(row, "TotalTargetLines", 0) or 0,
+                        "pending_count": getattr(row, "PendingCount", 0) or 0,
+                        "suggested_count": getattr(row, "SuggestedCount", 0) or 0,
+                        "flagged_count": getattr(row, "FlaggedCount", 0) or 0,
+                        "confirmed_count": getattr(row, "ConfirmedCount", 0) or 0,
+                        "enqueued_count": getattr(row, "EnqueuedCount", 0) or 0,
+                        "written_count": getattr(row, "WrittenCount", 0) or 0,
+                        "changed_in_qbo_count": getattr(row, "ChangedInQboCount", 0) or 0,
+                        "error_count": getattr(row, "ErrorCount", 0) or 0,
+                        "accepted_count": getattr(row, "AcceptedCount", 0) or 0,
+                        "overridden_count": getattr(row, "OverriddenCount", 0) or 0,
+                    }
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read expense coding metrics: {error}")
+            raise map_database_error(error)
+
     def read_lines_needing_update(
         self,
         realm_id: Optional[str] = None,

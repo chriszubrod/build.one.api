@@ -531,3 +531,40 @@ class QboPurchaseService:
             include_linked=include_linked,
             include_all=include_all,
         )
+
+    def get_expense_coding_queue(self, realm_id: Optional[str] = None) -> List[dict]:
+        """
+        Read the strict 58999 coding queue and idempotently seed missing
+        ExpenseCodingItem rows so every returned line carries coding state.
+        """
+        rows = self.line_repo.read_expense_coding_queue(realm_id=realm_id)
+        needs_reseed = any(row.get("coding_item_public_id") is None for row in rows)
+        if not needs_reseed:
+            return rows
+
+        from entities.expense_coding_item.business.service import ExpenseCodingItemService
+
+        coding_service = ExpenseCodingItemService()
+        for row in rows:
+            if row.get("coding_item_public_id") is not None:
+                continue
+            coding_service.upsert_from_queue(
+                qbo_purchase_id=row["qbo_purchase_id"],
+                qbo_purchase_line_id=row["qbo_purchase_line_id"],
+                qbo_line_id=row.get("qbo_line_id"),
+                qbo_purchase_qbo_id=row.get("qbo_purchase_qbo_id"),
+                realm_id=row.get("realm_id"),
+                vendor_qbo_id=row.get("vendor_qbo_id"),
+            )
+
+        return self.line_repo.read_expense_coding_queue(realm_id=realm_id)
+
+    def get_expense_coding_metrics(
+        self,
+        realm_id: Optional[str] = None,
+        since_days: Optional[int] = None,
+    ) -> dict:
+        return self.line_repo.read_expense_coding_metrics(
+            realm_id=realm_id,
+            since_days=since_days,
+        )

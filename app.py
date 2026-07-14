@@ -60,6 +60,7 @@ from entities.bill.api.router import router as bill_api_router
 from entities.bill_line_item.api.router import router as bill_line_item_api_router
 from entities.bill_line_item_attachment.api.router import router as bill_line_item_attachment_api_router
 from entities.expense.api.router import router as expense_api_router
+from entities.expense_coding_item.api.router import router as expense_coding_item_api_router
 from entities.expense_line_item.api.router import router as expense_line_item_api_router
 from entities.expense_line_item_attachment.api.router import router as expense_line_item_attachment_api_router
 from entities.bill_credit.api.router import router as bill_credit_api_router
@@ -231,6 +232,7 @@ app.include_router(bill_api_router)
 app.include_router(bill_line_item_api_router)
 app.include_router(bill_line_item_attachment_api_router)
 app.include_router(expense_api_router)
+app.include_router(expense_coding_item_api_router)
 app.include_router(expense_line_item_api_router)
 app.include_router(expense_line_item_attachment_api_router)
 app.include_router(bill_credit_api_router)

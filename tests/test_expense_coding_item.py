@@ -6,8 +6,11 @@ integration test once migrations are applied.
 
 import base64
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from entities.expense_coding_item.business.model import ExpenseCodingItem
+from entities.expense_coding_item.business.service import ExpenseCodingItemService
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseLineRepository
 from shared.api.responses import item_response, list_response
 
@@ -193,3 +196,124 @@ def test_expense_coding_queue_row_mapper_keys():
         "claimed_at",
     }
     assert set(mapped.keys()) == expected_keys
+
+
+# --- U-005 Phase F: confirm() double-gate (global QBO + feature recode) ---
+
+
+def _confirm_fake_item():
+    # confirm() reads only realm_id (enqueue) and qbo_purchase_id (sync-token snapshot).
+    return SimpleNamespace(realm_id="realm-1", qbo_purchase_id=1)
+
+
+def _setup_confirm_gate_mocks(monkeypatch, *, writes_allowed: bool, recode_writes_enabled: bool):
+    svc = ExpenseCodingItemService()
+    svc.read_by_public_id = MagicMock(return_value=_confirm_fake_item())
+    record_spy = MagicMock()
+    svc.record_confirmation = record_spy
+    mark_enqueued_spy = MagicMock()
+    svc.mark_enqueued = mark_enqueued_spy
+
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.base.client._writes_allowed",
+        lambda: writes_allowed,
+    )
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.base.client._recode_writes_allowed",
+        lambda: recode_writes_enabled,
+    )
+
+    mock_item_repo = MagicMock()
+    mock_item_repo.read_by_sub_cost_code_id.return_value = SimpleNamespace(id=1)
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo.ItemSubCostCodeRepository",
+        lambda: mock_item_repo,
+    )
+
+    mock_purchase_repo = MagicMock()
+    mock_purchase_repo.read_by_id.return_value = SimpleNamespace(sync_token="1")
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.purchase.persistence.repo.QboPurchaseRepository",
+        lambda: mock_purchase_repo,
+    )
+
+    mock_outbox_instance = MagicMock()
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.outbox.business.service.QboOutboxService",
+        MagicMock(return_value=mock_outbox_instance),
+    )
+
+    return svc, record_spy, mark_enqueued_spy, mock_outbox_instance
+
+
+def test_confirm_feature_gate_off_records_but_does_not_enqueue(monkeypatch):
+    svc, record_spy, mark_enqueued_spy, mock_outbox_instance = (
+        _setup_confirm_gate_mocks(monkeypatch, writes_allowed=True, recode_writes_enabled=False)
+    )
+
+    result = svc.confirm(
+        public_id="eci-1",
+        project_id=1,
+        sub_cost_code_id=1,
+        description="x",
+        was_overridden=False,
+        user_id=1,
+    )
+
+    assert result == {
+        "status": "confirmed",
+        "enqueued": False,
+        "reason": "recode_writes_disabled",
+    }
+    record_spy.assert_called_once()
+    mock_outbox_instance.enqueue.assert_not_called()
+    mark_enqueued_spy.assert_not_called()
+
+
+def test_confirm_both_gates_on_enqueues(monkeypatch):
+    svc, record_spy, mark_enqueued_spy, mock_outbox_instance = (
+        _setup_confirm_gate_mocks(monkeypatch, writes_allowed=True, recode_writes_enabled=True)
+    )
+
+    result = svc.confirm(
+        public_id="eci-1",
+        project_id=1,
+        sub_cost_code_id=1,
+        description="x",
+        was_overridden=False,
+        user_id=1,
+    )
+
+    assert result == {"status": "enqueued", "enqueued": True}
+    record_spy.assert_called_once()
+    mock_outbox_instance.enqueue.assert_called_once_with(
+        kind="recode_purchase_line",
+        entity_type="ExpenseCodingItem",
+        entity_public_id="eci-1",
+        realm_id="realm-1",
+    )
+    mark_enqueued_spy.assert_called_once_with("eci-1")
+
+
+def test_confirm_global_qbo_writes_off_returns_qbo_writes_disabled(monkeypatch):
+    svc, record_spy, mark_enqueued_spy, mock_outbox_instance = (
+        _setup_confirm_gate_mocks(monkeypatch, writes_allowed=False, recode_writes_enabled=True)
+    )
+
+    result = svc.confirm(
+        public_id="eci-1",
+        project_id=1,
+        sub_cost_code_id=1,
+        description="x",
+        was_overridden=False,
+        user_id=1,
+    )
+
+    assert result == {
+        "status": "confirmed",
+        "enqueued": False,
+        "reason": "qbo_writes_disabled",
+    }
+    record_spy.assert_called_once()
+    mock_outbox_instance.enqueue.assert_not_called()
+    mark_enqueued_spy.assert_not_called()

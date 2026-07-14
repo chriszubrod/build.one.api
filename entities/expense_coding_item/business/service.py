@@ -194,25 +194,36 @@ class ExpenseCodingItemService:
             status="confirmed",
         )
 
-        from integrations.intuit.qbo.base.client import _writes_allowed
+        from integrations.intuit.qbo.base.client import _recode_writes_allowed, _writes_allowed
 
-        if _writes_allowed():
-            from integrations.intuit.qbo.outbox.business.service import QboOutboxService
+        # Global QBO write gate (unchanged behavior + reason).
+        if not _writes_allowed():
+            return {
+                "status": "confirmed",
+                "enqueued": False,
+                "reason": "qbo_writes_disabled",
+            }
 
-            QboOutboxService().enqueue(
-                kind="recode_purchase_line",
-                entity_type="ExpenseCodingItem",
-                entity_public_id=public_id,
-                realm_id=item.realm_id,
-            )
-            self.mark_enqueued(public_id)
-            return {"status": "enqueued", "enqueued": True}
+        # U-005 Phase F feature gate: even with global writes on, the expense-coding
+        # recode stays off until ALLOW_EXPENSE_RECODE_WRITES is deliberately flipped on
+        # (Gate-P2 go-live). Confirmation is still recorded above; we simply do not enqueue.
+        if not _recode_writes_allowed():
+            return {
+                "status": "confirmed",
+                "enqueued": False,
+                "reason": "recode_writes_disabled",
+            }
 
-        return {
-            "status": "confirmed",
-            "enqueued": False,
-            "reason": "qbo_writes_disabled",
-        }
+        from integrations.intuit.qbo.outbox.business.service import QboOutboxService
+
+        QboOutboxService().enqueue(
+            kind="recode_purchase_line",
+            entity_type="ExpenseCodingItem",
+            entity_public_id=public_id,
+            realm_id=item.realm_id,
+        )
+        self.mark_enqueued(public_id)
+        return {"status": "enqueued", "enqueued": True}
 
     def _resolve_vendor_id(
         self,

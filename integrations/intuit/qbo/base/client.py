@@ -49,6 +49,19 @@ def _writes_allowed() -> bool:
     return os.getenv("ALLOW_QBO_WRITES", "").strip().lower() == "true"
 
 
+def _recode_writes_allowed() -> bool:
+    """
+    Default-deny feature gate for the expense-coding cockpit's QBO recode
+    (U-005 Phase F). Mirrors `_writes_allowed()` and is AND-ed with it.
+
+    Returns True only when `ALLOW_EXPENSE_RECODE_WRITES` is explicitly set to
+    `"true"` (case-insensitive). Any other value — including unset or a
+    malformed string — returns False, so the cockpit ships writes-off and
+    go-live is a deliberate, reversible flip of this one flag.
+    """
+    return os.getenv("ALLOW_EXPENSE_RECODE_WRITES", "").strip().lower() == "true"
+
+
 class QboHttpClient:
     """
     Shared HTTP client for QBO API calls.

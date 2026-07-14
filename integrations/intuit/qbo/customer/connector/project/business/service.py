@@ -94,21 +94,63 @@ class CustomerProjectConnector:
             project = self.project_service.read_by_id(mapping.project_id)
             if project:
                 logger.info(f"Updating existing Project {project.id} from QboCustomer {qbo_customer.id}")
-                project.name = project_name
-                project.description = project_description
-                project.status = project_status
-                project.customer_id = customer_id
-                project = self.project_service.repo.update_by_id(project)
-
-                # Sync addresses for existing project
-                self._sync_addresses(qbo_customer, project.id)
-
-                return project
+                return self._apply_project_fields_and_sync(
+                    project,
+                    qbo_customer=qbo_customer,
+                    name=project_name,
+                    description=project_description,
+                    status=project_status,
+                    customer_id=customer_id,
+                )
             else:
-                # Mapping exists but Project not found - recreate Project
-                logger.warning(f"Mapping exists but Project {mapping.project_id} not found. Creating new Project.")
-                self.mapping_repo.delete_by_id(mapping.id)
-                mapping = None
+                # Mapping exists but the bound Project is missing (a transient empty-read,
+                # or a renamed/deleted project). HEAL in place — do NOT delete-then-maybe-
+                # -create: a delete here plus a name-miss below would MINT A DUPLICATE
+                # dbo.Project and orphan the real row (the 2026-07-08 OHR2-CHAPEL failure).
+                # Re-resolve by name FIRST; repoint the stale mapping in place (via update,
+                # never delete) only once a replacement binding is confirmed.
+                replacement = self.project_service.read_by_name(project_name)
+                if replacement:
+                    existing_map_for_replacement = self.mapping_repo.read_by_project_id(replacement.id)
+                    if existing_map_for_replacement and existing_map_for_replacement.qbo_customer_id != qbo_customer.id:
+                        # Replacement Project is already bound to a DIFFERENT QboCustomer — a
+                        # genuine QBO-side duplicate sub-customer. Do NOT repoint (would break
+                        # the 1:1 project<->customer mapping). Record the issue, mutate nothing.
+                        self._raise_duplicate_qbo_customer_issue(
+                            qbo_customer=qbo_customer,
+                            local_project=replacement,
+                            existing_mapping=existing_map_for_replacement,
+                        )
+                        return replacement
+                    # Replacement is unbound (or already bound to THIS QboCustomer) — repoint
+                    # the stale mapping to it IN PLACE (no delete, no window).
+                    if mapping.project_id != replacement.id:
+                        old_project_id = mapping.project_id
+                        mapping.project_id = replacement.id
+                        self.mapping_repo.update_by_id(mapping)
+                        logger.info(
+                            f'Healed CustomerProject mapping {mapping.id}: repointed QboCustomer '
+                            f'{qbo_customer.id} from missing Project {old_project_id} to Project '
+                            f'{replacement.id} ({project_name})'
+                        )
+                    return self._apply_project_fields_and_sync(
+                        replacement,
+                        qbo_customer=qbo_customer,
+                        name=project_name,
+                        description=project_description,
+                        status=project_status,
+                        customer_id=customer_id,
+                    )
+                # No replacement Project resolvable — a transient empty-read must NOT mint a
+                # duplicate. Do NOT delete the mapping, do NOT create a Project. Record a
+                # reconciliation issue and raise so the caller's per-item handler logs + skips
+                # and the row retries next tick (heals naturally if the read was transient).
+                self._raise_missing_project_issue(qbo_customer=qbo_customer, mapping=mapping)
+                raise ValueError(
+                    f'CustomerProject mapping {mapping.id} points at missing Project '
+                    f'{mapping.project_id} and no local Project named "{project_name}" could be '
+                    f'resolved for QboCustomer {qbo_customer.id}; preserving mapping, skipping.'
+                )
 
         # No mapping. Before creating a fresh Project, look for a matching local row
         # by exact (case-insensitive — SQL Server default collation) Name. This
@@ -171,6 +213,60 @@ class CustomerProjectConnector:
 
         return project
 
+    def _apply_project_fields_and_sync(
+        self,
+        project: Project,
+        *,
+        qbo_customer: QboCustomer,
+        name: str,
+        description: str,
+        status: str,
+        customer_id: Optional[int],
+    ) -> Project:
+        """
+        Write the QboCustomer-derived fields onto an existing Project, persist it,
+        and sync its addresses. Shared by the normal existing-mapping update path
+        and the heal-in-place repoint path so the QboCustomer->Project field mapping
+        lives in exactly one place (no drift between the two update sites).
+        """
+        project.name = name
+        project.description = description
+        project.status = status
+        project.customer_id = customer_id
+        updated = self.project_service.repo.update_by_id(project)
+        self._sync_addresses(qbo_customer, updated.id)
+        return updated
+
+    def _record_reconciliation_issue(
+        self,
+        *,
+        drift_type: str,
+        entity_public_id: Optional[str],
+        qbo_customer: QboCustomer,
+        details: str,
+    ) -> None:
+        """
+        Insert a critical qbo.ReconciliationIssue for a manual-review Project-mapping
+        drift, failure-isolated: a failed insert is logged loud but never breaks the
+        sync. Shared scaffold for the two detectors below (duplicate-sub-customer and
+        orphaned-mapping) — only drift_type / entity_public_id / details vary.
+        """
+        try:
+            self.reconciliation_repo.create(
+                drift_type=drift_type,
+                severity="critical",
+                action="manual_review",
+                entity_type="Project",
+                entity_public_id=entity_public_id,
+                qbo_id=str(qbo_customer.qbo_id) if qbo_customer.qbo_id else None,
+                realm_id=qbo_customer.realm_id or "",
+                details=details,
+            )
+            logger.warning(details)
+        except Exception as exc:
+            # Don't break the sync because reconciliation insert failed. Log loud.
+            logger.error(f"Failed to record reconciliation issue: {exc}. Details: {details}")
+
     def _raise_duplicate_qbo_customer_issue(
         self,
         *,
@@ -193,21 +289,36 @@ class CustomerProjectConnector:
             f"QboCustomer {existing_mapping.qbo_customer_id}. Resolve by merging or "
             f"renaming one of the QBO sub-customers."
         )
-        try:
-            self.reconciliation_repo.create(
-                drift_type="duplicate_qbo_customer",
-                severity="critical",
-                action="manual_review",
-                entity_type="Project",
-                entity_public_id=str(local_project.public_id) if local_project.public_id else None,
-                qbo_id=str(qbo_customer.qbo_id) if qbo_customer.qbo_id else None,
-                realm_id=qbo_customer.realm_id or "",
-                details=details,
-            )
-            logger.warning(details)
-        except Exception as exc:
-            # Don't break the sync because reconciliation insert failed. Log loud.
-            logger.error(f"Failed to record reconciliation issue: {exc}. Details: {details}")
+        self._record_reconciliation_issue(
+            drift_type="duplicate_qbo_customer",
+            entity_public_id=str(local_project.public_id) if local_project.public_id else None,
+            qbo_customer=qbo_customer,
+            details=details,
+        )
+
+    def _raise_missing_project_issue(self, *, qbo_customer: QboCustomer, mapping: CustomerProject) -> None:
+        """
+        Record an orphaned-mapping detection on qbo.ReconciliationIssue.
+
+        Triggered when a CustomerProject mapping exists but its bound Project is
+        missing AND no local Project can be resolved by name to repoint it to.
+        We deliberately do NOT delete the mapping or create a Project here (a
+        transient empty-read would otherwise mint a duplicate); the row is left
+        intact for a human to resolve / the next tick to heal.
+        """
+        details = (
+            f"Orphaned CustomerProject mapping. Mapping {mapping.id} (QboCustomer "
+            f"{qbo_customer.id}, QboId={qbo_customer.qbo_id}, DisplayName="
+            f"'{qbo_customer.display_name}') points at Project {mapping.project_id} which no "
+            f"longer reads, and no local Project name-matches to repoint it. Mapping preserved; "
+            f"no Project created. Investigate whether the Project was deleted/renamed."
+        )
+        self._record_reconciliation_issue(
+            drift_type="orphaned_customer_project_mapping",
+            entity_public_id=None,
+            qbo_customer=qbo_customer,
+            details=details,
+        )
 
     def _sync_addresses(self, qbo_customer: QboCustomer, project_id: int) -> None:
         """
@@ -311,3 +422,44 @@ class CustomerProjectConnector:
         Get mapping by QboCustomer ID.
         """
         return self.mapping_repo.read_by_qbo_customer_id(qbo_customer_id)
+
+    def heal_missing_mapping(self, qbo_customer) -> Optional[Project]:
+        '''
+        Auto-heal a MISSING CustomerProject mapping for a QboCustomer by binding an
+        existing local Project matched EXACTLY by name. NEVER creates a new Project.
+
+        Returns the bound Project, or None when no local Project can be resolved
+        (callers must fail loud rather than mint). Shared by the invoice-pull
+        connector to close the no-invoice window on a (possibly transient) missing
+        mapping without duplicating the bind recipe.
+        '''
+        # Only job/sub-customers map to Projects (parity with sync_from_qbo_customer's
+        # is_job gate at the top of this class). A non-job (top-level) customer must NOT be
+        # name-bound to a Project — return None so the invoice caller fails loud instead of
+        # wrong-binding an invoice onto an unrelated Project that merely shares a name.
+        if not qbo_customer.is_job:
+            return None
+        project_name = qbo_customer.display_name or qbo_customer.company_name or ''
+        if not project_name:
+            return None
+        existing_local = self.project_service.read_by_name(project_name)
+        if not existing_local:
+            return None
+        existing_mapping_for_local = self.mapping_repo.read_by_project_id(existing_local.id)
+        if existing_mapping_for_local:
+            if existing_mapping_for_local.qbo_customer_id == qbo_customer.id:
+                return existing_local  # already correctly mapped
+            # Bound to a DIFFERENT QboCustomer — genuine duplicate; do NOT rebind.
+            self._raise_duplicate_qbo_customer_issue(
+                qbo_customer=qbo_customer,
+                local_project=existing_local,
+                existing_mapping=existing_mapping_for_local,
+            )
+            return None
+        self.create_mapping(project_id=existing_local.id, qbo_customer_id=qbo_customer.id)
+        self._sync_addresses(qbo_customer, existing_local.id)
+        logger.info(
+            f'Auto-healed missing CustomerProject mapping: bound Project {existing_local.id} '
+            f'({project_name}) to QboCustomer {qbo_customer.id} by name match'
+        )
+        return existing_local

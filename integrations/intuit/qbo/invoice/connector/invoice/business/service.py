@@ -42,7 +42,7 @@ class InvoiceInvoiceConnector:
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
 
         # In-memory caches to avoid repeated DB lookups across invoice syncs
-        self._project_cache: dict = {}          # {qbo_customer_ref_value: project_public_id}
+        self._project_cache: dict = {}          # {(realm_id, qbo_customer_ref_value): project_public_id}
         self._invoice_mapping_cache: dict = {}  # {qbo_invoice_id: InvoiceInvoice}
         self._line_mapping_cache: dict = {}     # {qbo_invoice_line_id: InvoiceLineItemInvoiceLine}
         self._invoice_cache: dict = {}          # {invoice_id: Invoice}
@@ -93,7 +93,7 @@ class InvoiceInvoiceConnector:
             Invoice: The synced Invoice record
         """
         # Find project mapping from QBO CustomerRef
-        project_public_id = self._get_project_public_id(qbo_invoice.customer_ref_value)
+        project_public_id = self._get_project_public_id(qbo_invoice.customer_ref_value, qbo_invoice.realm_id)
         if not project_public_id:
             raise ValueError(f"No project mapping found for QBO customer ref: {qbo_invoice.customer_ref_value}")
         
@@ -273,13 +273,14 @@ class InvoiceInvoiceConnector:
 
         return invoice
 
-    def _get_project_public_id(self, qbo_customer_ref_value: str) -> Optional[str]:
+    def _get_project_public_id(self, qbo_customer_ref_value: str, realm_id: Optional[str] = None) -> Optional[str]:
         """
         Get the Project public_id from QBO customer reference value.
         Results are cached to avoid repeated DB lookups for the same customer.
 
         Args:
             qbo_customer_ref_value: QBO customer reference value (QBO Customer ID)
+            realm_id: Optional QBO realm ID for realm-scoped customer lookup
 
         Returns:
             str: Project public_id or None
@@ -287,32 +288,49 @@ class InvoiceInvoiceConnector:
         if not qbo_customer_ref_value:
             return None
 
+        cache_key = (realm_id, qbo_customer_ref_value)
+
         # Return cached result if available (including None for known misses)
-        if qbo_customer_ref_value in self._project_cache:
-            return self._project_cache[qbo_customer_ref_value]
+        if cache_key in self._project_cache:
+            return self._project_cache[cache_key]
 
         # Find the QboCustomer by qbo_id
-        qbo_customer = self.qbo_customer_repo.read_by_qbo_id(qbo_customer_ref_value)
+        if realm_id:
+            qbo_customer = self.qbo_customer_repo.read_by_qbo_id_and_realm_id(qbo_customer_ref_value, realm_id)
+        else:
+            qbo_customer = self.qbo_customer_repo.read_by_qbo_id(qbo_customer_ref_value)
         if not qbo_customer:
             logger.warning(f"QboCustomer not found for qbo_id: {qbo_customer_ref_value}")
-            self._project_cache[qbo_customer_ref_value] = None
+            self._project_cache[cache_key] = None
             return None
 
         # Find the CustomerProject mapping
         customer_mapping = self.customer_project_repo.read_by_qbo_customer_id(qbo_customer.id)
         if not customer_mapping:
-            logger.warning(f"CustomerProject mapping not found for QboCustomer ID: {qbo_customer.id}")
-            self._project_cache[qbo_customer_ref_value] = None
+            # Auto-heal the missing mapping by binding an existing local Project by name
+            # (never creating one). Closes the no-invoice window where a (possibly transient)
+            # missing CustomerProject mapping fails the entire invoice pull. If it genuinely
+            # cannot resolve a local Project, fall through to return None so the caller still
+            # raises (fail loud — never silently skip the project binding).
+            from integrations.intuit.qbo.customer.connector.project.business.service import (
+                CustomerProjectConnector,
+            )
+            healed_project = CustomerProjectConnector().heal_missing_mapping(qbo_customer)
+            if healed_project:
+                self._project_cache[cache_key] = healed_project.public_id
+                return healed_project.public_id
+            logger.warning(f'CustomerProject mapping not found (and unhealable) for QboCustomer ID: {qbo_customer.id}')
+            self._project_cache[cache_key] = None
             return None
 
         # Get the Project
         project = self.project_service.read_by_id(customer_mapping.project_id)
         if not project:
             logger.warning(f"Project not found for ID: {customer_mapping.project_id}")
-            self._project_cache[qbo_customer_ref_value] = None
+            self._project_cache[cache_key] = None
             return None
 
-        self._project_cache[qbo_customer_ref_value] = project.public_id
+        self._project_cache[cache_key] = project.public_id
         return project.public_id
 
     def _sync_line_items(self, invoice_id: int, invoice_public_id: str, qbo_invoice_lines: List[QboInvoiceLine]) -> None:

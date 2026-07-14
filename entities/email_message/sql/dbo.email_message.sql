@@ -945,7 +945,8 @@ GO
 -- for the full background.
 CREATE OR ALTER PROCEDURE dbo.RecoverStuckProcessingEmailMessages
     @StaleAfterMinutes INT = 10,
-    @MaxResets INT = 3
+    @MaxResets INT = 3,
+    @MaxRows INT = 50
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -955,7 +956,7 @@ BEGIN
     DECLARE @ResetCount INT = 0;
     DECLARE @FailedCount INT = 0;
 
-    UPDATE dbo.[EmailMessage]
+    UPDATE TOP (@MaxRows) dbo.[EmailMessage]
     SET [ProcessingStatus] = 'pending',
         [ProcessingResetCount] = [ProcessingResetCount] + 1,
         [LastError] = CONCAT(
@@ -970,7 +971,7 @@ BEGIN
       AND [ProcessingResetCount] < @MaxResets;
     SET @ResetCount = @@ROWCOUNT;
 
-    UPDATE dbo.[EmailMessage]
+    UPDATE TOP (@MaxRows) dbo.[EmailMessage]
     SET [ProcessingStatus] = 'failed',
         [LastError] = CONCAT(
             'auto-failed after ', [ProcessingResetCount], ' resets ',

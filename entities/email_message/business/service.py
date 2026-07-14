@@ -366,11 +366,12 @@ class EmailMessageService:
         return self.repo.claim_next_pending()
 
     def recover_stuck_processing(
-        self, *, stale_after_minutes: int = 10, max_resets: int = 3
+        self, *, stale_after_minutes: int = 10, max_resets: int = 3, max_rows: int = 50
     ) -> dict:
         return self.repo.recover_stuck_processing(
             stale_after_minutes=stale_after_minutes,
             max_resets=max_resets,
+            max_rows=max_rows,
         )
 
     def delete_by_id(self, id: int) -> bool:

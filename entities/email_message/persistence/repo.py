@@ -432,7 +432,7 @@ class EmailMessageRepository:
             raise map_database_error(error)
 
     def recover_stuck_processing(
-        self, *, stale_after_minutes: int = 10, max_resets: int = 3
+        self, *, stale_after_minutes: int = 10, max_resets: int = 3, max_rows: int = 50
     ) -> dict:
         """Reset orphaned EmailMessage rows stuck in 'processing'.
 
@@ -450,6 +450,7 @@ class EmailMessageRepository:
                     params={
                         "StaleAfterMinutes": stale_after_minutes,
                         "MaxResets": max_resets,
+                        "MaxRows": max_rows,
                     },
                 )
                 row = cursor.fetchone()

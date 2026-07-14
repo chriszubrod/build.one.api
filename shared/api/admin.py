@@ -842,10 +842,10 @@ async def email_recover_stuck_router():
         from intelligence.persistence.session_repo import AgentSessionRepo
 
         em_result = EmailMessageService().recover_stuck_processing(
-            stale_after_minutes=10, max_resets=3
+            stale_after_minutes=10, max_resets=3, max_rows=50
         )
         ag_result = AgentSessionRepo().timeout_long_running(
-            stale_after_minutes=30, max_email_resets=3
+            stale_after_minutes=30, max_email_resets=3, max_rows=50
         )
         return {**em_result, **ag_result}
 

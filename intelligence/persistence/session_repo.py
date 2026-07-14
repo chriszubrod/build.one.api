@@ -277,7 +277,7 @@ class AgentSessionRepo:
             raise map_database_error(error)
 
     def timeout_long_running(
-        self, *, stale_after_minutes: int = 30, max_email_resets: int = 3
+        self, *, stale_after_minutes: int = 30, max_email_resets: int = 3, max_rows: int = 50
     ) -> dict:
         """Time out AgentSession rows stuck in 'running' past the threshold.
 
@@ -294,6 +294,7 @@ class AgentSessionRepo:
                     params={
                         "StaleAfterMinutes": stale_after_minutes,
                         "MaxEmailResets": max_email_resets,
+                        "MaxRows": max_rows,
                     },
                 )
                 row = cursor.fetchone()

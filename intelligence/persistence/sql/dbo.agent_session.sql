@@ -347,7 +347,8 @@ GO
 -- migrations/001_timeout_long_running_sessions.sql for the full background.
 CREATE OR ALTER PROCEDURE dbo.TimeoutLongRunningAgentSessions
     @StaleAfterMinutes INT = 30,
-    @MaxEmailResets INT = 3
+    @MaxEmailResets INT = 3,
+    @MaxRows INT = 50
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -357,7 +358,7 @@ BEGIN
 
     DECLARE @TimedOut TABLE (Id BIGINT);
 
-    UPDATE s
+    UPDATE TOP (@MaxRows) s
     SET [Status] = 'failed',
         [TerminationReason] = 'auto-timeout (recovery cron)',
         [ErrorMessage] = CONCAT(

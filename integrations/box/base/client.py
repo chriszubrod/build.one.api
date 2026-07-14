@@ -371,7 +371,7 @@ class BoxHttpClient:
             files=self._build_upload_parts(attributes, filename, content, content_type),
             extra_headers=None,
             timeout_tier=timeout_tier,
-            policy=RetryPolicy.for_writes(),
+            policy=RetryPolicy.for_uploads(),
             operation_name=operation_name,
         )
 
@@ -406,7 +406,7 @@ class BoxHttpClient:
             files=self._build_upload_parts(attributes, filename, content, content_type),
             extra_headers=self._merge_if_match(None, if_match),
             timeout_tier=timeout_tier,
-            policy=RetryPolicy.for_writes(),
+            policy=RetryPolicy.for_uploads(),
             operation_name=operation_name,
         )
 

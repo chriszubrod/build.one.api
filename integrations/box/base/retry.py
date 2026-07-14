@@ -15,6 +15,13 @@ logger = get_box_logger(__name__)
 
 T = TypeVar("T")
 
+# Tier-C per-request timeout ceiling, mirroring client.py _TIMEOUT_TIERS['C']
+# (read/write 120s + connect 5s, plus a small margin). A single upload attempt
+# can burn a full tier-C timeout before Box answers (2026-07-08 incident: a ~40s
+# hung upload_version then 503). The upload retry budget must fit this many FULL
+# attempts so a slow-then-503 upload is genuinely retried, not zero-retry-dead-lettered.
+TIER_C_REQUEST_CEILING_SECONDS: float = 130.0
+
 
 @dataclass(frozen=True)
 class RetryPolicy:
@@ -45,6 +52,18 @@ class RetryPolicy:
     @classmethod
     def for_reads(cls) -> "RetryPolicy":
         return cls(max_attempts=5)
+
+    @classmethod
+    def for_uploads(cls) -> "RetryPolicy":
+        # Uploads default to timeout_tier='C' (120s). Unlike for_writes()'s 30s
+        # budget, this budget is sized so a slow-then-503 upload still gets its
+        # full retries instead of budget-exceeding on attempt 1. Invariant:
+        #   max_total_budget_seconds >= max_attempts * TIER_C_REQUEST_CEILING_SECONDS
+        # plus headroom for the exponential backoff sleeps between attempts.
+        max_attempts = 3
+        backoff_headroom_seconds = 10.0
+        budget = max_attempts * TIER_C_REQUEST_CEILING_SECONDS + backoff_headroom_seconds
+        return cls(max_attempts=max_attempts, max_total_budget_seconds=budget)
 
 
 def compute_backoff_seconds(

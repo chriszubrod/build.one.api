@@ -828,10 +828,19 @@ class BillBillConnector:
         if line_item.is_billable is not False:
             if customer_ref:
                 billable_status = "HasBeenBilled" if line_item.is_billed is True else "Billable"
+            elif line_item.project_id:
+                # Fail loud: a billable line WITH a project but no QBO CustomerRef mapping must not
+                # be silently downgraded to NotBillable (that silent downgrade let 14 OVH bills push
+                # in the wrong state unnoticed, 2026-07). Raise like the missing-Item-mapping path
+                # above so the push dead-letters via the outbox instead of shipping a not-billable bill.
+                raise ValueError(
+                    f"BillLineItem {line_item.id}: billable line on project_id={line_item.project_id} "
+                    f"has no QBO CustomerRef mapping. Map the Project to a qbo.CustomerProject row before syncing."
+                )
             else:
+                # Billable but no project to bill against — nothing to map; keep NotBillable.
                 logger.warning(
-                    f"Line item {line_item.id} is billable but no CustomerRef available "
-                    f"(project_id={line_item.project_id}). Setting to NotBillable."
+                    f"Line item {line_item.id} is billable but has no project_id; setting to NotBillable."
                 )
                 billable_status = "NotBillable"
         else:

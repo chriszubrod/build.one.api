@@ -65,6 +65,23 @@ class RetryPolicy:
         budget = max_attempts * TIER_C_REQUEST_CEILING_SECONDS + backoff_headroom_seconds
         return cls(max_attempts=max_attempts, max_total_budget_seconds=budget)
 
+    @classmethod
+    def for_downloads(cls) -> "RetryPolicy":
+        # Downloads default to timeout_tier='C' (120s). Unlike for_reads()'s 30s
+        # budget, this budget is sized so a slow-then-503 download still gets its
+        # full retries instead of budget-exceeding on attempt 1. Downloads
+        # legitimately need retries because a Box 202 + Retry-After ("file not yet
+        # available") is raised as BoxServiceUnavailableError for the retry layer.
+        # Invariant:
+        #   max_total_budget_seconds >= max_attempts * TIER_C_REQUEST_CEILING_SECONDS
+        # plus headroom for the exponential backoff sleeps between attempts.
+        # max_attempts=3 (not 5) keeps the drain applock hold bounded, matching
+        # uploads (download+upload run under the same box_outbox_drain lock).
+        max_attempts = 3
+        backoff_headroom_seconds = 10.0
+        budget = max_attempts * TIER_C_REQUEST_CEILING_SECONDS + backoff_headroom_seconds
+        return cls(max_attempts=max_attempts, max_total_budget_seconds=budget)
+
 
 def compute_backoff_seconds(
     attempt: int,

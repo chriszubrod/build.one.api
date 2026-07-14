@@ -521,7 +521,7 @@ class BoxHttpClient:
 
         return execute_with_retry(
             _do_once,
-            RetryPolicy.for_reads(),
+            RetryPolicy.for_downloads(),
             log=logger,
             operation_name=op_name,
             correlation_id=correlation_id,

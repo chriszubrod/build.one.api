@@ -150,6 +150,29 @@ class QboPurchaseClient:
         )
         return QboPurchaseResponse(**data).purchase
 
+    def get_purchase_raw(self, purchase_id: str) -> dict:
+        """Retrieve a single purchase as the raw QBO JSON dict (no schema parsing)."""
+        data = self._http_client.get(
+            f"purchase/{purchase_id}",
+            operation_name="qbo.purchase.get",
+        )
+        return data.get("Purchase") or data.get("purchase") or {}
+
+    def update_purchase_raw(
+        self,
+        purchase: dict,
+        *,
+        idempotency_key: Optional[str] = None,
+    ) -> dict:
+        """Update a purchase using the raw QBO JSON dict (no schema parsing)."""
+        data = self._http_client.post(
+            "purchase",
+            json=purchase,
+            idempotency_key=idempotency_key,
+            operation_name="qbo.purchase.update",
+        )
+        return data.get("Purchase") or data.get("purchase") or {}
+
     def query_purchases(
         self,
         last_updated_time: Optional[str] = None,

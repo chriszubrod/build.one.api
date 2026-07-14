@@ -64,6 +64,7 @@ class QboOutboxWorker:
             "sync_bill_to_qbo": self._handle_sync_bill,
             "sync_expense_to_qbo": self._handle_sync_expense,
             "sync_invoice_to_qbo": self._handle_sync_invoice,
+            "recode_purchase_line": self._handle_recode_purchase_line,
         }
         # Retry policy for backoff computation. Reuses base/retry.py math.
         self._retry_policy = RetryPolicy.for_writes()
@@ -476,3 +477,54 @@ class QboOutboxWorker:
             invoice=invoice,
             realm_id=row.realm_id,
         )
+
+    def _handle_recode_purchase_line(self, row: QboOutbox) -> None:
+        from entities.expense_coding_item.business.service import ExpenseCodingItemService
+        from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
+        from integrations.intuit.qbo.purchase.connector.expense.business.errors import (
+            PurchaseChangedInQboError,
+            PurchaseRecodeMappingError,
+        )
+        from integrations.intuit.qbo.base.errors import QboSyncTokenMismatchError
+
+        svc = ExpenseCodingItemService()
+        item = svc.read_by_public_id(row.entity_public_id)
+        if item is None:
+            return
+        # An outbox row only exists when a write was intended (confirm enqueued it
+        # under ALLOW_QBO_WRITES). Process both 'enqueued' and 'confirmed': the
+        # latter covers the crash window where enqueue succeeded but the follow-up
+        # mark_enqueued did not — skipping it here would silently drop the write.
+        # Terminal states (written / changed_in_qbo / error) are idempotent skips.
+        if item.status not in ("enqueued", "confirmed"):
+            return
+
+        try:
+            result = PurchaseExpenseConnector().recode_purchase_line(
+                realm_id=row.realm_id,
+                qbo_purchase_qbo_id=item.qbo_purchase_qbo_id,
+                target_qbo_line_id=item.qbo_line_id,
+                sub_cost_code_id=item.confirmed_sub_cost_code_id,
+                project_id=item.confirmed_project_id,
+                description=item.confirmed_description,
+                expected_sync_token=item.sync_token_at_suggest or "",
+            )
+        except (PurchaseChangedInQboError, QboSyncTokenMismatchError):
+            # Both mean the live Purchase drifted from the coding decision — bounce
+            # to re-review, fail closed (never reach the worker's refresh-and-retry).
+            svc.mark_changed_in_qbo(row.entity_public_id)
+            return
+        except PurchaseRecodeMappingError as exc:
+            svc.mark_error(row.entity_public_id, write_error=str(exc))
+            return
+
+        status = result.get("status")
+        if status in ("written", "already_recoded"):
+            svc.mark_written(row.entity_public_id, sync_token=result.get("sync_token"))
+        elif status == "line_not_found":
+            svc.mark_changed_in_qbo(row.entity_public_id)
+        else:
+            svc.mark_error(
+                row.entity_public_id,
+                write_error=f"unexpected recode status: {status}",
+            )

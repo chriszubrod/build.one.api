@@ -6,7 +6,10 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 # Local Imports
-from entities.expense_coding_item.api.schemas import FlagExpenseCodingItemRequest
+from entities.expense_coding_item.api.schemas import (
+    ConfirmExpenseCodingItemRequest,
+    FlagExpenseCodingItemRequest,
+)
 from entities.expense_coding_item.business.service import ExpenseCodingItemService
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
 from shared.api.responses import item_response, list_response, raise_database_error, raise_not_found
@@ -131,3 +134,76 @@ def flag_expense_coding_item_router(
         raise_not_found("Expense coding item")
 
     return item_response(flagged.to_dict())
+
+
+@router.post("/expense-coding/{public_id}/confirm")
+def confirm_expense_coding_item_router(
+    public_id: str,
+    body: ConfirmExpenseCodingItemRequest,
+    _: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
+):
+    user_id = current_user_id.get()
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Authenticated user required.")
+
+    service = ExpenseCodingItemService()
+    existing = service.read_by_public_id(public_id)
+    if existing is None:
+        raise_not_found("Expense coding item")
+
+    if existing.claimed_by_user_id != user_id:
+        try:
+            claimed = service.claim(public_id=public_id, user_id=user_id)
+        except Exception as error:
+            logger.exception("Failed to claim expense coding item %s before confirm.", public_id)
+            raise_database_error(error)
+
+        if claimed is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Expense coding item is currently claimed by another user.",
+            )
+
+    from entities.project.business.service import ProjectService
+    from entities.sub_cost_code.business.service import SubCostCodeService
+
+    project = ProjectService().read_by_public_id(body.project_public_id)
+    if project is None:
+        raise_not_found("Project")
+
+    sub_cost_code = SubCostCodeService().read_by_public_id(body.sub_cost_code_public_id)
+    if sub_cost_code is None:
+        raise_not_found("Sub cost code")
+
+    try:
+        result = service.confirm(
+            public_id=public_id,
+            project_id=project.id,
+            sub_cost_code_id=sub_cost_code.id,
+            description=body.description,
+            was_overridden=body.was_overridden,
+            user_id=user_id,
+        )
+    except Exception as error:
+        logger.exception("Failed to confirm expense coding item %s.", public_id)
+        raise_database_error(error)
+
+    result_status = result.get("status")
+    if result_status == "not_found":
+        raise_not_found("Expense coding item")
+    if result_status in ("invalid", "mapping_missing"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=result.get("reason", "Invalid confirmation request."),
+        )
+
+    item = service.read_by_public_id(public_id)
+    if item is None:
+        raise_not_found("Expense coding item")
+
+    payload = item.to_dict()
+    payload["enqueued"] = result.get("enqueued", False)
+    if result.get("reason"):
+        payload["reason"] = result["reason"]
+
+    return item_response(payload)

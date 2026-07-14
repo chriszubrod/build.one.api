@@ -485,3 +485,343 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+
+CREATE OR ALTER PROCEDURE RecordExpenseCodingConfirmation
+(
+    @PublicId UNIQUEIDENTIFIER,
+    @ConfirmedProjectId BIGINT = NULL,
+    @ConfirmedSubCostCodeId BIGINT = NULL,
+    @ConfirmedDescription NVARCHAR(1024) = NULL,
+    @WasOverridden BIT = NULL,
+    @ConfirmedByUserId BIGINT = NULL,
+    @ExpectedSyncToken NVARCHAR(50) = NULL,
+    @Status NVARCHAR(30) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+    DECLARE @UpdatedId BIGINT;
+
+    UPDATE eci
+    SET
+        [ConfirmedProjectId] = CASE WHEN @ConfirmedProjectId IS NOT NULL THEN @ConfirmedProjectId ELSE eci.[ConfirmedProjectId] END,
+        [ConfirmedSubCostCodeId] = CASE WHEN @ConfirmedSubCostCodeId IS NOT NULL THEN @ConfirmedSubCostCodeId ELSE eci.[ConfirmedSubCostCodeId] END,
+        [ConfirmedDescription] = CASE WHEN @ConfirmedDescription IS NOT NULL THEN @ConfirmedDescription ELSE eci.[ConfirmedDescription] END,
+        [WasOverridden] = CASE WHEN @WasOverridden IS NOT NULL THEN @WasOverridden ELSE eci.[WasOverridden] END,
+        [ConfirmedByUserId] = CASE WHEN @ConfirmedByUserId IS NOT NULL THEN @ConfirmedByUserId ELSE eci.[ConfirmedByUserId] END,
+        [ConfirmedAt] = @Now,
+        [SyncTokenAtSuggest] = CASE WHEN @ExpectedSyncToken IS NOT NULL THEN @ExpectedSyncToken ELSE eci.[SyncTokenAtSuggest] END,
+        [Status] = COALESCE(@Status, eci.[Status]),
+        [ModifiedDatetime] = @Now,
+        @UpdatedId = eci.[Id]
+    FROM dbo.[ExpenseCodingItem] eci
+    WHERE eci.[PublicId] = @PublicId;
+
+    SELECT
+        eci.[Id],
+        eci.[PublicId],
+        eci.[RowVersion],
+        eci.[QboPurchaseId],
+        eci.[QboPurchaseLineId],
+        eci.[QboLineId],
+        eci.[QboPurchaseQboId],
+        eci.[RealmId],
+        eci.[VendorId],
+        eci.[SyncTokenAtSuggest],
+        eci.[Status],
+        eci.[SuggestedProjectId],
+        eci.[SuggestedSubCostCodeId],
+        eci.[SuggestedDescription],
+        eci.[SuggestionSource],
+        eci.[SuggestionReason],
+        eci.[SuggestionConfidence],
+        eci.[SuggestedAt],
+        eci.[ConfirmedProjectId],
+        eci.[ConfirmedSubCostCodeId],
+        eci.[ConfirmedDescription],
+        eci.[WasOverridden],
+        eci.[ConfirmedByUserId],
+        eci.[ConfirmedAt],
+        eci.[FlagReason],
+        eci.[FlaggedAt],
+        eci.[WrittenAt],
+        eci.[WriteError],
+        eci.[ClaimedByUserId],
+        eci.[ClaimedAt],
+        eci.[CompanyId],
+        eci.[CreatedByUserId],
+        CONVERT(VARCHAR(19), eci.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), eci.[ModifiedDatetime], 120) AS [ModifiedDatetime]
+    FROM dbo.[ExpenseCodingItem] eci
+    WHERE eci.[Id] = @UpdatedId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE MarkExpenseCodingEnqueued
+(
+    @PublicId UNIQUEIDENTIFIER
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+    DECLARE @UpdatedId BIGINT;
+
+    UPDATE eci
+    SET
+        [Status] = N'enqueued',
+        [ModifiedDatetime] = @Now,
+        @UpdatedId = eci.[Id]
+    FROM dbo.[ExpenseCodingItem] eci
+    WHERE eci.[PublicId] = @PublicId;
+
+    SELECT
+        eci.[Id],
+        eci.[PublicId],
+        eci.[RowVersion],
+        eci.[QboPurchaseId],
+        eci.[QboPurchaseLineId],
+        eci.[QboLineId],
+        eci.[QboPurchaseQboId],
+        eci.[RealmId],
+        eci.[VendorId],
+        eci.[SyncTokenAtSuggest],
+        eci.[Status],
+        eci.[SuggestedProjectId],
+        eci.[SuggestedSubCostCodeId],
+        eci.[SuggestedDescription],
+        eci.[SuggestionSource],
+        eci.[SuggestionReason],
+        eci.[SuggestionConfidence],
+        eci.[SuggestedAt],
+        eci.[ConfirmedProjectId],
+        eci.[ConfirmedSubCostCodeId],
+        eci.[ConfirmedDescription],
+        eci.[WasOverridden],
+        eci.[ConfirmedByUserId],
+        eci.[ConfirmedAt],
+        eci.[FlagReason],
+        eci.[FlaggedAt],
+        eci.[WrittenAt],
+        eci.[WriteError],
+        eci.[ClaimedByUserId],
+        eci.[ClaimedAt],
+        eci.[CompanyId],
+        eci.[CreatedByUserId],
+        CONVERT(VARCHAR(19), eci.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), eci.[ModifiedDatetime], 120) AS [ModifiedDatetime]
+    FROM dbo.[ExpenseCodingItem] eci
+    WHERE eci.[Id] = @UpdatedId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE MarkExpenseCodingWritten
+(
+    @PublicId UNIQUEIDENTIFIER,
+    @SyncToken NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+    DECLARE @UpdatedId BIGINT;
+
+    UPDATE eci
+    SET
+        [Status] = N'written',
+        [WrittenAt] = @Now,
+        [WriteError] = NULL,
+        [ModifiedDatetime] = @Now,
+        @UpdatedId = eci.[Id]
+    FROM dbo.[ExpenseCodingItem] eci
+    WHERE eci.[PublicId] = @PublicId;
+
+    SELECT
+        eci.[Id],
+        eci.[PublicId],
+        eci.[RowVersion],
+        eci.[QboPurchaseId],
+        eci.[QboPurchaseLineId],
+        eci.[QboLineId],
+        eci.[QboPurchaseQboId],
+        eci.[RealmId],
+        eci.[VendorId],
+        eci.[SyncTokenAtSuggest],
+        eci.[Status],
+        eci.[SuggestedProjectId],
+        eci.[SuggestedSubCostCodeId],
+        eci.[SuggestedDescription],
+        eci.[SuggestionSource],
+        eci.[SuggestionReason],
+        eci.[SuggestionConfidence],
+        eci.[SuggestedAt],
+        eci.[ConfirmedProjectId],
+        eci.[ConfirmedSubCostCodeId],
+        eci.[ConfirmedDescription],
+        eci.[WasOverridden],
+        eci.[ConfirmedByUserId],
+        eci.[ConfirmedAt],
+        eci.[FlagReason],
+        eci.[FlaggedAt],
+        eci.[WrittenAt],
+        eci.[WriteError],
+        eci.[ClaimedByUserId],
+        eci.[ClaimedAt],
+        eci.[CompanyId],
+        eci.[CreatedByUserId],
+        CONVERT(VARCHAR(19), eci.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), eci.[ModifiedDatetime], 120) AS [ModifiedDatetime]
+    FROM dbo.[ExpenseCodingItem] eci
+    WHERE eci.[Id] = @UpdatedId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE MarkExpenseCodingChangedInQbo
+(
+    @PublicId UNIQUEIDENTIFIER
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+    DECLARE @UpdatedId BIGINT;
+
+    UPDATE eci
+    SET
+        [Status] = N'changed_in_qbo',
+        [ModifiedDatetime] = @Now,
+        @UpdatedId = eci.[Id]
+    FROM dbo.[ExpenseCodingItem] eci
+    WHERE eci.[PublicId] = @PublicId;
+
+    SELECT
+        eci.[Id],
+        eci.[PublicId],
+        eci.[RowVersion],
+        eci.[QboPurchaseId],
+        eci.[QboPurchaseLineId],
+        eci.[QboLineId],
+        eci.[QboPurchaseQboId],
+        eci.[RealmId],
+        eci.[VendorId],
+        eci.[SyncTokenAtSuggest],
+        eci.[Status],
+        eci.[SuggestedProjectId],
+        eci.[SuggestedSubCostCodeId],
+        eci.[SuggestedDescription],
+        eci.[SuggestionSource],
+        eci.[SuggestionReason],
+        eci.[SuggestionConfidence],
+        eci.[SuggestedAt],
+        eci.[ConfirmedProjectId],
+        eci.[ConfirmedSubCostCodeId],
+        eci.[ConfirmedDescription],
+        eci.[WasOverridden],
+        eci.[ConfirmedByUserId],
+        eci.[ConfirmedAt],
+        eci.[FlagReason],
+        eci.[FlaggedAt],
+        eci.[WrittenAt],
+        eci.[WriteError],
+        eci.[ClaimedByUserId],
+        eci.[ClaimedAt],
+        eci.[CompanyId],
+        eci.[CreatedByUserId],
+        CONVERT(VARCHAR(19), eci.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), eci.[ModifiedDatetime], 120) AS [ModifiedDatetime]
+    FROM dbo.[ExpenseCodingItem] eci
+    WHERE eci.[Id] = @UpdatedId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE MarkExpenseCodingError
+(
+    @PublicId UNIQUEIDENTIFIER,
+    @WriteError NVARCHAR(1024) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+    DECLARE @UpdatedId BIGINT;
+
+    UPDATE eci
+    SET
+        [Status] = N'error',
+        -- COALESCE guard: a NULL @WriteError never erases an existing diagnostic
+        [WriteError] = COALESCE(@WriteError, eci.[WriteError]),
+        [ModifiedDatetime] = @Now,
+        @UpdatedId = eci.[Id]
+    FROM dbo.[ExpenseCodingItem] eci
+    WHERE eci.[PublicId] = @PublicId;
+
+    SELECT
+        eci.[Id],
+        eci.[PublicId],
+        eci.[RowVersion],
+        eci.[QboPurchaseId],
+        eci.[QboPurchaseLineId],
+        eci.[QboLineId],
+        eci.[QboPurchaseQboId],
+        eci.[RealmId],
+        eci.[VendorId],
+        eci.[SyncTokenAtSuggest],
+        eci.[Status],
+        eci.[SuggestedProjectId],
+        eci.[SuggestedSubCostCodeId],
+        eci.[SuggestedDescription],
+        eci.[SuggestionSource],
+        eci.[SuggestionReason],
+        eci.[SuggestionConfidence],
+        eci.[SuggestedAt],
+        eci.[ConfirmedProjectId],
+        eci.[ConfirmedSubCostCodeId],
+        eci.[ConfirmedDescription],
+        eci.[WasOverridden],
+        eci.[ConfirmedByUserId],
+        eci.[ConfirmedAt],
+        eci.[FlagReason],
+        eci.[FlaggedAt],
+        eci.[WrittenAt],
+        eci.[WriteError],
+        eci.[ClaimedByUserId],
+        eci.[ClaimedAt],
+        eci.[CompanyId],
+        eci.[CreatedByUserId],
+        CONVERT(VARCHAR(19), eci.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), eci.[ModifiedDatetime], 120) AS [ModifiedDatetime]
+    FROM dbo.[ExpenseCodingItem] eci
+    WHERE eci.[Id] = @UpdatedId;
+
+    COMMIT TRANSACTION;
+END;
+GO

@@ -212,3 +212,107 @@ class ExpenseCodingItemRepository:
         except Exception as error:
             logger.error(f"Error releasing expense coding item {public_id}: {error}")
             raise map_database_error(error)
+
+    def record_confirmation(
+        self,
+        *,
+        public_id: str,
+        confirmed_project_id: Optional[int] = None,
+        confirmed_sub_cost_code_id: Optional[int] = None,
+        confirmed_description: Optional[str] = None,
+        was_overridden: Optional[bool] = None,
+        confirmed_by_user_id: Optional[int] = None,
+        expected_sync_token: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> Optional[ExpenseCodingItem]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="RecordExpenseCodingConfirmation",
+                    params={
+                        "PublicId": public_id,
+                        "ConfirmedProjectId": confirmed_project_id,
+                        "ConfirmedSubCostCodeId": confirmed_sub_cost_code_id,
+                        "ConfirmedDescription": confirmed_description,
+                        "WasOverridden": was_overridden,
+                        "ConfirmedByUserId": confirmed_by_user_id,
+                        "ExpectedSyncToken": expected_sync_token,
+                        "Status": status,
+                    },
+                )
+                return self._from_db(cursor.fetchone())
+        except Exception as error:
+            logger.error(f"Error recording confirmation for expense coding item {public_id}: {error}")
+            raise map_database_error(error)
+
+    def mark_enqueued(self, public_id: str) -> Optional[ExpenseCodingItem]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="MarkExpenseCodingEnqueued",
+                    params={"PublicId": public_id},
+                )
+                return self._from_db(cursor.fetchone())
+        except Exception as error:
+            logger.error(f"Error marking expense coding item {public_id} enqueued: {error}")
+            raise map_database_error(error)
+
+    def mark_written(
+        self,
+        public_id: str,
+        sync_token: Optional[str] = None,
+    ) -> Optional[ExpenseCodingItem]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="MarkExpenseCodingWritten",
+                    params={
+                        "PublicId": public_id,
+                        "SyncToken": sync_token,
+                    },
+                )
+                return self._from_db(cursor.fetchone())
+        except Exception as error:
+            logger.error(f"Error marking expense coding item {public_id} written: {error}")
+            raise map_database_error(error)
+
+    def mark_changed_in_qbo(self, public_id: str) -> Optional[ExpenseCodingItem]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="MarkExpenseCodingChangedInQbo",
+                    params={"PublicId": public_id},
+                )
+                return self._from_db(cursor.fetchone())
+        except Exception as error:
+            logger.error(f"Error marking expense coding item {public_id} changed_in_qbo: {error}")
+            raise map_database_error(error)
+
+    def mark_error(
+        self,
+        public_id: str,
+        write_error: Optional[str] = None,
+    ) -> Optional[ExpenseCodingItem]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="MarkExpenseCodingError",
+                    params={
+                        "PublicId": public_id,
+                        "WriteError": write_error,
+                    },
+                )
+                return self._from_db(cursor.fetchone())
+        except Exception as error:
+            logger.error(f"Error marking expense coding item {public_id} error: {error}")
+            raise map_database_error(error)

@@ -95,6 +95,123 @@ class ExpenseCodingItemService:
     def release(self, public_id: str, user_id: int) -> Optional[ExpenseCodingItem]:
         return self.repo.release(public_id=public_id, user_id=user_id)
 
+    def record_confirmation(
+        self,
+        *,
+        public_id: str,
+        confirmed_project_id: Optional[int] = None,
+        confirmed_sub_cost_code_id: Optional[int] = None,
+        confirmed_description: Optional[str] = None,
+        was_overridden: Optional[bool] = None,
+        confirmed_by_user_id: Optional[int] = None,
+        expected_sync_token: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> Optional[ExpenseCodingItem]:
+        return self.repo.record_confirmation(
+            public_id=public_id,
+            confirmed_project_id=confirmed_project_id,
+            confirmed_sub_cost_code_id=confirmed_sub_cost_code_id,
+            confirmed_description=confirmed_description,
+            was_overridden=was_overridden,
+            confirmed_by_user_id=confirmed_by_user_id,
+            expected_sync_token=expected_sync_token,
+            status=status,
+        )
+
+    def mark_enqueued(self, public_id: str) -> Optional[ExpenseCodingItem]:
+        return self.repo.mark_enqueued(public_id)
+
+    def mark_written(
+        self,
+        public_id: str,
+        sync_token: Optional[str] = None,
+    ) -> Optional[ExpenseCodingItem]:
+        return self.repo.mark_written(public_id, sync_token=sync_token)
+
+    def mark_changed_in_qbo(self, public_id: str) -> Optional[ExpenseCodingItem]:
+        return self.repo.mark_changed_in_qbo(public_id)
+
+    def mark_error(
+        self,
+        public_id: str,
+        write_error: Optional[str] = None,
+    ) -> Optional[ExpenseCodingItem]:
+        return self.repo.mark_error(public_id, write_error=write_error)
+
+    def confirm(
+        self,
+        *,
+        public_id: str,
+        project_id: int,
+        sub_cost_code_id: int,
+        description: Optional[str],
+        was_overridden: bool,
+        user_id: int,
+    ) -> dict:
+        item = self.read_by_public_id(public_id)
+        if item is None:
+            return {"status": "not_found"}
+
+        if not project_id or not sub_cost_code_id:
+            return {
+                "status": "invalid",
+                "reason": "project and sub_cost_code required",
+            }
+
+        from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
+
+        item_mapping = ItemSubCostCodeRepository().read_by_sub_cost_code_id(sub_cost_code_id)
+        if item_mapping is None:
+            return {
+                "status": "mapping_missing",
+                "reason": "SubCostCode has no QBO Item mapping",
+            }
+
+        expected_sync_token = None
+        try:
+            from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
+
+            qbo_purchase = QboPurchaseRepository().read_by_id(item.qbo_purchase_id)
+            if qbo_purchase and qbo_purchase.sync_token:
+                expected_sync_token = qbo_purchase.sync_token
+        except Exception as error:
+            logger.warning(
+                "Could not snapshot sync token for expense coding item %s: %s",
+                public_id,
+                error,
+            )
+
+        self.record_confirmation(
+            public_id=public_id,
+            confirmed_project_id=project_id,
+            confirmed_sub_cost_code_id=sub_cost_code_id,
+            confirmed_description=description,
+            was_overridden=was_overridden,
+            confirmed_by_user_id=user_id,
+            expected_sync_token=expected_sync_token,
+            status="confirmed",
+        )
+
+        from integrations.intuit.qbo.base.client import _writes_allowed
+
+        if _writes_allowed():
+            from integrations.intuit.qbo.outbox.business.service import QboOutboxService
+
+            QboOutboxService().enqueue(
+                kind="recode_purchase_line",
+                entity_type="ExpenseCodingItem",
+                entity_public_id=public_id,
+                realm_id=item.realm_id,
+            )
+            self.mark_enqueued(public_id)
+            return {"status": "enqueued", "enqueued": True}
+
+        return {
+            "status": "confirmed",
+            "enqueued": False,
+            "reason": "qbo_writes_disabled",
+        }
+
     def _resolve_vendor_id(
         self,
         vendor_qbo_id: Optional[str],

@@ -480,6 +480,130 @@ class PurchaseExpenseConnector:
             item_based_expense_line_detail=detail,
         )
 
+    def recode_purchase_line(
+        self,
+        *,
+        realm_id: str,
+        qbo_purchase_qbo_id: str,
+        target_qbo_line_id: str,
+        sub_cost_code_id: int,
+        project_id: Optional[int],
+        description: Optional[str],
+        expected_sync_token: str,
+    ) -> dict:
+        """
+        Surgically recode one 58999 placeholder Purchase line to ItemBasedExpenseLineDetail.
+
+        Round-trips the raw QBO Purchase JSON; mutates only the target line dict in place.
+        Performs no local DB or qbo.* cache writes.
+        """
+        from integrations.intuit.qbo.base.errors import QboSyncTokenMismatchError
+        from integrations.intuit.qbo.purchase.connector.expense.business.errors import (
+            PurchaseChangedInQboError,
+            PurchaseRecodeMappingError,
+        )
+        from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
+
+        with QboPurchaseClient(realm_id=realm_id) as client:
+            raw = client.get_purchase_raw(qbo_purchase_qbo_id)
+            lines = raw.get("Line") or []
+            live_sync_token = str(raw.get("SyncToken"))
+
+            target = next(
+                (line for line in lines if str(line.get("Id")) == str(target_qbo_line_id)),
+                None,
+            )
+            if target is None:
+                return {"status": "line_not_found", "sync_token": live_sync_token}
+
+            # If the line already left 58999, it was recoded by someone (or a prior
+            # run). Idempotent success only when it carries OUR intended item;
+            # any other coding is a foreign edit -> fail closed to re-review.
+            if not self._raw_line_is_categorize_placeholder(target):
+                existing_ref = self._get_qbo_item_ref(sub_cost_code_id)
+                if (
+                    target.get("DetailType") == "ItemBasedExpenseLineDetail"
+                    and existing_ref is not None
+                    and (target.get("ItemBasedExpenseLineDetail") or {}).get("ItemRef", {}).get("value")
+                    == existing_ref.value
+                ):
+                    return {"status": "already_recoded", "sync_token": live_sync_token}
+                raise PurchaseChangedInQboError(
+                    qbo_purchase_qbo_id=qbo_purchase_qbo_id,
+                    expected_sync_token=str(expected_sync_token),
+                    actual_sync_token=live_sync_token,
+                )
+
+            # Still on the placeholder: any drift from our snapshot token means the
+            # Purchase changed in QBO since queueing -> fail closed.
+            if live_sync_token != str(expected_sync_token):
+                raise PurchaseChangedInQboError(
+                    qbo_purchase_qbo_id=qbo_purchase_qbo_id,
+                    expected_sync_token=str(expected_sync_token),
+                    actual_sync_token=live_sync_token,
+                )
+
+            item_ref = self._get_qbo_item_ref(sub_cost_code_id)
+            if item_ref is None:
+                raise PurchaseRecodeMappingError(sub_cost_code_id=sub_cost_code_id)
+
+            customer_ref = self._get_qbo_customer_ref(project_id) if project_id else None
+
+            old = target.get("AccountBasedExpenseLineDetail") or {}
+            item_detail: dict = {
+                "ItemRef": {"value": item_ref.value, "name": item_ref.name},
+            }
+            if customer_ref is not None:
+                item_detail["CustomerRef"] = {
+                    "value": customer_ref.value,
+                    "name": customer_ref.name,
+                }
+            elif old.get("CustomerRef"):
+                item_detail["CustomerRef"] = old["CustomerRef"]
+            for carry_key in ("ClassRef", "BillableStatus", "TaxCodeRef", "MarkupInfo"):
+                if old.get(carry_key) is not None:
+                    item_detail[carry_key] = old[carry_key]
+
+            target["DetailType"] = "ItemBasedExpenseLineDetail"
+            target["ItemBasedExpenseLineDetail"] = item_detail
+            target.pop("AccountBasedExpenseLineDetail", None)
+            if description is not None:
+                target["Description"] = description
+
+            # Strip QBO response-only fields before echoing the document back on
+            # a full update — MetaData is server-owned, and domain/sparse are read
+            # markers. QBO recomputes MetaData; leaving them in risks rejection.
+            for _read_only in ("MetaData", "domain", "sparse"):
+                raw.pop(_read_only, None)
+
+            try:
+                updated = client.update_purchase_raw(raw)
+            except QboSyncTokenMismatchError as exc:
+                raise PurchaseChangedInQboError(
+                    qbo_purchase_qbo_id=qbo_purchase_qbo_id,
+                    expected_sync_token=str(expected_sync_token),
+                    actual_sync_token="unknown",
+                ) from exc
+
+        return {
+            "status": "written",
+            "sync_token": str(updated.get("SyncToken")),
+            "qbo_purchase_qbo_id": qbo_purchase_qbo_id,
+            "target_qbo_line_id": target_qbo_line_id,
+        }
+
+    @staticmethod
+    def _raw_line_is_categorize_placeholder(line_dict: dict) -> bool:
+        """True when the line sits on the 58999 NEED TO CATEGORIZE placeholder account."""
+        detail = line_dict.get("AccountBasedExpenseLineDetail")
+        if not detail:
+            return False
+        account_ref = detail.get("AccountRef") or {}
+        name = account_ref.get("name")
+        if not name:
+            return False
+        return "need to categorize" in name.lower()
+
     def _get_qbo_item_ref(self, sub_cost_code_id: int):
         """
         Get QBO ItemRef from local sub_cost_code_id.

@@ -4,6 +4,7 @@ import hmac
 import logging
 import os
 import time
+from datetime import datetime
 from typing import Any, Optional
 
 # Third-party Imports
@@ -101,6 +102,14 @@ async def _timed(job_name: str, sync_fn) -> dict[str, Any]:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"{job_name} failed after {duration_ms}ms: {error}",
         )
+
+
+def _validate_work_date(work_date: str) -> str:
+    try:
+        datetime.strptime(work_date, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="work_date must be an ISO date (YYYY-MM-DD).")
+    return work_date
 
 
 # --- Outbox drain ---------------------------------------------------------- #
@@ -243,6 +252,9 @@ async def time_entry_daily_digest_router(work_date: Optional[str] = None):
     so a re-run won't double-enqueue. Honors TIME_ENTRY_DIGEST_MODE
     (off | draft | send) — 'off' is a no-op — plus the ALLOW_MS_WRITES gate.
     """
+    if work_date:
+        work_date = _validate_work_date(work_date)
+
     def _run() -> dict[str, Any]:
         from entities.time_entry.business.digest_service import TimeEntryDigestService
         svc = TimeEntryDigestService()
@@ -270,6 +282,9 @@ async def time_tracking_auto_submit_prior_day_router(work_date: Optional[str] = 
     (off = no-op | dry_run = report only | on = execute). Called once a day by
     the scheduler's `auto_submit_prior_day` timer (18:00 UTC = 12:00 CST).
     """
+    if work_date:
+        work_date = _validate_work_date(work_date)
+
     def _run() -> dict[str, Any]:
         from entities.time_entry.business.auto_submit_service import TimeEntryAutoSubmitService
         svc = TimeEntryAutoSubmitService()

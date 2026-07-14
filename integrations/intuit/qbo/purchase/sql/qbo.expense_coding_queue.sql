@@ -44,6 +44,7 @@ BEGIN
         eci.[ConfirmedSubCostCodeId],
         eci.[ConfirmedDescription],
         eci.[FlagReason],
+        eci.[VendorId] AS [CodingVendorId],
         eci.[ClaimedByUserId],
         eci.[ClaimedAt]
     FROM [qbo].[PurchaseLine] pl

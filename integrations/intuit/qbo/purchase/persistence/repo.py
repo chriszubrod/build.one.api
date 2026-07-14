@@ -654,6 +654,7 @@ class QboPurchaseLineRepository:
             "confirmed_sub_cost_code_id": getattr(row, "ConfirmedSubCostCodeId", None),
             "confirmed_description": getattr(row, "ConfirmedDescription", None),
             "flag_reason": getattr(row, "FlagReason", None),
+            "vendor_id": getattr(row, "CodingVendorId", None),
             "claimed_by_user_id": getattr(row, "ClaimedByUserId", None),
             "claimed_at": claimed_at.isoformat() if claimed_at is not None else None,
         }

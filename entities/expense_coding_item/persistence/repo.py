@@ -155,6 +155,7 @@ class ExpenseCodingItemRepository:
         public_id: str,
         reason: str,
         modified_by_user_id: Optional[int] = None,
+        only_from_pending_like: bool = False,
     ) -> Optional[ExpenseCodingItem]:
         try:
             with get_connection() as conn:
@@ -166,6 +167,7 @@ class ExpenseCodingItemRepository:
                         "PublicId": public_id,
                         "FlagReason": reason,
                         "ModifiedByUserId": modified_by_user_id,
+                        "OnlyFromPendingLike": 1 if only_from_pending_like else 0,
                     },
                 )
                 return self._from_db(cursor.fetchone())
@@ -294,6 +296,32 @@ class ExpenseCodingItemRepository:
                 return self._from_db(cursor.fetchone())
         except Exception as error:
             logger.error(f"Error marking expense coding item {public_id} changed_in_qbo: {error}")
+            raise map_database_error(error)
+
+    def read_vendor_dominant_sub_cost_code(self, vendor_id: int) -> Optional[dict]:
+        """Return the modal SubCostCode from committed vendor expense history."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadVendorDominantSubCostCode",
+                    params={"VendorId": vendor_id},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    "sub_cost_code_id": row.SubCostCodeId,
+                    "number": row.Number,
+                    "name": row.Name,
+                    "top_count": row.TopCount,
+                    "total_count": row.TotalCount,
+                }
+        except Exception as error:
+            logger.error(
+                f"Error reading dominant sub cost code for vendor {vendor_id}: {error}"
+            )
             raise map_database_error(error)
 
     def mark_error(

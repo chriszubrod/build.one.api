@@ -111,6 +111,10 @@ class ProjectService:
             actor_is_system_admin=actor_is_system_admin,
         )
 
+    def read_by_abbreviation(self, abbreviation: str) -> Optional[Project]:
+        """Resolve an active project by exact abbreviation (expense coding / memo codes)."""
+        return self.repo.read_by_abbreviation(abbreviation)
+
     def find_for_invoice(self, *, address_hint: Optional[str] = None,
                          project_name_hint: Optional[str] = None) -> list[dict]:
         """Multi-strategy ranked Project lookup for invoice classification.

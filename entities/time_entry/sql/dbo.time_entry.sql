@@ -401,7 +401,7 @@ BEGIN
         SELECT TOP 1 s.[Status]
         FROM dbo.[TimeEntryStatus] s
         WHERE s.[TimeEntryId] = te.[Id]
-        ORDER BY s.[CreatedDatetime] DESC
+        ORDER BY s.[CreatedDatetime] DESC, s.[Id] DESC
     ) cs
     WHERE
         (@SearchTerm IS NULL OR
@@ -452,7 +452,7 @@ BEGIN
         SELECT TOP 1 s.[Status]
         FROM dbo.[TimeEntryStatus] s
         WHERE s.[TimeEntryId] = te.[Id]
-        ORDER BY s.[CreatedDatetime] DESC
+        ORDER BY s.[CreatedDatetime] DESC, s.[Id] DESC
     ) cs
     WHERE
         (@SearchTerm IS NULL OR
@@ -837,7 +837,7 @@ BEGIN
         [Note]
     FROM dbo.[TimeEntryStatus]
     WHERE [TimeEntryId] = @TimeEntryId
-    ORDER BY [CreatedDatetime] ASC;
+    ORDER BY [CreatedDatetime] ASC, [Id] ASC;
 
     COMMIT TRANSACTION;
 END;
@@ -865,7 +865,7 @@ BEGIN
         [Note]
     FROM dbo.[TimeEntryStatus]
     WHERE [TimeEntryId] = @TimeEntryId
-    ORDER BY [CreatedDatetime] DESC;
+    ORDER BY [CreatedDatetime] DESC, [Id] DESC;
 
     COMMIT TRANSACTION;
 END;

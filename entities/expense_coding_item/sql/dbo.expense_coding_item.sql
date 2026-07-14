@@ -235,7 +235,10 @@ BEGIN
         [ModifiedDatetime] = @Now,
         @UpdatedId = eci.[Id]
     FROM dbo.[ExpenseCodingItem] eci
-    WHERE eci.[PublicId] = @PublicId;
+    -- State guard: the automated suggest batch must never clobber a row a human
+    -- has already moved forward (confirmed/enqueued/written/changed_in_qbo/error).
+    WHERE eci.[PublicId] = @PublicId
+      AND eci.[Status] IN (N'pending', N'suggested', N'flagged');
 
     SELECT
         eci.[Id],
@@ -284,7 +287,11 @@ CREATE OR ALTER PROCEDURE RecordExpenseCodingFlag
 (
     @PublicId UNIQUEIDENTIFIER,
     @FlagReason NVARCHAR(1024),
-    @ModifiedByUserId BIGINT = NULL
+    @ModifiedByUserId BIGINT = NULL,
+    -- When 1 (the automated suggest batch), only flag a still-open row; never
+    -- clobber a human-advanced state. Default 0 = the manual /flag endpoint,
+    -- which may flag from any state.
+    @OnlyFromPendingLike BIT = 0
 )
 AS
 BEGIN
@@ -303,7 +310,8 @@ BEGIN
         [ModifiedDatetime] = @Now,
         @UpdatedId = eci.[Id]
     FROM dbo.[ExpenseCodingItem] eci
-    WHERE eci.[PublicId] = @PublicId;
+    WHERE eci.[PublicId] = @PublicId
+      AND (@OnlyFromPendingLike = 0 OR eci.[Status] IN (N'pending', N'suggested', N'flagged'));
 
     SELECT
         eci.[Id],

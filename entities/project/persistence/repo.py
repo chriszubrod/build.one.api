@@ -220,6 +220,39 @@ class ProjectRepository:
             logger.error(f"Error during read project by name: {error}")
             raise map_database_error(error)
 
+    def read_by_abbreviation(self, abbreviation: str) -> Optional[Project]:
+        """Exact case-insensitive match on Project.Abbreviation for active projects."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadProjectByAbbreviation",
+                    params={"Abbreviation": abbreviation},
+                )
+                rows = cursor.fetchall()
+                # Abbreviation is not schema-unique; on ambiguity return None
+                # (never guess a project when >1 active row shares the code).
+                if len(rows) != 1:
+                    return None
+                row = rows[0]
+                return Project(
+                    id=row.Id,
+                    public_id=str(row.PublicId) if row.PublicId else None,
+                    row_version=None,
+                    created_datetime=None,
+                    modified_datetime=None,
+                    name=row.Name,
+                    description=None,
+                    status="active",
+                    customer_id=None,
+                    abbreviation=row.Abbreviation,
+                    notes=None,
+                )
+        except Exception as error:
+            logger.error(f"Error during read project by abbreviation: {error}")
+            raise map_database_error(error)
+
     def find_for_invoice(self, *, address_hint: Optional[str] = None,
                          project_name_hint: Optional[str] = None) -> list[dict]:
         """Multi-strategy ranked Project lookup for invoice classification.

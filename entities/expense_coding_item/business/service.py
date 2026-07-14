@@ -73,11 +73,13 @@ class ExpenseCodingItemService:
         public_id: str,
         reason: str,
         modified_by_user_id: Optional[int] = None,
+        only_from_pending_like: bool = False,
     ) -> Optional[ExpenseCodingItem]:
         return self.repo.record_flag(
             public_id=public_id,
             reason=reason,
             modified_by_user_id=modified_by_user_id,
+            only_from_pending_like=only_from_pending_like,
         )
 
     def claim(

@@ -188,6 +188,7 @@ def test_expense_coding_queue_row_mapper_keys():
         "confirmed_sub_cost_code_id",
         "confirmed_description",
         "flag_reason",
+        "vendor_id",
         "claimed_by_user_id",
         "claimed_at",
     }

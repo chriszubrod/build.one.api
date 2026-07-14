@@ -11,6 +11,7 @@ from entities.expense_coding_item.api.schemas import (
     FlagExpenseCodingItemRequest,
 )
 from entities.expense_coding_item.business.service import ExpenseCodingItemService
+from entities.expense_coding_item.business.suggestion_service import ExpenseCodingSuggestionService
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
 from shared.api.responses import item_response, list_response, raise_database_error, raise_not_found
 from shared.authz import current_user_id
@@ -33,6 +34,26 @@ def get_expense_coding_queue_router(
         logger.exception("Failed to read expense coding queue.")
         raise HTTPException(status_code=500, detail="Failed to read expense coding queue.") from error
     return list_response(rows)
+
+
+@router.post("/expense-coding/suggest")
+def suggest_expense_coding_items_router(
+    realm_id: Optional[str] = Query(default=None),
+    max_items: int = Query(default=200, ge=1, le=1000),
+    _: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
+):
+    try:
+        counts = ExpenseCodingSuggestionService().suggest_pending(
+            realm_id=realm_id,
+            max_items=max_items,
+        )
+    except Exception as error:
+        logger.exception("Failed to run expense coding suggestions.")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to run expense coding suggestions.",
+        ) from error
+    return item_response(counts)
 
 
 @router.get("/expense-coding/metrics")

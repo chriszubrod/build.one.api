@@ -4,8 +4,9 @@
 -- , [Id] DESC/ASC sort key makes the current-status pick + history list deterministic.
 -- Redefines exactly: ReadTimeEntriesPaginated, CountTimeEntries, ReadCurrentTimeEntryStatus (Id DESC picks)
 -- + ReadTimeEntryStatusesByTimeEntryId (Id ASC history list). ORDER-BY-only; no logic/row-set/shape change.
+-- U-037: sprocs are now RBAC-scoped (@ActorUserId / @ActorIsSystemAdmin / @ActorCanViewTeam).
 
-CREATE OR ALTER PROCEDURE ReadTimeEntriesPaginated
+CREATE OR ALTER PROCEDURE dbo.ReadTimeEntriesPaginated
 (
     @PageNumber INT = 1,
     @PageSize INT = 50,
@@ -16,7 +17,10 @@ CREATE OR ALTER PROCEDURE ReadTimeEntriesPaginated
     @StartDate DATE = NULL,
     @EndDate DATE = NULL,
     @SortBy NVARCHAR(50) = 'WorkDate',
-    @SortDirection NVARCHAR(4) = 'DESC'
+    @SortDirection NVARCHAR(4) = 'DESC',
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL,
+    @ActorCanViewTeam BIT = 0
 )
 AS
 BEGIN
@@ -35,7 +39,6 @@ BEGIN
         te.[Note]
     FROM dbo.[TimeEntry] te
     LEFT JOIN dbo.[User] u ON te.[UserId] = u.[Id]
-    -- Get current status from most recent TimeEntryStatus row
     OUTER APPLY (
         SELECT TOP 1 s.[Status]
         FROM dbo.[TimeEntryStatus] s
@@ -54,6 +57,20 @@ BEGIN
         AND (@Status IS NULL OR cs.[Status] = @Status)
         AND (@StartDate IS NULL OR te.[WorkDate] >= @StartDate)
         AND (@EndDate IS NULL OR te.[WorkDate] <= @EndDate)
+        AND (
+            @ActorIsSystemAdmin = 1
+            OR te.[UserId] = @ActorUserId
+            OR (
+                @ActorCanViewTeam = 1
+                AND EXISTS (
+                    SELECT 1 FROM dbo.[TimeLog] tl2
+                    WHERE tl2.[TimeEntryId] = te.[Id]
+                      AND tl2.[ProjectId] IN (
+                        SELECT up.[ProjectId] FROM dbo.[UserProject] up WHERE up.[UserId] = @ActorUserId
+                      )
+                )
+            )
+        )
     ORDER BY
         CASE WHEN @SortDirection = 'ASC' AND @SortBy = 'WorkDate' THEN te.[WorkDate] END ASC,
         CASE WHEN @SortDirection = 'DESC' AND @SortBy = 'WorkDate' THEN te.[WorkDate] END DESC,
@@ -71,19 +88,23 @@ GO
 
 GO
 
-CREATE OR ALTER PROCEDURE CountTimeEntries
+CREATE OR ALTER PROCEDURE dbo.CountTimeEntries
 (
     @SearchTerm NVARCHAR(255) = NULL,
     @UserId BIGINT = NULL,
     @ProjectId BIGINT = NULL,
     @Status NVARCHAR(20) = NULL,
     @StartDate DATE = NULL,
-    @EndDate DATE = NULL
+    @EndDate DATE = NULL,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL,
+    @ActorCanViewTeam BIT = 0
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
 
+    -- alias MUST be [TotalCount] — TimeEntryRepository.count() reads row.TotalCount
     SELECT COUNT(*) AS [TotalCount]
     FROM dbo.[TimeEntry] te
     LEFT JOIN dbo.[User] u ON te.[UserId] = u.[Id]
@@ -104,7 +125,21 @@ BEGIN
         ))
         AND (@Status IS NULL OR cs.[Status] = @Status)
         AND (@StartDate IS NULL OR te.[WorkDate] >= @StartDate)
-        AND (@EndDate IS NULL OR te.[WorkDate] <= @EndDate);
+        AND (@EndDate IS NULL OR te.[WorkDate] <= @EndDate)
+        AND (
+            @ActorIsSystemAdmin = 1
+            OR te.[UserId] = @ActorUserId
+            OR (
+                @ActorCanViewTeam = 1
+                AND EXISTS (
+                    SELECT 1 FROM dbo.[TimeLog] tl2
+                    WHERE tl2.[TimeEntryId] = te.[Id]
+                      AND tl2.[ProjectId] IN (
+                        SELECT up.[ProjectId] FROM dbo.[UserProject] up WHERE up.[UserId] = @ActorUserId
+                      )
+                )
+            )
+        );
 
     COMMIT TRANSACTION;
 END;
@@ -113,26 +148,44 @@ GO
 
 GO
 
-CREATE OR ALTER PROCEDURE ReadTimeEntryStatusesByTimeEntryId
+CREATE OR ALTER PROCEDURE dbo.ReadTimeEntryStatusesByTimeEntryId
 (
-    @TimeEntryId BIGINT
+    @TimeEntryId BIGINT,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL,
+    @ActorCanViewTeam BIT = 0
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        [TimeEntryId],
-        [Status],
-        [UserId],
-        [Note]
-    FROM dbo.[TimeEntryStatus]
-    WHERE [TimeEntryId] = @TimeEntryId
-    ORDER BY [CreatedDatetime] ASC, [Id] ASC;
+        s.[Id],
+        s.[PublicId],
+        s.[RowVersion],
+        CONVERT(VARCHAR(19), s.[CreatedDatetime], 120) AS [CreatedDatetime],
+        s.[TimeEntryId],
+        s.[Status],
+        s.[UserId],
+        s.[Note]
+    FROM dbo.[TimeEntryStatus] s
+    INNER JOIN dbo.[TimeEntry] te ON te.[Id] = s.[TimeEntryId]
+    WHERE s.[TimeEntryId] = @TimeEntryId
+      AND (
+            @ActorIsSystemAdmin = 1
+            OR te.[UserId] = @ActorUserId
+            OR (
+                @ActorCanViewTeam = 1
+                AND EXISTS (
+                    SELECT 1 FROM dbo.[TimeLog] tl_scope
+                    WHERE tl_scope.[TimeEntryId] = te.[Id]
+                      AND tl_scope.[ProjectId] IN (
+                        SELECT up.[ProjectId] FROM dbo.[UserProject] up WHERE up.[UserId] = @ActorUserId
+                      )
+                )
+            )
+      )
+    ORDER BY s.[CreatedDatetime] ASC, s.[Id] ASC;
 
     COMMIT TRANSACTION;
 END;
@@ -141,26 +194,44 @@ GO
 
 GO
 
-CREATE OR ALTER PROCEDURE ReadCurrentTimeEntryStatus
+CREATE OR ALTER PROCEDURE dbo.ReadCurrentTimeEntryStatus
 (
-    @TimeEntryId BIGINT
+    @TimeEntryId BIGINT,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL,
+    @ActorCanViewTeam BIT = 0
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
 
     SELECT TOP 1
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        [TimeEntryId],
-        [Status],
-        [UserId],
-        [Note]
-    FROM dbo.[TimeEntryStatus]
-    WHERE [TimeEntryId] = @TimeEntryId
-    ORDER BY [CreatedDatetime] DESC, [Id] DESC;
+        s.[Id],
+        s.[PublicId],
+        s.[RowVersion],
+        CONVERT(VARCHAR(19), s.[CreatedDatetime], 120) AS [CreatedDatetime],
+        s.[TimeEntryId],
+        s.[Status],
+        s.[UserId],
+        s.[Note]
+    FROM dbo.[TimeEntryStatus] s
+    INNER JOIN dbo.[TimeEntry] te ON te.[Id] = s.[TimeEntryId]
+    WHERE s.[TimeEntryId] = @TimeEntryId
+      AND (
+            @ActorIsSystemAdmin = 1
+            OR te.[UserId] = @ActorUserId
+            OR (
+                @ActorCanViewTeam = 1
+                AND EXISTS (
+                    SELECT 1 FROM dbo.[TimeLog] tl_scope
+                    WHERE tl_scope.[TimeEntryId] = te.[Id]
+                      AND tl_scope.[ProjectId] IN (
+                        SELECT up.[ProjectId] FROM dbo.[UserProject] up WHERE up.[UserId] = @ActorUserId
+                      )
+                )
+            )
+      )
+    ORDER BY s.[CreatedDatetime] DESC, s.[Id] DESC;
 
     COMMIT TRANSACTION;
 END;

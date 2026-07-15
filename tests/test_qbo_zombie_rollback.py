@@ -130,6 +130,7 @@ def test_existing_mapping_resync_failure_does_not_compensating_delete():
         id=42,
         public_id="bill-pub-42",
         row_version="rv1",
+        bill_number="INV-EXISTING",  # read by the U-027 preserve decision on UPDATE
     )
 
     mapping_repo = Mock()

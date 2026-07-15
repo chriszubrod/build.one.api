@@ -33,6 +33,7 @@ from entities.bill_line_item.business.service import BillLineItemService
 from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
+from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ class BillBillConnector:
             raise ValueError(f"No vendor mapping found for QBO vendor ref: {qbo_bill.vendor_ref_value}")
         
         # Map QBO Bill fields to Bill module fields
-        bill_number = qbo_bill.doc_number or f"QBO-{qbo_bill.qbo_id}"
+        bill_number = qbo_ref_or_placeholder(qbo_bill.doc_number, qbo_bill.qbo_id)
         bill_date = qbo_bill.txn_date or ""
         due_date = qbo_bill.due_date or ""
         memo = qbo_bill.private_note
@@ -120,13 +121,27 @@ class BillBillConnector:
             bill = self.bill_service.read_by_id(mapping.bill_id)
             if bill:
                 logger.info(f"Updating existing Bill {bill.id} from QboBill {qbo_bill.id}")
-                
+
+                # U-027 (rule of three): never clobber a human-corrected bill_number on
+                # re-pull. Preserve the stored value unless it is empty/null or the
+                # QBO-<id> placeholder (which still upgrades to a real doc_number). CREATE
+                # path below is unchanged. See base.field_ownership.
+                # ACCEPTED RESIDUAL: a preserved number diverges from the QBO-derived one, so
+                # IF the qbo.BillBill mapping is later lost while this Bill persists (abnormal —
+                # the connector only drops the mapping when the Bill is already gone), the
+                # lost-mapping CREATE path's (vendor, bill_number, date) dedup keys on the
+                # QBO number and won't match this renamed row → a duplicate could be created.
+                # Adopt-style recovery for Bill is a separate reviewed unit (see TODO.md).
+                effective_bill_number = preserve_human_edited_ref(
+                    bill.bill_number, bill_number, qbo_bill.qbo_id
+                )
+
                 bill = self.bill_service.update_by_public_id(
                     bill.public_id,
                     vendor_public_id=vendor_public_id,
                     bill_date=bill_date,
                     due_date=due_date,
-                    bill_number=bill_number,
+                    bill_number=effective_bill_number,
                     total_amount=total_amount,
                     memo=memo,
                     is_draft=False,

@@ -51,7 +51,7 @@ and then update the corresponding connector sync methods in lockstep.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 QBO_OWNED = "qbo_owned"
@@ -82,6 +82,73 @@ class FieldOwnership:
 
 
 # ---------------------------------------------------------------------------
+# Pull-side value preservation (the "rule of three" document-number decision)
+# ---------------------------------------------------------------------------
+#
+# Several human-editable document-number fields are re-derived from QBO on every
+# pull (Bill.bill_number, BillCredit.credit_number, Invoice.invoice_number,
+# Expense.reference_number — all `qbo.doc_number or f"QBO-{qbo_id}"`). Passing
+# that derived value unconditionally into the UPDATE path reverts any local human
+# correction within a scheduler tick (KI-42). These pure helpers centralize both
+# the mint (`qbo_ref_or_placeholder`) and the preserve/upgrade decision
+# (`preserve_human_edited_ref`) so every connector shares one implementation and
+# the placeholder format lives in exactly one place.
+
+
+def _qbo_placeholder(qbo_id) -> str:
+    """The single source of the ``QBO-<qbo_id>`` placeholder format.
+
+    Both the minter (`qbo_ref_or_placeholder`) and the recognizer
+    (`is_qbo_placeholder_ref`) derive the placeholder from here, so they can never
+    drift apart.
+    """
+    return f"QBO-{qbo_id}"
+
+
+def qbo_ref_or_placeholder(doc_number: Optional[str], qbo_id) -> str:
+    """Derive the local document number from a QBO record.
+
+    Returns the QBO DocNumber, or the ``QBO-<qbo_id>`` placeholder when QBO hasn't
+    assigned one yet. This is the one mint the pull connectors call for
+    Bill.bill_number / BillCredit.credit_number / Invoice.invoice_number /
+    Expense.reference_number; `is_qbo_placeholder_ref` recognizes exactly what it
+    mints. Pure; no I/O.
+    """
+    return doc_number or _qbo_placeholder(qbo_id)
+
+
+def is_qbo_placeholder_ref(stored_value: Optional[str], qbo_id) -> bool:
+    """True when ``stored_value`` is exactly the placeholder that
+    `qbo_ref_or_placeholder` mints for a QBO record with no DocNumber yet.
+
+    A stored placeholder is a not-yet-real number that SHOULD upgrade to a genuine
+    doc_number once QBO supplies one. Pure; no I/O.
+    """
+    return stored_value == _qbo_placeholder(qbo_id)
+
+
+def preserve_human_edited_ref(
+    stored_value: Optional[str], incoming_value: Optional[str], qbo_id
+) -> Optional[str]:
+    """Decide the document number to write on a QBO re-pull UPDATE.
+
+    Preserve the locally stored value (a possible human correction) UNLESS it is
+    empty/None or the ``QBO-<qbo_id>`` placeholder — in which case take the incoming
+    QBO-derived value (so an empty field fills in, and a placeholder upgrades to a
+    real doc_number). Pure; no I/O.
+
+    ACCEPTED RESIDUAL: if QBO's doc_number legitimately CHANGES after the initial
+    sync AND the local value is neither empty nor the placeholder, the QBO change is
+    ignored (rare) — the correct tradeoff, since we must never clobber a manual
+    correction. This is the shared "rule of three" decision for Bill.bill_number,
+    BillCredit.credit_number, Invoice.invoice_number, and Expense.reference_number.
+    """
+    if not stored_value or is_qbo_placeholder_ref(stored_value, qbo_id):
+        return incoming_value
+    return stored_value
+
+
+# ---------------------------------------------------------------------------
 # Per-entity rules
 # ---------------------------------------------------------------------------
 
@@ -93,7 +160,6 @@ BILL = FieldOwnership(
         "vendor_id",
         "bill_date",
         "due_date",
-        "bill_number",         # DocNumber in QBO
         "total_amount",
         "memo",                # PrivateNote in QBO
         "payment_term_id",     # SalesTermRef in QBO
@@ -115,7 +181,10 @@ BILL = FieldOwnership(
         # Attachment links are app-side only; QBO attachments are a separate sync.
     ],
     both_editable=[
-        # None. Pure source-of-truth per field.
+        # DocNumber in QBO, but a human may correct it locally. Pull resolves the
+        # conflict via preserve_human_edited_ref (keep the local edit unless empty
+        # or the QBO-<id> placeholder) rather than clobbering it (KI-42 / U-027).
+        "bill_number",
     ],
 )
 
@@ -126,7 +195,6 @@ INVOICE = FieldOwnership(
         "customer_ref_value",
         "invoice_date",
         "due_date",
-        "invoice_number",      # DocNumber
         "total_amount",
         "memo",                # CustomerMemo
         "line_items",          # managed via InvoiceLineItem connector
@@ -136,7 +204,14 @@ INVOICE = FieldOwnership(
         # Invoice workflow state is entirely app-driven; QBO doesn't track
         # the invoice review/approval pipeline.
     ],
-    both_editable=[],
+    both_editable=[
+        # DocNumber in QBO; human-editable locally. NOTE: unlike Bill/BillCredit,
+        # the Invoice pull does NOT yet route through preserve_human_edited_ref —
+        # its lost-mapping adopt path keys on the QBO-derived number, so preserving
+        # a divergent local number reintroduces the phantom-duplicate bug. Deferred
+        # (U-027); classified both_editable to document intent. See TODO.md.
+        "invoice_number",
+    ],
 )
 
 
@@ -163,7 +238,11 @@ PURCHASE = FieldOwnership(
         "is_draft",
         "review_status_id",
     ],
-    both_editable=[],
+    both_editable=[
+        # DocNumber in QBO (reference_number locally); human-editable. Pull resolves
+        # the conflict via preserve_human_edited_ref, not by clobbering (KI-42 / U-024).
+        "reference_number",
+    ],
 )
 
 
@@ -172,7 +251,6 @@ VENDOR_CREDIT = FieldOwnership(
     qbo_owned=[
         "vendor_id",
         "credit_date",         # TxnDate
-        "credit_number",       # DocNumber
         "total_amount",
         "memo",
         "line_items",
@@ -180,7 +258,11 @@ VENDOR_CREDIT = FieldOwnership(
     app_owned=[
         "is_draft",
     ],
-    both_editable=[],
+    both_editable=[
+        # DocNumber in QBO; human-editable locally. Pull resolves the conflict via
+        # preserve_human_edited_ref, not by clobbering (KI-42 / U-027).
+        "credit_number",
+    ],
 )
 
 

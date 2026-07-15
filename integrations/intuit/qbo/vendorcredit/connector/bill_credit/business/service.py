@@ -14,6 +14,7 @@ from entities.bill_credit_line_item.business.service import BillCreditLineItemSe
 from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
+from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 
 logger = logging.getLogger(__name__)
 
@@ -61,19 +62,36 @@ class VendorCreditBillCreditConnector:
                     f"No vendor mapping found for QBO vendor ref: {qbo_vc.vendor_ref_value}"
                 )
             
+            # QBO-derived credit number (real DocNumber or the QBO-<id> placeholder).
+            # Hoisted once and reused on both the UPDATE and CREATE paths, mirroring the
+            # Bill/Expense siblings.
+            credit_number = qbo_ref_or_placeholder(qbo_vc.doc_number, qbo_vc.qbo_id)
+
             # Step 2: Check for existing mapping
             existing_mapping = self.mapping_repo.read_by_qbo_vendor_credit_id(qbo_vc.id)
-            
+
             if existing_mapping:
                 # Update existing BillCredit
                 bill_credit = self.bill_credit_service.read_by_id(existing_mapping.bill_credit_id)
                 if bill_credit:
+                    # U-027 (rule of three): never clobber a human-corrected credit_number on
+                    # re-pull. Preserve the stored value unless it is empty/null or the QBO-<id>
+                    # placeholder (which still upgrades to a real doc_number). The CREATE path
+                    # below is unchanged. See base.field_ownership.
+                    # ACCEPTED RESIDUAL: same as the Bill sibling — a preserved credit_number
+                    # diverges from the QBO number, so IF this credit's mapping is later lost
+                    # while it persists (abnormal), the CREATE path's UQ_BillCredit_VendorId_
+                    # CreditNumber dedup keys on the QBO number and won't match → possible
+                    # duplicate. Adopt-style recovery is a separate reviewed unit (see TODO.md).
+                    effective_credit_number = preserve_human_edited_ref(
+                        bill_credit.credit_number, credit_number, qbo_vc.qbo_id
+                    )
                     updated = self.bill_credit_service.update_by_public_id(
                         public_id=bill_credit.public_id,
                         row_version=bill_credit.row_version,
                         vendor_public_id=vendor_public_id,
                         credit_date=qbo_vc.txn_date,
-                        credit_number=qbo_vc.doc_number or f"QBO-{qbo_vc.qbo_id}",
+                        credit_number=effective_credit_number,
                         total_amount=Decimal(str(qbo_vc.total_amt)) if qbo_vc.total_amt else None,
                         memo=qbo_vc.private_note,
                     )
@@ -81,12 +99,12 @@ class VendorCreditBillCreditConnector:
                         # Sync line items
                         self._sync_line_items(updated.id, updated.public_id, qbo_lines)
                     return updated
-            
+
             # Step 3: Create new BillCredit
             bill_credit = self.bill_credit_service.create(
                 vendor_public_id=vendor_public_id,
                 credit_date=qbo_vc.txn_date,
-                credit_number=qbo_vc.doc_number or f"QBO-{qbo_vc.qbo_id}",
+                credit_number=credit_number,
                 total_amount=Decimal(str(qbo_vc.total_amt)) if qbo_vc.total_amt else None,
                 memo=qbo_vc.private_note,
                 is_draft=False,

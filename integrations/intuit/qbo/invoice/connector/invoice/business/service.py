@@ -15,6 +15,9 @@ from integrations.intuit.qbo.customer.connector.project.persistence.repo import 
 from entities.invoice.business.service import InvoiceService
 from entities.invoice.business.model import Invoice
 from entities.project.business.service import ProjectService
+# Only the mint helper — the preserve/upgrade decision is DEFERRED for Invoice
+# (see the NOTE on the UPDATE path + TODO.md).
+from integrations.intuit.qbo.base.field_ownership import qbo_ref_or_placeholder
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +101,7 @@ class InvoiceInvoiceConnector:
             raise ValueError(f"No project mapping found for QBO customer ref: {qbo_invoice.customer_ref_value}")
         
         # Map QBO Invoice fields to Invoice module fields
-        invoice_number = qbo_invoice.doc_number or f"QBO-{qbo_invoice.qbo_id}"
+        invoice_number = qbo_ref_or_placeholder(qbo_invoice.doc_number, qbo_invoice.qbo_id)
         invoice_date = qbo_invoice.txn_date or ""
         due_date = qbo_invoice.due_date or ""
         memo = qbo_invoice.private_note
@@ -116,6 +119,13 @@ class InvoiceInvoiceConnector:
             if invoice:
                 logger.info(f"Updating existing Invoice {invoice.id} from QboInvoice {qbo_invoice.id}")
 
+                # U-027 NOTE: the rule-of-three preserve (kept for Bill/BillCredit/Expense) is
+                # DELIBERATELY NOT applied here. Preserving a human-corrected invoice_number would
+                # let the local number diverge from the QBO-derived value, which the lost-mapping
+                # gap-detect/adopt path below (read_by_invoice_number_and_project_id, keyed on the
+                # QBO-derived number) relies on to re-adopt an existing invoice — divergence there
+                # reintroduces the documented "46 phantom -N invoices" bug. Deferred to its own
+                # unit (adopt lookup must also try the preserved number first). See TODO.md.
                 invoice = self.invoice_service.update_by_public_id(
                     invoice.public_id,
                     row_version=invoice.row_version,

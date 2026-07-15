@@ -17,6 +17,7 @@ from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
+from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ class PurchaseExpenseConnector:
             raise ValueError(f"No vendor mapping found for QBO entity ref: {qbo_purchase.entity_ref_value}")
         
         # Map QBO Purchase fields to Expense module fields
-        reference_number = qbo_purchase.doc_number or f"QBO-{qbo_purchase.qbo_id}"
+        reference_number = qbo_ref_or_placeholder(qbo_purchase.doc_number, qbo_purchase.qbo_id)
         expense_date = qbo_purchase.txn_date
         memo = qbo_purchase.private_note
         total_amount = qbo_purchase.total_amt
@@ -96,16 +97,13 @@ class PurchaseExpenseConnector:
             if expense:
                 logger.info(f"Updating existing Expense {expense.id} from QboPurchase {qbo_purchase.id}")
 
-                # KI-42: never silently revert a human-corrected reference_number. Only (re)set it
-                # from the QBO-derived value when the stored value is empty/null OR the QBO-<id>
-                # placeholder (an expense pulled before QBO had a doc_number, which SHOULD upgrade to
-                # a real doc_number when one appears). Otherwise keep whatever is stored.
-                # ACCEPTED RESIDUAL: if QBO's doc_number legitimately CHANGES after the initial sync
-                # AND the local value isn't empty/placeholder, the QBO change is ignored (rare) — the
-                # correct tradeoff, since we must never clobber a manual correction.
-                effective_ref = expense.reference_number
-                if not effective_ref or self._is_qbo_placeholder_ref(effective_ref, qbo_purchase.qbo_id):
-                    effective_ref = reference_number
+                # KI-42 / U-027 (rule of three): never silently revert a human-corrected
+                # reference_number on re-pull. The shared base helper keeps the stored value
+                # unless it is empty/null or the QBO-<id> placeholder (which still upgrades to a
+                # real doc_number when one appears). See base.field_ownership.
+                effective_ref = preserve_human_edited_ref(
+                    expense.reference_number, reference_number, qbo_purchase.qbo_id
+                )
 
                 expense = self.expense_service.update_by_public_id(
                     expense.public_id,
@@ -614,11 +612,6 @@ class PurchaseExpenseConnector:
         if not name:
             return False
         return "need to categorize" in name.lower()
-
-    @staticmethod
-    def _is_qbo_placeholder_ref(value, qbo_id) -> bool:
-        """True when the stored reference_number is the QBO-<qbo_id> placeholder minted before QBO had a doc_number."""
-        return value == f'QBO-{qbo_id}'
 
     def _get_qbo_item_ref(self, sub_cost_code_id: int):
         """

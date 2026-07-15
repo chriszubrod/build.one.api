@@ -95,13 +95,24 @@ class PurchaseExpenseConnector:
             expense = self.expense_service.read_by_id(mapping.expense_id)
             if expense:
                 logger.info(f"Updating existing Expense {expense.id} from QboPurchase {qbo_purchase.id}")
-                
+
+                # KI-42: never silently revert a human-corrected reference_number. Only (re)set it
+                # from the QBO-derived value when the stored value is empty/null OR the QBO-<id>
+                # placeholder (an expense pulled before QBO had a doc_number, which SHOULD upgrade to
+                # a real doc_number when one appears). Otherwise keep whatever is stored.
+                # ACCEPTED RESIDUAL: if QBO's doc_number legitimately CHANGES after the initial sync
+                # AND the local value isn't empty/placeholder, the QBO change is ignored (rare) — the
+                # correct tradeoff, since we must never clobber a manual correction.
+                effective_ref = expense.reference_number
+                if not effective_ref or self._is_qbo_placeholder_ref(effective_ref, qbo_purchase.qbo_id):
+                    effective_ref = reference_number
+
                 expense = self.expense_service.update_by_public_id(
                     expense.public_id,
                     row_version=expense.row_version,
                     vendor_public_id=vendor_public_id,
                     expense_date=expense_date,
-                    reference_number=reference_number,
+                    reference_number=effective_ref,
                     total_amount=total_amount,
                     memo=memo,
                     is_draft=False,
@@ -603,6 +614,11 @@ class PurchaseExpenseConnector:
         if not name:
             return False
         return "need to categorize" in name.lower()
+
+    @staticmethod
+    def _is_qbo_placeholder_ref(value, qbo_id) -> bool:
+        """True when the stored reference_number is the QBO-<qbo_id> placeholder minted before QBO had a doc_number."""
+        return value == f'QBO-{qbo_id}'
 
     def _get_qbo_item_ref(self, sub_cost_code_id: int):
         """

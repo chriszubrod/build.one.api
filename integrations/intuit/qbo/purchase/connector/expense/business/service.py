@@ -18,6 +18,7 @@ from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
+from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class PurchaseExpenseConnector:
         qbo_vendor_repo: Optional[QboVendorRepository] = None,
         qbo_purchase_repo: Optional[QboPurchaseRepository] = None,
         qbo_purchase_line_repo: Optional[QboPurchaseLineRepository] = None,
+        reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
     ):
         """Initialize the PurchaseExpenseConnector."""
         self.mapping_repo = mapping_repo or PurchaseExpenseRepository()
@@ -45,6 +47,7 @@ class PurchaseExpenseConnector:
         self.qbo_vendor_repo = qbo_vendor_repo or QboVendorRepository()
         self.qbo_purchase_repo = qbo_purchase_repo or QboPurchaseRepository()
         self.qbo_purchase_line_repo = qbo_purchase_line_repo or QboPurchaseLineRepository()
+        self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
         # Per-sync cache: avoids 3 DB round-trips per purchase when multiple purchases
         # share the same QBO vendor (the common case).
         self._vendor_cache: dict = {}
@@ -92,41 +95,57 @@ class PurchaseExpenseConnector:
         mapping = self.mapping_repo.read_by_qbo_purchase_id(qbo_purchase.id)
         
         if mapping:
-            # Found existing mapping - update the Expense
+            # Found existing mapping. Resolve the Expense to update. HEAL-don't-delete
+            # (U-029, applying the U-022 CustomerProject pattern): a transient empty-read
+            # must NEVER delete the mapping and fall through to CREATE — that would mint a
+            # DUPLICATE Expense (the exact hazard U-024 flagged).
             expense = self.expense_service.read_by_id(mapping.expense_id)
             if expense:
                 logger.info(f"Updating existing Expense {expense.id} from QboPurchase {qbo_purchase.id}")
-
-                # KI-42 / U-027 (rule of three): never silently revert a human-corrected
-                # reference_number on re-pull. The shared base helper keeps the stored value
-                # unless it is empty/null or the QBO-<id> placeholder (which still upgrades to a
-                # real doc_number when one appears). See base.field_ownership.
-                effective_ref = preserve_human_edited_ref(
-                    expense.reference_number, reference_number, qbo_purchase.qbo_id
-                )
-
-                expense = self.expense_service.update_by_public_id(
-                    expense.public_id,
-                    row_version=expense.row_version,
-                    vendor_public_id=vendor_public_id,
-                    expense_date=expense_date,
-                    reference_number=effective_ref,
-                    total_amount=total_amount,
-                    memo=memo,
-                    is_draft=False,
-                    is_credit=qbo_purchase.credit or False,
-                )
-                
-                # Sync line items for existing expense
-                self._sync_line_items(expense.id, expense.public_id, qbo_purchase_lines)
-                
-                return expense
+                target = expense
             else:
-                # Mapping exists but Expense not found - recreate Expense
-                logger.warning(f"Mapping exists but Expense {mapping.expense_id} not found. Creating new Expense.")
-                self.mapping_repo.delete_by_id(mapping.id)
-                mapping = None
-        
+                # Bound Expense read empty. Expense has no unique NAME like Project, and
+                # there is no mapping-repoint sproc, so re-resolve by the closest natural
+                # fingerprint — (reference_number, vendor) — and heal ONLY when it re-binds
+                # the SAME Expense the mapping already targets (a confirmed transient
+                # empty-read). See _record_missing_expense_issue for the fingerprint-key
+                # rationale.
+                replacement = self.expense_service.read_by_reference_number_and_vendor_public_id(
+                    reference_number, vendor_public_id
+                )
+                if replacement and replacement.id == mapping.expense_id:
+                    logger.warning(
+                        f"Expense {mapping.expense_id} read empty for QboPurchase "
+                        f"{qbo_purchase.id} but re-resolved by (reference_number, vendor) — "
+                        f"transient empty-read; healing in place, not recreating."
+                    )
+                    target = replacement
+                else:
+                    # No fingerprint match, or a match under a DIFFERENT id we cannot safely
+                    # repoint to (no mapping-update sproc): preserve the mapping, create
+                    # nothing, record a critical reconciliation issue, and RAISE. The purchase
+                    # pull treats this ValueError as a permanent skip (watermark advances, sync
+                    # stays healthy); the issue is the durable record for follow-up.
+                    self._record_missing_expense_issue(
+                        qbo_purchase=qbo_purchase, mapping=mapping, fingerprint=replacement
+                    )
+                    raise ValueError(
+                        f"PurchaseExpense mapping {mapping.id} points at missing Expense "
+                        f"{mapping.expense_id} and no local Expense fingerprinted by "
+                        f"reference_number '{reference_number}' + vendor resolves to it for "
+                        f"QboPurchase {qbo_purchase.id}; preserving mapping, skipping."
+                    )
+            return self._update_existing_expense(
+                target,
+                qbo_purchase=qbo_purchase,
+                vendor_public_id=vendor_public_id,
+                expense_date=expense_date,
+                reference_number=reference_number,
+                memo=memo,
+                total_amount=total_amount,
+                qbo_purchase_lines=qbo_purchase_lines,
+            )
+
         # Create new Expense
         logger.info(f"Creating new Expense from QboPurchase {qbo_purchase.id}: reference_number={reference_number}")
         expense = self.expense_service.create(
@@ -174,8 +193,101 @@ class PurchaseExpenseConnector:
                 entity_label='Expense', entity_id=expense_id,
             )
             raise
-        
+
         return expense
+
+    def _update_existing_expense(
+        self,
+        expense: Expense,
+        *,
+        qbo_purchase: QboPurchase,
+        vendor_public_id: str,
+        expense_date,
+        reference_number,
+        memo,
+        total_amount,
+        qbo_purchase_lines: List[QboPurchaseLine],
+    ) -> Expense:
+        """
+        Write the QBO-derived fields onto an existing Expense, then sync its line items.
+
+        Shared by the normal existing-mapping update path and the U-029 heal-in-place
+        path so the QboPurchase->Expense field mapping and the reference_number
+        preserve/upgrade decision live in exactly one place (no drift between the two
+        update sites).
+
+        KI-42 / U-024 (rule of three): never silently revert a human-corrected
+        reference_number on re-pull. The shared base helper keeps the stored value
+        unless it is empty/null or the QBO-<id> placeholder (which still upgrades to a
+        real doc_number when one appears). See base.field_ownership.
+        """
+        effective_ref = preserve_human_edited_ref(
+            expense.reference_number, reference_number, qbo_purchase.qbo_id
+        )
+        updated = self.expense_service.update_by_public_id(
+            expense.public_id,
+            row_version=expense.row_version,
+            vendor_public_id=vendor_public_id,
+            expense_date=expense_date,
+            reference_number=effective_ref,
+            total_amount=total_amount,
+            memo=memo,
+            is_draft=False,
+            is_credit=qbo_purchase.credit or False,
+        )
+        self._sync_line_items(updated.id, updated.public_id, qbo_purchase_lines)
+        return updated
+
+    def _record_missing_expense_issue(
+        self,
+        *,
+        qbo_purchase: QboPurchase,
+        mapping: PurchaseExpense,
+        fingerprint: Optional[Expense] = None,
+    ) -> None:
+        """
+        Record an orphaned-mapping detection on qbo.ReconciliationIssue, failure-
+        isolated: a failed insert is logged loud but never breaks the sync (mirrors
+        the CustomerProject connector's _raise_missing_project_issue).
+
+        Triggered when a PurchaseExpense mapping exists but its bound Expense read
+        empty AND the (reference_number, vendor) fingerprint did not re-resolve to that
+        same Expense. We deliberately do NOT delete the mapping or create an Expense
+        here — a transient empty-read would otherwise mint a duplicate; the mapping is
+        preserved for the next tick / a human to resolve.
+        """
+        if fingerprint is not None:
+            fingerprint_note = (
+                f" A different Expense {fingerprint.id} matches the (reference_number, "
+                f"vendor) fingerprint but is not the mapped row; not repointing "
+                f"(no mapping-update path)."
+            )
+        else:
+            fingerprint_note = (
+                " No local Expense matches the (reference_number, vendor) fingerprint."
+            )
+        details = (
+            f"Orphaned PurchaseExpense mapping. Mapping {mapping.id} (QboPurchase "
+            f"{qbo_purchase.id}, QboId={qbo_purchase.qbo_id}) points at Expense "
+            f"{mapping.expense_id} which no longer reads.{fingerprint_note} Mapping "
+            f"preserved; no Expense created. Investigate whether the Expense was "
+            f"deleted/renumbered."
+        )
+        try:
+            self.reconciliation_repo.create(
+                drift_type="orphaned_purchase_expense_mapping",
+                severity="critical",
+                action="manual_review",
+                entity_type="Expense",
+                entity_public_id=None,
+                qbo_id=str(qbo_purchase.qbo_id) if qbo_purchase.qbo_id else None,
+                realm_id=qbo_purchase.realm_id or "",
+                details=details,
+            )
+            logger.warning(details)
+        except Exception as exc:
+            # Don't break the sync because the reconciliation insert failed. Log loud.
+            logger.error(f"Failed to record reconciliation issue: {exc}. Details: {details}")
 
     def _get_vendor_public_id(self, qbo_entity_ref_value: str) -> Optional[str]:
         """

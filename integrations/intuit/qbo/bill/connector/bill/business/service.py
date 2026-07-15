@@ -34,6 +34,7 @@ from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
+from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ class BillBillConnector:
         qbo_account_repo: Optional[QboAccountRepository] = None,
         term_payment_term_repo: Optional[TermPaymentTermRepository] = None,
         qbo_term_repo: Optional[QboTermRepository] = None,
+        reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
     ):
         """Initialize the BillBillConnector."""
         self.mapping_repo = mapping_repo or BillBillRepository()
@@ -77,6 +79,7 @@ class BillBillConnector:
         self.qbo_account_repo = qbo_account_repo or QboAccountRepository()
         self.term_payment_term_repo = term_payment_term_repo or TermPaymentTermRepository()
         self.qbo_term_repo = qbo_term_repo or QboTermRepository()
+        self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
 
     def sync_from_qbo_bill(self, qbo_bill: QboBill, qbo_bill_lines: List[QboBillLine]) -> Bill:
         """
@@ -117,47 +120,79 @@ class BillBillConnector:
         mapping = self.mapping_repo.read_by_qbo_bill_id(qbo_bill.id)
         
         if mapping:
-            # Found existing mapping - update the Bill
+            # Found existing mapping. Resolve the Bill to update. HEAL-don't-delete
+            # (U-031, mirroring U-029 Purchase->Expense): a transient empty-read must
+            # NEVER delete the mapping and fall through to CREATE — that would mint a
+            # DUPLICATE Bill (the exact hazard U-029 fixed for Expense).
             bill = self.bill_service.read_by_id(mapping.bill_id)
             if bill:
                 logger.info(f"Updating existing Bill {bill.id} from QboBill {qbo_bill.id}")
-
-                # U-027 (rule of three): never clobber a human-corrected bill_number on
-                # re-pull. Preserve the stored value unless it is empty/null or the
-                # QBO-<id> placeholder (which still upgrades to a real doc_number). CREATE
-                # path below is unchanged. See base.field_ownership.
-                # ACCEPTED RESIDUAL: a preserved number diverges from the QBO-derived one, so
-                # IF the qbo.BillBill mapping is later lost while this Bill persists (abnormal —
-                # the connector only drops the mapping when the Bill is already gone), the
-                # lost-mapping CREATE path's (vendor, bill_number, date) dedup keys on the
-                # QBO number and won't match this renamed row → a duplicate could be created.
-                # Adopt-style recovery for Bill is a separate reviewed unit (see TODO.md).
-                effective_bill_number = preserve_human_edited_ref(
-                    bill.bill_number, bill_number, qbo_bill.qbo_id
-                )
-
-                bill = self.bill_service.update_by_public_id(
-                    bill.public_id,
-                    vendor_public_id=vendor_public_id,
-                    bill_date=bill_date,
-                    due_date=due_date,
-                    bill_number=effective_bill_number,
-                    total_amount=total_amount,
-                    memo=memo,
-                    is_draft=False,
-                    row_version=bill.row_version,
-                )
-                
-                # Sync line items for existing bill
-                self._sync_line_items(bill.id, qbo_bill_lines)
-                
-                return bill
             else:
-                # Mapping exists but Bill not found - recreate Bill
-                logger.warning(f"Mapping exists but Bill {mapping.bill_id} not found. Creating new Bill.")
-                self.mapping_repo.delete_by_id(mapping.id)
-                mapping = None
-        
+                # Bound Bill read empty. Bill has no unique NAME like Project, and there
+                # is no mapping-repoint sproc, so re-resolve by the closest natural
+                # fingerprint — (bill_number, vendor) — and heal ONLY when it re-binds the
+                # SAME Bill the mapping already targets (a confirmed transient empty-read).
+                # The fingerprint keys on the QBO-derived bill_number (what CREATE writes);
+                # the same-id gate makes a wrong/duplicate row safe under a non-TOP-1
+                # fingerprint proc (id != mapping.bill_id → record+raise, never a wrong
+                # bind). See _record_missing_bill_issue.
+                replacement = self.bill_service.read_by_bill_number_and_vendor_public_id(
+                    bill_number, vendor_public_id
+                )
+                if replacement and replacement.id == mapping.bill_id:
+                    logger.warning(
+                        f"Bill {mapping.bill_id} read empty for QboBill {qbo_bill.id} but "
+                        f"re-resolved by (bill_number, vendor) — transient empty-read; "
+                        f"healing in place, not recreating."
+                    )
+                    bill = replacement
+                else:
+                    # No fingerprint match, or a match under a DIFFERENT id we cannot
+                    # safely repoint to (no mapping-update sproc): preserve the mapping,
+                    # create nothing, record a critical reconciliation issue, and RAISE.
+                    # The pull caller treats this ValueError as a per-item skip (watermark
+                    # advances, sync stays healthy); the issue is the durable follow-up.
+                    self._record_missing_bill_issue(
+                        qbo_bill=qbo_bill, mapping=mapping, fingerprint=replacement
+                    )
+                    raise ValueError(
+                        f"BillBill mapping {mapping.id} points at missing Bill "
+                        f"{mapping.bill_id} and no local Bill fingerprinted by bill_number "
+                        f"'{bill_number}' + vendor resolves to it for QboBill "
+                        f"{qbo_bill.id}; preserving mapping, skipping."
+                    )
+
+            # U-027 (rule of three): never clobber a human-corrected bill_number on
+            # re-pull. Preserve the stored value unless it is empty/null or the
+            # QBO-<id> placeholder (which still upgrades to a real doc_number). CREATE
+            # path below is unchanged. See base.field_ownership.
+            # ACCEPTED RESIDUAL: a preserved number diverges from the QBO-derived one, so
+            # IF the qbo.BillBill mapping is later lost while this Bill persists (abnormal —
+            # the connector only drops the mapping when the Bill is already gone), the
+            # lost-mapping CREATE path's (vendor, bill_number, date) dedup keys on the
+            # QBO number and won't match this renamed row → a duplicate could be created.
+            # Adopt-style recovery for Bill is a separate reviewed unit (see TODO.md).
+            effective_bill_number = preserve_human_edited_ref(
+                bill.bill_number, bill_number, qbo_bill.qbo_id
+            )
+
+            bill = self.bill_service.update_by_public_id(
+                bill.public_id,
+                vendor_public_id=vendor_public_id,
+                bill_date=bill_date,
+                due_date=due_date,
+                bill_number=effective_bill_number,
+                total_amount=total_amount,
+                memo=memo,
+                is_draft=False,
+                row_version=bill.row_version,
+            )
+
+            # Sync line items for existing bill
+            self._sync_line_items(bill.id, qbo_bill_lines)
+
+            return bill
+
         # Create new Bill
         logger.info(f"Creating new Bill from QboBill {qbo_bill.id}: bill_number={bill_number}")
         bill = self.bill_service.create(
@@ -200,6 +235,56 @@ class BillBillConnector:
             raise
         
         return bill
+
+    def _record_missing_bill_issue(
+        self,
+        *,
+        qbo_bill: QboBill,
+        mapping: BillBill,
+        fingerprint: Optional[Bill] = None,
+    ) -> None:
+        """
+        Record an orphaned-mapping detection on qbo.ReconciliationIssue, failure-
+        isolated: a failed insert is logged loud but never breaks the sync (mirrors
+        the Purchase/CustomerProject connectors' recorders).
+
+        Triggered when a BillBill mapping exists but its bound Bill read empty AND the
+        (bill_number, vendor) fingerprint did not re-resolve to that same Bill. We
+        deliberately do NOT delete the mapping or create a Bill here — a transient
+        empty-read would otherwise mint a duplicate; the mapping is preserved for the
+        next tick / a human to resolve.
+        """
+        if fingerprint is not None:
+            fingerprint_note = (
+                f" A different Bill {fingerprint.id} matches the (bill_number, vendor) "
+                f"fingerprint but is not the mapped row; not repointing (no "
+                f"mapping-update path)."
+            )
+        else:
+            fingerprint_note = (
+                " No local Bill matches the (bill_number, vendor) fingerprint."
+            )
+        details = (
+            f"Orphaned BillBill mapping. Mapping {mapping.id} (QboBill {qbo_bill.id}, "
+            f"QboId={qbo_bill.qbo_id}) points at Bill {mapping.bill_id} which no longer "
+            f"reads.{fingerprint_note} Mapping preserved; no Bill created. Investigate "
+            f"whether the Bill was deleted/renumbered."
+        )
+        try:
+            self.reconciliation_repo.create(
+                drift_type="orphaned_bill_bill_mapping",
+                severity="critical",
+                action="manual_review",
+                entity_type="Bill",
+                entity_public_id=None,
+                qbo_id=str(qbo_bill.qbo_id) if qbo_bill.qbo_id else None,
+                realm_id=qbo_bill.realm_id or "",
+                details=details,
+            )
+            logger.warning(details)
+        except Exception as exc:
+            # Don't break the sync because the reconciliation insert failed. Log loud.
+            logger.error(f"Failed to record reconciliation issue: {exc}. Details: {details}")
 
     def _get_vendor_public_id(self, qbo_vendor_ref_value: str) -> Optional[str]:
         """

@@ -7,7 +7,10 @@ from decimal import Decimal
 
 # Local Imports
 from integrations.intuit.qbo.vendorcredit.business.model import QboVendorCredit, QboVendorCreditLine
-from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import VendorCreditBillCreditMappingRepository
+from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
+    VendorCreditBillCreditMappingRepository,
+    VendorCreditBillCreditMapping,
+)
 from entities.bill_credit.business.service import BillCreditService
 from entities.bill_credit.business.model import BillCredit
 from entities.bill_credit_line_item.business.service import BillCreditLineItemService
@@ -15,6 +18,7 @@ from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
+from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +26,19 @@ logger = logging.getLogger(__name__)
 class VendorCreditBillCreditConnector:
     """Connector service for syncing QBO VendorCredits to BillCredits."""
 
-    def __init__(self):
-        self.mapping_repo = VendorCreditBillCreditMappingRepository()
-        self.bill_credit_service = BillCreditService()
-        self.bill_credit_line_item_service = BillCreditLineItemService()
-        self.vendor_service = VendorService()
+    def __init__(
+        self,
+        mapping_repo: Optional[VendorCreditBillCreditMappingRepository] = None,
+        bill_credit_service: Optional[BillCreditService] = None,
+        bill_credit_line_item_service: Optional[BillCreditLineItemService] = None,
+        vendor_service: Optional[VendorService] = None,
+        reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
+    ):
+        self.mapping_repo = mapping_repo or VendorCreditBillCreditMappingRepository()
+        self.bill_credit_service = bill_credit_service or BillCreditService()
+        self.bill_credit_line_item_service = bill_credit_line_item_service or BillCreditLineItemService()
+        self.vendor_service = vendor_service or VendorService()
+        self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
 
     def sync_from_qbo_vendor_credit(
         self,
@@ -71,34 +83,73 @@ class VendorCreditBillCreditConnector:
             existing_mapping = self.mapping_repo.read_by_qbo_vendor_credit_id(qbo_vc.id)
 
             if existing_mapping:
-                # Update existing BillCredit
+                # Found existing mapping. Resolve the BillCredit to update. HEAL-don't-
+                # delete (U-031, mirroring U-029 Purchase->Expense): the empty-read branch
+                # must NEVER fall through to Step 3 CREATE — that mints a DUPLICATE
+                # BillCredit. (This connector's flavor of the bug: it didn't delete the
+                # mapping, it just silently fell through to create when the read came back
+                # empty.)
                 bill_credit = self.bill_credit_service.read_by_id(existing_mapping.bill_credit_id)
-                if bill_credit:
-                    # U-027 (rule of three): never clobber a human-corrected credit_number on
-                    # re-pull. Preserve the stored value unless it is empty/null or the QBO-<id>
-                    # placeholder (which still upgrades to a real doc_number). The CREATE path
-                    # below is unchanged. See base.field_ownership.
-                    # ACCEPTED RESIDUAL: same as the Bill sibling — a preserved credit_number
-                    # diverges from the QBO number, so IF this credit's mapping is later lost
-                    # while it persists (abnormal), the CREATE path's UQ_BillCredit_VendorId_
-                    # CreditNumber dedup keys on the QBO number and won't match → possible
-                    # duplicate. Adopt-style recovery is a separate reviewed unit (see TODO.md).
-                    effective_credit_number = preserve_human_edited_ref(
-                        bill_credit.credit_number, credit_number, qbo_vc.qbo_id
+                if not bill_credit:
+                    # Bound BillCredit read empty. Re-resolve by the natural
+                    # (credit_number, vendor) fingerprint and heal ONLY when it re-binds the
+                    # SAME BillCredit the mapping already targets (a confirmed transient
+                    # empty-read). The fingerprint keys on the QBO-derived credit_number
+                    # (what CREATE writes); the same-id gate makes a wrong/duplicate row safe
+                    # under a non-TOP-1 fingerprint proc (id != mapping → record+raise).
+                    replacement = self.bill_credit_service.read_by_credit_number_and_vendor_public_id(
+                        credit_number, vendor_public_id
                     )
-                    updated = self.bill_credit_service.update_by_public_id(
-                        public_id=bill_credit.public_id,
-                        row_version=bill_credit.row_version,
-                        vendor_public_id=vendor_public_id,
-                        credit_date=qbo_vc.txn_date,
-                        credit_number=effective_credit_number,
-                        total_amount=Decimal(str(qbo_vc.total_amt)) if qbo_vc.total_amt else None,
-                        memo=qbo_vc.private_note,
-                    )
-                    if updated:
-                        # Sync line items
-                        self._sync_line_items(updated.id, updated.public_id, qbo_lines)
-                    return updated
+                    if replacement and replacement.id == existing_mapping.bill_credit_id:
+                        logger.warning(
+                            f"BillCredit {existing_mapping.bill_credit_id} read empty for "
+                            f"QboVendorCredit {qbo_vc.qbo_id} but re-resolved by "
+                            f"(credit_number, vendor) — transient empty-read; healing in "
+                            f"place, not recreating."
+                        )
+                        bill_credit = replacement
+                    else:
+                        # No fingerprint match, or a match under a DIFFERENT id we cannot
+                        # safely repoint to (no mapping-update sproc): preserve the mapping,
+                        # create nothing, record a critical reconciliation issue, and RAISE.
+                        # The pull caller treats this ValueError as a per-item skip; the
+                        # issue is the durable follow-up record.
+                        self._record_missing_bill_credit_issue(
+                            qbo_vc=qbo_vc, mapping=existing_mapping, fingerprint=replacement
+                        )
+                        raise ValueError(
+                            f"VendorCreditBillCredit mapping {existing_mapping.id} points at "
+                            f"missing BillCredit {existing_mapping.bill_credit_id} and no "
+                            f"local BillCredit fingerprinted by credit_number "
+                            f"'{credit_number}' + vendor resolves to it for QboVendorCredit "
+                            f"{qbo_vc.qbo_id}; preserving mapping, skipping."
+                        )
+
+                # U-027 (rule of three): never clobber a human-corrected credit_number on
+                # re-pull. Preserve the stored value unless it is empty/null or the QBO-<id>
+                # placeholder (which still upgrades to a real doc_number). The CREATE path
+                # below is unchanged. See base.field_ownership.
+                # ACCEPTED RESIDUAL: same as the Bill sibling — a preserved credit_number
+                # diverges from the QBO number, so IF this credit's mapping is later lost
+                # while it persists (abnormal), the CREATE path's UQ_BillCredit_VendorId_
+                # CreditNumber dedup keys on the QBO number and won't match → possible
+                # duplicate. Adopt-style recovery is a separate reviewed unit (see TODO.md).
+                effective_credit_number = preserve_human_edited_ref(
+                    bill_credit.credit_number, credit_number, qbo_vc.qbo_id
+                )
+                updated = self.bill_credit_service.update_by_public_id(
+                    public_id=bill_credit.public_id,
+                    row_version=bill_credit.row_version,
+                    vendor_public_id=vendor_public_id,
+                    credit_date=qbo_vc.txn_date,
+                    credit_number=effective_credit_number,
+                    total_amount=Decimal(str(qbo_vc.total_amt)) if qbo_vc.total_amt else None,
+                    memo=qbo_vc.private_note,
+                )
+                if updated:
+                    # Sync line items
+                    self._sync_line_items(updated.id, updated.public_id, qbo_lines)
+                return updated
 
             # Step 3: Create new BillCredit
             bill_credit = self.bill_credit_service.create(
@@ -143,6 +194,57 @@ class VendorCreditBillCreditConnector:
             # block the watermark and retry next run, instead of silently dropping it.
             logger.error(f"Error syncing VendorCredit {qbo_vc.qbo_id} to BillCredit: {e}")
             raise
+
+    def _record_missing_bill_credit_issue(
+        self,
+        *,
+        qbo_vc: QboVendorCredit,
+        mapping: VendorCreditBillCreditMapping,
+        fingerprint: Optional[BillCredit] = None,
+    ) -> None:
+        """
+        Record an orphaned-mapping detection on qbo.ReconciliationIssue, failure-
+        isolated: a failed insert is logged loud but never breaks the sync (mirrors
+        the Purchase/CustomerProject connectors' recorders).
+
+        Triggered when a VendorCreditBillCredit mapping exists but its bound BillCredit
+        read empty AND the (credit_number, vendor) fingerprint did not re-resolve to
+        that same BillCredit. We deliberately do NOT create a BillCredit or drop the
+        mapping here — a transient empty-read would otherwise mint a duplicate; the
+        mapping is preserved for the next tick / a human to resolve.
+        """
+        if fingerprint is not None:
+            fingerprint_note = (
+                f" A different BillCredit {fingerprint.id} matches the (credit_number, "
+                f"vendor) fingerprint but is not the mapped row; not repointing (no "
+                f"mapping-update path)."
+            )
+        else:
+            fingerprint_note = (
+                " No local BillCredit matches the (credit_number, vendor) fingerprint."
+            )
+        details = (
+            f"Orphaned VendorCreditBillCredit mapping. Mapping {mapping.id} "
+            f"(QboVendorCredit {qbo_vc.id}, QboId={qbo_vc.qbo_id}) points at BillCredit "
+            f"{mapping.bill_credit_id} which no longer reads.{fingerprint_note} Mapping "
+            f"preserved; no BillCredit created. Investigate whether the BillCredit was "
+            f"deleted/renumbered."
+        )
+        try:
+            self.reconciliation_repo.create(
+                drift_type="orphaned_vendorcredit_billcredit_mapping",
+                severity="critical",
+                action="manual_review",
+                entity_type="BillCredit",
+                entity_public_id=None,
+                qbo_id=str(qbo_vc.qbo_id) if qbo_vc.qbo_id else None,
+                realm_id=qbo_vc.realm_id or "",
+                details=details,
+            )
+            logger.warning(details)
+        except Exception as exc:
+            # Don't break the sync because the reconciliation insert failed. Log loud.
+            logger.error(f"Failed to record reconciliation issue: {exc}. Details: {details}")
 
     def _get_vendor_public_id(self, qbo_vendor_ref_value: Optional[str]) -> Optional[str]:
         """Resolve QBO vendor ref (QBO API string ID) to local Vendor public_id.

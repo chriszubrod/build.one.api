@@ -205,11 +205,13 @@ INVOICE = FieldOwnership(
         # the invoice review/approval pipeline.
     ],
     both_editable=[
-        # DocNumber in QBO; human-editable locally. NOTE: unlike Bill/BillCredit,
-        # the Invoice pull does NOT yet route through preserve_human_edited_ref —
-        # its lost-mapping adopt path keys on the QBO-derived number, so preserving
-        # a divergent local number reintroduces the phantom-duplicate bug. Deferred
-        # (U-027); classified both_editable to document intent. See TODO.md.
+        # DocNumber in QBO; human-editable locally. Pull resolves the conflict via
+        # preserve_human_edited_ref (keep the local edit unless empty or the QBO-<id>
+        # placeholder), same as Bill/BillCredit/Expense (KI-42 / U-027 / U-034). Safe
+        # because the lost-mapping adopt path no longer keys ONLY on the QBO-derived
+        # number — a header fingerprint (total + txn_date + project) re-adopts a
+        # human-renamed invoice, so a preserved divergent number no longer reintroduces
+        # the phantom-duplicate bug.
         "invoice_number",
     ],
 )

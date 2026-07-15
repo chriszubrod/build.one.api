@@ -15,9 +15,10 @@ from integrations.intuit.qbo.customer.connector.project.persistence.repo import 
 from entities.invoice.business.service import InvoiceService
 from entities.invoice.business.model import Invoice
 from entities.project.business.service import ProjectService
-# Only the mint helper — the preserve/upgrade decision is DEFERRED for Invoice
-# (see the NOTE on the UPDATE path + TODO.md).
-from integrations.intuit.qbo.base.field_ownership import qbo_ref_or_placeholder
+from integrations.intuit.qbo.base.field_ownership import (
+    preserve_human_edited_ref,
+    qbo_ref_or_placeholder,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,20 +120,24 @@ class InvoiceInvoiceConnector:
             if invoice:
                 logger.info(f"Updating existing Invoice {invoice.id} from QboInvoice {qbo_invoice.id}")
 
-                # U-027 NOTE: the rule-of-three preserve (kept for Bill/BillCredit/Expense) is
-                # DELIBERATELY NOT applied here. Preserving a human-corrected invoice_number would
-                # let the local number diverge from the QBO-derived value, which the lost-mapping
-                # gap-detect/adopt path below (read_by_invoice_number_and_project_id, keyed on the
-                # QBO-derived number) relies on to re-adopt an existing invoice — divergence there
-                # reintroduces the documented "46 phantom -N invoices" bug. Deferred to its own
-                # unit (adopt lookup must also try the preserved number first). See TODO.md.
+                # U-027/U-034 (rule of three, completed for Invoice): never clobber a human-
+                # corrected invoice_number on re-pull. Preserve the stored value unless it is
+                # empty/null or the QBO-<id> placeholder (which still upgrades to a real
+                # doc_number) — exactly like the Bill/BillCredit/Expense siblings. This is now
+                # SAFE because the lost-mapping gap-detect/adopt path below no longer keys ONLY
+                # on the QBO-derived number: when a preserved (divergent) number makes the number
+                # lookup miss, a header fingerprint (total + txn_date + project) re-adopts the
+                # renamed invoice instead of minting a phantom -N duplicate. CREATE path unchanged.
+                effective_invoice_number = preserve_human_edited_ref(
+                    invoice.invoice_number, invoice_number, qbo_invoice.qbo_id
+                )
                 invoice = self.invoice_service.update_by_public_id(
                     invoice.public_id,
                     row_version=invoice.row_version,
                     project_public_id=project_public_id,
                     invoice_date=invoice_date,
                     due_date=due_date,
-                    invoice_number=invoice_number,
+                    invoice_number=effective_invoice_number,
                     total_amount=Decimal(str(total_amount)) if total_amount is not None else None,
                     memo=memo,
                     is_draft=False,
@@ -161,6 +166,16 @@ class InvoiceInvoiceConnector:
             self.invoice_service.repo.read_by_invoice_number_and_project_id(invoice_number, proj.id)
             if proj else None
         )
+        # U-034 (completes the rule of three for Invoice): if the QBO-derived-number lookup
+        # missed, the local invoice may have been RENAMED by a human — its number now diverges
+        # from QBO's (the UPDATE path above preserves that edit) and its header mapping has since
+        # been lost. Fall back to a header fingerprint (total + txn_date + project) so the renamed
+        # invoice is RE-ADOPTED here rather than missed and phantom-duplicated by the suffix-CREATE
+        # loop below (the "46 phantom -N invoices" bug this whole path exists to prevent).
+        if not existing_local and proj:
+            existing_local = self._find_adoptable_invoice_by_fingerprint(
+                proj.id, total_amount, invoice_date, qbo_invoice.id
+            )
         if existing_local:
             existing_map = self.mapping_repo.read_by_invoice_id(int(existing_local.id))
             if existing_map and existing_map.qbo_invoice_id != qbo_invoice.id:
@@ -176,19 +191,27 @@ class InvoiceInvoiceConnector:
                 # one would overwrite its header and double-add lines. Only adopt when the header
                 # fingerprint confirms the SAME invoice whose mapping was lost: total within $0.01 AND
                 # same txn date. Otherwise fall through to the safe (non-destructive) suffix CREATE.
-                ex_total = getattr(existing_local, "total_amount", None)
-                qbo_date = str(invoice_date or "").strip()[:10]
-                ex_date = str(getattr(existing_local, "invoice_date", "") or "").strip()[:10]
-                same_invoice = (
-                    total_amount is not None and ex_total is not None
-                    and abs(float(total_amount) - float(ex_total)) <= 0.01
-                    and bool(qbo_date) and qbo_date == ex_date   # require a real (non-blank) matching date
+                same_invoice = self._header_fingerprint_matches(
+                    total_amount, invoice_date,
+                    getattr(existing_local, "total_amount", None),
+                    getattr(existing_local, "invoice_date", None),
                 )
-                if not same_invoice:
+                # Provenance guard (Pass-1 P2): only re-adopt an invoice that QBO actually
+                # materialized (its line items carry InvoiceLineItemInvoiceLine mappings).
+                # A manual/local-origin invoice — which, since QBO invoice push is disabled,
+                # is exactly what stays unmapped — must never be adopted even on an exact
+                # (number, total, date) match; that would bind it to QBO and overwrite its
+                # header. Gates BOTH the number-matched and fingerprint-fallback adopt routes,
+                # which converge here (the fingerprint helper also pre-filters on provenance
+                # so its single-match disambiguation is correct).
+                has_qbo_provenance = self._has_qbo_line_provenance(int(existing_local.id))
+                if not same_invoice or not has_qbo_provenance:
                     logger.warning(
                         f"Local Invoice {existing_local.id} shares (project {proj.id}, number "
-                        f"'{invoice_number}') with QboInvoice {qbo_invoice.id} but header fingerprint "
-                        f"(total/date) differs — NOT adopting; will create a suffixed invoice."
+                        f"'{invoice_number}') with QboInvoice {qbo_invoice.id} but is NOT an "
+                        f"adoptable mapping-lost QBO invoice (fingerprint_match={same_invoice}, "
+                        f"qbo_provenance={has_qbo_provenance}) — NOT adopting; will create a "
+                        f"suffixed invoice."
                     )
                 else:
                     logger.info(
@@ -199,13 +222,20 @@ class InvoiceInvoiceConnector:
                     had_lines = bool(InvoiceLineItemService().read_by_invoice_id(int(existing_local.id)))
                     if not existing_map:
                         self.create_mapping(invoice_id=int(existing_local.id), qbo_invoice_id=qbo_invoice.id)
+                    # Preserve a human-corrected number here too: re-adopting a RENAMED invoice
+                    # must not overwrite its number back to the QBO-derived value (that would
+                    # re-clobber the very edit the fingerprint let us find). Placeholder/empty
+                    # still upgrades. Mirrors the plain UPDATE path above.
+                    adopt_invoice_number = preserve_human_edited_ref(
+                        existing_local.invoice_number, invoice_number, qbo_invoice.qbo_id
+                    )
                     updated = self.invoice_service.update_by_public_id(
                         existing_local.public_id,
                         row_version=existing_local.row_version,
                         project_public_id=project_public_id,
                         invoice_date=invoice_date,
                         due_date=due_date,
-                        invoice_number=invoice_number,
+                        invoice_number=adopt_invoice_number,
                         total_amount=Decimal(str(total_amount)) if total_amount is not None else None,
                         memo=memo,
                         is_draft=False,
@@ -282,6 +312,120 @@ class InvoiceInvoiceConnector:
         self._sync_line_items(invoice_id, invoice.public_id, qbo_invoice_lines)
 
         return invoice
+
+    def _find_adoptable_invoice_by_fingerprint(
+        self, project_id, total_amount, invoice_date, qbo_invoice_id
+    ) -> Optional[Invoice]:
+        """Find a mapping-lost local Invoice for this project whose header fingerprint
+        matches the incoming QBO invoice, so a human-RENAMED invoice (whose number no
+        longer equals the QBO-derived value and is therefore missed by
+        read_by_invoice_number_and_project_id) is still RE-ADOPTED instead of phantom-
+        duplicated. This fingerprint fallback is what makes preserving invoice_number
+        safe (U-034 completes the rule of three for Invoice).
+
+        Fingerprint = same project AND total within $0.01 AND same non-blank txn date
+        (first 10 chars) — identical to the positive-evidence guard the number-matched
+        adopt path already applies. Returns the SINGLE unambiguous adoptable candidate,
+        or None (no match, ambiguous multi-match, or a missing signal) so the caller
+        falls through to the safe suffix-CREATE.
+
+        Adoptable = has QBO line-mapping provenance (see _has_qbo_line_provenance) AND is
+        unmapped, or already mapped to THIS QboInvoice. A candidate mapped to a DIFFERENT
+        QboInvoice is a distinct invoice and is never returned (genuine-collision case);
+        a candidate with NO QBO provenance is a distinct manual invoice and is never
+        returned either (closes the Pass-1 P2 false-adopt path). RESIDUAL: two distinct
+        QBO-derived invoices in one project sharing (total, date) with one's header
+        mapping lost is ambiguous — the single-match rule falls through to suffix-CREATE
+        rather than risk a wrong QBO-to-QBO bind.
+
+        Candidate source is the preloaded _invoice_cache (production batch path) or a full
+        read when unpopulated. Pure in-memory scan; the per-candidate mapping read only
+        runs for the tiny subset that already passed the fingerprint filter.
+        """
+        qbo_date = str(invoice_date or "").strip()[:10]
+        if total_amount is None or not qbo_date:
+            # Need both signals; a blank date is not a fingerprint (matches the guard
+            # in the adopt block below).
+            return None
+
+        candidates = (
+            list(self._invoice_cache.values())
+            if self._invoice_cache
+            else self.invoice_service.read_all()
+        )
+        matches = []
+        for inv in candidates:
+            if getattr(inv, "project_id", None) != project_id:
+                continue
+            if not self._header_fingerprint_matches(
+                total_amount, invoice_date,
+                getattr(inv, "total_amount", None), getattr(inv, "invoice_date", None),
+            ):
+                continue
+            ex_map = self.mapping_repo.read_by_invoice_id(int(inv.id))
+            if ex_map and ex_map.qbo_invoice_id != qbo_invoice_id:
+                continue  # bound to a DIFFERENT QboInvoice -> genuine separate invoice
+            if not self._has_qbo_line_provenance(int(inv.id)):
+                # No QBO line-mapping provenance -> a distinct local/manual invoice that
+                # merely shares the fingerprint (QBO invoice push is disabled, so manual
+                # invoices are exactly the unmapped ones). Never adopt it (Pass-1 P2).
+                continue
+            matches.append(inv)
+
+        if len(matches) == 1:
+            logger.info(
+                f"Fingerprint (total {total_amount}, date {qbo_date}, project {project_id}) "
+                f"re-adopting mapping-lost local Invoice {matches[0].id} for QboInvoice "
+                f"{qbo_invoice_id} (number diverged via a human edit)."
+            )
+            return matches[0]
+        if len(matches) > 1:
+            logger.warning(
+                f"Fingerprint (total {total_amount}, date {qbo_date}, project {project_id}) "
+                f"matched {len(matches)} adoptable local invoices for QboInvoice "
+                f"{qbo_invoice_id}; ambiguous -- NOT adopting, will suffix-CREATE."
+            )
+        return None
+
+    def _has_qbo_line_provenance(self, invoice_id: int) -> bool:
+        """True if any of the invoice's line items carries an InvoiceLineItemInvoiceLine
+        mapping — i.e. it was materialized by a QBO pull. A local-origin/manual invoice
+        has none (and since QBO invoice push is disabled, manual invoices are exactly the
+        ones that stay unmapped), so this separates a mapping-LOST QBO invoice — the only
+        thing we may re-adopt — from a distinct manual invoice that merely shares the
+        header fingerprint. Closes the Pass-1 P2 false-adopt path.
+
+        Cost is confined to the tiny set of fingerprint-matched candidates. Residual: if a
+        QBO invoice's line mappings were ALSO wiped (or it had no lines), provenance can't
+        be proven and the caller falls through to the safe suffix-CREATE — the accepted,
+        VISIBLE degradation (never a silent wrong bind onto a human's manual invoice).
+        """
+        from entities.invoice_line_item.business.service import InvoiceLineItemService
+
+        line_items = InvoiceLineItemService().read_by_invoice_id(int(invoice_id))
+        for li in line_items or []:
+            if self.line_mapping_repo.read_by_invoice_line_item_id(int(li.id)):
+                return True
+        return False
+
+    @staticmethod
+    def _header_fingerprint_matches(
+        total_amount, invoice_date, other_total, other_invoice_date
+    ) -> bool:
+        """True if an incoming QBO header (total + txn_date) matches a local invoice's
+        header within the adopt fingerprint: both totals present AND within $0.01 AND the
+        same NON-BLANK txn date (first 10 chars). Single source for the money-tolerance +
+        date rule shared by the number-matched adopt guard (`same_invoice`) and the
+        fingerprint-fallback scan, so the $0.01 / date[:10] rule lives in exactly one place.
+        Pure; no I/O.
+        """
+        qbo_date = str(invoice_date or "").strip()[:10]
+        other_date = str(other_invoice_date or "").strip()[:10]
+        if total_amount is None or other_total is None or not qbo_date:
+            return False
+        if qbo_date != other_date:
+            return False
+        return abs(Decimal(str(total_amount)) - Decimal(str(other_total))) <= Decimal("0.01")
 
     def _get_project_public_id(self, qbo_customer_ref_value: str, realm_id: Optional[str] = None) -> Optional[str]:
         """

@@ -2,32 +2,38 @@
 -- time_entry_view_team.sql
 --
 -- RoleModule CanViewTeam migration (filed 2026-05-26; time_entry sproc/UDF
--- bodies removed U-045, 2026-07-16).
+-- bodies removed U-045, 2026-07-16; RoleModule schema+sprocs removed U-048,
+-- 2026-07-16).
 --
 -- This file is the SOLE canonical source for:
---   - dbo.RoleModule.CanViewTeam column + seed grants
---   - RoleModule CRUD sprocs that round-trip CanViewTeam
+--   - RoleModule CanViewTeam seed grants (section 2)
+--
+-- RoleModule schema (CanViewTeam column) and CRUD sprocs are canonical in
+-- entities/role_module/sql/dbo.rolemodule.sql
+-- (see entities/role_module/sql/README.md).
 --
 -- TimeEntry/TimeLog/TimeEntryStatus sprocs and dbo.UserCanAccessTimeEntry UDF
 -- are canonical in entities/time_entry/sql/dbo.time_entry.sql
 -- (see entities/time_entry/sql/README.md).
 --
--- Idempotent. Safe to re-run. ALTER TABLE guards on column existence.
+-- Idempotent. Safe to re-run (the section-2 seed is a guarded UPDATE).
+--
+-- ORDER MATTERS: entities/role_module/sql/dbo.rolemodule.sql must be applied
+-- BEFORE this file — it creates the CanViewTeam column the seed updates.
 -- ============================================================================
 
--- ----------------------------------------------------------------------------
--- 1. Schema: add CanViewTeam to RoleModule with DEFAULT 0
--- ----------------------------------------------------------------------------
-IF NOT EXISTS (
-    SELECT 1
-    FROM sys.columns
-    WHERE object_id = OBJECT_ID('dbo.RoleModule') AND name = 'CanViewTeam'
-)
-BEGIN
-    ALTER TABLE dbo.RoleModule
-        ADD CanViewTeam BIT NOT NULL CONSTRAINT DF_RoleModule_CanViewTeam DEFAULT (0);
-END;
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-048, 2026-07-16) — CanViewTeam column guard removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   Add CanViewTeam BIT NOT NULL with DEFAULT 0 to dbo.RoleModule.
+--
+-- The canonical definition of this schema change now lives in exactly ONE place:
+--   entities/role_module/sql/dbo.rolemodule.sql
+--
+-- Re-running this file is now a no-op for this object. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file breaks net-zero with prod.
+-- ---------------------------------------------------------------------------
 
 
 -- ----------------------------------------------------------------------------
@@ -77,195 +83,30 @@ GO
 -- ---------------------------------------------------------------------------
 
 
--- ----------------------------------------------------------------------------
--- 7. RoleModule CRUD sprocs — extend to round-trip the new CanViewTeam
---    column so RoleModuleRepository._from_db can read it and admin UI
---    updates persist it. Identical shape to existing Can* fields.
--- ----------------------------------------------------------------------------
-
-CREATE OR ALTER PROCEDURE dbo.ReadRoleModules
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    SELECT
-        [Id], [PublicId], [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [RoleId], [ModuleId],
-        [CanCreate], [CanRead], [CanUpdate], [CanDelete],
-        [CanSubmit], [CanApprove], [CanComplete],
-        [CanViewTeam]
-    FROM dbo.[RoleModule];
-    COMMIT TRANSACTION;
-END;
-GO
-
-CREATE OR ALTER PROCEDURE dbo.ReadRoleModuleById
-(
-    @Id BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    SELECT
-        [Id], [PublicId], [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [RoleId], [ModuleId],
-        [CanCreate], [CanRead], [CanUpdate], [CanDelete],
-        [CanSubmit], [CanApprove], [CanComplete],
-        [CanViewTeam]
-    FROM dbo.[RoleModule]
-    WHERE [Id] = @Id;
-    COMMIT TRANSACTION;
-END;
-GO
-
-CREATE OR ALTER PROCEDURE dbo.ReadRoleModuleByPublicId
-(
-    @PublicId UNIQUEIDENTIFIER
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    SELECT
-        [Id], [PublicId], [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [RoleId], [ModuleId],
-        [CanCreate], [CanRead], [CanUpdate], [CanDelete],
-        [CanSubmit], [CanApprove], [CanComplete],
-        [CanViewTeam]
-    FROM dbo.[RoleModule]
-    WHERE [PublicId] = @PublicId;
-    COMMIT TRANSACTION;
-END;
-GO
-
-CREATE OR ALTER PROCEDURE dbo.ReadRoleModuleByRoleId
-(
-    @RoleId BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    SELECT
-        [Id], [PublicId], [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [RoleId], [ModuleId],
-        [CanCreate], [CanRead], [CanUpdate], [CanDelete],
-        [CanSubmit], [CanApprove], [CanComplete],
-        [CanViewTeam]
-    FROM dbo.[RoleModule]
-    WHERE [RoleId] = @RoleId;
-    COMMIT TRANSACTION;
-END;
-GO
-
-CREATE OR ALTER PROCEDURE dbo.ReadRoleModuleByModuleId
-(
-    @ModuleId BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    SELECT
-        [Id], [PublicId], [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [RoleId], [ModuleId],
-        [CanCreate], [CanRead], [CanUpdate], [CanDelete],
-        [CanSubmit], [CanApprove], [CanComplete],
-        [CanViewTeam]
-    FROM dbo.[RoleModule]
-    WHERE [ModuleId] = @ModuleId;
-    COMMIT TRANSACTION;
-END;
-GO
-
-CREATE OR ALTER PROCEDURE dbo.CreateRoleModule
-(
-    @RoleId BIGINT,
-    @ModuleId BIGINT,
-    @CanCreate BIT = 0,
-    @CanRead BIT = 0,
-    @CanUpdate BIT = 0,
-    @CanDelete BIT = 0,
-    @CanSubmit BIT = 0,
-    @CanApprove BIT = 0,
-    @CanComplete BIT = 0,
-    @CanViewTeam BIT = 0
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    DECLARE @Now DATETIME2 = SYSUTCDATETIME();
-    INSERT INTO dbo.[RoleModule] (
-        [CreatedDatetime], [ModifiedDatetime], [RoleId], [ModuleId],
-        [CanCreate], [CanRead], [CanUpdate], [CanDelete],
-        [CanSubmit], [CanApprove], [CanComplete], [CanViewTeam]
-    )
-    OUTPUT
-        INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[RoleId], INSERTED.[ModuleId],
-        INSERTED.[CanCreate], INSERTED.[CanRead], INSERTED.[CanUpdate], INSERTED.[CanDelete],
-        INSERTED.[CanSubmit], INSERTED.[CanApprove], INSERTED.[CanComplete],
-        INSERTED.[CanViewTeam]
-    VALUES (
-        @Now, @Now, @RoleId, @ModuleId,
-        @CanCreate, @CanRead, @CanUpdate, @CanDelete,
-        @CanSubmit, @CanApprove, @CanComplete, @CanViewTeam
-    );
-    COMMIT TRANSACTION;
-END;
-GO
-
-CREATE OR ALTER PROCEDURE dbo.UpdateRoleModuleById
-(
-    @Id BIGINT,
-    @RowVersion BINARY(8),
-    @RoleId BIGINT,
-    @ModuleId BIGINT,
-    @CanCreate BIT = 0,
-    @CanRead BIT = 0,
-    @CanUpdate BIT = 0,
-    @CanDelete BIT = 0,
-    @CanSubmit BIT = 0,
-    @CanApprove BIT = 0,
-    @CanComplete BIT = 0,
-    @CanViewTeam BIT = 0
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    UPDATE dbo.[RoleModule]
-       SET [ModifiedDatetime] = SYSUTCDATETIME(),
-           [RoleId]      = @RoleId,
-           [ModuleId]    = @ModuleId,
-           [CanCreate]   = @CanCreate,
-           [CanRead]     = @CanRead,
-           [CanUpdate]   = @CanUpdate,
-           [CanDelete]   = @CanDelete,
-           [CanSubmit]   = @CanSubmit,
-           [CanApprove]  = @CanApprove,
-           [CanComplete] = @CanComplete,
-           [CanViewTeam] = @CanViewTeam
-        OUTPUT
-            INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
-            CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-            CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-            INSERTED.[RoleId], INSERTED.[ModuleId],
-            INSERTED.[CanCreate], INSERTED.[CanRead], INSERTED.[CanUpdate], INSERTED.[CanDelete],
-            INSERTED.[CanSubmit], INSERTED.[CanApprove], INSERTED.[CanComplete],
-            INSERTED.[CanViewTeam]
-     WHERE [Id] = @Id
-       AND [RowVersion] = @RowVersion;
-    COMMIT TRANSACTION;
-END;
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-048, 2026-07-16) — sproc bodies removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   Extend RoleModule CRUD sprocs to round-trip the CanViewTeam column so
+--   RoleModuleRepository._from_db can read it and admin UI updates persist it.
+--
+-- The canonical definition of these objects now lives in exactly ONE place:
+--   entities/role_module/sql/dbo.rolemodule.sql
+--
+-- Objects formerly defined here (now canonical in the base file):
+--   ReadRoleModules, ReadRoleModuleById, ReadRoleModuleByPublicId,
+--   ReadRoleModuleByRoleId, ReadRoleModuleByModuleId,
+--   CreateRoleModule, UpdateRoleModuleById
+--
+-- Re-running this file is now a no-op for these objects. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file silently reverts the
+-- CanViewTeam round-trip. shared/rbac.py reads the flag via
+-- getattr(rm, 'can_view_team', False), so a sproc body missing the column
+-- resolves False with no error raised, and every non-admin who depends on team
+-- visibility goes blind on team rows. (An RBAC permission regression — NOT the
+-- 2026-07-15 SQL 8144 outage; that was time_entry migration 015, which never
+-- touched RoleModule. See the U-045 banner above for that one.)
+-- ---------------------------------------------------------------------------
 
 
 -- ----------------------------------------------------------------------------
@@ -290,7 +131,8 @@ SELECT r.Id AS RoleId, r.Name AS RoleName, rm.CanViewTeam
 SELECT 'dbo.UserCanAccessTimeEntry UDF exists' AS Check_Item,
        CASE WHEN OBJECT_ID('dbo.UserCanAccessTimeEntry') IS NOT NULL THEN 'OK' ELSE 'MISSING' END AS Result;
 
--- expect 16 TimeEntry/TimeLog/TimeEntryStatus sprocs + 7 RoleModule sprocs = 23 rows
+-- verify 16 TimeEntry/TimeLog/TimeEntryStatus sprocs + 7 RoleModule sprocs exist
+-- (none are defined in this file — canonical in base files)
 SELECT name AS Sproc, 'OK' AS Result
   FROM sys.procedures
  WHERE name IN (

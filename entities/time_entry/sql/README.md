@@ -5,9 +5,9 @@
 `dbo.time_entry.sql` is the **single canonical source** for all 19 TimeEntry /
 TimeLog / TimeEntryStatus stored procedures plus the `dbo.UserCanAccessTimeEntry`
 UDF. No migration may redefine them — change the base file and apply it.
-Enforced by `tests/test_time_entry_sproc_single_source.py`. Duplicate bodies that
-drift from the base file caused the 2026-07-15 outage (SQL 8144, cross-user
-payroll exposure risk).
+Enforced by `tests/test_sproc_single_source.py` (parametrized per entity; the
+`time_entry` row is this file's guard). Duplicate bodies that drift from the base
+file caused the 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
 
 ## From-scratch build order
 
@@ -41,9 +41,16 @@ payroll exposure risk).
    `UX_TimeEntry_UserId_WorkDate`). Sproc bodies in this file are superseded
    stubs (U-045).
 
-5. **`scripts/migrations/time_entry_view_team.sql`** — RoleModule `CanViewTeam`
-   column + seed + RoleModule CRUD sprocs. TimeEntry sproc/UDF bodies in this
-   file are superseded stubs (U-045).
+5. **`entities/role_module/sql/dbo.rolemodule.sql`** — creates the
+   `RoleModule.CanViewTeam` column that step 6's seed updates. Canonical for the
+   RoleModule table + all 8 of its sprocs since U-048; see
+   `entities/role_module/sql/README.md`. **Required before step 6** — without it
+   the seed fails with `Invalid column name 'CanViewTeam'`.
+
+6. **`scripts/migrations/time_entry_view_team.sql`** — RoleModule `CanViewTeam`
+   **seed grants only**. Its TimeEntry sproc/UDF bodies are superseded stubs
+   (U-045); its RoleModule column + CRUD sproc bodies are superseded stubs
+   (U-048, now canonical in step 5).
 
 ## Superseded migration stubs
 
@@ -57,7 +64,9 @@ Re-running them is a no-op for those sprocs:
 - `015_status_read_id_tiebreak.sql`
 - `016_read_time_entries_sort_by_worker.sql`
 - `scripts/migrations/time_entry_view_team.sql` — TimeEntry sproc + UDF sections
-  only; still carries live RoleModule `CanViewTeam` column, seed, and CRUD sprocs
+  (U-045) **and** the RoleModule column + CRUD sproc sections (U-048, canonical
+  in `entities/role_module/sql/dbo.rolemodule.sql`); the only live content left
+  is the RoleModule `CanViewTeam` seed grants
 - `scripts/migrations/time_log_update_guards_and_unique_indexes.sql` — Update*
   sproc sections only; still carries live unique indexes
   (`UX_TimeLog_TimeEntry_ClockIn`, `UX_TimeEntry_UserId_WorkDate`)
@@ -78,9 +87,11 @@ each name two different files), so always cite migrations by full filename.
   real revert. This is why step 3 lists only `009` (presumed-latest by number);
   confirming the live body needs a prod read, so it is not settled here.
 
-- **U-048** — `entities/role_module/sql/dbo.rolemodule.sql` has 8 sprocs and no
-  `CanViewTeam`, so re-running it reverts CanViewTeam round-tripping. This is
-  why step 5's `time_entry_view_team.sql` keeps its RoleModule half.
+- **U-048 — RESOLVED 2026-07-16.** `entities/role_module/sql/dbo.rolemodule.sql`
+  is now canonical for the `CanViewTeam` column + all 7 CanViewTeam-aware CRUD
+  sprocs (verified byte-equivalent to live prod), so re-running it no longer
+  reverts CanViewTeam round-tripping. `time_entry_view_team.sql` keeps only its
+  seed grants — hence steps 5 → 6 above.
 
 - **U-050** — the sibling `UserCanAccess{Project,Bill,BillCredit,Expense}` UDFs
   have 3 distinct bodies each across the `gap1`/`gap2`/`gap3` migrations and no

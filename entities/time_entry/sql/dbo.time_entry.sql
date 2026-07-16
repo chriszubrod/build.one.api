@@ -2,7 +2,7 @@
 -- SINGLE CANONICAL SOURCE (U-045, 2026-07-16): this file is the ONE home for
 -- all 19 TimeEntry / TimeLog / TimeEntryStatus stored procedures plus the
 -- dbo.UserCanAccessTimeEntry UDF. No migration may redefine them — change
--- this file and apply it. Enforced by tests/test_time_entry_sproc_single_source.py.
+-- this file and apply it. Enforced by tests/test_sproc_single_source.py.
 -- Build order: README.md (same directory).
 --
 -- INCIDENT HISTORY (2026-07-15, Unit U-037): migration 015 once redefined 4

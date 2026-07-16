@@ -15,18 +15,126 @@ CREATE TABLE [dbo].[RoleModule]
     [CanDelete] BIT NOT NULL DEFAULT 0,
     [CanSubmit] BIT NOT NULL DEFAULT 0,
     [CanApprove] BIT NOT NULL DEFAULT 0,
-    [CanComplete] BIT NOT NULL DEFAULT 0
+    [CanComplete] BIT NOT NULL DEFAULT 0,
+    [CanViewTeam] BIT NOT NULL CONSTRAINT DF_RoleModule_CanViewTeam DEFAULT (0)
 );
 END
 GO
 
-
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.RoleModule') AND name = 'CanViewTeam')
+BEGIN
+    ALTER TABLE dbo.RoleModule ADD CanViewTeam BIT NOT NULL CONSTRAINT DF_RoleModule_CanViewTeam DEFAULT (0);
+END;
 GO
 
 
 GO
 
-CREATE OR ALTER PROCEDURE CreateRoleModule
+
+GO
+
+CREATE OR ALTER PROCEDURE dbo.ReadRoleModules
+AS
+BEGIN
+    BEGIN TRANSACTION;
+    SELECT
+        [Id], [PublicId], [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [RoleId], [ModuleId],
+        [CanCreate], [CanRead], [CanUpdate], [CanDelete],
+        [CanSubmit], [CanApprove], [CanComplete],
+        [CanViewTeam]
+    FROM dbo.[RoleModule];
+    COMMIT TRANSACTION;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.ReadRoleModuleById
+(
+    @Id BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+    SELECT
+        [Id], [PublicId], [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [RoleId], [ModuleId],
+        [CanCreate], [CanRead], [CanUpdate], [CanDelete],
+        [CanSubmit], [CanApprove], [CanComplete],
+        [CanViewTeam]
+    FROM dbo.[RoleModule]
+    WHERE [Id] = @Id;
+    COMMIT TRANSACTION;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.ReadRoleModuleByPublicId
+(
+    @PublicId UNIQUEIDENTIFIER
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+    SELECT
+        [Id], [PublicId], [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [RoleId], [ModuleId],
+        [CanCreate], [CanRead], [CanUpdate], [CanDelete],
+        [CanSubmit], [CanApprove], [CanComplete],
+        [CanViewTeam]
+    FROM dbo.[RoleModule]
+    WHERE [PublicId] = @PublicId;
+    COMMIT TRANSACTION;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.ReadRoleModuleByRoleId
+(
+    @RoleId BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+    SELECT
+        [Id], [PublicId], [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [RoleId], [ModuleId],
+        [CanCreate], [CanRead], [CanUpdate], [CanDelete],
+        [CanSubmit], [CanApprove], [CanComplete],
+        [CanViewTeam]
+    FROM dbo.[RoleModule]
+    WHERE [RoleId] = @RoleId;
+    COMMIT TRANSACTION;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.ReadRoleModuleByModuleId
+(
+    @ModuleId BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+    SELECT
+        [Id], [PublicId], [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [RoleId], [ModuleId],
+        [CanCreate], [CanRead], [CanUpdate], [CanDelete],
+        [CanSubmit], [CanApprove], [CanComplete],
+        [CanViewTeam]
+    FROM dbo.[RoleModule]
+    WHERE [ModuleId] = @ModuleId;
+    COMMIT TRANSACTION;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.CreateRoleModule
 (
     @RoleId BIGINT,
     @ModuleId BIGINT,
@@ -36,202 +144,36 @@ CREATE OR ALTER PROCEDURE CreateRoleModule
     @CanDelete BIT = 0,
     @CanSubmit BIT = 0,
     @CanApprove BIT = 0,
-    @CanComplete BIT = 0
+    @CanComplete BIT = 0,
+    @CanViewTeam BIT = 0
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[RoleModule] ([CreatedDatetime], [ModifiedDatetime], [RoleId], [ModuleId], [CanCreate], [CanRead], [CanUpdate], [CanDelete], [CanSubmit], [CanApprove], [CanComplete])
+    DECLARE @Now DATETIME2 = SYSUTCDATETIME();
+    INSERT INTO dbo.[RoleModule] (
+        [CreatedDatetime], [ModifiedDatetime], [RoleId], [ModuleId],
+        [CanCreate], [CanRead], [CanUpdate], [CanDelete],
+        [CanSubmit], [CanApprove], [CanComplete], [CanViewTeam]
+    )
     OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
+        INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[RoleId],
-        INSERTED.[ModuleId],
-        INSERTED.[CanCreate],
-        INSERTED.[CanRead],
-        INSERTED.[CanUpdate],
-        INSERTED.[CanDelete],
-        INSERTED.[CanSubmit],
-        INSERTED.[CanApprove],
-        INSERTED.[CanComplete]
-    VALUES (@Now, @Now, @RoleId, @ModuleId, @CanCreate, @CanRead, @CanUpdate, @CanDelete, @CanSubmit, @CanApprove, @CanComplete);
-
+        INSERTED.[RoleId], INSERTED.[ModuleId],
+        INSERTED.[CanCreate], INSERTED.[CanRead], INSERTED.[CanUpdate], INSERTED.[CanDelete],
+        INSERTED.[CanSubmit], INSERTED.[CanApprove], INSERTED.[CanComplete],
+        INSERTED.[CanViewTeam]
+    VALUES (
+        @Now, @Now, @RoleId, @ModuleId,
+        @CanCreate, @CanRead, @CanUpdate, @CanDelete,
+        @CanSubmit, @CanApprove, @CanComplete, @CanViewTeam
+    );
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
 
-CREATE OR ALTER PROCEDURE ReadRoleModules
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [RoleId],
-        [ModuleId],
-        [CanCreate],
-        [CanRead],
-        [CanUpdate],
-        [CanDelete],
-        [CanSubmit],
-        [CanApprove],
-        [CanComplete]
-    FROM dbo.[RoleModule]
-    ORDER BY [RoleId] ASC, [ModuleId] ASC;
-
-    COMMIT TRANSACTION;
-END;
-
-
-
-GO
-
-CREATE OR ALTER PROCEDURE ReadRoleModuleById
-(
-    @Id BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [RoleId],
-        [ModuleId],
-        [CanCreate],
-        [CanRead],
-        [CanUpdate],
-        [CanDelete],
-        [CanSubmit],
-        [CanApprove],
-        [CanComplete]
-    FROM dbo.[RoleModule]
-    WHERE [Id] = @Id;
-
-    COMMIT TRANSACTION;
-END;
-
-
-
-GO
-
-CREATE OR ALTER PROCEDURE ReadRoleModuleByPublicId
-(
-    @PublicId UNIQUEIDENTIFIER
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [RoleId],
-        [ModuleId],
-        [CanCreate],
-        [CanRead],
-        [CanUpdate],
-        [CanDelete],
-        [CanSubmit],
-        [CanApprove],
-        [CanComplete]
-    FROM dbo.[RoleModule]
-    WHERE [PublicId] = @PublicId;
-
-    COMMIT TRANSACTION;
-END;
-
-
-
-GO
-
-CREATE OR ALTER PROCEDURE ReadRoleModuleByRoleId
-(
-    @RoleId BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [RoleId],
-        [ModuleId],
-        [CanCreate],
-        [CanRead],
-        [CanUpdate],
-        [CanDelete],
-        [CanSubmit],
-        [CanApprove],
-        [CanComplete]
-    FROM dbo.[RoleModule]
-    WHERE [RoleId] = @RoleId;
-
-    COMMIT TRANSACTION;
-END;
-
-
-
-GO
-
-CREATE OR ALTER PROCEDURE ReadRoleModuleByModuleId
-(
-    @ModuleId BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [RoleId],
-        [ModuleId],
-        [CanCreate],
-        [CanRead],
-        [CanUpdate],
-        [CanDelete],
-        [CanSubmit],
-        [CanApprove],
-        [CanComplete]
-    FROM dbo.[RoleModule]
-    WHERE [ModuleId] = @ModuleId;
-
-    COMMIT TRANSACTION;
-END;
-
-
-
-GO
-
-CREATE OR ALTER PROCEDURE UpdateRoleModuleById
+CREATE OR ALTER PROCEDURE dbo.UpdateRoleModuleById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
@@ -243,48 +185,36 @@ CREATE OR ALTER PROCEDURE UpdateRoleModuleById
     @CanDelete BIT = 0,
     @CanSubmit BIT = 0,
     @CanApprove BIT = 0,
-    @CanComplete BIT = 0
+    @CanComplete BIT = 0,
+    @CanViewTeam BIT = 0
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
     UPDATE dbo.[RoleModule]
-    SET
-        [ModifiedDatetime] = @Now,
-        [RoleId] = @RoleId,
-        [ModuleId] = @ModuleId,
-        [CanCreate] = @CanCreate,
-        [CanRead] = @CanRead,
-        [CanUpdate] = @CanUpdate,
-        [CanDelete] = @CanDelete,
-        [CanSubmit] = @CanSubmit,
-        [CanApprove] = @CanApprove,
-        [CanComplete] = @CanComplete
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[RoleId],
-        INSERTED.[ModuleId],
-        INSERTED.[CanCreate],
-        INSERTED.[CanRead],
-        INSERTED.[CanUpdate],
-        INSERTED.[CanDelete],
-        INSERTED.[CanSubmit],
-        INSERTED.[CanApprove],
-        INSERTED.[CanComplete]
-    WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
-
+       SET [ModifiedDatetime] = SYSUTCDATETIME(),
+           [RoleId]      = @RoleId,
+           [ModuleId]    = @ModuleId,
+           [CanCreate]   = @CanCreate,
+           [CanRead]     = @CanRead,
+           [CanUpdate]   = @CanUpdate,
+           [CanDelete]   = @CanDelete,
+           [CanSubmit]   = @CanSubmit,
+           [CanApprove]  = @CanApprove,
+           [CanComplete] = @CanComplete,
+           [CanViewTeam] = @CanViewTeam
+        OUTPUT
+            INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
+            CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
+            CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+            INSERTED.[RoleId], INSERTED.[ModuleId],
+            INSERTED.[CanCreate], INSERTED.[CanRead], INSERTED.[CanUpdate], INSERTED.[CanDelete],
+            INSERTED.[CanSubmit], INSERTED.[CanApprove], INSERTED.[CanComplete],
+            INSERTED.[CanViewTeam]
+     WHERE [Id] = @Id
+       AND [RowVersion] = @RowVersion;
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
 
 CREATE OR ALTER PROCEDURE DeleteRoleModuleById
@@ -315,7 +245,7 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
+GO
 
 -- FK constraints
 IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_RoleModule_Role')

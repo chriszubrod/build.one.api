@@ -66,7 +66,7 @@ SELECT DISTINCT ProjectId FROM (
     UNION SELECT ProjectId FROM dbo.ContractLabor         WHERE CreatedDatetime >= @Cutoff AND ProjectId IS NOT NULL
     UNION SELECT ProjectId FROM dbo.ContractLaborLineItem WHERE CreatedDatetime >= @Cutoff AND ProjectId IS NOT NULL
     UNION SELECT ProjectId FROM dbo.BillCreditLineItem    WHERE CreatedDatetime >= @Cutoff AND ProjectId IS NOT NULL
-    UNION SELECT ProjectId FROM dbo.TimeEntry             WHERE CreatedDatetime >= @Cutoff AND ProjectId IS NOT NULL
+    UNION SELECT ProjectId FROM dbo.TimeLog               WHERE CreatedDatetime >= @Cutoff AND ProjectId IS NOT NULL
 ) src;
 
 -- Loop over personas

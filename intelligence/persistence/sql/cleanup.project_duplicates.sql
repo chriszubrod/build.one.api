@@ -63,7 +63,6 @@ DECLARE @RefCount INT = (
         SELECT ProjectId FROM dbo.Invoice                 WHERE ProjectId IN (SELECT DupId FROM @Map) UNION ALL
         SELECT ProjectId FROM dbo.ContractLabor           WHERE ProjectId IN (SELECT DupId FROM @Map) UNION ALL
         SELECT ProjectId FROM dbo.ContractLaborLineItem   WHERE ProjectId IN (SELECT DupId FROM @Map) UNION ALL
-        SELECT ProjectId FROM dbo.TimeEntry               WHERE ProjectId IN (SELECT DupId FROM @Map) UNION ALL
         SELECT ProjectId FROM dbo.TimeLog                 WHERE ProjectId IN (SELECT DupId FROM @Map) UNION ALL
         SELECT ProjectId FROM dbo.UserProject             WHERE ProjectId IN (SELECT DupId FROM @Map) UNION ALL
         SELECT ProjectId FROM dbo.Contact                 WHERE ProjectId IN (SELECT DupId FROM @Map) UNION ALL

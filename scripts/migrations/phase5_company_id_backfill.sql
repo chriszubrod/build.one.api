@@ -41,17 +41,21 @@ UPDATE i SET [CompanyId] = p.[CompanyId]
  WHERE i.[CompanyId] IS NULL;
 PRINT CONCAT('Invoice: ', @@ROWCOUNT, ' row(s) backfilled via Project.');
 
-UPDATE te SET [CompanyId] = p.[CompanyId]
-  FROM dbo.[TimeEntry] te
-  JOIN dbo.[Project] p ON p.[Id] = te.[ProjectId]
- WHERE te.[CompanyId] IS NULL
-   AND te.[ProjectId] IS NOT NULL;
-PRINT CONCAT('TimeEntry (with ProjectId): ', @@ROWCOUNT, ' row(s) backfilled via Project.');
-
+-- TimeEntry carries no ProjectId of its own -- the project lives on TimeLog,
+-- one per clock-in segment. Every row therefore takes the default Company.
+-- This is what actually ran historically: the old bridge-via-Project UPDATE
+-- keyed on TimeEntry.ProjectId matched zero rows and this statement did all
+-- the work.
+--
+-- NB: a bridge IS reachable (TimeEntry -> TimeLog.ProjectId -> Project.CompanyId),
+-- but it is deliberately not used here: a single TimeEntry can span TimeLogs on
+-- projects in different Companies, so there is no single Company to derive. If
+-- Phase 5b multi-tenant enforcement lands, that ambiguity must be resolved
+-- before this can be anything other than the default.
 UPDATE te SET [CompanyId] = @DefaultCompanyId
   FROM dbo.[TimeEntry] te
- WHERE te.[CompanyId] IS NULL;  -- catches null-ProjectId rows
-PRINT CONCAT('TimeEntry (null-ProjectId fallback): ', @@ROWCOUNT, ' row(s) backfilled to default.');
+ WHERE te.[CompanyId] IS NULL;
+PRINT CONCAT('TimeEntry: ', @@ROWCOUNT, ' row(s) backfilled to default.');
 
 UPDATE cl SET [CompanyId] = p.[CompanyId]
   FROM dbo.[ContractLabor] cl

@@ -86,9 +86,6 @@ UPDATE x SET ProjectId = m.KeepId
   FROM dbo.Task x JOIN @Map m ON x.ProjectId = m.DupId;
 
 UPDATE x SET ProjectId = m.KeepId
-  FROM dbo.TimeEntry x JOIN @Map m ON x.ProjectId = m.DupId;
-
-UPDATE x SET ProjectId = m.KeepId
   FROM dbo.TimeLog x JOIN @Map m ON x.ProjectId = m.DupId;
 
 UPDATE x SET ProjectId = m.KeepId
@@ -151,7 +148,6 @@ DECLARE @OrphanCount INT = (
         SELECT ProjectId FROM dbo.Invoice                 WHERE ProjectId IN (SELECT DupId FROM @Map) UNION ALL
         SELECT ProjectId FROM dbo.ProjectAddress          WHERE ProjectId IN (SELECT DupId FROM @Map) UNION ALL
         SELECT ProjectId FROM dbo.Task                    WHERE ProjectId IN (SELECT DupId FROM @Map) UNION ALL
-        SELECT ProjectId FROM dbo.TimeEntry               WHERE ProjectId IN (SELECT DupId FROM @Map) UNION ALL
         SELECT ProjectId FROM dbo.TimeLog                 WHERE ProjectId IN (SELECT DupId FROM @Map) UNION ALL
         SELECT ProjectId FROM dbo.UserProject             WHERE ProjectId IN (SELECT DupId FROM @Map) UNION ALL
         SELECT ProjectId FROM dbo.Workflow                WHERE ProjectId IN (SELECT DupId FROM @Map) UNION ALL

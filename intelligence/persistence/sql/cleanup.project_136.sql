@@ -51,7 +51,6 @@ DECLARE @NonUpRefs INT = (
         SELECT ProjectId FROM dbo.MsMessageProject        WHERE ProjectId = 136 UNION ALL
         SELECT ProjectId FROM dbo.ProjectAddress          WHERE ProjectId = 136 UNION ALL
         SELECT ProjectId FROM dbo.Task                    WHERE ProjectId = 136 UNION ALL
-        SELECT ProjectId FROM dbo.TimeEntry               WHERE ProjectId = 136 UNION ALL
         SELECT ProjectId FROM dbo.TimeLog                 WHERE ProjectId = 136 UNION ALL
         SELECT ProjectId FROM dbo.VendorProjectRate       WHERE ProjectId = 136 UNION ALL
         SELECT ProjectId FROM dbo.Workflow                WHERE ProjectId = 136 UNION ALL

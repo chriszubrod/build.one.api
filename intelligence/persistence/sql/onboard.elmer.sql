@@ -127,7 +127,7 @@ DECLARE @Cutoff DATETIME2 = DATEADD(MONTH, -12, SYSUTCDATETIME());
     UNION SELECT DISTINCT ProjectId FROM dbo.ContractLabor         WHERE CreatedDatetime >= @Cutoff AND ProjectId IS NOT NULL
     UNION SELECT DISTINCT ProjectId FROM dbo.ContractLaborLineItem WHERE CreatedDatetime >= @Cutoff AND ProjectId IS NOT NULL
     UNION SELECT DISTINCT ProjectId FROM dbo.BillCreditLineItem    WHERE CreatedDatetime >= @Cutoff AND ProjectId IS NOT NULL
-    UNION SELECT DISTINCT ProjectId FROM dbo.TimeEntry             WHERE CreatedDatetime >= @Cutoff AND ProjectId IS NOT NULL
+    UNION SELECT DISTINCT ProjectId FROM dbo.TimeLog               WHERE CreatedDatetime >= @Cutoff AND ProjectId IS NOT NULL
 )
 INSERT INTO dbo.UserProject (CreatedDatetime, ModifiedDatetime, UserId, ProjectId)
 SELECT @Now, @Now, @UserId, a.ProjectId

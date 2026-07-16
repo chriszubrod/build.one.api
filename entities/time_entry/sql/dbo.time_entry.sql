@@ -8,6 +8,14 @@
 -- in U-051, which is the canonical home for the whole dbo.UserCanAccess*
 -- family.
 --
+-- PROJECT LINK LIVES ON TimeLog (U-057, 2026-07-16): dbo.TimeLog.ProjectId is the
+-- ONE home for "which project was worked" — a worker can move between projects
+-- inside a single WorkDate, so the link belongs to the clock-in segment, not the
+-- day. dbo.TimeEntry has NO ProjectId; the vestigial column + its index are
+-- dropped by the guarded block below. Anything deriving project activity from
+-- time tracking (e.g. the UserProject grants in intelligence/persistence/sql/
+-- onboard.*.sql) MUST read dbo.TimeLog.
+--
 -- INCIDENT HISTORY (2026-07-15, Unit U-037): migration 015 once redefined 4
 -- read/mutation sprocs FROM a stale unscoped copy of this file and dropped the
 -- @ActorUserId / @ActorIsSystemAdmin / @ActorCanViewTeam RBAC actor params ->
@@ -45,13 +53,14 @@ CREATE TABLE [dbo].[TimeEntry]
     [ModifiedDatetime] DATETIME2(3) NULL,
 
     -- Worker and assignment
+    -- NB: the project lives on TimeLog, NOT here — a worker can move between
+    -- projects within a single WorkDate, so each clock-in segment carries its
+    -- own ProjectId. See dbo.TimeLog below.
     [UserId] BIGINT NOT NULL,                      -- FK to User (the worker)
-    [ProjectId] BIGINT NOT NULL,                   -- FK to Project
     [WorkDate] DATE NOT NULL,
     [Note] NVARCHAR(MAX) NULL,                     -- Worker's note, important for reviewer
 
-    CONSTRAINT [FK_TimeEntry_User] FOREIGN KEY ([UserId]) REFERENCES [dbo].[User]([Id]),
-    CONSTRAINT [FK_TimeEntry_Project] FOREIGN KEY ([ProjectId]) REFERENCES [dbo].[Project]([Id])
+    CONSTRAINT [FK_TimeEntry_User] FOREIGN KEY ([UserId]) REFERENCES [dbo].[User]([Id])
 );
 END
 GO
@@ -82,7 +91,13 @@ CREATE TABLE [dbo].[TimeLog]
     [Latitude] DECIMAL(9,6) NULL,                   -- GPS latitude at clock in/out
     [Longitude] DECIMAL(9,6) NULL,                  -- GPS longitude at clock in/out
 
-    CONSTRAINT [FK_TimeLog_TimeEntry] FOREIGN KEY ([TimeEntryId]) REFERENCES [dbo].[TimeEntry]([Id]) ON DELETE CASCADE
+    -- The project worked during this segment. NULL is legitimate: break logs
+    -- and not-yet-assigned work. This is the ONLY home for the project link —
+    -- TimeEntry deliberately has no ProjectId.
+    [ProjectId] BIGINT NULL,
+
+    CONSTRAINT [FK_TimeLog_TimeEntry] FOREIGN KEY ([TimeEntryId]) REFERENCES [dbo].[TimeEntry]([Id]) ON DELETE CASCADE,
+    CONSTRAINT [FK_TimeLog_Project] FOREIGN KEY ([ProjectId]) REFERENCES [dbo].[Project]([Id])
 );
 END
 GO
@@ -100,17 +115,6 @@ BEGIN
 END
 GO
 
--- Move ProjectId from TimeEntry to TimeLog (idempotent migration)
--- Make TimeEntry.ProjectId nullable (preserve existing data)
-IF OBJECT_ID('dbo.TimeEntry', 'U') IS NOT NULL AND EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TimeEntry') AND name = 'ProjectId' AND is_nullable = 0)
-BEGIN
-    -- Drop existing FK constraint first
-    IF EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_TimeEntry_Project')
-        ALTER TABLE [dbo].[TimeEntry] DROP CONSTRAINT [FK_TimeEntry_Project];
-    ALTER TABLE [dbo].[TimeEntry] ALTER COLUMN [ProjectId] BIGINT NULL;
-END
-GO
-
 -- Add ProjectId to TimeLog
 IF OBJECT_ID('dbo.TimeLog', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TimeLog') AND name = 'ProjectId')
 BEGIN
@@ -125,6 +129,42 @@ BEGIN
     ALTER TABLE [dbo].[TimeLog] ADD [Note] NVARCHAR(MAX) NULL;
 END
 GO
+
+
+-- Retire the vestigial TimeEntry.ProjectId (U-057, 2026-07-16).
+--
+-- The project link lives on dbo.TimeLog.ProjectId, per clock-in segment, because
+-- a worker can move between projects inside one WorkDate. An earlier migration
+-- moved it there but left this column behind — nullable, unread, and NULL on
+-- every row. All 19 sprocs below read tl.[ProjectId]; nothing reads te.[ProjectId].
+--
+-- GUARDED: aborts if any non-NULL value survives, so an environment that never
+-- completed the TimeLog backfill fails loudly instead of silently discarding the
+-- project link. Dynamic SQL is required — the column is absent on a fresh build,
+-- and a static reference to it would fail to compile this batch.
+IF OBJECT_ID('dbo.TimeEntry', 'U') IS NOT NULL
+   AND EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TimeEntry') AND name = 'ProjectId')
+BEGIN
+    DECLARE @UnmigratedRows INT;
+    EXEC sp_executesql
+        N'SELECT @cnt = COUNT(*) FROM dbo.[TimeEntry] WHERE [ProjectId] IS NOT NULL',
+        N'@cnt INT OUTPUT', @cnt = @UnmigratedRows OUTPUT;
+
+    IF @UnmigratedRows > 0
+        RAISERROR(
+            'dbo.time_entry.sql: %d TimeEntry row(s) still carry a non-NULL ProjectId. Backfill dbo.TimeLog.ProjectId from them before this column can be dropped.',
+            16, 1, @UnmigratedRows);
+    ELSE
+    BEGIN
+        IF EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_TimeEntry_Project')
+            ALTER TABLE [dbo].[TimeEntry] DROP CONSTRAINT [FK_TimeEntry_Project];
+        IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_TimeEntry_ProjectId' AND object_id = OBJECT_ID('dbo.TimeEntry'))
+            DROP INDEX [IX_TimeEntry_ProjectId] ON [dbo].[TimeEntry];
+        EXEC sp_executesql N'ALTER TABLE [dbo].[TimeEntry] DROP COLUMN [ProjectId]';
+    END
+END
+GO
+
 
 
 -- TimeEntryStatus Table
@@ -166,11 +206,8 @@ CREATE INDEX IX_TimeEntry_UserId ON [dbo].[TimeEntry] ([UserId]);
 END
 GO
 
-IF OBJECT_ID('dbo.TimeEntry', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_TimeEntry_ProjectId' AND object_id = OBJECT_ID('dbo.TimeEntry'))
-BEGIN
-CREATE INDEX IX_TimeEntry_ProjectId ON [dbo].[TimeEntry] ([ProjectId]);
-END
-GO
+-- (No IX_TimeEntry_ProjectId — the column is retired; see the drop block above.
+--  The project-keyed index lives on TimeLog: IX_TimeLog_ProjectId.)
 
 IF OBJECT_ID('dbo.TimeEntry', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_TimeEntry_WorkDate' AND object_id = OBJECT_ID('dbo.TimeEntry'))
 BEGIN

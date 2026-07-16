@@ -1,3 +1,32 @@
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-051, 2026-07-16) — UDF bodies removed, NOT the intent.
+--
+-- Original intent of this file (preserved for lineage):
+--   Gap 1 — the original four UserProject access-check helper UDFs.
+--
+-- The canonical definition of these UDFs now lives in exactly ONE place:
+--   shared/sql/dbo.access_udfs.sql
+--
+-- UDFs formerly redefined here (now canonical in the shared file):
+--   dbo.UserCanAccessProject, dbo.UserCanAccessBill,
+--   dbo.UserCanAccessBillCredit, dbo.UserCanAccessExpense
+--
+-- Re-running this file is now a no-op. Do NOT reintroduce a body here.
+--
+-- DANGER (motivated U-051): each of these four UDFs had THREE DIVERGENT
+-- bodies — one in each of gap1, gap2 and gap3. The body THIS file carried
+-- (like gap2's) included a "WHEN @ActorUserId IS NULL THEN CONVERT(BIT, 1)"
+-- fail-open bypass branch, which gap3 deliberately removed. Re-running gap1
+-- would therefore have reverted BOTH the gap2 creator clause AND the gap3
+-- bypass removal, silently reopening a fail-open RBAC hole on Bill /
+-- BillCredit / Expense / Project by-id reads. That is what this stub prevents.
+--
+-- NOTE: the prose below is the ORIGINAL header, preserved verbatim for
+-- lineage. It describes the fail-open behavior AS IT WAS IN 2026-05-06 — not
+-- how the canonical UDFs behave now. For current behavior read
+-- shared/sql/dbo.access_udfs.sql.
+-- ---------------------------------------------------------------------------
+
 -- Gap 1 — UserProject access-check helper functions.
 --
 -- Four scalar UDFs that return BIT (1=accessible, 0=denied). All four
@@ -16,119 +45,3 @@
 SET XACT_ABORT ON;
 SET NOCOUNT ON;
 GO
-
--- 1. Project — direct ProjectId on parent (also used for Invoice + ContractLabor).
-CREATE OR ALTER FUNCTION dbo.UserCanAccessProject
-(
-    @ActorUserId BIGINT,
-    @ActorIsSystemAdmin BIT,
-    @ProjectId BIGINT
-)
-RETURNS BIT
-WITH SCHEMABINDING
-AS
-BEGIN
-    RETURN (
-        SELECT CASE
-            WHEN @ActorIsSystemAdmin = 1 THEN CONVERT(BIT, 1)
-            WHEN @ActorUserId IS NULL THEN CONVERT(BIT, 1)
-            WHEN EXISTS (
-                SELECT 1 FROM dbo.[UserProject] up
-                WHERE up.[UserId] = @ActorUserId
-                  AND up.[ProjectId] = @ProjectId
-            ) THEN CONVERT(BIT, 1)
-            ELSE CONVERT(BIT, 0)
-        END
-    );
-END;
-GO
-
--- 2. Bill — line items carry ProjectId; parent is accessible if ANY
---    line item's project is in the user's UserProject set.
-CREATE OR ALTER FUNCTION dbo.UserCanAccessBill
-(
-    @ActorUserId BIGINT,
-    @ActorIsSystemAdmin BIT,
-    @BillId BIGINT
-)
-RETURNS BIT
-WITH SCHEMABINDING
-AS
-BEGIN
-    RETURN (
-        SELECT CASE
-            WHEN @ActorIsSystemAdmin = 1 THEN CONVERT(BIT, 1)
-            WHEN @ActorUserId IS NULL THEN CONVERT(BIT, 1)
-            WHEN EXISTS (
-                SELECT 1
-                FROM dbo.[BillLineItem] bli
-                INNER JOIN dbo.[UserProject] up
-                    ON up.[ProjectId] = bli.[ProjectId]
-                WHERE bli.[BillId] = @BillId
-                  AND up.[UserId] = @ActorUserId
-            ) THEN CONVERT(BIT, 1)
-            ELSE CONVERT(BIT, 0)
-        END
-    );
-END;
-GO
-
--- 3. BillCredit — same shape as Bill.
-CREATE OR ALTER FUNCTION dbo.UserCanAccessBillCredit
-(
-    @ActorUserId BIGINT,
-    @ActorIsSystemAdmin BIT,
-    @BillCreditId BIGINT
-)
-RETURNS BIT
-WITH SCHEMABINDING
-AS
-BEGIN
-    RETURN (
-        SELECT CASE
-            WHEN @ActorIsSystemAdmin = 1 THEN CONVERT(BIT, 1)
-            WHEN @ActorUserId IS NULL THEN CONVERT(BIT, 1)
-            WHEN EXISTS (
-                SELECT 1
-                FROM dbo.[BillCreditLineItem] bcli
-                INNER JOIN dbo.[UserProject] up
-                    ON up.[ProjectId] = bcli.[ProjectId]
-                WHERE bcli.[BillCreditId] = @BillCreditId
-                  AND up.[UserId] = @ActorUserId
-            ) THEN CONVERT(BIT, 1)
-            ELSE CONVERT(BIT, 0)
-        END
-    );
-END;
-GO
-
--- 4. Expense — same shape as Bill.
-CREATE OR ALTER FUNCTION dbo.UserCanAccessExpense
-(
-    @ActorUserId BIGINT,
-    @ActorIsSystemAdmin BIT,
-    @ExpenseId BIGINT
-)
-RETURNS BIT
-WITH SCHEMABINDING
-AS
-BEGIN
-    RETURN (
-        SELECT CASE
-            WHEN @ActorIsSystemAdmin = 1 THEN CONVERT(BIT, 1)
-            WHEN @ActorUserId IS NULL THEN CONVERT(BIT, 1)
-            WHEN EXISTS (
-                SELECT 1
-                FROM dbo.[ExpenseLineItem] eli
-                INNER JOIN dbo.[UserProject] up
-                    ON up.[ProjectId] = eli.[ProjectId]
-                WHERE eli.[ExpenseId] = @ExpenseId
-                  AND up.[UserId] = @ActorUserId
-            ) THEN CONVERT(BIT, 1)
-            ELSE CONVERT(BIT, 0)
-        END
-    );
-END;
-GO
-
-PRINT 'Gap 1 access helper functions installed.';

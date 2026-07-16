@@ -1,10 +1,19 @@
-"""U-045/U-048 guard: a converted entity's sprocs/UDF must have a single canonical SQL home.
+"""U-045/U-048/U-051 guard: canonical SQL homes for sprocs and access UDFs.
 
-Covers time_entry (U-045) and role_module (U-048) — 2 of 37 entities. The other
-35 still carry duplicated base sprocs in migrations (bill=10, contract_labor=10,
-user_role=9, …); converting them is future work. **When you convert one, add its
-row to ENTITY_BASE_FILES** — coverage is opt-in, so a conversion without a row
-leaves a gap that looks covered.
+Two guards, different shapes:
+
+* **Sprocs** — an entity's base SQL file is the one home for its sprocs. Covers
+  time_entry (U-045) and role_module (U-048) — 2 of 37 entities. The other 35
+  still carry duplicated base sprocs in migrations (bill=10, contract_labor=10,
+  user_role=9, …); converting them is future work. **When you convert one, add
+  its row to ENTITY_BASE_FILES** — coverage is opt-in, so a conversion without a
+  row leaves a gap that looks covered.
+
+* **Access UDFs** (U-051) — the whole `dbo.UserCanAccess*` family lives in
+  `shared/sql/dbo.access_udfs.sql`, NOT in any entity base file. Each one is
+  WITH SCHEMABINDING across more than one entity package, so an entity-local home
+  would create a from-scratch build cycle. Guarded here by name, plus a catch-all
+  so a sixth access UDF cannot silently escape the guarded set.
 
 The patterns must keep matching every T-SQL declaration style (bare, dbo., and
 the bracketed [dbo].[Name] form the repo uses in ~22 places). A duplicate written
@@ -23,45 +32,56 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 TIME_ENTRY_BASE = REPO_ROOT / "entities" / "time_entry" / "sql" / "dbo.time_entry.sql"
 ROLE_MODULE_BASE = REPO_ROOT / "entities" / "role_module" / "sql" / "dbo.rolemodule.sql"
+ACCESS_UDF_HOME = REPO_ROOT / "shared" / "sql" / "dbo.access_udfs.sql"
 
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
     ("role_module", ROLE_MODULE_BASE),
 ]
 
+ACCESS_UDFS = [
+    "UserCanAccessTimeEntry",
+    "UserCanAccessProject",
+    "UserCanAccessBill",
+    "UserCanAccessBillCredit",
+    "UserCanAccessExpense",
+]
+
 # Matches an optional schema ([dbo]. / dbo. / [qbo]. / qbo.) then the object
 # name, bracketed or bare. Only the name is captured.
 _SCHEMA = r"(?:\[\w+\]|\w+)\s*\.\s*"
-_SPROC_NAME = r"(?:\[(\w+)\]|(\w+))"
+_OBJECT_NAME = r"(?:\[(\w+)\]|(\w+))"
 
 _SPROC_PATTERN = re.compile(
-    rf"CREATE\s+OR\s+ALTER\s+PROCEDURE\s+(?:{_SCHEMA})?{_SPROC_NAME}",
+    rf"CREATE\s+OR\s+ALTER\s+PROCEDURE\s+(?:{_SCHEMA})?{_OBJECT_NAME}",
     re.IGNORECASE,
 )
 _UDF_PATTERN = re.compile(
-    rf"CREATE\s+OR\s+ALTER\s+FUNCTION\s+(?:{_SCHEMA})?"
-    r"(?:\[UserCanAccessTimeEntry\]|UserCanAccessTimeEntry\b)",
+    rf"CREATE\s+OR\s+ALTER\s+FUNCTION\s+(?:{_SCHEMA})?{_OBJECT_NAME}",
     re.IGNORECASE,
 )
 
 
-def _sproc_names_from_text(text: str) -> list[str]:
-    return [bracketed or bare for bracketed, bare in _SPROC_PATTERN.findall(text)]
+def _names_from_text(pattern: re.Pattern, text: str) -> frozenset[str]:
+    """Object names `pattern` declares in `text`, unwrapping the bracketed/bare capture pair."""
+    return frozenset(bracketed or bare for bracketed, bare in pattern.findall(text))
 
 
 @lru_cache(maxsize=1)
-def _sql_index() -> tuple[tuple[Path, frozenset[str], bool], ...]:
-    """Read every repo .sql file once: (path, sproc names it declares, declares the UDF).
+def _sql_index() -> tuple[tuple[Path, frozenset[str], frozenset[str]], ...]:
+    """Read every repo .sql file once: (path, sproc names, UDF names it declares).
 
-    Cached because each parametrized entity — and the UDF test — would otherwise
-    re-walk and re-read all ~372 .sql files (~2.2 MB) from scratch.
+    Cached because each parametrized entity — and each access-UDF test — would
+    otherwise re-walk and re-read all ~372 .sql files (~2.2 MB) from scratch.
     """
     index = []
     for path in REPO_ROOT.rglob("*.sql"):
         if ".venv" in path.parts:
             continue
         text = path.read_text(encoding="utf-8")
-        index.append((path, frozenset(_sproc_names_from_text(text)), bool(_UDF_PATTERN.search(text))))
+        index.append(
+            (path, _names_from_text(_SPROC_PATTERN, text), _names_from_text(_UDF_PATTERN, text))
+        )
     return tuple(index)
 
 
@@ -82,10 +102,29 @@ def test_base_sprocs_are_not_redefined_elsewhere(entity_name, base_path):
             )
 
 
-def test_user_can_access_time_entry_udf_defined_once():
-    matches = [path for path, _, has_udf in _sql_index() if has_udf]
-    assert matches == [TIME_ENTRY_BASE], (
-        "dbo.UserCanAccessTimeEntry must be defined exactly once in "
-        f"{TIME_ENTRY_BASE.relative_to(REPO_ROOT)}; found in: "
+@pytest.mark.parametrize("udf_name", ACCESS_UDFS)
+def test_access_udf_defined_once_in_shared_home(udf_name):
+    matches = [path for path, _, udf_names in _sql_index() if udf_name in udf_names]
+    assert matches == [ACCESS_UDF_HOME], (
+        f"dbo.{udf_name} must be defined exactly once in "
+        f"{ACCESS_UDF_HOME.relative_to(REPO_ROOT)}; found in: "
         + ", ".join(str(p.relative_to(REPO_ROOT)) for p in matches)
+        + f". Change {ACCESS_UDF_HOME.relative_to(REPO_ROOT)} instead."
+    )
+
+
+def test_unlisted_user_can_access_udfs_fail():
+    """Catch-all: ACCESS_UDFS is opt-in, so a sixth access UDF added to an entity
+    file would otherwise escape the guard entirely instead of failing loudly."""
+    expected = frozenset(ACCESS_UDFS)
+    offenders = [
+        f"{name} in {path.relative_to(REPO_ROOT)}"
+        for path, _, udf_names in _sql_index()
+        for name in sorted(udf_names)
+        if name.startswith("UserCanAccess") and name not in expected
+    ]
+    assert not offenders, (
+        "UserCanAccess* UDF(s) found outside the guarded set — add to ACCESS_UDFS "
+        "and home in shared/sql/dbo.access_udfs.sql, or remove the duplicate:\n"
+        + "\n".join(offenders)
     )

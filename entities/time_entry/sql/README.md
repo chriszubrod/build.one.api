@@ -3,20 +3,32 @@
 ## Single source of truth
 
 `dbo.time_entry.sql` is the **single canonical source** for all 19 TimeEntry /
-TimeLog / TimeEntryStatus stored procedures plus the `dbo.UserCanAccessTimeEntry`
-UDF. No migration may redefine them — change the base file and apply it.
-Enforced by `tests/test_sproc_single_source.py` (parametrized per entity; the
-`time_entry` row is this file's guard). Duplicate bodies that drift from the base
-file caused the 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+TimeLog / TimeEntryStatus stored procedures. No migration may redefine them —
+change the base file and apply it. Enforced by `tests/test_sproc_single_source.py`
+(parametrized per entity; the `time_entry` row is this file's guard). Duplicate
+bodies that drift from the base file caused the 2026-07-15 outage (SQL 8144,
+cross-user payroll exposure risk).
+
+The `dbo.UserCanAccessTimeEntry` UDF is **not** in this file — it moved to
+`shared/sql/dbo.access_udfs.sql` in U-051, which is the canonical home for the
+whole `dbo.UserCanAccess*` family. See `shared/sql/README.md`.
 
 ## From-scratch build order
 
-1. **`entities/user_project/sql/dbo.userproject.sql`** — creates `dbo.UserProject`.
-   Required before the TimeEntry base file because `dbo.UserCanAccessTimeEntry`
-   is `WITH SCHEMABINDING` and binds to `dbo.UserProject`.
+1. **`entities/time_entry/sql/dbo.time_entry.sql`** — tables, indexes, all 19
+   sprocs. The RBAC-scoped sprocs reference `dbo.UserProject` at runtime, but
+   SQL Server defers name resolution for stored procedures, so UserProject is
+   not a CREATE-time prerequisite for this file. UserProject ordering for the
+   access UDFs lives in `shared/sql/README.md`.
 
-2. **`entities/time_entry/sql/dbo.time_entry.sql`** — tables, indexes, UDF, all
-   19 sprocs.
+2. **`shared/sql/dbo.access_udfs.sql`** — must run *after* step 1, because
+   `dbo.UserCanAccessTimeEntry` schema-binds `dbo.TimeEntry` and `dbo.TimeLog`.
+   **Do not run it here, though** — it also schema-binds the project /
+   user_project / bill / bill_credit / expense packages' tables, and needs
+   `CreatedByUserId` (added by `scripts/migrations/gap2_created_by_user_id.sql`,
+   which itself has broad prerequisites) already present.
+   `shared/sql/README.md` is the authority for its full prerequisite list and is
+   where it is sequenced; this entry only records that it follows this file.
 
 3. **Sole-source sproc migrations** (each is the only home of its sproc, so each
    still carries a live body — this is correct and expected):
@@ -93,7 +105,7 @@ each name two different files), so always cite migrations by full filename.
   reverts CanViewTeam round-tripping. `time_entry_view_team.sql` keeps only its
   seed grants — hence steps 5 → 6 above.
 
-- **U-050** — the sibling `UserCanAccess{Project,Bill,BillCredit,Expense}` UDFs
-  have 3 distinct bodies each across the `gap1`/`gap2`/`gap3` migrations and no
-  base-file home, and `entities/project/sql/dbo.project.sql` still carries a
-  live `OR @ActorUserId IS NULL` bypass its own migration 002 removes.
+- **U-051 — RESOLVED 2026-07-16.** The `dbo.UserCanAccess{TimeEntry,Project,Bill,
+  BillCredit,Expense}` UDF family now has a single canonical home in
+  `shared/sql/dbo.access_udfs.sql`; the three `gap1`/`gap2`/`gap3` migrations
+  are superseded stubs. See `shared/sql/README.md`.

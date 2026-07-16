@@ -1,14 +1,17 @@
 -- ============================================================================
--- WARNING (2026-07-15 incident, Unit U-037): the 16 TimeEntry / TimeLog /
--- TimeEntryStatus READ + MUTATION sprocs below are RBAC-SCOPED — they carry
--- @ActorUserId / @ActorIsSystemAdmin / @ActorCanViewTeam params + a fail-closed
--- actor-scope WHERE clause. This file MUST stay in sync with the deployed
--- scoped definitions in scripts/migrations/time_entry_view_team.sql and
--- scripts/migrations/time_log_update_guards_and_unique_indexes.sql (+ the U-015
--- [Id] tie-breaks). Migration 015 once redefined 4 of these FROM a stale
--- unscoped copy of this file and dropped the actor params -> prod 500 (SQL 8144),
--- cross-user payroll exposure risk. Before any migration redefines one of these
--- sprocs, diff the LIVE sproc params (sys.parameters) against this file first.
+-- SINGLE CANONICAL SOURCE (U-045, 2026-07-16): this file is the ONE home for
+-- all 19 TimeEntry / TimeLog / TimeEntryStatus stored procedures plus the
+-- dbo.UserCanAccessTimeEntry UDF. No migration may redefine them — change
+-- this file and apply it. Enforced by tests/test_time_entry_sproc_single_source.py.
+-- Build order: README.md (same directory).
+--
+-- INCIDENT HISTORY (2026-07-15, Unit U-037): migration 015 once redefined 4
+-- read/mutation sprocs FROM a stale unscoped copy of this file and dropped the
+-- @ActorUserId / @ActorIsSystemAdmin / @ActorCanViewTeam RBAC actor params ->
+-- prod 500 (SQL 8144), cross-user payroll exposure risk. The 16 READ + MUTATION
+-- sprocs below are RBAC-SCOPED — they carry those actor params + a fail-closed
+-- actor-scope WHERE clause.
+--
 -- CREATE-path sprocs (CreateTimeEntry / CreateTimeLog / CreateTimeEntryStatus)
 -- are intentionally UNSCOPED and must stay so.
 -- ============================================================================
@@ -200,6 +203,55 @@ IF OBJECT_ID('dbo.TimeEntryStatus', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FR
 BEGIN
 CREATE INDEX IX_TimeEntryStatus_PublicId ON [dbo].[TimeEntryStatus] ([PublicId]);
 END
+GO
+
+-- Placement: WITH SCHEMABINDING binds to dbo.TimeEntry, dbo.TimeLog, and
+-- dbo.UserProject — must be created after those tables exist. dbo.UserProject
+-- is a cross-entity dependency (entities/user_project/); see README.md.
+
+-- ----------------------------------------------------------------------------
+-- UDF: dbo.UserCanAccessTimeEntry
+--
+-- Returns 1 iff the actor is system admin, OR the actor created (owns) the
+-- entry, OR (actor holds CanViewTeam AND any of the entry's TimeLog rows
+-- has a ProjectId in the actor's UserProject set).
+--
+-- Used by service-layer post-fetch checks on by-id reads + mutation gating.
+-- Single-row UDF calls are cheap; the gap-1 perf concern only applies to
+-- per-row list-path use.
+-- ----------------------------------------------------------------------------
+CREATE OR ALTER FUNCTION dbo.UserCanAccessTimeEntry
+(
+    @ActorUserId BIGINT,
+    @ActorIsSystemAdmin BIT,
+    @ActorCanViewTeam BIT,
+    @TimeEntryId BIGINT
+)
+RETURNS BIT
+WITH SCHEMABINDING
+AS
+BEGIN
+    RETURN (
+        SELECT CASE
+            WHEN @ActorIsSystemAdmin = 1 THEN CONVERT(BIT, 1)
+            WHEN EXISTS (
+                SELECT 1
+                FROM dbo.[TimeEntry] te
+                WHERE te.[Id] = @TimeEntryId
+                  AND te.[UserId] = @ActorUserId
+            ) THEN CONVERT(BIT, 1)
+            WHEN @ActorCanViewTeam = 1 AND EXISTS (
+                SELECT 1
+                FROM dbo.[TimeLog] tl
+                INNER JOIN dbo.[UserProject] up
+                    ON up.[ProjectId] = tl.[ProjectId]
+                WHERE tl.[TimeEntryId] = @TimeEntryId
+                  AND up.[UserId] = @ActorUserId
+            ) THEN CONVERT(BIT, 1)
+            ELSE CONVERT(BIT, 0)
+        END
+    );
+END;
 GO
 
 

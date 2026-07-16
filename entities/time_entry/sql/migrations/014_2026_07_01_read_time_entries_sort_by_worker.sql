@@ -22,47 +22,21 @@ SET XACT_ABORT ON;
 SET NOCOUNT ON;
 GO
 
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-045, 2026-07-16) — sproc bodies removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   Mistargeted Worker sort on ReadTimeEntries; reconciled to scoped 3-param body.
+--
+-- The canonical definition of these sprocs now lives in exactly ONE place:
+--   entities/time_entry/sql/dbo.time_entry.sql
+--
+-- Sprocs formerly redefined here (now canonical in the base file):
+--   dbo.ReadTimeEntries
+--
+-- Re-running this file is now a no-op for these sprocs. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------
 
-CREATE OR ALTER PROCEDURE dbo.ReadTimeEntries
-(
-    @ActorUserId BIGINT = NULL,
-    @ActorIsSystemAdmin BIT = NULL,
-    @ActorCanViewTeam BIT = 0
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [UserId],
-        CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
-        [Note]
-    FROM dbo.[TimeEntry] te
-    WHERE
-        @ActorIsSystemAdmin = 1
-        OR te.[UserId] = @ActorUserId
-        OR (
-            @ActorCanViewTeam = 1
-            AND EXISTS (
-                SELECT 1
-                FROM dbo.[TimeLog] tl
-                WHERE tl.[TimeEntryId] = te.[Id]
-                  AND tl.[ProjectId] IN (
-                    SELECT up.[ProjectId] FROM dbo.[UserProject] up WHERE up.[UserId] = @ActorUserId
-                  )
-            )
-        )
-    ORDER BY te.[WorkDate] DESC, te.[UserId] ASC;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-PRINT 'ReadTimeEntries reconciled to scoped 3-param canonical (U-039).';
+PRINT 'SUPERSEDED (U-045): no sprocs applied; canonical definitions live in entities/time_entry/sql/dbo.time_entry.sql.';

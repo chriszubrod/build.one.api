@@ -28,128 +28,24 @@
 -- Run with: python scripts/run_sql.py scripts/migrations/time_log_update_guards_and_unique_indexes.sql
 -- =============================================================================
 
-CREATE OR ALTER PROCEDURE dbo.UpdateTimeLogById
-(
-    @Id BIGINT,
-    @RowVersion BINARY(8),
-    @ClockIn DATETIME2(3),
-    @ClockOut DATETIME2(3) NULL,
-    @LogType NVARCHAR(10),
-    @Duration DECIMAL(6,2) NULL,
-    @Latitude DECIMAL(9,6) NULL,
-    @Longitude DECIMAL(9,6) NULL,
-    @ProjectId BIGINT NULL,
-    @Note NVARCHAR(MAX) NULL,
-    @ActorUserId BIGINT = NULL,
-    @ActorIsSystemAdmin BIT = NULL,
-    @ActorCanViewTeam BIT = 0
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    UPDATE tl
-    SET
-        tl.[ModifiedDatetime] = @Now,
-        -- NULL guards: NOT NULL columns + append-only GPS evidence.
-        -- NULL here means "caller did not supply" — preserve existing.
-        tl.[ClockIn] = COALESCE(@ClockIn, tl.[ClockIn]),
-        tl.[LogType] = COALESCE(@LogType, tl.[LogType]),
-        tl.[Latitude] = CASE WHEN @Latitude IS NULL THEN tl.[Latitude] ELSE @Latitude END,
-        tl.[Longitude] = CASE WHEN @Longitude IS NULL THEN tl.[Longitude] ELSE @Longitude END,
-        -- Unconditional: NULL is a legitimate target value for these.
-        tl.[ClockOut] = @ClockOut,
-        tl.[Duration] = @Duration,
-        tl.[ProjectId] = @ProjectId,
-        tl.[Note] = @Note
-    OUTPUT
-        INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[TimeEntryId],
-        CONVERT(VARCHAR(23), INSERTED.[ClockIn], 121) AS [ClockIn],
-        CONVERT(VARCHAR(23), INSERTED.[ClockOut], 121) AS [ClockOut],
-        INSERTED.[LogType], INSERTED.[Duration],
-        INSERTED.[Latitude], INSERTED.[Longitude],
-        INSERTED.[ProjectId], INSERTED.[Note]
-    FROM dbo.[TimeLog] tl
-    INNER JOIN dbo.[TimeEntry] te ON te.[Id] = tl.[TimeEntryId]
-    WHERE tl.[Id] = @Id
-      AND tl.[RowVersion] = @RowVersion
-      AND (
-            @ActorIsSystemAdmin = 1
-            OR te.[UserId] = @ActorUserId
-            OR (
-                @ActorCanViewTeam = 1
-                AND EXISTS (
-                    SELECT 1 FROM dbo.[TimeLog] tl_scope
-                    WHERE tl_scope.[TimeEntryId] = te.[Id]
-                      AND tl_scope.[ProjectId] IN (
-                        SELECT up.[ProjectId] FROM dbo.[UserProject] up WHERE up.[UserId] = @ActorUserId
-                      )
-                )
-            )
-      );
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-CREATE OR ALTER PROCEDURE dbo.UpdateTimeEntryById
-(
-    @Id BIGINT,
-    @RowVersion BINARY(8),
-    @UserId BIGINT,
-    @WorkDate DATE,
-    @Note NVARCHAR(MAX) NULL,
-    @ActorUserId BIGINT = NULL,
-    @ActorIsSystemAdmin BIT = NULL,
-    @ActorCanViewTeam BIT = 0
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    UPDATE dbo.[TimeEntry]
-    SET
-        [ModifiedDatetime] = @Now,
-        -- NULL guards: NULL means "caller did not supply" — preserve
-        -- existing. Clearing an entry note is expressed as '' (the iOS
-        -- model is non-optional), never NULL.
-        [UserId] = COALESCE(@UserId, [UserId]),
-        [WorkDate] = COALESCE(@WorkDate, [WorkDate]),
-        [Note] = CASE WHEN @Note IS NULL THEN [Note] ELSE @Note END
-    OUTPUT
-        INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[UserId],
-        CONVERT(VARCHAR(10), INSERTED.[WorkDate], 120) AS [WorkDate],
-        INSERTED.[Note]
-    WHERE [Id] = @Id
-      AND [RowVersion] = @RowVersion
-      AND (
-            @ActorIsSystemAdmin = 1
-            OR [UserId] = @ActorUserId
-            OR (
-                @ActorCanViewTeam = 1
-                AND EXISTS (
-                    SELECT 1 FROM dbo.[TimeLog] tl
-                    WHERE tl.[TimeEntryId] = @Id
-                      AND tl.[ProjectId] IN (
-                        SELECT up.[ProjectId] FROM dbo.[UserProject] up WHERE up.[UserId] = @ActorUserId
-                      )
-                )
-            )
-      );
-
-    COMMIT TRANSACTION;
-END;
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-045, 2026-07-16) — sproc bodies removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   NULL-overwrite guards on UpdateTimeLogById / UpdateTimeEntryById for fields
+--   that must never be nulled by a partial update (ClockIn, LogType, GPS, UserId,
+--   WorkDate, Note semantics documented in the header above).
+--
+-- The canonical definition of these sprocs now lives in exactly ONE place:
+--   entities/time_entry/sql/dbo.time_entry.sql
+--
+-- Sprocs formerly redefined here (now canonical in the base file):
+--   dbo.UpdateTimeEntryById, dbo.UpdateTimeLogById
+--
+-- Re-running this file is now a no-op for these sprocs. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------
 
 -- =============================================================================
 -- Unique index: dbo.TimeLog (TimeEntryId, ClockIn)

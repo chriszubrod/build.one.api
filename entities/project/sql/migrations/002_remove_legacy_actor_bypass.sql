@@ -1,3 +1,25 @@
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-050, 2026-07-16) — sproc bodies removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   Gap 1 follow-up — remove the @ActorUserId IS NULL legacy-caller bypass
+--   from Project list/read sprocs (fail-closed).
+--
+-- Its sproc bodies OMITTED the [Notes] column — a regression vs the base file
+-- introduced 2026-05-12 (Project.Notes was added 2026-05-07) — so re-running
+-- it would silently drop Notes from the read surface.
+--
+-- The canonical definition of these sprocs now lives in exactly ONE place:
+--   entities/project/sql/dbo.project.sql
+--
+-- Sprocs formerly redefined here (now canonical in the base file):
+--   ReadProjects, ReadProjectById, ReadProjectByPublicId, ReadProjectByName
+--
+-- Re-running this file is now a no-op for these sprocs. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-05-12 bypass leak path and the Notes-column regression.
+-- ---------------------------------------------------------------------------
+
 -- Gap 1 follow-up (2026-05-12) — remove the `@ActorUserId IS NULL`
 -- legacy-caller bypass from Project list/read sprocs. Replaces
 -- 001_gap1_scope_by_user_project.sql.
@@ -15,148 +37,9 @@
 -- @ActorIsSystemAdmin = 1 clause grants them all-user visibility
 -- via the intended path, not via a silent bypass.
 --
--- Idempotent (CREATE OR ALTER). Safe to re-run.
+-- Idempotent stub (U-050): sproc bodies removed; re-running applies nothing.
 
 SET XACT_ABORT ON;
 SET NOCOUNT ON;
+
 GO
-
-CREATE OR ALTER PROCEDURE ReadProjects
-(
-    @ActorUserId BIGINT = NULL,
-    @ActorIsSystemAdmin BIT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name],
-        [Description],
-        [Status],
-        [CustomerId],
-        [Abbreviation]
-    FROM dbo.[Project] p
-    WHERE
-        @ActorIsSystemAdmin = 1
-        OR EXISTS (
-            SELECT 1 FROM dbo.[UserProject] up
-            WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]
-        )
-    ORDER BY [Name] ASC;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-CREATE OR ALTER PROCEDURE ReadProjectById
-(
-    @Id BIGINT,
-    @ActorUserId BIGINT = NULL,
-    @ActorIsSystemAdmin BIT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name],
-        [Description],
-        [Status],
-        [CustomerId],
-        [Abbreviation]
-    FROM dbo.[Project] p
-    WHERE [Id] = @Id
-      AND (
-            @ActorIsSystemAdmin = 1
-            OR EXISTS (
-                SELECT 1 FROM dbo.[UserProject] up
-                WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]
-            )
-      );
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-CREATE OR ALTER PROCEDURE ReadProjectByPublicId
-(
-    @PublicId UNIQUEIDENTIFIER,
-    @ActorUserId BIGINT = NULL,
-    @ActorIsSystemAdmin BIT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name],
-        [Description],
-        [Status],
-        [CustomerId],
-        [Abbreviation]
-    FROM dbo.[Project] p
-    WHERE [PublicId] = @PublicId
-      AND (
-            @ActorIsSystemAdmin = 1
-            OR EXISTS (
-                SELECT 1 FROM dbo.[UserProject] up
-                WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]
-            )
-      );
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-CREATE OR ALTER PROCEDURE ReadProjectByName
-(
-    @Name NVARCHAR(50),
-    @ActorUserId BIGINT = NULL,
-    @ActorIsSystemAdmin BIT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name],
-        [Description],
-        [Status],
-        [CustomerId],
-        [Abbreviation]
-    FROM dbo.[Project] p
-    WHERE [Name] = @Name
-      AND (
-            @ActorIsSystemAdmin = 1
-            OR EXISTS (
-                SELECT 1 FROM dbo.[UserProject] up
-                WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]
-            )
-      );
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-PRINT 'Gap 1 Project scope filter applied.';

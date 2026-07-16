@@ -98,7 +98,8 @@ GO
 -- RBAC Gap 1: Project list scoped by UserProject membership.
 -- Non-admin users see only Projects they have a UserProject row for.
 -- System admins (@ActorIsSystemAdmin = 1) bypass.
--- NULL @ActorUserId also bypasses (back-compat during deploy).
+-- NULL @ActorUserId matches no rows (fail closed) - the legacy
+-- back-compat bypass was removed 2026-05-12 (migration 002 / U-050).
 CREATE OR ALTER PROCEDURE ReadProjects
 (
     @ActorUserId BIGINT = NULL,
@@ -123,7 +124,6 @@ BEGIN
     FROM dbo.[Project] p
     WHERE
         @ActorIsSystemAdmin = 1
-        OR @ActorUserId IS NULL
         OR EXISTS (
             SELECT 1 FROM dbo.[UserProject] up
             WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]
@@ -163,7 +163,6 @@ BEGIN
     WHERE [Id] = @Id
       AND (
             @ActorIsSystemAdmin = 1
-            OR @ActorUserId IS NULL
             OR EXISTS (
                 SELECT 1 FROM dbo.[UserProject] up
                 WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]
@@ -203,7 +202,6 @@ BEGIN
     WHERE [PublicId] = @PublicId
       AND (
             @ActorIsSystemAdmin = 1
-            OR @ActorUserId IS NULL
             OR EXISTS (
                 SELECT 1 FROM dbo.[UserProject] up
                 WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]
@@ -243,7 +241,6 @@ BEGIN
     WHERE [Name] = @Name
       AND (
             @ActorIsSystemAdmin = 1
-            OR @ActorUserId IS NULL
             OR EXISTS (
                 SELECT 1 FROM dbo.[UserProject] up
                 WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]

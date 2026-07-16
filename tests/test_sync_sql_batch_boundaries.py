@@ -6,7 +6,9 @@ before it is silently compiled into that procedure's body. This mirrors
 scripts/run_sql.py batch splitting and tracks BEGIN/END nesting from the
 procedure body AS through depth returning to zero to locate where the body
 actually closes — then fails on any trailing non-comment statement in the
-batch (including swallowed IF NOT EXISTS / ALTER TABLE blocks).
+batch (including swallowed IF NOT EXISTS / ALTER TABLE blocks). Lines that
+are only ``--`` comments are skipped; inline ``--`` comments are stripped
+before classifying BEGIN/END openers and closers.
 """
 
 import re
@@ -63,8 +65,19 @@ def _find_procedure_as_line_index(lines: list[str]) -> int | None:
     return None
 
 
-def _is_block_opener(upper: str) -> bool:
-    normalized = upper.rstrip(";").strip()
+def _strip_inline_sql_comment(line: str) -> str:
+    comment_start = line.find("--")
+    if comment_start >= 0:
+        line = line[:comment_start]
+    return line.strip()
+
+
+def _normalize_block_token(stripped: str) -> str:
+    return _strip_inline_sql_comment(stripped).upper().rstrip(";").strip()
+
+
+def _is_block_opener(stripped: str) -> bool:
+    normalized = _normalize_block_token(stripped)
     if normalized.startswith("BEGIN TRANSACTION") or normalized.startswith("BEGIN TRAN"):
         return False
     if normalized == "BEGIN":
@@ -76,8 +89,8 @@ def _is_block_opener(upper: str) -> bool:
     return False
 
 
-def _is_block_closer(upper: str) -> bool:
-    normalized = upper.rstrip(";").strip()
+def _is_block_closer(stripped: str) -> bool:
+    normalized = _normalize_block_token(stripped)
     if normalized == "END":
         return True
     if normalized.startswith("END TRY"):
@@ -88,18 +101,18 @@ def _is_block_closer(upper: str) -> bool:
 
 
 def _block_depth_change(stripped: str, *, is_as_line: bool) -> int:
-    upper = stripped.upper()
     if is_as_line:
-        if upper in {"AS", "AS;"}:
+        as_line = _normalize_block_token(stripped)
+        if as_line == "AS":
             return 0
-        if upper.startswith("AS "):
-            upper = upper[3:].strip()
+        if as_line.startswith("AS "):
+            stripped = as_line[3:].strip()
         else:
             return 0
 
-    if _is_block_opener(upper):
+    if _is_block_opener(stripped):
         return 1
-    if _is_block_closer(upper):
+    if _is_block_closer(stripped):
         return -1
     return 0
 
@@ -142,7 +155,7 @@ def _first_offending_trailing_statement(batch: str, after_line_index: int) -> st
     return None
 
 
-def test_sync_sql_procedure_batches_end_with_end():
+def test_no_statement_swallowed_into_procedure_body():
     sql_content = SYNC_SQL.read_text(encoding="utf-8")
     violations: list[tuple[str, str]] = []
 

@@ -234,8 +234,4 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
-
-UPDATE dbo.[Sync]
-SET [LastSyncDatetime] = '2026-01-01 00:00:00.000'
-WHERE [Id] = 14 AND [RowVersion] = 0x000000000004A864;
+GO

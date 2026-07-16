@@ -38,3 +38,9 @@ GO
 EXEC DeleteSyncById
     @Id = 8;
 GO
+
+-- Watermark reset: forces the next sync of one Sync row to re-pull from scratch.
+UPDATE dbo.[Sync]
+SET [LastSyncDatetime] = '2026-01-01 00:00:00.000'
+WHERE [Id] = 14 AND [RowVersion] = 0x000000000004A864;
+GO

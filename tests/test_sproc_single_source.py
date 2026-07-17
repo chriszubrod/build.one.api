@@ -34,6 +34,18 @@ TIME_ENTRY_BASE = REPO_ROOT / "entities" / "time_entry" / "sql" / "dbo.time_entr
 ROLE_MODULE_BASE = REPO_ROOT / "entities" / "role_module" / "sql" / "dbo.rolemodule.sql"
 ACCESS_UDF_HOME = REPO_ROOT / "shared" / "sql" / "dbo.access_udfs.sql"
 
+# U-061: the four Create sprocs whose bodies had drifted BEHIND their canonical
+# entity base files were neutralized to pointer-stub comments in
+# gap2_core_threading.sql (re-running the migration reverted prod — CreateProject
+# dropped @Notes, CreateExpense dropped @SourceEmailMessageId, CreateInvoiceLineItem
+# dropped @EmployeeLaborLineItemId, CreateBill undid the DueDate=@BillDate mirror).
+# Full single-source conversion of these entities is the 36-entity campaign; this
+# narrow guard just keeps this one file from re-acquiring a drifted body.
+GAP2_CORE_THREADING = REPO_ROOT / "scripts" / "migrations" / "gap2_core_threading.sql"
+GAP2_NEUTRALIZED_SPROCS = frozenset(
+    {"CreateProject", "CreateBill", "CreateExpense", "CreateInvoiceLineItem"}
+)
+
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
     ("role_module", ROLE_MODULE_BASE),
@@ -127,4 +139,25 @@ def test_unlisted_user_can_access_udfs_fail():
         "UserCanAccess* UDF(s) found outside the guarded set — add to ACCESS_UDFS "
         "and home in shared/sql/dbo.access_udfs.sql, or remove the duplicate:\n"
         + "\n".join(offenders)
+    )
+
+
+def test_gap2_neutralized_sprocs_stay_stubbed():
+    """U-061 recurrence guard: the four drift-neutralized Create sprocs must stay
+    pointer-stub comments in gap2_core_threading.sql — never re-acquire a
+    CREATE OR ALTER body there. A re-added body is what reverted prod."""
+    names = next(
+        (sprocs for path, sprocs, _ in _sql_index() if path == GAP2_CORE_THREADING),
+        None,
+    )
+    assert names is not None, (
+        f"expected {GAP2_CORE_THREADING.relative_to(REPO_ROOT)} in the SQL index"
+    )
+    offenders = sorted(names & GAP2_NEUTRALIZED_SPROCS)
+    assert not offenders, (
+        "gap2_core_threading.sql re-acquired a CREATE OR ALTER body for "
+        + ", ".join(offenders)
+        + " — these were neutralized to base-canonical pointer stubs in U-061 "
+        "because their bodies had drifted behind their entity base files. "
+        "Change the entity base file instead; do not re-add a body here."
     )

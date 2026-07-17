@@ -1,16 +1,21 @@
 -- =====================================================================
--- Gap 2 Phase Core — thread CreatedByUserId on the 11 transactional
--- money-entity Create sprocs (Project + Bill family + Expense family +
--- Invoice family + ContractLabor family).
+-- Gap 2 Phase Core — thread CreatedByUserId on the transactional
+-- money-entity Create sprocs whose entity base files do not yet carry it.
 --
 -- Pattern: add @CreatedByUserId BIGINT = NULL param; INSERT uses
 -- COALESCE(@CreatedByUserId, 17) so the existing DEFAULT-trick fallback
--- still fires when callers don't pass an actor (scheduler / recovery
--- jobs / agents that haven't been threaded yet keep working).
+-- still fires when callers do not pass an actor (scheduler / recovery
+-- jobs / agents that have not been threaded yet keep working).
 --
 -- Idempotent (CREATE OR ALTER). Migration-only — does NOT replay the
 -- base sproc files (which would roll back later migrations like Gap 1
 -- list-path filters or Phase 3 actor params on Read sprocs).
+--
+-- U-061 (2026-07-17): 4 sprocs originally defined here — CreateProject,
+-- CreateBill, CreateExpense, CreateInvoiceLineItem — were NEUTRALIZED to
+-- base-canonical pointer stubs (see each section) because their bodies had
+-- drifted BEHIND their entity base files; re-running them reverted prod.
+-- The remaining 7 bodies are the live @CreatedByUserId threading.
 -- =====================================================================
 
 SET XACT_ABORT ON;
@@ -18,90 +23,37 @@ SET NOCOUNT ON;
 GO
 
 -- ===== 1. CreateProject =====
-CREATE OR ALTER PROCEDURE CreateProject
-(
-    @Name NVARCHAR(50),
-    @Description NVARCHAR(500),
-    @Status NVARCHAR(50),
-    @CustomerId BIGINT NULL,
-    @Abbreviation NVARCHAR(20) NULL,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[Project] ([CreatedDatetime], [ModifiedDatetime], [Name], [Description], [Status], [CustomerId], [Abbreviation], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[Name],
-        INSERTED.[Description],
-        INSERTED.[Status],
-        INSERTED.[CustomerId],
-        INSERTED.[Abbreviation]
-    VALUES (@Now, @Now, @Name, @Description, @Status, @CustomerId, @Abbreviation, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-061, 2026-07-17) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/project/sql/dbo.project.sql
+-- That base carries @CreatedByUserId (the original intent of this file) AND the
+-- @Notes param this copy had drifted behind.
+--
+-- Drift: this body omitted @Notes. The repo layer sends @Notes unconditionally,
+-- so re-running this file reverted prod CreateProject to the pre-@Notes shape and
+-- broke project creation with SQL 8144 ("too many arguments") from ~2026-05-26
+-- until the base was re-applied to prod on 2026-07-17. Re-running this file is
+-- now a no-op for CreateProject. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 2. CreateBill =====
-CREATE OR ALTER PROCEDURE CreateBill
-(
-    @VendorId BIGINT = NULL,
-    @PaymentTermId BIGINT = NULL,
-    @BillDate DATETIME2(3),
-    @DueDate DATETIME2(3),
-    @BillNumber NVARCHAR(50) = NULL,
-    @TotalAmount DECIMAL(18,2) = NULL,
-    @Memo NVARCHAR(MAX) = NULL,
-    @IsDraft BIT = 1,
-    @IntakeSource NVARCHAR(20) = NULL,
-    @IntakeSourceDetail NVARCHAR(100) = NULL,
-    @SourceEmailMessageId BIGINT = NULL,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[Bill]
-        ([CreatedDatetime], [ModifiedDatetime], [VendorId], [PaymentTermId],
-         [BillDate], [DueDate], [BillNumber], [TotalAmount], [Memo],
-         [IsDraft], [IntakeSource], [IntakeSourceDetail], [SourceEmailMessageId],
-         [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[VendorId],
-        INSERTED.[PaymentTermId],
-        CONVERT(VARCHAR(19), INSERTED.[BillDate], 120) AS [BillDate],
-        CONVERT(VARCHAR(19), INSERTED.[DueDate], 120) AS [DueDate],
-        INSERTED.[BillNumber],
-        INSERTED.[TotalAmount],
-        INSERTED.[Memo],
-        INSERTED.[IsDraft],
-        INSERTED.[IntakeSource],
-        INSERTED.[IntakeSourceDetail],
-        INSERTED.[SourceEmailMessageId]
-    VALUES (@Now, @Now, @VendorId, @PaymentTermId, @BillDate, @DueDate,
-            @BillNumber, @TotalAmount, @Memo, @IsDraft, @IntakeSource,
-            @IntakeSourceDetail, @SourceEmailMessageId,
-            COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-061, 2026-07-17) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/bill/sql/dbo.bill_create_source_email.sql
+-- That base carries @CreatedByUserId (the original intent of this file).
+--
+-- Drift (body-level, params match): this body inserted the caller @DueDate,
+-- whereas the base deliberately mirrors DueDate = @BillDate (migration
+-- 005_bill_duedate_mirror_billdate). Because the params match, re-running this
+-- file would NOT error — it would SILENTLY revert the DueDate = BillDate business
+-- rule. Re-running this file is now a no-op for CreateBill. Do NOT reintroduce a
+-- body here.
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 3. CreateBillCredit =====
@@ -141,41 +93,20 @@ END;
 GO
 
 -- ===== 4. CreateExpense =====
-CREATE OR ALTER PROCEDURE CreateExpense
-(
-    @VendorId BIGINT,
-    @ExpenseDate DATETIME2(3),
-    @ReferenceNumber NVARCHAR(50),
-    @TotalAmount DECIMAL(18,2) NULL,
-    @Memo NVARCHAR(MAX) NULL,
-    @IsDraft BIT = 1,
-    @IsCredit BIT = 0,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[Expense] ([CreatedDatetime], [ModifiedDatetime], [VendorId], [ExpenseDate], [ReferenceNumber], [TotalAmount], [Memo], [IsDraft], [IsCredit], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[VendorId],
-        CONVERT(VARCHAR(19), INSERTED.[ExpenseDate], 120) AS [ExpenseDate],
-        INSERTED.[ReferenceNumber],
-        INSERTED.[TotalAmount],
-        INSERTED.[Memo],
-        INSERTED.[IsDraft],
-        INSERTED.[IsCredit]
-    VALUES (@Now, @Now, @VendorId, @ExpenseDate, @ReferenceNumber, @TotalAmount, @Memo, @IsDraft, @IsCredit, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-061, 2026-07-17) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/expense/sql/dbo.expense.sql
+-- That base carries @CreatedByUserId (the original intent of this file) AND the
+-- @SourceEmailMessageId param this copy had drifted behind.
+--
+-- Drift: this body omitted @SourceEmailMessageId. ExpenseRepository.create sends
+-- that param unconditionally (entities/expense/persistence/repo.py), so re-running
+-- this file would revert prod CreateExpense to the pre-source-email shape and break
+-- expense creation with SQL 8144 — the exact CreateProject failure mode. Re-running
+-- this file is now a no-op for CreateExpense. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 5. CreateInvoice =====
@@ -445,53 +376,21 @@ END;
 GO
 
 -- ===== 10. CreateInvoiceLineItem =====
-CREATE OR ALTER PROCEDURE CreateInvoiceLineItem
-(
-    @InvoiceId BIGINT,
-    @SourceType NVARCHAR(50),
-    @BillLineItemId BIGINT NULL,
-    @ExpenseLineItemId BIGINT NULL,
-    @BillCreditLineItemId BIGINT NULL,
-    @SubCostCodeId BIGINT NULL,
-    @Description NVARCHAR(MAX) NULL,
-    @Quantity DECIMAL(18,4) NULL,
-    @Rate DECIMAL(18,4) NULL,
-    @Amount DECIMAL(18,2) NULL,
-    @Markup DECIMAL(18,4) NULL,
-    @Price DECIMAL(18,2) NULL,
-    @IsDraft BIT = 1,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[InvoiceLineItem] ([CreatedDatetime], [ModifiedDatetime], [InvoiceId], [SourceType], [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[InvoiceId],
-        INSERTED.[SourceType],
-        INSERTED.[BillLineItemId],
-        INSERTED.[ExpenseLineItemId],
-        INSERTED.[BillCreditLineItemId],
-        INSERTED.[SubCostCodeId],
-        INSERTED.[Description],
-        INSERTED.[Quantity],
-        INSERTED.[Rate],
-        INSERTED.[Amount],
-        INSERTED.[Markup],
-        INSERTED.[Price],
-        INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @InvoiceId, @SourceType, @BillLineItemId, @ExpenseLineItemId, @BillCreditLineItemId, @SubCostCodeId, @Description, @Quantity, @Rate, @Amount, @Markup, @Price, @IsDraft, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-061, 2026-07-17) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/invoice_line_item/sql/dbo.invoice_line_item.sql
+-- That base carries @CreatedByUserId (the original intent of this file) AND the
+-- @EmployeeLaborLineItemId param this copy had drifted behind.
+--
+-- Drift: this body omitted @EmployeeLaborLineItemId. The repo layer sends that
+-- param (entities/invoice_line_item/persistence/repo.py), so re-running this file
+-- would revert prod to the pre-employee-labor shape and break invoice-line creation
+-- with SQL 8144 — the same drift that hid @EmployeeLaborLineItemId from prod through
+-- incidents WVA-17 / WVA-18 (base made canonical 2026-07-06). Re-running this file is
+-- now a no-op for CreateInvoiceLineItem. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 11. CreateContractLaborLineItem =====
@@ -547,5 +446,5 @@ BEGIN
 END;
 GO
 
-PRINT 'Gap 2 Phase Core: 11 Create sprocs threaded with @CreatedByUserId';
+PRINT 'Gap 2 Phase Core: 7 live Create sprocs threaded with @CreatedByUserId; 4 neutralized to base-canonical pointer stubs (U-061)';
 GO

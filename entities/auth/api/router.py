@@ -2,8 +2,9 @@
 import asyncio
 import json
 import logging
-from typing import Optional
+import math
 import secrets
+from typing import Optional
 
 # Third-party Imports
 from fastapi import APIRouter, HTTPException, Depends, Response, Request
@@ -43,6 +44,7 @@ from shared.authz.companies import (
     resolve_active_company_for_user,
 )
 from shared.profile_events import profile_event_subscription, publish_profile_changed
+from shared.rate_limit import login_rate_limiter, normalize_username
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -53,6 +55,21 @@ service = AuthService()
 
 ACCESS_COOKIE_NAME = "token.access_token"
 REFRESH_COOKIE_NAME = "token.refresh_token"
+
+
+def _enforce_login_rate_limit(username: str) -> str:
+    """Reserve one token for this username's bucket, or raise 429 if it is empty.
+    Returns the normalized key so the caller can `refund()` it on success — the
+    login endpoints do (a success costs nothing); set-credentials never refunds."""
+    key = normalize_username(username)
+    retry_after = login_rate_limiter.try_acquire(key)
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many attempts. Please try again later.",
+            headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+        )
+    return key
 
 
 def _secure_cookie_enabled() -> bool:
@@ -229,6 +246,8 @@ def admin_set_credentials_router(
     """
     if request.cookies.get(REFRESH_COOKIE_NAME):
         _require_csrf(request)
+    # Every call is counted (this endpoint has no "failed attempt" concept); no refund.
+    _enforce_login_rate_limit(body.username)
     try:
         auth = service.set_credentials_for_user(
             user_public_id=user_public_id,
@@ -254,11 +273,13 @@ def login_auth_router(body: AuthLogin, response: Response):
     """
     Login a auth.
     """
+    key = _enforce_login_rate_limit(body.username)
     try:
         auth, access_token, refresh_token = service.login(
             username=body.username,
             password=body.password
         )
+        login_rate_limiter.refund(key)
         _set_auth_cookies(response=response, access_token=access_token, refresh_token=refresh_token)
         return item_response({
             "auth": auth.to_dict(),
@@ -479,11 +500,13 @@ def mobile_login_router(body: AuthLogin):
     Mobile login. Returns access and refresh tokens in the response body.
     Client stores tokens in secure device storage (e.g. iOS Keychain).
     """
+    key = _enforce_login_rate_limit(body.username)
     try:
         auth, access_token, refresh_token = service.login(
             username=body.username,
             password=body.password
         )
+        login_rate_limiter.refund(key)
         return item_response({
             "auth": auth.to_dict(),
             "token": access_token.to_dict(),

@@ -2,6 +2,25 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## 🟢 U-063 follow-ups — Auth rate-limiting (2026-07-17) — SHIPPED (username-keyed, in-proc, `shared/rate_limit.py`), residuals below
+
+The rate limiter (`/auth/login`, `/mobile/auth/login`, `/admin/auth/set-credentials`) is username-keyed, per-worker in-proc token bucket, count-failures-only on login, TTL+LRU bounded at 10k keys. Codex `gpt-5.5` (xhigh) verified atomicity, the O(1) front-scan eviction invariant, and no auth regression. Accepted, documented residuals (all deliberately NOT fixed in U-063):
+- [ ] **P3 refund-vs-refill boundary race (Codex R2).** A legit login that reserves a token just before a 180s refill boundary, interleaved with an attacker hitting the same username *at* the boundary, can yield ONE extra failed attempt (6 where 5 intended). Reproduced (`5 1 6`). Long-run rate unchanged; fix needs a reservation-handle protocol threaded through the auth hot path — worse trade than the slop. Documented, not fixed.
+- [ ] **P2 LRU-reset of a throttled bucket.** Inherent to the bounded store: ~10k distinct sprayed usernames per worker evicts a target's bucket, resetting it to full. Cost/benefit for the attacker is terrible (~2000:1); the alternative is an unbounded store (OOM) or DB-backed (rejected). Mitigated by the per-IP follow-up below.
+- [ ] **`/signup/auth` is NOT rate-limited (out of U-063 scope).** It brute-forces a shared `signup_registration_code` via `hmac.compare_digest` (`entities/auth/business/service.py:695`), unauthenticated, and a correct guess MINTS an account. Stronger target than set-credentials — promote to its own unit (rate-limit keyed on IP-or-registration-code, or a lockout after N global failures).
+- [ ] **U-070 — per-IP rate-limiting (deferred).** v1 is username-only because `X-Forwarded-For` is client-spoofable and `request.client.host` is the Azure LB IP (would bucket the whole company). First step: empirically verify what Azure App Service actually sends (the `ProxyHeadersMiddleware` at `app.py:134` only handles `X-Forwarded-Proto` today), THEN key on the verified client IP. Would mitigate both the targeted-throttle residual and the LRU-reset residual.
+- [ ] **iOS 429 handling unverified.** The app has never received a 429 from login. Confirm it surfaces "try again shortly" rather than a credential-failure or a retry loop (cf. `project_ios_onboarding_lockout`).
+
+## U-068 — HTML-escape the remaining unescaped email/PDF interpolations (2026-07-17, LOW — found during U-063)
+
+Not live injection (self-scoped / admin-controlled fields), but the same escaping rule the review notification services already follow:
+- [ ] `entities/time_entry/business/digest_service.py:320` — `firstname` interpolated raw while 8 other values in the same file are `html.escape`'d.
+- [ ] `entities/contract_labor/business/bill_service.py:1020-1021` — vendor name + address fed into a reportlab `Paragraph` unescaped (PDF-gen breakage on `&`, different class from email injection).
+
+## U-069 — QBO/MS `force_refresh` redundant-refresh dampener (2026-07-17, LOW — found during U-063)
+
+Not a bug (no token loss — the lock ordering is already correct). `ensure_valid_token(force_refresh=True)` skips the already-refreshed check, so N concurrent 401-recoveries each do a real serialized refresh instead of one. Waste + Intuit/MS rate-limit exposure, not correctness. `integrations/intuit/qbo/auth/business/service.py` + `integrations/ms/auth/business/service.py` (keep symmetric).
+
 ## 🟡 U-057 follow-ups — TimeEntry.ProjectId retirement (2026-07-16) — code LANDED, prod DDL DEFERRED by request
 
 **Context.** The project link lives on `dbo.TimeLog.ProjectId` (one per clock-in segment — a worker can move sites inside one `WorkDate`; Weston Parker 2026-05-06 is the worked example: 8.00h at 925 Overton Lea + 0.57h at 424 Westview Avenue). `dbo.TimeEntry.ProjectId` was left behind by the original move: nullable, FK already dropped, **NULL on all 939 rows**, read by nothing. U-057 repointed the 14 `ActiveProjectIds` CTEs to TimeLog, granted the 5 missing GEN rows, and staged a guarded drop in the base file.

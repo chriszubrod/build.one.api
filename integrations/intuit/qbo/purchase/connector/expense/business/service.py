@@ -181,7 +181,7 @@ class PurchaseExpenseConnector:
         # delete the just-created header + qbo.PurchaseExpense mapping and re-raise (watermark
         # holds; re-pull is idempotent).
         try:
-            self._sync_line_items(expense_id, expense.public_id, qbo_purchase_lines)
+            self._sync_line_items(expense_id, expense.public_id, qbo_purchase_lines, qbo_purchase.realm_id)
         except Exception:
             def _delete_expense_mapping():
                 _m = self.mapping_repo.read_by_expense_id(expense_id)
@@ -235,7 +235,7 @@ class PurchaseExpenseConnector:
             is_draft=False,
             is_credit=qbo_purchase.credit or False,
         )
-        self._sync_line_items(updated.id, updated.public_id, qbo_purchase_lines)
+        self._sync_line_items(updated.id, updated.public_id, qbo_purchase_lines, qbo_purchase.realm_id)
         return updated
 
     def _record_missing_expense_issue(
@@ -329,7 +329,7 @@ class PurchaseExpenseConnector:
         self._vendor_cache[qbo_entity_ref_value] = vendor.public_id
         return vendor.public_id
 
-    def _sync_line_items(self, expense_id: int, expense_public_id: str, qbo_purchase_lines: List[QboPurchaseLine]) -> None:
+    def _sync_line_items(self, expense_id: int, expense_public_id: str, qbo_purchase_lines: List[QboPurchaseLine], realm_id: Optional[str] = None) -> None:
         """
         Sync purchase line items to ExpenseLineItem module.
 
@@ -346,7 +346,7 @@ class PurchaseExpenseConnector:
 
         for qbo_line in qbo_purchase_lines:
             try:
-                line_connector.sync_from_qbo_purchase_line(expense_id, expense_public_id, qbo_line)
+                line_connector.sync_from_qbo_purchase_line(expense_id, expense_public_id, qbo_line, realm_id)
             except Exception as e:
                 logger.error(f"Failed to sync QboPurchaseLine {qbo_line.id} to ExpenseLineItem: {e}")
                 failed_line_ids.append(qbo_line.id)

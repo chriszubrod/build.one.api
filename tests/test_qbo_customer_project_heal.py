@@ -1,4 +1,5 @@
-"""Pure-logic tests for CustomerProject heal-don't-delete mapping fixes (U-022)."""
+"""Pure-logic tests for CustomerProject heal-don't-delete mapping fixes (U-022)
+and QBO customer-ref realm-scoping on line-item project resolvers (U-060)."""
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -8,6 +9,13 @@ import pytest
 from integrations.intuit.qbo.customer.connector.project.business.model import CustomerProject
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
 from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
+from integrations.intuit.qbo.bill.connector.bill_line_item.business.service import BillLineItemConnector
+from integrations.intuit.qbo.purchase.connector.expense_line_item.business.service import (
+    PurchaseLineExpenseLineItemConnector,
+)
+from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import (
+    VendorCreditLineItemConnector,
+)
 
 # The invoice connector imports CustomerProjectConnector lazily from its defining module,
 # so the heal auto-heal path is patched where the class is defined.
@@ -101,6 +109,38 @@ def _build_invoice_connector(**overrides):
         project_service=Mock(),
         qbo_customer_repo=Mock(),
         customer_project_repo=Mock(),
+    )
+    for key, value in overrides.items():
+        setattr(connector, key, value)
+    return connector
+
+
+def _build_purchase_line_connector(**overrides):
+    connector = PurchaseLineExpenseLineItemConnector(
+        mapping_repo=Mock(),
+        expense_line_item_service=Mock(),
+        item_sub_cost_code_repo=Mock(),
+        qbo_item_repo=Mock(),
+        customer_project_repo=Mock(),
+        qbo_customer_repo=Mock(),
+    )
+    for key, value in overrides.items():
+        setattr(connector, key, value)
+    return connector
+
+
+def _build_vendor_credit_line_connector(**overrides):
+    connector = VendorCreditLineItemConnector()
+    for key, value in overrides.items():
+        setattr(connector, key, value)
+    return connector
+
+
+def _build_bill_line_connector(**overrides):
+    connector = BillLineItemConnector(
+        qbo_customer_repo=Mock(),
+        customer_project_repo=Mock(),
+        project_service=Mock(),
     )
     for key, value in overrides.items():
         setattr(connector, key, value)
@@ -361,3 +401,184 @@ def test_get_project_public_id_realm_miss_returns_none_without_heal():
     assert result is None
     customer_project_repo.read_by_qbo_customer_id.assert_not_called()
     mock_connector_cls.assert_not_called()
+
+
+# --- PART 4: PurchaseLineExpenseLineItemConnector._get_project_public_id ---
+
+
+def test_purchase_get_project_public_id_uses_realm_scoped_lookup_when_realm_given():
+    """Realm-scoped customer lookup when realm_id is provided."""
+    qbo_customer = _make_qbo_customer()
+    project = _make_project(public_id="proj-pub-200")
+    mapping = _make_mapping(project_id=project.id)
+
+    qbo_customer_repo = Mock()
+    qbo_customer_repo.read_by_qbo_id_and_realm_id.return_value = qbo_customer
+    qbo_customer_repo.read_by_qbo_id.return_value = qbo_customer
+
+    customer_project_repo = Mock()
+    customer_project_repo.read_by_qbo_customer_id.return_value = mapping
+
+    connector = _build_purchase_line_connector(
+        qbo_customer_repo=qbo_customer_repo,
+        customer_project_repo=customer_project_repo,
+    )
+
+    with patch(
+        "integrations.intuit.qbo.purchase.connector.expense_line_item.business.service.ProjectService"
+    ) as mock_project_svc:
+        mock_project_svc.return_value.read_by_id.return_value = project
+        result = connector._get_project_public_id("QBO-100", "realm-1")
+
+    assert result == "proj-pub-200"
+    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_called_once_with("QBO-100", "realm-1")
+    qbo_customer_repo.read_by_qbo_id.assert_not_called()
+
+
+def test_purchase_get_project_public_id_falls_back_to_unscoped_lookup_without_realm():
+    """No realm_id falls back to read_by_qbo_id for back-compat."""
+    qbo_customer = _make_qbo_customer()
+    project = _make_project(public_id="proj-pub-200")
+    mapping = _make_mapping(project_id=project.id)
+
+    qbo_customer_repo = Mock()
+    qbo_customer_repo.read_by_qbo_id.return_value = qbo_customer
+
+    customer_project_repo = Mock()
+    customer_project_repo.read_by_qbo_customer_id.return_value = mapping
+
+    connector = _build_purchase_line_connector(
+        qbo_customer_repo=qbo_customer_repo,
+        customer_project_repo=customer_project_repo,
+    )
+
+    with patch(
+        "integrations.intuit.qbo.purchase.connector.expense_line_item.business.service.ProjectService"
+    ) as mock_project_svc:
+        mock_project_svc.return_value.read_by_id.return_value = project
+        result = connector._get_project_public_id("QBO-100")
+
+    assert result == "proj-pub-200"
+    qbo_customer_repo.read_by_qbo_id.assert_called_once_with("QBO-100")
+    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_not_called()
+
+
+# --- PART 5: VendorCreditLineItemConnector._get_project_public_id ---
+
+QBO_CUSTOMER_REPO_PATH = "integrations.intuit.qbo.customer.persistence.repo.QboCustomerRepository"
+CUSTOMER_PROJECT_REPO_PATH = (
+    "integrations.intuit.qbo.customer.connector.project.persistence.repo.CustomerProjectRepository"
+)
+
+
+def test_vendorcredit_get_project_public_id_uses_realm_scoped_lookup_when_realm_given():
+    """Realm-scoped customer lookup when realm_id is provided."""
+    qbo_customer = _make_qbo_customer()
+    project = _make_project(public_id="proj-pub-200")
+    mapping = SimpleNamespace(project_id=project.id)
+
+    qbo_customer_repo = Mock()
+    qbo_customer_repo.read_by_qbo_id_and_realm_id.return_value = qbo_customer
+    qbo_customer_repo.read_by_qbo_id.return_value = qbo_customer
+
+    customer_project_repo = Mock()
+    customer_project_repo.read_by_qbo_customer_id.return_value = mapping
+
+    connector = _build_vendor_credit_line_connector(
+        project_service=Mock(read_by_id=Mock(return_value=project)),
+    )
+
+    with patch(QBO_CUSTOMER_REPO_PATH, return_value=qbo_customer_repo), patch(
+        CUSTOMER_PROJECT_REPO_PATH, return_value=customer_project_repo
+    ):
+        result = connector._get_project_public_id("QBO-100", "realm-1")
+
+    assert result == "proj-pub-200"
+    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_called_once_with("QBO-100", "realm-1")
+    qbo_customer_repo.read_by_qbo_id.assert_not_called()
+
+
+def test_vendorcredit_get_project_public_id_falls_back_to_unscoped_lookup_without_realm():
+    """No realm_id falls back to read_by_qbo_id for back-compat."""
+    qbo_customer = _make_qbo_customer()
+    project = _make_project(public_id="proj-pub-200")
+    mapping = SimpleNamespace(project_id=project.id)
+
+    qbo_customer_repo = Mock()
+    qbo_customer_repo.read_by_qbo_id.return_value = qbo_customer
+
+    customer_project_repo = Mock()
+    customer_project_repo.read_by_qbo_customer_id.return_value = mapping
+
+    connector = _build_vendor_credit_line_connector(
+        project_service=Mock(read_by_id=Mock(return_value=project)),
+    )
+
+    with patch(QBO_CUSTOMER_REPO_PATH, return_value=qbo_customer_repo), patch(
+        CUSTOMER_PROJECT_REPO_PATH, return_value=customer_project_repo
+    ):
+        result = connector._get_project_public_id("QBO-100")
+
+    assert result == "proj-pub-200"
+    qbo_customer_repo.read_by_qbo_id.assert_called_once_with("QBO-100")
+    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_not_called()
+
+
+# --- PART 6: BillLineItemConnector._get_project_public_id ---
+
+
+def test_bill_get_project_public_id_uses_realm_scoped_lookup_when_realm_given():
+    """Realm-scoped customer lookup when realm_id is provided."""
+    qbo_customer = _make_qbo_customer()
+    project = _make_project(public_id="proj-pub-200")
+    mapping = _make_mapping(project_id=project.id)
+
+    qbo_customer_repo = Mock()
+    qbo_customer_repo.read_by_qbo_id_and_realm_id.return_value = qbo_customer
+    qbo_customer_repo.read_by_qbo_id.return_value = qbo_customer
+
+    customer_project_repo = Mock()
+    customer_project_repo.read_by_qbo_customer_id.return_value = mapping
+
+    project_service = Mock()
+    project_service.read_by_id.return_value = project
+
+    connector = _build_bill_line_connector(
+        qbo_customer_repo=qbo_customer_repo,
+        customer_project_repo=customer_project_repo,
+        project_service=project_service,
+    )
+
+    result = connector._get_project_public_id("QBO-100", "realm-1")
+
+    assert result == "proj-pub-200"
+    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_called_once_with("QBO-100", "realm-1")
+    qbo_customer_repo.read_by_qbo_id.assert_not_called()
+
+
+def test_bill_get_project_public_id_falls_back_to_unscoped_lookup_without_realm():
+    """No realm_id falls back to read_by_qbo_id for back-compat."""
+    qbo_customer = _make_qbo_customer()
+    project = _make_project(public_id="proj-pub-200")
+    mapping = _make_mapping(project_id=project.id)
+
+    qbo_customer_repo = Mock()
+    qbo_customer_repo.read_by_qbo_id.return_value = qbo_customer
+
+    customer_project_repo = Mock()
+    customer_project_repo.read_by_qbo_customer_id.return_value = mapping
+
+    project_service = Mock()
+    project_service.read_by_id.return_value = project
+
+    connector = _build_bill_line_connector(
+        qbo_customer_repo=qbo_customer_repo,
+        customer_project_repo=customer_project_repo,
+        project_service=project_service,
+    )
+
+    result = connector._get_project_public_id("QBO-100")
+
+    assert result == "proj-pub-200"
+    qbo_customer_repo.read_by_qbo_id.assert_called_once_with("QBO-100")
+    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_not_called()

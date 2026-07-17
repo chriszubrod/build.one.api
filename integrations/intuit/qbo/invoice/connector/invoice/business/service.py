@@ -427,6 +427,10 @@ class InvoiceInvoiceConnector:
             return False
         return abs(Decimal(str(total_amount)) - Decimal(str(other_total))) <= Decimal("0.01")
 
+    # One of FOUR near-identical QBO customer-ref -> Project resolvers (invoice /
+    # purchase / vendorcredit / bill). All four are realm-scoped as of U-060; they
+    # still diverge on heal (invoice only) and caching (invoice + purchase only).
+    # Lift into one shared resolver when multi-realm lands — see TODO.md.
     def _get_project_public_id(self, qbo_customer_ref_value: str, realm_id: Optional[str] = None) -> Optional[str]:
         """
         Get the Project public_id from QBO customer reference value.

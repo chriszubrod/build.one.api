@@ -42,12 +42,12 @@ class PurchaseLineExpenseLineItemConnector:
         # Per-sync caches: the same QBO item / customer ref appears on many lines.
         # Caching avoids 2 DB queries per line for each repeated value.
         self._sub_cost_code_cache: dict = {}  # qbo_item_ref_value -> sub_cost_code_id | None
-        self._project_cache: dict = {}        # qbo_customer_ref_value -> project_public_id | None
+        self._project_cache: dict = {}        # (realm_id, qbo_customer_ref_value) -> project_public_id | None
         self.qbo_item_repo = qbo_item_repo or QboItemRepository()
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
 
-    def sync_from_qbo_purchase_line(self, expense_id: int, expense_public_id: str, qbo_line: QboPurchaseLine) -> ExpenseLineItem:
+    def sync_from_qbo_purchase_line(self, expense_id: int, expense_public_id: str, qbo_line: QboPurchaseLine, realm_id: Optional[str] = None) -> ExpenseLineItem:
         """
         Sync data from QboPurchaseLine to ExpenseLineItem module.
 
@@ -68,7 +68,7 @@ class PurchaseLineExpenseLineItemConnector:
         # Resolve project from customer reference
         project_public_id = None
         if qbo_line.customer_ref_value:
-            project_public_id = self._get_project_public_id(qbo_line.customer_ref_value)
+            project_public_id = self._get_project_public_id(qbo_line.customer_ref_value, realm_id)
         
         # Determine billable status
         is_billable = None
@@ -228,12 +228,17 @@ class PurchaseLineExpenseLineItemConnector:
         self._sub_cost_code_cache[qbo_item_ref_value] = item_mapping.sub_cost_code_id
         return item_mapping.sub_cost_code_id
 
-    def _get_project_public_id(self, qbo_customer_ref_value: str) -> Optional[str]:
+    # One of FOUR near-identical QBO customer-ref -> Project resolvers (invoice /
+    # purchase / vendorcredit / bill). All four are realm-scoped as of U-060; they
+    # still diverge on heal (invoice only) and caching (invoice + purchase only).
+    # Lift into one shared resolver when multi-realm lands — see TODO.md.
+    def _get_project_public_id(self, qbo_customer_ref_value: str, realm_id: Optional[str] = None) -> Optional[str]:
         """
         Get the Project public_id from QBO customer reference value.
         
         Args:
             qbo_customer_ref_value: QBO customer reference value (QBO Customer ID)
+            realm_id: Optional QBO realm ID for realm-scoped customer lookup
         
         Returns:
             str: Project public_id or None
@@ -241,31 +246,36 @@ class PurchaseLineExpenseLineItemConnector:
         if not qbo_customer_ref_value:
             return None
 
-        if qbo_customer_ref_value in self._project_cache:
-            return self._project_cache[qbo_customer_ref_value]
+        cache_key = (realm_id, qbo_customer_ref_value)
+
+        if cache_key in self._project_cache:
+            return self._project_cache[cache_key]
 
         # First find the QboCustomer by qbo_id
-        qbo_customer = self.qbo_customer_repo.read_by_qbo_id(qbo_customer_ref_value)
+        if realm_id:
+            qbo_customer = self.qbo_customer_repo.read_by_qbo_id_and_realm_id(qbo_customer_ref_value, realm_id)
+        else:
+            qbo_customer = self.qbo_customer_repo.read_by_qbo_id(qbo_customer_ref_value)
         if not qbo_customer:
             logger.debug(f"QboCustomer not found for qbo_id: {qbo_customer_ref_value}")
-            self._project_cache[qbo_customer_ref_value] = None
+            self._project_cache[cache_key] = None
             return None
 
         # Then find the CustomerProject mapping
         customer_mapping = self.customer_project_repo.read_by_qbo_customer_id(qbo_customer.id)
         if not customer_mapping:
             logger.debug(f"CustomerProject mapping not found for QboCustomer ID: {qbo_customer.id}")
-            self._project_cache[qbo_customer_ref_value] = None
+            self._project_cache[cache_key] = None
             return None
 
         # Get the Project
         project = ProjectService().read_by_id(customer_mapping.project_id)
         if not project:
             logger.debug(f"Project not found for ID: {customer_mapping.project_id}")
-            self._project_cache[qbo_customer_ref_value] = None
+            self._project_cache[cache_key] = None
             return None
 
-        self._project_cache[qbo_customer_ref_value] = project.public_id
+        self._project_cache[cache_key] = project.public_id
         return project.public_id
 
     def create_mapping(self, expense_line_item_id: int, qbo_purchase_line_id: int) -> PurchaseLineExpenseLineItem:

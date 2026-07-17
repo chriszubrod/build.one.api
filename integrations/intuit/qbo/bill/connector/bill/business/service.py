@@ -189,7 +189,7 @@ class BillBillConnector:
             )
 
             # Sync line items for existing bill
-            self._sync_line_items(bill.id, qbo_bill_lines)
+            self._sync_line_items(bill.id, qbo_bill_lines, qbo_bill.realm_id)
 
             return bill
 
@@ -221,7 +221,7 @@ class BillBillConnector:
         # delete the just-created header + qbo.BillBill mapping and re-raise (watermark holds;
         # re-pull is idempotent).
         try:
-            self._sync_line_items(bill_id, qbo_bill_lines)
+            self._sync_line_items(bill_id, qbo_bill_lines, qbo_bill.realm_id)
         except Exception:
             def _delete_bill_mapping():
                 _m = self.mapping_repo.read_by_bill_id(bill_id)
@@ -319,7 +319,7 @@ class BillBillConnector:
         
         return vendor.public_id
 
-    def _sync_line_items(self, bill_id: int, qbo_bill_lines: List[QboBillLine]) -> None:
+    def _sync_line_items(self, bill_id: int, qbo_bill_lines: List[QboBillLine], realm_id: Optional[str] = None) -> None:
         """
         Sync bill line items to BillLineItem module.
         
@@ -343,7 +343,7 @@ class BillBillConnector:
         failed = []
         for qbo_line in qbo_bill_lines:
             try:
-                line_connector.sync_from_qbo_bill_line(bill_id, qbo_line)
+                line_connector.sync_from_qbo_bill_line(bill_id, qbo_line, realm_id)
             except Exception as e:
                 logger.error(f"Failed to sync QboBillLine {qbo_line.id} to BillLineItem: {e}")
                 failed.append((qbo_line.id, str(e)))

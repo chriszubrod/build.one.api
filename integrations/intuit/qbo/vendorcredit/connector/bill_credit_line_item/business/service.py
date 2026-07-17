@@ -30,6 +30,7 @@ class VendorCreditLineItemConnector:
         bill_credit_id: int,
         bill_credit_public_id: str,
         qbo_line: QboVendorCreditLine,
+        realm_id: Optional[str] = None,
     ) -> Optional[BillCreditLineItem]:
         """
         Upsert a QBO VendorCredit line into a BillCreditLineItem.
@@ -45,7 +46,7 @@ class VendorCreditLineItemConnector:
             # Resolve project from CustomerRef (if billable)
             project_public_id = None
             if qbo_line.customer_ref_value:
-                project_public_id = self._get_project_public_id(qbo_line.customer_ref_value)
+                project_public_id = self._get_project_public_id(qbo_line.customer_ref_value, realm_id)
 
             # Resolve sub_cost_code from ItemRef
             sub_cost_code_id = None
@@ -194,7 +195,11 @@ class VendorCreditLineItemConnector:
             return matches[0]
         return None
 
-    def _get_project_public_id(self, qbo_customer_ref_value: str) -> Optional[str]:
+    # One of FOUR near-identical QBO customer-ref -> Project resolvers (invoice /
+    # purchase / vendorcredit / bill). All four are realm-scoped as of U-060; they
+    # still diverge on heal (invoice only) and caching (invoice + purchase only).
+    # Lift into one shared resolver when multi-realm lands — see TODO.md.
+    def _get_project_public_id(self, qbo_customer_ref_value: str, realm_id: Optional[str] = None) -> Optional[str]:
         """Resolve QBO customer ref to local project public_id (QboCustomer by qbo_id -> CustomerProject by qbo_customer_id)."""
         try:
             from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
@@ -202,7 +207,10 @@ class VendorCreditLineItemConnector:
 
             qbo_customer_repo = QboCustomerRepository()
             customer_project_repo = CustomerProjectRepository()
-            qbo_customer = qbo_customer_repo.read_by_qbo_id(qbo_customer_ref_value)
+            if realm_id:
+                qbo_customer = qbo_customer_repo.read_by_qbo_id_and_realm_id(qbo_customer_ref_value, realm_id)
+            else:
+                qbo_customer = qbo_customer_repo.read_by_qbo_id(qbo_customer_ref_value)
             if not qbo_customer:
                 return None
             mapping = customer_project_repo.read_by_qbo_customer_id(qbo_customer.id)

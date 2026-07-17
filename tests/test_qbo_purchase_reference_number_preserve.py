@@ -24,10 +24,11 @@ LINE_CONNECTOR_PATH = (
 )
 
 
-def _make_qbo_purchase(*, qbo_id="77", doc_number="5001"):
+def _make_qbo_purchase(*, qbo_id="77", doc_number="5001", realm_id="realm-1"):
     return SimpleNamespace(
         id=901,
         qbo_id=qbo_id,
+        realm_id=realm_id,
         entity_ref_value="qbo-vendor-1",
         doc_number=doc_number,
         txn_date="2026-07-01",

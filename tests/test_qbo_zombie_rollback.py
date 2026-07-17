@@ -8,10 +8,11 @@ import pytest
 from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 
 
-def _make_qbo_bill(*, bill_id=100, qbo_id="QB-1", total=Decimal("100.00")):
+def _make_qbo_bill(*, bill_id=100, qbo_id="QB-1", total=Decimal("100.00"), realm_id="realm-1"):
     return SimpleNamespace(
         id=bill_id,
         qbo_id=qbo_id,
+        realm_id=realm_id,
         vendor_ref_value="vend-1",
         doc_number="INV-001",
         txn_date="2026-01-15",

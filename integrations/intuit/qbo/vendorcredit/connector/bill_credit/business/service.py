@@ -148,7 +148,7 @@ class VendorCreditBillCreditConnector:
                 )
                 if updated:
                     # Sync line items
-                    self._sync_line_items(updated.id, updated.public_id, qbo_lines)
+                    self._sync_line_items(updated.id, updated.public_id, qbo_lines, qbo_vc.realm_id)
                 return updated
 
             # Step 3: Create new BillCredit
@@ -173,7 +173,7 @@ class VendorCreditBillCreditConnector:
                 # zombie; delete the just-created header + mapping and re-raise (watermark holds;
                 # re-pull is idempotent).
                 try:
-                    self._sync_line_items(bill_credit.id, bill_credit.public_id, qbo_lines)
+                    self._sync_line_items(bill_credit.id, bill_credit.public_id, qbo_lines, qbo_vc.realm_id)
                 except Exception:
                     rollback_orphan_header(
                         delete_header=lambda: self.bill_credit_service.delete_by_public_id(bill_credit.public_id),
@@ -287,6 +287,7 @@ class VendorCreditBillCreditConnector:
         bill_credit_id: int,
         bill_credit_public_id: str,
         qbo_lines: List[QboVendorCreditLine],
+        realm_id: Optional[str] = None,
     ) -> None:
         """
         Sync line items from QBO VendorCredit to BillCreditLineItems by UPSERTING
@@ -314,7 +315,7 @@ class VendorCreditBillCreditConnector:
         failed = []
         for line in qbo_lines:
             try:
-                connector.sync_from_qbo_line(bill_credit_id, bill_credit_public_id, line)
+                connector.sync_from_qbo_line(bill_credit_id, bill_credit_public_id, line, realm_id)
             except Exception as e:
                 logger.error(f"Error syncing line item {line.qbo_line_id}: {e}")
                 failed.append((line.qbo_line_id, str(e)))

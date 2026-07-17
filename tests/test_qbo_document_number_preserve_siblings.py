@@ -38,10 +38,11 @@ from integrations.intuit.qbo.bill.connector.bill.business.service import (
 BILL_SERVICE = "integrations.intuit.qbo.bill.connector.bill.business.service"
 
 
-def _make_qbo_bill(*, qbo_id="88", doc_number="B-5001"):
+def _make_qbo_bill(*, qbo_id="88", doc_number="B-5001", realm_id="realm-1"):
     return SimpleNamespace(
         id=801,
         qbo_id=qbo_id,
+        realm_id=realm_id,
         vendor_ref_value="qbo-vendor-1",
         doc_number=doc_number,
         txn_date="2026-07-01",
@@ -164,10 +165,11 @@ from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service
 VC_SERVICE = "integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service"
 
 
-def _make_qbo_vc(*, qbo_id="99", doc_number="VC-300"):
+def _make_qbo_vc(*, qbo_id="99", doc_number="VC-300", realm_id="realm-1"):
     return SimpleNamespace(
         id=301,
         qbo_id=qbo_id,
+        realm_id=realm_id,
         vendor_ref_value="qbo-vendor-1",
         doc_number=doc_number,
         txn_date="2026-07-01",

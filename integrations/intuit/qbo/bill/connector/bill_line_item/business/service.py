@@ -53,7 +53,7 @@ class BillLineItemConnector:
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.project_service = project_service or ProjectService()
 
-    def sync_from_qbo_bill_line(self, bill_id: int, qbo_bill_line: QboBillLine) -> BillLineItem:
+    def sync_from_qbo_bill_line(self, bill_id: int, qbo_bill_line: QboBillLine, realm_id: Optional[str] = None) -> BillLineItem:
         """
         Sync data from QboBillLine to BillLineItem module.
         
@@ -122,23 +122,7 @@ class BillLineItemConnector:
         # Look up Project from QBO Customer reference (customer_ref can be a job/sub-customer which maps to Project)
         project_public_id = None
         if qbo_bill_line.customer_ref_value:
-            # Find the QboCustomer by its QboId
-            qbo_customer = self.qbo_customer_repo.read_by_qbo_id(qbo_bill_line.customer_ref_value)
-            if qbo_customer:
-                # Look up the Project mapping for this QboCustomer
-                customer_project = self.customer_project_repo.read_by_qbo_customer_id(qbo_customer.id)
-                if customer_project:
-                    # Get the Project to retrieve its public_id
-                    project = self.project_service.read_by_id(customer_project.project_id)
-                    if project:
-                        project_public_id = project.public_id
-                        logger.debug(f"Found Project {project.id} for QboCustomer {qbo_customer.id}")
-                    else:
-                        logger.debug(f"Project {customer_project.project_id} not found in database")
-                else:
-                    logger.debug(f"No Project mapping found for QboCustomer {qbo_customer.id}")
-            else:
-                logger.debug(f"QboCustomer with QboId {qbo_bill_line.customer_ref_value} not found in local database")
+            project_public_id = self._get_project_public_id(qbo_bill_line.customer_ref_value, realm_id)
         
         # Check for existing mapping by current qbo_bill_line.id.
         mapping = self.mapping_repo.read_by_qbo_bill_line_id(qbo_bill_line.id)
@@ -229,6 +213,46 @@ class BillLineItemConnector:
             logger.warning(f"Could not create mapping: {e}")
         
         return line_item
+
+    # One of FOUR near-identical QBO customer-ref -> Project resolvers (invoice /
+    # purchase / vendorcredit / bill). All four are realm-scoped as of U-060; they
+    # still diverge on heal (invoice only) and caching (invoice + purchase only).
+    # Lift into one shared resolver when multi-realm lands — see TODO.md.
+    def _get_project_public_id(self, qbo_customer_ref_value: str, realm_id: Optional[str] = None) -> Optional[str]:
+        """
+        Get the Project public_id from QBO customer reference value.
+
+        Args:
+            qbo_customer_ref_value: QBO customer reference value (QBO Customer ID)
+            realm_id: Optional QBO realm ID for realm-scoped customer lookup
+
+        Returns:
+            str: Project public_id or None
+        """
+        if not qbo_customer_ref_value:
+            return None
+
+        # Find the QboCustomer by its QboId
+        if realm_id:
+            qbo_customer = self.qbo_customer_repo.read_by_qbo_id_and_realm_id(qbo_customer_ref_value, realm_id)
+        else:
+            qbo_customer = self.qbo_customer_repo.read_by_qbo_id(qbo_customer_ref_value)
+        if qbo_customer:
+            # Look up the Project mapping for this QboCustomer
+            customer_project = self.customer_project_repo.read_by_qbo_customer_id(qbo_customer.id)
+            if customer_project:
+                # Get the Project to retrieve its public_id
+                project = self.project_service.read_by_id(customer_project.project_id)
+                if project:
+                    logger.debug(f"Found Project {project.id} for QboCustomer {qbo_customer.id}")
+                    return project.public_id
+                else:
+                    logger.debug(f"Project {customer_project.project_id} not found in database")
+            else:
+                logger.debug(f"No Project mapping found for QboCustomer {qbo_customer.id}")
+        else:
+            logger.debug(f"QboCustomer with QboId {qbo_customer_ref_value} not found in local database")
+        return None
 
     # ------------------------------------------------------------------ #
     # Shape B line-matching helpers (task #17)

@@ -32,7 +32,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 TIME_ENTRY_BASE = REPO_ROOT / "entities" / "time_entry" / "sql" / "dbo.time_entry.sql"
 ROLE_MODULE_BASE = REPO_ROOT / "entities" / "role_module" / "sql" / "dbo.rolemodule.sql"
+BILL_LINE_ITEM_BASE = REPO_ROOT / "entities" / "bill_line_item" / "sql" / "dbo.bill_line_item.sql"
+EXPENSE_LINE_ITEM_BASE = REPO_ROOT / "entities" / "expense_line_item" / "sql" / "dbo.expense_line_item.sql"
 ACCESS_UDF_HOME = REPO_ROOT / "shared" / "sql" / "dbo.access_udfs.sql"
+
+# U-074: CreateBillLineItem + CreateExpenseLineItem reconciled to their entity base
+# (@Quantity DECIMAL(18,4) + @CreatedByUserId threading - the union of the base
+# DECIMAL, step2 DECIMAL+threading, and gap2 INT+threading copies). The two
+# migration copies were neutralized to pointer stubs so each base is the sole home.
+SINGLE_SOURCE_SPROCS = [
+    ("CreateBillLineItem", BILL_LINE_ITEM_BASE),
+    ("CreateExpenseLineItem", EXPENSE_LINE_ITEM_BASE),
+]
 
 # U-061: the four Create sprocs whose bodies had drifted BEHIND their canonical
 # entity base files were neutralized to pointer-stub comments in
@@ -95,6 +106,19 @@ def _sql_index() -> tuple[tuple[Path, frozenset[str], frozenset[str]], ...]:
             (path, _names_from_text(_SPROC_PATTERN, text), _names_from_text(_UDF_PATTERN, text))
         )
     return tuple(index)
+
+
+@pytest.mark.parametrize("sproc_name,home_path", SINGLE_SOURCE_SPROCS)
+def test_sproc_defined_once_in_entity_base(sproc_name, home_path):
+    """U-074: each reconciled line-item Create sproc is defined exactly once, in
+    its entity base file. A body re-added to ANY .sql file fails here."""
+    matches = [path for path, sprocs, _ in _sql_index() if sproc_name in sprocs]
+    assert matches == [home_path], (
+        f"{sproc_name} must be defined exactly once in "
+        f"{home_path.relative_to(REPO_ROOT)}; found in: "
+        + ", ".join(str(p.relative_to(REPO_ROOT)) for p in matches)
+        + f". Change {home_path.relative_to(REPO_ROOT)} instead."
+    )
 
 
 @pytest.mark.parametrize("entity_name,base_path", ENTITY_BASE_FILES)

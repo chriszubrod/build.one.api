@@ -11,7 +11,7 @@ CREATE TABLE [dbo].[BillLineItem]
     [SubCostCodeId] BIGINT NULL,
     [ProjectId] BIGINT NULL,
     [Description] NVARCHAR(MAX) NULL,
-    [Quantity] INT NULL,
+    [Quantity] DECIMAL(18,4) NULL,
     [Rate] DECIMAL(18,4) NULL,
     [Amount] DECIMAL(18,2) NULL,
     [IsBillable] BIT NULL,
@@ -65,7 +65,8 @@ CREATE OR ALTER PROCEDURE CreateBillLineItem
     @IsBilled BIT NULL,
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
-    @IsDraft BIT = 1
+    @IsDraft BIT = 1,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -73,7 +74,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[BillLineItem] ([CreatedDatetime], [ModifiedDatetime], [BillId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [Rate], [Amount], [IsBillable], [IsBilled], [Markup], [Price], [IsDraft])
+    INSERT INTO dbo.[BillLineItem] ([CreatedDatetime], [ModifiedDatetime], [BillId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [Rate], [Amount], [IsBillable], [IsBilled], [Markup], [Price], [IsDraft], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -92,7 +93,7 @@ BEGIN
         INSERTED.[Markup],
         INSERTED.[Price],
         INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @BillId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @Rate, @Amount, @IsBillable, @IsBilled, @Markup, @Price, @IsDraft);
+    VALUES (@Now, @Now, @BillId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @Rate, @Amount, @IsBillable, @IsBilled, @Markup, @Price, @IsDraft, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;

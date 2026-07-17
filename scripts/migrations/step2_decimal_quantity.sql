@@ -9,51 +9,16 @@ IF EXISTS (SELECT 1 FROM sys.columns col JOIN sys.types t ON col.user_type_id=t.
 GO
 
 -- ===== 7. CreateBillLineItem =====
-CREATE OR ALTER PROCEDURE CreateBillLineItem
-(
-    @BillId BIGINT,
-    @SubCostCodeId BIGINT NULL,
-    @ProjectId BIGINT NULL,
-    @Description NVARCHAR(MAX) NULL,
-    @Quantity DECIMAL(18,4) NULL,
-    @Rate DECIMAL(18,4) NULL,
-    @Amount DECIMAL(18,2) NULL,
-    @IsBillable BIT NULL,
-    @IsBilled BIT NULL,
-    @Markup DECIMAL(18,4) NULL,
-    @Price DECIMAL(18,2) NULL,
-    @IsDraft BIT = 1,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[BillLineItem] ([CreatedDatetime], [ModifiedDatetime], [BillId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [Rate], [Amount], [IsBillable], [IsBilled], [Markup], [Price], [IsDraft], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[BillId],
-        INSERTED.[SubCostCodeId],
-        INSERTED.[ProjectId],
-        INSERTED.[Description],
-        INSERTED.[Quantity],
-        INSERTED.[Rate],
-        INSERTED.[Amount],
-        INSERTED.[IsBillable],
-        INSERTED.[IsBilled],
-        INSERTED.[Markup],
-        INSERTED.[Price],
-        INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @BillId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @Rate, @Amount, @IsBillable, @IsBilled, @Markup, @Price, @IsDraft, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-074, 2026-07-17) - body relocated to the entity base, not lost.
+--
+-- This copy was already DECIMAL(18,4) + @CreatedByUserId-threaded (the canonical
+-- form). U-074 relocated that exact body to its single home:
+--   entities/bill_line_item/sql/dbo.bill_line_item.sql
+-- The @Quantity column widening (the ALTER TABLE at the top of this file) and
+-- UpdateBillLineItemById are still owned here and are preserved. Re-running this
+-- file is now a no-op for CreateBillLineItem. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
 CREATE OR ALTER PROCEDURE UpdateBillLineItemById
@@ -119,51 +84,16 @@ END;
 GO
 
 -- ===== 9. CreateExpenseLineItem =====
-CREATE OR ALTER PROCEDURE CreateExpenseLineItem
-(
-    @ExpenseId BIGINT,
-    @SubCostCodeId BIGINT NULL,
-    @ProjectId BIGINT NULL,
-    @Description NVARCHAR(MAX) NULL,
-    @Quantity DECIMAL(18,4) NULL,
-    @Rate DECIMAL(18,4) NULL,
-    @Amount DECIMAL(18,2) NULL,
-    @IsBillable BIT NULL,
-    @IsBilled BIT NULL,
-    @Markup DECIMAL(18,4) NULL,
-    @Price DECIMAL(18,2) NULL,
-    @IsDraft BIT = 1,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[ExpenseLineItem] ([CreatedDatetime], [ModifiedDatetime], [ExpenseId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [Rate], [Amount], [IsBillable], [IsBilled], [Markup], [Price], [IsDraft], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[ExpenseId],
-        INSERTED.[SubCostCodeId],
-        INSERTED.[ProjectId],
-        INSERTED.[Description],
-        INSERTED.[Quantity],
-        INSERTED.[Rate],
-        INSERTED.[Amount],
-        INSERTED.[IsBillable],
-        INSERTED.[IsBilled],
-        INSERTED.[Markup],
-        INSERTED.[Price],
-        INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @ExpenseId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @Rate, @Amount, @IsBillable, @IsBilled, @Markup, @Price, @IsDraft, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-074, 2026-07-17) - body relocated to the entity base, not lost.
+--
+-- This copy was already DECIMAL(18,4) + @CreatedByUserId-threaded (the canonical
+-- form). U-074 relocated that exact body to its single home:
+--   entities/expense_line_item/sql/dbo.expense_line_item.sql
+-- The @Quantity column widening (the ALTER TABLE at the top of this file) and
+-- UpdateExpenseLineItemById are still owned here and are preserved. Re-running this
+-- file is now a no-op for CreateExpenseLineItem. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
 CREATE OR ALTER PROCEDURE UpdateExpenseLineItemById

@@ -234,51 +234,16 @@ END;
 GO
 
 -- ===== 7. CreateBillLineItem =====
-CREATE OR ALTER PROCEDURE CreateBillLineItem
-(
-    @BillId BIGINT,
-    @SubCostCodeId BIGINT NULL,
-    @ProjectId BIGINT NULL,
-    @Description NVARCHAR(MAX) NULL,
-    @Quantity INT NULL,
-    @Rate DECIMAL(18,4) NULL,
-    @Amount DECIMAL(18,2) NULL,
-    @IsBillable BIT NULL,
-    @IsBilled BIT NULL,
-    @Markup DECIMAL(18,4) NULL,
-    @Price DECIMAL(18,2) NULL,
-    @IsDraft BIT = 1,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[BillLineItem] ([CreatedDatetime], [ModifiedDatetime], [BillId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [Rate], [Amount], [IsBillable], [IsBilled], [Markup], [Price], [IsDraft], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[BillId],
-        INSERTED.[SubCostCodeId],
-        INSERTED.[ProjectId],
-        INSERTED.[Description],
-        INSERTED.[Quantity],
-        INSERTED.[Rate],
-        INSERTED.[Amount],
-        INSERTED.[IsBillable],
-        INSERTED.[IsBilled],
-        INSERTED.[Markup],
-        INSERTED.[Price],
-        INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @BillId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @Rate, @Amount, @IsBillable, @IsBilled, @Markup, @Price, @IsDraft, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-074, 2026-07-17) - body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/bill_line_item/sql/dbo.bill_line_item.sql
+-- That base carries @CreatedByUserId (this copy threading intent) AND @Quantity
+-- DECIMAL(18,4). This copy had drifted behind on @Quantity INT, which silently
+-- truncated fractional quantities on insert (prod ran this INT body). Re-running
+-- this file is now a no-op for CreateBillLineItem. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 8. CreateBillCreditLineItem =====
@@ -328,51 +293,16 @@ END;
 GO
 
 -- ===== 9. CreateExpenseLineItem =====
-CREATE OR ALTER PROCEDURE CreateExpenseLineItem
-(
-    @ExpenseId BIGINT,
-    @SubCostCodeId BIGINT NULL,
-    @ProjectId BIGINT NULL,
-    @Description NVARCHAR(MAX) NULL,
-    @Quantity INT NULL,
-    @Rate DECIMAL(18,4) NULL,
-    @Amount DECIMAL(18,2) NULL,
-    @IsBillable BIT NULL,
-    @IsBilled BIT NULL,
-    @Markup DECIMAL(18,4) NULL,
-    @Price DECIMAL(18,2) NULL,
-    @IsDraft BIT = 1,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[ExpenseLineItem] ([CreatedDatetime], [ModifiedDatetime], [ExpenseId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [Rate], [Amount], [IsBillable], [IsBilled], [Markup], [Price], [IsDraft], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[ExpenseId],
-        INSERTED.[SubCostCodeId],
-        INSERTED.[ProjectId],
-        INSERTED.[Description],
-        INSERTED.[Quantity],
-        INSERTED.[Rate],
-        INSERTED.[Amount],
-        INSERTED.[IsBillable],
-        INSERTED.[IsBilled],
-        INSERTED.[Markup],
-        INSERTED.[Price],
-        INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @ExpenseId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @Rate, @Amount, @IsBillable, @IsBilled, @Markup, @Price, @IsDraft, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-074, 2026-07-17) - body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/expense_line_item/sql/dbo.expense_line_item.sql
+-- That base carries @CreatedByUserId (this copy threading intent) AND @Quantity
+-- DECIMAL(18,4). This copy had drifted behind on @Quantity INT, which silently
+-- truncated fractional quantities on insert (prod ran this INT body). Re-running
+-- this file is now a no-op for CreateExpenseLineItem. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 10. CreateInvoiceLineItem =====

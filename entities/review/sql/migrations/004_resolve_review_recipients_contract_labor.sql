@@ -1,11 +1,5 @@
 -- =============================================================================
--- !!! SUPERSEDED BY MIGRATION 008 (2026-06-09) !!!
--- Re-applying this file in isolation will WIPE the human-only filter
--- (no LLM agents / no persona test accounts) that 008 adds to the
--- recipient walk. If you need to touch the sproc, edit 008 instead, or
--- chase this file with a re-run of 008.
---
--- 2026-05-28 — Recipient resolver for ContractLabor reviews.
+-- 2026-05-28 — Recipient resolver for ContractLabor reviews. (historical migration; body superseded — see U-062 banner below)
 --
 -- Walks: ContractLabor → ContractLaborLineItem (distinct ProjectId)
 --                     → UserProject (filtered to 'Project Manager' / 'Owner')
@@ -15,82 +9,18 @@
 -- lines have NULL ProjectId; they're excluded). Dedupe by UserId with PM
 -- precedence when a user holds both roles across the labor's projects.
 --
--- Idempotent (CREATE OR ALTER). Same envelope as ResolveReviewRecipientsByBillId
--- so callers can share post-processing code.
+-- Same envelope as ResolveReviewRecipientsByBillId so callers can share
+-- post-processing code.
 -- =============================================================================
 
-CREATE OR ALTER PROCEDURE dbo.ResolveReviewRecipientsByContractLaborId
-(
-    @ContractLaborId BIGINT,
-    @ExcludeUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    WITH ContractLaborProjects AS (
-        SELECT DISTINCT cli.[ProjectId]
-        FROM dbo.[ContractLaborLineItem] cli
-        WHERE cli.[ContractLaborId] = @ContractLaborId
-          AND cli.[ProjectId] IS NOT NULL
-    ),
-    UserProjectRoles AS (
-        SELECT
-            up.[UserId],
-            up.[ProjectId],
-            r.[Name] AS [RoleName],
-            CASE r.[Name]
-                WHEN 'Project Manager' THEN 1
-                WHEN 'Owner'           THEN 2
-                ELSE 99
-            END AS [RolePrecedence]
-        FROM dbo.[UserProject] up
-        INNER JOIN ContractLaborProjects clp ON clp.[ProjectId] = up.[ProjectId]
-        INNER JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
-        WHERE r.[Name] IN ('Project Manager', 'Owner')
-          AND (@ExcludeUserId IS NULL OR up.[UserId] <> @ExcludeUserId)
-    ),
-    DedupedRoles AS (
-        SELECT
-            [UserId],
-            [RoleName],
-            [ProjectId],
-            ROW_NUMBER() OVER (
-                PARTITION BY [UserId]
-                ORDER BY [RolePrecedence] ASC, [ProjectId] ASC
-            ) AS rn
-        FROM UserProjectRoles
-    ),
-    UserEmails AS (
-        SELECT
-            c.[UserId],
-            c.[Email],
-            ROW_NUMBER() OVER (
-                PARTITION BY c.[UserId]
-                ORDER BY c.[Id] ASC
-            ) AS rn
-        FROM dbo.[Contact] c
-        WHERE c.[UserId] IS NOT NULL
-          AND c.[Email] IS NOT NULL
-    )
-    SELECT
-        u.[Id]        AS [UserId],
-        u.[Firstname],
-        u.[Lastname],
-        ue.[Email],
-        dr.[RoleName],
-        dr.[ProjectId]
-    FROM DedupedRoles dr
-    INNER JOIN dbo.[User] u ON u.[Id] = dr.[UserId]
-    LEFT JOIN UserEmails ue
-        ON ue.[UserId] = dr.[UserId]
-       AND ue.rn = 1
-    WHERE dr.rn = 1
-    ORDER BY dr.[RoleName], u.[Lastname], u.[Firstname];
-
-    COMMIT TRANSACTION;
-END;
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-062) — sproc body removed, NOT the intent.
+-- Canonical definition now lives in exactly ONE place:
+--   entities/review/sql/dbo.review.sql
+-- Sproc formerly redefined here: dbo.ResolveReviewRecipientsByContractLaborId
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is the single-source hazard.
+-- ---------------------------------------------------------------------------
 
 
-PRINT 'ResolveReviewRecipientsByContractLaborId created.';
+PRINT 'SUPERSEDED (U-062): no sprocs applied; canonical definitions live in entities/review/sql/dbo.review.sql.';

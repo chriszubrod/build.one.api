@@ -56,273 +56,40 @@
 -- -----------------------------------------------------------------------------
 -- 1. Bill resolver — filter personas in UserProjectRoles
 -- -----------------------------------------------------------------------------
-CREATE OR ALTER PROCEDURE dbo.ResolveReviewRecipientsByBillId
-(
-    @BillId BIGINT,
-    @ExcludeUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    WITH BillProjects AS (
-        SELECT DISTINCT bli.[ProjectId]
-        FROM dbo.[BillLineItem] bli
-        WHERE bli.[BillId] = @BillId
-          AND bli.[ProjectId] IS NOT NULL
-    ),
-    UserProjectRoles AS (
-        SELECT
-            up.[UserId],
-            up.[ProjectId],
-            r.[Name] AS [RoleName],
-            CASE r.[Name]
-                WHEN 'Project Manager' THEN 1
-                WHEN 'Owner'           THEN 2
-                ELSE 99
-            END AS [RolePrecedence]
-        FROM dbo.[UserProject] up
-        INNER JOIN BillProjects bp ON bp.[ProjectId] = up.[ProjectId]
-        INNER JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
-        WHERE r.[Name] IN ('Project Manager', 'Owner')
-          AND (@ExcludeUserId IS NULL OR up.[UserId] <> @ExcludeUserId)
-          -- Restrict recipients to real human users: exclude LLM agent
-          -- accounts (User.IsAgent = 1) and persona test accounts
-          -- (Auth.Username starting with 'persona_', whitespace-tolerant).
-          AND NOT EXISTS (
-              SELECT 1 FROM dbo.[User] u
-              WHERE u.[Id] = up.[UserId]
-                AND u.[IsAgent] = 1
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM dbo.[Auth] a
-              WHERE a.[UserId] = up.[UserId]
-                AND LEFT(LTRIM(a.[Username]), 8) = N'persona_'
-          )
-    ),
-    DedupedRoles AS (
-        SELECT
-            [UserId],
-            [RoleName],
-            [ProjectId],
-            ROW_NUMBER() OVER (
-                PARTITION BY [UserId]
-                ORDER BY [RolePrecedence] ASC, [ProjectId] ASC
-            ) AS rn
-        FROM UserProjectRoles
-    ),
-    UserEmails AS (
-        SELECT
-            c.[UserId],
-            c.[Email],
-            ROW_NUMBER() OVER (
-                PARTITION BY c.[UserId]
-                ORDER BY c.[Id] ASC
-            ) AS rn
-        FROM dbo.[Contact] c
-        WHERE c.[UserId] IS NOT NULL
-          AND c.[Email] IS NOT NULL
-    )
-    SELECT
-        u.[Id]        AS [UserId],
-        u.[Firstname],
-        u.[Lastname],
-        ue.[Email],
-        dr.[RoleName],
-        dr.[ProjectId]
-    FROM DedupedRoles dr
-    INNER JOIN dbo.[User] u ON u.[Id] = dr.[UserId]
-    LEFT JOIN UserEmails ue
-        ON ue.[UserId] = dr.[UserId]
-       AND ue.rn = 1
-    WHERE dr.rn = 1
-    ORDER BY dr.[RoleName], u.[Lastname], u.[Firstname];
-
-    COMMIT TRANSACTION;
-END;
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-062) — sproc body removed, NOT the intent.
+-- Canonical definition now lives in exactly ONE place:
+--   entities/review/sql/dbo.review.sql
+-- Sproc formerly redefined here: dbo.ResolveReviewRecipientsByBillId
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is the single-source hazard.
+-- ---------------------------------------------------------------------------
 
 
 -- -----------------------------------------------------------------------------
 -- 2. ContractLabor resolver — filter personas in UserProjectRoles
 -- -----------------------------------------------------------------------------
-CREATE OR ALTER PROCEDURE dbo.ResolveReviewRecipientsByContractLaborId
-(
-    @ContractLaborId BIGINT,
-    @ExcludeUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    WITH ContractLaborProjects AS (
-        SELECT DISTINCT cli.[ProjectId]
-        FROM dbo.[ContractLaborLineItem] cli
-        WHERE cli.[ContractLaborId] = @ContractLaborId
-          AND cli.[ProjectId] IS NOT NULL
-    ),
-    UserProjectRoles AS (
-        SELECT
-            up.[UserId],
-            up.[ProjectId],
-            r.[Name] AS [RoleName],
-            CASE r.[Name]
-                WHEN 'Project Manager' THEN 1
-                WHEN 'Owner'           THEN 2
-                ELSE 99
-            END AS [RolePrecedence]
-        FROM dbo.[UserProject] up
-        INNER JOIN ContractLaborProjects clp ON clp.[ProjectId] = up.[ProjectId]
-        INNER JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
-        WHERE r.[Name] IN ('Project Manager', 'Owner')
-          AND (@ExcludeUserId IS NULL OR up.[UserId] <> @ExcludeUserId)
-          -- Restrict recipients to real human users: exclude LLM agent
-          -- accounts (User.IsAgent = 1) and persona test accounts
-          -- (Auth.Username starting with 'persona_', whitespace-tolerant).
-          AND NOT EXISTS (
-              SELECT 1 FROM dbo.[User] u
-              WHERE u.[Id] = up.[UserId]
-                AND u.[IsAgent] = 1
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM dbo.[Auth] a
-              WHERE a.[UserId] = up.[UserId]
-                AND LEFT(LTRIM(a.[Username]), 8) = N'persona_'
-          )
-    ),
-    DedupedRoles AS (
-        SELECT
-            [UserId],
-            [RoleName],
-            [ProjectId],
-            ROW_NUMBER() OVER (
-                PARTITION BY [UserId]
-                ORDER BY [RolePrecedence] ASC, [ProjectId] ASC
-            ) AS rn
-        FROM UserProjectRoles
-    ),
-    UserEmails AS (
-        SELECT
-            c.[UserId],
-            c.[Email],
-            ROW_NUMBER() OVER (
-                PARTITION BY c.[UserId]
-                ORDER BY c.[Id] ASC
-            ) AS rn
-        FROM dbo.[Contact] c
-        WHERE c.[UserId] IS NOT NULL
-          AND c.[Email] IS NOT NULL
-    )
-    SELECT
-        u.[Id]        AS [UserId],
-        u.[Firstname],
-        u.[Lastname],
-        ue.[Email],
-        dr.[RoleName],
-        dr.[ProjectId]
-    FROM DedupedRoles dr
-    INNER JOIN dbo.[User] u ON u.[Id] = dr.[UserId]
-    LEFT JOIN UserEmails ue
-        ON ue.[UserId] = dr.[UserId]
-       AND ue.rn = 1
-    WHERE dr.rn = 1
-    ORDER BY dr.[RoleName], u.[Lastname], u.[Firstname];
-
-    COMMIT TRANSACTION;
-END;
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-062) — sproc body removed, NOT the intent.
+-- Canonical definition now lives in exactly ONE place:
+--   entities/review/sql/dbo.review.sql
+-- Sproc formerly redefined here: dbo.ResolveReviewRecipientsByContractLaborId
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is the single-source hazard.
+-- ---------------------------------------------------------------------------
 
 
 -- -----------------------------------------------------------------------------
 -- 3. Per-project ContractLabor resolver (v2 envelope, includes Owners)
 -- -----------------------------------------------------------------------------
-CREATE OR ALTER PROCEDURE dbo.ResolveContractLaborReviewRecipientsPerProject
-(
-    @ContractLaborId BIGINT
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    WITH ContractLaborProjects AS (
-        SELECT DISTINCT cli.[ProjectId]
-        FROM dbo.[ContractLaborLineItem] cli
-        WHERE cli.[ContractLaborId] = @ContractLaborId
-          AND cli.[ProjectId] IS NOT NULL
-    ),
-    UserProjectRoles AS (
-        SELECT
-            up.[ProjectId],
-            up.[UserId],
-            r.[Name] AS [RoleName],
-            CASE r.[Name]
-                WHEN N'Project Manager' THEN 1
-                WHEN N'Owner'           THEN 2
-                ELSE 99
-            END AS [RolePrecedence]
-        FROM dbo.[UserProject] up
-        INNER JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
-        WHERE r.[Name] IN (N'Project Manager', N'Owner')
-          -- Restrict recipients to real human users: exclude LLM agent
-          -- accounts (User.IsAgent = 1) and persona test accounts
-          -- (Auth.Username starting with 'persona_', whitespace-tolerant).
-          AND NOT EXISTS (
-              SELECT 1 FROM dbo.[User] u
-              WHERE u.[Id] = up.[UserId]
-                AND u.[IsAgent] = 1
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM dbo.[Auth] a
-              WHERE a.[UserId] = up.[UserId]
-                AND LEFT(LTRIM(a.[Username]), 8) = N'persona_'
-          )
-    ),
-    -- PM wins when a user holds both roles on the same project.
-    DedupedUserProjectRoles AS (
-        SELECT
-            [ProjectId],
-            [UserId],
-            [RoleName],
-            ROW_NUMBER() OVER (
-                PARTITION BY [ProjectId], [UserId]
-                ORDER BY [RolePrecedence] ASC
-            ) AS rn
-        FROM UserProjectRoles
-    ),
-    UserEmails AS (
-        SELECT
-            c.[UserId],
-            c.[Email],
-            ROW_NUMBER() OVER (
-                PARTITION BY c.[UserId]
-                ORDER BY c.[Id] ASC
-            ) AS rn
-        FROM dbo.[Contact] c
-        WHERE c.[UserId] IS NOT NULL
-          AND c.[Email] IS NOT NULL
-    )
-    SELECT
-        clp.[ProjectId],
-        p.[Name]         AS [ProjectName],
-        p.[Abbreviation] AS [ProjectAbbreviation],
-        dpr.[UserId],
-        u.[Firstname],
-        u.[Lastname],
-        ue.[Email],
-        dpr.[RoleName]
-    FROM ContractLaborProjects clp
-    INNER JOIN dbo.[Project] p ON p.[Id] = clp.[ProjectId]
-    LEFT JOIN DedupedUserProjectRoles dpr
-        ON dpr.[ProjectId] = clp.[ProjectId]
-       AND dpr.rn = 1
-    LEFT JOIN dbo.[User] u      ON u.[Id] = dpr.[UserId]
-    LEFT JOIN UserEmails ue     ON ue.[UserId] = dpr.[UserId] AND ue.rn = 1
-    ORDER BY clp.[ProjectId], dpr.[RoleName], u.[Lastname], u.[Firstname];
-END;
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-062) — sproc body removed, NOT the intent.
+-- Canonical definition now lives in exactly ONE place:
+--   entities/review/sql/dbo.review.sql
+-- Sproc formerly redefined here: dbo.ResolveContractLaborReviewRecipientsPerProject
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is the single-source hazard.
+-- ---------------------------------------------------------------------------
 
 
-PRINT 'ResolveReviewRecipientsByBillId — human-only filter applied (supersedes 001).';
-PRINT 'ResolveReviewRecipientsByContractLaborId — human-only filter applied (supersedes 004).';
-PRINT 'ResolveContractLaborReviewRecipientsPerProject — human-only filter applied (supersedes 007).';
-PRINT 'Migration 008 applied — review recipient resolvers exclude LLM agents and persona test accounts.';
+PRINT 'SUPERSEDED (U-062): no sprocs applied; canonical definitions live in entities/review/sql/dbo.review.sql.';

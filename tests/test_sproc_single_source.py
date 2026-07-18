@@ -1,13 +1,15 @@
-"""U-045/U-048/U-051 guard: canonical SQL homes for sprocs and access UDFs.
+"""U-045/U-048/U-051/U-062 guard: canonical SQL homes for sprocs and access UDFs.
 
 Two guards, different shapes:
 
 * **Sprocs** — an entity's base SQL file is the one home for its sprocs. Covers
-  time_entry (U-045) and role_module (U-048) — 2 of 37 entities. The other 35
-  still carry duplicated base sprocs in migrations (bill=10, contract_labor=10,
-  user_role=9, …); converting them is future work. **When you convert one, add
-  its row to ENTITY_BASE_FILES** — coverage is opt-in, so a conversion without a
-  row leaves a gap that looks covered.
+  time_entry (U-045), role_module (U-048), and the three review recipient
+  resolvers (U-062) — 2 of 37 entities fully converted plus a narrow review
+  resolver set. The other 35 still carry duplicated base sprocs in migrations
+  (bill=10, contract_labor=10, user_role=9, …); converting them is future
+  work. **When you convert one, add its row to ENTITY_BASE_FILES or
+  SINGLE_SOURCE_SPROCS** — coverage is opt-in, so a conversion without a row
+  leaves a gap that looks covered.
 
 * **Access UDFs** (U-051) — the whole `dbo.UserCanAccess*` family lives in
   `shared/sql/dbo.access_udfs.sql`, NOT in any entity base file. Each one is
@@ -37,14 +39,22 @@ EXPENSE_LINE_ITEM_BASE = REPO_ROOT / "entities" / "expense_line_item" / "sql" / 
 ACCESS_UDF_HOME = REPO_ROOT / "shared" / "sql" / "dbo.access_udfs.sql"
 
 COMPLETION_JOB_BASE = REPO_ROOT / "entities" / "completion_job" / "sql" / "dbo.completion_job.sql"
+REVIEW_BASE = REPO_ROOT / "entities" / "review" / "sql" / "dbo.review.sql"
 
 # U-074: CreateBillLineItem + CreateExpenseLineItem reconciled to their entity base
 # (@Quantity DECIMAL(18,4) + @CreatedByUserId threading - the union of the base
 # DECIMAL, step2 DECIMAL+threading, and gap2 INT+threading copies). The two
 # migration copies were neutralized to pointer stubs so each base is the sole home.
+# U-062: the three review-notification recipient resolvers homed in the review base
+# file (dbo.review.sql), their bodies neutralized to pointer stubs in migrations
+# 001/004/006/007/008 — the human-only filter is additionally guarded by
+# test_review_resolvers_keep_persona_agent_filter below.
 SINGLE_SOURCE_SPROCS = [
     ("CreateBillLineItem", BILL_LINE_ITEM_BASE),
     ("CreateExpenseLineItem", EXPENSE_LINE_ITEM_BASE),
+    ("ResolveReviewRecipientsByBillId", REVIEW_BASE),
+    ("ResolveReviewRecipientsByContractLaborId", REVIEW_BASE),
+    ("ResolveContractLaborReviewRecipientsPerProject", REVIEW_BASE),
 ]
 
 # U-061: the four Create sprocs whose bodies had drifted BEHIND their canonical
@@ -87,10 +97,64 @@ _UDF_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_REVIEW_RESOLVER_NAMES = (
+    "ResolveReviewRecipientsByBillId",
+    "ResolveReviewRecipientsByContractLaborId",
+    "ResolveContractLaborReviewRecipientsPerProject",
+)
+
+# Reuses _OBJECT_NAME (so the bracketed [dbo].[Name] house style is handled, per
+# the module docstring) and anchors the body to the GO batch boundary — sturdier
+# than stopping at the first `END;`, which a future nested BEGIN…END; or
+# CASE…END; could truncate.
+_SPROC_BODY_PATTERN = re.compile(
+    rf"CREATE\s+OR\s+ALTER\s+PROCEDURE\s+(?:{_SCHEMA})?{_OBJECT_NAME}.*?(?=\nGO)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Both patterns bind the FULL correlated NOT EXISTS — the subquery table, the
+# `= up.[UserId]` correlation, AND the exclusion predicate — so a stray,
+# uncorrelated, or partial copy of the expression cannot satisfy the guard.
+# (Line comments are stripped before matching, so a commented-out filter block
+# cannot false-pass either.)
+_AGENT_FILTER_PATTERN = re.compile(
+    r"NOT\s+EXISTS\s*\(\s*"
+    r"SELECT\s+1\s+FROM\s+dbo\.\[User\]\s+u\s+"
+    r"WHERE\s+u\.\[Id\]\s*=\s*up\.\[UserId\]\s+"
+    r"AND\s+u\.\[IsAgent\]\s*=\s*1",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_PERSONA_FILTER_PATTERN = re.compile(
+    r"NOT\s+EXISTS\s*\(\s*"
+    r"SELECT\s+1\s+FROM\s+dbo\.\[Auth\]\s+a\s+"
+    r"WHERE\s+a\.\[UserId\]\s*=\s*up\.\[UserId\]\s+"
+    r"AND\s+LEFT\s*\(\s*LTRIM\s*\(\s*a\.\[Username\]\s*\)\s*,\s*8\s*\)\s*=\s*N?'persona_'",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_LINE_COMMENT = re.compile(r"--[^\n]*")
+
 
 def _names_from_text(pattern: re.Pattern, text: str) -> frozenset[str]:
     """Object names `pattern` declares in `text`, unwrapping the bracketed/bare capture pair."""
     return frozenset(bracketed or bare for bracketed, bare in pattern.findall(text))
+
+
+def _extract_sproc_body(text: str, sproc_name: str) -> str:
+    """Return the CREATE OR ALTER … END; block for one named sproc."""
+    for match in _SPROC_BODY_PATTERN.finditer(text):
+        name = match.group(1) or match.group(2)  # bracketed | bare
+        if name and name.casefold() == sproc_name.casefold():
+            return match.group(0)
+    raise AssertionError(
+        f"expected dbo.{sproc_name} in {REVIEW_BASE.relative_to(REPO_ROOT)}"
+    )
+
+
+@lru_cache(maxsize=1)
+def _review_base_text() -> str:
+    return REVIEW_BASE.read_text(encoding="utf-8")
 
 
 @lru_cache(maxsize=1)
@@ -188,3 +252,23 @@ def test_gap2_neutralized_sprocs_stay_stubbed():
         "because their bodies had drifted behind their entity base files. "
         "Change the entity base file instead; do not re-add a body here."
     )
+
+
+def test_review_resolvers_keep_persona_agent_filter():
+    """U-062: each review recipient resolver in dbo.review.sql must retain the
+    human-only filter (IsAgent + persona_ prefix) copied from migration 008."""
+    text = _review_base_text()
+    for sproc_name in _REVIEW_RESOLVER_NAMES:
+        # Strip line comments so a commented-out filter block can't satisfy the
+        # guard — only executable SQL counts.
+        body = _LINE_COMMENT.sub("", _extract_sproc_body(text, sproc_name))
+        assert _AGENT_FILTER_PATTERN.search(body), (
+            f"dbo.{sproc_name} in entities/review/sql/dbo.review.sql is missing "
+            "the NOT EXISTS dbo.[User] IsAgent = 1 exclusion — restore the "
+            "human-only filter from migration 008."
+        )
+        assert _PERSONA_FILTER_PATTERN.search(body), (
+            f"dbo.{sproc_name} in entities/review/sql/dbo.review.sql is missing "
+            "the LEFT(LTRIM(a.[Username]), 8) = N'persona_' exclusion — restore "
+            "the human-only filter from migration 008."
+        )

@@ -245,6 +245,17 @@ CREATE INDEX IX_TimeEntryStatus_PublicId ON [dbo].[TimeEntryStatus] ([PublicId])
 END
 GO
 
+IF OBJECT_ID('dbo.TimeEntryStatus', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_TimeEntryStatus_TimeEntryId_CreatedDatetime_Id' AND object_id = OBJECT_ID('dbo.TimeEntryStatus'))
+BEGIN
+-- Covering index for the 'latest TimeEntryStatus per TimeEntry' resolution used by
+-- ReadTimeEntriesPaginated / CountTimeEntries (OUTER APPLY TOP 1) and the batch
+-- ReadCurrentTimeEntryStatusesByTimeEntryIds (ROW_NUMBER). Key order (TimeEntryId,
+-- CreatedDatetime, Id) serves ORDER BY CreatedDatetime DESC, Id DESC via a backward
+-- ordered scan (no Sort); INCLUDE (Status) makes the two APPLY sites lookup-free.
+CREATE INDEX IX_TimeEntryStatus_TimeEntryId_CreatedDatetime_Id ON [dbo].[TimeEntryStatus] ([TimeEntryId], [CreatedDatetime], [Id]) INCLUDE ([Status]);
+END
+GO
+
 -- ============================================
 -- TimeEntry Stored Procedures
 -- ============================================

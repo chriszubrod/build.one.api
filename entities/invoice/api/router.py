@@ -1165,7 +1165,20 @@ def complete_invoice_router(public_id: str, current_user: dict = Depends(require
     invoice = service.read_by_public_id(public_id=public_id)
     if not invoice:
         raise_not_found("Invoice")
-    result = service.complete_invoice(public_id=public_id)
+
+    from entities.completion_job.business.service import CompletionJobService
+
+    job_service = CompletionJobService()
+    job = job_service.enqueue("Invoice", public_id)
+    try:
+        result = service.complete_invoice(public_id=public_id)
+        if job.public_id:
+            job_service.mark_success(job.public_id)
+    except Exception as e:
+        if job.public_id:
+            job_service.mark_failure(job.public_id, str(e))
+        raise
+
     return item_response(result)
 
 

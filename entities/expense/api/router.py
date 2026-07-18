@@ -220,12 +220,21 @@ def delete_expense_by_public_id_router(public_id: str, current_user: dict = Depe
     return item_response(result.get("data"))
 
 
-def _run_complete_expense(public_id: str) -> None:
-    """Background task: run expense completion (finalize, SharePoint)."""
+def _run_complete_expense(public_id: str, job_public_id: str | None = None, force: bool = False) -> None:
+    """Background task: run expense completion (finalize, SharePoint).
+
+    `force` is reclaim-only: the watchdog re-drives an already-finalized (non-draft)
+    expense, so it must bypass the "already completed" skip. The happy path never sets it.
+    """
+    from entities.completion_job.business.service import CompletionJobService
+
+    job_service = CompletionJobService()
     try:
         expense = ExpenseService().read_by_public_id(public_id=public_id)
-        if not expense or not getattr(expense, "is_draft", True):
+        if not expense or (not force and not getattr(expense, "is_draft", True)):
             logger.info("Complete expense skipped (already completed or missing): public_id=%s", public_id)
+            if job_public_id:
+                job_service.mark_success(job_public_id)
             return
         result = ExpenseService().complete_expense(public_id=public_id)
         logger.info(
@@ -239,6 +248,10 @@ def _run_complete_expense(public_id: str) -> None:
         }
         if result.get("status_code") >= 400:
             logger.warning("Complete expense failed in background: %s", result.get("message"))
+        if job_public_id:
+            # Returned dict (any status_code incl. 207/4xx/5xx) = finalize+enqueue ran;
+            # outbox retries external writes. Only raised exceptions mark job failure.
+            job_service.mark_success(job_public_id)
     except Exception as e:
         logger.exception("Complete expense background task failed: public_id=%s", public_id)
         failure_result = {
@@ -252,6 +265,8 @@ def _run_complete_expense(public_id: str) -> None:
         }
         expires_at = time.time() + _EXPENSE_COMPLETION_CACHE_TTL_SEC
         _EXPENSE_COMPLETION_RESULT_CACHE[public_id] = {"result": failure_result, "expires_at": expires_at}
+        if job_public_id:
+            job_service.mark_failure(job_public_id, str(e))
 
 
 @router.post("/complete/expense/{public_id}")
@@ -270,7 +285,13 @@ def complete_expense_router(
         raise_not_found("Expense")
     if not getattr(expense, "is_draft", True):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Expense is already completed")
-    background_tasks.add_task(_run_complete_expense, public_id)
+
+    from entities.completion_job.business.service import CompletionJobService
+
+    job = CompletionJobService().enqueue("Expense", public_id)
+    if job.was_created:
+        background_tasks.add_task(_run_complete_expense, public_id, job.public_id)
+    # Coalesced job: completion already in flight; crash recovery is via reclaim watchdog.
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
         content=accepted_response(public_id, "expense_public_id"),

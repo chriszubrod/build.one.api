@@ -184,6 +184,29 @@ async def drain_ms_outbox_router():
     return await _timed("outbox.drain.ms", _run)
 
 
+@router.post("/completion/reclaim", dependencies=[Depends(_require_drain_secret)])
+async def reclaim_stuck_completions_router():
+    """
+    Reclaim stuck CompletionJob rows whose ClaimedAt is older than the reclaim
+    threshold. Called on a 2-minute cadence by the scheduler Function App.
+    Each iteration atomically claims one stuck job and re-drives completion.
+    """
+    def _run() -> dict[str, Any]:
+        from entities.completion_job.business.service import CompletionJobService
+
+        service = CompletionJobService()
+        count = 0
+        while count < 25:
+            job = service.claim_next_stuck()
+            if not job:
+                break
+            service.run_job(job)
+            count += 1
+        return {"reclaimed": count}
+
+    return await _timed("completion.reclaim", _run)
+
+
 # --- Box outbox drain ------------------------------------------------------- #
 
 

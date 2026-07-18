@@ -409,12 +409,21 @@ async def delete_bill_by_public_id_router(public_id: str, current_user: dict = D
     return item_response(result.get("data"))
 
 
-def _run_complete_bill(public_id: str) -> None:
-    """Background task: run full bill completion (Build One, SharePoint, Excel, QBO)."""
+def _run_complete_bill(public_id: str, job_public_id: str | None = None, force: bool = False) -> None:
+    """Background task: run full bill completion (Build One, SharePoint, Excel, QBO).
+
+    `force` is reclaim-only: the watchdog re-drives an already-finalized (non-draft)
+    bill, so it must bypass the "already completed" skip. The happy path never sets it.
+    """
+    from entities.completion_job.business.service import CompletionJobService
+
+    job_service = CompletionJobService()
     try:
         bill = BillService().read_by_public_id(public_id=public_id)
-        if not bill or not getattr(bill, "is_draft", True):
+        if not bill or (not force and not getattr(bill, "is_draft", True)):
             logger.info("Complete bill skipped (already completed or missing): public_id=%s", public_id)
+            if job_public_id:
+                job_service.mark_success(job_public_id)
             return
         result = BillService().complete_bill(public_id=public_id)
         logger.info(
@@ -425,8 +434,14 @@ def _run_complete_bill(public_id: str) -> None:
         logger.info("Completion result saved for bill %s (status_code=%s)", public_id, result.get("status_code"))
         if result.get("status_code") >= 400:
             logger.warning("Complete bill failed in background: %s", result.get("message"))
+        if job_public_id:
+            # Returned dict (any status_code incl. 207/4xx/5xx) = finalize+enqueue ran;
+            # outbox retries external writes. Only raised exceptions mark job failure.
+            job_service.mark_success(job_public_id)
     except Exception as e:
         logger.exception("Complete bill background task failed: public_id=%s", public_id)
+        if job_public_id:
+            job_service.mark_failure(job_public_id, str(e))
 
 
 @router.post("/complete/bill/{public_id}")
@@ -447,7 +462,12 @@ def complete_bill_router(
     if not getattr(bill, "is_draft", True):
         raise HTTPException(status_code=400, detail="Bill is already completed")
 
-    background_tasks.add_task(_run_complete_bill, public_id)
+    from entities.completion_job.business.service import CompletionJobService
+
+    job = CompletionJobService().enqueue("Bill", public_id)
+    if job.was_created:
+        background_tasks.add_task(_run_complete_bill, public_id, job.public_id)
+    # Coalesced job: completion already in flight; crash recovery is via reclaim watchdog.
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
         content=accepted_response(public_id, "bill_public_id"),

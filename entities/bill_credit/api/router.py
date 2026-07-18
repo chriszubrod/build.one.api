@@ -173,13 +173,30 @@ def complete_bill_credit_router(public_id: str, current_user: dict = Depends(req
     """
     Complete a bill credit: finalize and upload attachments to module folders.
     """
+    bill_credit = BillCreditService().read_by_public_id(public_id=public_id)
+    if not bill_credit:
+        raise_not_found("Bill credit")
+    if not getattr(bill_credit, "is_draft", True):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bill credit is already completed")
+
+    from entities.completion_job.business.service import CompletionJobService
+
     service = BillCreditCompleteService()
-    result = service.complete_bill_credit(public_id=public_id)
-    
+    job_service = CompletionJobService()
+    job = job_service.enqueue("BillCredit", public_id)
+    try:
+        result = service.complete_bill_credit(public_id=public_id)
+        if job.public_id:
+            job_service.mark_success(job.public_id)
+    except Exception as e:
+        if job.public_id:
+            job_service.mark_failure(job.public_id, str(e))
+        raise
+
     if result.get("status_code") >= 400:
         raise HTTPException(
             status_code=result.get("status_code", 500),
             detail=result.get("message", "Failed to complete bill credit")
         )
-    
+
     return result

@@ -36,6 +36,8 @@ BILL_LINE_ITEM_BASE = REPO_ROOT / "entities" / "bill_line_item" / "sql" / "dbo.b
 EXPENSE_LINE_ITEM_BASE = REPO_ROOT / "entities" / "expense_line_item" / "sql" / "dbo.expense_line_item.sql"
 ACCESS_UDF_HOME = REPO_ROOT / "shared" / "sql" / "dbo.access_udfs.sql"
 
+COMPLETION_JOB_BASE = REPO_ROOT / "entities" / "completion_job" / "sql" / "dbo.completion_job.sql"
+
 # U-074: CreateBillLineItem + CreateExpenseLineItem reconciled to their entity base
 # (@Quantity DECIMAL(18,4) + @CreatedByUserId threading - the union of the base
 # DECIMAL, step2 DECIMAL+threading, and gap2 INT+threading copies). The two
@@ -60,6 +62,7 @@ GAP2_NEUTRALIZED_SPROCS = frozenset(
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
     ("role_module", ROLE_MODULE_BASE),
+    ("completion_job", COMPLETION_JOB_BASE),
 ]
 
 ACCESS_UDFS = [

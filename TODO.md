@@ -21,6 +21,17 @@ Not live injection (self-scoped / admin-controlled fields), but the same escapin
 
 Not a bug (no token loss — the lock ordering is already correct). `ensure_valid_token(force_refresh=True)` skips the already-refreshed check, so N concurrent 401-recoveries each do a real serialized refresh instead of one. Waste + Intuit/MS rate-limit exposure, not correctness. `integrations/intuit/qbo/auth/business/service.py` + `integrations/ms/auth/business/service.py` (keep symmetric).
 
+## U-080 — Dead completion triggers on create/update paths (2026-07-17, found during U-065) — LATENT, pre-existing
+
+`create` (non-draft) at `entities/bill/api/router.py:104` and `update` (draft→complete) at `:375` both `add_task(_run_complete_bill, ...)` — but the row's `IsDraft` is already `False` by the time the background task reads it, so `_run_complete_bill`'s `is_draft` guard (`:419`) self-skips and the SharePoint/Excel/QBO side-effects **never run**. Only `POST /complete/{id}` keeps the row a draft through `complete_bill()`, so it is the one live completion path. Deliberately split out of U-065 (bracketing them with a CompletionJob = phantom-success rows, or removing the skip = silently activating a dormant side-effect path — a real behavior change out of that unit's scope).
+- [ ] **Confirm no client completes via those paths first** — web "Complete" uses `/complete`; check iOS / agents / scripts never `POST create is_draft=false` or `PUT is_draft=false`. If any do, this is a live data-integrity bug (entity marked complete, zero external sync).
+- [ ] Then **either delete the triggers as vestigial, or activate + CompletionJob-cover them.** **Audit all four** — bill / expense / invoice / bill_credit routers share the shape. (U-065 left one-line `# vestigial, see U-080` markers at the sites.)
+
+## U-081 — MS Excel drain worker re-checks column-Z at drain time (2026-07-17, found during U-065 Gate-2) — closes the reclaim-overlap residual
+
+The one side-effect NOT idempotent under overlapping completion runs. Column-Z (line-item public_id) is checked only at *enqueue*; Excel outbox rows never coalesce and the drain worker doesn't re-check, so two overlapping runs of the same completion — a reclaim overtaking a still-alive >30-min-hung task (U-065's N=1800s residual, practically unreachable but real) — can enqueue duplicate DETAILS rows. SharePoint (coalesce+replace) and QBO (mapping-check) are already overlap-idempotent; Excel is the only gap.
+- [ ] Make the MS Excel drain worker re-check column-Z at drain time → true idempotency under overlap. **Shared sensitive path** — touches every Excel sync (Box + SharePoint workbooks) and the insert row-index is position-dependent, so it needs its own verify + blast-radius pass (which is why it was kept out of U-065).
+
 ## 🟡 U-057 follow-ups — TimeEntry.ProjectId retirement (2026-07-16) — code LANDED, prod DDL DEFERRED by request
 
 **Context.** The project link lives on `dbo.TimeLog.ProjectId` (one per clock-in segment — a worker can move sites inside one `WorkDate`; Weston Parker 2026-05-06 is the worked example: 8.00h at 925 Overton Lea + 0.57h at 424 Westview Avenue). `dbo.TimeEntry.ProjectId` was left behind by the original move: nullable, FK already dropped, **NULL on all 939 rows**, read by nothing. U-057 repointed the 14 `ActiveProjectIds` CTEs to TimeLog, granted the 5 missing GEN rows, and staged a guarded drop in the base file.

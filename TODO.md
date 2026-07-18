@@ -39,6 +39,14 @@ The one side-effect NOT idempotent under overlapping completion runs. Column-Z (
 - [ ] **Measure `/time-entries` END-TO-END from the client** (not the sproc in isolation): container cold-start (Always On healthy? the documented 10–15s cold-start window matches 13.5s almost exactly), per-request RBAC permission resolution + the `UserCanAccessTimeEntry` UDF on a cold cache, response serialization, network/TLS from the iOS app.
 - [ ] Identify the dominant cost, fix it, THEN raise the iOS request timeout (U-064 was mis-scoped to unblock that — it doesn't).
 
+## U-062 follow-ups — review recipient resolvers (2026-07-17)
+
+U-062 (`38b65d5`) single-sourced the 3 review recipient resolvers into `entities/review/sql/dbo.review.sql`; the persona+agent human-only filter was already live in prod (base==live verified, net-zero). Deliverables spun out:
+
+- [ ] **U-086 (Ops/PM) — staff real PMs on the zero-recipient projects.** Once persona is excluded, **EASH(144)** and **OVH(145)** have **zero** real review recipients (bills there route to no one), and persona is the sole PM on **~94 projects**. Assign a real PM/Owner via `UserProject.RoleId` (there's no React UI for `RoleId` yet — do via SQL). Latent while `REVIEW_NOTIFICATION_MODE` is unset (=draft), but reviews reach nobody real. Also decide the broader ~94-project staffing.
+- [ ] **U-087 (Eng) — one shared human-only predicate.** `IsAgent = 1 AND LEFT(LTRIM(Username),8) = 'persona_'` is copy-pasted in all 3 resolvers. Fold into one UDF / inline-TVF each references so the next change (or a new persona prefix / a 3rd exclusion class) is one edit, not three — the 14-`ActiveProjectIds`-CTEs lesson (U-057).
+- [ ] **(minor) test-helper dedup.** The SQL comment-strip / body-extract helpers in `tests/test_sproc_single_source.py` are duplicated inline; promote to a shared test module when a 3rd caller appears. Low priority.
+
 ## 🟡 U-057 follow-ups — TimeEntry.ProjectId retirement (2026-07-16) — code LANDED, prod DDL DEFERRED by request
 
 **Context.** The project link lives on `dbo.TimeLog.ProjectId` (one per clock-in segment — a worker can move sites inside one `WorkDate`; Weston Parker 2026-05-06 is the worked example: 8.00h at 925 Overton Lea + 0.57h at 424 Westview Avenue). `dbo.TimeEntry.ProjectId` was left behind by the original move: nullable, FK already dropped, **NULL on all 939 rows**, read by nothing. U-057 repointed the 14 `ActiveProjectIds` CTEs to TimeLog, granted the 5 missing GEN rows, and staged a guarded drop in the base file.

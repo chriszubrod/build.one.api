@@ -53,6 +53,14 @@ U-080 removed Bill's dead non-draft create/update completion triggers. When iOS 
 - [ ] iOS bill **create/update currently 422** — sends legacy `vendor_id: Int` but the API requires `vendor_public_id: str`; create also omits the now-required `attachment_public_id`.
 - [ ] iOS has **no `/complete/bill/{id}` path** — completion must route through the durable `POST /complete/bill/{public_id}` (the only live completion path after U-080), never via a non-draft create/update.
 
+## ✅ U-073/U-076 AST param-drift audit — DONE via U-092 (2026-07-19)
+
+Swept all 1008 repo `call_procedure` sites (AST) vs live prod `sys.parameters`. **The drift class is bounded** — the 9 U-089 sprocs confirmed clean, only 3 new pre-existing 8145-latent findings, all fixed + column-verified in prod: `ReadTimeEntries` (scoped), `CreateSubCostCode` (threaded + base-threaded so it can't re-revert), `CountBillLineItemAttachmentsByAttachmentId` (created). Recurring guard `tests/test_repo_sproc_param_contract.py` now blocks "repo param with no SQL" at test time.
+
+- [ ] **Periodic prod sweep (the guard can't catch base-vs-PROD drift).** The test guard is code-only (repo vs .sql); a correct base file that prod reverted from is invisible to it. Re-run the live sweep periodically: AST-extract repo params → compare to prod `sys.parameters` (temp firewall rule + creds from App Service, `ODBC Driver 17`). Consider making it a scheduled ops task. The one-off script logic is in the session transcript / reproducible from `test_repo_sproc_param_contract.py`'s AST half + a `sys.parameters` query.
+- [ ] **U-087 forward item** — the human-only filter is still inline (not the new `dbo.IsHumanReviewUser` UDF) in `entities/time_entry/sql/migrations/011_..._time_entry_digest.sql` + `entities/user/sql/migrations/2026_06_10_read_workers.sql`. Adopt the UDF when either is next touched.
+- [ ] **U-087 prod SQL apply owed** — `python scripts/run_sql.py entities/review/sql/dbo.review.sql` (idempotent, net-zero, UDF-before-resolvers; no container). Held with the deploy pause.
+
 ## 🔴→🟡 U-089 — Bill/Expense/ContractLabor list-sproc RBAC-scoping drift (2026-07-19) — PROD FIXED, single-source PARTIAL
 
 **Live P0 (fixed).** A base-file re-apply had reverted 9 list-path sprocs to their unscoped form in prod while the deployed repo passes `@ActorUserId`/`@ActorIsSystemAdmin` → SQL 8145 → `GET /api/v1/get/{bills,expenses,contract-labor}` 500'd. Same class as the U-037 TimeEntry outage. The by-key reads are service-layer scoped (never send sproc actor params), so email intake + expense dedup were unaffected.

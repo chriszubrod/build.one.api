@@ -37,14 +37,13 @@ _folder_summary_lock = threading.Lock()
 @router.post("/create/bill")
 async def create_bill_router(
     body: BillCreate,
-    background_tasks: BackgroundTasks,
     current_user: dict = Depends(require_module_api(Modules.BILLS, "can_create")),
 ):
     """
     Create a new bill.
 
     Routes through the workflow engine for audit logging and state tracking.
-    When is_draft=False, triggers background completion (SharePoint, Excel, QBO).
+    Completion (SharePoint, Excel, QBO) runs only via POST /complete/bill/{public_id}.
     """
     is_draft = body.is_draft if body.is_draft is not None else True
     user_id = resolve_user_id(current_user)
@@ -100,15 +99,12 @@ async def create_bill_router(
 
     data = result.get("data")
 
-    if not is_draft and data and data.get("public_id"):
-        background_tasks.add_task(_run_complete_bill, data["public_id"])
-        import json
-        serializable = json.loads(json.dumps(data, default=str))
-        return JSONResponse(
-            status_code=status.HTTP_202_ACCEPTED,
-            content={"data": serializable, "status": "accepted"},
-        )
-
+    # A non-draft create commits IsDraft=False but does NOT run completion.
+    # External sync (SharePoint/Excel/QBO) happens ONLY via POST
+    # /complete/bill/{public_id} (durable, CompletionJob-covered). 'Not a
+    # draft' is not the same as 'completed'. (U-080 — removed a dead trigger
+    # whose scheduled _run_complete_bill always self-skipped on the already
+    # non-draft row.)
     return item_response(data)
 
 
@@ -328,21 +324,12 @@ def get_bill_by_id_router(id: int, current_user: dict = Depends(require_module_a
 async def update_bill_by_public_id_router(
     public_id: str,
     body: BillUpdate,
-    background_tasks: BackgroundTasks,
     current_user: dict = Depends(require_module_api(Modules.BILLS, "can_update")),
 ):
     """
     Update a bill by public ID.
-    When is_draft transitions from True to False, triggers background completion
-    (SharePoint, Excel, QBO).
+    Completion (SharePoint, Excel, QBO) runs only via POST /complete/bill/{public_id}.
     """
-    # Check if this is a draft-to-complete transition
-    is_completing = body.is_draft is False
-    if is_completing:
-        bill = await asyncio.to_thread(BillService().read_by_public_id, public_id=public_id)
-        if bill and not getattr(bill, "is_draft", True):
-            is_completing = False  # Already completed, don't re-trigger
-
     context = TriggerContext(
         trigger_type=EventType.API_CALL,
         trigger_source=Channel.API,
@@ -370,16 +357,11 @@ async def update_bill_by_public_id_router(
 
     data = result.get("data")
 
-    # If completing, queue background pipeline
-    if is_completing:
-        background_tasks.add_task(_run_complete_bill, public_id)
-        import json
-        serializable = json.loads(json.dumps(data, default=str))
-        return JSONResponse(
-            status_code=status.HTTP_202_ACCEPTED,
-            content={"data": serializable, "status": "accepted"},
-        )
-
+    # Flipping IsDraft True->False here COMMITS the bill but does NOT run
+    # completion. External sync (SharePoint/Excel/QBO) happens ONLY via POST
+    # /complete/bill/{public_id} (durable, CompletionJob-covered). (U-080 —
+    # removed a dead trigger that always self-skipped on the already
+    # non-draft row.)
     return item_response(data)
 
 

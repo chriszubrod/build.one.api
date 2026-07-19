@@ -254,50 +254,29 @@ GO
 GO
 
 CREATE OR ALTER PROCEDURE ReadContractLabors
+( @ActorUserId BIGINT = NULL, @ActorIsSystemAdmin BIT = NULL )
 AS
 BEGIN
     BEGIN TRANSACTION;
-
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [VendorId],
-        [ProjectId],
-        [EmployeeName],
-        [JobName],
-        CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
-        [TimeIn],
-        [TimeOut],
-        [BreakTime],
-        [RegularHours],
-        [OvertimeHours],
-        [TotalHours],
-        [HourlyRate],
-        [Markup],
-        [TotalAmount],
-        [SubCostCodeId],
-        [Description],
-        CONVERT(VARCHAR(10), [BillingPeriodStart], 120) AS [BillingPeriodStart],
-        [Status],
-        [BillLineItemId],
-        [BillVendorId],
-        CONVERT(VARCHAR(10), [BillDate], 120) AS [BillDate],
-        CONVERT(VARCHAR(10), [DueDate], 120) AS [DueDate],
-        [BillNumber],
-        [ImportBatchId],
-        [SourceFile],
-        [SourceRow],
-        [SourceTimeEntryId]
+        [Id],[PublicId],[RowVersion],
+        CONVERT(VARCHAR(19),[CreatedDatetime],120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19),[ModifiedDatetime],120) AS [ModifiedDatetime],
+        [VendorId],[ProjectId],[EmployeeName],[JobName],
+        CONVERT(VARCHAR(10),[WorkDate],120) AS [WorkDate],
+        [TimeIn],[TimeOut],[BreakTime],[RegularHours],[OvertimeHours],[TotalHours],
+        [HourlyRate],[Markup],[TotalAmount],[SubCostCodeId],[Description],
+        CONVERT(VARCHAR(10),[BillingPeriodStart],120) AS [BillingPeriodStart],
+        [Status],[BillLineItemId],[BillVendorId],
+        CONVERT(VARCHAR(10),[BillDate],120) AS [BillDate],
+        CONVERT(VARCHAR(10),[DueDate],120) AS [DueDate],
+        [BillNumber],[ImportBatchId],[SourceFile],[SourceRow],[SourceTimeEntryId]
     FROM dbo.[ContractLabor]
+    WHERE dbo.UserCanAccessProject(@ActorUserId,@ActorIsSystemAdmin,[ProjectId]) = 1
     ORDER BY [WorkDate] DESC, [EmployeeName] ASC, [JobName] ASC;
-
     COMMIT TRANSACTION;
 END;
 GO
-
 
 GO
 
@@ -649,14 +628,15 @@ CREATE OR ALTER PROCEDURE ReadContractLaborsPaginated
     @StartDate DATE = NULL,
     @EndDate DATE = NULL,
     @SortBy NVARCHAR(50) = 'WorkDate',
-    @SortDirection NVARCHAR(4) = 'DESC'
+    @SortDirection NVARCHAR(4) = 'DESC',
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
-    
     DECLARE @Offset INT = (@PageNumber - 1) * @PageSize;
-    
+
     SELECT
         cl.[Id],
         cl.[PublicId],
@@ -693,7 +673,7 @@ BEGIN
     LEFT JOIN dbo.[Vendor] v ON cl.[VendorId] = v.[Id]
     LEFT JOIN dbo.[Project] p ON cl.[ProjectId] = p.[Id]
     WHERE
-        (@SearchTerm IS NULL OR 
+        (@SearchTerm IS NULL OR
          cl.[EmployeeName] LIKE '%' + @SearchTerm + '%' OR
          cl.[JobName] LIKE '%' + @SearchTerm + '%' OR
          cl.[Description] LIKE '%' + @SearchTerm + '%' OR
@@ -705,6 +685,7 @@ BEGIN
         AND (@BillingPeriodStart IS NULL OR cl.[BillingPeriodStart] = @BillingPeriodStart)
         AND (@StartDate IS NULL OR cl.[WorkDate] >= @StartDate)
         AND (@EndDate IS NULL OR cl.[WorkDate] <= @EndDate)
+        AND dbo.UserCanAccessProject(@ActorUserId, @ActorIsSystemAdmin, cl.[ProjectId]) = 1
     ORDER BY
         CASE WHEN @SortDirection = 'ASC' AND @SortBy = 'WorkDate' THEN cl.[WorkDate] END ASC,
         CASE WHEN @SortDirection = 'DESC' AND @SortBy = 'WorkDate' THEN cl.[WorkDate] END DESC,
@@ -718,11 +699,9 @@ BEGIN
         cl.[JobName] ASC
     OFFSET @Offset ROWS
     FETCH NEXT @PageSize ROWS ONLY;
-    
     COMMIT TRANSACTION;
 END;
 GO
-
 
 GO
 
@@ -734,18 +713,19 @@ CREATE OR ALTER PROCEDURE CountContractLabors
     @Status NVARCHAR(20) = NULL,
     @BillingPeriodStart DATE = NULL,
     @StartDate DATE = NULL,
-    @EndDate DATE = NULL
+    @EndDate DATE = NULL,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
-    
     SELECT COUNT(*) AS [TotalCount]
     FROM dbo.[ContractLabor] cl
     LEFT JOIN dbo.[Vendor] v ON cl.[VendorId] = v.[Id]
     LEFT JOIN dbo.[Project] p ON cl.[ProjectId] = p.[Id]
     WHERE
-        (@SearchTerm IS NULL OR 
+        (@SearchTerm IS NULL OR
          cl.[EmployeeName] LIKE '%' + @SearchTerm + '%' OR
          cl.[JobName] LIKE '%' + @SearchTerm + '%' OR
          cl.[Description] LIKE '%' + @SearchTerm + '%' OR
@@ -756,12 +736,11 @@ BEGIN
         AND (@Status IS NULL OR cl.[Status] = @Status)
         AND (@BillingPeriodStart IS NULL OR cl.[BillingPeriodStart] = @BillingPeriodStart)
         AND (@StartDate IS NULL OR cl.[WorkDate] >= @StartDate)
-        AND (@EndDate IS NULL OR cl.[WorkDate] <= @EndDate);
-
+        AND (@EndDate IS NULL OR cl.[WorkDate] <= @EndDate)
+        AND dbo.UserCanAccessProject(@ActorUserId, @ActorIsSystemAdmin, cl.[ProjectId]) = 1;
     COMMIT TRANSACTION;
 END;
 GO
-
 
 GO
 

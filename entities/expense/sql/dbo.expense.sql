@@ -111,26 +111,29 @@ GO
 GO
 
 CREATE OR ALTER PROCEDURE ReadExpenses
+(
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
+)
 AS
 BEGIN
     BEGIN TRANSACTION;
-
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [VendorId],
-        CONVERT(VARCHAR(19), [ExpenseDate], 120) AS [ExpenseDate],
-        [ReferenceNumber],
-        [TotalAmount],
-        [Memo],
-        [IsDraft],
-        [IsCredit]
-    FROM dbo.[Expense]
-    ORDER BY [ExpenseDate] DESC, [ReferenceNumber] ASC;
-
+        e.[Id],
+        e.[PublicId],
+        e.[RowVersion],
+        CONVERT(VARCHAR(19), e.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), e.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        e.[VendorId],
+        CONVERT(VARCHAR(19), e.[ExpenseDate], 120) AS [ExpenseDate],
+        e.[ReferenceNumber],
+        e.[TotalAmount],
+        e.[Memo],
+        e.[IsDraft],
+        e.[IsCredit]
+    FROM dbo.[Expense] e
+    WHERE dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, e.[Id]) = 1
+    ORDER BY e.[ExpenseDate] DESC, e.[ReferenceNumber] ASC;
     COMMIT TRANSACTION;
 END;
 GO
@@ -319,28 +322,23 @@ CREATE OR ALTER PROCEDURE ReadExpensesPaginated
     @IsDraft BIT = NULL,
     @IsCredit BIT = NULL,
     @SortBy NVARCHAR(50) = 'ExpenseDate',
-    @SortDirection NVARCHAR(4) = 'DESC'
+    @SortDirection NVARCHAR(4) = 'DESC',
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
-    
     DECLARE @Offset INT = (@PageNumber - 1) * @PageSize;
-    
-    -- Validate sort column to prevent SQL injection
-    DECLARE @SortColumn NVARCHAR(50);
-    SET @SortColumn = CASE @SortBy
+    DECLARE @SortColumn NVARCHAR(50) = CASE @SortBy
         WHEN 'ReferenceNumber' THEN 'ReferenceNumber'
         WHEN 'ExpenseDate' THEN 'ExpenseDate'
         WHEN 'TotalAmount' THEN 'TotalAmount'
         WHEN 'VendorId' THEN 'VendorId'
         ELSE 'ExpenseDate'
     END;
-    
-    -- Validate sort direction
-    DECLARE @SortDir NVARCHAR(4);
-    SET @SortDir = CASE WHEN UPPER(@SortDirection) = 'ASC' THEN 'ASC' ELSE 'DESC' END;
-    
+    DECLARE @SortDir NVARCHAR(4) = CASE WHEN UPPER(@SortDirection) = 'ASC' THEN 'ASC' ELSE 'DESC' END;
+
     SELECT
         e.[Id],
         e.[PublicId],
@@ -368,7 +366,8 @@ BEGIN
         AND (@EndDate IS NULL OR e.[ExpenseDate] <= @EndDate)
         AND (@IsDraft IS NULL OR e.[IsDraft] = @IsDraft)
         AND (@IsCredit IS NULL OR e.[IsCredit] = @IsCredit)
-    ORDER BY 
+        AND dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, e.[Id]) = 1
+    ORDER BY
         CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'ReferenceNumber' THEN e.[ReferenceNumber] END ASC,
         CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'ReferenceNumber' THEN e.[ReferenceNumber] END DESC,
         CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'ExpenseDate' THEN e.[ExpenseDate] END ASC,
@@ -379,7 +378,6 @@ BEGIN
         CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'VendorId' THEN e.[VendorId] END DESC
     OFFSET @Offset ROWS
     FETCH NEXT @PageSize ROWS ONLY;
-    
     COMMIT TRANSACTION;
 END;
 GO
@@ -393,17 +391,18 @@ CREATE OR ALTER PROCEDURE CountExpenses
     @StartDate DATETIME2(3) = NULL,
     @EndDate DATETIME2(3) = NULL,
     @IsDraft BIT = NULL,
-    @IsCredit BIT = NULL
+    @IsCredit BIT = NULL,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
-    
     SELECT COUNT(*) AS [TotalCount]
     FROM dbo.[Expense] e
     LEFT JOIN dbo.[Vendor] v ON e.[VendorId] = v.[Id]
     WHERE
-        (@SearchTerm IS NULL OR 
+        (@SearchTerm IS NULL OR
          e.[ReferenceNumber] LIKE '%' + @SearchTerm + '%' OR
          e.[Memo] LIKE '%' + @SearchTerm + '%' OR
          v.[Name] LIKE '%' + @SearchTerm + '%' OR
@@ -413,8 +412,8 @@ BEGIN
         AND (@StartDate IS NULL OR e.[ExpenseDate] >= @StartDate)
         AND (@EndDate IS NULL OR e.[ExpenseDate] <= @EndDate)
         AND (@IsDraft IS NULL OR e.[IsDraft] = @IsDraft)
-        AND (@IsCredit IS NULL OR e.[IsCredit] = @IsCredit);
-
+        AND (@IsCredit IS NULL OR e.[IsCredit] = @IsCredit)
+        AND dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, e.[Id]) = 1;
     COMMIT TRANSACTION;
 END;
 GO

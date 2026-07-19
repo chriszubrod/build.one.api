@@ -47,6 +47,15 @@ U-062 (`38b65d5`) single-sourced the 3 review recipient resolvers into `entities
 - [ ] **U-087 (Eng) — one shared human-only predicate.** `IsAgent = 1 AND LEFT(LTRIM(Username),8) = 'persona_'` is copy-pasted in all 3 resolvers. Fold into one UDF / inline-TVF each references so the next change (or a new persona prefix / a 3rd exclusion class) is one edit, not three — the 14-`ActiveProjectIds`-CTEs lesson (U-057).
 - [ ] **(minor) test-helper dedup.** The SQL comment-strip / body-extract helpers in `tests/test_sproc_single_source.py` are duplicated inline; promote to a shared test module when a 3rd caller appears. Low priority.
 
+## 🔴→🟡 U-089 — Bill/Expense/ContractLabor list-sproc RBAC-scoping drift (2026-07-19) — PROD FIXED, single-source PARTIAL
+
+**Live P0 (fixed).** A base-file re-apply had reverted 9 list-path sprocs to their unscoped form in prod while the deployed repo passes `@ActorUserId`/`@ActorIsSystemAdmin` → SQL 8145 → `GET /api/v1/get/{bills,expenses,contract-labor}` 500'd. Same class as the U-037 TimeEntry outage. The by-key reads are service-layer scoped (never send sproc actor params), so email intake + expense dedup were unaffected.
+
+- [x] **Prod restored** — all 9 (`Read*`/`Read*Paginated`/`Count*` × Bill/Expense/CL) re-scoped in prod, **column-verified** (gap1 was stale: caught `SourceEmailMessageId` ×2 + `SourceTimeEntryId` ×1 before they stuck).
+- [x] **Base files reconciled to scoped (`base == prod`, verified pre-write)** — defuses the primary landmine (applying `dbo.{bill,expense,contract_labor}.sql` no longer reverts prod). `gap1_list_sprocs_scoped.sql`'s 9 copies neutralized to SUPERSEDED stubs (BillCredit/Invoice kept). Scoping guard: `tests/test_list_sproc_scoping.py`.
+- [ ] **FULL single-source (remaining).** These 9 sprocs are still ALSO defined in `gap1_bill_family_inline_filter.sql`, `gap1_bill_family_inline_filter_v2.sql`, `gap1_bill_family_remove_legacy_actor_bypass.sql`, `entities/bill/sql/migrations/003_read_bill_source_email_message_id.sql`, `entities/expense/sql/add_is_credit_column.sql`. Neutralize those copies (keep the column-add DDL in 003 / add_is_credit) + add `SINGLE_SOURCE_SPROCS` rows so the base is provably sole-source. Delicate (some files do more than redefine the sproc) — do carefully, ideally reviewed.
+- [ ] **U-073/U-076 now proven live.** Run the AST audit across ALL entities (repo `call_procedure` params vs live `sys.parameters`) — this drift class bit prod; other entities may carry it. Prioritize.
+
 ## 🟡 U-057 follow-ups — TimeEntry.ProjectId retirement (2026-07-16) — code LANDED, prod DDL DEFERRED by request
 
 **Context.** The project link lives on `dbo.TimeLog.ProjectId` (one per clock-in segment — a worker can move sites inside one `WorkDate`; Weston Parker 2026-05-06 is the worked example: 8.00h at 925 Overton Lea + 0.57h at 424 Westview Avenue). `dbo.TimeEntry.ProjectId` was left behind by the original move: nullable, FK already dropped, **NULL on all 939 rows**, read by nothing. U-057 repointed the 14 `ActiveProjectIds` CTEs to TimeLog, granted the 5 missing GEN rows, and staged a guarded drop in the base file.

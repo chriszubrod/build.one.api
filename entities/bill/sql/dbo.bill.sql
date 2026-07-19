@@ -92,39 +92,36 @@ GO
 
 -- Read Bills Stored Procedures
 CREATE OR ALTER PROCEDURE ReadBills
+(
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
+)
 AS
 BEGIN
     BEGIN TRANSACTION;
-
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [VendorId],
-        [PaymentTermId],
-        CONVERT(VARCHAR(19), [BillDate], 120) AS [BillDate],
-        CONVERT(VARCHAR(19), [DueDate], 120) AS [DueDate],
-        [BillNumber],
-        [TotalAmount],
-        [Memo],
-        [IsDraft],
-        [IntakeSource],
-        [IntakeSourceDetail],
-        [SourceEmailMessageId]
-    FROM dbo.[Bill]
-    ORDER BY [BillDate] DESC, [BillNumber] ASC;
-
+        b.[Id],
+        b.[PublicId],
+        b.[RowVersion],
+        CONVERT(VARCHAR(19), b.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), b.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        b.[VendorId],
+        b.[PaymentTermId],
+        CONVERT(VARCHAR(19), b.[BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(19), b.[DueDate], 120) AS [DueDate],
+        b.[BillNumber],
+        b.[TotalAmount],
+        b.[Memo],
+        b.[IsDraft],
+        b.[IntakeSource],
+        b.[IntakeSourceDetail],
+        b.[SourceEmailMessageId]
+    FROM dbo.[Bill] b
+    WHERE dbo.UserCanAccessBill(@ActorUserId, @ActorIsSystemAdmin, b.[Id]) = 1
+    ORDER BY b.[BillDate] DESC, b.[BillNumber] ASC;
     COMMIT TRANSACTION;
 END;
 GO
-
-
-
-
-
-
 
 -- Read Bill By Id Stored Procedures
 CREATE OR ALTER PROCEDURE ReadBillById
@@ -389,17 +386,15 @@ CREATE OR ALTER PROCEDURE ReadBillsPaginated
     @EndDate DATETIME2(3) = NULL,
     @IsDraft BIT = NULL,
     @SortBy NVARCHAR(50) = 'BillDate',
-    @SortDirection NVARCHAR(4) = 'DESC'
+    @SortDirection NVARCHAR(4) = 'DESC',
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
-    
     DECLARE @Offset INT = (@PageNumber - 1) * @PageSize;
-    
-    -- Validate sort column to prevent SQL injection
-    DECLARE @SortColumn NVARCHAR(50);
-    SET @SortColumn = CASE @SortBy
+    DECLARE @SortColumn NVARCHAR(50) = CASE @SortBy
         WHEN 'BillNumber' THEN 'BillNumber'
         WHEN 'BillDate' THEN 'BillDate'
         WHEN 'DueDate' THEN 'DueDate'
@@ -407,11 +402,8 @@ BEGIN
         WHEN 'VendorId' THEN 'VendorId'
         ELSE 'BillDate'
     END;
-    
-    -- Validate sort direction
-    DECLARE @SortDir NVARCHAR(4);
-    SET @SortDir = CASE WHEN UPPER(@SortDirection) = 'ASC' THEN 'ASC' ELSE 'DESC' END;
-    
+    DECLARE @SortDir NVARCHAR(4) = CASE WHEN UPPER(@SortDirection) = 'ASC' THEN 'ASC' ELSE 'DESC' END;
+
     SELECT
         b.[Id],
         b.[PublicId],
@@ -443,7 +435,8 @@ BEGIN
         AND (@StartDate IS NULL OR b.[BillDate] >= @StartDate)
         AND (@EndDate IS NULL OR b.[BillDate] <= @EndDate)
         AND (@IsDraft IS NULL OR b.[IsDraft] = @IsDraft)
-    ORDER BY 
+        AND dbo.UserCanAccessBill(@ActorUserId, @ActorIsSystemAdmin, b.[Id]) = 1
+    ORDER BY
         CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'BillNumber' THEN b.[BillNumber] END ASC,
         CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'BillNumber' THEN b.[BillNumber] END DESC,
         CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'BillDate' THEN b.[BillDate] END ASC,
@@ -456,11 +449,9 @@ BEGIN
         CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'VendorId' THEN b.[VendorId] END DESC
     OFFSET @Offset ROWS
     FETCH NEXT @PageSize ROWS ONLY;
-    
     COMMIT TRANSACTION;
 END;
 GO
-
 
 CREATE OR ALTER PROCEDURE CountBills
 (
@@ -468,17 +459,18 @@ CREATE OR ALTER PROCEDURE CountBills
     @VendorId BIGINT = NULL,
     @StartDate DATETIME2(3) = NULL,
     @EndDate DATETIME2(3) = NULL,
-    @IsDraft BIT = NULL
+    @IsDraft BIT = NULL,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
-    
     SELECT COUNT(*) AS [TotalCount]
     FROM dbo.[Bill] b
     LEFT JOIN dbo.[Vendor] v ON b.[VendorId] = v.[Id]
     WHERE
-        (@SearchTerm IS NULL OR 
+        (@SearchTerm IS NULL OR
          b.[BillNumber] LIKE '%' + @SearchTerm + '%' OR
          b.[Memo] LIKE '%' + @SearchTerm + '%' OR
          v.[Name] LIKE '%' + @SearchTerm + '%' OR
@@ -488,12 +480,11 @@ BEGIN
         AND (@VendorId IS NULL OR b.[VendorId] = @VendorId)
         AND (@StartDate IS NULL OR b.[BillDate] >= @StartDate)
         AND (@EndDate IS NULL OR b.[BillDate] <= @EndDate)
-        AND (@IsDraft IS NULL OR b.[IsDraft] = @IsDraft);
-    
+        AND (@IsDraft IS NULL OR b.[IsDraft] = @IsDraft)
+        AND dbo.UserCanAccessBill(@ActorUserId, @ActorIsSystemAdmin, b.[Id]) = 1;
     COMMIT TRANSACTION;
 END;
 GO
-
 
 -- Get first line item's ProjectId for a batch of bills
 CREATE OR ALTER PROCEDURE ReadBillFirstLineItemProjects

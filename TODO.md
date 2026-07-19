@@ -47,6 +47,12 @@ U-062 (`38b65d5`) single-sourced the 3 review recipient resolvers into `entities
 - [ ] **U-087 (Eng) — one shared human-only predicate.** `IsAgent = 1 AND LEFT(LTRIM(Username),8) = 'persona_'` is copy-pasted in all 3 resolvers. Fold into one UDF / inline-TVF each references so the next change (or a new persona prefix / a 3rd exclusion class) is one edit, not three — the 14-`ActiveProjectIds`-CTEs lesson (U-057).
 - [ ] **(minor) test-helper dedup.** The SQL comment-strip / body-extract helpers in `tests/test_sproc_single_source.py` are duplicated inline; promote to a shared test module when a 3rd caller appears. Low priority.
 
+## iOS bill create/update revival (from U-080, 2026-07-19) — iOS-repo unit when Bills return
+
+U-080 removed Bill's dead non-draft create/update completion triggers. When iOS Bills are revived, two separate breakages must be fixed (iOS repo, not api):
+- [ ] iOS bill **create/update currently 422** — sends legacy `vendor_id: Int` but the API requires `vendor_public_id: str`; create also omits the now-required `attachment_public_id`.
+- [ ] iOS has **no `/complete/bill/{id}` path** — completion must route through the durable `POST /complete/bill/{public_id}` (the only live completion path after U-080), never via a non-draft create/update.
+
 ## 🔴→🟡 U-089 — Bill/Expense/ContractLabor list-sproc RBAC-scoping drift (2026-07-19) — PROD FIXED, single-source PARTIAL
 
 **Live P0 (fixed).** A base-file re-apply had reverted 9 list-path sprocs to their unscoped form in prod while the deployed repo passes `@ActorUserId`/`@ActorIsSystemAdmin` → SQL 8145 → `GET /api/v1/get/{bills,expenses,contract-labor}` 500'd. Same class as the U-037 TimeEntry outage. The by-key reads are service-layer scoped (never send sproc actor params), so email intake + expense dedup were unaffected.

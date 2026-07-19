@@ -18,6 +18,13 @@ from shared.database import (
 logger = logging.getLogger(__name__)
 
 
+def _bit(flag):
+    """SQL Server BIT params take 0/1, not Python bool."""
+    if flag is None:
+        return None
+    return 1 if flag else 0
+
+
 class QboPurchaseRepository:
     """
     Repository for QboPurchase persistence operations.
@@ -659,7 +666,12 @@ class QboPurchaseLineRepository:
             "claimed_at": claimed_at.isoformat() if claimed_at is not None else None,
         }
 
-    def read_expense_coding_queue(self, realm_id: Optional[str] = None) -> List[dict]:
+    def read_expense_coding_queue(
+        self,
+        realm_id: Optional[str] = None,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> List[dict]:
         """Read strict 58999 NEED TO CATEGORIZE purchase lines with coding item state."""
         try:
             with get_connection() as conn:
@@ -668,7 +680,11 @@ class QboPurchaseLineRepository:
                     call_procedure(
                         cursor=cursor,
                         name="ReadExpenseCodingQueue",
-                        params={"RealmId": realm_id},
+                        params={
+                            "RealmId": realm_id,
+                            "ActorUserId": actor_user_id,
+                            "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        },
                     )
                     rows = cursor.fetchall()
                     return [self._expense_coding_queue_row_to_dict(row) for row in rows if row]
@@ -685,6 +701,8 @@ class QboPurchaseLineRepository:
         self,
         realm_id: Optional[str] = None,
         since_days: Optional[int] = None,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
     ) -> dict:
         """Scalar metrics for the expense coding queue and instrumentation rows."""
         try:
@@ -694,7 +712,12 @@ class QboPurchaseLineRepository:
                     call_procedure(
                         cursor=cursor,
                         name="ReadExpenseCodingMetrics",
-                        params={"RealmId": realm_id, "SinceDays": since_days},
+                        params={
+                            "RealmId": realm_id,
+                            "SinceDays": since_days,
+                            "ActorUserId": actor_user_id,
+                            "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        },
                     )
                     row = cursor.fetchone()
                     if not row:

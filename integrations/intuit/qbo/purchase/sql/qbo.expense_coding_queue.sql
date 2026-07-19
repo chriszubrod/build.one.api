@@ -8,7 +8,9 @@ GO
 
 CREATE OR ALTER PROCEDURE ReadExpenseCodingQueue
 (
-    @RealmId NVARCHAR(50) = NULL
+    @RealmId NVARCHAR(50) = NULL,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
@@ -52,6 +54,18 @@ BEGIN
     LEFT JOIN [dbo].[ExpenseCodingItem] eci ON eci.[QboPurchaseLineId] = pl.[Id]
     WHERE pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
       AND (@RealmId IS NULL OR p.[RealmId] = @RealmId)
+      -- U-059: UserProject row-scoping (mirrors the Expense ledger). A coding
+      -- row has no committed Expense; its project is the coding item's resolved
+      -- project (Confirmed, else Suggested). Uncoded rows (no project yet) stay
+      -- visible to every EXPENSES user — the queue's whole purpose is triaging
+      -- them. Admins bypass. Non-admins see a coded row only via UserProject.
+      AND (
+          @ActorIsSystemAdmin = 1
+          OR COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId]) IS NULL
+          OR dbo.UserCanAccessProject(
+                 @ActorUserId, @ActorIsSystemAdmin,
+                 COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId])) = 1
+      )
     ORDER BY TRY_CONVERT(DATE, p.[TxnDate], 23) DESC, p.[DocNumber], pl.[LineNum];
 END;
 GO
@@ -60,7 +74,9 @@ GO
 CREATE OR ALTER PROCEDURE ReadExpenseCodingMetrics
 (
     @RealmId NVARCHAR(50) = NULL,
-    @SinceDays INT = NULL
+    @SinceDays INT = NULL,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
@@ -80,8 +96,16 @@ BEGIN
             SELECT COUNT(*)
             FROM [qbo].[PurchaseLine] pl
             INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
+            LEFT JOIN [dbo].[ExpenseCodingItem] eci ON eci.[QboPurchaseLineId] = pl.[Id]
             WHERE pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
               AND (@RealmId IS NULL OR p.[RealmId] = @RealmId)
+              AND (
+                  @ActorIsSystemAdmin = 1
+                  OR COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId]) IS NULL
+                  OR dbo.UserCanAccessProject(
+                         @ActorUserId, @ActorIsSystemAdmin,
+                         COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId])) = 1
+              )
         ) AS [TotalTargetLines],
         COUNT(CASE WHEN eci.[Status] = N'pending' THEN 1 END) AS [PendingCount],
         COUNT(CASE WHEN eci.[Status] = N'suggested' THEN 1 END) AS [SuggestedCount],
@@ -95,6 +119,13 @@ BEGIN
         COUNT(CASE WHEN eci.[Status] = N'written' AND eci.[WasOverridden] = 1 THEN 1 END) AS [OverriddenCount]
     FROM [dbo].[ExpenseCodingItem] eci
     WHERE (@RealmId IS NULL OR eci.[RealmId] = @RealmId)
-      AND (@SinceCutoff IS NULL OR eci.[CreatedDatetime] >= @SinceCutoff);
+      AND (@SinceCutoff IS NULL OR eci.[CreatedDatetime] >= @SinceCutoff)
+      AND (
+          @ActorIsSystemAdmin = 1
+          OR COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId]) IS NULL
+          OR dbo.UserCanAccessProject(
+                 @ActorUserId, @ActorIsSystemAdmin,
+                 COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId])) = 1
+      );
 END;
 GO

@@ -10,6 +10,7 @@ from integrations.intuit.qbo.purchase.business.model import QboPurchase, QboPurc
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
 from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
 from integrations.intuit.qbo.purchase.external.schemas import QboPurchase as QboPurchaseExternalSchema
+from shared.authz import current_user_id, current_is_system_admin
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
@@ -537,7 +538,13 @@ class QboPurchaseService:
         Read the strict 58999 coding queue and idempotently seed missing
         ExpenseCodingItem rows so every returned line carries coding state.
         """
-        rows = self.line_repo.read_expense_coding_queue(realm_id=realm_id)
+        actor_user_id = current_user_id.get()
+        actor_is_system_admin = current_is_system_admin.get()
+        rows = self.line_repo.read_expense_coding_queue(
+            realm_id=realm_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
         needs_reseed = any(row.get("coding_item_public_id") is None for row in rows)
         if not needs_reseed:
             return rows
@@ -557,7 +564,11 @@ class QboPurchaseService:
                 vendor_qbo_id=row.get("vendor_qbo_id"),
             )
 
-        return self.line_repo.read_expense_coding_queue(realm_id=realm_id)
+        return self.line_repo.read_expense_coding_queue(
+            realm_id=realm_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
     def get_expense_coding_metrics(
         self,
@@ -567,4 +578,6 @@ class QboPurchaseService:
         return self.line_repo.read_expense_coding_metrics(
             realm_id=realm_id,
             since_days=since_days,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
         )

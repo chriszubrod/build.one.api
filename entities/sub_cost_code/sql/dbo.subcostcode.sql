@@ -75,7 +75,8 @@ CREATE OR ALTER PROCEDURE CreateSubCostCode
     @Name NVARCHAR(255),
     @Description NVARCHAR(255) = NULL,
     @CostCodeId BIGINT,
-    @Aliases NVARCHAR(500) = NULL
+    @Aliases NVARCHAR(500) = NULL,
+    @CreatedByUserId BIGINT = NULL   -- U-092: Gap-2 actor threading (was only in gap2_reference_threading.sql; base re-apply reverted prod -> 8145)
 )
 AS
 BEGIN
@@ -84,8 +85,8 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[SubCostCode] ([CreatedDatetime], [ModifiedDatetime], [Number], [Name], [Description], [CostCodeId], [Aliases])
-    VALUES (@Now, @Now, @Number, @Name, @Description, @CostCodeId, @Aliases);
+    INSERT INTO dbo.[SubCostCode] ([CreatedDatetime], [ModifiedDatetime], [Number], [Name], [Description], [CostCodeId], [Aliases], [CreatedByUserId])
+    VALUES (@Now, @Now, @Number, @Name, @Description, @CostCodeId, @Aliases, COALESCE(@CreatedByUserId, 17));
 
     SELECT * FROM dbo.[vw_SubCostCode] WHERE [Id] = SCOPE_IDENTITY();
 

@@ -367,6 +367,33 @@ GO
 GO
 
 -- -----------------------------------------------------------------------------
+-- Shared human-only predicate (U-087): single source for the filter that was
+-- copy-pasted verbatim in all three resolvers below. Excludes LLM agent accounts
+-- (User.IsAgent = 1) and persona test accounts (Auth.Username starting with
+-- 'persona_', whitespace-tolerant). Returns 1 for a real human reviewer, else 0.
+-- Recipient sets are tiny, so correctness/DRY > perf; on compat-150+ FROID
+-- inlines it into the resolver plans anyway.
+-- -----------------------------------------------------------------------------
+CREATE OR ALTER FUNCTION dbo.IsHumanReviewUser (@UserId BIGINT)
+RETURNS BIT
+AS
+BEGIN
+    RETURN CASE WHEN
+        NOT EXISTS (
+            SELECT 1 FROM dbo.[User] u
+            WHERE u.[Id] = @UserId
+              AND u.[IsAgent] = 1
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM dbo.[Auth] a
+            WHERE a.[UserId] = @UserId
+              AND LEFT(LTRIM(a.[Username]), 8) = N'persona_'
+        )
+    THEN 1 ELSE 0 END;
+END;
+GO
+
+-- -----------------------------------------------------------------------------
 -- 1. Bill resolver — filter personas in UserProjectRoles
 -- -----------------------------------------------------------------------------
 CREATE OR ALTER PROCEDURE dbo.ResolveReviewRecipientsByBillId
@@ -399,19 +426,9 @@ BEGIN
         INNER JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
         WHERE r.[Name] IN ('Project Manager', 'Owner')
           AND (@ExcludeUserId IS NULL OR up.[UserId] <> @ExcludeUserId)
-          -- Restrict recipients to real human users: exclude LLM agent
-          -- accounts (User.IsAgent = 1) and persona test accounts
-          -- (Auth.Username starting with 'persona_', whitespace-tolerant).
-          AND NOT EXISTS (
-              SELECT 1 FROM dbo.[User] u
-              WHERE u.[Id] = up.[UserId]
-                AND u.[IsAgent] = 1
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM dbo.[Auth] a
-              WHERE a.[UserId] = up.[UserId]
-                AND LEFT(LTRIM(a.[Username]), 8) = N'persona_'
-          )
+          -- Restrict recipients to real human users via the U-087 shared
+          -- predicate: excludes LLM agent accounts + persona test accounts.
+          AND dbo.IsHumanReviewUser(up.[UserId]) = 1
     ),
     DedupedRoles AS (
         SELECT
@@ -489,19 +506,9 @@ BEGIN
         INNER JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
         WHERE r.[Name] IN ('Project Manager', 'Owner')
           AND (@ExcludeUserId IS NULL OR up.[UserId] <> @ExcludeUserId)
-          -- Restrict recipients to real human users: exclude LLM agent
-          -- accounts (User.IsAgent = 1) and persona test accounts
-          -- (Auth.Username starting with 'persona_', whitespace-tolerant).
-          AND NOT EXISTS (
-              SELECT 1 FROM dbo.[User] u
-              WHERE u.[Id] = up.[UserId]
-                AND u.[IsAgent] = 1
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM dbo.[Auth] a
-              WHERE a.[UserId] = up.[UserId]
-                AND LEFT(LTRIM(a.[Username]), 8) = N'persona_'
-          )
+          -- Restrict recipients to real human users via the U-087 shared
+          -- predicate: excludes LLM agent accounts + persona test accounts.
+          AND dbo.IsHumanReviewUser(up.[UserId]) = 1
     ),
     DedupedRoles AS (
         SELECT
@@ -576,19 +583,9 @@ BEGIN
         FROM dbo.[UserProject] up
         INNER JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
         WHERE r.[Name] IN (N'Project Manager', N'Owner')
-          -- Restrict recipients to real human users: exclude LLM agent
-          -- accounts (User.IsAgent = 1) and persona test accounts
-          -- (Auth.Username starting with 'persona_', whitespace-tolerant).
-          AND NOT EXISTS (
-              SELECT 1 FROM dbo.[User] u
-              WHERE u.[Id] = up.[UserId]
-                AND u.[IsAgent] = 1
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM dbo.[Auth] a
-              WHERE a.[UserId] = up.[UserId]
-                AND LEFT(LTRIM(a.[Username]), 8) = N'persona_'
-          )
+          -- Restrict recipients to real human users via the U-087 shared
+          -- predicate: excludes LLM agent accounts + persona test accounts.
+          AND dbo.IsHumanReviewUser(up.[UserId]) = 1
     ),
     -- PM wins when a user holds both roles on the same project.
     DedupedUserProjectRoles AS (

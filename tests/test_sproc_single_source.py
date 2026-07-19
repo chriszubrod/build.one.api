@@ -1,6 +1,7 @@
-"""U-045/U-048/U-051/U-062 guard: canonical SQL homes for sprocs and access UDFs.
+"""U-045/U-048/U-051/U-062/U-087 guard: canonical SQL homes for sprocs, access
+UDFs, and the shared human-only review predicate.
 
-Two guards, different shapes:
+Three guard shapes:
 
 * **Sprocs** — an entity's base SQL file is the one home for its sprocs. Covers
   time_entry (U-045), role_module (U-048), and the three review recipient
@@ -16,6 +17,13 @@ Two guards, different shapes:
   WITH SCHEMABINDING across more than one entity package, so an entity-local home
   would create a from-scratch build cycle. Guarded here by name, plus a catch-all
   so a sixth access UDF cannot silently escape the guarded set.
+
+* **Domain predicate UDFs** (U-087) — a non-schemabound UDF with a single-file
+  consumer set (today `dbo.IsHumanReviewUser`, the human-only review filter used
+  only by the three resolvers) is homed in its entity base file, NOT shared/sql.
+  This is the deliberate counterpoint to the access-UDF family: no SCHEMABINDING,
+  no cross-entity build cycle, so entity-local is correct. Both its single-source
+  home (SINGLE_SOURCE_UDFS) and the filter it carries are guarded below.
 
 The patterns must keep matching every T-SQL declaration style (bare, dbo., and
 the bracketed [dbo].[Name] form the repo uses in ~22 places). A duplicate written
@@ -45,10 +53,13 @@ REVIEW_BASE = REPO_ROOT / "entities" / "review" / "sql" / "dbo.review.sql"
 # (@Quantity DECIMAL(18,4) + @CreatedByUserId threading - the union of the base
 # DECIMAL, step2 DECIMAL+threading, and gap2 INT+threading copies). The two
 # migration copies were neutralized to pointer stubs so each base is the sole home.
-# U-062: the three review-notification recipient resolvers homed in the review base
-# file (dbo.review.sql), their bodies neutralized to pointer stubs in migrations
-# 001/004/006/007/008 — the human-only filter is additionally guarded by
-# test_review_resolvers_keep_persona_agent_filter below.
+# U-062/U-087: the three review-notification recipient resolvers homed in the
+# review base file (dbo.review.sql), their bodies neutralized to pointer stubs in
+# migrations 001/004/006/007/008. The human-only filter they shared was folded
+# (U-087) into dbo.IsHumanReviewUser (homed in the same file, tabled in
+# SINGLE_SOURCE_UDFS); it is additionally guarded by
+# test_review_resolvers_keep_persona_agent_filter +
+# test_review_resolver_enumeration_is_complete below.
 SINGLE_SOURCE_SPROCS = [
     ("CreateBillLineItem", BILL_LINE_ITEM_BASE),
     ("CreateExpenseLineItem", EXPENSE_LINE_ITEM_BASE),
@@ -83,6 +94,14 @@ ACCESS_UDFS = [
     "UserCanAccessExpense",
 ]
 
+# (udf_name, canonical_home) for every single-sourced UDF. The access-UDF family
+# stays in its shared home; U-087's dbo.IsHumanReviewUser is non-schemabound with
+# a single-file consumer set, so it is homed in the review entity base file (no
+# build cycle). test_udf_defined_once_in_canonical_home enforces both.
+SINGLE_SOURCE_UDFS = [(name, ACCESS_UDF_HOME) for name in ACCESS_UDFS] + [
+    ("IsHumanReviewUser", REVIEW_BASE),
+]
+
 # Matches an optional schema ([dbo]. / dbo. / [qbo]. / qbo.) then the object
 # name, bracketed or bare. Only the name is captured.
 _SCHEMA = r"(?:\[\w+\]|\w+)\s*\.\s*"
@@ -103,34 +122,49 @@ _REVIEW_RESOLVER_NAMES = (
     "ResolveContractLaborReviewRecipientsPerProject",
 )
 
-# Reuses _OBJECT_NAME (so the bracketed [dbo].[Name] house style is handled, per
-# the module docstring) and anchors the body to the GO batch boundary — sturdier
-# than stopping at the first `END;`, which a future nested BEGIN…END; or
-# CASE…END; could truncate.
-_SPROC_BODY_PATTERN = re.compile(
-    rf"CREATE\s+OR\s+ALTER\s+PROCEDURE\s+(?:{_SCHEMA})?{_OBJECT_NAME}.*?(?=\nGO)",
-    re.IGNORECASE | re.DOTALL,
-)
+# Completeness catch-all for the enumeration above: any sproc in the review base
+# whose name matches the resolver convention must be listed in
+# _REVIEW_RESOLVER_NAMES, so a new resolver can't escape the human-only filter
+# guard (mirrors test_unlisted_user_can_access_udfs_fail for the access-UDF set).
+_REVIEW_RESOLVER_NAME_PATTERN = re.compile(r"Resolve.*Review.*Recipient", re.IGNORECASE)
 
-# Both patterns bind the FULL correlated NOT EXISTS — the subquery table, the
-# `= up.[UserId]` correlation, AND the exclusion predicate — so a stray,
-# uncorrelated, or partial copy of the expression cannot satisfy the guard.
-# (Line comments are stripped before matching, so a commented-out filter block
-# cannot false-pass either.)
-_AGENT_FILTER_PATTERN = re.compile(
+# Anchors a CREATE OR ALTER <kind> body to the GO batch boundary — sturdier than
+# stopping at the first `END;`, which a future nested BEGIN…END; or CASE…END;
+# could truncate. Reuses _OBJECT_NAME so the bracketed [dbo].[Name] house style is
+# handled (per the module docstring).
+def _body_pattern(keyword: str) -> re.Pattern:
+    return re.compile(
+        rf"CREATE\s+OR\s+ALTER\s+{keyword}\s+(?:{_SCHEMA})?{_OBJECT_NAME}.*?(?=\nGO)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+
+_SPROC_BODY_PATTERN = _body_pattern("PROCEDURE")
+_FUNCTION_BODY_PATTERN = _body_pattern("FUNCTION")
+
+# U-087: the human-only filter now lives once in dbo.IsHumanReviewUser (a scalar
+# UDF correlating on its @UserId param), and each resolver references it. These
+# patterns mirror the removed inline ones but bind @UserId, and a call pattern
+# confirms each resolver applies the shared predicate on up.[UserId].
+_UDF_AGENT_FILTER_PATTERN = re.compile(
     r"NOT\s+EXISTS\s*\(\s*"
     r"SELECT\s+1\s+FROM\s+dbo\.\[User\]\s+u\s+"
-    r"WHERE\s+u\.\[Id\]\s*=\s*up\.\[UserId\]\s+"
+    r"WHERE\s+u\.\[Id\]\s*=\s*@UserId\s+"
     r"AND\s+u\.\[IsAgent\]\s*=\s*1",
     re.IGNORECASE | re.DOTALL,
 )
 
-_PERSONA_FILTER_PATTERN = re.compile(
+_UDF_PERSONA_FILTER_PATTERN = re.compile(
     r"NOT\s+EXISTS\s*\(\s*"
     r"SELECT\s+1\s+FROM\s+dbo\.\[Auth\]\s+a\s+"
-    r"WHERE\s+a\.\[UserId\]\s*=\s*up\.\[UserId\]\s+"
+    r"WHERE\s+a\.\[UserId\]\s*=\s*@UserId\s+"
     r"AND\s+LEFT\s*\(\s*LTRIM\s*\(\s*a\.\[Username\]\s*\)\s*,\s*8\s*\)\s*=\s*N?'persona_'",
     re.IGNORECASE | re.DOTALL,
+)
+
+_UDF_CALL_PATTERN = re.compile(
+    r"dbo\.IsHumanReviewUser\s*\(\s*up\.\[UserId\]\s*\)\s*=\s*1",
+    re.IGNORECASE,
 )
 
 _LINE_COMMENT = re.compile(r"--[^\n]*")
@@ -141,14 +175,14 @@ def _names_from_text(pattern: re.Pattern, text: str) -> frozenset[str]:
     return frozenset(bracketed or bare for bracketed, bare in pattern.findall(text))
 
 
-def _extract_sproc_body(text: str, sproc_name: str) -> str:
-    """Return the CREATE OR ALTER … END; block for one named sproc."""
-    for match in _SPROC_BODY_PATTERN.finditer(text):
+def _extract_object_body(text: str, pattern: re.Pattern, name_wanted: str) -> str:
+    """Return the CREATE OR ALTER … block for one named object (sproc or UDF)."""
+    for match in pattern.finditer(text):
         name = match.group(1) or match.group(2)  # bracketed | bare
-        if name and name.casefold() == sproc_name.casefold():
+        if name and name.casefold() == name_wanted.casefold():
             return match.group(0)
     raise AssertionError(
-        f"expected dbo.{sproc_name} in {REVIEW_BASE.relative_to(REPO_ROOT)}"
+        f"expected dbo.{name_wanted} in {REVIEW_BASE.relative_to(REPO_ROOT)}"
     )
 
 
@@ -205,14 +239,17 @@ def test_base_sprocs_are_not_redefined_elsewhere(entity_name, base_path):
             )
 
 
-@pytest.mark.parametrize("udf_name", ACCESS_UDFS)
-def test_access_udf_defined_once_in_shared_home(udf_name):
+@pytest.mark.parametrize("udf_name,home_path", SINGLE_SOURCE_UDFS)
+def test_udf_defined_once_in_canonical_home(udf_name, home_path):
+    """Each single-sourced UDF is defined exactly once, in its canonical home —
+    the shared access-UDF file for the UserCanAccess* family, the review entity
+    base file for the U-087 human-only predicate."""
     matches = [path for path, _, udf_names in _sql_index() if udf_name in udf_names]
-    assert matches == [ACCESS_UDF_HOME], (
+    assert matches == [home_path], (
         f"dbo.{udf_name} must be defined exactly once in "
-        f"{ACCESS_UDF_HOME.relative_to(REPO_ROOT)}; found in: "
+        f"{home_path.relative_to(REPO_ROOT)}; found in: "
         + ", ".join(str(p.relative_to(REPO_ROOT)) for p in matches)
-        + f". Change {ACCESS_UDF_HOME.relative_to(REPO_ROOT)} instead."
+        + f". Change {home_path.relative_to(REPO_ROOT)} instead."
     )
 
 
@@ -255,20 +292,53 @@ def test_gap2_neutralized_sprocs_stay_stubbed():
 
 
 def test_review_resolvers_keep_persona_agent_filter():
-    """U-062: each review recipient resolver in dbo.review.sql must retain the
-    human-only filter (IsAgent + persona_ prefix) copied from migration 008."""
+    """U-062/U-087: the human-only filter (IsAgent + persona_ prefix) must
+    survive as a single shared predicate. Post-U-087 the two NOT EXISTS blocks
+    live once in dbo.IsHumanReviewUser, and every resolver references it — so a
+    future resolver cannot silently drop the exclusion."""
     text = _review_base_text()
+
+    # 1. The filter itself lives in the shared UDF body (correlated on @UserId).
+    #    Strip line comments so a commented-out block can't satisfy the guard.
+    udf_body = _LINE_COMMENT.sub(
+        "", _extract_object_body(text, _FUNCTION_BODY_PATTERN, "IsHumanReviewUser")
+    )
+    assert _UDF_AGENT_FILTER_PATTERN.search(udf_body), (
+        "dbo.IsHumanReviewUser is missing the NOT EXISTS dbo.[User] IsAgent = 1 "
+        "exclusion — the human-only filter must live in the shared predicate."
+    )
+    assert _UDF_PERSONA_FILTER_PATTERN.search(udf_body), (
+        "dbo.IsHumanReviewUser is missing the LEFT(LTRIM(a.[Username]), 8) = "
+        "N'persona_' exclusion — the human-only filter must live in the shared "
+        "predicate."
+    )
+
+    # 2. Every resolver references the shared predicate on up.[UserId].
     for sproc_name in _REVIEW_RESOLVER_NAMES:
-        # Strip line comments so a commented-out filter block can't satisfy the
-        # guard — only executable SQL counts.
-        body = _LINE_COMMENT.sub("", _extract_sproc_body(text, sproc_name))
-        assert _AGENT_FILTER_PATTERN.search(body), (
-            f"dbo.{sproc_name} in entities/review/sql/dbo.review.sql is missing "
-            "the NOT EXISTS dbo.[User] IsAgent = 1 exclusion — restore the "
-            "human-only filter from migration 008."
+        body = _LINE_COMMENT.sub(
+            "", _extract_object_body(text, _SPROC_BODY_PATTERN, sproc_name)
         )
-        assert _PERSONA_FILTER_PATTERN.search(body), (
-            f"dbo.{sproc_name} in entities/review/sql/dbo.review.sql is missing "
-            "the LEFT(LTRIM(a.[Username]), 8) = N'persona_' exclusion — restore "
-            "the human-only filter from migration 008."
+        assert _UDF_CALL_PATTERN.search(body), (
+            f"dbo.{sproc_name} no longer references "
+            "dbo.IsHumanReviewUser(up.[UserId]) = 1 — every review resolver must "
+            "apply the U-087 shared human-only predicate."
         )
+
+
+def test_review_resolver_enumeration_is_complete():
+    """U-087: _REVIEW_RESOLVER_NAMES must list exactly the review recipient
+    resolvers in the base file, so the filter-reference guard above cannot be
+    silently bypassed by adding (or renaming) a resolver."""
+    declared = {
+        name
+        for name in _names_from_text(_SPROC_PATTERN, _review_base_text())
+        if _REVIEW_RESOLVER_NAME_PATTERN.search(name)
+    }
+    drift = declared ^ set(_REVIEW_RESOLVER_NAMES)
+    assert not drift, (
+        "review recipient resolver set drifted from _REVIEW_RESOLVER_NAMES: "
+        + ", ".join(sorted(drift))
+        + " — update _REVIEW_RESOLVER_NAMES so "
+        "test_review_resolvers_keep_persona_agent_filter checks every resolver "
+        "applies dbo.IsHumanReviewUser."
+    )

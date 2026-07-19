@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import html
 import io
 import logging
 from datetime import datetime, timedelta
@@ -27,6 +28,11 @@ from entities.sub_cost_code.business.service import SubCostCodeService
 from shared.storage import AzureBlobStorage
 
 logger = logging.getLogger(__name__)
+
+
+def _pdf_text(value) -> str:
+    """Escape a plain-text value for safe inclusion in a reportlab Paragraph, whose mini-XML parser requires & < > escaped. None-safe."""
+    return html.escape('' if value is None else str(value))
 
 
 # Hardcoded vendor config (address, rate, markup)
@@ -1017,8 +1023,8 @@ class ContractLaborBillService:
 
         header_data = [
             [
-                Paragraph(f"<b>{vendor_name}</b><br/>{vendor_address['address']}<br/>{vendor_address['city_state_zip']}", styles['Normal']),
-                Paragraph(f"<b>BILL TO</b><br/>{BILL_TO['name']}<br/>{BILL_TO['address']}<br/>{BILL_TO['city_state_zip']}", styles['Normal']),
+                Paragraph(f"<b>{_pdf_text(vendor_name)}</b><br/>{_pdf_text(vendor_address['address'])}<br/>{_pdf_text(vendor_address['city_state_zip'])}", styles['Normal']),
+                Paragraph(f"<b>BILL TO</b><br/>{_pdf_text(BILL_TO['name'])}<br/>{_pdf_text(BILL_TO['address'])}<br/>{_pdf_text(BILL_TO['city_state_zip'])}", styles['Normal']),
             ]
         ]
         header_table = Table(header_data, colWidths=[3.5*inch, 3.5*inch])
@@ -1054,12 +1060,12 @@ class ContractLaborBillService:
 
         details_header = ['INVOICE #', 'DATE', 'TOTAL DUE', 'DUE DATE', 'TERMS', 'ENCLOSED']
         details_data = [
-            Paragraph(invoice_number, details_style),
+            Paragraph(_pdf_text(invoice_number), details_style),
             bill_date_display,
             f"${total_amount:,.2f}",
             due_date_display,
             'Net 15',
-            Paragraph(project_display, details_style),
+            Paragraph(_pdf_text(project_display), details_style),
         ]
         
         details_table = Table(
@@ -1113,7 +1119,7 @@ class ContractLaborBillService:
                 item_date_display = item_date
 
             service = f"{scc.number}" if scc else ""
-            description = Paragraph(li.description or "", desc_style)
+            description = Paragraph(_pdf_text(li.description), desc_style)
             amount = "$0.00" if li.is_billable is False else f"${float(li.price or 0):,.2f}"
 
             line_items_data.append([item_date_display, service, description, amount])

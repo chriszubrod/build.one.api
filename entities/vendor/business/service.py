@@ -34,7 +34,7 @@ class VendorService:
         except (InvalidOperation, ValueError) as e:
             raise ValueError(f"Invalid decimal value: {value!r}") from e
 
-    def create(self, *, tenant_id: int = 1, name: str, abbreviation: Optional[str] = None, taxpayer_public_id: Optional[str] = None, vendor_type_public_id: Optional[str] = None, is_draft: bool = True, is_contract_labor: bool = False, notes: Optional[str] = None, hourly_rate=None, markup=None) -> Vendor:
+    def create(self, *, tenant_id: int = 1, name: str, abbreviation: Optional[str] = None, taxpayer_public_id: Optional[str] = None, vendor_type_public_id: Optional[str] = None, is_draft: bool = True, is_contract_labor: bool = False, track_compliance: bool = False, notes: Optional[str] = None, hourly_rate=None, markup=None) -> Vendor:
         """
         Create a new vendor.
 
@@ -65,7 +65,7 @@ class VendorService:
             if vendor_type:
                 vendor_type_id = vendor_type.id
 
-        return self.repo.create(tenant_id=tenant_id, name=name, abbreviation=abbreviation, taxpayer_id=taxpayer_id, vendor_type_id=vendor_type_id, is_draft=is_draft, is_contract_labor=is_contract_labor, notes=notes, hourly_rate=self._coerce_decimal(hourly_rate), markup=self._coerce_decimal(markup), created_by_user_id=current_user_id.get())
+        return self.repo.create(tenant_id=tenant_id, name=name, abbreviation=abbreviation, taxpayer_id=taxpayer_id, vendor_type_id=vendor_type_id, is_draft=is_draft, is_contract_labor=is_contract_labor, track_compliance=track_compliance, notes=notes, hourly_rate=self._coerce_decimal(hourly_rate), markup=self._coerce_decimal(markup), created_by_user_id=current_user_id.get())
 
     def read_all(self) -> list[Vendor]:
         """
@@ -159,6 +159,7 @@ class VendorService:
         vendor_type_public_id: str = None,
         is_draft: bool = None,
         is_contract_labor: bool = None,
+        track_compliance: Optional[bool] = None,
         notes: Optional[str] = None,
         hourly_rate: Union[str, Decimal, None] = None,
         markup: Union[str, Decimal, None] = None,
@@ -189,6 +190,8 @@ class VendorService:
             existing.is_draft = is_draft
         if is_contract_labor is not None:
             existing.is_contract_labor = is_contract_labor
+        if track_compliance is not None:
+            existing.track_compliance = track_compliance
         # React form always sends `notes` on PUT (echoing current value
         # if unedited). None means "field omitted entirely" → preserve.
         # Empty string means user cleared the textarea → store NULL.

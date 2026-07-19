@@ -23,6 +23,7 @@ class Vendor:
     is_draft: Optional[bool]
     is_deleted: Optional[bool] = False
     is_contract_labor: Optional[bool] = False
+    track_compliance: bool = False
     # Free-text per-vendor notes — surfaced in the React Vendor edit
     # page and read by bill_specialist via FindVendorForInvoice when
     # creating bills from invoice emails.

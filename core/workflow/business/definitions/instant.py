@@ -56,6 +56,8 @@ SYNCHRONOUS_TASKS = [
     "vendor",
     "vendor_address",
     "vendor_type",
+    "vendor_compliance_document",
+    "vendor_insurance_policy",
     "vendor_project_rate",
     "employee_project_rate",
     

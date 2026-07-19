@@ -190,3 +190,57 @@ def fit_page_to_letter(src_page):
     new_page = PageObject.create_blank_page(width=LETTER_WIDTH_PT, height=LETTER_HEIGHT_PT)
     new_page.merge_transformed_page(src_page, Transformation().scale(scale).translate(tx, ty))
     return new_page
+
+
+def merge_pdfs(blob_urls, leading_pdf_bytes=None):
+    """Merge PDFs into one letter-sized PDF's bytes.
+
+    leading_pdf_bytes: list[bytes] of already-letter-sized pages (cover/TOC) added first, as-is.
+    blob_urls: list[str] Azure blob URLs; each downloaded, read, and each page fit to letter.
+    Unreadable/empty blobs are skipped. Raises ValueError if zero pages result.
+    """
+    from pypdf import PdfReader, PdfWriter
+    from shared.storage import AzureBlobStorage
+
+    writer = PdfWriter()
+    for pdf_bytes in (leading_pdf_bytes or []):
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        for page in reader.pages:
+            writer.add_page(page)
+    storage = AzureBlobStorage()
+    merged_blob_pages = 0
+    for blob_url in blob_urls:
+        if not blob_url:
+            continue
+        try:
+            content, _ = storage.download_file(blob_url)
+            reader = PdfReader(io.BytesIO(content))
+            for page in reader.pages:
+                writer.add_page(fit_page_to_letter(page))
+                merged_blob_pages += 1
+        except Exception:
+            continue
+    if len(writer.pages) == 0:
+        raise ValueError("No PDF pages could be read for the merged document")
+    requested_any_blob = any(bool(u) for u in blob_urls)
+    if requested_any_blob and merged_blob_pages == 0:
+        raise ValueError("All source documents failed to merge; refusing to produce an incomplete packet")
+    merged_buf = io.BytesIO()
+    writer.write(merged_buf)
+    uncompressed_bytes = merged_buf.getvalue()
+    try:
+        import pikepdf
+        compressed_buf = io.BytesIO()
+        with pikepdf.open(io.BytesIO(uncompressed_bytes)) as pdf:
+            pdf.save(
+                compressed_buf,
+                compress_streams=True,
+                object_stream_mode=pikepdf.ObjectStreamMode.generate,
+                recompress_flate=True,
+                normalize_content=True,
+            )
+        merged_bytes = compressed_buf.getvalue()
+    except Exception as e:
+        logger.warning("merge_pdfs: pikepdf compression failed, using uncompressed: %s", e)
+        merged_bytes = uncompressed_bytes
+    return merged_bytes

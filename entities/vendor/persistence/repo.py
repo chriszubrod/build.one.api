@@ -48,6 +48,7 @@ class VendorRepository:
                 is_draft=row.IsDraft,
                 is_deleted=row.IsDeleted,
                 is_contract_labor=row.IsContractLabor,
+                track_compliance=bool(getattr(row, "TrackCompliance", False)),
                 notes=getattr(row, "Notes", None),
                 hourly_rate=getattr(row, "HourlyRate", None),
                 markup=getattr(row, "Markup", None),
@@ -59,7 +60,7 @@ class VendorRepository:
             logger.error(f"Unexpected error during vendor mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, name: Optional[str], abbreviation: Optional[str], taxpayer_id: Optional[int] = None, vendor_type_id: Optional[int] = None, is_draft: bool = True, is_contract_labor: bool = False, notes: Optional[str] = None, hourly_rate: Optional[Decimal] = None, markup: Optional[Decimal] = None, created_by_user_id: Optional[int] = None) -> Vendor:
+    def create(self, *, tenant_id: int = 1, name: Optional[str], abbreviation: Optional[str], taxpayer_id: Optional[int] = None, vendor_type_id: Optional[int] = None, is_draft: bool = True, is_contract_labor: bool = False, track_compliance: bool = False, notes: Optional[str] = None, hourly_rate: Optional[Decimal] = None, markup: Optional[Decimal] = None, created_by_user_id: Optional[int] = None) -> Vendor:
         """
         Create a new vendor.
         """
@@ -73,6 +74,7 @@ class VendorRepository:
                     "TaxpayerId": taxpayer_id,
                     "IsDraft": is_draft,
                     "IsContractLabor": is_contract_labor,
+                    "TrackCompliance": track_compliance,
                     "Notes": notes,
                     "CreatedByUserId": created_by_user_id,
                     "HourlyRate": hourly_rate,
@@ -246,6 +248,7 @@ class VendorRepository:
                     "Notes": vendor.notes,
                     "HourlyRate": vendor.hourly_rate,
                     "Markup": vendor.markup,
+                    "TrackCompliance": vendor.track_compliance,
                 }
                 # Only include IsDraft/IsContractLabor if explicitly set (not None)
                 if vendor.is_draft is not None:

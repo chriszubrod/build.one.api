@@ -46,6 +46,10 @@ class VendorCreate(BaseModel):
         default=False,
         description="Whether the vendor is eligible for contract labor records.",
     )
+    track_compliance: Optional[bool] = Field(
+        default=False,
+        description="Compliance roster flag",
+    )
     notes: Optional[str] = Field(
         default=None,
         description="Free-text notes — visible in the UI and read by the bill_specialist agent for vendor-specific guidance.",
@@ -100,6 +104,10 @@ class VendorUpdate(BaseModel):
     is_contract_labor: Optional[bool] = Field(
         default=None,
         description="Whether the vendor is eligible for contract labor records.",
+    )
+    track_compliance: Optional[bool] = Field(
+        default=None,
+        description="Compliance roster flag",
     )
     notes: Optional[str] = Field(
         default=None,

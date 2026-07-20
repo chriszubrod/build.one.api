@@ -1,14 +1,27 @@
 import math
 import threading
 
+from starlette.datastructures import Headers
+
 from shared.rate_limit import (
     IDLE_TTL_SECONDS,
     LOGIN_BUCKET_CAPACITY,
     LOGIN_REFILL_INTERVAL_SECONDS,
     MAX_TRACKED_KEYS,
     TokenBucketStore,
+    client_ip_rate_key,
+    normalize_client_ip,
     normalize_username,
 )
+
+
+def _headers(x_client_ip: str | None = None, x_forwarded_for: str | None = None) -> Headers:
+    raw = []
+    if x_client_ip is not None:
+        raw.append((b"x-client-ip", x_client_ip.encode()))
+    if x_forwarded_for is not None:
+        raw.append((b"x-forwarded-for", x_forwarded_for.encode()))
+    return Headers(raw=raw)
 
 
 def _fake_clock(start: float = 0.0):
@@ -204,3 +217,68 @@ def test_retry_after_never_zero_in_router_header():
     assert retry_after is not None
     header_value = max(1, math.ceil(retry_after))
     assert header_value >= 1
+
+
+def test_extract_client_ip_spoof_prepend_ignored():
+    assert client_ip_rate_key(_headers(x_client_ip="6.6.6.6, 1.2.3.4")) == "1.2.3.4"
+
+
+def test_extract_client_ip_xff_fallback_port_stripped():
+    assert client_ip_rate_key(_headers(x_forwarded_for="6.6.6.6, 1.2.3.4:2996")) == "1.2.3.4"
+
+
+def test_extract_client_ip_prefers_x_client_ip():
+    assert client_ip_rate_key(_headers(x_client_ip="9.9.9.9", x_forwarded_for="1.2.3.4:80")) == "9.9.9.9"
+
+
+def test_extract_client_ip_ipv6_bracket_form_collapses_to_slash64():
+    assert client_ip_rate_key(_headers(x_forwarded_for="[2001:db8::1]:443")) == "2001:db8::/64"
+
+
+def test_normalize_client_ip_same_slash64_maps_to_same_key():
+    assert normalize_client_ip("2001:db8::1") == "2001:db8::/64"
+    assert normalize_client_ip("2001:db8::ffff") == "2001:db8::/64"
+    assert normalize_client_ip("2001:db8::1") == normalize_client_ip("2001:db8::ffff")
+
+
+def test_normalize_client_ip_different_slash64_maps_to_different_keys():
+    assert normalize_client_ip("2001:db8:1::1") == "2001:db8:1::/64"
+    assert normalize_client_ip("2001:db8:2::1") == "2001:db8:2::/64"
+    assert normalize_client_ip("2001:db8:1::1") != normalize_client_ip("2001:db8:2::1")
+
+
+def test_extract_client_ip_invalid_and_missing():
+    assert client_ip_rate_key(_headers(x_client_ip="not-an-ip")) is None
+    assert client_ip_rate_key(_headers()) is None
+    assert client_ip_rate_key(_headers(x_client_ip="", x_forwarded_for="")) is None
+
+
+def test_extract_client_ip_rightmost_invalid_does_not_fallback():
+    assert client_ip_rate_key(_headers(x_client_ip="6.6.6.6, junk")) is None
+
+
+def test_normalize_client_ip_ipv4_mapped_distinct_keys():
+    assert normalize_client_ip("::ffff:192.0.2.128") == "192.0.2.128"
+    assert normalize_client_ip("::ffff:203.0.113.9") == "203.0.113.9"
+
+
+def test_normalize_client_ip_rejects_invalid_port_and_zone():
+    assert normalize_client_ip("1.2.3.4:bad") is None
+    assert normalize_client_ip("1.2.3.4:") is None
+    assert normalize_client_ip("[2001:db8::1]junk") is None
+    assert normalize_client_ip("fe80::1%eth0") is None
+
+
+def test_normalize_client_ip_bracket_port_still_collapses_to_slash64():
+    assert normalize_client_ip("[2001:db8::1]:443") == "2001:db8::/64"
+
+
+def test_extract_client_ip_merged_duplicate_line_shape():
+    assert client_ip_rate_key(_headers(x_client_ip="6.6.6.6, 7.7.7.7, 1.2.3.4")) == "1.2.3.4"
+
+
+def test_client_ip_rate_key_joins_duplicate_physical_lines():
+    headers = Headers(
+        raw=[(b"x-client-ip", b"6.6.6.6"), (b"x-client-ip", b"7.7.7.7, 1.2.3.4")]
+    )
+    assert client_ip_rate_key(headers) == "1.2.3.4"

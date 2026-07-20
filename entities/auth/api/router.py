@@ -44,7 +44,13 @@ from shared.authz.companies import (
     resolve_active_company_for_user,
 )
 from shared.profile_events import profile_event_subscription, publish_profile_changed
-from shared.rate_limit import login_rate_limiter, normalize_username
+from shared.rate_limit import (
+    TokenBucketStore,
+    client_ip_rate_key,
+    login_ip_rate_limiter,
+    login_rate_limiter,
+    normalize_username,
+)
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -57,19 +63,43 @@ ACCESS_COOKIE_NAME = "token.access_token"
 REFRESH_COOKIE_NAME = "token.refresh_token"
 
 
-def _enforce_login_rate_limit(username: str) -> str:
-    """Reserve one token for this username's bucket, or raise 429 if it is empty.
-    Returns the normalized key so the caller can `refund()` it on success — the
-    login endpoints do (a success costs nothing); set-credentials never refunds."""
-    key = normalize_username(username)
-    retry_after = login_rate_limiter.try_acquire(key)
-    if retry_after is not None:
-        raise HTTPException(
-            status_code=429,
-            detail="Too many attempts. Please try again later.",
-            headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+_LoginReservations = list[tuple[TokenBucketStore, str]]
+
+
+def _enforce_login_rate_limit(username: str, request: Request) -> _LoginReservations:
+    """Reserve one token per bucket (per-username, then per-client-IP), or
+    raise 429 with Retry-After if either denies — refunding any token already
+    taken, so an IP-blocked spray never burns the target username's budget.
+    Returns the acquired ``(store, key)`` reservations so login callers can
+    refund them all on success (a success costs nothing); set-credentials
+    ignores the return and refunds nothing. A missing/untrusted client-IP
+    header fails open on the IP bucket only; username limiting still applies."""
+    demands = [(login_rate_limiter, normalize_username(username))]
+    ip_key = client_ip_rate_key(request.headers)
+    if ip_key is None:
+        logger.warning(
+            "per-IP login rate limit skipped: no trusted client-IP header present"
         )
-    return key
+    else:
+        demands.append((login_ip_rate_limiter, ip_key))
+    reservations: _LoginReservations = []
+    for store, bucket_key in demands:
+        retry_after = store.try_acquire(bucket_key)
+        if retry_after is not None:
+            for held_store, held_key in reservations:
+                held_store.refund(held_key)
+            raise HTTPException(
+                status_code=429,
+                detail="Too many attempts. Please try again later.",
+                headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+            )
+        reservations.append((store, bucket_key))
+    return reservations
+
+
+def _refund_login_rate_limit(reservations: _LoginReservations) -> None:
+    for store, bucket_key in reservations:
+        store.refund(bucket_key)
 
 
 def _secure_cookie_enabled() -> bool:
@@ -247,7 +277,7 @@ def admin_set_credentials_router(
     if request.cookies.get(REFRESH_COOKIE_NAME):
         _require_csrf(request)
     # Every call is counted (this endpoint has no "failed attempt" concept); no refund.
-    _enforce_login_rate_limit(body.username)
+    _enforce_login_rate_limit(body.username, request)
     try:
         auth = service.set_credentials_for_user(
             user_public_id=user_public_id,
@@ -269,17 +299,17 @@ def admin_set_credentials_router(
 
 
 @router.post("/auth/login")
-def login_auth_router(body: AuthLogin, response: Response):
+def login_auth_router(body: AuthLogin, request: Request, response: Response):
     """
     Login a auth.
     """
-    key = _enforce_login_rate_limit(body.username)
+    reservations = _enforce_login_rate_limit(body.username, request)
     try:
         auth, access_token, refresh_token = service.login(
             username=body.username,
             password=body.password
         )
-        login_rate_limiter.refund(key)
+        _refund_login_rate_limit(reservations)
         _set_auth_cookies(response=response, access_token=access_token, refresh_token=refresh_token)
         return item_response({
             "auth": auth.to_dict(),
@@ -495,18 +525,18 @@ def mobile_switch_company_router(
 
 
 @router.post("/mobile/auth/login")
-def mobile_login_router(body: AuthLogin):
+def mobile_login_router(body: AuthLogin, request: Request):
     """
     Mobile login. Returns access and refresh tokens in the response body.
     Client stores tokens in secure device storage (e.g. iOS Keychain).
     """
-    key = _enforce_login_rate_limit(body.username)
+    reservations = _enforce_login_rate_limit(body.username, request)
     try:
         auth, access_token, refresh_token = service.login(
             username=body.username,
             password=body.password
         )
-        login_rate_limiter.refund(key)
+        _refund_login_rate_limit(reservations)
         return item_response({
             "auth": auth.to_dict(),
             "token": access_token.to_dict(),

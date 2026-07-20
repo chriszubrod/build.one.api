@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import logging
 from typing import Optional
 
 # Third-party Imports
@@ -6,9 +7,12 @@ from typing import Optional
 # Local Imports
 from entities.attachment.business.service import AttachmentService
 from entities.vendor.business.service import VendorService
+from entities.vendor_compliance_document.business.folder_helpers import build_export_filename
 from entities.vendor_compliance_document.business.model import VendorComplianceDocument
 from entities.vendor_compliance_document.persistence.repo import VendorComplianceDocumentRepository
 from shared.authz import current_user_id
+
+logger = logging.getLogger(__name__)
 
 
 class VendorComplianceDocumentService:
@@ -33,6 +37,7 @@ class VendorComplianceDocumentService:
         expiry_date: Optional[str] = None,
         attachment_public_id: Optional[str] = None,
         verification_status: str = "Received",
+        push_to_folder: bool = True,
     ) -> VendorComplianceDocument:
         """
         Create a new vendor compliance document.
@@ -49,7 +54,7 @@ class VendorComplianceDocumentService:
                 raise ValueError(f"Attachment with public_id '{attachment_public_id}' not found")
             attachment_id = int(attachment.id)
 
-        return self.repo.create(
+        doc = self.repo.create(
             vendor_id=int(vendor.id),
             document_type=document_type,
             issuing_authority=issuing_authority,
@@ -61,6 +66,19 @@ class VendorComplianceDocumentService:
             verification_status=verification_status,
             created_by_user_id=current_user_id.get(),
         )
+
+        if push_to_folder:
+            try:
+                self._enqueue_folder_export(int(vendor.id), attachment_id)
+            except Exception:
+                logger.exception(
+                    "Failed to enqueue vendor compliance folder export after create "
+                    "(vendor_id=%s, attachment_id=%s)",
+                    vendor.id,
+                    attachment_id,
+                )
+
+        return doc
 
     def read_by_id(self, id: str) -> Optional[VendorComplianceDocument]:
         """
@@ -93,6 +111,7 @@ class VendorComplianceDocumentService:
         expiry_date: Optional[str] = None,
         attachment_public_id: Optional[str] = None,
         verification_status: Optional[str] = None,
+        push_to_folder: bool = True,
     ) -> Optional[VendorComplianceDocument]:
         """
         Update a vendor compliance document by public ID.
@@ -101,6 +120,8 @@ class VendorComplianceDocumentService:
         existing = self.read_by_public_id(public_id=public_id)
         if not existing:
             return None
+
+        attachment_changed = attachment_public_id is not None
 
         existing.row_version = row_version
         if issuing_authority is not None:
@@ -121,7 +142,20 @@ class VendorComplianceDocumentService:
                 raise ValueError(f"Attachment with public_id '{attachment_public_id}' not found")
             existing.attachment_id = int(attachment.id)
 
-        return self.repo.update_by_id(existing)
+        updated = self.repo.update_by_id(existing)
+
+        if push_to_folder and updated and updated.attachment_id and attachment_changed:
+            try:
+                self._enqueue_folder_export(int(updated.vendor_id), int(updated.attachment_id))
+            except Exception:
+                logger.exception(
+                    "Failed to enqueue vendor compliance folder export after update "
+                    "(vendor_id=%s, attachment_id=%s)",
+                    updated.vendor_id,
+                    updated.attachment_id,
+                )
+
+        return updated
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = 1) -> Optional[VendorComplianceDocument]:
         """
@@ -133,3 +167,45 @@ class VendorComplianceDocumentService:
             if self.repo.delete_by_id(int(existing.id)):
                 return existing
         return None
+
+    def _enqueue_folder_export(self, vendor_id: int, attachment_id: Optional[int]) -> None:
+        """Queue a SharePoint upload of a compliance-doc attachment to the vendor folder."""
+        if attachment_id is None:
+            return
+
+        from integrations.ms.outbox.business.service import MsOutboxService
+        from integrations.ms.sharepoint.driveitem.connector.vendor.business.service import (
+            DriveItemVendorConnector,
+        )
+
+        folder = DriveItemVendorConnector().get_driveitem_for_vendor(vendor_id)
+        if not folder or not folder.get("drive_id") or not folder.get("item_id"):
+            return
+
+        attachment = AttachmentService().read_by_id(id=attachment_id)
+        if not attachment or not attachment.blob_url:
+            return
+
+        filename = build_export_filename(
+            attachment.original_filename or attachment.filename or "document",
+            str(attachment.public_id),
+        )
+        content_type = attachment.content_type or "application/octet-stream"
+
+        queued = MsOutboxService().enqueue_sharepoint_upload(
+            entity_type="Attachment",
+            entity_public_id=str(attachment.public_id),
+            drive_id=folder["drive_id"],
+            parent_item_id=folder["item_id"],
+            filename=filename,
+            content_type=content_type,
+            blob_path=attachment.blob_url,
+            attachment_id=attachment_id,
+        )
+        if queued is None:
+            logger.info(
+                "SharePoint export enqueue skipped (writes disabled or failure) "
+                "for attachment_id=%s vendor_id=%s",
+                attachment_id,
+                vendor_id,
+            )

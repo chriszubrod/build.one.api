@@ -92,3 +92,18 @@ class VendorComplianceDocumentUpdate(BaseModel):
         default=None,
         description="The verification status of the document.",
     )
+
+
+class VendorFolderLinkRequest(BaseModel):
+    drive_public_id: str = Field(min_length=1)
+    graph_item_id: str = Field(min_length=1)
+
+
+class VendorFolderImportRequest(BaseModel):
+    graph_item_id: str = Field(min_length=1)
+    document_type: DocumentTypeLiteral
+    issuing_authority: Optional[str] = None
+    document_number: Optional[str] = None
+    classification: Optional[str] = None
+    issue_date: Optional[str] = None
+    expiry_date: Optional[str] = None

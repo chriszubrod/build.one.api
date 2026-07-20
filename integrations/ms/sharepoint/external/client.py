@@ -4,7 +4,7 @@ import urllib.parse
 from typing import Any, Dict, Optional
 
 # Local Imports
-from integrations.ms.base.client import MsGraphClient
+from integrations.ms.base.client import DEFAULT_BASE_URL, MsGraphClient
 from integrations.ms.base.errors import MsGraphError
 from integrations.ms.base.locking import ms_app_lock
 
@@ -28,6 +28,57 @@ def _error_response(e: MsGraphError, *, extra: Optional[Dict[str, Any]] = None) 
     if extra:
         base.update(extra)
     return base
+
+
+def _strip_base(absolute_url: str) -> str:
+    """
+    Strip the Graph base URL prefix from a @odata.nextLink so the result
+    can be passed as a path to MsGraphClient.get().
+    """
+    prefix = DEFAULT_BASE_URL + "/"
+    if absolute_url.startswith(prefix):
+        return absolute_url[len(prefix):]
+    return absolute_url
+
+
+def _collect_paginated_drive_items(client: MsGraphClient, initial_path: str, *, operation_name: str) -> list[dict]:
+    """Follow @odata.nextLink until all drive children pages are loaded."""
+    raw_items: list[dict] = []
+    next_link: Optional[str] = None
+    path = initial_path
+    seen_next_links: set[str] = set()
+    max_pages = 50
+    page_count = 0
+
+    while page_count < max_pages:
+        if next_link:
+            if next_link in seen_next_links:
+                logger.warning(
+                    "%s: repeated @odata.nextLink detected, stopping pagination",
+                    operation_name,
+                )
+                break
+            seen_next_links.add(next_link)
+            data = client.get(
+                _strip_base(next_link),
+                operation_name=f"{operation_name}.next",
+            )
+        else:
+            data = client.get(path, operation_name=operation_name)
+        raw_items.extend(data.get("value", []))
+        page_count += 1
+        next_link = data.get("@odata.nextLink")
+        if not next_link:
+            break
+
+    if page_count >= max_pages and next_link:
+        logger.warning(
+            "%s: pagination page cap (%d) reached, stopping pagination",
+            operation_name,
+            max_pages,
+        )
+
+    return raw_items
 
 
 def _format_drive_item(item: dict) -> dict:
@@ -301,11 +352,12 @@ def list_drive_root_children(drive_id: str) -> dict:
     """List items at the root of a drive."""
     try:
         with MsGraphClient() as client:
-            data = client.get(
+            raw_items = _collect_paginated_drive_items(
+                client,
                 f"drives/{drive_id}/root/children",
                 operation_name="driveitem.list_root",
             )
-        items = [_format_drive_item(i) for i in data.get("value", [])]
+        items = [_format_drive_item(i) for i in raw_items]
         return {
             "message": f"Found {len(items)} items",
             "status_code": 200,
@@ -320,11 +372,12 @@ def list_drive_item_children(drive_id: str, item_id: str) -> dict:
     """List children of a specific folder in a drive."""
     try:
         with MsGraphClient() as client:
-            data = client.get(
+            raw_items = _collect_paginated_drive_items(
+                client,
                 f"drives/{drive_id}/items/{item_id}/children",
                 operation_name="driveitem.list_children",
             )
-        items = [_format_drive_item(i) for i in data.get("value", [])]
+        items = [_format_drive_item(i) for i in raw_items]
         return {
             "message": f"Found {len(items)} items",
             "status_code": 200,

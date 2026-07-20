@@ -10,7 +10,7 @@ from typing import Any, Optional
 # Third-party Imports
 from functools import partial
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request, status
 
 # Local Imports
 import config
@@ -110,6 +110,26 @@ def _validate_work_date(work_date: str) -> str:
     except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="work_date must be an ISO date (YYYY-MM-DD).")
     return work_date
+
+
+@router.get("/debug/client-ip-headers", dependencies=[Depends(_require_drain_secret)])
+async def debug_client_ip_headers_router(request: Request):
+    """TEMP diagnostic (U-070): echo the client-addressing headers the Azure App Service front end actually injects, so the per-IP rate-limit key can be chosen against observed prod behavior. DRAIN_SECRET-gated. Safe to remove once U-070 ships."""
+    return {
+        "request_client_host": request.client.host if request.client else None,
+        "headers": {
+            name: request.headers.get(name)
+            for name in [
+                "x-forwarded-for",
+                "x-client-ip",
+                "client-ip",
+                "x-azure-clientip",
+                "x-azure-socketip",
+                "forwarded",
+                "x-forwarded-proto",
+            ]
+        },
+    }
 
 
 # --- Outbox drain ---------------------------------------------------------- #

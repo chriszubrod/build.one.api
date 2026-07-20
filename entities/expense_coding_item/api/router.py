@@ -12,6 +12,7 @@ from entities.expense_coding_item.api.schemas import (
 )
 from entities.expense_coding_item.business.service import ExpenseCodingItemService
 from entities.expense_coding_item.business.suggestion_service import ExpenseCodingSuggestionService
+from integrations.intuit.qbo.base.client import recode_write_gate_reason
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
 from shared.api.responses import item_response, list_response, raise_database_error, raise_not_found
 from shared.authz import current_user_id
@@ -70,6 +71,7 @@ def get_expense_coding_metrics_router(
     except Exception as error:
         logger.exception("Failed to read expense coding metrics.")
         raise HTTPException(status_code=500, detail="Failed to read expense coding metrics.") from error
+    metrics["recode_writes_enabled"] = recode_write_gate_reason() is None
     return item_response(metrics)
 
 
@@ -212,7 +214,7 @@ def confirm_expense_coding_item_router(
     result_status = result.get("status")
     if result_status == "not_found":
         raise_not_found("Expense coding item")
-    if result_status in ("invalid", "mapping_missing"):
+    if result_status in ("invalid", "mapping_missing", "writes_disabled"):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=result.get("reason", "Invalid confirmation request."),
@@ -224,7 +226,5 @@ def confirm_expense_coding_item_router(
 
     payload = item.to_dict()
     payload["enqueued"] = result.get("enqueued", False)
-    if result.get("reason"):
-        payload["reason"] = result["reason"]
 
     return item_response(payload)

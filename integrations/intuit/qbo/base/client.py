@@ -62,6 +62,20 @@ def _recode_writes_allowed() -> bool:
     return os.getenv("ALLOW_EXPENSE_RECODE_WRITES", "").strip().lower() == "true"
 
 
+def recode_write_gate_reason() -> Optional[str]:
+    """
+    Public read of the expense-recode write gates (for confirm + status
+    endpoints — U-058): why the recode write path is disabled, or None when
+    enabled. Checks the global ALLOW_QBO_WRITES gate first, then the
+    ALLOW_EXPENSE_RECODE_WRITES feature gate.
+    """
+    if not _writes_allowed():
+        return "qbo_writes_disabled"
+    if not _recode_writes_allowed():
+        return "recode_writes_disabled"
+    return None
+
+
 class QboHttpClient:
     """
     Shared HTTP client for QBO API calls.

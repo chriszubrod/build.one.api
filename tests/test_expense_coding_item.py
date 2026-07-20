@@ -246,7 +246,7 @@ def _setup_confirm_gate_mocks(monkeypatch, *, writes_allowed: bool, recode_write
     return svc, record_spy, mark_enqueued_spy, mock_outbox_instance
 
 
-def test_confirm_feature_gate_off_records_but_does_not_enqueue(monkeypatch):
+def test_confirm_feature_gate_off_rejects_without_recording(monkeypatch):
     svc, record_spy, mark_enqueued_spy, mock_outbox_instance = (
         _setup_confirm_gate_mocks(monkeypatch, writes_allowed=True, recode_writes_enabled=False)
     )
@@ -261,11 +261,11 @@ def test_confirm_feature_gate_off_records_but_does_not_enqueue(monkeypatch):
     )
 
     assert result == {
-        "status": "confirmed",
-        "enqueued": False,
+        "status": "writes_disabled",
         "reason": "recode_writes_disabled",
     }
-    record_spy.assert_called_once()
+    svc.read_by_public_id.assert_not_called()
+    record_spy.assert_not_called()
     mock_outbox_instance.enqueue.assert_not_called()
     mark_enqueued_spy.assert_not_called()
 
@@ -295,7 +295,7 @@ def test_confirm_both_gates_on_enqueues(monkeypatch):
     mark_enqueued_spy.assert_called_once_with("eci-1")
 
 
-def test_confirm_global_qbo_writes_off_returns_qbo_writes_disabled(monkeypatch):
+def test_confirm_global_qbo_writes_off_rejects_without_recording(monkeypatch):
     svc, record_spy, mark_enqueued_spy, mock_outbox_instance = (
         _setup_confirm_gate_mocks(monkeypatch, writes_allowed=False, recode_writes_enabled=True)
     )
@@ -310,10 +310,31 @@ def test_confirm_global_qbo_writes_off_returns_qbo_writes_disabled(monkeypatch):
     )
 
     assert result == {
-        "status": "confirmed",
-        "enqueued": False,
+        "status": "writes_disabled",
         "reason": "qbo_writes_disabled",
     }
-    record_spy.assert_called_once()
+    svc.read_by_public_id.assert_not_called()
+    record_spy.assert_not_called()
     mock_outbox_instance.enqueue.assert_not_called()
     mark_enqueued_spy.assert_not_called()
+
+
+def test_recode_write_gate_reason_truth_table(monkeypatch):
+    from integrations.intuit.qbo.base.client import recode_write_gate_reason
+
+    cases = [
+        (True, True, None),
+        (True, False, "recode_writes_disabled"),
+        (False, True, "qbo_writes_disabled"),
+        (False, False, "qbo_writes_disabled"),
+    ]
+    for writes_allowed, recode_writes_allowed, expected in cases:
+        monkeypatch.setattr(
+            "integrations.intuit.qbo.base.client._writes_allowed",
+            lambda w=writes_allowed: w,
+        )
+        monkeypatch.setattr(
+            "integrations.intuit.qbo.base.client._recode_writes_allowed",
+            lambda r=recode_writes_allowed: r,
+        )
+        assert recode_write_gate_reason() == expected

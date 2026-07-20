@@ -150,6 +150,14 @@ class ExpenseCodingItemService:
         was_overridden: bool,
         user_id: int,
     ) -> dict:
+        from integrations.intuit.qbo.base.client import recode_write_gate_reason
+
+        # U-058: gate-off must reject with zero DB writes — a silently recorded
+        # 'confirmed' looked successful to the operator but never reached QBO.
+        gate_reason = recode_write_gate_reason()
+        if gate_reason is not None:
+            return {"status": "writes_disabled", "reason": gate_reason}
+
         item = self.read_by_public_id(public_id)
         if item is None:
             return {"status": "not_found"}
@@ -193,26 +201,6 @@ class ExpenseCodingItemService:
             expected_sync_token=expected_sync_token,
             status="confirmed",
         )
-
-        from integrations.intuit.qbo.base.client import _recode_writes_allowed, _writes_allowed
-
-        # Global QBO write gate (unchanged behavior + reason).
-        if not _writes_allowed():
-            return {
-                "status": "confirmed",
-                "enqueued": False,
-                "reason": "qbo_writes_disabled",
-            }
-
-        # U-005 Phase F feature gate: even with global writes on, the expense-coding
-        # recode stays off until ALLOW_EXPENSE_RECODE_WRITES is deliberately flipped on
-        # (Gate-P2 go-live). Confirmation is still recorded above; we simply do not enqueue.
-        if not _recode_writes_allowed():
-            return {
-                "status": "confirmed",
-                "enqueued": False,
-                "reason": "recode_writes_disabled",
-            }
 
         from integrations.intuit.qbo.outbox.business.service import QboOutboxService
 

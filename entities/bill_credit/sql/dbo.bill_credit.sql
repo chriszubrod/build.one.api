@@ -85,25 +85,36 @@ GO
 GO
 
 CREATE OR ALTER PROCEDURE ReadBillCredits
+(
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
+)
 AS
 BEGIN
     BEGIN TRANSACTION;
-
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [VendorId],
-        CONVERT(VARCHAR(19), [CreditDate], 120) AS [CreditDate],
-        [CreditNumber],
-        [TotalAmount],
-        [Memo],
-        [IsDraft]
-    FROM dbo.[BillCredit]
-    ORDER BY [CreditDate] DESC, [CreditNumber] ASC;
-
+        bc.[Id],
+        bc.[PublicId],
+        bc.[RowVersion],
+        CONVERT(VARCHAR(19), bc.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), bc.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        bc.[VendorId],
+        CONVERT(VARCHAR(19), bc.[CreditDate], 120) AS [CreditDate],
+        bc.[CreditNumber],
+        bc.[TotalAmount],
+        bc.[Memo],
+        bc.[IsDraft]
+    FROM dbo.[BillCredit] bc
+    WHERE
+        @ActorIsSystemAdmin = 1
+        OR bc.[CreatedByUserId] = @ActorUserId
+        OR bc.[Id] IN (
+            SELECT bcli.[BillCreditId]
+            FROM dbo.[BillCreditLineItem] bcli
+            INNER JOIN dbo.[UserProject] up ON up.[ProjectId] = bcli.[ProjectId]
+            WHERE up.[UserId] = @ActorUserId
+        )
+    ORDER BY bc.[CreditDate] DESC, bc.[CreditNumber] ASC;
     COMMIT TRANSACTION;
 END;
 GO
@@ -284,28 +295,23 @@ CREATE OR ALTER PROCEDURE ReadBillCreditsPaginated
     @EndDate DATETIME2(3) = NULL,
     @IsDraft BIT = NULL,
     @SortBy NVARCHAR(50) = 'CreditDate',
-    @SortDirection NVARCHAR(4) = 'DESC'
+    @SortDirection NVARCHAR(4) = 'DESC',
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
-    
     DECLARE @Offset INT = (@PageNumber - 1) * @PageSize;
-    
-    -- Validate sort column to prevent SQL injection
-    DECLARE @SortColumn NVARCHAR(50);
-    SET @SortColumn = CASE @SortBy
+    DECLARE @SortColumn NVARCHAR(50) = CASE @SortBy
         WHEN 'CreditNumber' THEN 'CreditNumber'
         WHEN 'CreditDate' THEN 'CreditDate'
         WHEN 'TotalAmount' THEN 'TotalAmount'
         WHEN 'VendorId' THEN 'VendorId'
         ELSE 'CreditDate'
     END;
-    
-    -- Validate sort direction
-    DECLARE @SortDir NVARCHAR(4);
-    SET @SortDir = CASE WHEN UPPER(@SortDirection) = 'ASC' THEN 'ASC' ELSE 'DESC' END;
-    
+    DECLARE @SortDir NVARCHAR(4) = CASE WHEN UPPER(@SortDirection) = 'ASC' THEN 'ASC' ELSE 'DESC' END;
+
     SELECT
         bc.[Id],
         bc.[PublicId],
@@ -321,7 +327,7 @@ BEGIN
     FROM dbo.[BillCredit] bc
     LEFT JOIN dbo.[Vendor] v ON bc.[VendorId] = v.[Id]
     WHERE
-        (@SearchTerm IS NULL OR 
+        (@SearchTerm IS NULL OR
          bc.[CreditNumber] LIKE '%' + @SearchTerm + '%' OR
          bc.[Memo] LIKE '%' + @SearchTerm + '%' OR
          v.[Name] LIKE '%' + @SearchTerm + '%' OR
@@ -331,7 +337,17 @@ BEGIN
         AND (@StartDate IS NULL OR bc.[CreditDate] >= @StartDate)
         AND (@EndDate IS NULL OR bc.[CreditDate] <= @EndDate)
         AND (@IsDraft IS NULL OR bc.[IsDraft] = @IsDraft)
-    ORDER BY 
+        AND (
+            @ActorIsSystemAdmin = 1
+            OR bc.[CreatedByUserId] = @ActorUserId
+            OR bc.[Id] IN (
+                SELECT bcli.[BillCreditId]
+                FROM dbo.[BillCreditLineItem] bcli
+                INNER JOIN dbo.[UserProject] up ON up.[ProjectId] = bcli.[ProjectId]
+                WHERE up.[UserId] = @ActorUserId
+            )
+        )
+    ORDER BY
         CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'CreditNumber' THEN bc.[CreditNumber] END ASC,
         CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'CreditNumber' THEN bc.[CreditNumber] END DESC,
         CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'CreditDate' THEN bc.[CreditDate] END ASC,
@@ -342,7 +358,6 @@ BEGIN
         CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'VendorId' THEN bc.[VendorId] END DESC
     OFFSET @Offset ROWS
     FETCH NEXT @PageSize ROWS ONLY;
-    
     COMMIT TRANSACTION;
 END;
 GO
@@ -355,17 +370,18 @@ CREATE OR ALTER PROCEDURE CountBillCredits
     @VendorId BIGINT = NULL,
     @StartDate DATETIME2(3) = NULL,
     @EndDate DATETIME2(3) = NULL,
-    @IsDraft BIT = NULL
+    @IsDraft BIT = NULL,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
-    
     SELECT COUNT(*) AS [TotalCount]
     FROM dbo.[BillCredit] bc
     LEFT JOIN dbo.[Vendor] v ON bc.[VendorId] = v.[Id]
     WHERE
-        (@SearchTerm IS NULL OR 
+        (@SearchTerm IS NULL OR
          bc.[CreditNumber] LIKE '%' + @SearchTerm + '%' OR
          bc.[Memo] LIKE '%' + @SearchTerm + '%' OR
          v.[Name] LIKE '%' + @SearchTerm + '%' OR
@@ -374,8 +390,17 @@ BEGIN
         AND (@VendorId IS NULL OR bc.[VendorId] = @VendorId)
         AND (@StartDate IS NULL OR bc.[CreditDate] >= @StartDate)
         AND (@EndDate IS NULL OR bc.[CreditDate] <= @EndDate)
-        AND (@IsDraft IS NULL OR bc.[IsDraft] = @IsDraft);
-    
+        AND (@IsDraft IS NULL OR bc.[IsDraft] = @IsDraft)
+        AND (
+            @ActorIsSystemAdmin = 1
+            OR bc.[CreatedByUserId] = @ActorUserId
+            OR bc.[Id] IN (
+                SELECT bcli.[BillCreditId]
+                FROM dbo.[BillCreditLineItem] bcli
+                INNER JOIN dbo.[UserProject] up ON up.[ProjectId] = bcli.[ProjectId]
+                WHERE up.[UserId] = @ActorUserId
+            )
+        );
     COMMIT TRANSACTION;
 END;
 GO

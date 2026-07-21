@@ -49,7 +49,8 @@ CREATE OR ALTER PROCEDURE CreateBillFolderRunItem
 (
     @RunId BIGINT,
     @Filename NVARCHAR(500),
-    @ItemId NVARCHAR(200)
+    @ItemId NVARCHAR(200),
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -58,7 +59,7 @@ BEGIN
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
     INSERT INTO dbo.[BillFolderRunItem]
-        ([CreatedDatetime], [ModifiedDatetime], [RunId], [Filename], [ItemId], [Status], [Attempts])
+        ([CreatedDatetime], [ModifiedDatetime], [RunId], [Filename], [ItemId], [Status], [Attempts], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -67,7 +68,7 @@ BEGIN
         INSERTED.[ItemId],
         INSERTED.[Status],
         INSERTED.[Attempts]
-    VALUES (@Now, @Now, @RunId, @Filename, @ItemId, 'queued', 0);
+    VALUES (@Now, @Now, @RunId, @Filename, @ItemId, 'queued', 0, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;

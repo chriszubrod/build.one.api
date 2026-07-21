@@ -386,64 +386,27 @@ END;
 GO
 
 -- ===== 9. CreateBillFolderRun =====
-CREATE OR ALTER PROCEDURE CreateBillFolderRun
-(
-    @PublicId UNIQUEIDENTIFIER = NULL,
-    @Status NVARCHAR(20) = 'processing',
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-    DECLARE @NewPublicId UNIQUEIDENTIFIER = ISNULL(@PublicId, NEWID());
-
-    INSERT INTO dbo.[BillFolderRun] ([PublicId], [CreatedDatetime], [ModifiedDatetime], [Status], [StartedAt], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[Status],
-        INSERTED.[Result],
-        CONVERT(VARCHAR(19), INSERTED.[StartedAt], 120) AS [StartedAt],
-        CONVERT(VARCHAR(19), INSERTED.[CompletedAt], 120) AS [CompletedAt]
-    VALUES (@NewPublicId, @Now, @Now, @Status, @Now, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-100, 2026-07-21) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/bill/sql/dbo.billfolderrun.sql
+--
+-- Re-running this file is now a no-op for CreateBillFolderRun. Do NOT reintroduce a
+-- body here.
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 10. CreateBillFolderRunItem =====
-CREATE OR ALTER PROCEDURE CreateBillFolderRunItem
-(
-    @RunId BIGINT,
-    @Filename NVARCHAR(500),
-    @ItemId NVARCHAR(200),
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[BillFolderRunItem]
-        ([CreatedDatetime], [ModifiedDatetime], [RunId], [Filename], [ItemId], [Status], [Attempts], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RunId],
-        INSERTED.[Filename],
-        INSERTED.[ItemId],
-        INSERTED.[Status],
-        INSERTED.[Attempts]
-    VALUES (@Now, @Now, @RunId, @Filename, @ItemId, 'queued', 0, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-100, 2026-07-21) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/bill/sql/dbo.billfolderrunitem.sql
+--
+-- Re-running this file is now a no-op for CreateBillFolderRunItem. Do NOT reintroduce a
+-- body here.
+-- ---------------------------------------------------------------------------
 GO
 
 PRINT 'Gap 2 Phase Adjacent: 10 sprocs threaded with @CreatedByUserId (ReviewEntry skipped — decommissioned)';

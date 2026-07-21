@@ -1,16 +1,16 @@
-"""U-045/U-048/U-051/U-062/U-087 guard: canonical SQL homes for sprocs, access
+"""U-045/U-048/U-051/U-062/U-087/U-100 guard: canonical SQL homes for sprocs, access
 UDFs, and the shared human-only review predicate.
 
 Three guard shapes:
 
 * **Sprocs** — an entity's base SQL file is the one home for its sprocs. Covers
-  time_entry (U-045), role_module (U-048), and the three review recipient
-  resolvers (U-062) — 2 of 37 entities fully converted plus a narrow review
-  resolver set. The other 35 still carry duplicated base sprocs in migrations
-  (bill=10, contract_labor=10, user_role=9, …); converting them is future
-  work. **When you convert one, add its row to ENTITY_BASE_FILES or
-  SINGLE_SOURCE_SPROCS** — coverage is opt-in, so a conversion without a row
-  leaves a gap that looks covered.
+  time_entry (U-045), role_module (U-048), completion_job, bill + expense (U-100),
+  bill_credit list-3 (U-100), and the three review recipient resolvers (U-062).
+  The remaining entities still carry duplicated base sprocs in migrations
+  (contract_labor=10, user_role=9, …); converting them is future work.
+  **When you convert one, add its row to
+  ENTITY_BASE_FILES or SINGLE_SOURCE_SPROCS** — coverage is opt-in, so a
+  conversion without a row leaves a gap that looks covered.
 
 * **Access UDFs** (U-051) — the whole `dbo.UserCanAccess*` family lives in
   `shared/sql/dbo.access_udfs.sql`, NOT in any entity base file. Each one is
@@ -42,7 +42,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 TIME_ENTRY_BASE = REPO_ROOT / "entities" / "time_entry" / "sql" / "dbo.time_entry.sql"
 ROLE_MODULE_BASE = REPO_ROOT / "entities" / "role_module" / "sql" / "dbo.rolemodule.sql"
+BILL_BASE = REPO_ROOT / "entities" / "bill" / "sql" / "dbo.bill.sql"
+BILL_SOURCE_EMAIL_BASE = REPO_ROOT / "entities" / "bill" / "sql" / "dbo.bill_create_source_email.sql"
+BILL_COMPLETION_RESULT_BASE = REPO_ROOT / "entities" / "bill" / "sql" / "dbo.bill_completion_result.sql"
+BILL_FOLDER_RUN_BASE = REPO_ROOT / "entities" / "bill" / "sql" / "dbo.billfolderrun.sql"
+BILL_FOLDER_RUN_ITEM_BASE = REPO_ROOT / "entities" / "bill" / "sql" / "dbo.billfolderrunitem.sql"
 BILL_LINE_ITEM_BASE = REPO_ROOT / "entities" / "bill_line_item" / "sql" / "dbo.bill_line_item.sql"
+EXPENSE_BASE = REPO_ROOT / "entities" / "expense" / "sql" / "dbo.expense.sql"
+BILL_CREDIT_BASE = REPO_ROOT / "entities" / "bill_credit" / "sql" / "dbo.bill_credit.sql"
 EXPENSE_LINE_ITEM_BASE = REPO_ROOT / "entities" / "expense_line_item" / "sql" / "dbo.expense_line_item.sql"
 ACCESS_UDF_HOME = REPO_ROOT / "shared" / "sql" / "dbo.access_udfs.sql"
 
@@ -63,6 +70,16 @@ REVIEW_BASE = REPO_ROOT / "entities" / "review" / "sql" / "dbo.review.sql"
 SINGLE_SOURCE_SPROCS = [
     ("CreateBillLineItem", BILL_LINE_ITEM_BASE),
     ("CreateExpenseLineItem", EXPENSE_LINE_ITEM_BASE),
+    # U-100: bill_line_item + bill_credit are guarded per-sproc, NOT via
+    # ENTITY_BASE_FILES, because each is only PARTIALLY converted —
+    # UpdateBillLineItemById still has a live copy in step2_decimal_quantity.sql,
+    # CreateBillCredit/CreateBillCreditLineItem in gap2_core_threading.sql (see
+    # TODO.md "single-source ledger"). Promoting an entity to ENTITY_BASE_FILES
+    # is the signal that its base file is fully sole-source.
+    ("ReadBillLineItemBoxLinks", BILL_LINE_ITEM_BASE),
+    ("ReadBillCredits", BILL_CREDIT_BASE),
+    ("ReadBillCreditsPaginated", BILL_CREDIT_BASE),
+    ("CountBillCredits", BILL_CREDIT_BASE),
     ("ResolveReviewRecipientsByBillId", REVIEW_BASE),
     ("ResolveReviewRecipientsByContractLaborId", REVIEW_BASE),
     ("ResolveContractLaborReviewRecipientsPerProject", REVIEW_BASE),
@@ -84,6 +101,12 @@ ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
     ("role_module", ROLE_MODULE_BASE),
     ("completion_job", COMPLETION_JOB_BASE),
+    ("bill", BILL_BASE),
+    ("bill_source_email", BILL_SOURCE_EMAIL_BASE),
+    ("bill_completion_result", BILL_COMPLETION_RESULT_BASE),
+    ("billfolderrun", BILL_FOLDER_RUN_BASE),
+    ("billfolderrunitem", BILL_FOLDER_RUN_ITEM_BASE),
+    ("expense", EXPENSE_BASE),
 ]
 
 ACCESS_UDFS = [
@@ -211,8 +234,8 @@ def _sql_index() -> tuple[tuple[Path, frozenset[str], frozenset[str]], ...]:
 
 @pytest.mark.parametrize("sproc_name,home_path", SINGLE_SOURCE_SPROCS)
 def test_sproc_defined_once_in_entity_base(sproc_name, home_path):
-    """U-074: each reconciled line-item Create sproc is defined exactly once, in
-    its entity base file. A body re-added to ANY .sql file fails here."""
+    """Each sproc listed in SINGLE_SOURCE_SPROCS is defined exactly once, in its
+    canonical home file. A body re-added to ANY .sql file fails here."""
     matches = [path for path, sprocs, _ in _sql_index() if sproc_name in sprocs]
     assert matches == [home_path], (
         f"{sproc_name} must be defined exactly once in "

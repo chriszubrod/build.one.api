@@ -76,8 +76,19 @@ Swept all 1008 repo `call_procedure` sites (AST) vs live prod `sys.parameters`. 
 
 - [x] **Prod restored** — all 9 (`Read*`/`Read*Paginated`/`Count*` × Bill/Expense/CL) re-scoped in prod, **column-verified** (gap1 was stale: caught `SourceEmailMessageId` ×2 + `SourceTimeEntryId` ×1 before they stuck).
 - [x] **Base files reconciled to scoped (`base == prod`, verified pre-write)** — defuses the primary landmine (applying `dbo.{bill,expense,contract_labor}.sql` no longer reverts prod). `gap1_list_sprocs_scoped.sql`'s 9 copies neutralized to SUPERSEDED stubs (BillCredit/Invoice kept). Scoping guard: `tests/test_list_sproc_scoping.py`.
-- [ ] **FULL single-source (remaining).** These 9 sprocs are still ALSO defined in `gap1_bill_family_inline_filter.sql`, `gap1_bill_family_inline_filter_v2.sql`, `gap1_bill_family_remove_legacy_actor_bypass.sql`, `entities/bill/sql/migrations/003_read_bill_source_email_message_id.sql`, `entities/expense/sql/add_is_credit_column.sql`. Neutralize those copies (keep the column-add DDL in 003 / add_is_credit) + add `SINGLE_SOURCE_SPROCS` rows so the base is provably sole-source. Delicate (some files do more than redefine the sproc) — do carefully, ideally reviewed.
+- [x] **FULL single-source (U-100, bill + expense + bill_credit list-3).** Neutralized duplicate copies in `gap1_bill_family_*`, `add_is_credit_column.sql` (sproc bodies only; DDL kept), `bill_external_links.sql`, bill migrations 002–005 (003 alone carried 8 Bill sproc copies), `001_expense_source_email.sql`, `gap2_adjacent_threading.sql` (CreateBillFolderRun/Item only). Guard extended in `tests/test_sproc_single_source.py`.
 - [ ] **U-073/U-076 now proven live.** Run the AST audit across ALL entities (repo `call_procedure` params vs live `sys.parameters`) — this drift class bit prod; other entities may carry it. Prioritize.
+
+## single-source ledger (U-100 leftovers)
+
+Remaining duplicate sproc bodies not yet neutralized — fold into future conversion units:
+
+- [ ] **`UpdateBillLineItemById` dup** in `scripts/migrations/step2_decimal_quantity.sql` (canonical: `entities/bill_line_item/sql/dbo.bill_line_item.sql`; U-074 neutralized CreateBillLineItem only).
+- [ ] **`gap2_core_threading.sql` LIVE bodies beyond U-061's 4 stubs** — still carries CreateBillCredit, CreateBillCreditLineItem, CreateVendor, CreateCustomer, … (CreateBill/CreateExpense/CreateProject/CreateInvoiceLineItem stubbed).
+- [ ] **qbo.* vendorcredit mapping sproc dups** — `scripts/migrations/qbo_vendorcredit_mapping_sprocs_dbo.sql`, `scripts/migrations/qbo_vendorcredit_dup_fix.sql`.
+- [ ] **contract_labor family ~10 dup'd sprocs** — list-path copies in `gap1_list_sprocs_scoped.sql` now stubbed (U-089) but other migration duplicates remain.
+- [ ] **Invoice list sprocs' only source is still `gap1_list_sprocs_scoped.sql`** — ReadInvoices / ReadInvoicesPaginated / CountInvoices have no entity base home yet.
+- [ ] **(P3, optional) Upgrade prod BillCredit list scoping to the `UserCanAccessBillCredit` UDF form.** U-100's `sys.sql_modules` sweep (2026-07-21) proved prod runs the gap1-v3 INLINE filter for ReadBillCredits/ReadBillCreditsPaginated/CountBillCredits (semantically equivalent: admin OR creator OR line-item-project membership, fail-closed); the base was reconciled to that live text (base==live). Bill/Expense lists use the UDF form in prod, so BillCredit is the odd one out. Upgrading = apply the UDF-form bodies to prod (own Gate-2 SQL apply + update base in the same unit); cosmetic consistency, no behavior change expected.
 
 ## 🟡 U-057 follow-ups — TimeEntry.ProjectId retirement (2026-07-16) — code LANDED, prod DDL DEFERRED by request
 

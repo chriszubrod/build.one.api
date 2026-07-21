@@ -536,3 +536,31 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+-- =====================================================================
+-- ReadBillQboLinkInfo — bill-level (one QBO bill per dbo.Bill in practice).
+-- =====================================================================
+-- Walks dbo.Bill → dbo.BillLineItem → qbo.BillLineItemBillLine →
+-- qbo.BillLine → qbo.Bill to fetch the Intuit (QboId, RealmId) used to
+-- construct the QBO web URL. Returns at most one row.
+--
+-- A bill is "synced" once at least one line item has been pushed to QBO.
+-- We pick the qbo.Bill with the lowest Id (oldest) to be stable across
+-- re-sync churn. Returns empty if no line item is mapped yet.
+
+CREATE OR ALTER PROCEDURE dbo.ReadBillQboLinkInfo (@BillId BIGINT)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT TOP 1
+        qb.[QboId]    AS QboId,
+        qb.[RealmId]  AS QboRealmId
+    FROM dbo.[BillLineItem] bli
+    INNER JOIN qbo.[BillLineItemBillLine] map ON map.[BillLineItemId] = bli.[Id]
+    INNER JOIN qbo.[BillLine] qbline           ON qbline.[Id] = map.[QboBillLineId]
+    INNER JOIN qbo.[Bill] qb                   ON qb.[Id] = qbline.[QboBillId]
+    WHERE bli.[BillId] = @BillId
+      AND qb.[QboId] IS NOT NULL
+    ORDER BY qb.[Id] ASC;
+END;
+GO

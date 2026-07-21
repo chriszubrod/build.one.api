@@ -377,3 +377,35 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+-- =====================================================================
+-- ReadBillLineItemBoxLinks — per-line-item (multi-project bills supported).
+-- =====================================================================
+-- Returns one row per dbo.BillLineItem on the bill, including line items
+-- whose project has no Box mapping (LEFT JOIN — Box columns NULL in that
+-- case). The router merges per-row results back into the line-item list
+-- by BillLineItemId so the React table can show or hide icons per row.
+--
+-- Doc class for bills is fixed at 'invoices' (the project's `14 - Invoices`
+-- Box folder). Workbook is one per project (UNIQUE on ProjectId).
+
+CREATE OR ALTER PROCEDURE dbo.ReadBillLineItemBoxLinks (@BillId BIGINT)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT
+        bli.[Id]                AS BillLineItemId,
+        f.[BoxFolderId]         AS BoxInvoicesFolderId,
+        pw.[BoxFileId]          AS BoxWorkbookFileId,
+        pw.[WorksheetName]      AS BoxWorkbookWorksheetName
+    FROM dbo.[BillLineItem] bli
+    LEFT JOIN [box].[ProjectFolder] pf
+        ON pf.[ProjectId] = bli.[ProjectId]
+       AND pf.[DocClass]  = N'invoices'
+    LEFT JOIN [box].[Folder] f
+        ON f.[Id] = pf.[BoxFolderId]
+    LEFT JOIN [box].[ProjectWorkbook] pw
+        ON pw.[ProjectId] = bli.[ProjectId]
+    WHERE bli.[BillId] = @BillId;
+END;
+GO

@@ -33,7 +33,8 @@ GO
 CREATE OR ALTER PROCEDURE CreateBillFolderRun
 (
     @PublicId UNIQUEIDENTIFIER = NULL,
-    @Status NVARCHAR(20) = 'processing'
+    @Status NVARCHAR(20) = 'processing',
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -42,7 +43,7 @@ BEGIN
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
     DECLARE @NewPublicId UNIQUEIDENTIFIER = ISNULL(@PublicId, NEWID());
 
-    INSERT INTO dbo.[BillFolderRun] ([PublicId], [CreatedDatetime], [ModifiedDatetime], [Status], [StartedAt])
+    INSERT INTO dbo.[BillFolderRun] ([PublicId], [CreatedDatetime], [ModifiedDatetime], [Status], [StartedAt], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -53,7 +54,7 @@ BEGIN
         INSERTED.[Result],
         CONVERT(VARCHAR(19), INSERTED.[StartedAt], 120) AS [StartedAt],
         CONVERT(VARCHAR(19), INSERTED.[CompletedAt], 120) AS [CompletedAt]
-    VALUES (@NewPublicId, @Now, @Now, @Status, @Now);
+    VALUES (@NewPublicId, @Now, @Now, @Status, @Now, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;

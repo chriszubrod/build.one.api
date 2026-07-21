@@ -35,133 +35,21 @@ GO
 
 -- =====================================================================
 -- BillCredit — line items carry ProjectId
+-- DANGER (U-100): the three UserCanAccessBillCredit-UDF bodies this section
+-- held were retired UNAPPLIED — sys.sql_modules (2026-07-21) proved prod
+-- never ran them; live prod runs the gap1-v3 inline-scoped form, which now
+-- lives (base==live verified) in entities/bill_credit/sql/dbo.bill_credit.sql.
+-- Re-introducing any body here would fork that single source again; an
+-- unscoped body would unscope prod BillCredit lists → SQL 8145/500.
 -- =====================================================================
 
-CREATE OR ALTER PROCEDURE ReadBillCredits
-(
-    @ActorUserId BIGINT = NULL,
-    @ActorIsSystemAdmin BIT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    SELECT
-        bc.[Id],
-        bc.[PublicId],
-        bc.[RowVersion],
-        CONVERT(VARCHAR(19), bc.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), bc.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        bc.[VendorId],
-        CONVERT(VARCHAR(19), bc.[CreditDate], 120) AS [CreditDate],
-        bc.[CreditNumber],
-        bc.[TotalAmount],
-        bc.[Memo],
-        bc.[IsDraft]
-    FROM dbo.[BillCredit] bc
-    WHERE dbo.UserCanAccessBillCredit(@ActorUserId, @ActorIsSystemAdmin, bc.[Id]) = 1
-    ORDER BY bc.[CreditDate] DESC, bc.[CreditNumber] ASC;
-    COMMIT TRANSACTION;
-END;
+-- SUPERSEDED (U-100): dbo.ReadBillCredits single-sourced in entities/bill_credit/sql/dbo.bill_credit.sql.
 GO
 
-CREATE OR ALTER PROCEDURE ReadBillCreditsPaginated
-(
-    @PageNumber INT = 1,
-    @PageSize INT = 50,
-    @SearchTerm NVARCHAR(255) = NULL,
-    @VendorId BIGINT = NULL,
-    @StartDate DATETIME2(3) = NULL,
-    @EndDate DATETIME2(3) = NULL,
-    @IsDraft BIT = NULL,
-    @SortBy NVARCHAR(50) = 'CreditDate',
-    @SortDirection NVARCHAR(4) = 'DESC',
-    @ActorUserId BIGINT = NULL,
-    @ActorIsSystemAdmin BIT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    DECLARE @Offset INT = (@PageNumber - 1) * @PageSize;
-    DECLARE @SortColumn NVARCHAR(50) = CASE @SortBy
-        WHEN 'CreditNumber' THEN 'CreditNumber'
-        WHEN 'CreditDate' THEN 'CreditDate'
-        WHEN 'TotalAmount' THEN 'TotalAmount'
-        WHEN 'VendorId' THEN 'VendorId'
-        ELSE 'CreditDate'
-    END;
-    DECLARE @SortDir NVARCHAR(4) = CASE WHEN UPPER(@SortDirection) = 'ASC' THEN 'ASC' ELSE 'DESC' END;
-
-    SELECT
-        bc.[Id],
-        bc.[PublicId],
-        bc.[RowVersion],
-        CONVERT(VARCHAR(19), bc.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), bc.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        bc.[VendorId],
-        CONVERT(VARCHAR(19), bc.[CreditDate], 120) AS [CreditDate],
-        bc.[CreditNumber],
-        bc.[TotalAmount],
-        bc.[Memo],
-        bc.[IsDraft]
-    FROM dbo.[BillCredit] bc
-    LEFT JOIN dbo.[Vendor] v ON bc.[VendorId] = v.[Id]
-    WHERE
-        (@SearchTerm IS NULL OR
-         bc.[CreditNumber] LIKE '%' + @SearchTerm + '%' OR
-         bc.[Memo] LIKE '%' + @SearchTerm + '%' OR
-         v.[Name] LIKE '%' + @SearchTerm + '%' OR
-         CONVERT(VARCHAR(10), bc.[CreditDate], 120) LIKE '%' + @SearchTerm + '%' OR
-         CONVERT(VARCHAR(50), bc.[TotalAmount]) LIKE '%' + @SearchTerm + '%')
-        AND (@VendorId IS NULL OR bc.[VendorId] = @VendorId)
-        AND (@StartDate IS NULL OR bc.[CreditDate] >= @StartDate)
-        AND (@EndDate IS NULL OR bc.[CreditDate] <= @EndDate)
-        AND (@IsDraft IS NULL OR bc.[IsDraft] = @IsDraft)
-        AND dbo.UserCanAccessBillCredit(@ActorUserId, @ActorIsSystemAdmin, bc.[Id]) = 1
-    ORDER BY
-        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'CreditNumber' THEN bc.[CreditNumber] END ASC,
-        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'CreditNumber' THEN bc.[CreditNumber] END DESC,
-        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'CreditDate' THEN bc.[CreditDate] END ASC,
-        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'CreditDate' THEN bc.[CreditDate] END DESC,
-        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'TotalAmount' THEN bc.[TotalAmount] END ASC,
-        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'TotalAmount' THEN bc.[TotalAmount] END DESC,
-        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'VendorId' THEN bc.[VendorId] END ASC,
-        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'VendorId' THEN bc.[VendorId] END DESC
-    OFFSET @Offset ROWS
-    FETCH NEXT @PageSize ROWS ONLY;
-    COMMIT TRANSACTION;
-END;
+-- SUPERSEDED (U-100): dbo.ReadBillCreditsPaginated single-sourced in entities/bill_credit/sql/dbo.bill_credit.sql.
 GO
 
-CREATE OR ALTER PROCEDURE CountBillCredits
-(
-    @SearchTerm NVARCHAR(255) = NULL,
-    @VendorId BIGINT = NULL,
-    @StartDate DATETIME2(3) = NULL,
-    @EndDate DATETIME2(3) = NULL,
-    @IsDraft BIT = NULL,
-    @ActorUserId BIGINT = NULL,
-    @ActorIsSystemAdmin BIT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    SELECT COUNT(*) AS [TotalCount]
-    FROM dbo.[BillCredit] bc
-    LEFT JOIN dbo.[Vendor] v ON bc.[VendorId] = v.[Id]
-    WHERE
-        (@SearchTerm IS NULL OR
-         bc.[CreditNumber] LIKE '%' + @SearchTerm + '%' OR
-         bc.[Memo] LIKE '%' + @SearchTerm + '%' OR
-         v.[Name] LIKE '%' + @SearchTerm + '%' OR
-         CONVERT(VARCHAR(10), bc.[CreditDate], 120) LIKE '%' + @SearchTerm + '%' OR
-         CONVERT(VARCHAR(50), bc.[TotalAmount]) LIKE '%' + @SearchTerm + '%')
-        AND (@VendorId IS NULL OR bc.[VendorId] = @VendorId)
-        AND (@StartDate IS NULL OR bc.[CreditDate] >= @StartDate)
-        AND (@EndDate IS NULL OR bc.[CreditDate] <= @EndDate)
-        AND (@IsDraft IS NULL OR bc.[IsDraft] = @IsDraft)
-        AND dbo.UserCanAccessBillCredit(@ActorUserId, @ActorIsSystemAdmin, bc.[Id]) = 1;
-    COMMIT TRANSACTION;
-END;
+-- SUPERSEDED (U-100): dbo.CountBillCredits single-sourced in entities/bill_credit/sql/dbo.bill_credit.sql.
 GO
 
 -- =====================================================================

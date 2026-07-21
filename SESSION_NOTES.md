@@ -1,5 +1,15 @@
 # Session Notes
 
+## Session: U-100 — Bill-family sproc single-source conversion complete (2026-07-21)
+
+Finished what U-089 started: **31 sprocs now have exactly one definition site** — Bill 17 (11 in `dbo.bill.sql` + promoted `ReadBillQboLinkInfo`, 4 in `dbo.bill_create_source_email.sql`, `ReadBillLineItemBoxLinks` → `dbo.bill_line_item.sql`, the 2 BillFolderRun creates), Expense 9, BillCredit list-3. **11 migration files neutralized to SUPERSEDED stubs** (whole-file: bill migrations 002/003/004/005, gap1_bill_family ×3, `bill_external_links.sql`, `001_expense_source_email.sql`; partial, DDL/other-sprocs kept: `add_is_credit_column.sql`, `gap1_list_sprocs_scoped.sql` BillCredit trio, `gap2_adjacent_threading.sql` folderrun pair). Guard: `ENTITY_BASE_FILES` += bill, bill_source_email, bill_completion_result, billfolderrun, billfolderrunitem, expense; `SINGLE_SOURCE_SPROCS` += BillCredit list-3 + `ReadBillLineItemBoxLinks`.
+
+**Prod-proven, repo-only:** read-only `sys.sql_modules` sweep = **31/31 base==live** (compare from the CREATE token — SQL Server stores `CREATE OR ALTER` with "OR ALTER" blanked to spaces and keeps the batch's comment preamble; naive byte-compare false-positives on both). Three stale bases were reconciled to live text **before** their duplicate copies were stubbed:
+- `CreateBillFolderRun`/`CreateBillFolderRunItem` — base lacked the gap2 `@CreatedByUserId` threading; **caught mid-unit by U-092's param-contract guard** failing on the stub (the guard works).
+- BillCredit list-3 — base was the UNSCOPED pre-gap1 form (armed U-089-class landmine: repo passes actor params → base re-apply ⇒ 8145/500). Lineage proven: **prod runs the gap1-v3 INLINE-scoped form**, NOT the UDF-form copies in `gap1_list_sprocs_scoped.sql` (U-089's "still their source" note was wrong — those were never applied; retired unapplied). Base = live v3 text; optional UDF-form upgrade → TODO P3.
+
+Two-pass: Codex `gpt-5.5` xhigh **PASS 0 findings**; `/simplify` 4 agents → 5 wording-only fixes. Verify: **412 pytest** + `py_compile`. Leftovers → TODO.md "single-source ledger" (step2 BLI dup, gap2_core live bodies incl. CreateBillCredit, qbo vendorcredit dups, CL family ~10, Invoice list sprocs homeless). NOTHING to apply to prod; commit `Unit: U-100`.
+
 ## Session: Box Excel — immune-formula conversion of all 23 budget trackers (2026-07-01)
 
 Diagnosed + fixed an active corruption bug: line-item inserts into the Box budget-tracker workbooks were silently corrupting the DETAILS tab (and downstream) formulas.

@@ -11,11 +11,16 @@
 -- base sproc files (which would roll back later migrations like Gap 1
 -- list-path filters or Phase 3 actor params on Read sprocs).
 --
--- U-061 (2026-07-17): 4 sprocs originally defined here — CreateProject,
--- CreateBill, CreateExpense, CreateInvoiceLineItem — were NEUTRALIZED to
--- base-canonical pointer stubs (see each section) because their bodies had
--- drifted BEHIND their entity base files; re-running them reverted prod.
--- The remaining 7 bodies are the live @CreatedByUserId threading.
+-- NEUTRALIZED sections (8 of the 11 below are now base-canonical pointer stubs):
+--   U-061 (2026-07-17) — CreateProject, CreateBill, CreateExpense,
+--     CreateInvoiceLineItem: their bodies had drifted BEHIND their entity base
+--     files, so re-running them reverted prod.
+--   U-074 (2026-07-17) — CreateBillLineItem, CreateExpenseLineItem.
+--   U-102 (2026-07-21) — CreateBillCredit, CreateBillCreditLineItem: the
+--     INVERSE case — the BASE files were the stale copies (no @CreatedByUserId)
+--     and were reconciled to this file's form verbatim.
+-- The remaining 3 live bodies (CreateInvoice, CreateContractLabor,
+-- CreateContractLaborLineItem) are the live @CreatedByUserId threading.
 -- =====================================================================
 
 SET XACT_ABORT ON;
@@ -57,39 +62,22 @@ GO
 GO
 
 -- ===== 3. CreateBillCredit =====
-CREATE OR ALTER PROCEDURE CreateBillCredit
-(
-    @VendorId BIGINT,
-    @CreditDate DATETIME2(3),
-    @CreditNumber NVARCHAR(50),
-    @TotalAmount DECIMAL(18,2) NULL,
-    @Memo NVARCHAR(MAX) NULL,
-    @IsDraft BIT = 1,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[BillCredit] ([CreatedDatetime], [ModifiedDatetime], [VendorId], [CreditDate], [CreditNumber], [TotalAmount], [Memo], [IsDraft], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[VendorId],
-        CONVERT(VARCHAR(19), INSERTED.[CreditDate], 120) AS [CreditDate],
-        INSERTED.[CreditNumber],
-        INSERTED.[TotalAmount],
-        INSERTED.[Memo],
-        INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @VendorId, @CreditDate, @CreditNumber, @TotalAmount, @Memo, @IsDraft, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-102, 2026-07-21) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/bill_credit/sql/dbo.bill_credit.sql
+-- That base was STALE (it lacked @CreatedByUserId) and has been reconciled to
+-- this file's live form verbatim.
+--
+-- Drift (INVERTED vs the U-061 stubs above — here the BASE was the copy that had
+-- fallen behind, not this file): the base omitted @CreatedByUserId, which BillCreditRepository.create
+-- sends unconditionally (entities/bill_credit/persistence/repo.py), so
+-- re-applying the base file would have reverted prod CreateBillCredit to the
+-- pre-threading shape and broken every BillCredit create with SQL 8145 — the
+-- same param-drift that caused the U-089 and U-037 outages. Re-running this
+-- file is now a no-op for CreateBillCredit. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 4. CreateExpense =====
@@ -247,49 +235,22 @@ GO
 GO
 
 -- ===== 8. CreateBillCreditLineItem =====
-CREATE OR ALTER PROCEDURE CreateBillCreditLineItem
-(
-    @BillCreditId BIGINT,
-    @SubCostCodeId BIGINT NULL,
-    @ProjectId BIGINT NULL,
-    @Description NVARCHAR(MAX) NULL,
-    @Quantity DECIMAL(18,4) NULL,
-    @UnitPrice DECIMAL(18,4) NULL,
-    @Amount DECIMAL(18,2) NULL,
-    @IsBillable BIT NULL,
-    @IsBilled BIT NULL,
-    @BillableAmount DECIMAL(18,2) NULL,
-    @IsDraft BIT = 1,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[BillCreditLineItem] ([CreatedDatetime], [ModifiedDatetime], [BillCreditId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [UnitPrice], [Amount], [IsBillable], [IsBilled], [BillableAmount], [IsDraft], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[BillCreditId],
-        INSERTED.[SubCostCodeId],
-        INSERTED.[ProjectId],
-        INSERTED.[Description],
-        INSERTED.[Quantity],
-        INSERTED.[UnitPrice],
-        INSERTED.[Amount],
-        INSERTED.[IsBillable],
-        INSERTED.[IsBilled],
-        INSERTED.[BillableAmount],
-        INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @BillCreditId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @UnitPrice, @Amount, @IsBillable, @IsBilled, @BillableAmount, @IsDraft, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-102, 2026-07-21) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/bill_credit_line_item/sql/dbo.bill_credit_line_item.sql
+-- That base was STALE (it lacked @CreatedByUserId) and has been reconciled to
+-- this file's live form verbatim.
+--
+-- Drift (INVERTED vs the U-061 stubs above — here the BASE was the copy that had
+-- fallen behind, not this file): the base omitted @CreatedByUserId, which BillCreditLineItemRepository.create
+-- sends unconditionally (entities/bill_credit_line_item/persistence/repo.py), so
+-- re-applying the base file would have reverted prod CreateBillCreditLineItem to the
+-- pre-threading shape and broken every BillCreditLineItem create with SQL 8145 — the
+-- same param-drift that caused the U-089 and U-037 outages. Re-running this
+-- file is now a no-op for CreateBillCreditLineItem. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 9. CreateExpenseLineItem =====

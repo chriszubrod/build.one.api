@@ -9,25 +9,16 @@
 -- NullifyInvoiceLineItemsByBillLineItemId sproc. Idempotent (CREATE OR ALTER).
 --
 -- Run with: python scripts/run_sql.py scripts/migrations/qbo_vendorcredit_dup_fix.sql
+-- (as of U-102 this file applies NOTHING — see the stub below; the run PRINTs
+--  a SUPERSEDED line so a no-op is distinguishable from a failed apply.)
 
-CREATE OR ALTER PROCEDURE NullifyInvoiceLineItemsByBillCreditLineItemId
-(
-    @BillCreditLineItemId BIGINT
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    UPDATE dbo.[InvoiceLineItem]
-    SET
-        [ModifiedDatetime] = @Now,
-        [BillCreditLineItemId] = NULL
-    WHERE [BillCreditLineItemId] = @BillCreditLineItemId;
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-102, 2026-07-21): dbo.NullifyInvoiceLineItemsByBillCreditLineItemId
+-- single-sourced in entities/bill_credit_line_item/sql/dbo.bill_credit_line_item.sql.
+-- The body there is identical to the one this file carried (no drift), so this
+-- removal is behavior-neutral. Re-running this file is now a no-op. Do NOT
+-- reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
+
+PRINT 'SUPERSEDED (U-102): no sprocs applied; dbo.NullifyInvoiceLineItemsByBillCreditLineItemId lives in entities/bill_credit_line_item/sql/dbo.bill_credit_line_item.sql.';

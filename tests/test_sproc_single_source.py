@@ -1,11 +1,12 @@
-"""U-045/U-048/U-051/U-062/U-087/U-100 guard: canonical SQL homes for sprocs, access
-UDFs, and the shared human-only review predicate.
+"""U-045/U-048/U-051/U-062/U-087/U-100/U-102 guard: canonical SQL homes for sprocs,
+access UDFs, and the shared human-only review predicate.
 
 Three guard shapes:
 
 * **Sprocs** — an entity's base SQL file is the one home for its sprocs. Covers
   time_entry (U-045), role_module (U-048), completion_job, bill + expense (U-100),
-  bill_credit list-3 (U-100), and the three review recipient resolvers (U-062).
+  bill_credit + bill_credit_line_item fully converted (U-102), and the three
+  review recipient resolvers (U-062).
   The remaining entities still carry duplicated base sprocs in migrations
   (contract_labor=10, user_role=9, …); converting them is future work.
   **When you convert one, add its row to
@@ -50,6 +51,7 @@ BILL_FOLDER_RUN_ITEM_BASE = REPO_ROOT / "entities" / "bill" / "sql" / "dbo.billf
 BILL_LINE_ITEM_BASE = REPO_ROOT / "entities" / "bill_line_item" / "sql" / "dbo.bill_line_item.sql"
 EXPENSE_BASE = REPO_ROOT / "entities" / "expense" / "sql" / "dbo.expense.sql"
 BILL_CREDIT_BASE = REPO_ROOT / "entities" / "bill_credit" / "sql" / "dbo.bill_credit.sql"
+BILL_CREDIT_LINE_ITEM_BASE = REPO_ROOT / "entities" / "bill_credit_line_item" / "sql" / "dbo.bill_credit_line_item.sql"
 EXPENSE_LINE_ITEM_BASE = REPO_ROOT / "entities" / "expense_line_item" / "sql" / "dbo.expense_line_item.sql"
 ACCESS_UDF_HOME = REPO_ROOT / "shared" / "sql" / "dbo.access_udfs.sql"
 
@@ -70,16 +72,12 @@ REVIEW_BASE = REPO_ROOT / "entities" / "review" / "sql" / "dbo.review.sql"
 SINGLE_SOURCE_SPROCS = [
     ("CreateBillLineItem", BILL_LINE_ITEM_BASE),
     ("CreateExpenseLineItem", EXPENSE_LINE_ITEM_BASE),
-    # U-100: bill_line_item + bill_credit are guarded per-sproc, NOT via
-    # ENTITY_BASE_FILES, because each is only PARTIALLY converted —
-    # UpdateBillLineItemById still has a live copy in step2_decimal_quantity.sql,
-    # CreateBillCredit/CreateBillCreditLineItem in gap2_core_threading.sql (see
-    # TODO.md "single-source ledger"). Promoting an entity to ENTITY_BASE_FILES
-    # is the signal that its base file is fully sole-source.
+    # U-100: bill_line_item is guarded per-sproc, NOT via ENTITY_BASE_FILES,
+    # because it is only PARTIALLY converted — UpdateBillLineItemById still has
+    # a live copy in step2_decimal_quantity.sql (see TODO.md "single-source
+    # ledger"). Promoting an entity to ENTITY_BASE_FILES is the signal that its
+    # base file is fully sole-source.
     ("ReadBillLineItemBoxLinks", BILL_LINE_ITEM_BASE),
-    ("ReadBillCredits", BILL_CREDIT_BASE),
-    ("ReadBillCreditsPaginated", BILL_CREDIT_BASE),
-    ("CountBillCredits", BILL_CREDIT_BASE),
     ("ResolveReviewRecipientsByBillId", REVIEW_BASE),
     ("ResolveReviewRecipientsByContractLaborId", REVIEW_BASE),
     ("ResolveContractLaborReviewRecipientsPerProject", REVIEW_BASE),
@@ -92,11 +90,21 @@ SINGLE_SOURCE_SPROCS = [
 # dropped @EmployeeLaborLineItemId, CreateBill undid the DueDate=@BillDate mirror).
 # Full single-source conversion of these entities is the 36-entity campaign; this
 # narrow guard just keeps this one file from re-acquiring a drifted body.
+# U-102 later stubbed two MORE sprocs in the same file (CreateBillCredit,
+# CreateBillCreditLineItem) — those are deliberately NOT added to the frozenset
+# below: promoting bill_credit + bill_credit_line_item to ENTITY_BASE_FILES
+# already forbids their bodies in ANY file, which is strictly stronger. Add to
+# GAP2_NEUTRALIZED_SPROCS only when a stub has no entity-level guard behind it.
 GAP2_CORE_THREADING = REPO_ROOT / "scripts" / "migrations" / "gap2_core_threading.sql"
 GAP2_NEUTRALIZED_SPROCS = frozenset(
     {"CreateProject", "CreateBill", "CreateExpense", "CreateInvoiceLineItem"}
 )
 
+# U-102: bill_credit + bill_credit_line_item are FULLY converted — every sproc
+# in each base file is its sole home — so they are guarded here at whole-entity
+# level rather than per-sproc. This subsumes U-100's three per-sproc BillCredit
+# list rows (removed from SINGLE_SOURCE_SPROCS above) and extends the guard to
+# all 17 sprocs across the two files, including any added later.
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
     ("role_module", ROLE_MODULE_BASE),
@@ -107,6 +115,8 @@ ENTITY_BASE_FILES = [
     ("billfolderrun", BILL_FOLDER_RUN_BASE),
     ("billfolderrunitem", BILL_FOLDER_RUN_ITEM_BASE),
     ("expense", EXPENSE_BASE),
+    ("bill_credit", BILL_CREDIT_BASE),
+    ("bill_credit_line_item", BILL_CREDIT_LINE_ITEM_BASE),
 ]
 
 ACCESS_UDFS = [

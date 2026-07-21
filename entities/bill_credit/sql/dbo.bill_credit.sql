@@ -55,7 +55,8 @@ CREATE OR ALTER PROCEDURE CreateBillCredit
     @CreditNumber NVARCHAR(50),
     @TotalAmount DECIMAL(18,2) NULL,
     @Memo NVARCHAR(MAX) NULL,
-    @IsDraft BIT = 1
+    @IsDraft BIT = 1,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -63,7 +64,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[BillCredit] ([CreatedDatetime], [ModifiedDatetime], [VendorId], [CreditDate], [CreditNumber], [TotalAmount], [Memo], [IsDraft])
+    INSERT INTO dbo.[BillCredit] ([CreatedDatetime], [ModifiedDatetime], [VendorId], [CreditDate], [CreditNumber], [TotalAmount], [Memo], [IsDraft], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -76,7 +77,7 @@ BEGIN
         INSERTED.[TotalAmount],
         INSERTED.[Memo],
         INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @VendorId, @CreditDate, @CreditNumber, @TotalAmount, @Memo, @IsDraft);
+    VALUES (@Now, @Now, @VendorId, @CreditDate, @CreditNumber, @TotalAmount, @Memo, @IsDraft, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;

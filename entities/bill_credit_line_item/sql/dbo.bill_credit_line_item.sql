@@ -66,7 +66,8 @@ CREATE OR ALTER PROCEDURE CreateBillCreditLineItem
     @IsBillable BIT NULL,
     @IsBilled BIT NULL,
     @BillableAmount DECIMAL(18,2) NULL,
-    @IsDraft BIT = 1
+    @IsDraft BIT = 1,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -74,7 +75,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[BillCreditLineItem] ([CreatedDatetime], [ModifiedDatetime], [BillCreditId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [UnitPrice], [Amount], [IsBillable], [IsBilled], [BillableAmount], [IsDraft])
+    INSERT INTO dbo.[BillCreditLineItem] ([CreatedDatetime], [ModifiedDatetime], [BillCreditId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [UnitPrice], [Amount], [IsBillable], [IsBilled], [BillableAmount], [IsDraft], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -92,7 +93,7 @@ BEGIN
         INSERTED.[IsBilled],
         INSERTED.[BillableAmount],
         INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @BillCreditId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @UnitPrice, @Amount, @IsBillable, @IsBilled, @BillableAmount, @IsDraft);
+    VALUES (@Now, @Now, @BillCreditId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @UnitPrice, @Amount, @IsBillable, @IsBilled, @BillableAmount, @IsDraft, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;

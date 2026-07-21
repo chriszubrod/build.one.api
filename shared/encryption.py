@@ -2,6 +2,8 @@
 from typing import Optional
 from cryptography.fernet import Fernet
 import base64
+import hashlib
+import hmac
 import logging
 import os
 
@@ -118,6 +120,17 @@ def decrypt_sensitive_data(encrypted_data: str) -> Optional[str]:
     except Exception as exc:
         logger.exception("Failed to decrypt sensitive data.")
         raise EncryptionError("Failed to decrypt sensitive data.") from exc
+
+
+def blind_index(value: str) -> Optional[str]:
+    """Deterministic keyed HMAC-SHA256 hex digest for a searchable blind index of an otherwise-encrypted field. Keyed by the same server-side secret as encryption so a DB-only leak cannot brute-force the value. Returns a 64-char lowercase hex string, or None for empty input.
+
+    NOTE: determinism (and therefore dedup/lookup across restarts) requires a STABLE key. Prod sets ENCRYPTION_KEY; a dev process without it uses an ephemeral per-process key, so persisted hashes only match within that one process — fine for dev/throwaway data, but do not persist real values keyed off an ephemeral key.
+    """
+    if not value:
+        return None
+    key = _get_encryption_key()
+    return hmac.new(key, value.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def _looks_like_fernet(value: str) -> bool:

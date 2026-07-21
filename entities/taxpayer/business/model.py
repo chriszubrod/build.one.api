@@ -9,6 +9,15 @@ import base64
 # Local Imports
 
 
+def _mask_tin(tin):
+    if not tin:
+        return None
+    digits = "".join(c for c in str(tin) if c.isdigit())
+    if len(digits) < 4:
+        return "*" * len(digits)
+    return "*" * (len(digits) - 4) + digits[-4:]
+
+
 class TaxpayerClassification(str, Enum):
     """
     Enumeration of taxpayer classifications.
@@ -34,6 +43,8 @@ class Taxpayer:
     taxpayer_id_number: Optional[str]
     is_signed: Optional[int] = None
     signature_date: Optional[str] = None
+    taxpayer_id_number_hash: Optional[str] = None
+    is_deleted: Optional[bool] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:
@@ -55,4 +66,8 @@ class Taxpayer:
         # Convert enum to string value for JSON serialization
         if result.get("classification") is not None:
             result["classification"] = result["classification"].value if isinstance(result["classification"], TaxpayerClassification) else result["classification"]
+        digits = "".join(c for c in str(self.taxpayer_id_number) if c.isdigit()) if self.taxpayer_id_number else ""
+        result["taxpayer_id_number"] = _mask_tin(self.taxpayer_id_number)
+        result["taxpayer_id_last4"] = digits[-4:] if len(digits) >= 4 else None
+        result.pop("taxpayer_id_number_hash", None)
         return result

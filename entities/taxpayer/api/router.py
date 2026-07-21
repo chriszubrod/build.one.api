@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import logging
 
 # Third-party Imports
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -10,6 +11,8 @@ from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 from shared.api.responses import list_response, item_response, raise_workflow_error
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["api", "taxpayer"])
 service = TaxpayerService()
@@ -62,6 +65,33 @@ def get_taxpayer_by_public_id_router(public_id: str, current_user: dict = Depend
     """
     taxpayer = service.read_by_public_id(public_id=public_id)
     return item_response(taxpayer.to_dict())
+
+
+@router.get("/get/taxpayer/{public_id}/tin")
+def reveal_taxpayer_tin_router(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_update")),
+):
+    """
+    Reveal the full taxpayer ID number (audited; requires vendor update permission).
+    """
+    taxpayer = service.read_by_public_id(public_id=public_id)
+    if not taxpayer:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Taxpayer not found")
+    logger.warning(
+        "taxpayer_tin_revealed",
+        extra={
+            "event_name": "taxpayer_tin_revealed",
+            "taxpayer_public_id": public_id,
+            "actor_user_id": current_user.get("id"),
+        },
+    )
+    return item_response(
+        {
+            "taxpayer_id_number": taxpayer.taxpayer_id_number,
+            "public_id": public_id,
+        }
+    )
 
 
 @router.put("/update/taxpayer/{public_id}")

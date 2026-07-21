@@ -56,6 +56,8 @@ class TaxpayerRepository:
                 taxpayer_id_number=row.TaxpayerIdNumber,
                 is_signed=row.IsSigned,
                 signature_date=row.SignatureDate,
+                taxpayer_id_number_hash=getattr(row, "TaxpayerIdNumberHash", None),
+                is_deleted=bool(row.IsDeleted) if getattr(row, "IsDeleted", None) is not None else None,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during taxpayer mapping: {error}")
@@ -64,7 +66,7 @@ class TaxpayerRepository:
             logger.error(f"Unexpected error during taxpayer mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, entity_name: Optional[str], business_name: Optional[str], classification: Optional[TaxpayerClassification], taxpayer_id_number: Optional[str], is_signed: Optional[int] = 0, signature_date: Optional[str] = None) -> Taxpayer:
+    def create(self, *, entity_name: Optional[str], business_name: Optional[str], classification: Optional[TaxpayerClassification], taxpayer_id_number: Optional[str], is_signed: Optional[int] = 0, signature_date: Optional[str] = None, taxpayer_id_number_hash: Optional[str] = None) -> Taxpayer:
         """
         Create a new taxpayer.
         """
@@ -78,8 +80,9 @@ class TaxpayerRepository:
                         params={
                             "EntityName": entity_name,
                             "BusinessName": business_name,
-                            "Classification": classification.value if classification else None,
+                            "Classification": getattr(classification, "value", classification),
                             "TaxpayerIdNumber": taxpayer_id_number,
+                            "TaxpayerIdNumberHash": taxpayer_id_number_hash,
                             "IsSigned": is_signed if is_signed is not None else 0,
                             "SignatureDate": signature_date,
                         },
@@ -185,22 +188,22 @@ class TaxpayerRepository:
             logger.error(f"Error during read taxpayer by business name: {error}")
             raise map_database_error(error)
 
-    def read_by_taxpayer_id_number(self, taxpayer_id_number: str) -> Optional[Taxpayer]:
+    def read_by_taxpayer_id_number_hash(self, taxpayer_id_number_hash: str) -> Optional[Taxpayer]:
         """
-        Read a taxpayer by taxpayer ID number (encrypted value).
+        Read a taxpayer by taxpayer ID number hash.
         """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="ReadTaxpayerByTaxpayerIdNumber",
-                    params={"TaxpayerIdNumber": taxpayer_id_number},
+                    name="ReadTaxpayerByTaxpayerIdNumberHash",
+                    params={"TaxpayerIdNumberHash": taxpayer_id_number_hash},
                 )
                 row = cursor.fetchone()
                 return self._from_db(row)
         except Exception as error:
-            logger.error(f"Error during read taxpayer by taxpayer ID number: {error}")
+            logger.error(f"Error during read taxpayer by taxpayer ID number hash: {error}")
             raise map_database_error(error)
 
     def update_by_id(self, taxpayer: Taxpayer) -> Optional[Taxpayer]:
@@ -218,8 +221,9 @@ class TaxpayerRepository:
                         "RowVersion": taxpayer.row_version_bytes,
                         "EntityName": taxpayer.entity_name,
                         "BusinessName": taxpayer.business_name,
-                        "Classification": taxpayer.classification.value if taxpayer.classification else None,
+                        "Classification": getattr(taxpayer.classification, "value", taxpayer.classification),
                         "TaxpayerIdNumber": taxpayer.taxpayer_id_number,
+                        "TaxpayerIdNumberHash": taxpayer.taxpayer_id_number_hash,
                         "IsSigned": taxpayer.is_signed if taxpayer.is_signed is not None else 0,
                         "SignatureDate": taxpayer.signature_date,
                     },

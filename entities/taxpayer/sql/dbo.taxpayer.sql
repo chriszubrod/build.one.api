@@ -11,8 +11,10 @@ CREATE TABLE [dbo].[Taxpayer]
     [BusinessName] NVARCHAR(MAX) NOT NULL,
     [Classification] NVARCHAR(MAX) NOT NULL,
     [TaxpayerIdNumber] NVARCHAR(MAX) NOT NULL,
+    [TaxpayerIdNumberHash] CHAR(64) NULL,
     [IsSigned] INT NOT NULL,
-    [SignatureDate] DATETIME2(3) NOT NULL
+    [SignatureDate] DATETIME2(3) NULL,
+    [IsDeleted] BIT NOT NULL DEFAULT 0
 );
 END
 GO
@@ -28,6 +30,30 @@ BEGIN
 END
 GO
 
+IF COL_LENGTH('dbo.Taxpayer', 'TaxpayerIdNumberHash') IS NULL
+BEGIN
+    ALTER TABLE dbo.[Taxpayer] ADD [TaxpayerIdNumberHash] CHAR(64) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.Taxpayer', 'IsDeleted') IS NULL
+BEGIN
+    ALTER TABLE dbo.[Taxpayer] ADD [IsDeleted] BIT NOT NULL CONSTRAINT DF_Taxpayer_IsDeleted DEFAULT (0);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_Taxpayer_TaxpayerIdNumberHash' AND object_id = OBJECT_ID('dbo.Taxpayer'))
+BEGIN
+    CREATE UNIQUE INDEX UQ_Taxpayer_TaxpayerIdNumberHash ON dbo.[Taxpayer]([TaxpayerIdNumberHash]) WHERE [TaxpayerIdNumberHash] IS NOT NULL AND [IsDeleted] = 0;
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Taxpayer') AND name = 'SignatureDate' AND is_nullable = 0)
+BEGIN
+    ALTER TABLE dbo.[Taxpayer] ALTER COLUMN [SignatureDate] DATETIME2(3) NULL;
+END
+GO
+
 
 
 CREATE OR ALTER PROCEDURE CreateTaxpayer
@@ -36,17 +62,21 @@ CREATE OR ALTER PROCEDURE CreateTaxpayer
     @BusinessName NVARCHAR(MAX),
     @Classification NVARCHAR(MAX),
     @TaxpayerIdNumber NVARCHAR(MAX),
+    @TaxpayerIdNumberHash CHAR(64) = NULL,
     @IsSigned INT = 0,
     @SignatureDate DATETIME2(3) = NULL
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-    DECLARE @SigDate DATETIME2(3) = COALESCE(@SignatureDate, @Now);
+    DECLARE @SigDate DATETIME2(3) = @SignatureDate;  -- allow NULL for an unsigned/undated W-9
 
-    INSERT INTO dbo.[Taxpayer] ([CreatedDatetime], [ModifiedDatetime], [EntityName], [BusinessName], [Classification], [TaxpayerIdNumber], [IsSigned], [SignatureDate])
+    INSERT INTO dbo.[Taxpayer] ([CreatedDatetime], [ModifiedDatetime], [EntityName], [BusinessName], [Classification], [TaxpayerIdNumber], [TaxpayerIdNumberHash], [IsSigned], [SignatureDate], [IsDeleted])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -57,9 +87,11 @@ BEGIN
         INSERTED.[BusinessName],
         INSERTED.[Classification],
         INSERTED.[TaxpayerIdNumber],
+        INSERTED.[TaxpayerIdNumberHash],
         INSERTED.[IsSigned],
-        CONVERT(VARCHAR(19), INSERTED.[SignatureDate], 120) AS [SignatureDate]
-    VALUES (@Now, @Now, @EntityName, @BusinessName, @Classification, @TaxpayerIdNumber, @IsSigned, @SigDate);
+        CONVERT(VARCHAR(19), INSERTED.[SignatureDate], 120) AS [SignatureDate],
+        INSERTED.[IsDeleted]
+    VALUES (@Now, @Now, @EntityName, @BusinessName, @Classification, @TaxpayerIdNumber, @TaxpayerIdNumberHash, @IsSigned, @SigDate, 0);
 
     COMMIT TRANSACTION;
 END;
@@ -71,6 +103,9 @@ GO
 CREATE OR ALTER PROCEDURE ReadTaxpayers
 AS
 BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
     BEGIN TRANSACTION;
 
     SELECT
@@ -83,9 +118,12 @@ BEGIN
         [BusinessName],
         [Classification],
         [TaxpayerIdNumber],
+        [TaxpayerIdNumberHash],
         [IsSigned],
-        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate]
+        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate],
+        [IsDeleted]
     FROM dbo.[Taxpayer]
+    WHERE [IsDeleted] = 0
     ORDER BY [EntityName] ASC;
 
     COMMIT TRANSACTION;
@@ -101,6 +139,9 @@ CREATE OR ALTER PROCEDURE ReadTaxpayerById
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
     BEGIN TRANSACTION;
 
     SELECT
@@ -113,10 +154,12 @@ BEGIN
         [BusinessName],
         [Classification],
         [TaxpayerIdNumber],
+        [TaxpayerIdNumberHash],
         [IsSigned],
-        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate]
+        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate],
+        [IsDeleted]
     FROM dbo.[Taxpayer]
-    WHERE [Id] = @Id;
+    WHERE [Id] = @Id AND [IsDeleted] = 0;
 
     COMMIT TRANSACTION;
 END;
@@ -131,6 +174,9 @@ CREATE OR ALTER PROCEDURE ReadTaxpayerByPublicId
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
     BEGIN TRANSACTION;
 
     SELECT
@@ -143,10 +189,12 @@ BEGIN
         [BusinessName],
         [Classification],
         [TaxpayerIdNumber],
+        [TaxpayerIdNumberHash],
         [IsSigned],
-        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate]
+        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate],
+        [IsDeleted]
     FROM dbo.[Taxpayer]
-    WHERE [PublicId] = @PublicId;
+    WHERE [PublicId] = @PublicId AND [IsDeleted] = 0;
 
     COMMIT TRANSACTION;
 END;
@@ -161,6 +209,9 @@ CREATE OR ALTER PROCEDURE ReadTaxpayerByName
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
     BEGIN TRANSACTION;
 
     SELECT
@@ -173,10 +224,12 @@ BEGIN
         [BusinessName],
         [Classification],
         [TaxpayerIdNumber],
+        [TaxpayerIdNumberHash],
         [IsSigned],
-        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate]
+        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate],
+        [IsDeleted]
     FROM dbo.[Taxpayer]
-    WHERE [EntityName] = @EntityName;
+    WHERE [EntityName] = @EntityName AND [IsDeleted] = 0;
 
     COMMIT TRANSACTION;
 END;
@@ -191,6 +244,9 @@ CREATE OR ALTER PROCEDURE ReadTaxpayerByBusinessName
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
     BEGIN TRANSACTION;
 
     SELECT
@@ -203,10 +259,12 @@ BEGIN
         [BusinessName],
         [Classification],
         [TaxpayerIdNumber],
+        [TaxpayerIdNumberHash],
         [IsSigned],
-        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate]
+        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate],
+        [IsDeleted]
     FROM dbo.[Taxpayer]
-    WHERE [BusinessName] = @BusinessName;
+    WHERE [BusinessName] = @BusinessName AND [IsDeleted] = 0;
 
     COMMIT TRANSACTION;
 END;
@@ -215,12 +273,18 @@ GO
 
 
 
-CREATE OR ALTER PROCEDURE ReadTaxpayerByTaxpayerIdNumber
+DROP PROCEDURE IF EXISTS dbo.ReadTaxpayerByTaxpayerIdNumber;
+GO
+
+CREATE OR ALTER PROCEDURE ReadTaxpayerByTaxpayerIdNumberHash
 (
-    @TaxpayerIdNumber NVARCHAR(MAX)
+    @TaxpayerIdNumberHash CHAR(64)
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
     BEGIN TRANSACTION;
 
     SELECT
@@ -233,10 +297,12 @@ BEGIN
         [BusinessName],
         [Classification],
         [TaxpayerIdNumber],
+        [TaxpayerIdNumberHash],
         [IsSigned],
-        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate]
+        CONVERT(VARCHAR(19), [SignatureDate], 120) AS [SignatureDate],
+        [IsDeleted]
     FROM dbo.[Taxpayer]
-    WHERE [TaxpayerIdNumber] = @TaxpayerIdNumber;
+    WHERE [TaxpayerIdNumberHash] = @TaxpayerIdNumberHash AND [IsDeleted] = 0;
 
     COMMIT TRANSACTION;
 END;
@@ -253,11 +319,15 @@ CREATE OR ALTER PROCEDURE UpdateTaxpayerById
     @BusinessName NVARCHAR(MAX),
     @Classification NVARCHAR(MAX),
     @TaxpayerIdNumber NVARCHAR(MAX),
+    @TaxpayerIdNumberHash CHAR(64) = NULL,
     @IsSigned INT,
     @SignatureDate DATETIME2(3)
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
@@ -269,6 +339,7 @@ BEGIN
         [BusinessName] = @BusinessName,
         [Classification] = @Classification,
         [TaxpayerIdNumber] = @TaxpayerIdNumber,
+        [TaxpayerIdNumberHash] = CASE WHEN @TaxpayerIdNumberHash IS NULL THEN [TaxpayerIdNumberHash] ELSE @TaxpayerIdNumberHash END,
         [IsSigned] = @IsSigned,
         [SignatureDate] = @SignatureDate
     OUTPUT
@@ -281,8 +352,10 @@ BEGIN
         INSERTED.[BusinessName],
         INSERTED.[Classification],
         INSERTED.[TaxpayerIdNumber],
+        INSERTED.[TaxpayerIdNumberHash],
         INSERTED.[IsSigned],
-        CONVERT(VARCHAR(19), INSERTED.[SignatureDate], 120) AS [SignatureDate]
+        CONVERT(VARCHAR(19), INSERTED.[SignatureDate], 120) AS [SignatureDate],
+        INSERTED.[IsDeleted]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -298,21 +371,29 @@ CREATE OR ALTER PROCEDURE DeleteTaxpayerById
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
     BEGIN TRANSACTION;
 
-    DELETE FROM dbo.[Taxpayer]
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    UPDATE dbo.[Taxpayer]
+    SET [IsDeleted] = 1, [ModifiedDatetime] = @Now
     OUTPUT
-        DELETED.[Id],
-        DELETED.[PublicId],
-        DELETED.[RowVersion],
-        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        DELETED.[EntityName],
-        DELETED.[BusinessName],
-        DELETED.[Classification],
-        DELETED.[TaxpayerIdNumber],
-        DELETED.[IsSigned],
-        CONVERT(VARCHAR(19), DELETED.[SignatureDate], 120) AS [SignatureDate]
+        INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[RowVersion],
+        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        INSERTED.[EntityName],
+        INSERTED.[BusinessName],
+        INSERTED.[Classification],
+        INSERTED.[TaxpayerIdNumber],
+        INSERTED.[TaxpayerIdNumberHash],
+        INSERTED.[IsSigned],
+        CONVERT(VARCHAR(19), INSERTED.[SignatureDate], 120) AS [SignatureDate],
+        INSERTED.[IsDeleted]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;

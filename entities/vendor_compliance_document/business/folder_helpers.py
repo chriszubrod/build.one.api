@@ -36,6 +36,13 @@ def is_compliance_hint(filename: str) -> bool:
     return any(keyword in lowered for keyword in COMPLIANCE_HINT_KEYWORDS)
 
 
+def is_w9_hint(filename: str) -> bool:
+    """True when a filename looks like a W-9 (matches 'w-9' or a 'w9' token, case-insensitive)."""
+    if not filename:
+        return False
+    return re.search(r'w-?9\b', filename.lower()) is not None
+
+
 def _sanitize_filename_base(name: str) -> str:
     """Strip SharePoint-illegal characters from a filename base."""
     cleaned = _SHAREPOINT_ILLEGAL_CHARS.sub("", name)

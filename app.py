@@ -53,6 +53,7 @@ from entities.vendor_compliance_document.api.router import router as vendor_comp
 from entities.vendor_compliance_document.api.folder_router import router as vendor_compliance_folder_api_router
 from entities.vendor_insurance_policy.api.router import router as vendor_insurance_policy_api_router
 from entities.taxpayer.api.router import router as taxpayer_api_router
+from entities.taxpayer.api.w9_router import router as taxpayer_w9_api_router
 from entities.role_module.api.router import router as role_module_api_router
 from entities.user_module.api.router import router as user_module_api_router
 from entities.contact.api.router import router as contact_api_router
@@ -230,6 +231,7 @@ app.include_router(vendor_compliance_document_api_router)
 app.include_router(vendor_compliance_folder_api_router)
 app.include_router(vendor_insurance_policy_api_router)
 app.include_router(taxpayer_api_router)
+app.include_router(taxpayer_w9_api_router)
 app.include_router(role_module_api_router)
 app.include_router(user_module_api_router)
 app.include_router(dashboard_api_router)

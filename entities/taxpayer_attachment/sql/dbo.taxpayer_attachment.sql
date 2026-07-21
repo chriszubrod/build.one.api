@@ -9,12 +9,23 @@ CREATE TABLE [dbo].[TaxpayerAttachment]
     [RowVersion] ROWVERSION NOT NULL,
     [CreatedDatetime] DATETIME2(3) NOT NULL,
     [ModifiedDatetime] DATETIME2(3) NULL,
-    [TaxpayerId] BIGINT NULL,
-    [AttachmentId] BIGINT NULL
+    [TaxpayerId] BIGINT NOT NULL,
+    [AttachmentId] BIGINT NOT NULL
 );
 END
 GO
 
+IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TaxpayerAttachment') AND name = 'TaxpayerId' AND is_nullable = 1)
+BEGIN
+    ALTER TABLE dbo.[TaxpayerAttachment] ALTER COLUMN [TaxpayerId] BIGINT NOT NULL;
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TaxpayerAttachment') AND name = 'AttachmentId' AND is_nullable = 1)
+BEGIN
+    ALTER TABLE dbo.[TaxpayerAttachment] ALTER COLUMN [AttachmentId] BIGINT NOT NULL;
+END
+GO
 
 GO
 

@@ -11,6 +11,7 @@ from entities.attachment.business.service import AttachmentService
 from entities.vendor.business.service import VendorService
 from entities.vendor_compliance_document.business.folder_helpers import (
     is_compliance_hint,
+    is_w9_hint,
     select_duplicate_compliance_doc,
     walk_folder_tree,
 )
@@ -153,6 +154,7 @@ class VendorFolderService:
                 "folder_path": file.get("folder_path", ""),
                 "size": file.get("size"),
                 "compliance_hint": is_compliance_hint(file.get("name") or ""),
+                "w9_hint": is_w9_hint(file.get("name") or ""),
             }
             for file in files
         ]

@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import re
 from typing import Optional
 
 # Third-party Imports
@@ -6,8 +7,11 @@ from typing import Optional
 # Local Imports
 from entities.taxpayer.business.model import Taxpayer, TaxpayerClassification
 from entities.taxpayer.persistence.repo import TaxpayerRepository
-from shared.encryption import encrypt_sensitive_data, decrypt_sensitive_data
+from shared.encryption import blind_index, encrypt_sensitive_data, decrypt_sensitive_data
 
+
+def _normalize_tin(tin: Optional[str]) -> Optional[str]:
+    return None if not tin else re.sub(r"\D", "", tin) or None
 
 
 class TaxpayerService:
@@ -35,15 +39,21 @@ class TaxpayerService:
             if existing:
                 raise ValueError(f"Taxpayer with business name '{business_name}' already exists.")
         
-        # Check for duplicate TaxpayerIdNumber (encrypt before checking)
-        if taxpayer_id_number:
-            existing = self.read_by_taxpayer_id_number(taxpayer_id_number=taxpayer_id_number)
-            if existing:
-                raise ValueError(f"Taxpayer with taxpayer ID number already exists.")
-        
+        tin_hash = blind_index(_normalize_tin(taxpayer_id_number)) if taxpayer_id_number else None
+        if tin_hash and self.repo.read_by_taxpayer_id_number_hash(tin_hash):
+            raise ValueError("Taxpayer with taxpayer ID number already exists.")
+
         # TODO: In Phase 10, use tenant_id for tenant isolation
         encrypted_taxpayer_id_number = encrypt_sensitive_data(taxpayer_id_number) if taxpayer_id_number else None
-        taxpayer = self.repo.create(entity_name=entity_name, business_name=business_name, classification=classification, taxpayer_id_number=encrypted_taxpayer_id_number, is_signed=is_signed, signature_date=signature_date)
+        taxpayer = self.repo.create(
+            entity_name=entity_name,
+            business_name=business_name,
+            classification=classification,
+            taxpayer_id_number=encrypted_taxpayer_id_number,
+            is_signed=is_signed,
+            signature_date=signature_date,
+            taxpayer_id_number_hash=tin_hash,
+        )
         # Decrypt for return value
         if taxpayer and taxpayer.taxpayer_id_number:
             taxpayer.taxpayer_id_number = decrypt_sensitive_data(taxpayer.taxpayer_id_number)
@@ -97,12 +107,12 @@ class TaxpayerService:
 
     def read_by_taxpayer_id_number(self, taxpayer_id_number: str) -> Optional[Taxpayer]:
         """
-        Read a taxpayer by taxpayer ID number (plain text - will be encrypted for lookup).
+        Read a taxpayer by taxpayer ID number (plain text — looked up via blind index).
         """
-        encrypted_id = encrypt_sensitive_data(taxpayer_id_number) if taxpayer_id_number else None
-        if not encrypted_id:
+        tin_hash = blind_index(_normalize_tin(taxpayer_id_number))
+        if not tin_hash:
             return None
-        taxpayer = self.repo.read_by_taxpayer_id_number(encrypted_id)
+        taxpayer = self.repo.read_by_taxpayer_id_number_hash(tin_hash)
         if taxpayer and taxpayer.taxpayer_id_number:
             taxpayer.taxpayer_id_number = decrypt_sensitive_data(taxpayer.taxpayer_id_number)
         return taxpayer
@@ -142,10 +152,12 @@ class TaxpayerService:
             if taxpayer_id_number is not None:
                 # existing.taxpayer_id_number is already decrypted from read_by_public_id
                 if taxpayer_id_number != existing.taxpayer_id_number:
-                    duplicate = self.read_by_taxpayer_id_number(taxpayer_id_number=taxpayer_id_number)
-                    if duplicate and duplicate.public_id != public_id:
-                        raise ValueError(f"Taxpayer with taxpayer ID number already exists.")
-            
+                    tin_hash = blind_index(_normalize_tin(taxpayer_id_number))
+                    if tin_hash:
+                        duplicate = self.repo.read_by_taxpayer_id_number_hash(tin_hash)
+                        if duplicate and duplicate.public_id != public_id:
+                            raise ValueError("Taxpayer with taxpayer ID number already exists.")
+
             existing.row_version = row_version
             if entity_name is not None:
                 existing.entity_name = entity_name
@@ -154,8 +166,11 @@ class TaxpayerService:
             if classification is not None:
                 existing.classification = classification
             if taxpayer_id_number is not None:
-                encrypted_id = encrypt_sensitive_data(taxpayer_id_number)
-                existing.taxpayer_id_number = encrypted_id
+                if taxpayer_id_number != existing.taxpayer_id_number:
+                    tin_hash = blind_index(_normalize_tin(taxpayer_id_number))
+                    existing.taxpayer_id_number = encrypt_sensitive_data(taxpayer_id_number)
+                    existing.taxpayer_id_number_hash = tin_hash
+                # unchanged TIN: do not pass hash (sproc NULL-preserve)
             if is_signed is not None:
                 existing.is_signed = is_signed
             if signature_date is not None:

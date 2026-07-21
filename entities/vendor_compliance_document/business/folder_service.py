@@ -11,6 +11,7 @@ from entities.attachment.business.service import AttachmentService
 from entities.vendor.business.service import VendorService
 from entities.vendor_compliance_document.business.folder_helpers import (
     is_compliance_hint,
+    select_duplicate_compliance_doc,
     walk_folder_tree,
 )
 from entities.vendor_compliance_document.business.service import VendorComplianceDocumentService
@@ -218,6 +219,11 @@ class VendorFolderService:
 
         attachment_service = AttachmentService()
         file_hash = attachment_service.calculate_hash(file_bytes)
+
+        dup = self._find_existing_duplicate(int(vendor.id), document_type, file_hash)
+        if dup is not None:
+            return {**dup.to_dict(), "already_on_file": True}
+
         blob_name = f"vendor_compliance/{uuid4().hex}{dotted_ext}"
         blob_url = AzureBlobStorage().upload_file(
             blob_name=blob_name,
@@ -248,3 +254,23 @@ class VendorFolderService:
             push_to_folder=False,
         )
         return doc.to_dict()
+
+    def _find_existing_duplicate(
+        self, vendor_id: int, document_type: str, file_hash: str
+    ):
+        """Return an existing compliance doc for this vendor whose document_type and attachment file_hash both match, else None."""
+        existing_docs = VendorComplianceDocumentService().read_by_vendor_id(vendor_id)
+        attachment_ids = [int(d.attachment_id) for d in existing_docs if d.attachment_id]
+        hash_by_id: dict[int, str | None] = {}
+        if attachment_ids:
+            att_list = AttachmentService().read_by_ids(attachment_ids)
+            hash_by_id = {int(a.id): a.file_hash for a in att_list}
+        candidates = [
+            (
+                d.document_type,
+                hash_by_id.get(int(d.attachment_id)) if d.attachment_id else None,
+                d,
+            )
+            for d in existing_docs
+        ]
+        return select_duplicate_compliance_doc(candidates, document_type, file_hash)

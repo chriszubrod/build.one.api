@@ -13,6 +13,23 @@ COMPLIANCE_HINT_KEYWORDS = ("coi", "insurance", "license", "licence", "certifica
 _SHAREPOINT_ILLEGAL_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
+def select_duplicate_compliance_doc(candidates, document_type, file_hash):
+    """Return the first existing doc whose type and attachment hash match, else None.
+
+    candidates: iterable of (candidate_document_type, candidate_attachment_hash, doc) tuples.
+    If file_hash is falsy, return None (cannot dedup without content hash).
+    """
+    if not file_hash:
+        return None
+    for candidate_document_type, candidate_attachment_hash, doc in candidates:
+        if (
+            candidate_document_type == document_type
+            and candidate_attachment_hash == file_hash
+        ):
+            return doc
+    return None
+
+
 def is_compliance_hint(filename: str) -> bool:
     """Return True when filename contains a compliance-related keyword."""
     lowered = filename.lower()

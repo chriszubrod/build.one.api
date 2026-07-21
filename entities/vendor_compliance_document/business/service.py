@@ -169,43 +169,72 @@ class VendorComplianceDocumentService:
         return None
 
     def _enqueue_folder_export(self, vendor_id: int, attachment_id: Optional[int]) -> None:
-        """Queue a SharePoint upload of a compliance-doc attachment to the vendor folder."""
+        """Queue SharePoint and/or Box upload of a compliance-doc attachment to the vendor folder."""
         if attachment_id is None:
             return
-
-        from integrations.ms.outbox.business.service import MsOutboxService
-        from integrations.ms.sharepoint.driveitem.connector.vendor.business.service import (
-            DriveItemVendorConnector,
-        )
-
-        folder = DriveItemVendorConnector().get_driveitem_for_vendor(vendor_id)
-        if not folder or not folder.get("drive_id") or not folder.get("item_id"):
-            return
-
         attachment = AttachmentService().read_by_id(id=attachment_id)
         if not attachment or not attachment.blob_url:
             return
 
-        filename = build_export_filename(
-            attachment.original_filename or attachment.filename or "document",
-            str(attachment.public_id),
-        )
-        content_type = attachment.content_type or "application/octet-stream"
+        # SharePoint export (unchanged logic, now its own guarded block)
+        try:
+            from integrations.ms.outbox.business.service import MsOutboxService
+            from integrations.ms.sharepoint.driveitem.connector.vendor.business.service import (
+                DriveItemVendorConnector,
+            )
 
-        queued = MsOutboxService().enqueue_sharepoint_upload(
-            entity_type="Attachment",
-            entity_public_id=str(attachment.public_id),
-            drive_id=folder["drive_id"],
-            parent_item_id=folder["item_id"],
-            filename=filename,
-            content_type=content_type,
-            blob_path=attachment.blob_url,
-            attachment_id=attachment_id,
-        )
-        if queued is None:
-            logger.info(
-                "SharePoint export enqueue skipped (writes disabled or failure) "
-                "for attachment_id=%s vendor_id=%s",
+            folder = DriveItemVendorConnector().get_driveitem_for_vendor(vendor_id)
+            if folder and folder.get("drive_id") and folder.get("item_id"):
+                filename = build_export_filename(
+                    attachment.original_filename or attachment.filename or "document",
+                    str(attachment.public_id),
+                )
+                content_type = attachment.content_type or "application/octet-stream"
+                queued = MsOutboxService().enqueue_sharepoint_upload(
+                    entity_type="Attachment",
+                    entity_public_id=str(attachment.public_id),
+                    drive_id=folder["drive_id"],
+                    parent_item_id=folder["item_id"],
+                    filename=filename,
+                    content_type=content_type,
+                    blob_path=attachment.blob_url,
+                    attachment_id=attachment_id,
+                )
+                if queued is None:
+                    logger.info(
+                        "SharePoint export enqueue skipped (writes disabled or failure) "
+                        "for attachment_id=%s vendor_id=%s",
+                        attachment_id,
+                        vendor_id,
+                    )
+        except Exception:
+            logger.exception(
+                "SharePoint compliance export enqueue failed for attachment_id=%s vendor_id=%s",
+                attachment_id,
+                vendor_id,
+            )
+
+        # Box export (parallel, failure-isolated)
+        try:
+            from integrations.box.folder.persistence.repo import BoxVendorFolderRepository
+            from integrations.box.outbox.business.service import BoxOutboxService
+
+            box_mapping = BoxVendorFolderRepository().read_by_vendor_id(vendor_id)
+            if box_mapping and box_mapping.get("box_folder_id"):
+                BoxOutboxService().enqueue_box_upload(
+                    entity_type="vendor_compliance_document",
+                    entity_public_id=str(attachment.public_id),
+                    doc_kind="attachment",
+                    blob_path=attachment.blob_url,
+                    filename=attachment.original_filename or attachment.filename or "document",
+                    content_type=attachment.content_type or "application/octet-stream",
+                    box_folder_id=box_mapping["box_folder_id"],
+                    attachment_id=attachment_id,
+                    project_id=None,
+                )
+        except Exception:
+            logger.exception(
+                "Box compliance export enqueue failed for attachment_id=%s vendor_id=%s",
                 attachment_id,
                 vendor_id,
             )

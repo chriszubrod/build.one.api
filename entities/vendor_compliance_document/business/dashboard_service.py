@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import logging
 from datetime import date
 from typing import Optional
 
@@ -17,6 +18,12 @@ from entities.vendor_compliance_document.business.validity import (
 )
 from entities.vendor_insurance_policy.business.service import VendorInsurancePolicyService
 from entities.vendor_type.business.service import VendorTypeService
+from integrations.box.folder.persistence.repo import BoxVendorFolderRepository
+from integrations.ms.sharepoint.driveitem.connector.vendor.business.service import (
+    DriveItemVendorConnector,
+)
+
+logger = logging.getLogger(__name__)
 
 SLOT_DOCUMENT_TYPES = (
     "BUSINESS_LICENSE",
@@ -88,11 +95,47 @@ class VendorComplianceDashboardService:
 
         slots[W9_SLOT] = self._build_w9_slot(vendor)
 
+        vendor_id = int(vendor.id)
+        try:
+            sharepoint_linked = bool(
+                DriveItemVendorConnector().get_driveitem_for_vendor(vendor_id)
+            )
+        except Exception as error:
+            logger.warning(
+                "vendor_compliance_dashboard.sharepoint_folder_lookup.failed",
+                extra={
+                    "event_name": "vendor_compliance_dashboard.sharepoint_folder_lookup.failed",
+                    "vendor_id": vendor_id,
+                    "error": str(error),
+                },
+            )
+            sharepoint_linked = False
+
+        try:
+            box_linked = bool(BoxVendorFolderRepository().read_by_vendor_id(vendor_id))
+        except Exception as error:
+            logger.warning(
+                "vendor_compliance_dashboard.box_folder_lookup.failed",
+                extra={
+                    "event_name": "vendor_compliance_dashboard.box_folder_lookup.failed",
+                    "vendor_id": vendor_id,
+                    "error": str(error),
+                },
+            )
+            box_linked = False
+
+        folders = {
+            "sharepoint": {"status": "linked" if sharepoint_linked else "missing"},
+            "box": {"status": "linked" if box_linked else "missing"},
+            "both_linked": sharepoint_linked and box_linked,
+        }
+
         return {
             "vendor_public_id": vendor.public_id,
             "vendor_name": vendor.name,
             "vendor_abbreviation": vendor.abbreviation,
             "slots": slots,
+            "folders": folders,
         }
 
     def _build_w9_slot(self, vendor) -> dict:

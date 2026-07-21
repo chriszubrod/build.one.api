@@ -107,3 +107,17 @@ class VendorFolderImportRequest(BaseModel):
     classification: Optional[str] = None
     issue_date: Optional[str] = None
     expiry_date: Optional[str] = None
+
+
+class BoxVendorFolderLinkRequest(BaseModel):
+    box_folder_id: str
+
+
+class BoxVendorFolderImportRequest(BaseModel):
+    box_file_id: str
+    document_type: DocumentTypeLiteral
+    issuing_authority: Optional[str] = None
+    document_number: Optional[str] = None
+    classification: Optional[str] = None
+    issue_date: Optional[str] = None
+    expiry_date: Optional[str] = None

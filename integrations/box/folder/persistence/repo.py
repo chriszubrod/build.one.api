@@ -7,7 +7,7 @@ from typing import List, Optional
 import pyodbc
 
 # Local Imports
-from integrations.box.folder.business.model import BoxFolder, BoxProjectFolder
+from integrations.box.folder.business.model import BoxFolder, BoxProjectFolder, BoxVendorFolder
 from shared.database import (
     call_procedure,
     get_connection,
@@ -315,4 +315,202 @@ class BoxProjectFolderRepository:
                         pass
         except Exception as error:
             logger.error(f"Error during delete box project folder: {error}")
+            raise map_database_error(error)
+
+
+class BoxVendorFolderRepository:
+    """Persistence for `[box].[VendorFolder]` (joined reads include Folder /
+    Vendor columns, so reads return dicts, not bare dataclasses)."""
+
+    def __init__(self):
+        pass
+
+    def _from_db(self, row: pyodbc.Row) -> Optional[BoxVendorFolder]:
+        if not row:
+            return None
+        try:
+            return BoxVendorFolder(
+                id=getattr(row, "Id", None),
+                public_id=str(row.PublicId) if getattr(row, "PublicId", None) else None,
+                row_version=base64.b64encode(row.RowVersion).decode("ascii") if getattr(row, "RowVersion", None) else None,
+                created_datetime=getattr(row, "CreatedDatetime", None),
+                modified_datetime=getattr(row, "ModifiedDatetime", None),
+                vendor_id=getattr(row, "VendorId", None),
+                box_folder_id=getattr(row, "FolderId", None),
+                created_by_user_id=getattr(row, "CreatedByUserId", None),
+            )
+        except Exception as error:
+            logger.error(f"Error mapping BoxVendorFolder row: {error}")
+            raise map_database_error(error)
+
+    @staticmethod
+    def _joined_row_to_dict(cursor: pyodbc.Cursor, row) -> Optional[dict]:
+        """Map a VendorFolder ⋈ Folder (⋈ Vendor) row to a mapping dict."""
+        if not row:
+            return None
+        columns = [c[0] for c in cursor.description]
+        record = dict(zip(columns, row))
+
+        external_folder_id = (
+            record.get("FolderBoxFolderId")
+            or record.get("BoxFolderExternalId")
+            or record.get("BoxFolderId")
+        )
+        folder_name = record.get("FolderName") or record.get("Name")
+        row_version = record.get("RowVersion")
+
+        result = {
+            "id": record.get("Id"),
+            "public_id": str(record["PublicId"]) if record.get("PublicId") else None,
+            "row_version": base64.b64encode(row_version).decode("ascii") if row_version else None,
+            "vendor_id": record.get("VendorId"),
+            "box_folder_id": str(external_folder_id) if external_folder_id is not None else None,
+            "folder_name": folder_name,
+            "created_by_user_id": record.get("CreatedByUserId"),
+            "created_datetime": record.get("CreatedDatetime"),
+            "modified_datetime": record.get("ModifiedDatetime"),
+        }
+        vendor_name = record.get("VendorName")
+        if vendor_name is not None:
+            result["vendor_name"] = vendor_name
+        vendor_public_id = record.get("VendorPublicId")
+        if vendor_public_id is not None:
+            result["vendor_public_id"] = str(vendor_public_id)
+        return result
+
+    def create(
+        self,
+        *,
+        vendor_id: int,
+        box_folder_id: int,
+        created_by_user_id: Optional[int] = None,
+    ) -> BoxVendorFolder:
+        """`box_folder_id` is the local `[box].[Folder].Id` BIGINT, not the Box string id."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="CreateBoxVendorFolder",
+                        params={
+                            "VendorId": vendor_id,
+                            "BoxFolderId": box_folder_id,
+                            "CreatedByUserId": created_by_user_id,
+                        },
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        raise map_database_error(Exception("create box vendor folder failed"))
+                    return self._from_db(row)
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during create box vendor folder: {error}")
+            raise map_database_error(error)
+
+    def read_by_vendor_id(self, vendor_id: int) -> Optional[dict]:
+        """Joined read: the vendor's mapping + the Folder's Box string id + name."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadBoxVendorFolderByVendorId",
+                        params={"VendorId": vendor_id},
+                    )
+                    return self._joined_row_to_dict(cursor, cursor.fetchone())
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read box vendor folder by vendor id: {error}")
+            raise map_database_error(error)
+
+    def read_by_box_folder_id(self, box_folder_id: int) -> Optional[dict]:
+        """Joined read by internal `[box].[Folder].Id` BIGINT FK."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadBoxVendorFolderByBoxFolderId",
+                        params={"BoxFolderId": box_folder_id},
+                    )
+                    return self._joined_row_to_dict(cursor, cursor.fetchone())
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read box vendor folder by box folder id: {error}")
+            raise map_database_error(error)
+
+    def read_all(self) -> List[dict]:
+        """All mappings joined to Folder + dbo.Vendor.Name."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(cursor=cursor, name="ReadBoxVendorFolders", params={})
+                    return [
+                        self._joined_row_to_dict(cursor, row)
+                        for row in cursor.fetchall()
+                    ]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read box vendor folders: {error}")
+            raise map_database_error(error)
+
+    def delete_by_id(self, id: int, row_version: str) -> None:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="DeleteBoxVendorFolderById",
+                        params={
+                            "Id": id,
+                            "RowVersion": base64.b64decode(row_version),
+                        },
+                    )
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during delete box vendor folder by id: {error}")
+            raise map_database_error(error)
+
+    def delete_by_vendor_id(self, vendor_id: int) -> None:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="DeleteBoxVendorFolderByVendorId",
+                        params={"VendorId": vendor_id},
+                    )
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during delete box vendor folder by vendor id: {error}")
             raise map_database_error(error)

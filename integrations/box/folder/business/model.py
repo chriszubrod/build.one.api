@@ -46,3 +46,24 @@ class BoxProjectFolder:
     box_folder_id: Optional[int] = None
     doc_class: Optional[str] = None
     created_by_user_id: Optional[int] = None
+
+
+@dataclass
+class BoxVendorFolder:
+    """
+    Row in `[box].[VendorFolder]` — maps a dbo.Vendor to a `[box].[Folder]`
+    row 1:1 (one folder per vendor, one vendor per folder).
+
+    `box_folder_id` here is the local BIGINT FK to `[box].[Folder](Id)` —
+    the external Box string id lives on the joined Folder row.
+    """
+
+    id: Optional[int] = None
+    public_id: Optional[str] = None
+    row_version: Optional[str] = None
+    created_datetime: Optional[str] = None
+    modified_datetime: Optional[str] = None
+
+    vendor_id: Optional[int] = None
+    box_folder_id: Optional[int] = None
+    created_by_user_id: Optional[int] = None

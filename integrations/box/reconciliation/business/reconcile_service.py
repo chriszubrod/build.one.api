@@ -14,6 +14,7 @@ from integrations.box.base.errors import (
 )
 from integrations.box.file.persistence.repo import BoxFileRepository
 from integrations.box.folder.business.service import BoxProjectFolderService
+from integrations.box.folder.persistence.repo import BoxVendorFolderRepository
 from integrations.box.reconciliation.business.service import BoxReconciliationIssueService
 
 logger = logging.getLogger(__name__)
@@ -35,10 +36,10 @@ class BoxReconcileService:
       1. Auth canary — mint a CCG token and `GET /users/me`. A non-retryable
          failure (bad/rotated secret, app deauthorized) is flagged critical;
          a transient failure skips the run (next tick retries).
-      2. Folder visibility — for every `[box].[ProjectFolder]` mapping,
-         `GET /folders/{id}`. A 404/403 means the service account lost
-         collaboration on (or someone deleted) a mapped project folder —
-         the #1 day-2 failure. Flagged critical.
+      2. Folder visibility — for every `[box].[ProjectFolder]` and
+         `[box].[VendorFolder]` mapping, `GET /folders/{id}`. A 404/403
+         means the service account lost collaboration on (or someone deleted)
+         a mapped folder — the #1 day-2 failure. Flagged critical.
       3. Registry spot-check — for the most-recently-pushed files,
          `GET /files/{id}`. A 404 means a human deleted/purged a document we
          filed. Flagged high.
@@ -177,6 +178,44 @@ class BoxReconcileService:
                         },
                     )
 
+            for mapping in self._safe_list_vendor_mappings():
+                box_folder_id = mapping.get("box_folder_id")
+                if not box_folder_id:
+                    continue
+                summary["folders_checked"] += 1
+                try:
+                    client.get(
+                        f"folders/{box_folder_id}",
+                        params={"fields": "id,name"},
+                        operation_name="reconcile.folder_visibility",
+                    )
+                except (BoxNotFoundError, BoxPermissionError) as error:
+                    summary["folders_missing"] += 1
+                    _flag(
+                        drift_type="folder_not_visible",
+                        severity="critical",
+                        entity_type="vendor",
+                        details=(
+                            f"Mapped Box folder {box_folder_id} "
+                            f"(vendor '{mapping.get('vendor_name')}', id "
+                            f"{mapping.get('vendor_id')}) is not visible to the "
+                            f"service account: {type(error).__name__}. Likely "
+                            f"collaboration removed or folder deleted."
+                        ),
+                        drive_item_id=str(box_folder_id),
+                        entity_public_id=mapping.get("vendor_public_id"),
+                    )
+                except BoxError as error:
+                    summary["folders_transient"] += 1
+                    logger.warning(
+                        "box.reconcile.folder_check.transient",
+                        extra={
+                            "event_name": "box.reconcile.folder_check.transient",
+                            "box_folder_id": box_folder_id,
+                            "error_class": type(error).__name__,
+                        },
+                    )
+
             # 3. Registry spot-check
             for box_file in self._safe_recent_files(registry_limit):
                 box_file_id = getattr(box_file, "box_file_id", None)
@@ -245,6 +284,19 @@ class BoxReconcileService:
             logger.warning(
                 "box.reconcile.list_mappings.failed",
                 extra={"event_name": "box.reconcile.list_mappings.failed", "error": str(error)},
+            )
+            return []
+
+    def _safe_list_vendor_mappings(self) -> list:
+        try:
+            return BoxVendorFolderRepository().read_all()
+        except Exception as error:
+            logger.warning(
+                "box.reconcile.list_vendor_mappings.failed",
+                extra={
+                    "event_name": "box.reconcile.list_vendor_mappings.failed",
+                    "error": str(error),
+                },
             )
             return []
 

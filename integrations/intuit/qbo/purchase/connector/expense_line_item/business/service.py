@@ -21,6 +21,43 @@ from entities.project.business.service import ProjectService
 logger = logging.getLogger(__name__)
 
 
+# Pure pull-side field decision, deliberately NOT connector state. The identical
+# AccountBasedExpenseLineDetail gap exists in the Bill and VendorCredit line
+# connectors (bill/connector/bill_line_item/, vendorcredit/connector/
+# bill_credit_line_item/) — when the second caller arrives, lift this into
+# integrations/intuit/qbo/base/ next to preserve_human_edited_ref rather than
+# pasting a copy, the way the four customer-ref resolvers went. See TODO.md.
+def default_amount_only_line(qty, unit_price, amount):
+    """
+    Amount-only QBO line (NO Qty AND NO UnitPrice, e.g. a Ramp
+    AccountBasedExpenseLineDetail) -> quantity 1 at rate=amount, so
+    quantity * rate == amount. Any line that carries either field is
+    returned untouched — an explicit 0 is a real value, not a missing one.
+    """
+    if qty is None and unit_price is None and amount is not None:
+        return Decimal("1"), Decimal(str(amount))
+    return qty, unit_price
+
+
+def preserve_stored_value(default_value, qbo_value, stored_value):
+    """
+    Decide what to send for a field the pull may default.
+
+    Returns None — the "leave it alone" sentinel — when QBO omitted the field and
+    the local row already carries a value, so a re-pull never overwrites a coding-
+    queue backfill. Otherwise returns the (possibly defaulted) value to write.
+
+    NB the None sentinel is honored by ExpenseLineItemService.update_by_public_id,
+    which re-reads the row and only assigns fields that arrive non-None. Sending
+    None rather than echoing `stored_value` back is deliberate: the service's read
+    is fresher than ours, so a concurrent web edit between our read and the write
+    is preserved instead of being clobbered with a stale value.
+    """
+    if qbo_value is None and stored_value is not None:
+        return None
+    return default_value
+
+
 class PurchaseLineExpenseLineItemConnector:
     """
     Connector service for synchronization between QboPurchaseLine and ExpenseLineItem.
@@ -90,7 +127,17 @@ class PurchaseLineExpenseLineItemConnector:
             # QBO stores markup as percentage (e.g., 10 for 10%), we store as decimal (e.g., 0.10)
             markup = Decimal(str(qbo_line.markup_percent)) / Decimal('100')
 
-        # Calculate price: amount * (1 + markup), or amount if no markup
+        # What this pull WOULD write if the local row carried nothing (U-098). A QBO
+        # amount-only line (Ramp card spend on 58999) has no Qty/UnitPrice/MarkupInfo
+        # at all, which used to persist as NULL quantity/rate/markup. Derived once
+        # per line; the create and update paths below decide whether to apply them.
+        default_qty, default_rate = default_amount_only_line(
+            qbo_line.qty, qbo_line.unit_price, qbo_line.amount
+        )
+        default_markup = markup if markup is not None else Decimal("0")
+
+        # Calculate price: amount * (1 + markup), or amount if no markup.
+        # Unchanged by the markup default — amount * (1 + 0) == amount.
         price = None
         if qbo_line.amount is not None:
             amount_val = Decimal(str(qbo_line.amount))
@@ -133,19 +180,27 @@ class PurchaseLineExpenseLineItemConnector:
             line_item = self.expense_line_item_service.read_by_id(mapping.expense_line_item_id)
             if line_item:
                 logger.debug(f"Updating existing ExpenseLineItem {line_item.id} from QboPurchaseLine {qbo_line.id}")
-                
+
+                # Defaults fill a hole, they never overwrite: a value QBO omitted but
+                # the user later set (coding-queue backfill) survives the re-pull.
+                update_qty = preserve_stored_value(default_qty, qbo_line.qty, line_item.quantity)
+                update_rate = preserve_stored_value(default_rate, qbo_line.unit_price, line_item.rate)
+                update_markup = preserve_stored_value(
+                    default_markup, qbo_line.markup_percent, line_item.markup
+                )
+
                 line_item = self.expense_line_item_service.update_by_public_id(
                     line_item.public_id,
                     row_version=line_item.row_version,
                     sub_cost_code_id=sub_cost_code_id,
                     project_public_id=project_public_id,
                     description=qbo_line.description,
-                    quantity=qbo_line.qty,
-                    rate=qbo_line.unit_price,
+                    quantity=update_qty,
+                    rate=update_rate,
                     amount=qbo_line.amount,
                     is_billable=is_billable,
                     is_billed=is_billed,
-                    markup=markup,
+                    markup=update_markup,
                     price=price,
                     is_draft=False,
                 )
@@ -164,12 +219,12 @@ class PurchaseLineExpenseLineItemConnector:
             sub_cost_code_id=sub_cost_code_id,
             project_public_id=project_public_id,
             description=qbo_line.description,
-            quantity=qbo_line.qty,
-            rate=qbo_line.unit_price,
+            quantity=default_qty,
+            rate=default_rate,
             amount=qbo_line.amount,
             is_billable=is_billable,
             is_billed=is_billed,
-            markup=markup,
+            markup=default_markup,
             price=price,
             is_draft=False,
         )
@@ -325,6 +380,14 @@ class PurchaseLineExpenseLineItemConnector:
             pass
         return str(value).strip()
 
+    def _fingerprint_tuple(self, description, amount, qty, rate):
+        return (
+            self._normalize_for_fingerprint(description),
+            self._normalize_for_fingerprint(amount),
+            self._normalize_for_fingerprint(qty),
+            self._normalize_for_fingerprint(rate),
+        )
+
     def _find_and_match_by_fingerprint(
         self,
         *,
@@ -336,12 +399,29 @@ class PurchaseLineExpenseLineItemConnector:
     ):
         """
         Find an unmapped ExpenseLineItem whose content fingerprint matches,
-        POSITION-AWARE. When several unmapped lines share a fingerprint, return the
+        POSITION-AWARE.
+
+        Two tiers preserve pre-patch adoption while rescuing legacy NULL rows:
+        - Tier 1 (exact): raw (description, amount, qty, rate) on target vs
+          (description, amount, quantity, rate) on each candidate — no defaulting.
+        - Tier 2 (normalized fallback): only if tier 1 found nothing, compare
+          default_amount_only_line on both sides.
+
+        Invariant: any row the pre-patch matcher would adopt is still adopted
+        (tier 1); normalization only adds matches where tier 1 would find none.
+
+        Tier 2 is a LEGACY-ROW SHIM, not a permanent feature: it exists only because
+        rows created before U-098 stored NULL quantity/rate where the pull now stores
+        1 x amount. Retire it (and collapse back to one tier) once no unmapped
+        ExpenseLineItem on a QBO-sourced Expense still has NULL quantity/rate —
+        otherwise it will be carried along into any future shared-matcher extraction.
+
+        When several unmapped lines share a fingerprint within a tier, return the
         FIRST in stable position order (by id ≈ creation ≈ LineNum). The caller
         consumes it (creates a mapping) before the next QBO line, so processing lines
         in order pairs identical-content lines 1:1 by position — robust to QBO line-id
         regeneration even with duplicate content, instead of bailing and duplicating.
-        Returns None only when nothing matches.
+        Returns None only when nothing matches in either tier.
         """
         existing = self.expense_line_item_service.read_by_expense_id(expense_id=expense_id)
         unmapped = [
@@ -349,31 +429,43 @@ class PurchaseLineExpenseLineItemConnector:
             if not self.mapping_repo.read_by_expense_line_item_id(int(li.id))
         ]
 
-        target = (
-            self._normalize_for_fingerprint(description),
-            self._normalize_for_fingerprint(amount),
-            self._normalize_for_fingerprint(qty),
-            self._normalize_for_fingerprint(rate),
-        )
+        def matches_for(tier_target, defaulted: bool):
+            """Candidates whose fingerprint equals tier_target, in position order."""
+            found = []
+            for candidate in unmapped:
+                cand_amount = getattr(candidate, "amount", None)
+                cand_qty = getattr(candidate, "quantity", None)
+                cand_rate = getattr(candidate, "rate", None)
+                if defaulted:
+                    cand_qty, cand_rate = default_amount_only_line(cand_qty, cand_rate, cand_amount)
+                candidate_fp = self._fingerprint_tuple(
+                    getattr(candidate, "description", None), cand_amount, cand_qty, cand_rate
+                )
+                if candidate_fp == tier_target:
+                    found.append(candidate)
+            return found
 
-        matches = []
-        for candidate in unmapped:
-            candidate_fp = (
-                self._normalize_for_fingerprint(getattr(candidate, "description", None)),
-                self._normalize_for_fingerprint(getattr(candidate, "amount", None)),
-                self._normalize_for_fingerprint(getattr(candidate, "quantity", None)),
-                self._normalize_for_fingerprint(getattr(candidate, "rate", None)),
-            )
-            if candidate_fp == target:
-                matches.append(candidate)
-
-        if matches:
+        def adopt(matches, tier_label):
             if len(matches) > 1:
                 logger.info(
-                    f"{len(matches)} unmapped ExpenseLineItems share the fingerprint; "
-                    f"adopting the first by position (QBO line-id regeneration)"
+                    f"{len(matches)} unmapped ExpenseLineItems share the tier-{tier_label} "
+                    f"fingerprint; adopting the first by position (QBO line-id regeneration)"
                 )
             return matches[0]
+
+        # Tier 1 — raw, exactly as the pre-patch matcher compared. Runs alone whenever
+        # it hits, so the normalized pass costs nothing on the common path.
+        exact = matches_for(self._fingerprint_tuple(description, amount, qty, rate), defaulted=False)
+        if exact:
+            return adopt(exact, "exact")
+
+        # Tier 2 — legacy-row rescue only (see docstring).
+        norm_qty, norm_rate = default_amount_only_line(qty, rate, amount)
+        normalized = matches_for(
+            self._fingerprint_tuple(description, amount, norm_qty, norm_rate), defaulted=True
+        )
+        if normalized:
+            return adopt(normalized, "normalized")
         return None
 
     def get_mapping_by_expense_line_item_id(self, expense_line_item_id: int) -> Optional[PurchaseLineExpenseLineItem]:

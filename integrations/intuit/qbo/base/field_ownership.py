@@ -228,8 +228,6 @@ PURCHASE = FieldOwnership(
         "memo",
         # Line-item fields:
         "description",
-        "quantity",
-        "rate",
         "amount",
         "sub_cost_code_id",
         "project_id",
@@ -244,6 +242,16 @@ PURCHASE = FieldOwnership(
         # DocNumber in QBO (reference_number locally); human-editable. Pull resolves
         # the conflict via preserve_human_edited_ref, not by clobbering (KI-42 / U-024).
         "reference_number",
+        # Expense LINE fields. A QBO amount-only line (Ramp card spend on the 58999
+        # placeholder) carries no Qty/UnitPrice/MarkupInfo at all, so the pull defaults
+        # 1 x amount / markup 0 — but only to FILL a hole. Once a value exists locally
+        # (coding-queue backfill), the pull preserves it instead of clobbering, so
+        # these are no longer qbo_owned (U-098). When QBO does supply a value it still
+        # wins. See default_amount_only_line / preserve_stored_value in
+        # purchase/connector/expense_line_item/business/service.py.
+        "quantity",
+        "rate",
+        "markup",
     ],
 )
 

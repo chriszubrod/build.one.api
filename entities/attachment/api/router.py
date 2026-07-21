@@ -306,7 +306,7 @@ async def upload_attachment_router(
 
         # Generate unique blob name using public_id only (with extension)
         public_id = str(uuid.uuid4())
-        blob_name = f"{public_id}{file_extension}" if file_extension else public_id
+        blob_name = service.build_blob_name(public_id, file_extension)
 
         # Upload to Azure Blob Storage
         storage = AzureBlobStorage()
@@ -378,7 +378,7 @@ async def upload_bill_line_item_attachment_router(
 
         # Generate unique blob name using public_id only (with extension)
         public_id = str(uuid.uuid4())
-        blob_name = f"{public_id}{file_extension}" if file_extension else public_id
+        blob_name = service.build_blob_name(public_id, file_extension)
 
         # Upload to Azure Blob Storage
         storage = AzureBlobStorage()

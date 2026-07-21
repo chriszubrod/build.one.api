@@ -42,6 +42,15 @@ class AttachmentService:
         _, ext = os.path.splitext(filename)
         return ext.lstrip(".") if ext else None
 
+    @staticmethod
+    def build_blob_name(public_id: str, file_extension: Optional[str]) -> str:
+        """
+        Build Azure blob name from public_id and dotless file extension.
+        """
+        if file_extension:
+            return f"{public_id}.{file_extension}"
+        return public_id
+
     def validate_file_size(self, file_size: int) -> None:
         """
         Validate file size does not exceed maximum.

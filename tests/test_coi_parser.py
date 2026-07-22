@@ -106,3 +106,20 @@ def test_parse_date_handles_month_abbrev_separators(raw, expected):
     from entities.certificate_of_insurance.business.coi_parser import _parse_date
 
     assert _parse_date(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("2/22/26", "2026-02-22"),    # M/D/YY 2-digit year (Iron Grove)
+        ("12/13/25", "2025-12-13"),   # MM/DD/YY
+        ("03/06/22", "2022-03-06"),
+        ("02/22/2026", "2026-02-22"), # MM/DD/YYYY still works
+        ("2/22/2026", "2026-02-22"),  # M/D/YYYY
+        ("99/99/26", None),           # malformed 2-digit-year -> None, no crash
+    ],
+)
+def test_parse_date_handles_two_and_four_digit_years(raw, expected):
+    from entities.certificate_of_insurance.business.coi_parser import _parse_date
+
+    assert _parse_date(raw) == expected

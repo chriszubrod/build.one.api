@@ -8,7 +8,7 @@ from typing import Any, Optional
 # Local Imports
 
 _DATE_NEAR_LABEL_RE = re.compile(
-    r"(\d{1,2}[-/][A-Za-z]{3}[-/]\d{4}|\d{1,2}/\d{1,2}/\d{4}|\d{4}-\d{2}-\d{2})"
+    r"(\d{1,2}[-/][A-Za-z]{3}[-/]\d{4}|\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2})"
 )
 _DOLLAR_AMOUNT_RE = re.compile(r"\$?\s*([\d,]+(?:\.\d{2})?)")
 _POLICY_NUMBER_RE = re.compile(
@@ -107,11 +107,17 @@ def _parse_date(raw: str) -> Optional[str]:
         except ValueError:
             pass
 
-    try:
-        dt = datetime.strptime(s, "%m/%d/%Y")
-        return dt.strftime("%Y-%m-%d")
-    except ValueError:
-        pass
+    # Numeric M/D/Y — 4-digit year (MM/DD/YYYY) OR 2-digit year (M/D/YY -> 20YY).
+    # Disambiguate by the year's digit-count: strptime's %Y would otherwise misread a
+    # 2-digit "26" as year 0026, so pick %m/%d/%y explicitly for 2-digit years. ACORD
+    # certs use both formats (Iron Grove used 2/22/26; A&A/Siteworks used 4-digit).
+    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4}|\d{2})$", s)
+    if m:
+        try:
+            dt = datetime.strptime(s, "%m/%d/%Y" if len(m.group(3)) == 4 else "%m/%d/%y")
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            pass
 
     try:
         dt = datetime.strptime(s, "%B %d, %Y")

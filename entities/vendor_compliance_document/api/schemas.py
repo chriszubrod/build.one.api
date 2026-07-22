@@ -7,10 +7,7 @@ from pydantic import BaseModel, Field
 # Local Imports
 
 
-DocumentTypeLiteral = Literal[
-    "CONTRACTORS_LICENSE",
-    "CERTIFICATE_OF_INSURANCE",
-]
+DocumentTypeLiteral = Literal["CERTIFICATE_OF_INSURANCE"]
 
 VerificationStatusLiteral = Literal["Received", "Verified", "Rejected"]
 

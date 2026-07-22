@@ -15,13 +15,9 @@ from entities.vendor_compliance_document.business.service import VendorComplianc
 from shared.pdf_utils import merge_pdfs
 from shared.storage import AzureBlobStorage
 
-DOCUMENT_TYPE_ORDER = (
-    "CONTRACTORS_LICENSE",
-    "CERTIFICATE_OF_INSURANCE",
-)
+DOCUMENT_TYPE_ORDER = ("CERTIFICATE_OF_INSURANCE",)
 
 DOCUMENT_TYPE_LABELS = {
-    "CONTRACTORS_LICENSE": "Contractors License",
     "CERTIFICATE_OF_INSURANCE": "Certificate of Insurance",
 }
 

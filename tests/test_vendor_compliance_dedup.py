@@ -6,7 +6,7 @@ from entities.vendor_compliance_document.business.folder_helpers import (
 )
 
 DOC_TYPE = "CERTIFICATE_OF_INSURANCE"
-OTHER_TYPE = "CONTRACTORS_LICENSE"
+OTHER_TYPE = "SOME_OTHER_TYPE"
 HASH_A = "abc123"
 HASH_B = "def456"
 

@@ -11,6 +11,7 @@ from entities.attachment.business.service import AttachmentService
 from entities.vendor.business.service import VendorService
 from entities.vendor_compliance_document.business.folder_helpers import (
     is_bl_hint,
+    is_cl_hint,
     is_compliance_hint,
     is_w9_hint,
     select_duplicate_compliance_doc,
@@ -25,10 +26,7 @@ logger = logging.getLogger(__name__)
 WALK_MAX_DEPTH = 25
 WALK_MAX_ITEMS = 5000
 
-IMPORTABLE_DOCUMENT_TYPES = frozenset({
-    "CONTRACTORS_LICENSE",
-    "CERTIFICATE_OF_INSURANCE",
-})
+IMPORTABLE_DOCUMENT_TYPES = frozenset({"CERTIFICATE_OF_INSURANCE"})
 
 
 class VendorFolderService:
@@ -156,6 +154,7 @@ class VendorFolderService:
                 "compliance_hint": is_compliance_hint(file.get("name") or ""),
                 "w9_hint": is_w9_hint(file.get("name") or ""),
                 "bl_hint": is_bl_hint(file.get("name") or ""),
+                "cl_hint": is_cl_hint(file.get("name") or ""),
             }
             for file in files
         ]

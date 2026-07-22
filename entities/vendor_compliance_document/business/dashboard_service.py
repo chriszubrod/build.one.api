@@ -10,7 +10,9 @@ from entities.vendor.business.service import VendorService
 from entities.vendor_compliance_document.business.read_helpers import (
     latest_document_by_type,
     resolve_business_license_attachment,
+    resolve_contractors_license_attachment,
     resolve_current_business_license,
+    resolve_current_contractors_license,
     resolve_latest_w9_attachment,
 )
 from entities.vendor_compliance_document.business.service import VendorComplianceDocumentService
@@ -27,10 +29,7 @@ from integrations.ms.sharepoint.driveitem.connector.vendor.business.service impo
 
 logger = logging.getLogger(__name__)
 
-SLOT_DOCUMENT_TYPES = (
-    "CONTRACTORS_LICENSE",
-    "CERTIFICATE_OF_INSURANCE",
-)
+SLOT_DOCUMENT_TYPES = ("CERTIFICATE_OF_INSURANCE",)
 W9_SLOT = "W9"
 
 
@@ -96,6 +95,7 @@ class VendorComplianceDashboardService:
 
         slots[W9_SLOT] = self._build_w9_slot(vendor)
         slots["BUSINESS_LICENSE"] = self._build_business_license_slot(vendor, today)
+        slots["CONTRACTORS_LICENSE"] = self._build_contractors_license_slot(vendor, today)
 
         vendor_id = int(vendor.id)
         try:
@@ -159,5 +159,22 @@ class VendorComplianceDashboardService:
             "expiry_date": bl.expiry_date,
             "days_until_expiry": days_until_expiry(bl.expiry_date, today),
             "verification_status": bl.verification_status,
+            "attachment_public_id": att.public_id if att else None,
+        }
+
+    def _build_contractors_license_slot(self, vendor, today):
+        cl = resolve_current_contractors_license(vendor)
+        if not cl:
+            return {"status": "missing"}
+        att = resolve_contractors_license_attachment(cl)
+        return {
+            "status": compute_doc_status(cl.expiry_date, today),
+            "document_public_id": cl.public_id,
+            "document_number": cl.license_number,
+            "issuing_authority": cl.issuing_authority,
+            "classification": cl.classification,
+            "expiry_date": cl.expiry_date,
+            "days_until_expiry": days_until_expiry(cl.expiry_date, today),
+            "verification_status": cl.verification_status,
             "attachment_public_id": att.public_id if att else None,
         }

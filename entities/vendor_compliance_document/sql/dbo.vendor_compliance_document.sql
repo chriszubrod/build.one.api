@@ -295,7 +295,7 @@ IF NOT EXISTS (
 BEGIN
     ALTER TABLE [dbo].[VendorComplianceDocument]
     ADD CONSTRAINT [CK_VendorComplianceDocument_DocumentType]
-        CHECK ([DocumentType] IN ('CONTRACTORS_LICENSE', 'CERTIFICATE_OF_INSURANCE'));
+        CHECK ([DocumentType] IN ('CERTIFICATE_OF_INSURANCE'));
 END
 GO
 

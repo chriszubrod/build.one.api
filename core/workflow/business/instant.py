@@ -108,6 +108,8 @@ PROCESS_REGISTRY: Dict[str, str] = {
     "taxpayer_attachment": "entities.taxpayer_attachment.business.service.TaxpayerAttachmentService",
     "business_license": "entities.business_license.business.service.BusinessLicenseService",
     "business_license_attachment": "entities.business_license_attachment.business.service.BusinessLicenseAttachmentService",
+    "contractors_license": "entities.contractors_license.business.service.ContractorsLicenseService",
+    "contractors_license_attachment": "entities.contractors_license_attachment.business.service.ContractorsLicenseAttachmentService",
     
     # Contact
     "contact": "entities.contact.business.service.ContactService",

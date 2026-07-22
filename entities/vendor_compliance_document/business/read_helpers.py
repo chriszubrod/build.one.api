@@ -66,3 +66,35 @@ def resolve_business_license_attachment(business_license):
         return AttachmentService().read_by_id(links[0].attachment_id)
     except Exception:
         return None
+
+
+def resolve_current_contractors_license(vendor):
+    """The vendor's current ContractorsLicense (latest by the read sproc ordering),
+    or None."""
+    from entities.contractors_license.business.service import ContractorsLicenseService
+
+    try:
+        licenses = ContractorsLicenseService().read_by_vendor_id(int(vendor.id))
+        return licenses[0] if licenses else None
+    except Exception:
+        return None
+
+
+def resolve_contractors_license_attachment(contractors_license):
+    """The Attachment linked to a ContractorsLicense (latest link), or None."""
+    from entities.attachment.business.service import AttachmentService
+    from entities.contractors_license_attachment.business.service import (
+        ContractorsLicenseAttachmentService,
+    )
+
+    try:
+        if not contractors_license or not contractors_license.public_id:
+            return None
+        links = ContractorsLicenseAttachmentService().read_by_contractors_license_id(
+            str(contractors_license.public_id)
+        )
+        if not links or not links[0].attachment_id:
+            return None
+        return AttachmentService().read_by_id(links[0].attachment_id)
+    except Exception:
+        return None

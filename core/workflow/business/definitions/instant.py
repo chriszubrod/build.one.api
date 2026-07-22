@@ -94,6 +94,8 @@ SYNCHRONOUS_TASKS = [
     "taxpayer_attachment",
     "business_license",
     "business_license_attachment",
+    "contractors_license",
+    "contractors_license_attachment",
     
     # Contact
     "contact",

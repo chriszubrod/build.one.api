@@ -53,6 +53,18 @@ def is_bl_hint(filename: str) -> bool:
     return "business license" in lowered or "business tax license" in lowered
 
 
+def is_cl_hint(filename: str) -> bool:
+    """True when a filename looks like a contractors license (CL token or explicit phrase)."""
+    if not filename:
+        return False
+    lowered = filename.lower()
+    if re.search(r"\bcl\b", lowered):
+        return True
+    if "contractors license" in lowered:
+        return True
+    return "contractor" in lowered
+
+
 def _sanitize_filename_base(name: str) -> str:
     """Strip SharePoint-illegal characters from a filename base."""
     cleaned = _SHAREPOINT_ILLEGAL_CHARS.sub("", name)

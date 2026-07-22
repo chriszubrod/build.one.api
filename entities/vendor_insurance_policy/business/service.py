@@ -5,7 +5,7 @@ from typing import Optional, Union
 # Third-party Imports
 
 # Local Imports
-from entities.vendor_compliance_document.business.service import VendorComplianceDocumentService
+from entities.certificate_of_insurance.business.service import CertificateOfInsuranceService
 from entities.vendor_insurance_policy.business.model import VendorInsurancePolicy
 from entities.vendor_insurance_policy.persistence.repo import VendorInsurancePolicyRepository
 from shared.authz import current_user_id
@@ -36,7 +36,7 @@ class VendorInsurancePolicyService:
         self,
         *,
         tenant_id: int = 1,
-        compliance_document_public_id: str,
+        certificate_of_insurance_public_id: str,
         coverage_type: str,
         carrier: Optional[str] = None,
         policy_number: Optional[str] = None,
@@ -49,14 +49,14 @@ class VendorInsurancePolicyService:
         Create a new vendor insurance policy.
         """
         # TODO: In Phase 10, use tenant_id for tenant isolation
-        parent = VendorComplianceDocumentService().read_by_public_id(public_id=compliance_document_public_id)
+        parent = CertificateOfInsuranceService().read_by_public_id(public_id=certificate_of_insurance_public_id)
         if not parent or not parent.id:
-            raise ValueError(f"Compliance document with public_id '{compliance_document_public_id}' not found")
-        if parent.document_type != "CERTIFICATE_OF_INSURANCE":
-            raise ValueError("Insurance policies can only be added to a Certificate of Insurance")
+            raise ValueError(
+                f"Certificate of insurance with public_id '{certificate_of_insurance_public_id}' not found"
+            )
 
         return self.repo.create(
-            vendor_compliance_document_id=int(parent.id),
+            certificate_of_insurance_id=int(parent.id),
             coverage_type=coverage_type,
             carrier=carrier,
             policy_number=policy_number,
@@ -79,17 +79,17 @@ class VendorInsurancePolicyService:
         """
         return self.repo.read_by_public_id(public_id)
 
-    def read_by_compliance_document_public_id(self, doc_public_id: str) -> list[VendorInsurancePolicy]:
+    def read_by_certificate_of_insurance_public_id(self, coi_public_id: str) -> list[VendorInsurancePolicy]:
         """
-        Read vendor insurance policies by compliance document public ID.
+        Read vendor insurance policies by certificate of insurance public ID.
         """
-        parent = VendorComplianceDocumentService().read_by_public_id(public_id=doc_public_id)
+        parent = CertificateOfInsuranceService().read_by_public_id(public_id=coi_public_id)
         if not parent or not parent.id:
-            raise ValueError(f"Compliance document with public_id '{doc_public_id}' not found")
-        return self.repo.read_by_compliance_document_id(int(parent.id))
+            raise ValueError(f"Certificate of insurance with public_id '{coi_public_id}' not found")
+        return self.repo.read_by_certificate_of_insurance_id(int(parent.id))
 
-    def read_by_compliance_document_id(self, compliance_document_id: int):
-        return self.repo.read_by_compliance_document_id(compliance_document_id)
+    def read_by_certificate_of_insurance_id(self, certificate_of_insurance_id: int):
+        return self.repo.read_by_certificate_of_insurance_id(certificate_of_insurance_id)
 
     def update_by_public_id(
         self,

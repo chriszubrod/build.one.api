@@ -15,7 +15,7 @@ class VendorInsurancePolicy:
     row_version: Optional[str]
     created_datetime: Optional[str]
     modified_datetime: Optional[str]
-    vendor_compliance_document_id: Optional[str]
+    certificate_of_insurance_id: Optional[str]
     coverage_type: Optional[str]
     carrier: Optional[str]
     policy_number: Optional[str]

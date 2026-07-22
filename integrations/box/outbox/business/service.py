@@ -47,7 +47,7 @@ ALLOWED_PUSH_CLASSES = frozenset(
         # Requests/<invoice#>/) are visible independently in logs +
         # dead-letter triage.
         ("invoice", "line_attachment"),
-        ("vendor_compliance_document", "attachment"),
+        ("certificate_of_insurance", "attachment"),
     }
 )
 

@@ -9,15 +9,16 @@ from uuid import uuid4
 # Local Imports
 from entities.attachment.business.service import AttachmentService
 from entities.vendor.business.service import VendorService
-from entities.vendor_compliance_document.business.folder_helpers import (
+from entities.vendor_compliance.business.folder_helpers import (
     is_bl_hint,
     is_cl_hint,
+    is_coi_hint,
     is_compliance_hint,
     is_w9_hint,
     select_duplicate_compliance_doc,
     walk_folder_tree,
 )
-from entities.vendor_compliance_document.business.service import VendorComplianceDocumentService
+from entities.certificate_of_insurance.business.service import CertificateOfInsuranceService
 from integrations.ms.sharepoint.drive.business.service import MsDriveService
 from shared.storage import AzureBlobStorage
 
@@ -155,6 +156,7 @@ class VendorFolderService:
                 "w9_hint": is_w9_hint(file.get("name") or ""),
                 "bl_hint": is_bl_hint(file.get("name") or ""),
                 "cl_hint": is_cl_hint(file.get("name") or ""),
+                "coi_hint": is_coi_hint(file.get("name") or ""),
             }
             for file in files
         ]
@@ -243,36 +245,31 @@ class VendorFolderService:
             category="vendor_compliance",
         )
 
-        doc = VendorComplianceDocumentService().create(
+        cert = CertificateOfInsuranceService().create(
             vendor_public_id=vendor_public_id,
-            document_type=document_type,
             issuing_authority=issuing_authority,
-            document_number=document_number,
-            classification=classification,
             issue_date=issue_date,
-            expiry_date=expiry_date,
-            attachment_public_id=str(attachment.public_id),
+            attachment_id=int(attachment.id),
             verification_status="Received",
-            push_to_folder=False,
         )
-        return doc.to_dict()
+        return cert.to_dict()
 
     def _find_existing_duplicate(
         self, vendor_id: int, document_type: str, file_hash: str
     ):
-        """Return an existing compliance doc for this vendor whose document_type and attachment file_hash both match, else None."""
-        existing_docs = VendorComplianceDocumentService().read_by_vendor_id(vendor_id)
-        attachment_ids = [int(d.attachment_id) for d in existing_docs if d.attachment_id]
+        """Return an existing cert for this vendor whose attachment file_hash matches, else None."""
+        certs = CertificateOfInsuranceService().read_by_vendor_id(vendor_id)
+        attachment_ids = [int(c.attachment_id) for c in certs if c.attachment_id]
         hash_by_id: dict[int, str | None] = {}
         if attachment_ids:
             att_list = AttachmentService().read_by_ids(attachment_ids)
             hash_by_id = {int(a.id): a.file_hash for a in att_list}
         candidates = [
             (
-                d.document_type,
-                hash_by_id.get(int(d.attachment_id)) if d.attachment_id else None,
-                d,
+                "CERTIFICATE_OF_INSURANCE",
+                hash_by_id.get(int(c.attachment_id)) if c.attachment_id else None,
+                c,
             )
-            for d in existing_docs
+            for c in certs
         ]
-        return select_duplicate_compliance_doc(candidates, document_type, file_hash)
+        return select_duplicate_compliance_doc(candidates, "CERTIFICATE_OF_INSURANCE", file_hash)

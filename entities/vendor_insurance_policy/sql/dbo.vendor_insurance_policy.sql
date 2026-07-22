@@ -7,7 +7,7 @@ CREATE TABLE [dbo].[VendorInsurancePolicy]
     [RowVersion] ROWVERSION NOT NULL,
     [CreatedDatetime] DATETIME2(3) NOT NULL,
     [ModifiedDatetime] DATETIME2(3) NULL,
-    [VendorComplianceDocumentId] BIGINT NOT NULL,
+    [CertificateOfInsuranceId] BIGINT NOT NULL,
     [CoverageType] NVARCHAR(20) NOT NULL,
     [Carrier] NVARCHAR(255) NULL,
     [PolicyNumber] NVARCHAR(255) NULL,
@@ -20,25 +20,9 @@ CREATE TABLE [dbo].[VendorInsurancePolicy]
 END
 GO
 
-CREATE OR ALTER PROCEDURE RecomputeComplianceDocumentExpiryFromPolicies
-(
-    @VendorComplianceDocumentId BIGINT
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-    UPDATE dbo.[VendorComplianceDocument]
-    SET [ExpiryDate] = (SELECT MIN([ExpiryDate]) FROM dbo.[VendorInsurancePolicy]
-                        WHERE [VendorComplianceDocumentId] = @VendorComplianceDocumentId),
-        [ModifiedDatetime] = SYSUTCDATETIME()
-    WHERE [Id] = @VendorComplianceDocumentId
-      AND [DocumentType] = 'CERTIFICATE_OF_INSURANCE';
-END;
-GO
-
 CREATE OR ALTER PROCEDURE CreateVendorInsurancePolicy
 (
-    @VendorComplianceDocumentId BIGINT,
+    @CertificateOfInsuranceId BIGINT,
     @CoverageType NVARCHAR(20),
     @Carrier NVARCHAR(255) = NULL,
     @PolicyNumber NVARCHAR(255) = NULL,
@@ -61,7 +45,7 @@ BEGIN
         (
             [CreatedDatetime],
             [ModifiedDatetime],
-            [VendorComplianceDocumentId],
+            [CertificateOfInsuranceId],
             [CoverageType],
             [Carrier],
             [PolicyNumber],
@@ -77,7 +61,7 @@ BEGIN
         INSERTED.[RowVersion],
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[VendorComplianceDocumentId],
+        INSERTED.[CertificateOfInsuranceId],
         INSERTED.[CoverageType],
         INSERTED.[Carrier],
         INSERTED.[PolicyNumber],
@@ -90,7 +74,7 @@ BEGIN
         (
             @Now,
             @Now,
-            @VendorComplianceDocumentId,
+            @CertificateOfInsuranceId,
             @CoverageType,
             @Carrier,
             @PolicyNumber,
@@ -100,8 +84,6 @@ BEGIN
             @ExpiryDate,
             COALESCE(@CreatedByUserId, 17)
         );
-
-    EXEC RecomputeComplianceDocumentExpiryFromPolicies @VendorComplianceDocumentId;
 
     COMMIT TRANSACTION;
 END;
@@ -114,13 +96,14 @@ CREATE OR ALTER PROCEDURE ReadVendorInsurancePolicyById
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     SELECT
         [Id],
         [PublicId],
         [RowVersion],
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [VendorComplianceDocumentId],
+        [CertificateOfInsuranceId],
         [CoverageType],
         [Carrier],
         [PolicyNumber],
@@ -141,13 +124,14 @@ CREATE OR ALTER PROCEDURE ReadVendorInsurancePolicyByPublicId
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     SELECT
         [Id],
         [PublicId],
         [RowVersion],
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [VendorComplianceDocumentId],
+        [CertificateOfInsuranceId],
         [CoverageType],
         [Carrier],
         [PolicyNumber],
@@ -162,19 +146,20 @@ END;
 GO
 
 
-CREATE OR ALTER PROCEDURE ReadVendorInsurancePoliciesByComplianceDocumentId
+CREATE OR ALTER PROCEDURE ReadVendorInsurancePoliciesByCertificateOfInsuranceId
 (
-    @VendorComplianceDocumentId BIGINT
+    @CertificateOfInsuranceId BIGINT
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     SELECT
         [Id],
         [PublicId],
         [RowVersion],
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [VendorComplianceDocumentId],
+        [CertificateOfInsuranceId],
         [CoverageType],
         [Carrier],
         [PolicyNumber],
@@ -184,7 +169,7 @@ BEGIN
         CONVERT(VARCHAR(10), [ExpiryDate], 23) AS [ExpiryDate],
         [CreatedByUserId]
     FROM dbo.[VendorInsurancePolicy]
-    WHERE [VendorComplianceDocumentId] = @VendorComplianceDocumentId
+    WHERE [CertificateOfInsuranceId] = @CertificateOfInsuranceId
     ORDER BY [ExpiryDate] ASC;
 END;
 GO
@@ -210,12 +195,10 @@ BEGIN
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-    DECLARE @DocId BIGINT;
     DECLARE @ExistingRowVersion BINARY(8);
     DECLARE @RowExists BIT = 0;
 
     SELECT
-        @DocId = [VendorComplianceDocumentId],
         @ExistingRowVersion = [RowVersion],
         @RowExists = 1
     FROM dbo.[VendorInsurancePolicy] WITH (UPDLOCK)
@@ -243,7 +226,7 @@ BEGIN
         INSERTED.[RowVersion],
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[VendorComplianceDocumentId],
+        INSERTED.[CertificateOfInsuranceId],
         INSERTED.[CoverageType],
         INSERTED.[Carrier],
         INSERTED.[PolicyNumber],
@@ -253,8 +236,6 @@ BEGIN
         CONVERT(VARCHAR(10), INSERTED.[ExpiryDate], 23) AS [ExpiryDate],
         INSERTED.[CreatedByUserId]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
-
-    EXEC RecomputeComplianceDocumentExpiryFromPolicies @DocId;
 
     COMMIT TRANSACTION;
 END;
@@ -272,28 +253,20 @@ BEGIN
 
     BEGIN TRANSACTION;
 
-    DECLARE @DocId BIGINT;
-
-    SELECT @DocId = [VendorComplianceDocumentId]
-    FROM dbo.[VendorInsurancePolicy]
-    WHERE [Id] = @Id;
-
     DELETE FROM dbo.[VendorInsurancePolicy]
     OUTPUT DELETED.[Id]
     WHERE [Id] = @Id;
-
-    EXEC RecomputeComplianceDocumentExpiryFromPolicies @DocId;
 
     COMMIT TRANSACTION;
 END;
 GO
 
 
-IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_VendorInsurancePolicy_ComplianceDocument')
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_VendorInsurancePolicy_CertificateOfInsurance')
 BEGIN
     ALTER TABLE [dbo].[VendorInsurancePolicy]
-    ADD CONSTRAINT [FK_VendorInsurancePolicy_ComplianceDocument]
-        FOREIGN KEY ([VendorComplianceDocumentId]) REFERENCES [dbo].[VendorComplianceDocument]([Id]);
+    ADD CONSTRAINT [FK_VendorInsurancePolicy_CertificateOfInsurance]
+        FOREIGN KEY ([CertificateOfInsuranceId]) REFERENCES [dbo].[CertificateOfInsurance]([Id]);
 END
 GO
 
@@ -301,14 +274,14 @@ IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_VendorInsura
 BEGIN
     ALTER TABLE [dbo].[VendorInsurancePolicy]
     ADD CONSTRAINT [CK_VendorInsurancePolicy_CoverageType]
-        CHECK ([CoverageType] IN ('GL', 'AUTO', 'UMBRELLA', 'WC'));
+        CHECK ([CoverageType] IN ('GL', 'WC', 'OTHER'));
 END
 GO
 
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_VendorInsurancePolicy_ComplianceDocumentId' AND object_id = OBJECT_ID('dbo.VendorInsurancePolicy'))
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_VendorInsurancePolicy_CertificateOfInsuranceId' AND object_id = OBJECT_ID('dbo.VendorInsurancePolicy'))
 BEGIN
-    CREATE INDEX [IX_VendorInsurancePolicy_ComplianceDocumentId]
-        ON [dbo].[VendorInsurancePolicy] ([VendorComplianceDocumentId]);
+    CREATE INDEX [IX_VendorInsurancePolicy_CertificateOfInsuranceId]
+        ON [dbo].[VendorInsurancePolicy] ([CertificateOfInsuranceId]);
 END
 GO
 

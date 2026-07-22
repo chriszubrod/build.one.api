@@ -5,13 +5,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 # Local Imports
-from entities.vendor_compliance_document.api.schemas import (
+from entities.vendor_compliance.api.schemas import (
     BoxVendorFolderImportRequest,
     BoxVendorFolderLinkRequest,
     VendorFolderImportRequest,
     VendorFolderLinkRequest,
 )
-from entities.vendor_compliance_document.business.folder_service import VendorFolderService
+from entities.vendor_compliance.business.folder_service import VendorFolderService
 from integrations.box.base.errors import BoxError, BoxNotFoundError, BoxPermissionError
 from integrations.box.folder.business.vendor_service import BoxVendorFolderService
 from shared.api.responses import item_response, list_response

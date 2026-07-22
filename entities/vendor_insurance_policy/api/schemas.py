@@ -7,11 +7,11 @@ from pydantic import BaseModel, Field
 # Local Imports
 
 
-CoverageTypeLiteral = Literal["GL", "AUTO", "UMBRELLA", "WC"]
+CoverageTypeLiteral = Literal["GL", "WC", "OTHER"]
 
 
 class VendorInsurancePolicyCreate(BaseModel):
-    compliance_document_public_id: str = Field(
+    certificate_of_insurance_public_id: str = Field(
         min_length=1,
         description="The public ID of the parent Certificate of Insurance.",
     )

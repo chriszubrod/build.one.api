@@ -34,7 +34,7 @@ def create_vendor_insurance_policy_router(
         tenant_id=current_user.get("tenant_id", 1),
         user_id=current_user.get("id"),
         payload={
-            "compliance_document_public_id": body.compliance_document_public_id,
+            "certificate_of_insurance_public_id": body.certificate_of_insurance_public_id,
             "coverage_type": body.coverage_type,
             "carrier": body.carrier,
             "policy_number": body.policy_number,
@@ -54,19 +54,19 @@ def create_vendor_insurance_policy_router(
     return item_response(result.get("data"))
 
 
-@router.get("/get/vendor-insurance-policies/by-document/{compliance_document_public_id}")
-def get_vendor_insurance_policies_by_document_router(
-    compliance_document_public_id: str,
+@router.get("/get/vendor-insurance-policies/by-certificate-of-insurance/{certificate_of_insurance_public_id}")
+def get_vendor_insurance_policies_by_certificate_of_insurance_router(
+    certificate_of_insurance_public_id: str,
     current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_read")),
 ):
     """
-    Read vendor insurance policies by compliance document public ID.
+    Read vendor insurance policies by certificate of insurance public ID.
     """
     try:
-        policies = service.read_by_compliance_document_public_id(doc_public_id=compliance_document_public_id)
+        policies = service.read_by_certificate_of_insurance_public_id(coi_public_id=certificate_of_insurance_public_id)
         return list_response([policy.to_dict() for policy in policies])
     except ValueError:
-        raise_not_found("Compliance document")
+        raise_not_found("Certificate of insurance")
     except HTTPException:
         raise
     except Exception as e:

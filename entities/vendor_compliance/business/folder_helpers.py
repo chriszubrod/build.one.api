@@ -65,6 +65,18 @@ def is_cl_hint(filename: str) -> bool:
     return "contractor" in lowered
 
 
+def is_coi_hint(filename: str) -> bool:
+    """True when a filename looks like a certificate of insurance (COI / ACORD)."""
+    if not filename:
+        return False
+    lowered = filename.lower()
+    if "certificate of insurance" in lowered:
+        return True
+    if "acord" in lowered:
+        return True
+    return re.search(r"\bcoi\b", lowered) is not None
+
+
 def _sanitize_filename_base(name: str) -> str:
     """Strip SharePoint-illegal characters from a filename base."""
     cleaned = _SHAREPOINT_ILLEGAL_CHARS.sub("", name)

@@ -3,11 +3,11 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from entities.vendor_compliance_document.business.dashboard_service import (
+from entities.vendor_compliance.business.dashboard_service import (
     VendorComplianceDashboardService,
 )
 
-DASHBOARD = "entities.vendor_compliance_document.business.dashboard_service"
+DASHBOARD = "entities.vendor_compliance.business.dashboard_service"
 
 TODAY = date(2026, 7, 21)
 VENDOR = SimpleNamespace(id=27)

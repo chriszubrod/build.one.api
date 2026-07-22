@@ -1,7 +1,7 @@
 """Filename hint tests for contractors license detection in vendor folder scans."""
 import pytest
 
-from entities.vendor_compliance_document.business.folder_helpers import is_cl_hint
+from entities.vendor_compliance.business.folder_helpers import is_cl_hint
 
 
 @pytest.mark.parametrize(

@@ -81,7 +81,7 @@ def _ensure_attachment_from_bytes(
 def _load_from_sharepoint(
     vendor, file_id: str, blob_category: str
 ) -> Tuple[bytes, str, str, str]:
-    from entities.vendor_compliance_document.business.folder_helpers import walk_folder_tree
+    from entities.vendor_compliance.business.folder_helpers import walk_folder_tree
     from integrations.ms.sharepoint.driveitem.connector.vendor.business.service import (
         DriveItemVendorConnector,
     )
@@ -119,7 +119,7 @@ def _load_from_sharepoint(
 
 
 def _load_from_box(vendor, file_id: str, blob_category: str) -> Tuple[bytes, str, str, str]:
-    from entities.vendor_compliance_document.business.folder_helpers import walk_folder_tree
+    from entities.vendor_compliance.business.folder_helpers import walk_folder_tree
     from integrations.box.base.client import BoxHttpClient
     from integrations.box.folder.business.vendor_service import _box_list_children
     from integrations.box.folder.persistence.repo import BoxVendorFolderRepository

@@ -1,27 +1,29 @@
 # Python Standard Library Imports
 import logging
 from datetime import date
+from types import SimpleNamespace
 from typing import Optional
 
 # Third-party Imports
 
 # Local Imports
+from entities.certificate_of_insurance.business.service import CertificateOfInsuranceService
 from entities.vendor.business.service import VendorService
-from entities.vendor_compliance_document.business.read_helpers import (
-    latest_document_by_type,
+from entities.vendor_compliance.business.coverage_resolver import resolve_coverage_map
+from entities.vendor_compliance.business.read_helpers import (
     resolve_business_license_attachment,
     resolve_contractors_license_attachment,
     resolve_current_business_license,
     resolve_current_contractors_license,
     resolve_latest_w9_attachment,
 )
-from entities.vendor_compliance_document.business.service import VendorComplianceDocumentService
-from entities.vendor_compliance_document.business.validity import (
+from entities.vendor_compliance.business.validity import (
     compute_doc_status,
     days_until_expiry,
 )
 from entities.vendor_insurance_policy.business.service import VendorInsurancePolicyService
 from entities.vendor_type.business.service import VendorTypeService
+from entities.vendor_type_required_coverage.business.service import VendorTypeRequiredCoverageService
 from integrations.box.folder.persistence.repo import BoxVendorFolderRepository
 from integrations.ms.sharepoint.driveitem.connector.vendor.business.service import (
     DriveItemVendorConnector,
@@ -29,7 +31,6 @@ from integrations.ms.sharepoint.driveitem.connector.vendor.business.service impo
 
 logger = logging.getLogger(__name__)
 
-SLOT_DOCUMENT_TYPES = ("CERTIFICATE_OF_INSURANCE",)
 W9_SLOT = "W9"
 
 
@@ -65,33 +66,13 @@ class VendorComplianceDashboardService:
                 and v.vendor_type_id == tradesman_type_id
             ]
 
-        doc_service = VendorComplianceDocumentService()
-        roster = [self._build_roster_entry(vendor, doc_service, today) for vendor in roster_vendors]
+        roster = [self._build_roster_entry(vendor, today) for vendor in roster_vendors]
 
         return {"roster": roster, "suggestions": suggestions}
 
-    def _build_roster_entry(self, vendor, doc_service: VendorComplianceDocumentService, today: date) -> dict:
-        docs = doc_service.read_by_vendor_id(vendor_id=int(vendor.id))
-        latest_by_type = latest_document_by_type(docs)
-
+    def _build_roster_entry(self, vendor, today: date) -> dict:
         slots = {}
-        for doc_type in SLOT_DOCUMENT_TYPES:
-            doc = latest_by_type.get(doc_type)
-            if doc is None:
-                slots[doc_type] = {"status": "missing"}
-            else:
-                slots[doc_type] = {
-                    "status": compute_doc_status(doc.expiry_date, today),
-                    "document_public_id": doc.public_id,
-                    "document_number": doc.document_number,
-                    "issuing_authority": doc.issuing_authority,
-                    "expiry_date": doc.expiry_date,
-                    "days_until_expiry": days_until_expiry(doc.expiry_date, today),
-                    "verification_status": doc.verification_status,
-                }
-                if doc_type == "CERTIFICATE_OF_INSURANCE" and doc.id:
-                    policies = VendorInsurancePolicyService().read_by_compliance_document_id(int(doc.id))
-                    slots[doc_type]["policy_count"] = len(policies)
+        slots["CERTIFICATE_OF_INSURANCE"] = self._build_coi_slot(vendor, today)
 
         slots[W9_SLOT] = self._build_w9_slot(vendor)
         slots["BUSINESS_LICENSE"] = self._build_business_license_slot(vendor, today)
@@ -139,6 +120,79 @@ class VendorComplianceDashboardService:
             "slots": slots,
             "folders": folders,
         }
+
+    def _build_coi_slot(self, vendor, today: date) -> dict:
+        try:
+            vendor_type_id = getattr(vendor, "vendor_type_id", None)
+            required_coverage_types: list[str] = []
+            if vendor_type_id:
+                required_rows = VendorTypeRequiredCoverageService().read_by_vendor_type_id(
+                    int(vendor_type_id)
+                )
+                required_coverage_types = [
+                    row.coverage_type for row in required_rows if row.coverage_type
+                ]
+
+            certs = CertificateOfInsuranceService().read_by_vendor_id(int(vendor.id))
+            latest_certificate_public_id = certs[0].public_id if certs else None
+            verification_status = certs[0].verification_status if certs else None
+
+            annotated_policies = []
+            policy_service = VendorInsurancePolicyService()
+            for cert in certs:
+                if not cert.id:
+                    continue
+                policies = policy_service.read_by_certificate_of_insurance_id(int(cert.id))
+                for policy in policies:
+                    annotated_policies.append(
+                        SimpleNamespace(
+                            coverage_type=policy.coverage_type,
+                            expiry_date=policy.expiry_date,
+                            carrier=policy.carrier,
+                            policy_number=policy.policy_number,
+                            each_occurrence=policy.each_occurrence,
+                            aggregate=policy.aggregate,
+                            public_id=policy.public_id,
+                            certificate_public_id=cert.public_id,
+                        )
+                    )
+
+            resolved = resolve_coverage_map(required_coverage_types, annotated_policies, today)
+
+            earliest_expiry: Optional[str] = None
+            for coverage_type in required_coverage_types:
+                entry = resolved["coverages"].get(coverage_type) or {}
+                expiry = entry.get("expiry_date")
+                if not expiry:
+                    continue
+                if earliest_expiry is None or expiry < earliest_expiry:
+                    earliest_expiry = expiry
+
+            slot = {
+                **resolved,
+                "document_public_id": latest_certificate_public_id,
+                "verification_status": verification_status,
+                "policy_count": len(annotated_policies),
+                "certificate_count": len(certs),
+                "expiry_date": earliest_expiry,
+                "days_until_expiry": days_until_expiry(earliest_expiry, today),
+            }
+            return slot
+        except Exception as error:
+            logger.warning(
+                "vendor_compliance_dashboard.coi_slot.failed",
+                extra={
+                    "event_name": "vendor_compliance_dashboard.coi_slot.failed",
+                    "vendor_id": getattr(vendor, "id", None),
+                    "error": str(error),
+                },
+            )
+            return {
+                "status": "missing",
+                "compliant": False,
+                "coverages": {},
+                "extra_coverages": [],
+            }
 
     def _build_w9_slot(self, vendor) -> dict:
         att = resolve_latest_w9_attachment(vendor)

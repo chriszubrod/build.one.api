@@ -40,7 +40,7 @@ class VendorInsurancePolicyRepository:
                 row_version=base64.b64encode(row.RowVersion).decode("ascii"),
                 created_datetime=getattr(row, "CreatedDatetime", None),
                 modified_datetime=getattr(row, "ModifiedDatetime", None),
-                vendor_compliance_document_id=getattr(row, "VendorComplianceDocumentId", None),
+                certificate_of_insurance_id=getattr(row, "CertificateOfInsuranceId", None),
                 coverage_type=getattr(row, "CoverageType", None),
                 carrier=getattr(row, "Carrier", None),
                 policy_number=getattr(row, "PolicyNumber", None),
@@ -60,7 +60,7 @@ class VendorInsurancePolicyRepository:
     def create(
         self,
         *,
-        vendor_compliance_document_id: int,
+        certificate_of_insurance_id: int,
         coverage_type: str,
         carrier: Optional[str] = None,
         policy_number: Optional[str] = None,
@@ -80,7 +80,7 @@ class VendorInsurancePolicyRepository:
                     cursor=cursor,
                     name="CreateVendorInsurancePolicy",
                     params={
-                        "VendorComplianceDocumentId": vendor_compliance_document_id,
+                        "CertificateOfInsuranceId": certificate_of_insurance_id,
                         "CoverageType": coverage_type,
                         "Carrier": carrier,
                         "PolicyNumber": policy_number,
@@ -136,22 +136,22 @@ class VendorInsurancePolicyRepository:
             logger.error(f"Error during read vendor insurance policy by public ID: {error}")
             raise map_database_error(error)
 
-    def read_by_compliance_document_id(self, vendor_compliance_document_id: int) -> list[VendorInsurancePolicy]:
+    def read_by_certificate_of_insurance_id(self, certificate_of_insurance_id: int) -> list[VendorInsurancePolicy]:
         """
-        Read vendor insurance policies by compliance document ID.
+        Read vendor insurance policies by certificate of insurance ID.
         """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="ReadVendorInsurancePoliciesByComplianceDocumentId",
-                    params={"VendorComplianceDocumentId": vendor_compliance_document_id},
+                    name="ReadVendorInsurancePoliciesByCertificateOfInsuranceId",
+                    params={"CertificateOfInsuranceId": certificate_of_insurance_id},
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
         except Exception as error:
-            logger.error(f"Error during read vendor insurance policies by compliance document ID: {error}")
+            logger.error(f"Error during read vendor insurance policies by certificate of insurance ID: {error}")
             raise map_database_error(error)
 
     def update_by_id(self, policy: VendorInsurancePolicy) -> VendorInsurancePolicy:

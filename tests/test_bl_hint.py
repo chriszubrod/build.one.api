@@ -1,7 +1,7 @@
 """Filename hint tests for business license detection in vendor folder scans."""
 import pytest
 
-from entities.vendor_compliance_document.business.folder_helpers import is_bl_hint
+from entities.vendor_compliance.business.folder_helpers import is_bl_hint
 
 
 @pytest.mark.parametrize(

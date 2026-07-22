@@ -49,8 +49,8 @@ from entities.vendor.api.router import router as vendor_api_router
 from entities.vendor_project_rate.api.router import router as vendor_project_rate_api_router
 from entities.vendor_address.api.router import router as vendor_address_api_router
 from entities.vendor_type.api.router import router as vendor_type_api_router
-from entities.vendor_compliance_document.api.router import router as vendor_compliance_document_api_router
-from entities.vendor_compliance_document.api.folder_router import router as vendor_compliance_folder_api_router
+from entities.vendor_compliance.api.router import router as vendor_compliance_api_router
+from entities.vendor_compliance.api.folder_router import router as vendor_compliance_folder_api_router
 from entities.vendor_insurance_policy.api.router import router as vendor_insurance_policy_api_router
 from entities.taxpayer.api.router import router as taxpayer_api_router
 from entities.taxpayer.api.w9_router import router as taxpayer_w9_api_router
@@ -58,6 +58,10 @@ from entities.business_license.api.router import router as business_license_api_
 from entities.business_license.api.ingest_router import router as business_license_ingest_api_router
 from entities.contractors_license.api.router import router as contractors_license_api_router
 from entities.contractors_license.api.ingest_router import router as contractors_license_ingest_api_router
+from entities.certificate_of_insurance.api.router import router as certificate_of_insurance_api_router
+from entities.certificate_of_insurance.api.ingest_router import (
+    router as certificate_of_insurance_ingest_api_router,
+)
 from entities.role_module.api.router import router as role_module_api_router
 from entities.user_module.api.router import router as user_module_api_router
 from entities.contact.api.router import router as contact_api_router
@@ -233,7 +237,7 @@ app.include_router(box_auth_api_router)
 app.include_router(box_folder_api_router)
 app.include_router(box_excel_api_router)
 app.include_router(vendor_type_api_router)
-app.include_router(vendor_compliance_document_api_router)
+app.include_router(vendor_compliance_api_router)
 app.include_router(vendor_compliance_folder_api_router)
 app.include_router(vendor_insurance_policy_api_router)
 app.include_router(taxpayer_api_router)
@@ -242,6 +246,8 @@ app.include_router(business_license_api_router)
 app.include_router(business_license_ingest_api_router)
 app.include_router(contractors_license_api_router)
 app.include_router(contractors_license_ingest_api_router)
+app.include_router(certificate_of_insurance_api_router)
+app.include_router(certificate_of_insurance_ingest_api_router)
 app.include_router(role_module_api_router)
 app.include_router(user_module_api_router)
 app.include_router(dashboard_api_router)

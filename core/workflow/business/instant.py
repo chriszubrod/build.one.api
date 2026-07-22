@@ -70,7 +70,6 @@ PROCESS_REGISTRY: Dict[str, str] = {
     "vendor": "entities.vendor.business.service.VendorService",
     "vendor_address": "entities.vendor_address.business.service.VendorAddressService",
     "vendor_type": "entities.vendor_type.business.service.VendorTypeService",
-    "vendor_compliance_document": "entities.vendor_compliance_document.business.service.VendorComplianceDocumentService",
     "vendor_insurance_policy": "entities.vendor_insurance_policy.business.service.VendorInsurancePolicyService",
     "vendor_project_rate": "entities.vendor_project_rate.business.service.VendorProjectRateService",
     "employee_project_rate": "entities.employee_project_rate.business.service.EmployeeProjectRateService",
@@ -110,6 +109,7 @@ PROCESS_REGISTRY: Dict[str, str] = {
     "business_license_attachment": "entities.business_license_attachment.business.service.BusinessLicenseAttachmentService",
     "contractors_license": "entities.contractors_license.business.service.ContractorsLicenseService",
     "contractors_license_attachment": "entities.contractors_license_attachment.business.service.ContractorsLicenseAttachmentService",
+    "certificate_of_insurance": "entities.certificate_of_insurance.business.service.CertificateOfInsuranceService",
     
     # Contact
     "contact": "entities.contact.business.service.ContactService",

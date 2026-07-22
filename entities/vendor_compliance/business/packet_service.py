@@ -6,20 +6,12 @@ import re
 
 # Local Imports
 from entities.attachment.business.service import AttachmentService
+from entities.certificate_of_insurance.business.service import CertificateOfInsuranceService
 from entities.vendor.business.service import VendorService
-from entities.vendor_compliance_document.business.read_helpers import (
-    latest_document_by_type,
-    resolve_latest_w9_attachment,
-)
-from entities.vendor_compliance_document.business.service import VendorComplianceDocumentService
+from entities.vendor_compliance.business.read_helpers import resolve_latest_w9_attachment
+from entities.vendor_insurance_policy.business.service import VendorInsurancePolicyService
 from shared.pdf_utils import merge_pdfs
 from shared.storage import AzureBlobStorage
-
-DOCUMENT_TYPE_ORDER = ("CERTIFICATE_OF_INSURANCE",)
-
-DOCUMENT_TYPE_LABELS = {
-    "CERTIFICATE_OF_INSURANCE": "Certificate of Insurance",
-}
 
 
 class VendorCompliancePacketService:
@@ -124,31 +116,38 @@ class VendorCompliancePacketService:
         ])
         return buf.getvalue()
 
+    def _earliest_policy_expiry(self, certificate_of_insurance_id: int) -> str | None:
+        policies = VendorInsurancePolicyService().read_by_certificate_of_insurance_id(
+            certificate_of_insurance_id
+        )
+        expiry_dates = [p.expiry_date for p in policies if p.expiry_date]
+        if not expiry_dates:
+            return None
+        return min(expiry_dates)
+
     def build_packet(self, vendor_public_id: str) -> tuple[bytes, str]:
         vendor = VendorService().read_by_public_id(public_id=vendor_public_id)
         if not vendor or not vendor.id:
             raise ValueError(f"Vendor with public_id '{vendor_public_id}' not found")
 
-        docs = VendorComplianceDocumentService().read_by_vendor_id(vendor_id=int(vendor.id))
-        latest_by_type = latest_document_by_type(docs)
+        certs = CertificateOfInsuranceService().read_by_vendor_id(vendor_id=int(vendor.id))
+        cert = certs[0] if certs else None
 
         att_service = AttachmentService()
         blob_urls = []
         doc_summary_rows = []
 
-        for doc_type in DOCUMENT_TYPE_ORDER:
-            doc = latest_by_type.get(doc_type)
-            if not doc or not doc.attachment_id:
-                continue
-            attachment = att_service.read_by_id(int(doc.attachment_id))
-            if not attachment or not attachment.blob_url:
-                continue
-            blob_urls.append(attachment.blob_url)
-            doc_summary_rows.append({
-                "type_label": DOCUMENT_TYPE_LABELS.get(doc_type, doc_type),
-                "document_number": doc.document_number,
-                "expiry_date": doc.expiry_date,
-            })
+        if cert and cert.attachment_id:
+            attachment = att_service.read_by_id(int(cert.attachment_id))
+            if attachment and attachment.blob_url:
+                blob_urls.append(attachment.blob_url)
+                doc_summary_rows.append({
+                    "type_label": "Certificate of Insurance",
+                    "document_number": None,
+                    "expiry_date": (
+                        self._earliest_policy_expiry(int(cert.id)) if cert.id else None
+                    ),
+                })
 
         w9_present = False
         w9_att = resolve_latest_w9_attachment(vendor)
@@ -165,9 +164,11 @@ class VendorCompliancePacketService:
         return pdf_bytes, filename
 
     def resolve_single_doc(self, document_public_id: str) -> tuple[bytes, str]:
-        doc = VendorComplianceDocumentService().read_by_public_id(public_id=document_public_id)
+        doc = CertificateOfInsuranceService().read_by_public_id(public_id=document_public_id)
         if not doc:
-            raise ValueError(f"Vendor compliance document with public_id '{document_public_id}' not found")
+            raise ValueError(
+                f"Vendor compliance document with public_id '{document_public_id}' not found"
+            )
         if not doc.attachment_id:
             raise ValueError("Vendor compliance document has no attachment")
 

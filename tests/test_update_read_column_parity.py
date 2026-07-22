@@ -54,7 +54,6 @@ _NULL_GUARD_EXCEPTIONS: dict[str, frozenset[str] | None] = {
     "UpdateContractLaborLineItemById": frozenset({"BillLineItemId"}),
     # U-093 entities are fully guarded by design — their update semantics are
     # partial-update (NULL = don't change), unlike the full-row-writer default.
-    "UpdateVendorComplianceDocumentById": None,
     "UpdateVendorInsurancePolicyById": None,
 }
 

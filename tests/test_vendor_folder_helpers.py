@@ -1,5 +1,5 @@
 """Pure-logic tests for vendor compliance SharePoint folder helpers (U-095)."""
-from entities.vendor_compliance_document.business.folder_helpers import (
+from entities.vendor_compliance.business.folder_helpers import (
     build_export_filename,
     is_compliance_hint,
     walk_folder_tree,

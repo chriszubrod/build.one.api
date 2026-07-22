@@ -1,7 +1,7 @@
 """Pure-logic tests for SharePoint folder-import compliance doc dedup (U-104)."""
 from types import SimpleNamespace
 
-from entities.vendor_compliance_document.business.folder_helpers import (
+from entities.vendor_compliance.business.folder_helpers import (
     select_duplicate_compliance_doc,
 )
 

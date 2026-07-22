@@ -1,7 +1,7 @@
 """Filename heuristics for W-9 vs other vendor compliance documents."""
 import pytest
 
-from entities.vendor_compliance_document.business.folder_helpers import is_w9_hint
+from entities.vendor_compliance.business.folder_helpers import is_w9_hint
 
 
 @pytest.mark.parametrize(

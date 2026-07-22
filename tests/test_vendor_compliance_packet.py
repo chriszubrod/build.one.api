@@ -51,7 +51,7 @@ def test_policy_to_dict_stringifies_money_limits():
         row_version="AAAAAAAAB9E=",
         created_datetime=None,
         modified_datetime=None,
-        vendor_compliance_document_id=1,
+        certificate_of_insurance_id=1,
         coverage_type="GL",
         carrier="Acme Mutual",
         policy_number="GL-123",

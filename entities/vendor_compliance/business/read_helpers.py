@@ -2,8 +2,8 @@ from typing import Optional
 
 
 def latest_document_by_type(docs) -> dict:
-    """First-seen VendorComplianceDocument per document_type.
-    Relies on the read sproc's ORDER BY DocumentType, CreatedDatetime DESC (newest first)."""
+    """First-seen compliance record per document_type key.
+    Relies on read order placing newest records first per type."""
     latest = {}
     for doc in docs:
         dt = doc.document_type

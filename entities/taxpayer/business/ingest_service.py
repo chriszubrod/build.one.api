@@ -19,7 +19,7 @@ class TaxpayerW9IngestService:
         file_id: Optional[str] = None,
     ) -> dict:
         from entities.vendor.business.service import VendorService
-        from entities.vendor_compliance_document.business.ingest_fetch import (
+        from entities.vendor_compliance.business.ingest_fetch import (
             load_compliance_pdf_and_attachment,
         )
         from integrations.azure.document_intelligence.business.service import (

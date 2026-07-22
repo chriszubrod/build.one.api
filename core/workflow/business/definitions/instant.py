@@ -56,7 +56,6 @@ SYNCHRONOUS_TASKS = [
     "vendor",
     "vendor_address",
     "vendor_type",
-    "vendor_compliance_document",
     "vendor_insurance_policy",
     "vendor_project_rate",
     "employee_project_rate",
@@ -96,6 +95,7 @@ SYNCHRONOUS_TASKS = [
     "business_license_attachment",
     "contractors_license",
     "contractors_license_attachment",
+    "certificate_of_insurance",
     
     # Contact
     "contact",

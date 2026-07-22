@@ -6,7 +6,7 @@ change can't silently move the expiring-soon window or the expired/valid edges.
 """
 from datetime import date
 
-from entities.vendor_compliance_document.business.validity import (
+from entities.vendor_compliance.business.validity import (
     EXPIRING_SOON_DAYS,
     compute_doc_status,
     days_until_expiry,

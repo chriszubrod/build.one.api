@@ -138,3 +138,22 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+CREATE OR ALTER PROCEDURE DeleteVendorTypeRequiredCoverageByPublicId
+(
+    @PublicId UNIQUEIDENTIFIER
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRANSACTION;
+
+    DELETE FROM dbo.[VendorTypeRequiredCoverage]
+    OUTPUT DELETED.[Id]
+    WHERE [PublicId] = @PublicId;
+
+    COMMIT TRANSACTION;
+END;
+GO

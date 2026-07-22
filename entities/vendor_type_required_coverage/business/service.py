@@ -50,3 +50,9 @@ class VendorTypeRequiredCoverageService:
         Hard-delete a vendor type required coverage row by ID.
         """
         return self.repo.delete_by_id(id=id)
+
+    def delete_by_public_id(self, public_id: str) -> bool:
+        """
+        Hard-delete a vendor type required coverage row by public ID.
+        """
+        return self.repo.delete_by_public_id(public_id=public_id)

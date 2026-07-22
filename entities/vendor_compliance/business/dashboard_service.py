@@ -134,8 +134,20 @@ class VendorComplianceDashboardService:
                 ]
 
             certs = CertificateOfInsuranceService().read_by_vendor_id(int(vendor.id))
-            latest_certificate_public_id = certs[0].public_id if certs else None
-            verification_status = certs[0].verification_status if certs else None
+            latest_cert = certs[0] if certs else None
+            latest_certificate_public_id = latest_cert.public_id if latest_cert else None
+            verification_status = latest_cert.verification_status if latest_cert else None
+            # The newest cert's attachment public_id, so the dashboard can view the cert PDF
+            # through the generic /view/attachment/{public_id} route (like the BL/CL/W9 slots).
+            attachment_public_id = None
+            if latest_cert and getattr(latest_cert, "attachment_id", None):
+                try:
+                    from entities.attachment.business.service import AttachmentService
+
+                    att = AttachmentService().read_by_id(int(latest_cert.attachment_id))
+                    attachment_public_id = att.public_id if att else None
+                except Exception:
+                    attachment_public_id = None
 
             annotated_policies = []
             policy_service = VendorInsurancePolicyService()
@@ -171,6 +183,7 @@ class VendorComplianceDashboardService:
             slot = {
                 **resolved,
                 "document_public_id": latest_certificate_public_id,
+                "attachment_public_id": attachment_public_id,
                 "verification_status": verification_status,
                 "policy_count": len(annotated_policies),
                 "certificate_count": len(certs),

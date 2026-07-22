@@ -138,3 +138,21 @@ class VendorTypeRequiredCoverageRepository:
         except Exception as error:
             logger.error(f"Error during delete vendor type required coverage by ID: {error}")
             raise map_database_error(error)
+
+    def delete_by_public_id(self, public_id: str) -> bool:
+        """
+        Hard-delete a vendor type required coverage row by public ID.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="DeleteVendorTypeRequiredCoverageByPublicId",
+                    params={"PublicId": public_id},
+                )
+                row = cursor.fetchone()
+                return row is not None
+        except Exception as error:
+            logger.error(f"Error during delete vendor type required coverage by public ID: {error}")
+            raise map_database_error(error)

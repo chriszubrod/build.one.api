@@ -8,7 +8,13 @@ import re
 from entities.attachment.business.service import AttachmentService
 from entities.certificate_of_insurance.business.service import CertificateOfInsuranceService
 from entities.vendor.business.service import VendorService
-from entities.vendor_compliance.business.read_helpers import resolve_latest_w9_attachment
+from entities.vendor_compliance.business.read_helpers import (
+    resolve_business_license_attachment,
+    resolve_contractors_license_attachment,
+    resolve_current_business_license,
+    resolve_current_contractors_license,
+    resolve_latest_w9_attachment,
+)
 from entities.vendor_insurance_policy.business.service import VendorInsurancePolicyService
 from shared.pdf_utils import merge_pdfs
 from shared.storage import AzureBlobStorage
@@ -147,6 +153,28 @@ class VendorCompliancePacketService:
                     "expiry_date": (
                         self._earliest_policy_expiry(int(cert.id)) if cert.id else None
                     ),
+                })
+
+        bl = resolve_current_business_license(vendor)
+        if bl:
+            att = resolve_business_license_attachment(bl)
+            if att and att.blob_url:
+                blob_urls.append(att.blob_url)
+                doc_summary_rows.append({
+                    "type_label": "Business License",
+                    "document_number": bl.license_number,
+                    "expiry_date": bl.expiry_date,
+                })
+
+        cl = resolve_current_contractors_license(vendor)
+        if cl:
+            att = resolve_contractors_license_attachment(cl)
+            if att and att.blob_url:
+                blob_urls.append(att.blob_url)
+                doc_summary_rows.append({
+                    "type_label": "Contractor's License",
+                    "document_number": cl.license_number,
+                    "expiry_date": cl.expiry_date,
                 })
 
         w9_present = False

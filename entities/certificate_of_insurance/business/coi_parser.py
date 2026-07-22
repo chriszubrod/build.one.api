@@ -211,7 +211,11 @@ def _parse_insurers(content: str, kvp: dict[str, str], tables: Any) -> dict[str,
                     if letter_m:
                         letter = letter_m.group(1).upper()
                         name = _safe_str(row[1]).strip()
-                        if name:
+                        # A coverage-grid row ALSO starts with an insurer letter (INSR LTR),
+                        # but its 2nd cell is a coverage-type label, not a carrier — don't let
+                        # it poison the insurer map (Codex #2; the real INSURER-table row can't
+                        # override it later because of setdefault).
+                        if name and not _map_coverage_type(name):
                             insurers.setdefault(letter, name)
 
     return insurers
@@ -276,13 +280,26 @@ def _extract_policy_number(text: str) -> Optional[str]:
     m = _POLICY_NUMBER_RE.search(search_text)
     if m:
         token = (m.group(1) or "").strip()
-        # A real policy number contains a digit — this rejects the literal label
-        # words ("POLICY", "EFF", "EXP", coverage names) the regex can otherwise grab.
-        if token and re.search(r"\d", token) and token.lower() not in ("number", "no", "eff", "exp"):
+        # A real policy number contains a digit but is NOT a currency amount — reject the
+        # literal label words AND limit amounts ("$1,000,000"), same guard as the grid path
+        # (Codex #3: the content fallback previously returned a limit as the policy number).
+        if (
+            token
+            and re.search(r"\d", token)
+            and "$" not in token
+            and "," not in token
+            and token.lower() not in ("number", "no", "eff", "exp")
+        ):
             return token
     for part in re.split(r"[\s/|]+", text):
         part = part.strip()
-        if len(part) >= 4 and re.search(r"\d", part) and re.search(r"[A-Za-z0-9]", part):
+        if (
+            len(part) >= 4
+            and re.search(r"\d", part)
+            and re.search(r"[A-Za-z0-9]", part)
+            and "$" not in part
+            and "," not in part
+        ):
             if part.lower() not in ("general", "liability", "workers", "compensation"):
                 return part
     return None
@@ -334,6 +351,159 @@ def _policy_score(policy: dict) -> int:
     return score
 
 
+def _is_coverage_grid_header_row(row: list) -> bool:
+    joined = " ".join(_safe_str(c).lower() for c in row if c)
+    return (
+        "insr ltr" in joined
+        and "policy number" in joined
+        and "policy eff" in joined
+    )
+
+
+def _build_grid_column_map(header_row: list) -> dict[str, int]:
+    col_map: dict[str, int] = {}
+    for idx, cell in enumerate(header_row):
+        h = _safe_str(cell).lower().strip()
+        if not h:
+            continue
+        if "insr ltr" in h:
+            col_map["insr_ltr"] = idx
+        elif "type of insurance" in h:
+            col_map["type"] = idx
+        elif "policy number" in h:
+            col_map["policy_number"] = idx
+        elif "policy eff" in h:
+            col_map["policy_eff"] = idx
+        elif "policy exp" in h:
+            col_map["policy_exp"] = idx
+    return col_map
+
+
+def _grid_cell(row: list, col_map: dict[str, int], key: str) -> str:
+    idx = col_map.get(key)
+    if idx is None or idx >= len(row):
+        return ""
+    return _safe_str(row[idx]).strip()
+
+
+def _is_invalid_policy_number_token(raw: str) -> bool:
+    s = raw.strip()
+    if not s:
+        return True
+    if s.startswith("$"):
+        return True
+    if "," in s:
+        return True
+    return False
+
+
+def _policy_number_from_grid_cell(raw: str) -> Optional[str]:
+    if _is_invalid_policy_number_token(raw):
+        return None
+    if re.search(r"\d", raw):
+        return raw.strip()
+    return None
+
+
+def _detect_coverage_type_from_grid_row(row: list, col_map: dict[str, int]) -> Optional[str]:
+    row_text = " ".join(_safe_str(c) for c in row if c).strip()
+    coverage_type = _map_coverage_type(row_text)
+    if coverage_type:
+        return coverage_type
+    type_idx = col_map.get("type")
+    if type_idx is not None:
+        start = max(0, type_idx - 1)
+        end = min(len(row), type_idx + 4)
+        for j in range(start, end):
+            cell_text = _safe_str(row[j]).strip()
+            coverage_type = _map_coverage_type(cell_text)
+            if coverage_type:
+                return coverage_type
+    return None
+
+
+def _flush_coverage_block(
+    block: Optional[dict],
+    insurers: dict[str, str],
+) -> Optional[dict]:
+    if not block or not block.get("coverage_type"):
+        return None
+    if not block.get("policy_number") and not block.get("expiry_date"):
+        return None
+    letter = block.get("insurer_letter")
+    carrier = insurers.get(letter) if letter else None
+    return {
+        "coverage_type": block["coverage_type"],
+        "carrier": carrier,
+        "policy_number": block.get("policy_number"),
+        "each_occurrence": block.get("each_occurrence"),
+        "aggregate": block.get("aggregate"),
+        "effective_date": block.get("effective_date"),
+        "expiry_date": block.get("expiry_date"),
+    }
+
+
+def _accumulate_into_coverage_block(
+    block: dict,
+    row: list,
+    col_map: dict[str, int],
+) -> None:
+    row_text = " ".join(_safe_str(c) for c in row if c).strip()
+
+    letter_raw = _grid_cell(row, col_map, "insr_ltr")
+    if letter_raw and _INSURER_LETTER_ONLY_RE.match(letter_raw):
+        block["insurer_letter"] = letter_raw.upper()
+
+    if not block.get("policy_number"):
+        pn = _policy_number_from_grid_cell(_grid_cell(row, col_map, "policy_number"))
+        if pn:
+            block["policy_number"] = pn
+
+    if not block.get("effective_date"):
+        eff_raw = _grid_cell(row, col_map, "policy_eff")
+        if eff_raw:
+            parsed = _parse_date(eff_raw)
+            if parsed:
+                block["effective_date"] = parsed
+
+    if not block.get("expiry_date"):
+        exp_raw = _grid_cell(row, col_map, "policy_exp")
+        if exp_raw:
+            parsed = _parse_date(exp_raw)
+            if parsed:
+                block["expiry_date"] = parsed
+
+    each, aggregate = _extract_limits_from_text(row_text)
+    if each and not block.get("each_occurrence"):
+        block["each_occurrence"] = each
+    if aggregate and not block.get("aggregate"):
+        block["aggregate"] = aggregate
+
+
+def _find_coverage_grid_table(tables: Any) -> Optional[tuple[list, dict[str, int]]]:
+    if not isinstance(tables, list):
+        return None
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        rows = table.get("rows")
+        if not isinstance(rows, list) or not rows:
+            continue
+        header = rows[0]
+        if not isinstance(header, list):
+            continue
+        if not _is_coverage_grid_header_row(header):
+            continue
+        col_map = _build_grid_column_map(header)
+        # Require BOTH the policy-number AND expiry columns to be mappable before
+        # trusting the grid — otherwise a partial grid would suppress the content
+        # fallback and silently lose the expiry date (Codex #1).
+        if "policy_number" not in col_map or "policy_exp" not in col_map:
+            continue
+        return rows, col_map
+    return None
+
+
 def _merge_policies(candidates: list[dict]) -> list[dict]:
     best_by_core: dict[str, dict] = {}
     other: list[dict] = []
@@ -354,27 +524,44 @@ def _merge_policies(candidates: list[dict]) -> list[dict]:
     return merged
 
 
-def _parse_policies_from_tables(tables: Any, insurers: dict[str, str]) -> list[dict]:
-    if not isinstance(tables, list):
-        return []
+def _parse_policies_from_tables(
+    tables: Any,
+    insurers: dict[str, str],
+) -> tuple[list[dict], bool]:
+    """Parse policies from the ACORD coverage grid. Returns (policies, grid_found)."""
+    found = _find_coverage_grid_table(tables)
+    if not found:
+        return [], False
+
+    rows, col_map = found
     candidates: list[dict] = []
-    for table in tables:
-        if not isinstance(table, dict):
+    block: Optional[dict] = None
+
+    for row in rows[1:]:
+        if not isinstance(row, list):
             continue
-        rows = table.get("rows")
-        if not isinstance(rows, list):
-            continue
-        for row in rows:
-            if not isinstance(row, list):
-                continue
-            row_text = " ".join(_safe_str(c) for c in row if c).strip()
-            if not row_text:
-                continue
-            coverage_type = _map_coverage_type(row_text)
-            if not coverage_type:
-                continue
-            candidates.append(_policy_from_text_blob(row_text, coverage_type, insurers))
-    return _merge_policies(candidates)
+        coverage_type = _detect_coverage_type_from_grid_row(row, col_map)
+        if coverage_type:
+            flushed = _flush_coverage_block(block, insurers)
+            if flushed:
+                candidates.append(flushed)
+            block = {
+                "coverage_type": coverage_type,
+                "insurer_letter": None,
+                "policy_number": None,
+                "effective_date": None,
+                "expiry_date": None,
+                "each_occurrence": None,
+                "aggregate": None,
+            }
+        if block is not None:
+            _accumulate_into_coverage_block(block, row, col_map)
+
+    flushed = _flush_coverage_block(block, insurers)
+    if flushed:
+        candidates.append(flushed)
+
+    return _merge_policies(candidates), True
 
 
 def _parse_policies_from_content(content: str, insurers: dict[str, str]) -> list[dict]:
@@ -476,8 +663,8 @@ def parse_certificate_of_insurance_fields(di_result: dict) -> dict:
         issue_date = _pick_issue_date(kvp, content)
 
         insurers = _parse_insurers(content, kvp, tables)
-        policies = _parse_policies_from_tables(tables, insurers)
-        if not policies:
+        policies, grid_found = _parse_policies_from_tables(tables, insurers)
+        if not grid_found:
             policies = _parse_policies_from_content(content, insurers)
 
         confidence = _compute_confidence(policies)

@@ -1,0 +1,634 @@
+{
+ "content": "ACORD\u00ae \u00ae\nCERTIFICATE OF LIABILITY INSURANCE\nDATE (MM/DD/YYYY)\n4/23/2025\nTHIS CERTIFICATE IS ISSUED AS A MATTER OF INFORMATION ONLY AND CONFERS NO RIGHTS UPON THE CERTIFICATE HOLDER. THIS CERTIFICATE DOES NOT AFFIRMATIVELY OR NEGATIVELY AMEND, EXTEND OR ALTER THE COVERAGE AFFORDED BY THE POLICIES BELOW. THIS CERTIFICATE OF INSURANCE DOES NOT CONSTITUTE A CONTRACT BETWEEN THE ISSUING INSURER(S), AUTHORIZED REPRESENTATIVE OR PRODUCER, AND THE CERTIFICATE HOLDER.\nIMPORTANT: If the certificate holder is an ADDITIONAL INSURED, the policy(ies) must be endorsed. If SUBROGATION IS WAIVED, subject to the terms and conditions of the policy, certain policies may require an endorsement. A statement on this certificate does not confer rights to the certificate holder in lieu of such endorsement(s).\nPRODUCER Test Producer Agency 1 Agency Rd Testville TN 00000\nINSURED\nTest Insured LLC\n1 Test Street\nTestville TN 00000\nCONTACT NAME: TESTSVC\nPHONE (A/C, No, Ext): (555) 000-0001\nFAX (A/C, No): (555) 000-0002\nE-MAIL ADDRESS: test@example.com\nINSURER(S) AFFORDING COVERAGE\nNAIC #\nINSURER A : Alpha Insurance Company\n32700\nINSURER B : Beta Insurance Company\n18988\nINSURER C :\nINSURER D :\nINSURER E :\nINSURER F :\nCOVERAGES CERTIFICATE NUMBER: TESTCERT001\nREVISION NUMBER:\nTHIS IS TO CERTIFY THAT THE POLICIES OF INSURANCE LISTED BELOW HAVE BEEN ISSUED TO THE INSURED NAMED ABOVE FOR THE POLICY PERIOD INDICATED. NOTWITHSTANDING ANY REQUIREMENT, TERM OR CONDITION OF ANY CONTRACT OR OTHER DOCUMENT WITH RESPECT TO WHICH THIS CERTIFICATE MAY BE ISSUED OR MAY PERTAIN, THE INSURANCE AFFORDED BY THE POLICIES DESCRIBED HEREIN IS SUBJECT TO ALL THE TERMS, EXCLUSIONS AND CONDITIONS OF SUCH POLICIES. LIMITS SHOWN MAY HAVE BEEN REDUCED BY PAID CLAIMS.\nINSR LTR\nTYPE OF INSURANCE\nADDL INSD\nSUBR WVD\nPOLICY NUMBER\nPOLICY EFF (MM/DD/YYYY)\nPOLICY EXP (MM/DD/YYYY)\nLIMITS\nA :selected: X\nCOMMERCIAL GENERAL LIABILITY\nEACH OCCURRENCE\n$ 1,000,000 :unselected: :unselected: :unselected:\nCLAIMS-MADE :selected:\nX OCCUR\nDAMAGE TO RENTED PREMISES (Ea occurrence)\n$ 300,000 :unselected:\nGLTEST0001\n12/14/2024\n12/14/2025\nMED EXP (Any one person)\n$ 10,000\nPERSONAL & ADV INJURY\n$ 1,000,000\nGEN'L AGGREGATE LIMIT APPLIES PER:\nGENERAL AGGREGATE\n$ 2,000,000 :selected: X :unselected:\nPOLICY :unselected:\nPRO- :unselected:\nJECT LOC\nPRODUCTS - COMP/OP AGG\n$ 2,000,000\nOTHER:\nPremises/Operations\n$\nB\nAUTOMOBILE LIABILITY :unselected:\nCOMBINED SINGLE LIMIT (Ea accident)\n$ 1,000,000\nANY AUTO\nBODILY INJURY (Per person)\n$ :unselected:\nALL OWNED :selected: AUTOS X SCHEDULED AUTOS\nAUTOTEST0002\n12/14/2024\n12/14/2025\nBODILY INJURY (Per accident)\n$ :unselected:\nHIRED AUTOS :unselected: NON-OWNED :unselected:\nAUTOS\nPROPERTY DAMAGE (Per accident)\n$ :selected: X\n19\nMedical payments\n$ 5,000 :unselected:\nUMBRELLA LIAB :unselected: OCCUR\nEACH OCCURRENCE\n$ :unselected: :unselected:\nEXCESS LIAB :unselected: :unselected:\nCLAIMS-MADE\nAGGREGATE\n$\nDED RETENTION $\n$\nWORKERS COMPENSATION AND EMPLOYERS' LIABILITY\nY/N :unselected:\nPER STATUTE :unselected:\nOTH- ER\nANY PROPRIETOR/PARTNER/EXECUTIVE\nOFFICER/MEMBER EXCLUDED? :unselected:\nN/A\nE.L. EACH ACCIDENT\n$\n(Mandatory in NH)\nE.L. DISEASE - EA EMPLOYEE\n$\nIf yes, describe under\nDESCRIPTION OF OPERATIONS below\nE.L. DISEASE - POLICY LIMIT\n$\nDESCRIPTION OF OPERATIONS / LOCATIONS / VEHICLES (ACORD 101, Additional Remarks Schedule, may be attached if more space is required)\nCERTIFICATE HOLDER\nCANCELLATION\nTest Holder Inc PO Box 1 Testville TN 00000\nSHOULD ANY OF THE ABOVE DESCRIBED POLICIES BE CANCELLED BEFORE THE EXPIRATION DATE THEREOF, NOTICE WILL BE DELIVERED IN ACCORDANCE WITH THE POLICY PROVISIONS.\nAUTHORIZED REPRESENTATIVE\nTest Rep\nlook & Pas\n@ 1988-2014 ACORD CORPORATION. All rights reserved.\nACORD 25 (2014/01) INS025 (201401)\nThe ACORD name and logo are registered marks of ACORD :unselected: :unselected: :unselected: :unselected: :unselected: :unselected: :unselected:",
+ "key_value_pairs": [
+  {
+   "key": "DATE (MM/DD/YYYY)",
+   "value": "4/23/2025",
+   "confidence": "0.995"
+  },
+  {
+   "key": "PRODUCER",
+   "value": "Test Producer Agency 1 Agency Rd Testville TN 00000",
+   "confidence": "0.997"
+  },
+  {
+   "key": "CONTACT NAME:",
+   "value": "TESTSVC",
+   "confidence": "0.997"
+  },
+  {
+   "key": "PHONE (A/C, No, Ext):",
+   "value": "(555) 000-0001",
+   "confidence": "0.957"
+  },
+  {
+   "key": "FAX (A/C, No):",
+   "value": "(555) 000-0002",
+   "confidence": "0.99"
+  },
+  {
+   "key": "E-MAIL ADDRESS:",
+   "value": "test@example.com",
+   "confidence": "0.989"
+  },
+  {
+   "key": "INSURER(S) AFFORDING COVERAGE",
+   "value": "INSURER A : Alpha Insurance Company\nINSURER B : Beta Insurance Company\nINSURER",
+   "confidence": "0.965"
+  },
+  {
+   "key": "NAIC #",
+   "value": "32700\n18988",
+   "confidence": "0.996"
+  },
+  {
+   "key": "INSURED",
+   "value": "Test Insured LLC\n1 Test Street\nTestville TN 00000",
+   "confidence": "0.996"
+  },
+  {
+   "key": "ADDL",
+   "value": "N/A",
+   "confidence": "0.873"
+  },
+  {
+   "key": "SUBR",
+   "value": "",
+   "confidence": "0.789"
+  },
+  {
+   "key": "POLICY EFF (MM/DD/YYYY)",
+   "value": "12/14/2024",
+   "confidence": "0.991"
+  },
+  {
+   "key": "POLICY EXP (MM/DD/YYYY)",
+   "value": "12/14/2025",
+   "confidence": "0.992"
+  },
+  {
+   "key": "POLICY NUMBER",
+   "value": "GLTEST0001",
+   "confidence": "0.997"
+  },
+  {
+   "key": "COMMERCIAL GENERAL LIABILITY",
+   "value": ":selected:",
+   "confidence": "0.993"
+  },
+  {
+   "key": "EACH OCCURRENCE",
+   "value": "$ 1,000,000",
+   "confidence": "0.994"
+  },
+  {
+   "key": "CLAIMS-MADE",
+   "value": ":unselected:",
+   "confidence": "0.991"
+  },
+  {
+   "key": "OCCUR",
+   "value": ":selected:",
+   "confidence": "0.996"
+  },
+  {
+   "key": "DAMAGE TO RENTED PREMISES (Ea occurrence)",
+   "value": "$ 300,000",
+   "confidence": "0.996"
+  },
+  {
+   "key": "MED EXP (Any one person)",
+   "value": "$ 10,000",
+   "confidence": "0.996"
+  },
+  {
+   "key": "PERSONAL & ADV INJURY",
+   "value": "$ 1,000,000",
+   "confidence": "0.996"
+  },
+  {
+   "key": "GENERAL AGGREGATE",
+   "value": "$ 2,000,000",
+   "confidence": "0.994"
+  },
+  {
+   "key": "POLICY",
+   "value": ":selected:",
+   "confidence": "0.996"
+  },
+  {
+   "key": "PRO-\nJECT",
+   "value": ":unselected:",
+   "confidence": "0.993"
+  },
+  {
+   "key": "LOC",
+   "value": ":unselected:",
+   "confidence": "0.994"
+  },
+  {
+   "key": "PRODUCTS - COMP/OP AGG",
+   "value": "$ 2,000,000",
+   "confidence": "0.996"
+  },
+  {
+   "key": "OTHER:",
+   "value": ":unselected:",
+   "confidence": "0.994"
+  },
+  {
+   "key": "Premises/Operations",
+   "value": "$",
+   "confidence": "0.961"
+  },
+  {
+   "key": "COMBINED SINGLE LIMIT (Ea accident)",
+   "value": "$ 1,000,000",
+   "confidence": "0.995"
+  },
+  {
+   "key": "ANY AUTO",
+   "value": ":unselected:",
+   "confidence": "0.995"
+  },
+  {
+   "key": "BODILY INJURY (Per person)",
+   "value": "$",
+   "confidence": "0.983"
+  },
+  {
+   "key": "ALL OWNED\nAUTOS",
+   "value": ":unselected:",
+   "confidence": "0.995"
+  },
+  {
+   "key": "SCHEDULED AUTOS",
+   "value": ":selected:",
+   "confidence": "0.997"
+  },
+  {
+   "key": "BODILY INJURY (Per accident)",
+   "value": "$",
+   "confidence": "0.984"
+  },
+  {
+   "key": "HIRED AUTOS",
+   "value": ":unselected:",
+   "confidence": "0.994"
+  },
+  {
+   "key": "NON-OWNED\nAUTOS",
+   "value": ":unselected:",
+   "confidence": "0.986"
+  },
+  {
+   "key": "PROPERTY DAMAGE (Per accident)",
+   "value": "$",
+   "confidence": "0.979"
+  },
+  {
+   "key": "19",
+   "value": ":selected:",
+   "confidence": "0.997"
+  },
+  {
+   "key": "Medical payments",
+   "value": "$ 5,000",
+   "confidence": "0.995"
+  },
+  {
+   "key": "EXCESS LIAB",
+   "value": ":unselected:",
+   "confidence": "0.992"
+  },
+  {
+   "key": "UMBRELLA LIAB",
+   "value": ":unselected:",
+   "confidence": "0.992"
+  },
+  {
+   "key": "CLAIMS-MADE",
+   "value": ":unselected:",
+   "confidence": "0.991"
+  },
+  {
+   "key": "OCCUR",
+   "value": ":unselected:",
+   "confidence": "0.981"
+  },
+  {
+   "key": "AGGREGATE",
+   "value": "",
+   "confidence": "0.998"
+  },
+  {
+   "key": "EACH OCCURRENCE",
+   "value": "",
+   "confidence": "0.996"
+  },
+  {
+   "key": "DED",
+   "value": ":unselected:",
+   "confidence": "0.993"
+  },
+  {
+   "key": "RETENTION $",
+   "value": ":unselected:",
+   "confidence": "0.99"
+  },
+  {
+   "key": "PER STATUTE",
+   "value": ":unselected:",
+   "confidence": "0.948"
+  },
+  {
+   "key": "OTH- ER",
+   "value": ":unselected:",
+   "confidence": "0.949"
+  },
+  {
+   "key": "Y/N",
+   "value": ":unselected:",
+   "confidence": "0.99"
+  },
+  {
+   "key": "E.L. EACH ACCIDENT",
+   "value": "",
+   "confidence": "0.995"
+  },
+  {
+   "key": "E.L. DISEASE - EA EMPLOYEE",
+   "value": "",
+   "confidence": "0.995"
+  },
+  {
+   "key": "If yes, describe under\nDESCRIPTION OF OPERATIONS below\n/\n/\n(ACORD\nAdditional\nbe\nmore\nis",
+   "value": "",
+   "confidence": "0.806"
+  },
+  {
+   "key": "E.L. DISEASE - POLICY LIMIT",
+   "value": "",
+   "confidence": "0.995"
+  },
+  {
+   "key": "AUTHORIZED REPRESENTATIVE",
+   "value": "Test Rep",
+   "confidence": "0.995"
+  }
+ ],
+ "tables": [
+  {
+   "row_count": 3,
+   "column_count": 2,
+   "rows": [
+    [
+     "CONTACT NAME: TESTSVC",
+     ""
+    ],
+    [
+     "PHONE (A/C, No, Ext): (555) 000-0001",
+     "FAX (A/C, No): (555) 000-0002"
+    ],
+    [
+     "E-MAIL ADDRESS: test@example.com",
+     ""
+    ]
+   ]
+  },
+  {
+   "row_count": 7,
+   "column_count": 2,
+   "rows": [
+    [
+     "INSURER(S) AFFORDING COVERAGE",
+     "NAIC #"
+    ],
+    [
+     "INSURER A : Alpha Insurance Company",
+     "32700"
+    ],
+    [
+     "INSURER B : Beta Insurance Company",
+     "18988"
+    ],
+    [
+     "INSURER C :",
+     ""
+    ],
+    [
+     "INSURER D :",
+     ""
+    ],
+    [
+     "INSURER E :",
+     ""
+    ],
+    [
+     "INSURER F :",
+     ""
+    ]
+   ]
+  },
+  {
+   "row_count": 21,
+   "column_count": 11,
+   "rows": [
+    [
+     "INSR LTR",
+     "TYPE OF INSURANCE",
+     "",
+     "",
+     "ADDL INSD",
+     "SUBR WVD",
+     "POLICY NUMBER",
+     "POLICY EFF (MM/DD/YYYY)",
+     "POLICY EXP (MM/DD/YYYY)",
+     "LIMITS",
+     ""
+    ],
+    [
+     "A",
+     ":selected: X",
+     "COMMERCIAL GENERAL LIABILITY",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "EACH OCCURRENCE",
+     "$ 1,000,000"
+    ],
+    [
+     "",
+     ":unselected:",
+     ":unselected:\n:selected:\nCLAIMS-MADE\nX OCCUR",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "DAMAGE TO RENTED PREMISES (Ea occurrence)",
+     "$ 300,000"
+    ],
+    [
+     "",
+     ":unselected:",
+     "",
+     "",
+     "",
+     "",
+     "GLTEST0001",
+     "12/14/2024",
+     "12/14/2025",
+     "MED EXP (Any one person)",
+     "$ 10,000"
+    ],
+    [
+     "",
+     ":unselected:",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "PERSONAL & ADV INJURY",
+     "$ 1,000,000"
+    ],
+    [
+     "",
+     "GEN'L AGGREGATE LIMIT APPLIES PER:",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "GENERAL AGGREGATE",
+     "$ 2,000,000"
+    ],
+    [
+     "",
+     ":selected: X",
+     "POLICY :unselected:\n:unselected:\nPRO-\nJECT LOC",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "PRODUCTS - COMP/OP AGG",
+     "$ 2,000,000"
+    ],
+    [
+     "",
+     ":unselected:",
+     "OTHER:",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "Premises/Operations",
+     "$"
+    ],
+    [
+     "B",
+     "AUTOMOBILE LIABILITY",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "COMBINED SINGLE LIMIT (Ea accident)",
+     "$ 1,000,000"
+    ],
+    [
+     "",
+     ":unselected:",
+     "ANY AUTO",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "BODILY INJURY (Per person)",
+     "$"
+    ],
+    [
+     "",
+     ":unselected:",
+     "ALL OWNED :selected: AUTOS X SCHEDULED AUTOS",
+     "",
+     "",
+     "",
+     "AUTOTEST0002",
+     "12/14/2024",
+     "12/14/2025",
+     "BODILY INJURY (Per accident)",
+     "$"
+    ],
+    [
+     "",
+     ":unselected:",
+     "HIRED AUTOS :unselected: NON-OWNED\nAUTOS",
+     "",
+     "",
+     ":unselected:",
+     "",
+     "",
+     "",
+     "PROPERTY DAMAGE (Per accident)",
+     "$"
+    ],
+    [
+     "",
+     ":selected: X",
+     "19\n:unselected:",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "Medical payments",
+     "$ 5,000"
+    ],
+    [
+     "",
+     ":unselected:",
+     "UMBRELLA LIAB :unselected: OCCUR",
+     "",
+     ":unselected:",
+     ":unselected:",
+     "",
+     "",
+     "",
+     "EACH OCCURRENCE",
+     "$"
+    ],
+    [
+     "",
+     ":unselected:",
+     "EXCESS LIAB",
+     ":unselected:\nCLAIMS-MADE",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "AGGREGATE",
+     "$"
+    ],
+    [
+     "",
+     ":unselected:\n:unselected:\nDED RETENTION $",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "$"
+    ],
+    [
+     "",
+     "WORKERS COMPENSATION AND EMPLOYERS' LIABILITY",
+     "",
+     "",
+     ":unselected:",
+     "",
+     "",
+     "",
+     "",
+     ":unselected:\n:unselected:\nPER STATUTE\nOTH- ER",
+     ""
+    ],
+    [
+     "",
+     "ANY PROPRIETOR/PARTNER/EXECUTIVE\nY/N\nOFFICER/MEMBER EXCLUDED? :unselected:",
+     "",
+     "",
+     "N/A",
+     ":unselected:",
+     "",
+     "",
+     "",
+     "E.L. EACH ACCIDENT",
+     "$"
+    ],
+    [
+     "",
+     "(Mandatory in NH)",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "E.L. DISEASE - EA EMPLOYEE",
+     "$"
+    ],
+    [
+     "",
+     "DESCRIPTION OF OPERATIONS below\nIf yes, describe under",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "E.L. DISEASE - POLICY LIMIT",
+     "$"
+    ],
+    [
+     "",
+     "",
+     "",
+     "",
+     ":unselected:",
+     ":unselected:",
+     "",
+     "",
+     "",
+     "",
+     ""
+    ]
+   ]
+  },
+  {
+   "row_count": 3,
+   "column_count": 3,
+   "rows": [
+    [
+     "Test Holder Inc PO Box 1 Testville TN 00000",
+     "SHOULD ANY OF THE ABOVE DESCRIBED POLICIES BE CANCELLED BEFORE THE EXPIRATION DATE THEREOF, NOTICE WILL BE DELIVERED IN ACCORDANCE WITH THE POLICY PROVISIONS.",
+     ""
+    ],
+    [
+     "",
+     "AUTHORIZED REPRESENTATIVE",
+     ""
+    ],
+    [
+     "",
+     "Test Rep",
+     "look & Pas"
+    ]
+   ]
+  }
+ ]
+}

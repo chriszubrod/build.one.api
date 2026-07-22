@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 
 
 DocumentTypeLiteral = Literal[
-    "BUSINESS_LICENSE",
     "CONTRACTORS_LICENSE",
     "CERTIFICATE_OF_INSURANCE",
 ]

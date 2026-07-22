@@ -9,6 +9,8 @@ from typing import Optional
 from entities.vendor.business.service import VendorService
 from entities.vendor_compliance_document.business.read_helpers import (
     latest_document_by_type,
+    resolve_business_license_attachment,
+    resolve_current_business_license,
     resolve_latest_w9_attachment,
 )
 from entities.vendor_compliance_document.business.service import VendorComplianceDocumentService
@@ -26,7 +28,6 @@ from integrations.ms.sharepoint.driveitem.connector.vendor.business.service impo
 logger = logging.getLogger(__name__)
 
 SLOT_DOCUMENT_TYPES = (
-    "BUSINESS_LICENSE",
     "CONTRACTORS_LICENSE",
     "CERTIFICATE_OF_INSURANCE",
 )
@@ -94,6 +95,7 @@ class VendorComplianceDashboardService:
                     slots[doc_type]["policy_count"] = len(policies)
 
         slots[W9_SLOT] = self._build_w9_slot(vendor)
+        slots["BUSINESS_LICENSE"] = self._build_business_license_slot(vendor, today)
 
         vendor_id = int(vendor.id)
         try:
@@ -143,3 +145,19 @@ class VendorComplianceDashboardService:
         if att and att.public_id:
             return {"status": "present", "attachment_public_id": att.public_id}
         return {"status": "missing"}
+
+    def _build_business_license_slot(self, vendor, today):
+        bl = resolve_current_business_license(vendor)
+        if not bl:
+            return {"status": "missing"}
+        att = resolve_business_license_attachment(bl)
+        return {
+            "status": compute_doc_status(bl.expiry_date, today),
+            "document_public_id": bl.public_id,
+            "document_number": bl.license_number,
+            "issuing_authority": bl.issuing_authority,
+            "expiry_date": bl.expiry_date,
+            "days_until_expiry": days_until_expiry(bl.expiry_date, today),
+            "verification_status": bl.verification_status,
+            "attachment_public_id": att.public_id if att else None,
+        }

@@ -54,6 +54,8 @@ from entities.vendor_compliance_document.api.folder_router import router as vend
 from entities.vendor_insurance_policy.api.router import router as vendor_insurance_policy_api_router
 from entities.taxpayer.api.router import router as taxpayer_api_router
 from entities.taxpayer.api.w9_router import router as taxpayer_w9_api_router
+from entities.business_license.api.router import router as business_license_api_router
+from entities.business_license.api.ingest_router import router as business_license_ingest_api_router
 from entities.role_module.api.router import router as role_module_api_router
 from entities.user_module.api.router import router as user_module_api_router
 from entities.contact.api.router import router as contact_api_router
@@ -71,6 +73,7 @@ from entities.bill_credit.api.router import router as bill_credit_api_router
 from entities.bill_credit_line_item.api.router import router as bill_credit_line_item_api_router
 from entities.bill_credit_line_item_attachment.api.router import router as bill_credit_line_item_attachment_api_router
 from entities.taxpayer_attachment.api.router import router as taxpayer_attachment_api_router
+from entities.business_license_attachment.api.router import router as business_license_attachment_api_router
 from entities.payment_term.api.router import router as payment_term_api_router
 from entities.contract_labor.api.router import router as contract_labor_api_router
 from entities.time_entry.api.router import router as time_entry_api_router
@@ -232,6 +235,8 @@ app.include_router(vendor_compliance_folder_api_router)
 app.include_router(vendor_insurance_policy_api_router)
 app.include_router(taxpayer_api_router)
 app.include_router(taxpayer_w9_api_router)
+app.include_router(business_license_api_router)
+app.include_router(business_license_ingest_api_router)
 app.include_router(role_module_api_router)
 app.include_router(user_module_api_router)
 app.include_router(dashboard_api_router)
@@ -247,6 +252,7 @@ app.include_router(bill_credit_api_router)
 app.include_router(bill_credit_line_item_api_router)
 app.include_router(bill_credit_line_item_attachment_api_router)
 app.include_router(taxpayer_attachment_api_router)
+app.include_router(business_license_attachment_api_router)
 app.include_router(payment_term_api_router)
 app.include_router(contract_labor_api_router)
 app.include_router(time_entry_api_router)

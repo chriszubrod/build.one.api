@@ -276,11 +276,26 @@ BEGIN
 END
 GO
 
-IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_VendorComplianceDocument_DocumentType')
+IF EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = 'CK_VendorComplianceDocument_DocumentType'
+      AND parent_object_id = OBJECT_ID('dbo.VendorComplianceDocument')
+)
+BEGIN
+    ALTER TABLE [dbo].[VendorComplianceDocument]
+    DROP CONSTRAINT [CK_VendorComplianceDocument_DocumentType];
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = 'CK_VendorComplianceDocument_DocumentType'
+      AND parent_object_id = OBJECT_ID('dbo.VendorComplianceDocument')
+)
 BEGIN
     ALTER TABLE [dbo].[VendorComplianceDocument]
     ADD CONSTRAINT [CK_VendorComplianceDocument_DocumentType]
-        CHECK ([DocumentType] IN ('BUSINESS_LICENSE', 'CONTRACTORS_LICENSE', 'CERTIFICATE_OF_INSURANCE'));
+        CHECK ([DocumentType] IN ('CONTRACTORS_LICENSE', 'CERTIFICATE_OF_INSURANCE'));
 END
 GO
 

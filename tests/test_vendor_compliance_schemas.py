@@ -33,7 +33,7 @@ def test_document_create_rejects_unknown_verification_status():
     with pytest.raises(ValidationError):
         VendorComplianceDocumentCreate(
             vendor_public_id="v",
-            document_type="BUSINESS_LICENSE",
+            document_type="CERTIFICATE_OF_INSURANCE",
             verification_status="Approved",  # not in {Received,Verified,Rejected}
         )
 

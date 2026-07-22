@@ -34,3 +34,35 @@ def resolve_latest_w9_attachment(vendor):
         return AttachmentService().read_by_id(latest.attachment_id)
     except Exception:
         return None
+
+
+def resolve_current_business_license(vendor):
+    """The vendor's current BusinessLicense (latest by the read sproc ordering:
+    ExpiryDate DESC, IssueDate DESC, Id DESC), or None."""
+    from entities.business_license.business.service import BusinessLicenseService
+
+    try:
+        licenses = BusinessLicenseService().read_by_vendor_id(int(vendor.id))
+        return licenses[0] if licenses else None
+    except Exception:
+        return None
+
+
+def resolve_business_license_attachment(business_license):
+    """The Attachment linked to a BusinessLicense (latest link), or None."""
+    from entities.attachment.business.service import AttachmentService
+    from entities.business_license_attachment.business.service import (
+        BusinessLicenseAttachmentService,
+    )
+
+    try:
+        if not business_license or not business_license.public_id:
+            return None
+        links = BusinessLicenseAttachmentService().read_by_business_license_id(
+            str(business_license.public_id)
+        )
+        if not links or not links[0].attachment_id:
+            return None
+        return AttachmentService().read_by_id(links[0].attachment_id)
+    except Exception:
+        return None

@@ -10,6 +10,7 @@ from uuid import uuid4
 from entities.attachment.business.service import AttachmentService
 from entities.vendor.business.service import VendorService
 from entities.vendor_compliance_document.business.folder_helpers import (
+    is_bl_hint,
     is_compliance_hint,
     is_w9_hint,
     select_duplicate_compliance_doc,
@@ -25,7 +26,6 @@ WALK_MAX_DEPTH = 25
 WALK_MAX_ITEMS = 5000
 
 IMPORTABLE_DOCUMENT_TYPES = frozenset({
-    "BUSINESS_LICENSE",
     "CONTRACTORS_LICENSE",
     "CERTIFICATE_OF_INSURANCE",
 })
@@ -155,6 +155,7 @@ class VendorFolderService:
                 "size": file.get("size"),
                 "compliance_hint": is_compliance_hint(file.get("name") or ""),
                 "w9_hint": is_w9_hint(file.get("name") or ""),
+                "bl_hint": is_bl_hint(file.get("name") or ""),
             }
             for file in files
         ]

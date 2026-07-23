@@ -219,67 +219,21 @@ END;
 GO
 
 
--- New mutation sproc — dedicated set-worker-link path. Defense-in-depth XOR
--- check (also enforced in UserService.set_worker_link). Pass both NULL to
--- clear the link.
-CREATE OR ALTER PROCEDURE UpdateUserWorkerLink
-(
-    @Id          BIGINT,
-    @RowVersion  BINARY(8),
-    @EmployeeId  BIGINT = NULL,
-    @VendorId    BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-126, 2026-07-23) — sproc body removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   Dedicated set/clear User EmployeeId/VendorId worker linkage with XOR guard.
+--
+-- The canonical definition of this sproc now lives in exactly ONE place:
+--   entities/user/sql/dbo.user.sql
+--
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.UpdateUserWorkerLink
+--
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------
 
-    IF @EmployeeId IS NOT NULL AND @VendorId IS NOT NULL
-    BEGIN
-        ROLLBACK TRANSACTION;
-        RAISERROR('User.EmployeeId and User.VendorId are mutually exclusive — at most one may be set.', 16, 1);
-        RETURN;
-    END
-
-    IF NOT EXISTS (SELECT 1 FROM dbo.[User] WHERE [Id] = @Id)
-    BEGIN
-        ROLLBACK TRANSACTION;
-        RAISERROR('User not found.', 16, 1);
-        RETURN;
-    END
-
-    IF NOT EXISTS (SELECT 1 FROM dbo.[User] WHERE [Id] = @Id AND [RowVersion] = @RowVersion)
-    BEGIN
-        ROLLBACK TRANSACTION;
-        RAISERROR('Concurrency conflict: the user record has been modified by another user. Please refresh and try again.', 16, 1);
-        RETURN;
-    END
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    UPDATE dbo.[User]
-    SET
-        [ModifiedDatetime] = @Now,
-        [EmployeeId] = @EmployeeId,
-        [VendorId]   = @VendorId
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[Firstname],
-        INSERTED.[Lastname],
-        INSERTED.[IsSystemAdmin],
-        INSERTED.[IsAgent],
-        INSERTED.[LastCompanyId],
-        INSERTED.[CreatedByUserId],
-        INSERTED.[ModifiedByUserId],
-        INSERTED.[EmployeeId],
-        INSERTED.[VendorId]
-    WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-PRINT 'User worker-link migration applied: EmployeeId/VendorId columns + 5 Read sprocs + UpdateUserWorkerLink.';
+PRINT 'User worker-link migration applied: EmployeeId/VendorId columns + 5 Read sprocs.';

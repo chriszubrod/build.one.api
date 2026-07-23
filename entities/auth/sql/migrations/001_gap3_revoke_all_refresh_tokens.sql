@@ -10,26 +10,19 @@ SET XACT_ABORT ON;
 SET NOCOUNT ON;
 GO
 
-CREATE OR ALTER PROCEDURE dbo.RevokeAllAuthRefreshTokensByAuthId
-(
-    @AuthId BIGINT,
-    @RevokedDatetime DATETIME2(3)
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-    BEGIN TRANSACTION;
-
-    UPDATE dbo.AuthRefreshToken
-    SET
-        [RevokedDatetime] = @RevokedDatetime
-    OUTPUT
-        INSERTED.[Id]
-    WHERE [AuthId] = @AuthId
-      AND [RevokedDatetime] IS NULL;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-PRINT 'RevokeAllAuthRefreshTokensByAuthId installed.';
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-126, 2026-07-23) — sproc body removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   Bulk-revoke all refresh tokens for an Auth row on password change/reset.
+--
+-- The canonical definition of this sproc now lives in exactly ONE place:
+--   entities/auth/sql/dbo.auth.sql
+--
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.RevokeAllAuthRefreshTokensByAuthId
+--
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------

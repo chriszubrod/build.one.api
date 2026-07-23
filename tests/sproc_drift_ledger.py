@@ -139,9 +139,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
-    "DeleteReviewsByContractLaborId": frozenset({
-        'entities/review/sql/migrations/005_review_sprocs_contract_labor.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
     "DeleteUserById": frozenset({
         'entities/user/sql/dbo.user.sql',
         'entities/user/sql/migrations/003_phase1_attribution_sprocs.sql',
@@ -232,9 +229,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/contract_labor/sql/dbo.contract_labor.sql',
         'entities/contract_labor/sql/migrations/2026_06_03_line_items_ordered_by_clockin.sql',
     }),  # known-dup, home=entities/contract_labor/sql/dbo.contract_labor.sql
-    "ReadCurrentReviewByContractLaborId": frozenset({
-        'entities/review/sql/migrations/005_review_sprocs_contract_labor.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
     "ReadEmailMessageByGraphMessageId": frozenset({
         'entities/email_message/sql/dbo.email_message.sql',
         'entities/email_message/sql/dbo.email_message_recipients.sql',
@@ -252,12 +246,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/email_message/sql/migrations/002_contract_labor_timesheet_vocab.sql',
         'entities/email_message/sql/migrations/003_delegated_to_contract_labor_action_vocab.sql',
     }),  # known-dup, home=entities/email_message/sql/dbo.email_message.sql
-    "ReadInboxTaskCounts": frozenset({
-        'entities/review/sql/migrations/002_inbox_tasks.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
-    "ReadInboxTasks": frozenset({
-        'entities/review/sql/migrations/002_inbox_tasks.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
     "ReadInvoiceLineItemById": frozenset({
         'entities/invoice_line_item/sql/dbo.invoice_line_item.sql',
         'entities/invoice_line_item/sql/migrations/001_2026_05_27_employee_labor_source.sql',
@@ -306,9 +294,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
-    "ReadReviewsByContractLaborId": frozenset({
-        'entities/review/sql/migrations/005_review_sprocs_contract_labor.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
     "ReadUserByFirstname": frozenset({
         'entities/user/sql/dbo.user.sql',
         'entities/user/sql/migrations/002_phase0_read_sprocs_extended.sql',
@@ -373,9 +358,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_module/sql/dbo.usermodule.sql',
         'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
     }),  # known-dup, home=entities/user_module/sql/dbo.usermodule.sql
-    "ReadUserModulesByUserIdAndCompanyId": frozenset({
-        'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
     "ReadUserProjectById": frozenset({
         'entities/user_project/sql/dbo.userproject.sql',
         'entities/user_project/sql/migrations/002_phase1_attribution_sprocs.sql',
@@ -425,9 +407,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_role/sql/dbo.userrole.sql',
         'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
     }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
-    "ReadUserRolesByUserIdAndCompanyId": frozenset({
-        'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
     "ReadUsers": frozenset({
         'entities/user/sql/dbo.user.sql',
         'entities/user/sql/migrations/002_phase0_read_sprocs_extended.sql',
@@ -470,20 +449,11 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/vendor/sql/migrations/002_2026_05_27_rate_columns.sql',
         'entities/vendor/sql/migrations/003_2026_07_19_track_compliance.sql',
     }),  # known-dup, home=entities/vendor/sql/dbo.vendor.sql
-    "ReadWorkers": frozenset({
-        'entities/user/sql/migrations/2026_06_10_read_workers.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
     "RecoverStuckProcessingEmailMessages": frozenset({
         'entities/email_message/sql/dbo.email_message.sql',
         'entities/email_message/sql/migrations/001_recovery_processing_reset.sql',
         'entities/email_message/sql/migrations/007_recover_stuck_max_rows.sql',
     }),  # known-dup, home=entities/email_message/sql/dbo.email_message.sql
-    "RevokeAllAuthRefreshTokensByAuthId": frozenset({
-        'entities/auth/sql/migrations/001_gap3_revoke_all_refresh_tokens.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
-    "SetUserLastCompanyId": frozenset({
-        'entities/user/sql/migrations/002_phase0_read_sprocs_extended.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
     "TimeoutLongRunningAgentSessions": frozenset({
         'intelligence/persistence/sql/dbo.agent_session.sql',
         'intelligence/persistence/sql/migrations/001_timeout_long_running_sessions.sql',
@@ -493,9 +463,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/company/sql/dbo.company.sql',
         'entities/company/sql/migrations/002_phase1_attribution_sprocs.sql',
     }),  # known-dup, home=entities/company/sql/dbo.company.sql
-    "UpdateContractLaborAggregates": frozenset({
-        'entities/contract_labor/sql/migrations/2026_06_09_update_contract_labor_aggregates.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
     "UpdateInvoiceLineItemById": frozenset({
         'entities/invoice_line_item/sql/dbo.invoice_line_item.sql',
         'entities/invoice_line_item/sql/migrations/001_2026_05_27_employee_labor_source.sql',
@@ -529,9 +496,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_role/sql/dbo.userrole.sql',
         'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
     }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
-    "UpdateUserWorkerLink": frozenset({
-        'entities/user/sql/migrations/005_2026_05_27_worker_links.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
     "UpdateVendorById": frozenset({
         'entities/vendor/sql/dbo.vendor.sql',
         'entities/vendor/sql/migrations/002_2026_05_27_rate_columns.sql',

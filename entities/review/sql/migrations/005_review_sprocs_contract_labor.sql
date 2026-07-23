@@ -96,63 +96,24 @@ END;
 GO
 
 
--- =========================================================================
--- ReadReviewsByContractLaborId — full history, ascending
--- =========================================================================
-
-CREATE OR ALTER PROCEDURE ReadReviewsByContractLaborId
-(
-    @ContractLaborId BIGINT
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-    SELECT * FROM dbo.[vw_Review]
-    WHERE [ContractLaborId] = @ContractLaborId
-    ORDER BY [CreatedDatetime] ASC, [Id] ASC;
-END;
-GO
-
-
--- =========================================================================
--- ReadCurrentReviewByContractLaborId — TOP 1 latest, descending
--- =========================================================================
-
-CREATE OR ALTER PROCEDURE ReadCurrentReviewByContractLaborId
-(
-    @ContractLaborId BIGINT
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-    SELECT TOP 1 * FROM dbo.[vw_Review]
-    WHERE [ContractLaborId] = @ContractLaborId
-    ORDER BY [CreatedDatetime] DESC, [Id] DESC;
-END;
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-126, 2026-07-23) — sproc bodies removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   Contract-labor parent review read/delete sprocs matching Bill/Expense shape.
+--
+-- The canonical definition of these sprocs now lives in exactly ONE place:
+--   entities/review/sql/dbo.review.sql
+--
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.ReadReviewsByContractLaborId
+--   dbo.ReadCurrentReviewByContractLaborId
+--   dbo.DeleteReviewsByContractLaborId
+--
+-- Re-running this file is now a no-op for these sprocs. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------
 
 
--- =========================================================================
--- DeleteReviewsByContractLaborId — for parent cascades
--- Mirrors DeleteReviewsByBillId. Required only if ContractLabor ever
--- hard-deletes parents (current ContractLaborService.delete is hard-delete).
--- =========================================================================
-
-CREATE OR ALTER PROCEDURE DeleteReviewsByContractLaborId
-(
-    @ContractLaborId BIGINT
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-    BEGIN TRANSACTION;
-
-    DELETE FROM dbo.[Review]
-    WHERE [ContractLaborId] = @ContractLaborId;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-PRINT 'Review view + sprocs extended for contract_labor parent.';
+PRINT 'Review view + CreateReview extended for contract_labor parent.';

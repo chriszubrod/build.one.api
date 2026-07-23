@@ -243,6 +243,20 @@ BEGIN
 END;
 GO
 
+-- U-126 (2026-07-23): homed from migration 005; body is the LIVE prod definition captured via sys.sql_modules.
+CREATE OR ALTER PROCEDURE ReadReviewsByContractLaborId
+(
+    @ContractLaborId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT * FROM dbo.[vw_Review]
+    WHERE [ContractLaborId] = @ContractLaborId
+    ORDER BY [CreatedDatetime] ASC, [Id] ASC;
+END;
+GO
+
 
 -- =========================================================================
 -- ReadCurrentReviewByXId — TOP 1 latest, descending. Tiebreak by Id DESC.
@@ -296,6 +310,20 @@ BEGIN
     SET NOCOUNT ON;
     SELECT TOP 1 * FROM dbo.[vw_Review]
     WHERE [InvoiceId] = @InvoiceId
+    ORDER BY [CreatedDatetime] DESC, [Id] DESC;
+END;
+GO
+
+-- U-126 (2026-07-23): homed from migration 005; body is the LIVE prod definition captured via sys.sql_modules.
+CREATE OR ALTER PROCEDURE ReadCurrentReviewByContractLaborId
+(
+    @ContractLaborId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT TOP 1 * FROM dbo.[vw_Review]
+    WHERE [ContractLaborId] = @ContractLaborId
     ORDER BY [CreatedDatetime] DESC, [Id] DESC;
 END;
 GO
@@ -354,6 +382,29 @@ BEGIN
 
     IF OBJECT_ID('dbo.ReviewEntry', 'U') IS NOT NULL
         DELETE FROM dbo.[ReviewEntry] WHERE [BillId] = @BillId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+-- U-126 (2026-07-23): homed from migration 005; body is the LIVE prod definition captured via sys.sql_modules.
+-- =========================================================================
+-- DeleteReviewsByContractLaborId — for parent cascades
+-- Mirrors DeleteReviewsByBillId. Required only if ContractLabor ever
+-- hard-deletes parents (current ContractLaborService.delete is hard-delete).
+-- =========================================================================
+
+CREATE OR ALTER PROCEDURE DeleteReviewsByContractLaborId
+(
+    @ContractLaborId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRANSACTION;
+
+    DELETE FROM dbo.[Review]
+    WHERE [ContractLaborId] = @ContractLaborId;
 
     COMMIT TRANSACTION;
 END;

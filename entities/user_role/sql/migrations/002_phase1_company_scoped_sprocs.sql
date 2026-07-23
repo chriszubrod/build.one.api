@@ -203,36 +203,22 @@ END;
 GO
 
 
--- New: Phase 2 permission resolver fetches the user's roles scoped to
--- the active Company. Returns ALL UserRole rows for the (user, company)
--- pair so the resolver can OR their RoleModule grants together.
-CREATE OR ALTER PROCEDURE ReadUserRolesByUserIdAndCompanyId
-(
-    @UserId BIGINT,
-    @CompanyId BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [UserId],
-        [RoleId],
-        [CompanyId],
-        [CreatedByUserId],
-        [ModifiedByUserId]
-    FROM dbo.[UserRole]
-    WHERE [UserId] = @UserId AND [CompanyId] = @CompanyId
-    ORDER BY [Id] ASC;
-
-    COMMIT TRANSACTION;
-END;
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-126, 2026-07-23) — sproc body removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   Phase 2 permission resolver — UserRole rows scoped to the active Company.
+--
+-- The canonical definition of this sproc now lives in exactly ONE place:
+--   entities/user_role/sql/dbo.userrole.sql
+--
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.ReadUserRolesByUserIdAndCompanyId
+--
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------
 
 
 CREATE OR ALTER PROCEDURE UpdateUserRoleById

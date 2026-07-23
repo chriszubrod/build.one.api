@@ -147,22 +147,19 @@ END;
 GO
 
 
--- Dedicated mutation sproc for User.LastCompanyId. Used by the
--- switch-company endpoint to remember the user's choice.
-CREATE OR ALTER PROCEDURE SetUserLastCompanyId
-(
-    @UserId BIGINT,
-    @LastCompanyId BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    UPDATE dbo.[User]
-       SET [LastCompanyId] = @LastCompanyId,
-           [ModifiedDatetime] = SYSUTCDATETIME()
-     WHERE [Id] = @UserId;
-
-    COMMIT TRANSACTION;
-END;
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-126, 2026-07-23) — sproc body removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   Persist the user's last active Company on switch-company.
+--
+-- The canonical definition of this sproc now lives in exactly ONE place:
+--   entities/user/sql/dbo.user.sql
+--
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.SetUserLastCompanyId
+--
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------

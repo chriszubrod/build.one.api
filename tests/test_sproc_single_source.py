@@ -1,4 +1,4 @@
-"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125 guard: canonical SQL homes
+"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126 guard: canonical SQL homes
 for sprocs, access UDFs, and the shared human-only review predicate.
 
 Three guard shapes:
@@ -7,7 +7,9 @@ Three guard shapes:
   time_entry (U-045), role_module (U-048), completion_job, bill + expense (U-100),
   bill_credit + bill_credit_line_item fully converted (U-102),
   bill_line_item + expense_line_item fully converted (U-111), the three
-  review recipient resolvers (U-062), and the ms_outbox package file (U-125).
+  review recipient resolvers (U-062), the ms_outbox package file (U-125), and
+  the last 12 HOME-LESS sprocs homed by U-126 (inbox_tasks as a whole file;
+  the 10 landing in partially-converted base files as per-sproc rows).
   The remaining entities still carry duplicated base sprocs in migrations
   (contract_labor=10, user_role=9, …); converting them is future work.
   **When you convert one, add its row to
@@ -69,7 +71,13 @@ ACCESS_UDF_HOME = REPO_ROOT / "shared" / "sql" / "dbo.access_udfs.sql"
 
 COMPLETION_JOB_BASE = REPO_ROOT / "entities" / "completion_job" / "sql" / "dbo.completion_job.sql"
 REVIEW_BASE = REPO_ROOT / "entities" / "review" / "sql" / "dbo.review.sql"
+INBOX_TASKS_BASE = REPO_ROOT / "entities" / "review" / "sql" / "dbo.inbox_tasks.sql"
 MS_OUTBOX_BASE = REPO_ROOT / "integrations" / "ms" / "outbox" / "sql" / "ms.outbox.sql"
+CONTRACT_LABOR_BASE = REPO_ROOT / "entities" / "contract_labor" / "sql" / "dbo.contract_labor.sql"
+USER_BASE = REPO_ROOT / "entities" / "user" / "sql" / "dbo.user.sql"
+USER_MODULE_BASE = REPO_ROOT / "entities" / "user_module" / "sql" / "dbo.usermodule.sql"
+USER_ROLE_BASE = REPO_ROOT / "entities" / "user_role" / "sql" / "dbo.userrole.sql"
+AUTH_BASE = REPO_ROOT / "entities" / "auth" / "sql" / "dbo.auth.sql"
 
 # U-062/U-087: the three review-notification recipient resolvers homed in the
 # review base file (dbo.review.sql), their bodies neutralized to pointer stubs in
@@ -82,6 +90,20 @@ SINGLE_SOURCE_SPROCS = [
     ("ResolveReviewRecipientsByBillId", REVIEW_BASE),
     ("ResolveReviewRecipientsByContractLaborId", REVIEW_BASE),
     ("ResolveContractLaborReviewRecipientsPerProject", REVIEW_BASE),
+    # U-126: 10 of the last 12 HOME-LESS sprocs, homed from their LIVE prod
+    # definitions (the other 2 are pinned by the inbox_tasks whole-file row).
+    # These landed in partially-converted base files, so the whole-file tier is
+    # unavailable — per-sproc rows pin each exact canonical home (U-062 shape).
+    ("ReadReviewsByContractLaborId", REVIEW_BASE),
+    ("ReadCurrentReviewByContractLaborId", REVIEW_BASE),
+    ("DeleteReviewsByContractLaborId", REVIEW_BASE),
+    ("UpdateContractLaborAggregates", CONTRACT_LABOR_BASE),
+    ("ReadWorkers", USER_BASE),
+    ("SetUserLastCompanyId", USER_BASE),
+    ("UpdateUserWorkerLink", USER_BASE),
+    ("ReadUserModulesByUserIdAndCompanyId", USER_MODULE_BASE),
+    ("ReadUserRolesByUserIdAndCompanyId", USER_ROLE_BASE),
+    ("RevokeAllAuthRefreshTokensByAuthId", AUTH_BASE),
 ]
 
 # U-061: the four Create sprocs whose bodies had drifted BEHIND their canonical
@@ -113,6 +135,8 @@ GAP2_NEUTRALIZED_SPROCS = frozenset(
 # U-125: ms.outbox.sql was already the sole home of the 10 MS outbox sprocs and
 # gained the relocated CountMsOutboxByEntity — a whole-file guard row (the U-102
 # tier, strictly stronger than a per-sproc SINGLE_SOURCE_SPROCS row) pins all 11.
+# U-126: dbo.inbox_tasks.sql is the sole home of ReadInboxTasks +
+# ReadInboxTaskCounts — whole-file guard pins both.
 # "Entity" here reads as entity/package, per the module docstring.
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
@@ -129,6 +153,7 @@ ENTITY_BASE_FILES = [
     ("bill_credit_line_item", BILL_CREDIT_LINE_ITEM_BASE),
     ("bill_line_item", BILL_LINE_ITEM_BASE),
     ("expense_line_item", EXPENSE_LINE_ITEM_BASE),
+    ("inbox_tasks", INBOX_TASKS_BASE),
 ]
 
 ACCESS_UDFS = [

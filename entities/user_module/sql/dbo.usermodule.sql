@@ -258,6 +258,39 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
+GO
+
+
+-- U-126 (2026-07-23): homed from migration 002; body is the LIVE prod definition captured via sys.sql_modules.
+-- New: Phase 2 permission resolver fetches the user's additive
+-- UserModule grants scoped to the active Company.
+CREATE OR ALTER PROCEDURE ReadUserModulesByUserIdAndCompanyId
+(
+    @UserId BIGINT,
+    @CompanyId BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [UserId],
+        [ModuleId],
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
+    FROM dbo.[UserModule]
+    WHERE [UserId] = @UserId AND [CompanyId] = @CompanyId
+    ORDER BY [ModuleId] ASC;
+
+    COMMIT TRANSACTION;
+END;
+GO
 
 
 -- FK constraints

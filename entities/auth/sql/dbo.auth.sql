@@ -231,6 +231,29 @@ BEGIN
 END;
 GO
 
+-- U-126 (2026-07-23): homed from migration 001_gap3; body is the LIVE prod definition captured via sys.sql_modules.
+CREATE OR ALTER PROCEDURE dbo.RevokeAllAuthRefreshTokensByAuthId
+(
+    @AuthId BIGINT,
+    @RevokedDatetime DATETIME2(3)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRANSACTION;
+
+    UPDATE dbo.AuthRefreshToken
+    SET
+        [RevokedDatetime] = @RevokedDatetime
+    OUTPUT
+        INSERTED.[Id]
+    WHERE [AuthId] = @AuthId
+      AND [RevokedDatetime] IS NULL;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
 
 
 CREATE OR ALTER PROCEDURE dbo.ReadAuthByPublicId

@@ -272,6 +272,159 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
+GO
+
+-- U-126 (2026-07-23): sprocs below (ReadWorkers, SetUserLastCompanyId, UpdateUserWorkerLink) homed from migrations 2026_06_10/002/005; bodies are the LIVE prod definitions captured via sys.sql_modules.
+
+-- =============================================================================
+-- 2026-06-10 — dbo.ReadWorkers — curated list for the time-entry worker picker.
+--
+-- "Workers" are users who can have hours billed to them. The picker on the
+-- web (and eventually iOS) populates from this list. The set is:
+--   - excludes LLM agents          (User.IsAgent = 1)
+--   - excludes persona test users  (Auth.Username starts with 'persona_')
+--   - includes anyone with an Employee or Vendor FK linkage
+--   - includes anyone holding a 'Field Crew' or 'Intern' role (covers
+--     interns and non-W2 crew whose User row isn't linked to an Employee
+--     or Vendor record)
+--
+-- Excludes pure-admin / PM / Owner / Controller / Reviewer / Auditor /
+-- Time Clerk / AP-Spec / AR-Spec / Tenant Admin roles — those users
+-- don't log their own time and shouldn't clutter the picker.
+--
+-- Same column shape as ReadUsers so the existing UserRepository._from_db
+-- hydrator handles the row without changes.
+--
+-- Idempotent (CREATE OR ALTER). Safe to re-run.
+-- =============================================================================
+
+CREATE OR ALTER PROCEDURE dbo.ReadWorkers
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        u.[Id],
+        u.[PublicId],
+        u.[RowVersion],
+        CONVERT(VARCHAR(19), u.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), u.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        u.[Firstname],
+        u.[Lastname],
+        u.[IsSystemAdmin],
+        u.[IsAgent],
+        u.[LastCompanyId],
+        u.[CreatedByUserId],
+        u.[ModifiedByUserId],
+        u.[EmployeeId],
+        u.[VendorId]
+    FROM dbo.[User] u
+    WHERE ISNULL(u.[IsAgent], 0) = 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM dbo.[Auth] a
+          WHERE a.[UserId] = u.[Id]
+            AND LEFT(LTRIM(a.[Username]), 8) = N'persona_'
+      )
+      AND (
+          u.[EmployeeId] IS NOT NULL
+          OR u.[VendorId] IS NOT NULL
+          OR EXISTS (
+              SELECT 1
+              FROM dbo.[UserRole] ur
+              INNER JOIN dbo.[Role] r ON r.[Id] = ur.[RoleId]
+              WHERE ur.[UserId] = u.[Id]
+                AND r.[Name] IN (N'Field Crew', N'Intern')
+          )
+      )
+    ORDER BY u.[Lastname] ASC, u.[Firstname] ASC;
+END;
+GO
+
+
+-- Dedicated mutation sproc for User.LastCompanyId. Used by the
+-- switch-company endpoint to remember the user's choice.
+CREATE OR ALTER PROCEDURE SetUserLastCompanyId
+(
+    @UserId BIGINT,
+    @LastCompanyId BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    UPDATE dbo.[User]
+       SET [LastCompanyId] = @LastCompanyId,
+           [ModifiedDatetime] = SYSUTCDATETIME()
+     WHERE [Id] = @UserId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+-- New mutation sproc — dedicated set-worker-link path. Defense-in-depth XOR
+-- check (also enforced in UserService.set_worker_link). Pass both NULL to
+-- clear the link.
+CREATE OR ALTER PROCEDURE UpdateUserWorkerLink
+(
+    @Id          BIGINT,
+    @RowVersion  BINARY(8),
+    @EmployeeId  BIGINT = NULL,
+    @VendorId    BIGINT = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    IF @EmployeeId IS NOT NULL AND @VendorId IS NOT NULL
+    BEGIN
+        ROLLBACK TRANSACTION;
+        RAISERROR('User.EmployeeId and User.VendorId are mutually exclusive — at most one may be set.', 16, 1);
+        RETURN;
+    END
+
+    IF NOT EXISTS (SELECT 1 FROM dbo.[User] WHERE [Id] = @Id)
+    BEGIN
+        ROLLBACK TRANSACTION;
+        RAISERROR('User not found.', 16, 1);
+        RETURN;
+    END
+
+    IF NOT EXISTS (SELECT 1 FROM dbo.[User] WHERE [Id] = @Id AND [RowVersion] = @RowVersion)
+    BEGIN
+        ROLLBACK TRANSACTION;
+        RAISERROR('Concurrency conflict: the user record has been modified by another user. Please refresh and try again.', 16, 1);
+        RETURN;
+    END
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    UPDATE dbo.[User]
+    SET
+        [ModifiedDatetime] = @Now,
+        [EmployeeId] = @EmployeeId,
+        [VendorId]   = @VendorId
+    OUTPUT
+        INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[RowVersion],
+        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        INSERTED.[Firstname],
+        INSERTED.[Lastname],
+        INSERTED.[IsSystemAdmin],
+        INSERTED.[IsAgent],
+        INSERTED.[LastCompanyId],
+        INSERTED.[CreatedByUserId],
+        INSERTED.[ModifiedByUserId],
+        INSERTED.[EmployeeId],
+        INSERTED.[VendorId]
+    WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
+
+    COMMIT TRANSACTION;
+END;
+GO
 
 -- PublicId index
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_User_PublicId' AND object_id = OBJECT_ID('dbo.User'))

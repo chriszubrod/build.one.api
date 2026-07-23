@@ -57,6 +57,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 TIME_ENTRY_BASE = REPO_ROOT / "entities" / "time_entry" / "sql" / "dbo.time_entry.sql"
 ROLE_MODULE_BASE = REPO_ROOT / "entities" / "role_module" / "sql" / "dbo.rolemodule.sql"
+USER_PROJECT_BASE = REPO_ROOT / "entities" / "user_project" / "sql" / "dbo.userproject.sql"
 BILL_BASE = REPO_ROOT / "entities" / "bill" / "sql" / "dbo.bill.sql"
 BILL_SOURCE_EMAIL_BASE = REPO_ROOT / "entities" / "bill" / "sql" / "dbo.bill_create_source_email.sql"
 BILL_COMPLETION_RESULT_BASE = REPO_ROOT / "entities" / "bill" / "sql" / "dbo.bill_completion_result.sql"
@@ -137,11 +138,13 @@ GAP2_NEUTRALIZED_SPROCS = frozenset(
 # tier, strictly stronger than a per-sproc SINGLE_SOURCE_SPROCS row) pins all 11.
 # U-126: dbo.inbox_tasks.sql is the sole home of ReadInboxTasks +
 # ReadInboxTaskCounts — whole-file guard pins both.
+# U-129: dbo.userproject.sql reconciled to the 004 layer and made sole home of the 8 UserProject sprocs — whole-file guard.
 # "Entity" here reads as entity/package, per the module docstring.
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
     ("ms_outbox", MS_OUTBOX_BASE),
     ("role_module", ROLE_MODULE_BASE),
+    ("user_project", USER_PROJECT_BASE),
     ("completion_job", COMPLETION_JOB_BASE),
     ("bill", BILL_BASE),
     ("bill_source_email", BILL_SOURCE_EMAIL_BASE),

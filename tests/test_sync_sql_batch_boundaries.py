@@ -14,8 +14,20 @@ before classifying BEGIN/END openers and closers.
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SYNC_SQL = REPO_ROOT / "integrations" / "sync" / "sql" / "dbo.sync.sql"
+USER_PROJECT_SQL = (
+    REPO_ROOT / "entities" / "user_project" / "sql" / "dbo.userproject.sql"
+)
+
+# Hand-listed, not derived from ENTITY_BASE_FILES: the BEGIN/END depth tracker
+# false-positives on multi-line CASE…END in other base files (e.g. bill's
+# ReadBillsPaginated), and SYNC_SQL is not an entity base file. Generalize to
+# ENTITY_BASE_FILES ∪ {SYNC_SQL} once the tracker skips CASE…END bodies; until
+# then, add your file here when you convert an entity to single-source.
+_BATCH_BOUNDARY_SQL_FILES = (SYNC_SQL, USER_PROJECT_SQL)
 
 _PROCEDURE_PATTERN = re.compile(
     r"CREATE\s+(?:OR\s+ALTER\s+)?PROCEDURE\s+(?:\[\w+\]|\w+\s*\.\s*)?(?:\[(\w+)\]|(\w+))",
@@ -155,8 +167,13 @@ def _first_offending_trailing_statement(batch: str, after_line_index: int) -> st
     return None
 
 
-def test_no_statement_swallowed_into_procedure_body():
-    sql_content = SYNC_SQL.read_text(encoding="utf-8")
+@pytest.mark.parametrize(
+    "sql_path",
+    _BATCH_BOUNDARY_SQL_FILES,
+    ids=lambda p: p.relative_to(REPO_ROOT).as_posix(),
+)
+def test_no_statement_swallowed_into_procedure_body(sql_path: Path):
+    sql_content = sql_path.read_text(encoding="utf-8")
     violations: list[tuple[str, str]] = []
 
     for batch in _split_sql_batches(sql_content):
@@ -178,9 +195,9 @@ def test_no_statement_swallowed_into_procedure_body():
         if trailing is not None:
             violations.append((proc_name, trailing))
 
+    rel = sql_path.relative_to(REPO_ROOT)
     assert violations == [], (
-        "Each CREATE PROCEDURE batch in "
-        f"{SYNC_SQL.relative_to(REPO_ROOT)} must close its body before any "
+        f"Each CREATE PROCEDURE batch in {rel} must close its body before any "
         "trailing statement (mirror scripts/run_sql.py GO boundaries). Offenders:\n"
         + "\n".join(
             f"  {name}: first trailing statement after procedure END — {stmt!r}"

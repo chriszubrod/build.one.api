@@ -29,16 +29,13 @@ BEGIN
 END
 GO
 
-
-GO
-
-
-GO
-
 CREATE OR ALTER PROCEDURE CreateUserProject
 (
     @UserId BIGINT,
-    @ProjectId BIGINT
+    @ProjectId BIGINT,
+    @RoleId BIGINT = NULL,
+    @CreatedByUserId BIGINT = NULL,
+    @ModifiedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -46,7 +43,9 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[UserProject] ([CreatedDatetime], [ModifiedDatetime], [UserId], [ProjectId])
+    INSERT INTO dbo.[UserProject]
+        ([CreatedDatetime], [ModifiedDatetime], [UserId], [ProjectId],
+         [RoleId], [CreatedByUserId], [ModifiedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -54,15 +53,19 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[UserId],
-        INSERTED.[ProjectId]
-    VALUES (@Now, @Now, @UserId, @ProjectId);
+        INSERTED.[ProjectId],
+        INSERTED.[RoleId],
+        CAST(NULL AS NVARCHAR(255)) AS [RoleName],
+        INSERTED.[CreatedByUserId],
+        INSERTED.[ModifiedByUserId]
+    VALUES
+        (@Now, @Now, @UserId, @ProjectId,
+         @RoleId, @CreatedByUserId, COALESCE(@ModifiedByUserId, @CreatedByUserId));
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserProjects
 AS
@@ -70,22 +73,25 @@ BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [UserId],
-        [ProjectId]
-    FROM dbo.[UserProject]
-    ORDER BY [UserId] ASC, [ProjectId] ASC;
+        up.[Id],
+        up.[PublicId],
+        up.[RowVersion],
+        CONVERT(VARCHAR(19), up.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), up.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        up.[UserId],
+        up.[ProjectId],
+        up.[RoleId],
+        r.[Name] AS [RoleName],
+        up.[CreatedByUserId],
+        up.[ModifiedByUserId]
+    FROM dbo.[UserProject] up
+    LEFT JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
+    ORDER BY up.[UserId] ASC, up.[ProjectId] ASC;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserProjectById
 (
@@ -96,22 +102,25 @@ BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [UserId],
-        [ProjectId]
-    FROM dbo.[UserProject]
-    WHERE [Id] = @Id;
+        up.[Id],
+        up.[PublicId],
+        up.[RowVersion],
+        CONVERT(VARCHAR(19), up.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), up.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        up.[UserId],
+        up.[ProjectId],
+        up.[RoleId],
+        r.[Name] AS [RoleName],
+        up.[CreatedByUserId],
+        up.[ModifiedByUserId]
+    FROM dbo.[UserProject] up
+    LEFT JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
+    WHERE up.[Id] = @Id;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserProjectByPublicId
 (
@@ -122,22 +131,25 @@ BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [UserId],
-        [ProjectId]
-    FROM dbo.[UserProject]
-    WHERE [PublicId] = @PublicId;
+        up.[Id],
+        up.[PublicId],
+        up.[RowVersion],
+        CONVERT(VARCHAR(19), up.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), up.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        up.[UserId],
+        up.[ProjectId],
+        up.[RoleId],
+        r.[Name] AS [RoleName],
+        up.[CreatedByUserId],
+        up.[ModifiedByUserId]
+    FROM dbo.[UserProject] up
+    LEFT JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
+    WHERE up.[PublicId] = @PublicId;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserProjectByUserId
 (
@@ -148,22 +160,25 @@ BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [UserId],
-        [ProjectId]
-    FROM dbo.[UserProject]
-    WHERE [UserId] = @UserId;
+        up.[Id],
+        up.[PublicId],
+        up.[RowVersion],
+        CONVERT(VARCHAR(19), up.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), up.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        up.[UserId],
+        up.[ProjectId],
+        up.[RoleId],
+        r.[Name] AS [RoleName],
+        up.[CreatedByUserId],
+        up.[ModifiedByUserId]
+    FROM dbo.[UserProject] up
+    LEFT JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
+    WHERE up.[UserId] = @UserId;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserProjectByProjectId
 (
@@ -174,29 +189,34 @@ BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [UserId],
-        [ProjectId]
-    FROM dbo.[UserProject]
-    WHERE [ProjectId] = @ProjectId;
+        up.[Id],
+        up.[PublicId],
+        up.[RowVersion],
+        CONVERT(VARCHAR(19), up.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), up.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        up.[UserId],
+        up.[ProjectId],
+        up.[RoleId],
+        r.[Name] AS [RoleName],
+        up.[CreatedByUserId],
+        up.[ModifiedByUserId]
+    FROM dbo.[UserProject] up
+    LEFT JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
+    WHERE up.[ProjectId] = @ProjectId;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE UpdateUserProjectById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
     @UserId BIGINT,
-    @ProjectId BIGINT
+    @ProjectId BIGINT,
+    @RoleId BIGINT = NULL,
+    @ModifiedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -208,7 +228,9 @@ BEGIN
     SET
         [ModifiedDatetime] = @Now,
         [UserId] = @UserId,
-        [ProjectId] = @ProjectId
+        [ProjectId] = @ProjectId,
+        [RoleId] = @RoleId,
+        [ModifiedByUserId] = @ModifiedByUserId
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -216,15 +238,17 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[UserId],
-        INSERTED.[ProjectId]
+        INSERTED.[ProjectId],
+        INSERTED.[RoleId],
+        CAST(NULL AS NVARCHAR(255)) AS [RoleName],
+        INSERTED.[CreatedByUserId],
+        INSERTED.[ModifiedByUserId]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE DeleteUserProjectById
 (
@@ -242,12 +266,16 @@ BEGIN
         CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.[UserId],
-        DELETED.[ProjectId]
+        DELETED.[ProjectId],
+        DELETED.[RoleId],
+        CAST(NULL AS NVARCHAR(255)) AS [RoleName],
+        DELETED.[CreatedByUserId],
+        DELETED.[ModifiedByUserId]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
 END;
-
+GO
 
 -- FK constraints
 IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_UserProject_User')
@@ -259,12 +287,5 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_UserProject_Project')
 BEGIN
     ALTER TABLE [dbo].[UserProject] ADD CONSTRAINT [FK_UserProject_Project] FOREIGN KEY ([ProjectId]) REFERENCES [dbo].[Project]([Id]);
-END
-GO
-
--- Prevent duplicate user-project assignments
-IF NOT EXISTS (SELECT 1 FROM sys.objects WHERE name = 'UQ_UserProject_UserId_ProjectId' AND parent_object_id = OBJECT_ID('dbo.UserProject'))
-BEGIN
-    ALTER TABLE [dbo].[UserProject] ADD CONSTRAINT [UQ_UserProject_UserId_ProjectId] UNIQUE ([UserId], [ProjectId]);
 END
 GO

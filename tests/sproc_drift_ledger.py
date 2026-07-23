@@ -92,11 +92,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_module/sql/dbo.usermodule.sql',
         'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
     }),  # known-dup, home=entities/user_module/sql/dbo.usermodule.sql
-    "CreateUserProject": frozenset({
-        'entities/user_project/sql/dbo.userproject.sql',
-        'entities/user_project/sql/migrations/002_phase1_attribution_sprocs.sql',
-        'entities/user_project/sql/migrations/004_role_qualifier_sprocs.sql',
-    }),  # known-dup, home=entities/user_project/sql/dbo.userproject.sql
     "CreateUserRole": frozenset({
         'entities/user_role/sql/dbo.userrole.sql',
         'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
@@ -151,11 +146,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_module/sql/dbo.usermodule.sql',
         'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
     }),  # known-dup, home=entities/user_module/sql/dbo.usermodule.sql
-    "DeleteUserProjectById": frozenset({
-        'entities/user_project/sql/dbo.userproject.sql',
-        'entities/user_project/sql/migrations/002_phase1_attribution_sprocs.sql',
-        'entities/user_project/sql/migrations/004_role_qualifier_sprocs.sql',
-    }),  # known-dup, home=entities/user_project/sql/dbo.userproject.sql
     "DeleteUserRoleById": frozenset({
         'entities/user_role/sql/dbo.userrole.sql',
         'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
@@ -358,31 +348,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_module/sql/dbo.usermodule.sql',
         'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
     }),  # known-dup, home=entities/user_module/sql/dbo.usermodule.sql
-    "ReadUserProjectById": frozenset({
-        'entities/user_project/sql/dbo.userproject.sql',
-        'entities/user_project/sql/migrations/002_phase1_attribution_sprocs.sql',
-        'entities/user_project/sql/migrations/004_role_qualifier_sprocs.sql',
-    }),  # known-dup, home=entities/user_project/sql/dbo.userproject.sql
-    "ReadUserProjectByProjectId": frozenset({
-        'entities/user_project/sql/dbo.userproject.sql',
-        'entities/user_project/sql/migrations/002_phase1_attribution_sprocs.sql',
-        'entities/user_project/sql/migrations/004_role_qualifier_sprocs.sql',
-    }),  # known-dup, home=entities/user_project/sql/dbo.userproject.sql
-    "ReadUserProjectByPublicId": frozenset({
-        'entities/user_project/sql/dbo.userproject.sql',
-        'entities/user_project/sql/migrations/002_phase1_attribution_sprocs.sql',
-        'entities/user_project/sql/migrations/004_role_qualifier_sprocs.sql',
-    }),  # known-dup, home=entities/user_project/sql/dbo.userproject.sql
-    "ReadUserProjectByUserId": frozenset({
-        'entities/user_project/sql/dbo.userproject.sql',
-        'entities/user_project/sql/migrations/002_phase1_attribution_sprocs.sql',
-        'entities/user_project/sql/migrations/004_role_qualifier_sprocs.sql',
-    }),  # known-dup, home=entities/user_project/sql/dbo.userproject.sql
-    "ReadUserProjects": frozenset({
-        'entities/user_project/sql/dbo.userproject.sql',
-        'entities/user_project/sql/migrations/002_phase1_attribution_sprocs.sql',
-        'entities/user_project/sql/migrations/004_role_qualifier_sprocs.sql',
-    }),  # known-dup, home=entities/user_project/sql/dbo.userproject.sql
     "ReadUserRoleById": frozenset({
         'entities/user_role/sql/dbo.userrole.sql',
         'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
@@ -487,11 +452,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_module/sql/dbo.usermodule.sql',
         'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
     }),  # known-dup, home=entities/user_module/sql/dbo.usermodule.sql
-    "UpdateUserProjectById": frozenset({
-        'entities/user_project/sql/dbo.userproject.sql',
-        'entities/user_project/sql/migrations/002_phase1_attribution_sprocs.sql',
-        'entities/user_project/sql/migrations/004_role_qualifier_sprocs.sql',
-    }),  # known-dup, home=entities/user_project/sql/dbo.userproject.sql
     "UpdateUserRoleById": frozenset({
         'entities/user_role/sql/dbo.userrole.sql',
         'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',

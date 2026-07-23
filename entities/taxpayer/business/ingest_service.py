@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import re
 from typing import Optional
 
 # Third-party Imports
@@ -75,12 +76,33 @@ class TaxpayerW9IngestService:
         if not vendor:
             raise ValueError(f"Vendor with public_id '{vendor_public_id}' not found")
 
+        # The TIN is the taxpayer identity + dedup key, and dbo.Taxpayer.TaxpayerIdNumber
+        # is NOT NULL. A blank / digit-less value can neither be looked up nor stored
+        # (TaxpayerService coerces a falsy TIN to NULL -> SQL 515 -> HTTP 500). Unlike
+        # business_name / classification it has no sensible default, so reject it up
+        # front as a clear 400 before the dedup lookup or any create.
+        if not re.sub(r"\D", "", taxpayer_id_number or ""):
+            raise ValueError("W-9 taxpayer_id_number (TIN/EIN) is required")
+
         existing = TaxpayerService().read_by_taxpayer_id_number(taxpayer_id_number)
         if existing:
             taxpayer = existing
         else:
+            # dbo.Taxpayer.{EntityName,BusinessName,Classification} are all NOT NULL,
+            # but a W-9's line-2 business name is legitimately blank for an entity with
+            # no DBA, and the classification can be missed on a poor scan. Coerce the
+            # optional columns here so a valid W-9 persists (taxpayer + TIN) instead of
+            # dying with a bare SQL 515 -> HTTP 500: business name falls back to the
+            # legal entity name (the business operates under its legal name when there
+            # is no DBA); an undetected classification stores as "Unspecified" (the
+            # extract path already flags it via `unresolved` for human review).
+            legal_name = (entity_name or "").strip()
+            if not legal_name:
+                raise ValueError("W-9 entity_name (line-1 legal name) is required")
+            business_name = (business_name or "").strip() or legal_name
+            classification = (classification or "").strip() or "Unspecified"
             taxpayer = TaxpayerService().create(
-                entity_name=entity_name,
+                entity_name=legal_name,
                 business_name=business_name,
                 classification=classification,
                 taxpayer_id_number=taxpayer_id_number,

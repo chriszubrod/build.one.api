@@ -4,108 +4,25 @@
 -- New params default to NULL.
 -- Idempotent (CREATE OR ALTER).
 
-CREATE OR ALTER PROCEDURE CreateUser
-(
-    @Firstname NVARCHAR(50),
-    @Lastname NVARCHAR(255),
-    @CreatedByUserId BIGINT = NULL,
-    @ModifiedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[User]
-        ([CreatedDatetime], [ModifiedDatetime], [Firstname], [Lastname],
-         [CreatedByUserId], [ModifiedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[Firstname],
-        INSERTED.[Lastname],
-        INSERTED.[IsSystemAdmin],
-        INSERTED.[IsAgent],
-        INSERTED.[LastCompanyId],
-        INSERTED.[CreatedByUserId],
-        INSERTED.[ModifiedByUserId]
-    VALUES
-        (@Now, @Now, @Firstname, @Lastname,
-         @CreatedByUserId, COALESCE(@ModifiedByUserId, @CreatedByUserId));
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-CREATE OR ALTER PROCEDURE UpdateUserById
-(
-    @Id BIGINT,
-    @RowVersion BINARY(8),
-    @Firstname NVARCHAR(50),
-    @Lastname NVARCHAR(255),
-    @ModifiedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    UPDATE dbo.[User]
-    SET
-        [ModifiedDatetime] = @Now,
-        [Firstname] = @Firstname,
-        [Lastname] = @Lastname,
-        [ModifiedByUserId] = @ModifiedByUserId
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[Firstname],
-        INSERTED.[Lastname],
-        INSERTED.[IsSystemAdmin],
-        INSERTED.[IsAgent],
-        INSERTED.[LastCompanyId],
-        INSERTED.[CreatedByUserId],
-        INSERTED.[ModifiedByUserId]
-    WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-CREATE OR ALTER PROCEDURE DeleteUserById
-(
-    @Id BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DELETE FROM dbo.[User]
-    OUTPUT
-        DELETED.[Id],
-        DELETED.[PublicId],
-        DELETED.[RowVersion],
-        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        DELETED.[Firstname],
-        DELETED.[Lastname],
-        DELETED.[IsSystemAdmin],
-        DELETED.[IsAgent],
-        DELETED.[LastCompanyId],
-        DELETED.[CreatedByUserId],
-        DELETED.[ModifiedByUserId]
-    WHERE [Id] = @Id;
-
-    COMMIT TRANSACTION;
-END;
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-131, 2026-07-23) — sproc bodies removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   Phase 1 — Access Control Rebuild
+--   Re-issue User Create/Update/Delete sprocs to thread CreatedByUserId
+--   and ModifiedByUserId. Read sprocs already SELECT them (Phase 0 002).
+--   New params default to NULL.
+--   Idempotent (CREATE OR ALTER).
+--
+-- The canonical definition of these sprocs now lives in exactly ONE place:
+--   entities/user/sql/dbo.user.sql
+--
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.CreateUser
+--   dbo.UpdateUserById
+--   dbo.DeleteUserById
+--
+-- Re-running this file is now a no-op for these sprocs. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------

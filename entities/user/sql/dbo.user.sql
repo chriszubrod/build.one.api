@@ -58,14 +58,12 @@ BEGIN
 END
 GO
 
-
-
-GO
-
 CREATE OR ALTER PROCEDURE CreateUser
 (
     @Firstname NVARCHAR(50),
-    @Lastname NVARCHAR(255)
+    @Lastname NVARCHAR(255),
+    @CreatedByUserId BIGINT = NULL,
+    @ModifiedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -73,7 +71,9 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[User] ([CreatedDatetime], [ModifiedDatetime], [Firstname], [Lastname])
+    INSERT INTO dbo.[User]
+        ([CreatedDatetime], [ModifiedDatetime], [Firstname], [Lastname],
+         [CreatedByUserId], [ModifiedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -81,8 +81,15 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[Firstname],
-        INSERTED.[Lastname]
-    VALUES (@Now, @Now, @Firstname, @Lastname);
+        INSERTED.[Lastname],
+        INSERTED.[IsSystemAdmin],
+        INSERTED.[IsAgent],
+        INSERTED.[LastCompanyId],
+        INSERTED.[CreatedByUserId],
+        INSERTED.[ModifiedByUserId]
+    VALUES
+        (@Now, @Now, @Firstname, @Lastname,
+         @CreatedByUserId, COALESCE(@ModifiedByUserId, @CreatedByUserId));
 
     COMMIT TRANSACTION;
 END;
@@ -90,6 +97,9 @@ GO
 
 
 CREATE OR ALTER PROCEDURE ReadUsers
+(
+    @IncludeAgents BIT = 0
+)
 AS
 BEGIN
     BEGIN TRANSACTION;
@@ -101,16 +111,24 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Firstname],
-        [Lastname]
+        [Lastname],
+        [IsSystemAdmin],
+        [IsAgent],
+        [LastCompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId],
+        [EmployeeId],
+        [VendorId]
     FROM dbo.[User]
+    WHERE
+        @IncludeAgents = 1
+        OR [IsAgent] = 0
     ORDER BY [Lastname] ASC, [Firstname] ASC;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserById
 (
@@ -127,16 +145,21 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Firstname],
-        [Lastname]
+        [Lastname],
+        [IsSystemAdmin],
+        [IsAgent],
+        [LastCompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId],
+        [EmployeeId],
+        [VendorId]
     FROM dbo.[User]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserByPublicId
 (
@@ -153,16 +176,21 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Firstname],
-        [Lastname]
+        [Lastname],
+        [IsSystemAdmin],
+        [IsAgent],
+        [LastCompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId],
+        [EmployeeId],
+        [VendorId]
     FROM dbo.[User]
     WHERE [PublicId] = @PublicId;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserByFirstname
 (
@@ -179,16 +207,21 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Firstname],
-        [Lastname]
+        [Lastname],
+        [IsSystemAdmin],
+        [IsAgent],
+        [LastCompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId],
+        [EmployeeId],
+        [VendorId]
     FROM dbo.[User]
     WHERE [Firstname] = @Firstname;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserByLastname
 (
@@ -205,23 +238,29 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Firstname],
-        [Lastname]
+        [Lastname],
+        [IsSystemAdmin],
+        [IsAgent],
+        [LastCompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId],
+        [EmployeeId],
+        [VendorId]
     FROM dbo.[User]
     WHERE [Lastname] = @Lastname;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE UpdateUserById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
     @Firstname NVARCHAR(50),
-    @Lastname NVARCHAR(255)
+    @Lastname NVARCHAR(255),
+    @ModifiedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -233,7 +272,8 @@ BEGIN
     SET
         [ModifiedDatetime] = @Now,
         [Firstname] = @Firstname,
-        [Lastname] = @Lastname
+        [Lastname] = @Lastname,
+        [ModifiedByUserId] = @ModifiedByUserId
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -241,15 +281,18 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[Firstname],
-        INSERTED.[Lastname]
+        INSERTED.[Lastname],
+        INSERTED.[IsSystemAdmin],
+        INSERTED.[IsAgent],
+        INSERTED.[LastCompanyId],
+        INSERTED.[CreatedByUserId],
+        INSERTED.[ModifiedByUserId]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE DeleteUserById
 (
@@ -267,7 +310,12 @@ BEGIN
         CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.[Firstname],
-        DELETED.[Lastname]
+        DELETED.[Lastname],
+        DELETED.[IsSystemAdmin],
+        DELETED.[IsAgent],
+        DELETED.[LastCompanyId],
+        DELETED.[CreatedByUserId],
+        DELETED.[ModifiedByUserId]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;

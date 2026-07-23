@@ -9,39 +9,23 @@
 -- ReadUserByLastname) are NOT filtered — if the caller has the Id /
 -- PublicId / name, they want that specific row.
 
-SET XACT_ABORT ON;
-SET NOCOUNT ON;
-GO
-
-CREATE OR ALTER PROCEDURE ReadUsers
-(
-    @IncludeAgents BIT = 0
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Firstname],
-        [Lastname],
-        [IsSystemAdmin],
-        [IsAgent],
-        [LastCompanyId],
-        [CreatedByUserId],
-        [ModifiedByUserId]
-    FROM dbo.[User]
-    WHERE
-        @IncludeAgents = 1
-        OR [IsAgent] = 0
-    ORDER BY [Lastname] ASC, [Firstname] ASC;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-PRINT 'ReadUsers extended with @IncludeAgents.';
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-131, 2026-07-23) — sproc body removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   Phase 4 — Access Control Rebuild — IsAgent filter on user lists.
+--   Adds @IncludeAgents BIT = 0 to ReadUsers. Default behavior changes:
+--   agent users (User.IsAgent = 1) are hidden from the list. Pass
+--   @IncludeAgents = 1 to surface them (e.g. for an admin Agents tab).
+--   Idempotent (CREATE OR ALTER). Safe to re-run.
+--
+-- The canonical definition of this sproc now lives in exactly ONE place:
+--   entities/user/sql/dbo.user.sql
+--
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.ReadUsers
+--
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------

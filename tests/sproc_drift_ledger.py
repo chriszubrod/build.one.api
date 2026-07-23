@@ -80,10 +80,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/sub_cost_code/sql/dbo.subcostcode.sql',
         'scripts/migrations/gap2_reference_threading.sql',
     }),  # known-dup, home=entities/sub_cost_code/sql/dbo.subcostcode.sql
-    "CreateUser": frozenset({
-        'entities/user/sql/dbo.user.sql',
-        'entities/user/sql/migrations/003_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/user/sql/dbo.user.sql
     "CreateUserCompany": frozenset({
         'entities/user_company/sql/dbo.usercompany.sql',
         'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
@@ -134,10 +130,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
-    "DeleteUserById": frozenset({
-        'entities/user/sql/dbo.user.sql',
-        'entities/user/sql/migrations/003_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/user/sql/dbo.user.sql
     "DeleteUserCompanyById": frozenset({
         'entities/user_company/sql/dbo.usercompany.sql',
         'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
@@ -284,26 +276,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
-    "ReadUserByFirstname": frozenset({
-        'entities/user/sql/dbo.user.sql',
-        'entities/user/sql/migrations/002_phase0_read_sprocs_extended.sql',
-        'entities/user/sql/migrations/005_2026_05_27_worker_links.sql',
-    }),  # known-dup, home=entities/user/sql/dbo.user.sql
-    "ReadUserById": frozenset({
-        'entities/user/sql/dbo.user.sql',
-        'entities/user/sql/migrations/002_phase0_read_sprocs_extended.sql',
-        'entities/user/sql/migrations/005_2026_05_27_worker_links.sql',
-    }),  # known-dup, home=entities/user/sql/dbo.user.sql
-    "ReadUserByLastname": frozenset({
-        'entities/user/sql/dbo.user.sql',
-        'entities/user/sql/migrations/002_phase0_read_sprocs_extended.sql',
-        'entities/user/sql/migrations/005_2026_05_27_worker_links.sql',
-    }),  # known-dup, home=entities/user/sql/dbo.user.sql
-    "ReadUserByPublicId": frozenset({
-        'entities/user/sql/dbo.user.sql',
-        'entities/user/sql/migrations/002_phase0_read_sprocs_extended.sql',
-        'entities/user/sql/migrations/005_2026_05_27_worker_links.sql',
-    }),  # known-dup, home=entities/user/sql/dbo.user.sql
     "ReadUserCompanies": frozenset({
         'entities/user_company/sql/dbo.usercompany.sql',
         'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
@@ -372,12 +344,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_role/sql/dbo.userrole.sql',
         'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
     }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
-    "ReadUsers": frozenset({
-        'entities/user/sql/dbo.user.sql',
-        'entities/user/sql/migrations/002_phase0_read_sprocs_extended.sql',
-        'entities/user/sql/migrations/004_phase4_include_agents_filter.sql',
-        'entities/user/sql/migrations/005_2026_05_27_worker_links.sql',
-    }),  # known-dup, home=entities/user/sql/dbo.user.sql
     "ReadVendorById": frozenset({
         'entities/vendor/sql/dbo.vendor.sql',
         'entities/vendor/sql/migrations/002_2026_05_27_rate_columns.sql',
@@ -440,10 +406,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
-    "UpdateUserById": frozenset({
-        'entities/user/sql/dbo.user.sql',
-        'entities/user/sql/migrations/003_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/user/sql/dbo.user.sql
     "UpdateUserCompanyById": frozenset({
         'entities/user_company/sql/dbo.usercompany.sql',
         'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',

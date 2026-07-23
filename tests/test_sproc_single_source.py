@@ -1,5 +1,5 @@
-"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126 guard: canonical SQL homes
-for sprocs, access UDFs, and the shared human-only review predicate.
+"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131 guard: canonical
+SQL homes for sprocs, access UDFs, and the shared human-only review predicate.
 
 Three guard shapes:
 
@@ -7,11 +7,13 @@ Three guard shapes:
   time_entry (U-045), role_module (U-048), completion_job, bill + expense (U-100),
   bill_credit + bill_credit_line_item fully converted (U-102),
   bill_line_item + expense_line_item fully converted (U-111), the three
-  review recipient resolvers (U-062), the ms_outbox package file (U-125), and
-  the last 12 HOME-LESS sprocs homed by U-126 (inbox_tasks as a whole file;
-  the 10 landing in partially-converted base files as per-sproc rows).
+  review recipient resolvers (U-062), the ms_outbox package file (U-125), the
+  last 12 HOME-LESS sprocs homed by U-126 (inbox_tasks as a whole file; the 10
+  landing in partially-converted base files as per-sproc rows — 3 of those,
+  the USER_BASE trio, later subsumed by U-131's whole-file guard), user_project
+  (U-129), and user (U-131).
   The remaining entities still carry duplicated base sprocs in migrations
-  (contract_labor=10, user_role=9, …); converting them is future work.
+  (user_role=9, user_module=9, …); converting them is future work.
   **When you convert one, add its row to
   ENTITY_BASE_FILES or SINGLE_SOURCE_SPROCS** — coverage is opt-in, so a
   conversion without a row leaves a gap that looks covered.
@@ -93,15 +95,14 @@ SINGLE_SOURCE_SPROCS = [
     ("ResolveContractLaborReviewRecipientsPerProject", REVIEW_BASE),
     # U-126: 10 of the last 12 HOME-LESS sprocs, homed from their LIVE prod
     # definitions (the other 2 are pinned by the inbox_tasks whole-file row).
-    # These landed in partially-converted base files, so the whole-file tier is
+    # These landed in partially-converted base files, so the whole-file tier was
     # unavailable — per-sproc rows pin each exact canonical home (U-062 shape).
+    # (The 3 USER_BASE rows were later subsumed by U-131's whole-file guard —
+    # 7 remain here.)
     ("ReadReviewsByContractLaborId", REVIEW_BASE),
     ("ReadCurrentReviewByContractLaborId", REVIEW_BASE),
     ("DeleteReviewsByContractLaborId", REVIEW_BASE),
     ("UpdateContractLaborAggregates", CONTRACT_LABOR_BASE),
-    ("ReadWorkers", USER_BASE),
-    ("SetUserLastCompanyId", USER_BASE),
-    ("UpdateUserWorkerLink", USER_BASE),
     ("ReadUserModulesByUserIdAndCompanyId", USER_MODULE_BASE),
     ("ReadUserRolesByUserIdAndCompanyId", USER_ROLE_BASE),
     ("RevokeAllAuthRefreshTokensByAuthId", AUTH_BASE),
@@ -139,12 +140,14 @@ GAP2_NEUTRALIZED_SPROCS = frozenset(
 # U-126: dbo.inbox_tasks.sql is the sole home of ReadInboxTasks +
 # ReadInboxTaskCounts — whole-file guard pins both.
 # U-129: dbo.userproject.sql reconciled to the 004 layer and made sole home of the 8 UserProject sprocs — whole-file guard.
+# U-131: dbo.user.sql reconciled to migrations 003 (mutation sprocs) + 005 (read sprocs) and made sole home of all 11 User sprocs — whole-file guard; subsumes U-126's three per-sproc USER_BASE rows (ReadWorkers, SetUserLastCompanyId, UpdateUserWorkerLink).
 # "Entity" here reads as entity/package, per the module docstring.
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
     ("ms_outbox", MS_OUTBOX_BASE),
     ("role_module", ROLE_MODULE_BASE),
     ("user_project", USER_PROJECT_BASE),
+    ("user", USER_BASE),
     ("completion_job", COMPLETION_JOB_BASE),
     ("bill", BILL_BASE),
     ("bill_source_email", BILL_SOURCE_EMAIL_BASE),

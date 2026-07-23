@@ -58,165 +58,28 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_User_VendorId' AND obj
 GO
 
 
--- Read sprocs — re-issued with the live shape (Phase 0 + Phase 4) + the 2 new
--- worker-link columns. EmployeeId / VendorId surface NULL on rows that haven't
--- been linked.
-CREATE OR ALTER PROCEDURE ReadUsers
-(
-    @IncludeAgents BIT = 0
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Firstname],
-        [Lastname],
-        [IsSystemAdmin],
-        [IsAgent],
-        [LastCompanyId],
-        [CreatedByUserId],
-        [ModifiedByUserId],
-        [EmployeeId],
-        [VendorId]
-    FROM dbo.[User]
-    WHERE
-        @IncludeAgents = 1
-        OR [IsAgent] = 0
-    ORDER BY [Lastname] ASC, [Firstname] ASC;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-CREATE OR ALTER PROCEDURE ReadUserById
-(
-    @Id BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Firstname],
-        [Lastname],
-        [IsSystemAdmin],
-        [IsAgent],
-        [LastCompanyId],
-        [CreatedByUserId],
-        [ModifiedByUserId],
-        [EmployeeId],
-        [VendorId]
-    FROM dbo.[User]
-    WHERE [Id] = @Id;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-CREATE OR ALTER PROCEDURE ReadUserByPublicId
-(
-    @PublicId UNIQUEIDENTIFIER
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Firstname],
-        [Lastname],
-        [IsSystemAdmin],
-        [IsAgent],
-        [LastCompanyId],
-        [CreatedByUserId],
-        [ModifiedByUserId],
-        [EmployeeId],
-        [VendorId]
-    FROM dbo.[User]
-    WHERE [PublicId] = @PublicId;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-CREATE OR ALTER PROCEDURE ReadUserByFirstname
-(
-    @Firstname NVARCHAR(50)
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT TOP 1
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Firstname],
-        [Lastname],
-        [IsSystemAdmin],
-        [IsAgent],
-        [LastCompanyId],
-        [CreatedByUserId],
-        [ModifiedByUserId],
-        [EmployeeId],
-        [VendorId]
-    FROM dbo.[User]
-    WHERE [Firstname] = @Firstname;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-CREATE OR ALTER PROCEDURE ReadUserByLastname
-(
-    @Lastname NVARCHAR(255)
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT TOP 1
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Firstname],
-        [Lastname],
-        [IsSystemAdmin],
-        [IsAgent],
-        [LastCompanyId],
-        [CreatedByUserId],
-        [ModifiedByUserId],
-        [EmployeeId],
-        [VendorId]
-    FROM dbo.[User]
-    WHERE [Lastname] = @Lastname;
-
-    COMMIT TRANSACTION;
-END;
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-131, 2026-07-23) — sproc bodies removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   Re-issue the 5 Read sprocs with the live shape (per migrations 002 + 004) +
+--   the 2 new worker-link columns so /auth/me, React UserProfile, and any other
+--   consumer sees the current linkage state.
+--
+-- The canonical definition of these sprocs now lives in exactly ONE place:
+--   entities/user/sql/dbo.user.sql
+--
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.ReadUsers
+--   dbo.ReadUserById
+--   dbo.ReadUserByPublicId
+--   dbo.ReadUserByFirstname
+--   dbo.ReadUserByLastname
+--
+-- Re-running this file is now a no-op for these sprocs. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------
 
 
 -- ---------------------------------------------------------------------------
@@ -236,4 +99,4 @@ GO
 -- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
 -- ---------------------------------------------------------------------------
 
-PRINT 'User worker-link migration applied: EmployeeId/VendorId columns + 5 Read sprocs.';
+PRINT 'User worker-link migration applied: EmployeeId/VendorId columns.';

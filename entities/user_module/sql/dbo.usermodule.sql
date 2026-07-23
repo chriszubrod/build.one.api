@@ -13,16 +13,13 @@ CREATE TABLE [dbo].[UserModule]
 END
 GO
 
-
-GO
-
-
-GO
-
 CREATE OR ALTER PROCEDURE CreateUserModule
 (
     @UserId BIGINT,
-    @ModuleId BIGINT
+    @ModuleId BIGINT,
+    @CompanyId BIGINT = NULL,
+    @CreatedByUserId BIGINT = NULL,
+    @ModifiedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -30,7 +27,9 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[UserModule] ([CreatedDatetime], [ModifiedDatetime], [UserId], [ModuleId])
+    INSERT INTO dbo.[UserModule]
+        ([CreatedDatetime], [ModifiedDatetime], [UserId], [ModuleId],
+         [CompanyId], [CreatedByUserId], [ModifiedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -38,15 +37,18 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[UserId],
-        INSERTED.[ModuleId]
-    VALUES (@Now, @Now, @UserId, @ModuleId);
+        INSERTED.[ModuleId],
+        INSERTED.[CompanyId],
+        INSERTED.[CreatedByUserId],
+        INSERTED.[ModifiedByUserId]
+    VALUES
+        (@Now, @Now, @UserId, @ModuleId,
+         @CompanyId, @CreatedByUserId, COALESCE(@ModifiedByUserId, @CreatedByUserId));
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserModules
 AS
@@ -60,16 +62,17 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [ModuleId]
+        [ModuleId],
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserModule]
     ORDER BY [UserId] ASC, [ModuleId] ASC;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserModuleById
 (
@@ -86,16 +89,17 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [ModuleId]
+        [ModuleId],
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserModule]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserModuleByPublicId
 (
@@ -112,16 +116,17 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [ModuleId]
+        [ModuleId],
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserModule]
     WHERE [PublicId] = @PublicId;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserModuleByUserId
 (
@@ -138,16 +143,17 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [ModuleId]
+        [ModuleId],
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserModule]
     WHERE [UserId] = @UserId;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserModulesByUserId
 (
@@ -164,17 +170,18 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [ModuleId]
+        [ModuleId],
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserModule]
     WHERE [UserId] = @UserId
     ORDER BY [ModuleId] ASC;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserModuleByModuleId
 (
@@ -191,23 +198,26 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [ModuleId]
+        [ModuleId],
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserModule]
     WHERE [ModuleId] = @ModuleId;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE UpdateUserModuleById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
     @UserId BIGINT,
-    @ModuleId BIGINT
+    @ModuleId BIGINT,
+    @CompanyId BIGINT = NULL,
+    @ModifiedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -219,7 +229,9 @@ BEGIN
     SET
         [ModifiedDatetime] = @Now,
         [UserId] = @UserId,
-        [ModuleId] = @ModuleId
+        [ModuleId] = @ModuleId,
+        [CompanyId] = CASE WHEN @CompanyId IS NULL THEN [CompanyId] ELSE @CompanyId END,
+        [ModifiedByUserId] = @ModifiedByUserId
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -227,15 +239,16 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[UserId],
-        INSERTED.[ModuleId]
+        INSERTED.[ModuleId],
+        INSERTED.[CompanyId],
+        INSERTED.[CreatedByUserId],
+        INSERTED.[ModifiedByUserId]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE DeleteUserModuleById
 (
@@ -253,7 +266,10 @@ BEGIN
         CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.[UserId],
-        DELETED.[ModuleId]
+        DELETED.[ModuleId],
+        DELETED.[CompanyId],
+        DELETED.[CreatedByUserId],
+        DELETED.[ModifiedByUserId]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;

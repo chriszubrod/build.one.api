@@ -84,10 +84,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_company/sql/dbo.usercompany.sql',
         'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
     }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
-    "CreateUserModule": frozenset({
-        'entities/user_module/sql/dbo.usermodule.sql',
-        'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_module/sql/dbo.usermodule.sql
     "CreateUserRole": frozenset({
         'entities/user_role/sql/dbo.userrole.sql',
         'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
@@ -134,10 +130,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_company/sql/dbo.usercompany.sql',
         'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
     }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
-    "DeleteUserModuleById": frozenset({
-        'entities/user_module/sql/dbo.usermodule.sql',
-        'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_module/sql/dbo.usermodule.sql
     "DeleteUserRoleById": frozenset({
         'entities/user_role/sql/dbo.userrole.sql',
         'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
@@ -296,30 +288,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_company/sql/dbo.usercompany.sql',
         'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
     }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
-    "ReadUserModuleById": frozenset({
-        'entities/user_module/sql/dbo.usermodule.sql',
-        'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_module/sql/dbo.usermodule.sql
-    "ReadUserModuleByModuleId": frozenset({
-        'entities/user_module/sql/dbo.usermodule.sql',
-        'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_module/sql/dbo.usermodule.sql
-    "ReadUserModuleByPublicId": frozenset({
-        'entities/user_module/sql/dbo.usermodule.sql',
-        'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_module/sql/dbo.usermodule.sql
-    "ReadUserModuleByUserId": frozenset({
-        'entities/user_module/sql/dbo.usermodule.sql',
-        'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_module/sql/dbo.usermodule.sql
-    "ReadUserModules": frozenset({
-        'entities/user_module/sql/dbo.usermodule.sql',
-        'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_module/sql/dbo.usermodule.sql
-    "ReadUserModulesByUserId": frozenset({
-        'entities/user_module/sql/dbo.usermodule.sql',
-        'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_module/sql/dbo.usermodule.sql
     "ReadUserRoleById": frozenset({
         'entities/user_role/sql/dbo.userrole.sql',
         'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
@@ -410,10 +378,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_company/sql/dbo.usercompany.sql',
         'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
     }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
-    "UpdateUserModuleById": frozenset({
-        'entities/user_module/sql/dbo.usermodule.sql',
-        'entities/user_module/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_module/sql/dbo.usermodule.sql
     "UpdateUserRoleById": frozenset({
         'entities/user_role/sql/dbo.userrole.sql',
         'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',

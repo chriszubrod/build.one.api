@@ -462,3 +462,24 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+
+
+-- ============================================================================
+-- CountMsOutboxByEntity — generic idempotency count (any status)
+-- ============================================================================
+CREATE OR ALTER PROCEDURE dbo.CountMsOutboxByEntity
+(
+    @EntityType     NVARCHAR(32),
+    @EntityPublicId UNIQUEIDENTIFIER
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT COUNT(*) AS [Cnt]
+    FROM [ms].[Outbox]
+    WHERE [EntityType] = @EntityType
+      AND [EntityPublicId] = @EntityPublicId;
+END;
+GO

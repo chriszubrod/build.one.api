@@ -7,19 +7,10 @@ ledgered.
 """
 
 SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
-    "AggregateTimeEntryOnSubmit": frozenset({
-        'entities/time_entry/sql/migrations/001_2026_05_27_aggregate_on_submit.sql',
-        'entities/time_entry/sql/migrations/002_2026_05_27_aggregate_contract_labor_lineage.sql',
-        'entities/time_entry/sql/migrations/008_2026_05_28_aggregate_with_line_items.sql',
-        'entities/time_entry/sql/migrations/009_2026_06_03_aggregate_parent_per_time_entry.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
     "CountInvoices": frozenset({
         'entities/invoice/sql/dbo.invoice.sql',
         'scripts/migrations/gap1_list_sprocs_scoped.sql',
     }),  # known-dup, home=entities/invoice/sql/dbo.invoice.sql
-    "CountMsOutboxByEntity": frozenset({
-        'entities/time_entry/sql/migrations/011_2026_06_16_time_entry_digest.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
     "CreateAttachment": frozenset({
         'entities/attachment/sql/dbo.attachment.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',
@@ -189,9 +180,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/vendor/sql/dbo.vendor.sql',
         'entities/vendor/sql/migrations/001_find_contract_labor_vendor_by_email.sql',
     }),  # known-dup, home=entities/vendor/sql/dbo.vendor.sql
-    "IsTimeEntryDownstreamLocked": frozenset({
-        'entities/time_entry/sql/migrations/003_2026_05_27_downstream_lock_check.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
     "ReadAttachmentByCategory": frozenset({
         'entities/attachment/sql/dbo.attachment.sql',
         'entities/attachment/sql/update_procedures_with_extraction.sql',
@@ -246,12 +234,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
     }),  # known-dup, home=entities/contract_labor/sql/dbo.contract_labor.sql
     "ReadCurrentReviewByContractLaborId": frozenset({
         'entities/review/sql/migrations/005_review_sprocs_contract_labor.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
-    "ReadCurrentTimeEntryStatusesByTimeEntryIds": frozenset({
-        'entities/time_entry/sql/migrations/013_2026_06_16_read_current_time_entry_statuses_by_ids.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
-    "ReadDistinctProjectIdsByTimeEntryIds": frozenset({
-        'entities/time_entry/sql/migrations/010_2026_06_03_distinct_project_ids_by_time_entry_ids.sql',
     }),  # HOME-LESS — must home (U-107 follow-up)
     "ReadEmailMessageByGraphMessageId": frozenset({
         'entities/email_message/sql/dbo.email_message.sql',
@@ -326,15 +308,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
     "ReadReviewsByContractLaborId": frozenset({
         'entities/review/sql/migrations/005_review_sprocs_contract_labor.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
-    "ReadTimeEntriesForDigestByWorkDate": frozenset({
-        'entities/time_entry/sql/migrations/011_2026_06_16_time_entry_digest.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
-    "ReadTimeEntryBilledLineage": frozenset({
-        'entities/time_entry/sql/migrations/004_2026_05_28_billed_lineage.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
-    "ReadTimeLogsByTimeEntryIds": frozenset({
-        'entities/time_entry/sql/migrations/012_2026_06_16_read_time_logs_by_time_entry_ids.sql',
     }),  # HOME-LESS — must home (U-107 follow-up)
     "ReadUserByFirstname": frozenset({
         'entities/user/sql/dbo.user.sql',
@@ -510,9 +483,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
     }),  # HOME-LESS — must home (U-107 follow-up)
     "SetUserLastCompanyId": frozenset({
         'entities/user/sql/migrations/002_phase0_read_sprocs_extended.sql',
-    }),  # HOME-LESS — must home (U-107 follow-up)
-    "StampTimeEntryReview": frozenset({
-        'entities/time_entry/sql/migrations/006_stamp_review_sproc.sql',
     }),  # HOME-LESS — must home (U-107 follow-up)
     "TimeoutLongRunningAgentSessions": frozenset({
         'intelligence/persistence/sql/dbo.agent_session.sql',

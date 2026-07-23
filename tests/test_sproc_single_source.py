@@ -1,13 +1,13 @@
-"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111 guard: canonical SQL homes for sprocs,
-access UDFs, and the shared human-only review predicate.
+"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125 guard: canonical SQL homes
+for sprocs, access UDFs, and the shared human-only review predicate.
 
 Three guard shapes:
 
 * **Sprocs** — an entity's base SQL file is the one home for its sprocs. Covers
   time_entry (U-045), role_module (U-048), completion_job, bill + expense (U-100),
   bill_credit + bill_credit_line_item fully converted (U-102),
-  bill_line_item + expense_line_item fully converted (U-111), and the three
-  review recipient resolvers (U-062).
+  bill_line_item + expense_line_item fully converted (U-111), the three
+  review recipient resolvers (U-062), and the ms_outbox package file (U-125).
   The remaining entities still carry duplicated base sprocs in migrations
   (contract_labor=10, user_role=9, …); converting them is future work.
   **When you convert one, add its row to
@@ -69,6 +69,7 @@ ACCESS_UDF_HOME = REPO_ROOT / "shared" / "sql" / "dbo.access_udfs.sql"
 
 COMPLETION_JOB_BASE = REPO_ROOT / "entities" / "completion_job" / "sql" / "dbo.completion_job.sql"
 REVIEW_BASE = REPO_ROOT / "entities" / "review" / "sql" / "dbo.review.sql"
+MS_OUTBOX_BASE = REPO_ROOT / "integrations" / "ms" / "outbox" / "sql" / "ms.outbox.sql"
 
 # U-062/U-087: the three review-notification recipient resolvers homed in the
 # review base file (dbo.review.sql), their bodies neutralized to pointer stubs in
@@ -109,8 +110,13 @@ GAP2_NEUTRALIZED_SPROCS = frozenset(
 # left them per-sproc because Update*ById still lived in step2_decimal_quantity.sql;
 # that blocker is resolved). This subsumes U-074/U-100's per-sproc rows for
 # CreateBillLineItem, CreateExpenseLineItem, and ReadBillLineItemBoxLinks.
+# U-125: ms.outbox.sql was already the sole home of the 10 MS outbox sprocs and
+# gained the relocated CountMsOutboxByEntity — a whole-file guard row (the U-102
+# tier, strictly stronger than a per-sproc SINGLE_SOURCE_SPROCS row) pins all 11.
+# "Entity" here reads as entity/package, per the module docstring.
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
+    ("ms_outbox", MS_OUTBOX_BASE),
     ("role_module", ROLE_MODULE_BASE),
     ("completion_job", COMPLETION_JOB_BASE),
     ("bill", BILL_BASE),

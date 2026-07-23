@@ -2,12 +2,22 @@
 
 ## Single source of truth
 
-`dbo.time_entry.sql` is the **single canonical source** for all 19 TimeEntry /
+`dbo.time_entry.sql` is the **single canonical source** for all 27 TimeEntry /
 TimeLog / TimeEntryStatus stored procedures. No migration may redefine them —
 change the base file and apply it. Enforced by `tests/test_sproc_single_source.py`
 (parametrized per entity; the `time_entry` row is this file's guard). Duplicate
 bodies that drift from the base file caused the 2026-07-15 outage (SQL 8144,
 cross-user payroll exposure risk).
+
+**U-125 (2026-07-23):** eight sprocs formerly sole-sourced in migrations 001–013
+(`AggregateTimeEntryOnSubmit`, `IsTimeEntryDownstreamLocked`,
+`ReadTimeEntryBilledLineage`, `StampTimeEntryReview`,
+`ReadDistinctProjectIdsByTimeEntryIds`, `ReadTimeEntriesForDigestByWorkDate`,
+`ReadTimeLogsByTimeEntryIds`, `ReadCurrentTimeEntryStatusesByTimeEntryIds`) are
+now homed in the base file using live prod bodies captured via `sys.sql_modules`.
+Those migration files are SUPERSEDED stubs. `CountMsOutboxByEntity` (introduced
+in migration 011 for digest idempotency) is homed in
+`integrations/ms/outbox/sql/ms.outbox.sql` and guarded via `SINGLE_SOURCE_SPROCS`.
 
 The `dbo.UserCanAccessTimeEntry` UDF is **not** in this file — it moved to
 `shared/sql/dbo.access_udfs.sql` in U-051, which is the canonical home for the
@@ -15,7 +25,7 @@ whole `dbo.UserCanAccess*` family. See `shared/sql/README.md`.
 
 ## From-scratch build order
 
-1. **`entities/time_entry/sql/dbo.time_entry.sql`** — tables, indexes, all 19
+1. **`entities/time_entry/sql/dbo.time_entry.sql`** — tables, indexes, all 27
    sprocs. The RBAC-scoped sprocs reference `dbo.UserProject` at runtime, but
    SQL Server defers name resolution for stored procedures, so UserProject is
    not a CREATE-time prerequisite for this file. UserProject ordering for the
@@ -30,23 +40,11 @@ whole `dbo.UserCanAccess*` family. See `shared/sql/README.md`.
    `shared/sql/README.md` is the authority for its full prerequisite list and is
    where it is sequenced; this entry only records that it follows this file.
 
-3. **Sole-source sproc migrations** (each is the only home of its sproc, so each
-   still carries a live body — this is correct and expected):
-   - `003_2026_05_27_downstream_lock_check.sql` (`IsTimeEntryDownstreamLocked`)
-   - `004_2026_05_28_billed_lineage.sql` (`ReadTimeEntryBilledLineage`)
-   - `005_add_review_columns.sql` (schema)
-   - `006_stamp_review_sproc.sql` (`StampTimeEntryReview`)
-   - `007_2026_05_28_add_source_time_entry_id_to_line_items.sql` (schema)
-   - `009_2026_06_03_aggregate_parent_per_time_entry.sql` (`AggregateTimeEntryOnSubmit`
-     — latest of a 4-file chain; see known issue below)
-   - `010_2026_06_03_distinct_project_ids_by_time_entry_ids.sql`
-   - `011_2026_06_16_time_entry_digest.sql`
-   - `012_2026_06_16_read_time_logs_by_time_entry_ids.sql`
-   - `013_2026_06_16_read_current_time_entry_statuses_by_ids.sql`
-
-   Schema-only migrations (no sproc bodies in the base file):
+3. **Schema-only migrations** (no sproc bodies in the base file):
    - `003_align_module_route.sql`
    - `004_cascade_delete_status.sql`
+   - `005_add_review_columns.sql`
+   - `007_2026_05_28_add_source_time_entry_id_to_line_items.sql`
 
 4. **`scripts/migrations/time_log_update_guards_and_unique_indexes.sql`** —
    unique indexes only (`UX_TimeLog_TimeEntry_ClockIn`,
@@ -67,9 +65,21 @@ whole `dbo.UserCanAccess*` family. See `shared/sql/README.md`.
 ## Superseded migration stubs
 
 These files retain header intent and SUPERSEDED banners but no longer carry live
-bodies for the 16 RBAC-scoped read/mutation sprocs defined in the base file.
-Re-running them is a no-op for those sprocs:
+bodies for sprocs defined in the base file (or, for 011,
+`integrations/ms/outbox/sql/ms.outbox.sql`). Re-running them is a no-op for
+those sprocs:
 
+- `001_2026_05_27_aggregate_on_submit.sql`
+- `002_2026_05_27_aggregate_contract_labor_lineage.sql`
+- `003_2026_05_27_downstream_lock_check.sql`
+- `004_2026_05_28_billed_lineage.sql`
+- `006_stamp_review_sproc.sql`
+- `008_2026_05_28_aggregate_with_line_items.sql`
+- `009_2026_06_03_aggregate_parent_per_time_entry.sql`
+- `010_2026_06_03_distinct_project_ids_by_time_entry_ids.sql`
+- `011_2026_06_16_time_entry_digest.sql`
+- `012_2026_06_16_read_time_logs_by_time_entry_ids.sql`
+- `013_2026_06_16_read_current_time_entry_statuses_by_ids.sql`
 - `001_phase3_scope_by_user.sql`
 - `002_remove_legacy_actor_bypass.sql`
 - `014_2026_07_01_read_time_entries_sort_by_worker.sql`
@@ -83,21 +93,11 @@ Re-running them is a no-op for those sprocs:
   sproc sections only; still carries live unique indexes
   (`UX_TimeLog_TimeEntry_ClockIn`, `UX_TimeEntry_UserId_WorkDate`)
 
-## Known issues (out of scope for U-045)
+## Resolved issues
 
-Tracked in `TODO.md` — that is the canonical register; these are one-line
-pointers so a reader of this build order knows why it looks the way it does.
-Note this directory has **four colliding numeric prefixes** (001, 002, 003, 004
-each name two different files), so always cite migrations by full filename.
-
-- **U-049** — `AggregateTimeEntryOnSubmit` is not in the base file and has 4
-  *distinct* bodies across `001_2026_05_27_aggregate_on_submit.sql`,
-  `002_2026_05_27_aggregate_contract_labor_lineage.sql`,
-  `008_2026_05_28_aggregate_with_line_items.sql` and
-  `009_2026_06_03_aggregate_parent_per_time_entry.sql`. Unlike the superseded
-  stubs above these are **not** byte-identical, so re-running an early one is a
-  real revert. This is why step 3 lists only `009` (presumed-latest by number);
-  confirming the live body needs a prod read, so it is not settled here.
+- **U-049 — RESOLVED (U-125, 2026-07-23).** `AggregateTimeEntryOnSubmit` is
+  canonical in `dbo.time_entry.sql` (live prod body). Migrations 001/002/008/009
+  are stubs; 001/002/008 bodies were stale vs prod.
 
 - **U-048 — RESOLVED 2026-07-16.** `entities/role_module/sql/dbo.rolemodule.sql`
   is now canonical for the `CanViewTeam` column + all 7 CanViewTeam-aware CRUD
@@ -109,3 +109,6 @@ each name two different files), so always cite migrations by full filename.
   BillCredit,Expense}` UDF family now has a single canonical home in
   `shared/sql/dbo.access_udfs.sql`; the three `gap1`/`gap2`/`gap3` migrations
   are superseded stubs. See `shared/sql/README.md`.
+
+Note this directory has **four colliding numeric prefixes** (001, 002, 003, 004
+each name two different files), so always cite migrations by full filename.

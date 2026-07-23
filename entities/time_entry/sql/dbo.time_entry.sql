@@ -1217,3 +1217,742 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+-- U-125 (2026-07-23): sprocs below homed from migrations 001-013; bodies are the LIVE prod definitions captured via sys.sql_modules.
+
+
+CREATE OR ALTER PROCEDURE dbo.AggregateTimeEntryOnSubmit
+(
+    @TimeEntryId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @UserId       BIGINT;
+    DECLARE @WorkDate     DATE;
+    DECLARE @EmployeeId   BIGINT;
+    DECLARE @VendorId     BIGINT;
+    DECLARE @WorkerName   NVARCHAR(310);
+
+    SELECT @UserId = [UserId], @WorkDate = [WorkDate]
+    FROM dbo.[TimeEntry]
+    WHERE [Id] = @TimeEntryId;
+
+    IF @UserId IS NULL
+    BEGIN
+        RAISERROR('TimeEntry %d not found.', 16, 1, @TimeEntryId);
+        RETURN;
+    END
+
+    SELECT
+        @EmployeeId = [EmployeeId],
+        @VendorId   = [VendorId],
+        @WorkerName = LTRIM(RTRIM(ISNULL([Firstname], N'') + N' ' + ISNULL([Lastname], N'')))
+    FROM dbo.[User]
+    WHERE [Id] = @UserId;
+
+    IF @EmployeeId IS NOT NULL AND @VendorId IS NOT NULL
+    BEGIN
+        RAISERROR('User %d has both EmployeeId and VendorId set (XOR violated).', 16, 1, @UserId);
+        RETURN;
+    END
+
+    IF @EmployeeId IS NULL AND @VendorId IS NULL
+    BEGIN
+        RAISERROR(
+            'User %d has no worker linkage (User.EmployeeId and VendorId both NULL). Set one via UserProfile before submitting TimeEntries for billing.',
+            16, 1, @UserId
+        );
+        RETURN;
+    END
+
+    -- Semi-monthly billing period (decision #3).
+    DECLARE @BillingPeriodStart DATE;
+    DECLARE @BillingPeriodEnd   DATE;
+    IF DAY(@WorkDate) <= 15
+    BEGIN
+        SET @BillingPeriodStart = DATEFROMPARTS(YEAR(@WorkDate), MONTH(@WorkDate), 1);
+        SET @BillingPeriodEnd   = DATEFROMPARTS(YEAR(@WorkDate), MONTH(@WorkDate), 15);
+    END
+    ELSE
+    BEGIN
+        SET @BillingPeriodStart = DATEFROMPARTS(YEAR(@WorkDate), MONTH(@WorkDate), 16);
+        SET @BillingPeriodEnd   = EOMONTH(@WorkDate);
+    END
+
+    -- Per-project buckets.
+    DECLARE @Buckets TABLE (
+        ProjectId    BIGINT        NULL,
+        TotalHours   DECIMAL(6,2)  NOT NULL,
+        ConcatNotes  NVARCHAR(MAX) NULL
+    );
+
+    INSERT INTO @Buckets (ProjectId, TotalHours, ConcatNotes)
+    SELECT
+        tl.[ProjectId],
+        SUM(ISNULL(tl.[Duration], 0)),
+        STRING_AGG(NULLIF(LTRIM(RTRIM(ISNULL(tl.[Note], N''))), N''), N'; ')
+            WITHIN GROUP (ORDER BY tl.[ClockIn])
+    FROM dbo.[TimeLog] tl
+    WHERE tl.[TimeEntryId] = @TimeEntryId
+      AND (tl.[LogType] IS NULL OR tl.[LogType] = 'work')
+    GROUP BY tl.[ProjectId];
+
+    DECLARE @Results TABLE (
+        TargetTable    NVARCHAR(30)  NOT NULL,
+        TargetRowId    BIGINT        NULL,
+        LineItemRowId  BIGINT        NULL,
+        ProjectId      BIGINT        NULL,
+        WorkDate       DATE          NOT NULL,
+        TotalHours     DECIMAL(6,2)  NOT NULL,
+        HourlyRate     DECIMAL(18,4) NULL,
+        Markup         DECIMAL(18,4) NULL,
+        RateSource     NVARCHAR(20)  NULL,
+        Status         NVARCHAR(20)  NOT NULL,
+        Note           NVARCHAR(500) NULL
+    );
+
+    -- ─── Parent-level aggregates ───────────────────────────────────────────
+    DECLARE @BucketCount     INT;
+    DECLARE @ParentTotalHrs  DECIMAL(6,2);
+    DECLARE @ParentProjectId BIGINT;
+    DECLARE @ParentRate      DECIMAL(18,4);
+    DECLARE @ParentMarkup    DECIMAL(18,4);
+    DECLARE @ParentAmount    DECIMAL(18,2);
+    DECLARE @ParentRateSrc   NVARCHAR(20);
+    DECLARE @ParentDesc      NVARCHAR(MAX) = NULL;
+    DECLARE @ParentNote      NVARCHAR(500) = NULL;
+
+    SELECT
+        @BucketCount    = COUNT(*),
+        @ParentTotalHrs = SUM(TotalHours)
+    FROM @Buckets;
+
+    IF @BucketCount = 0
+    BEGIN
+        -- No work logs (only breaks, or no logs at all). Nothing to aggregate.
+        SELECT TargetTable, TargetRowId, LineItemRowId, ProjectId,
+               CONVERT(VARCHAR(10), WorkDate, 120) AS WorkDate,
+               TotalHours, HourlyRate, Markup, RateSource, Status, Note
+        FROM @Results;
+        RETURN;
+    END
+
+    IF @BucketCount = 1
+    BEGIN
+        SELECT TOP 1 @ParentProjectId = ProjectId FROM @Buckets;
+
+        IF @EmployeeId IS NOT NULL
+        BEGIN
+            DECLARE @RateE_Parent TABLE (HourlyRate DECIMAL(18,4) NULL, Markup DECIMAL(18,4) NULL, RateSource NVARCHAR(20) NULL);
+            INSERT INTO @RateE_Parent
+            EXEC dbo.ReadEffectiveRateForEmployeeProject @EmployeeId = @EmployeeId, @ProjectId = @ParentProjectId;
+            SELECT TOP 1 @ParentRate = HourlyRate, @ParentMarkup = Markup, @ParentRateSrc = RateSource FROM @RateE_Parent;
+        END
+        ELSE
+        BEGIN
+            DECLARE @RateV_Parent TABLE (HourlyRate DECIMAL(18,4) NULL, Markup DECIMAL(18,4) NULL, RateSource NVARCHAR(20) NULL);
+            INSERT INTO @RateV_Parent
+            EXEC dbo.ReadEffectiveRateForVendorProject @VendorId = @VendorId, @ProjectId = @ParentProjectId;
+            SELECT TOP 1 @ParentRate = HourlyRate, @ParentMarkup = Markup, @ParentRateSrc = RateSource FROM @RateV_Parent;
+        END
+
+        IF @ParentRate IS NOT NULL
+        BEGIN
+            SET @ParentAmount = @ParentTotalHrs * @ParentRate * (1 + ISNULL(@ParentMarkup, 0));
+        END
+        ELSE
+        BEGIN
+            SET @ParentDesc = N'Rate not configured for ' + @WorkerName
+                + N' on Project Id=' + ISNULL(CAST(@ParentProjectId AS NVARCHAR(20)), N'(none)')
+                + N'. Set a default on the Worker or add a per-project override.';
+            SET @ParentNote = N'rate_source=none';
+        END
+    END
+    ELSE
+    BEGIN
+        -- Multi-project: parent ProjectId / rate / markup / amount are
+        -- meaningless aggregates. Leave NULL — the per-project values live
+        -- on the line items.
+        SET @ParentProjectId = NULL;
+        SET @ParentRate      = NULL;
+        SET @ParentMarkup    = NULL;
+        SET @ParentAmount    = NULL;
+        SET @ParentRateSrc   = 'multi_project';
+    END
+
+    DECLARE @Status NVARCHAR(20) = 'pending_review';
+
+    -- ─── Parent upsert: ONE row per TimeEntry, keyed on SourceTimeEntryId ──
+    DECLARE @ParentRowId BIGINT;
+
+    IF @EmployeeId IS NOT NULL
+    BEGIN
+        SELECT @ParentRowId = [Id]
+        FROM dbo.[EmployeeLabor]
+        WHERE [SourceTimeEntryId] = @TimeEntryId;
+
+        IF @ParentRowId IS NULL
+        BEGIN
+            INSERT INTO dbo.[EmployeeLabor]
+                ([CreatedDatetime], [ModifiedDatetime], [EmployeeId], [ProjectId], [WorkDate],
+                 [BillingPeriodStart], [BillingPeriodEnd], [TotalHours], [HourlyRate], [Markup],
+                 [TotalAmount], [Description], [Status], [SourceTimeEntryId])
+            VALUES (SYSUTCDATETIME(), SYSUTCDATETIME(), @EmployeeId, @ParentProjectId, @WorkDate,
+                    @BillingPeriodStart, @BillingPeriodEnd, @ParentTotalHrs, @ParentRate, @ParentMarkup,
+                    @ParentAmount, @ParentDesc, @Status, @TimeEntryId);
+            SET @ParentRowId = SCOPE_IDENTITY();
+        END
+        ELSE
+        BEGIN
+            IF EXISTS (SELECT 1 FROM dbo.[EmployeeLabor] WHERE [Id] = @ParentRowId AND [Status] = 'invoiced')
+            BEGIN
+                -- Frozen — already invoiced; surface a note + skip child upserts.
+                SET @ParentNote = COALESCE(@ParentNote + N'; ', N'') + N'frozen — already invoiced, skipped';
+                INSERT INTO @Results VALUES (N'EmployeeLabor', @ParentRowId, NULL, @ParentProjectId, @WorkDate,
+                                             @ParentTotalHrs, @ParentRate, @ParentMarkup, @ParentRateSrc, @Status, @ParentNote);
+
+                SELECT TargetTable, TargetRowId, LineItemRowId, ProjectId,
+                       CONVERT(VARCHAR(10), WorkDate, 120) AS WorkDate,
+                       TotalHours, HourlyRate, Markup, RateSource, Status, Note
+                FROM @Results;
+                RETURN;
+            END
+
+            UPDATE dbo.[EmployeeLabor]
+            SET [ModifiedDatetime]  = SYSUTCDATETIME(),
+                [ProjectId]         = @ParentProjectId,
+                [TotalHours]        = @ParentTotalHrs,
+                [HourlyRate]        = @ParentRate,
+                [Markup]            = @ParentMarkup,
+                [TotalAmount]       = @ParentAmount,
+                [Description]       = @ParentDesc,
+                [BillingPeriodEnd]  = @BillingPeriodEnd,
+                [SourceTimeEntryId] = @TimeEntryId
+            WHERE [Id] = @ParentRowId;
+        END
+    END
+    ELSE
+    BEGIN
+        SELECT @ParentRowId = [Id]
+        FROM dbo.[ContractLabor]
+        WHERE [SourceTimeEntryId] = @TimeEntryId;
+
+        IF @ParentRowId IS NULL
+        BEGIN
+            INSERT INTO dbo.[ContractLabor]
+                ([CreatedDatetime], [ModifiedDatetime], [VendorId], [ProjectId], [WorkDate],
+                 [BillingPeriodStart], [TotalHours], [HourlyRate], [Markup], [TotalAmount],
+                 [Description], [Status], [BillVendorId], [EmployeeName], [SourceTimeEntryId])
+            VALUES (SYSUTCDATETIME(), SYSUTCDATETIME(), @VendorId, @ParentProjectId, @WorkDate,
+                    @BillingPeriodStart, @ParentTotalHrs, @ParentRate, @ParentMarkup, @ParentAmount,
+                    @ParentDesc, @Status, @VendorId, @WorkerName, @TimeEntryId);
+            SET @ParentRowId = SCOPE_IDENTITY();
+        END
+        ELSE
+        BEGIN
+            IF EXISTS (SELECT 1 FROM dbo.[ContractLabor] WHERE [Id] = @ParentRowId AND [Status] = 'billed')
+            BEGIN
+                SET @ParentNote = COALESCE(@ParentNote + N'; ', N'') + N'frozen — already billed, skipped';
+                INSERT INTO @Results VALUES (N'ContractLabor', @ParentRowId, NULL, @ParentProjectId, @WorkDate,
+                                             @ParentTotalHrs, @ParentRate, @ParentMarkup, @ParentRateSrc, @Status, @ParentNote);
+
+                SELECT TargetTable, TargetRowId, LineItemRowId, ProjectId,
+                       CONVERT(VARCHAR(10), WorkDate, 120) AS WorkDate,
+                       TotalHours, HourlyRate, Markup, RateSource, Status, Note
+                FROM @Results;
+                RETURN;
+            END
+
+            UPDATE dbo.[ContractLabor]
+            SET [ModifiedDatetime]  = SYSUTCDATETIME(),
+                [ProjectId]         = @ParentProjectId,
+                [TotalHours]        = @ParentTotalHrs,
+                [HourlyRate]        = @ParentRate,
+                [Markup]            = @ParentMarkup,
+                [TotalAmount]       = @ParentAmount,
+                [Description]       = @ParentDesc,
+                [SourceTimeEntryId] = @TimeEntryId
+            WHERE [Id] = @ParentRowId;
+        END
+    END
+
+    -- ─── Per-bucket line-item upserts ──────────────────────────────────────
+    DECLARE @ProjectId    BIGINT;
+    DECLARE @TotalHours   DECIMAL(6,2);
+    DECLARE @ConcatNotes  NVARCHAR(MAX);
+
+    DECLARE bucket_cur CURSOR LOCAL FAST_FORWARD FOR
+        SELECT ProjectId, TotalHours, ConcatNotes FROM @Buckets;
+
+    OPEN bucket_cur;
+    FETCH NEXT FROM bucket_cur INTO @ProjectId, @TotalHours, @ConcatNotes;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        DECLARE @HourlyRate     DECIMAL(18,4) = NULL;
+        DECLARE @Markup         DECIMAL(18,4) = NULL;
+        DECLARE @RateSource     NVARCHAR(20)  = 'none';
+        DECLARE @TotalAmount    DECIMAL(18,2) = NULL;
+        DECLARE @LineItemRowId  BIGINT        = NULL;
+        DECLARE @LineNote       NVARCHAR(500) = NULL;
+
+        IF @EmployeeId IS NOT NULL
+        BEGIN
+            DECLARE @RateE TABLE (HourlyRate DECIMAL(18,4) NULL, Markup DECIMAL(18,4) NULL, RateSource NVARCHAR(20) NULL);
+            INSERT INTO @RateE
+            EXEC dbo.ReadEffectiveRateForEmployeeProject @EmployeeId = @EmployeeId, @ProjectId = @ProjectId;
+            SELECT TOP 1 @HourlyRate = HourlyRate, @Markup = Markup, @RateSource = RateSource FROM @RateE;
+            DELETE FROM @RateE;
+        END
+        ELSE
+        BEGIN
+            DECLARE @RateV TABLE (HourlyRate DECIMAL(18,4) NULL, Markup DECIMAL(18,4) NULL, RateSource NVARCHAR(20) NULL);
+            INSERT INTO @RateV
+            EXEC dbo.ReadEffectiveRateForVendorProject @VendorId = @VendorId, @ProjectId = @ProjectId;
+            SELECT TOP 1 @HourlyRate = HourlyRate, @Markup = Markup, @RateSource = RateSource FROM @RateV;
+            DELETE FROM @RateV;
+        END
+
+        IF @HourlyRate IS NOT NULL
+        BEGIN
+            SET @TotalAmount = @TotalHours * @HourlyRate * (1 + ISNULL(@Markup, 0));
+        END
+        ELSE
+        BEGIN
+            SET @LineNote = N'rate_source=none for Project Id=' + ISNULL(CAST(@ProjectId AS NVARCHAR(20)), N'(none)');
+        END
+
+        IF @EmployeeId IS NOT NULL
+        BEGIN
+            -- Line-item lookup: NULL-defend before SELECT to avoid the
+            -- same `SELECT @var = ... WHERE no_match` no-op trap on the
+            -- parent. (Belt-and-suspenders — line items are upserted
+            -- within a single parent so collision is less likely, but
+            -- the bug class is real either way.)
+            SET @LineItemRowId = NULL;
+            SELECT @LineItemRowId = [Id]
+            FROM dbo.[EmployeeLaborLineItem]
+            WHERE [EmployeeLaborId]   = @ParentRowId
+              AND [SourceTimeEntryId] = @TimeEntryId
+              AND ((@ProjectId IS NULL AND [ProjectId] IS NULL) OR ([ProjectId] = @ProjectId));
+
+            IF @LineItemRowId IS NULL
+            BEGIN
+                INSERT INTO dbo.[EmployeeLaborLineItem]
+                    ([CreatedDatetime], [ModifiedDatetime], [EmployeeLaborId], [LineDate], [ProjectId],
+                     [SubCostCodeId], [Description], [Hours], [Rate], [Markup], [Price],
+                     [IsBillable], [IsOverhead], [SourceTimeEntryId])
+                VALUES (SYSUTCDATETIME(), SYSUTCDATETIME(), @ParentRowId, @WorkDate, @ProjectId,
+                        NULL, @ConcatNotes, @TotalHours, @HourlyRate, @Markup, @TotalAmount,
+                        1, 0, @TimeEntryId);
+                SET @LineItemRowId = SCOPE_IDENTITY();
+            END
+            ELSE
+            BEGIN
+                -- Preserve PM edits: SubCostCodeId, Description, IsBillable,
+                -- IsOverhead, InvoiceLineItemId all left alone.
+                UPDATE dbo.[EmployeeLaborLineItem]
+                SET [ModifiedDatetime] = SYSUTCDATETIME(),
+                    [Hours]    = @TotalHours,
+                    [Rate]     = @HourlyRate,
+                    [Markup]   = @Markup,
+                    [Price]    = @TotalAmount,
+                    [LineDate] = @WorkDate
+                WHERE [Id] = @LineItemRowId;
+            END
+
+            INSERT INTO @Results VALUES (N'EmployeeLabor', @ParentRowId, @LineItemRowId, @ProjectId, @WorkDate,
+                                         @TotalHours, @HourlyRate, @Markup, @RateSource, @Status, @LineNote);
+        END
+        ELSE
+        BEGIN
+            SET @LineItemRowId = NULL;
+            SELECT @LineItemRowId = [Id]
+            FROM dbo.[ContractLaborLineItem]
+            WHERE [ContractLaborId]   = @ParentRowId
+              AND [SourceTimeEntryId] = @TimeEntryId
+              AND ((@ProjectId IS NULL AND [ProjectId] IS NULL) OR ([ProjectId] = @ProjectId));
+
+            IF @LineItemRowId IS NULL
+            BEGIN
+                INSERT INTO dbo.[ContractLaborLineItem]
+                    ([CreatedDatetime], [ModifiedDatetime], [ContractLaborId], [LineDate], [ProjectId],
+                     [SubCostCodeId], [Description], [Hours], [Rate], [Markup], [Price],
+                     [IsBillable], [IsOverhead], [SourceTimeEntryId])
+                VALUES (SYSUTCDATETIME(), SYSUTCDATETIME(), @ParentRowId, @WorkDate, @ProjectId,
+                        NULL, @ConcatNotes, @TotalHours, @HourlyRate, @Markup, @TotalAmount,
+                        1, 0, @TimeEntryId);
+                SET @LineItemRowId = SCOPE_IDENTITY();
+            END
+            ELSE
+            BEGIN
+                UPDATE dbo.[ContractLaborLineItem]
+                SET [ModifiedDatetime] = SYSUTCDATETIME(),
+                    [Hours]    = @TotalHours,
+                    [Rate]     = @HourlyRate,
+                    [Markup]   = @Markup,
+                    [Price]    = @TotalAmount,
+                    [LineDate] = @WorkDate
+                WHERE [Id] = @LineItemRowId;
+            END
+
+            INSERT INTO @Results VALUES (N'ContractLabor', @ParentRowId, @LineItemRowId, @ProjectId, @WorkDate,
+                                         @TotalHours, @HourlyRate, @Markup, @RateSource, @Status, @LineNote);
+        END
+
+        FETCH NEXT FROM bucket_cur INTO @ProjectId, @TotalHours, @ConcatNotes;
+    END
+
+    CLOSE bucket_cur;
+    DEALLOCATE bucket_cur;
+
+    SELECT TargetTable, TargetRowId, LineItemRowId, ProjectId,
+           CONVERT(VARCHAR(10), WorkDate, 120) AS WorkDate,
+           TotalHours, HourlyRate, Markup, RateSource, Status, Note
+    FROM @Results;
+END;
+GO
+
+
+
+CREATE OR ALTER PROCEDURE dbo.IsTimeEntryDownstreamLocked
+(
+    @TimeEntryId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Locked BIT = 0;
+
+    IF EXISTS (
+        SELECT 1 FROM dbo.[ContractLabor]
+        WHERE [SourceTimeEntryId] = @TimeEntryId
+          AND [Status] = 'billed'
+    )
+        SET @Locked = 1;
+
+    IF @Locked = 0 AND OBJECT_ID('dbo.[EmployeeLabor]', 'U') IS NOT NULL
+    BEGIN
+        IF EXISTS (
+            SELECT 1 FROM dbo.[EmployeeLabor]
+            WHERE [SourceTimeEntryId] = @TimeEntryId
+              AND [Status] = 'invoiced'
+        )
+            SET @Locked = 1;
+    END
+
+    SELECT @Locked AS Locked;
+END;
+GO
+
+
+
+CREATE OR ALTER PROCEDURE ReadCurrentTimeEntryStatusesByTimeEntryIds
+(
+    @TimeEntryIds NVARCHAR(MAX)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    ;WITH ranked AS (
+        SELECT
+            s.[Id],
+            s.[PublicId],
+            s.[RowVersion],
+            CONVERT(VARCHAR(19), s.[CreatedDatetime], 120) AS [CreatedDatetime],
+            s.[TimeEntryId],
+            s.[Status],
+            s.[UserId],
+            s.[Note],
+            ROW_NUMBER() OVER (
+                PARTITION BY s.[TimeEntryId]
+                ORDER BY s.[CreatedDatetime] DESC, s.[Id] DESC
+            ) AS rn
+        FROM dbo.[TimeEntryStatus] s
+        INNER JOIN STRING_SPLIT(ISNULL(@TimeEntryIds, ''), ',') p
+            ON p.value <> '' AND s.[TimeEntryId] = TRY_CAST(LTRIM(RTRIM(p.value)) AS BIGINT)
+    )
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        [CreatedDatetime],
+        [TimeEntryId],
+        [Status],
+        [UserId],
+        [Note]
+    FROM ranked
+    WHERE rn = 1;
+END;
+GO
+
+-- =============================================================================
+-- 2026-06-03 — Batch lookup: distinct ProjectIds per TimeEntry.
+--
+-- Powers the React TimeEntry list page's new Project column. Replaces an
+-- N+1 read where the list endpoint would otherwise fetch TimeLogs per
+-- entry. Input is a comma-separated list of TimeEntryIds (matches the
+-- STRING_SPLIT pattern used elsewhere in the codebase — see
+-- ReadExpenseLineItemAttachmentsByExpenseLineItemPublicIds).
+-- =============================================================================
+
+CREATE OR ALTER PROCEDURE dbo.ReadDistinctProjectIdsByTimeEntryIds
+(
+    @TimeEntryIds NVARCHAR(MAX)  -- CSV of BIGINT TimeEntry.Ids
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @TimeEntryIds IS NULL OR LEN(@TimeEntryIds) = 0
+    BEGIN
+        SELECT TOP 0 CAST(0 AS BIGINT) AS TimeEntryId, CAST(0 AS BIGINT) AS ProjectId;
+        RETURN;
+    END
+
+    -- DISTINCT (TimeEntryId, ProjectId). NULL ProjectId on TimeLog is
+    -- legitimate (break logs / un-assigned work) — surface as NULL so
+    -- the caller can show an "(unassigned)" marker if it wants. Work
+    -- and break LogTypes both included; consumer can filter.
+    SELECT DISTINCT
+        tl.[TimeEntryId],
+        tl.[ProjectId]
+    FROM dbo.[TimeLog] tl
+    INNER JOIN (
+        SELECT CAST(LTRIM(RTRIM(value)) AS BIGINT) AS Id
+        FROM STRING_SPLIT(@TimeEntryIds, ',')
+        WHERE LTRIM(RTRIM(value)) <> ''
+    ) ids ON ids.Id = tl.[TimeEntryId]
+    ORDER BY tl.[TimeEntryId], tl.[ProjectId];
+END;
+GO
+
+-- =============================================================================
+-- 2026-06-16 — Time-Entry daily digest support.
+--
+-- Powers the morning "here's the time recorded for you yesterday" email each
+-- worker receives so they can confirm correctness.
+--
+--   dbo.ReadTimeEntriesForDigestByWorkDate(@WorkDate)
+--        One flat row per (TimeEntry x TimeLog) for a single work_date, joined
+--        up to the worker (name + first non-null Contact email), the entry's
+--        current status, and each log's Project name. LEFT JOIN TimeLog so an
+--        entry with no logs still surfaces (NULL log columns). The digest
+--        service groups these by worker in Python. Real humans only — LLM
+--        agents (User.IsAgent=1) and persona test accounts (Auth.Username
+--        'persona_*') are excluded, matching the review-recipient resolvers
+--        (see review/sql/migrations/008_filter_personas_from_review_recipients).
+--        Runs in system context (drain-secret admin endpoint) — no per-user
+--        row scoping; it reads across all workers by design.
+--
+-- The digest's outbox idempotency helper (dbo.CountMsOutboxByEntity) is homed
+-- with the MS outbox package: integrations/ms/outbox/sql/ms.outbox.sql.
+--
+-- Idempotent (CREATE OR ALTER). Safe to re-run.
+-- =============================================================================
+
+
+-- -----------------------------------------------------------------------------
+-- Digest resolver — entries + logs + worker email + project + status
+-- -----------------------------------------------------------------------------
+CREATE OR ALTER PROCEDURE dbo.ReadTimeEntriesForDigestByWorkDate
+(
+    @WorkDate DATE
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    ;WITH UserEmails AS (
+        SELECT
+            c.[UserId],
+            c.[Email],
+            ROW_NUMBER() OVER (
+                PARTITION BY c.[UserId]
+                ORDER BY c.[Id] ASC
+            ) AS rn
+        FROM dbo.[Contact] c
+        WHERE c.[UserId] IS NOT NULL
+          AND c.[Email] IS NOT NULL
+    )
+    SELECT
+        te.[Id]                                   AS [TimeEntryId],
+        te.[PublicId]                             AS [TimeEntryPublicId],
+        CONVERT(VARCHAR(10), te.[WorkDate], 120)  AS [WorkDate],
+        te.[Note]                                 AS [EntryNote],
+        u.[Id]                                    AS [UserId],
+        u.[PublicId]                              AS [UserPublicId],
+        u.[Firstname],
+        u.[Lastname],
+        ue.[Email],
+        cs.[Status]                               AS [CurrentStatus],
+        tl.[Id]                                   AS [TimeLogId],
+        tl.[PublicId]                             AS [TimeLogPublicId],
+        CONVERT(VARCHAR(23), tl.[ClockIn], 121)   AS [ClockIn],
+        CONVERT(VARCHAR(23), tl.[ClockOut], 121)  AS [ClockOut],
+        tl.[LogType],
+        tl.[Duration],
+        tl.[ProjectId],
+        p.[Name]                                  AS [ProjectName],
+        p.[Abbreviation]                          AS [ProjectAbbreviation],
+        tl.[Note]                                 AS [LogNote]
+    FROM dbo.[TimeEntry] te
+    INNER JOIN dbo.[User] u ON u.[Id] = te.[UserId]
+    LEFT JOIN UserEmails ue
+        ON ue.[UserId] = u.[Id]
+       AND ue.rn = 1
+    OUTER APPLY (
+        SELECT TOP 1 s.[Status]
+        FROM dbo.[TimeEntryStatus] s
+        WHERE s.[TimeEntryId] = te.[Id]
+        ORDER BY s.[CreatedDatetime] DESC
+    ) cs
+    LEFT JOIN dbo.[TimeLog] tl ON tl.[TimeEntryId] = te.[Id]
+    LEFT JOIN dbo.[Project] p  ON p.[Id] = tl.[ProjectId]
+    WHERE te.[WorkDate] = @WorkDate
+      -- Real humans only: exclude LLM agent accounts (User.IsAgent = 1)
+      -- and persona test accounts (Auth.Username starting with 'persona_',
+      -- whitespace-tolerant) — same filter as the review resolvers.
+      AND NOT EXISTS (
+          SELECT 1 FROM dbo.[User] ua
+          WHERE ua.[Id] = te.[UserId]
+            AND ua.[IsAgent] = 1
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM dbo.[Auth] a
+          WHERE a.[UserId] = te.[UserId]
+            AND LEFT(LTRIM(a.[Username]), 8) = N'persona_'
+      )
+    ORDER BY u.[Lastname], u.[Firstname], te.[Id], tl.[ClockIn];
+END;
+GO
+
+
+
+CREATE OR ALTER PROCEDURE dbo.ReadTimeEntryBilledLineage
+(
+    @TimeEntryId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Vendor path: ContractLabor → BillLineItem → Bill
+    SELECT
+        N'ContractLabor'                          AS TargetTable,
+        cl.[Id]                                   AS TargetId,
+        CAST(cl.[PublicId] AS NVARCHAR(36))       AS TargetPublicId,
+        cl.[Status]                               AS LaborStatus,
+        CONVERT(VARCHAR(10), cl.[WorkDate], 120)  AS WorkDate,
+        cl.[VendorId]                             AS WorkerId,           -- VendorId for this row
+        v.[Name]                                  AS WorkerName,
+        cl.[TotalAmount]                          AS TotalAmount,
+        b.[Id]                                    AS LinkedTargetId,     -- Bill.Id when billed
+        CAST(b.[PublicId] AS NVARCHAR(36))        AS LinkedTargetPublicId,
+        N'Bill'                                   AS LinkedTargetTable,
+        b.[BillNumber]                            AS LinkedTargetNumber
+    FROM dbo.[ContractLabor] cl
+    LEFT JOIN dbo.[Vendor]       v   ON v.[Id]   = cl.[VendorId]
+    LEFT JOIN dbo.[BillLineItem] bli ON bli.[Id] = cl.[BillLineItemId]
+    LEFT JOIN dbo.[Bill]         b   ON b.[Id]   = bli.[BillId]
+    WHERE cl.[SourceTimeEntryId] = @TimeEntryId
+
+    UNION ALL
+
+    -- Employee path: EmployeeLabor → InvoiceLineItem → Invoice
+    SELECT
+        N'EmployeeLabor'                          AS TargetTable,
+        el.[Id]                                   AS TargetId,
+        CAST(el.[PublicId] AS NVARCHAR(36))       AS TargetPublicId,
+        el.[Status]                               AS LaborStatus,
+        CONVERT(VARCHAR(10), el.[WorkDate], 120)  AS WorkDate,
+        el.[EmployeeId]                           AS WorkerId,           -- EmployeeId for this row
+        e.[Firstname] + ' ' + e.[Lastname]        AS WorkerName,
+        el.[TotalAmount]                          AS TotalAmount,
+        i.[Id]                                    AS LinkedTargetId,
+        CAST(i.[PublicId] AS NVARCHAR(36))        AS LinkedTargetPublicId,
+        N'Invoice'                                AS LinkedTargetTable,
+        i.[InvoiceNumber]                         AS LinkedTargetNumber
+    FROM dbo.[EmployeeLabor] el
+    LEFT JOIN dbo.[Employee]        e   ON e.[Id]   = el.[EmployeeId]
+    LEFT JOIN dbo.[InvoiceLineItem] ili ON ili.[Id] = el.[InvoiceLineItemId]
+    LEFT JOIN dbo.[Invoice]         i   ON i.[Id]   = ili.[InvoiceId]
+    WHERE el.[SourceTimeEntryId] = @TimeEntryId
+
+    ORDER BY WorkDate, TargetTable;
+END;
+GO
+
+
+
+CREATE OR ALTER PROCEDURE ReadTimeLogsByTimeEntryIds
+(
+    @TimeEntryIds NVARCHAR(MAX)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        tl.[Id],
+        tl.[PublicId],
+        tl.[RowVersion],
+        CONVERT(VARCHAR(19), tl.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), tl.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        tl.[TimeEntryId],
+        CONVERT(VARCHAR(23), tl.[ClockIn],  121) AS [ClockIn],
+        CONVERT(VARCHAR(23), tl.[ClockOut], 121) AS [ClockOut],
+        tl.[LogType],
+        tl.[Duration],
+        tl.[Latitude],
+        tl.[Longitude],
+        tl.[ProjectId],
+        tl.[Note]
+    FROM dbo.[TimeLog] tl
+    INNER JOIN STRING_SPLIT(ISNULL(@TimeEntryIds, ''), ',') s
+        ON s.value <> '' AND tl.[TimeEntryId] = TRY_CAST(LTRIM(RTRIM(s.value)) AS BIGINT)
+    ORDER BY tl.[TimeEntryId], tl.[ClockIn] ASC;
+END;
+GO
+
+-- StampTimeEntryReview — set ReviewPriority + ReviewReasons on a TimeEntry.
+--
+-- Called by the time_tracking_specialist agent's flag tool to record its
+-- bucketing decision. Does NOT transition CurrentStatus and does NOT write
+-- a Workflow / WorkflowEvent row — flag metadata is observability, not a
+-- state transition. (Decision: 2026-05-26 refinement, see
+-- project_time_tracking_specialist.md.)
+--
+-- ModifiedDatetime is intentionally NOT touched. CRUD activity on the entry
+-- itself is what should bump ModifiedDatetime; an automated review stamp is
+-- a sidecar.
+--
+-- @ReasonsJson is opaque to this sproc — caller passes a JSON string,
+-- typically a short-code array like '["null_project","over_12hr"]', or '[]'
+-- for clean entries. No JSON validation here; the agent is the producer.
+--
+-- Idempotent (UPDATE by PublicId; safe to re-run with the same payload).
+
+CREATE OR ALTER PROCEDURE [dbo].[StampTimeEntryReview]
+(
+    @TimeEntryPublicId UNIQUEIDENTIFIER,
+    @Priority          VARCHAR(20),
+    @ReasonsJson       NVARCHAR(MAX)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE [dbo].[TimeEntry]
+    SET [ReviewPriority] = @Priority,
+        [ReviewReasons]  = @ReasonsJson
+    WHERE [PublicId] = @TimeEntryPublicId;
+
+    SELECT @@ROWCOUNT AS [AffectedRowCount];
+END;
+GO
+

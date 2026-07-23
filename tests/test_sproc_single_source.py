@@ -1,11 +1,12 @@
-"""U-045/U-048/U-051/U-062/U-087/U-100/U-102 guard: canonical SQL homes for sprocs,
+"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111 guard: canonical SQL homes for sprocs,
 access UDFs, and the shared human-only review predicate.
 
 Three guard shapes:
 
 * **Sprocs** — an entity's base SQL file is the one home for its sprocs. Covers
   time_entry (U-045), role_module (U-048), completion_job, bill + expense (U-100),
-  bill_credit + bill_credit_line_item fully converted (U-102), and the three
+  bill_credit + bill_credit_line_item fully converted (U-102),
+  bill_line_item + expense_line_item fully converted (U-111), and the three
   review recipient resolvers (U-062).
   The remaining entities still carry duplicated base sprocs in migrations
   (contract_labor=10, user_role=9, …); converting them is future work.
@@ -58,10 +59,6 @@ ACCESS_UDF_HOME = REPO_ROOT / "shared" / "sql" / "dbo.access_udfs.sql"
 COMPLETION_JOB_BASE = REPO_ROOT / "entities" / "completion_job" / "sql" / "dbo.completion_job.sql"
 REVIEW_BASE = REPO_ROOT / "entities" / "review" / "sql" / "dbo.review.sql"
 
-# U-074: CreateBillLineItem + CreateExpenseLineItem reconciled to their entity base
-# (@Quantity DECIMAL(18,4) + @CreatedByUserId threading - the union of the base
-# DECIMAL, step2 DECIMAL+threading, and gap2 INT+threading copies). The two
-# migration copies were neutralized to pointer stubs so each base is the sole home.
 # U-062/U-087: the three review-notification recipient resolvers homed in the
 # review base file (dbo.review.sql), their bodies neutralized to pointer stubs in
 # migrations 001/004/006/007/008. The human-only filter they shared was folded
@@ -70,14 +67,6 @@ REVIEW_BASE = REPO_ROOT / "entities" / "review" / "sql" / "dbo.review.sql"
 # test_review_resolvers_keep_persona_agent_filter +
 # test_review_resolver_enumeration_is_complete below.
 SINGLE_SOURCE_SPROCS = [
-    ("CreateBillLineItem", BILL_LINE_ITEM_BASE),
-    ("CreateExpenseLineItem", EXPENSE_LINE_ITEM_BASE),
-    # U-100: bill_line_item is guarded per-sproc, NOT via ENTITY_BASE_FILES,
-    # because it is only PARTIALLY converted — UpdateBillLineItemById still has
-    # a live copy in step2_decimal_quantity.sql (see TODO.md "single-source
-    # ledger"). Promoting an entity to ENTITY_BASE_FILES is the signal that its
-    # base file is fully sole-source.
-    ("ReadBillLineItemBoxLinks", BILL_LINE_ITEM_BASE),
     ("ResolveReviewRecipientsByBillId", REVIEW_BASE),
     ("ResolveReviewRecipientsByContractLaborId", REVIEW_BASE),
     ("ResolveContractLaborReviewRecipientsPerProject", REVIEW_BASE),
@@ -105,6 +94,10 @@ GAP2_NEUTRALIZED_SPROCS = frozenset(
 # level rather than per-sproc. This subsumes U-100's three per-sproc BillCredit
 # list rows (removed from SINGLE_SOURCE_SPROCS above) and extends the guard to
 # all 17 sprocs across the two files, including any added later.
+# U-111: bill_line_item + expense_line_item are now FULLY converted (U-100 had
+# left them per-sproc because Update*ById still lived in step2_decimal_quantity.sql;
+# that blocker is resolved). This subsumes U-074/U-100's per-sproc rows for
+# CreateBillLineItem, CreateExpenseLineItem, and ReadBillLineItemBoxLinks.
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
     ("role_module", ROLE_MODULE_BASE),
@@ -117,6 +110,8 @@ ENTITY_BASE_FILES = [
     ("expense", EXPENSE_BASE),
     ("bill_credit", BILL_CREDIT_BASE),
     ("bill_credit_line_item", BILL_CREDIT_LINE_ITEM_BASE),
+    ("bill_line_item", BILL_LINE_ITEM_BASE),
+    ("expense_line_item", EXPENSE_LINE_ITEM_BASE),
 ]
 
 ACCESS_UDFS = [
@@ -208,14 +203,14 @@ def _names_from_text(pattern: re.Pattern, text: str) -> frozenset[str]:
     return frozenset(bracketed or bare for bracketed, bare in pattern.findall(text))
 
 
-def _extract_object_body(text: str, pattern: re.Pattern, name_wanted: str) -> str:
+def _extract_object_body(text: str, pattern: re.Pattern, name_wanted: str, home: Path) -> str:
     """Return the CREATE OR ALTER … block for one named object (sproc or UDF)."""
     for match in pattern.finditer(text):
         name = match.group(1) or match.group(2)  # bracketed | bare
         if name and name.casefold() == name_wanted.casefold():
             return match.group(0)
     raise AssertionError(
-        f"expected dbo.{name_wanted} in {REVIEW_BASE.relative_to(REPO_ROOT)}"
+        f"expected dbo.{name_wanted} in {home.relative_to(REPO_ROOT)}"
     )
 
 
@@ -303,6 +298,40 @@ def test_unlisted_user_can_access_udfs_fail():
     )
 
 
+# U-111: patterns whose presence in a named sproc's body would un-ratify a form
+# verified against LIVE prod. Update{Bill,Expense}LineItemById use unconditional
+# SET for SubCostCodeId/ProjectId — None-as-skip lives in the service layer's
+# re-read merge, so a sproc-level CASE WHEN NULL guard reintroduced here would
+# silently change prod semantics on the next base re-apply. Add a row when a
+# future conversion ratifies another body form worth pinning.
+_LINE_ITEM_NULL_GUARDS = tuple(
+    re.compile(rf"CASE\s+WHEN\s+{col}", re.IGNORECASE)
+    for col in ("@SubCostCodeId", "@ProjectId")
+)
+SPROC_BODY_FORBIDDEN_PATTERNS = [
+    ("UpdateBillLineItemById", BILL_LINE_ITEM_BASE, _LINE_ITEM_NULL_GUARDS),
+    ("UpdateExpenseLineItemById", EXPENSE_LINE_ITEM_BASE, _LINE_ITEM_NULL_GUARDS),
+]
+
+
+@pytest.mark.parametrize("sproc_name,home_path,forbidden", SPROC_BODY_FORBIDDEN_PATTERNS)
+def test_sproc_body_keeps_ratified_form(sproc_name, home_path, forbidden):
+    """U-111 recurrence guard: the named sproc's body (comment-stripped, scoped
+    to its CREATE OR ALTER block) must not re-acquire a forbidden pattern."""
+    body = _LINE_COMMENT.sub(
+        "",
+        _extract_object_body(
+            home_path.read_text(encoding="utf-8"), _SPROC_BODY_PATTERN, sproc_name, home_path
+        ),
+    )
+    for pattern in forbidden:
+        assert not pattern.search(body), (
+            f"dbo.{sproc_name} in {home_path.relative_to(REPO_ROOT)} reintroduced a "
+            f"NULL-guard matching {pattern.pattern!r} — U-111 ratified the LIVE "
+            "unconditional-SET form; keep None-as-skip in the service layer, not the sproc."
+        )
+
+
 def test_gap2_neutralized_sprocs_stay_stubbed():
     """U-061 recurrence guard: the four drift-neutralized Create sprocs must stay
     pointer-stub comments in gap2_core_threading.sql — never re-acquire a
@@ -334,7 +363,7 @@ def test_review_resolvers_keep_persona_agent_filter():
     # 1. The filter itself lives in the shared UDF body (correlated on @UserId).
     #    Strip line comments so a commented-out block can't satisfy the guard.
     udf_body = _LINE_COMMENT.sub(
-        "", _extract_object_body(text, _FUNCTION_BODY_PATTERN, "IsHumanReviewUser")
+        "", _extract_object_body(text, _FUNCTION_BODY_PATTERN, "IsHumanReviewUser", REVIEW_BASE)
     )
     assert _UDF_AGENT_FILTER_PATTERN.search(udf_body), (
         "dbo.IsHumanReviewUser is missing the NOT EXISTS dbo.[User] IsAgent = 1 "
@@ -349,7 +378,7 @@ def test_review_resolvers_keep_persona_agent_filter():
     # 2. Every resolver references the shared predicate on up.[UserId].
     for sproc_name in _REVIEW_RESOLVER_NAMES:
         body = _LINE_COMMENT.sub(
-            "", _extract_object_body(text, _SPROC_BODY_PATTERN, sproc_name)
+            "", _extract_object_body(text, _SPROC_BODY_PATTERN, sproc_name, REVIEW_BASE)
         )
         assert _UDF_CALL_PATTERN.search(body), (
             f"dbo.{sproc_name} no longer references "

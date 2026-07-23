@@ -35,6 +35,7 @@ Resolver model (Phase 2 — Access Control Rebuild)
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Optional
@@ -94,6 +95,12 @@ _permission_cache: dict[_CacheKey, tuple[float, Optional[object]]] = {}
 _cache_lock = threading.Lock()
 
 
+def _phase_timing_enabled() -> bool:
+    # U-084 /time-entries latency diagnosis. Single definition — also
+    # imported by entities/time_entry/api/router.py. Log-only flag.
+    return os.environ.get("TIME_ENTRIES_PHASE_TIMING", "").strip().lower() == "true"
+
+
 def _cache_key_for(user_sub: str, *, is_system_admin: bool, company_id: Optional[int]) -> _CacheKey:
     """
     System admins are keyed without a Company so a single cache entry
@@ -138,11 +145,18 @@ def _get_user_permissions(current_user: dict) -> Optional[object]:
                 _publish_can_view_team_to_contextvar(cached_perms)
                 return cached_perms
 
+    resolve_start = time.perf_counter()
     perms = _resolve_permissions_from_db(
         user_id=user_id,
         company_id=company_id,
         is_system_admin=is_system_admin,
     )
+    resolve_elapsed = time.perf_counter() - resolve_start
+    # Cache hits are deliberately not logged: a hit is ~0ms by construction
+    # and this dependency runs on every authenticated request app-wide —
+    # only the DB-resolve cost answers the U-084 question.
+    if _phase_timing_enabled():
+        logger.info(f"TIMING rbac cache=miss resolve={resolve_elapsed * 1000:.1f}ms")
 
     with _cache_lock:
         _permission_cache[cache_key] = (time.time(), perms)

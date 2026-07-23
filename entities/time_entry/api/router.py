@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 import logging
+import time
 from typing import Optional
 
 # Third-party Imports
@@ -20,11 +21,20 @@ from entities.time_entry.api.schemas import (
 )
 from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found, raise_database_error
 from shared.database import DatabaseError
-from shared.rbac import require_module_api
+from shared.rbac import _phase_timing_enabled, require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
 logger = logging.getLogger(__name__)
+
+
+def _phase_log_line(phases: dict[str, float], rows: int, include_logs: bool) -> str:
+    # Dict-driven so a phase added to the handler appears automatically —
+    # no hard-coded key list to drift out of sync (a KeyError here would
+    # 500 the request whenever the flag is on). Insertion order == execution
+    # order.
+    parts = " ".join(f"{k}={v * 1000:.1f}ms" for k, v in phases.items())
+    return f"TIMING time-entries {parts} rows={rows} include_logs={include_logs}"
 
 
 def _resolve_user_id(current_user: dict) -> int:
@@ -153,7 +163,11 @@ def read_time_entries(
     """
     Read time entries with pagination and filtering.
     """
+    handler_start = time.perf_counter()
+    phases: dict[str, float] = {}
+
     service = TimeEntryService()
+    phase_start = time.perf_counter()
     results = service.read_paginated(
         page_number=page_number,
         page_size=page_size,
@@ -166,6 +180,9 @@ def read_time_entries(
         sort_by=sort_by,
         sort_direction=sort_direction,
     )
+    phases["read_paginated"] = time.perf_counter() - phase_start
+
+    phase_start = time.perf_counter()
     total_count = service.count(
         search_term=search_term,
         user_id=user_id,
@@ -174,6 +191,8 @@ def read_time_entries(
         start_date=start_date,
         end_date=end_date,
     )
+    phases["count"] = time.perf_counter() - phase_start
+
     # Batch-fetch three per-entry lookups in one sproc call each:
     #   1. current_status (was N+1 via read_current-per-entry; migration 013)
     #   2. distinct_project_ids for the Project column (migration 010)
@@ -183,36 +202,57 @@ def read_time_entries(
     # for why status has to be a separate lookup (lives in TimeEntryStatus,
     # not TimeEntry).
     entry_ids = [e.id for e in results if e.id is not None]
+
+    phase_start = time.perf_counter()
     project_ids_by_entry = service.repo.read_distinct_project_ids_for(
         time_entry_ids=entry_ids,
     )
+    phases["project_ids"] = time.perf_counter() - phase_start
+
     from entities.time_entry.persistence.time_entry_status_repo import (
         TimeEntryStatusRepository,
     )
+
+    phase_start = time.perf_counter()
     current_status_by_entry = TimeEntryStatusRepository().read_current_by_time_entry_ids(
         entry_ids,
     )
+    phases["statuses"] = time.perf_counter() - phase_start
 
     logs_by_entry: dict[int, list[dict]] = {}
     if include_logs and entry_ids:
+        # Import outside the timed window so first-hit module-import cost
+        # isn't attributed to the logs phase.
         from entities.time_entry.persistence.time_log_repo import TimeLogRepository
+        phase_start = time.perf_counter()
         for log in TimeLogRepository().read_by_time_entry_ids(entry_ids):
             logs_by_entry.setdefault(log.time_entry_id, []).append(log.to_dict())
+        phases["logs"] = time.perf_counter() - phase_start
+    else:
+        phases["logs"] = 0.0
+
+    phase_start = time.perf_counter()
+    data = [
+        _entry_dict_with_current_status(
+            entry,
+            project_ids=project_ids_by_entry.get(entry.id, []),
+            time_logs=logs_by_entry.get(entry.id, []) if include_logs else None,
+            current_status=(
+                current_status_by_entry[entry.id].status
+                if entry.id in current_status_by_entry
+                else "draft"
+            ),
+        )
+        for entry in results
+    ]
+    phases["serialize"] = time.perf_counter() - phase_start
+    phases["total_handler"] = time.perf_counter() - handler_start
+
+    if _phase_timing_enabled():
+        logger.info(_phase_log_line(phases, rows=len(results), include_logs=include_logs))
 
     return list_response(
-        data=[
-            _entry_dict_with_current_status(
-                entry,
-                project_ids=project_ids_by_entry.get(entry.id, []),
-                time_logs=logs_by_entry.get(entry.id, []) if include_logs else None,
-                current_status=(
-                    current_status_by_entry[entry.id].status
-                    if entry.id in current_status_by_entry
-                    else "draft"
-                ),
-            )
-            for entry in results
-        ],
+        data=data,
         count=total_count,
     )
 

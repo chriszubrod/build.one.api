@@ -6,16 +6,17 @@ from fastapi import APIRouter, Depends, HTTPException, status
 # Local Imports
 from entities.vendor_type.api.schemas import VendorTypeCreate, VendorTypeUpdate
 from entities.vendor_type.business.service import VendorTypeService
-from entities.auth.business.service import get_current_user_api as get_current_vendor_type_api
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 from shared.api.responses import list_response, item_response, raise_workflow_error
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 router = APIRouter(prefix="/api/v1", tags=["api", "vendor-type"])
 service = VendorTypeService()
 
 
 @router.post("/create/vendor-type")
-def create_vendor_type_router(body: VendorTypeCreate, current_user: dict = Depends(get_current_vendor_type_api)):
+def create_vendor_type_router(body: VendorTypeCreate, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_create"))):
     """
     Create a new vendor type.
     
@@ -42,7 +43,7 @@ def create_vendor_type_router(body: VendorTypeCreate, current_user: dict = Depen
 
 
 @router.get("/get/vendor-types")
-def get_vendor_types_router(current_user: dict = Depends(get_current_vendor_type_api)):
+def get_vendor_types_router(current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_read"))):
     """
     Read all vendor types.
     """
@@ -51,7 +52,7 @@ def get_vendor_types_router(current_user: dict = Depends(get_current_vendor_type
 
 
 @router.get("/get/vendor-type/{public_id}")
-def get_vendor_type_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_vendor_type_api)):
+def get_vendor_type_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_read"))):
     """
     Read a vendor type by public ID.
     """
@@ -60,7 +61,7 @@ def get_vendor_type_by_public_id_router(public_id: str, current_user: dict = Dep
 
 
 @router.put("/update/vendor-type/{public_id}")
-def update_vendor_type_by_public_id_router(public_id: str, body: VendorTypeUpdate, current_user: dict = Depends(get_current_vendor_type_api)):
+def update_vendor_type_by_public_id_router(public_id: str, body: VendorTypeUpdate, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_update"))):
     """
     Update a vendor type by public ID.
     
@@ -89,7 +90,7 @@ def update_vendor_type_by_public_id_router(public_id: str, body: VendorTypeUpdat
 
 
 @router.delete("/delete/vendor-type/{public_id}")
-def delete_vendor_type_by_public_id_router(public_id: str, current_user: dict = Depends(get_current_vendor_type_api)):
+def delete_vendor_type_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_delete"))):
     """
     Delete a vendor type by public ID.
     

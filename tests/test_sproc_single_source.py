@@ -31,6 +31,15 @@ The patterns must keep matching every T-SQL declaration style (bare, dbo., and
 the bracketed [dbo].[Name] form the repo uses in ~22 places). A duplicate written
 in a style the regex misses passes silently, which is the one failure mode this
 guard cannot afford.
+
+U-107 (default-ON ratchet): any sproc defined in 2+ distinct ``.sql`` files, or
+defined only in migrations/scripts (no canonical entity ``…/sql/`` home), fails
+the suite unless it exactly matches the frozen debt ledger in
+``tests/sproc_drift_ledger.py``. The ledger only shrinks — fix new drift in the
+canonical home; do not extend the ledger. Known-loose edges, accepted at freeze
+time: name identity is schema- and case-blind (a ``dbo.X`` / ``qbo.X`` pair
+would collide), and ANY non-migration ``sql/`` file counts as a home —
+tightening "home" to the enumerated base-file registry is a possible follow-up.
 """
 
 import re
@@ -38,6 +47,8 @@ from functools import lru_cache
 from pathlib import Path
 
 import pytest
+
+from tests.sproc_drift_ledger import SPROC_DRIFT_LEDGER
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -136,7 +147,7 @@ _SCHEMA = r"(?:\[\w+\]|\w+)\s*\.\s*"
 _OBJECT_NAME = r"(?:\[(\w+)\]|(\w+))"
 
 _SPROC_PATTERN = re.compile(
-    rf"CREATE\s+OR\s+ALTER\s+PROCEDURE\s+(?:{_SCHEMA})?{_OBJECT_NAME}",
+    rf"CREATE\s+(?:OR\s+ALTER\s+)?PROCEDURE\s+(?:{_SCHEMA})?{_OBJECT_NAME}",
     re.IGNORECASE,
 )
 _UDF_PATTERN = re.compile(
@@ -203,6 +214,22 @@ def _names_from_text(pattern: re.Pattern, text: str) -> frozenset[str]:
     return frozenset(bracketed or bare for bracketed, bare in pattern.findall(text))
 
 
+def _is_canonical_home(path: Path) -> bool:
+    """True when ``path`` (repo-relative) is an entity/package base ``…/sql/…``
+    file rather than a migration or a repo-level script."""
+    parts = path.parts
+    if "migrations" in parts:
+        return False
+    if parts and parts[0] == "scripts":
+        return False
+    return "sql" in parts
+
+
+def _is_migration_only(paths: frozenset[str]) -> bool:
+    """True when no path in the set is a canonical home (the sproc has no base file)."""
+    return not any(_is_canonical_home(Path(rel)) for rel in paths)
+
+
 def _extract_object_body(text: str, pattern: re.Pattern, name_wanted: str, home: Path) -> str:
     """Return the CREATE OR ALTER … block for one named object (sproc or UDF)."""
     for match in pattern.finditer(text):
@@ -217,6 +244,16 @@ def _extract_object_body(text: str, pattern: re.Pattern, name_wanted: str, home:
 @lru_cache(maxsize=1)
 def _review_base_text() -> str:
     return REVIEW_BASE.read_text(encoding="utf-8")
+
+
+def _sproc_name_to_paths() -> dict[str, frozenset[str]]:
+    """Map each sproc name to the repo-relative POSIX paths that declare it."""
+    by_name: dict[str, set[str]] = {}
+    for path, sprocs, _ in _sql_index():
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        for name in sprocs:
+            by_name.setdefault(name, set()).add(rel)
+    return {name: frozenset(paths) for name, paths in by_name.items()}
 
 
 @lru_cache(maxsize=1)
@@ -385,6 +422,79 @@ def test_review_resolvers_keep_persona_agent_filter():
             "dbo.IsHumanReviewUser(up.[UserId]) = 1 — every review resolver must "
             "apply the U-087 shared human-only predicate."
         )
+
+
+def _format_ledger_diff(
+    actual: dict[str, frozenset[str]],
+    ledger: dict[str, frozenset[str]],
+    *,
+    new_msg: str,
+    stale_msg: str,
+) -> str:
+    lines: list[str] = []
+    for name in sorted(set(actual) | set(ledger)):
+        a = actual.get(name)
+        l = ledger.get(name)
+        if a == l:
+            continue
+        if name not in ledger:
+            lines.append(f"{name}: NEW — {new_msg}\n  files: {sorted(a)}")
+        elif name not in actual:
+            lines.append(f"{name}: STALE — {stale_msg}\n  ledger: {sorted(l)}")
+        else:
+            lines.append(
+                f"{name}: PATH SET DRIFT — {new_msg}\n"
+                f"  actual: {sorted(a)}\n  ledger: {sorted(l)}"
+            )
+    return "\n".join(lines)
+
+
+def _assert_matches_ledger(predicate, *, new_msg: str, stale_msg: str) -> None:
+    """Assert exact both-direction equality between scanned reality and the
+    ledger, both sides filtered by ``predicate`` over a definition path set."""
+    actual = {n: p for n, p in _sproc_name_to_paths().items() if predicate(p)}
+    ledgered = {n: p for n, p in SPROC_DRIFT_LEDGER.items() if predicate(p)}
+    if actual != ledgered:
+        detail = _format_ledger_diff(actual, ledgered, new_msg=new_msg, stale_msg=stale_msg)
+        pytest.fail(detail or "sproc drift ledger mismatch")
+
+
+def test_no_unledgered_duplicate_sprocs():
+    """U-107: every sproc in 2+ files must match the frozen ledger exactly."""
+    _assert_matches_ledger(
+        lambda p: len(p) >= 2,
+        new_msg=(
+            "NEW duplicate sproc definition — single-source it in its canonical "
+            "home; do NOT add a ledger entry"
+        ),
+        stale_msg="stale ledger entry — the dup was fixed; DELETE its row from tests/sproc_drift_ledger.py",
+    )
+
+
+def test_no_unledgered_migration_only_sprocs():
+    """U-107: sprocs with no canonical home must match the frozen ledger exactly."""
+    _assert_matches_ledger(
+        _is_migration_only,
+        new_msg=(
+            "new sproc born in a migration/script — define it in its entity base "
+            "file (entities/<name>/sql/…) or package sql/ home instead; migrations "
+            "carry pointer stubs only"
+        ),
+        stale_msg="DELETE the ledger row",
+    )
+
+
+def test_ledger_entries_are_claimed():
+    """Every ledger row must describe a dup (2+ files) or a home-less definition."""
+    offenders = [
+        f"{name}: {sorted(paths)}"
+        for name, paths in SPROC_DRIFT_LEDGER.items()
+        if not (len(paths) >= 2 or _is_migration_only(paths))
+    ]
+    assert not offenders, (
+        "nonsense ledger entry (single canonical-home path only — delete the row):\n"
+        + "\n".join(offenders)
+    )
 
 
 def test_review_resolver_enumeration_is_complete():

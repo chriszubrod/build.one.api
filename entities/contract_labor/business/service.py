@@ -19,6 +19,8 @@ from shared.authz import current_user_id, current_is_system_admin
 
 logger = logging.getLogger(__name__)
 
+CANNOT_DELETE_BILLED_ENTRIES = "Cannot delete billed entries"
+
 
 class ContractLaborService:
     """
@@ -356,6 +358,8 @@ class ContractLaborService:
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
         if existing and existing.id:
+            if existing.status == "billed":
+                raise ValueError(CANNOT_DELETE_BILLED_ENTRIES)
             return self.repo.delete_by_id(existing.id)
         return None
 
@@ -775,7 +779,7 @@ class ContractLaborService:
                 
                 # Only allow deletion of pending_review entries
                 if entry.status == "billed":
-                    errors.append({"public_id": public_id, "error": "Cannot delete billed entries"})
+                    errors.append({"public_id": public_id, "error": CANNOT_DELETE_BILLED_ENTRIES})
                     continue
                 
                 # Delete the entry

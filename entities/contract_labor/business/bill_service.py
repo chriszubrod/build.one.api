@@ -127,6 +127,29 @@ class ContractLaborBillService:
             bp_date = datetime.strptime(billing_period, "%Y-%m-%d")
             return (bp_date + timedelta(days=15)).strftime("%Y-%m-%d")
 
+    def _billed_feeder_blocks_rebuild(
+        self,
+        existing_bli_ids: set,
+        billed_cls: list,
+        line_items_cache: dict,
+    ) -> bool:
+        """True when a billed CL feeder still references this bill's BLIs."""
+        if any(cl.bill_line_item_id in existing_bli_ids for cl in billed_cls):
+            return True
+        for cl in billed_cls:
+            if cl.id not in line_items_cache:
+                line_items_cache[cl.id] = (
+                    self.line_item_repo.read_by_contract_labor_id(
+                        contract_labor_id=cl.id
+                    )
+                )
+            if any(
+                li.bill_line_item_id in existing_bli_ids
+                for li in line_items_cache[cl.id]
+            ):
+                return True
+        return False
+
     def generate_invoice_number(self, billing_period: str, project_abbreviation: str) -> str:
         """
         Generate invoice number in format: YYYY.MM.DD.{ProjectAbbreviation}
@@ -168,6 +191,7 @@ class ContractLaborBillService:
         result = {
             "bills_created": 0,
             "bills_updated": 0,
+            "bills_refused": 0,
             "line_items_created": 0,
             "entries_billed": 0,
             "pdf_urls": [],
@@ -281,6 +305,12 @@ class ContractLaborBillService:
             for eid in eid_set:
                 entry_project_count[eid] = entry_project_count.get(eid, 0) + 1
 
+        expected_period_end = (
+            _period_end_for(billing_period_start) if billing_period_start else None
+        )
+        billed_cls_cache = None
+        billed_cl_line_items_cache: dict = {}
+
         # Generate a bill per (project, billing_period) group. project_id=None
         # means overhead. `period_end` is the derived last day of the period
         # (15th or end-of-month) and doubles as bill_date + invoice_number
@@ -288,6 +318,12 @@ class ContractLaborBillService:
         # separate bills.
         for group_key, items in project_groups.items():
             project_id, group_period = group_key
+            if expected_period_end is not None and group_period != expected_period_end:
+                result["errors"].append(
+                    f"off-period group (project={project_id}, period={group_period}) skipped — "
+                    f"intended period ends {expected_period_end}"
+                )
+                continue
             # Populated when we take the edit path (existing bill found);
             # purged only after successful new attachment upload so a
             # failure mid-flow leaves the reviewer with the prior PDF.
@@ -397,6 +433,38 @@ class ContractLaborBillService:
                     )
                     result["bills_created"] += 1
                 else:
+                    if bill.is_draft is not True:
+                        result["errors"].append(
+                            f"Bill {invoice_number} refused — completed bills are never regenerated"
+                        )
+                        result["bills_refused"] += 1
+                        continue
+
+                    existing_blis = self.bill_line_item_service.read_by_bill_id(bill.id)
+                    existing_bli_ids = {bli.id for bli in existing_blis if bli.id}
+
+                    if billed_cls_cache is None:
+                        billed_cls_cache = [
+                            cl
+                            for cl in self.cl_repo.read_by_vendor_id(vendor_id)
+                            if cl.status == "billed"
+                        ]
+
+                    blocked_by_billed_feeder = self._billed_feeder_blocks_rebuild(
+                        existing_bli_ids,
+                        billed_cls_cache,
+                        billed_cl_line_items_cache,
+                    )
+
+                    if blocked_by_billed_feeder:
+                        result["errors"].append(
+                            f"Bill {invoice_number} refused — existing line items are linked to "
+                            f"billed contract-labor feeders; to rebuild this bill, reset ALL its "
+                            f"period feeders to ready and null their BillLineItemId, then re-run"
+                        )
+                        result["bills_refused"] += 1
+                        continue
+
                     result["bills_updated"] += 1
                     bill.bill_date = billing_period
                     bill.due_date = due_date
@@ -415,7 +483,6 @@ class ContractLaborBillService:
                     # linked successfully. If any downstream step fails,
                     # the old attachments survive and the reviewer can
                     # still see the prior PDF.
-                    existing_blis = self.bill_line_item_service.read_by_bill_id(bill.id)
                     blia_service = BillLineItemAttachmentService()
                     orphan_attachment_ids = set()
                     for bli in existing_blis:

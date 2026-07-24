@@ -17,7 +17,9 @@ GO
 CREATE OR ALTER PROCEDURE CreateUserCompany
 (
     @UserId BIGINT,
-    @CompanyId BIGINT
+    @CompanyId BIGINT,
+    @CreatedByUserId BIGINT = NULL,
+    @ModifiedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -25,7 +27,9 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[UserCompany] ([CreatedDatetime], [ModifiedDatetime], [UserId], [CompanyId])
+    INSERT INTO dbo.[UserCompany]
+        ([CreatedDatetime], [ModifiedDatetime], [UserId], [CompanyId],
+         [CreatedByUserId], [ModifiedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -33,8 +37,12 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[UserId],
-        INSERTED.[CompanyId]
-    VALUES (@Now, @Now, @UserId, @CompanyId);
+        INSERTED.[CompanyId],
+        INSERTED.[CreatedByUserId],
+        INSERTED.[ModifiedByUserId]
+    VALUES
+        (@Now, @Now, @UserId, @CompanyId,
+         @CreatedByUserId, COALESCE(@ModifiedByUserId, @CreatedByUserId));
 
     COMMIT TRANSACTION;
 END;
@@ -53,7 +61,9 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [CompanyId]
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserCompany]
     ORDER BY [UserId] ASC, [CompanyId] ASC;
 
@@ -77,7 +87,9 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [CompanyId]
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserCompany]
     WHERE [Id] = @Id;
 
@@ -101,7 +113,9 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [CompanyId]
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserCompany]
     WHERE [PublicId] = @PublicId;
 
@@ -125,7 +139,9 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [CompanyId]
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserCompany]
     WHERE [UserId] = @UserId;
 
@@ -149,7 +165,9 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [CompanyId]
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserCompany]
     WHERE [UserId] = @UserId
     ORDER BY [Id] ASC;
@@ -164,7 +182,8 @@ CREATE OR ALTER PROCEDURE UpdateUserCompanyById
     @Id BIGINT,
     @RowVersion BINARY(8),
     @UserId BIGINT,
-    @CompanyId BIGINT
+    @CompanyId BIGINT,
+    @ModifiedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -176,7 +195,8 @@ BEGIN
     SET
         [ModifiedDatetime] = @Now,
         [UserId] = @UserId,
-        [CompanyId] = @CompanyId
+        [CompanyId] = @CompanyId,
+        [ModifiedByUserId] = @ModifiedByUserId
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -184,7 +204,9 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[UserId],
-        INSERTED.[CompanyId]
+        INSERTED.[CompanyId],
+        INSERTED.[CreatedByUserId],
+        INSERTED.[ModifiedByUserId]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -208,7 +230,9 @@ BEGIN
         CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.[UserId],
-        DELETED.[CompanyId]
+        DELETED.[CompanyId],
+        DELETED.[CreatedByUserId],
+        DELETED.[ModifiedByUserId]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;

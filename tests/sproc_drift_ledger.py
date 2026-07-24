@@ -72,10 +72,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/sub_cost_code/sql/dbo.subcostcode.sql',
         'scripts/migrations/gap2_reference_threading.sql',
     }),  # known-dup, home=entities/sub_cost_code/sql/dbo.subcostcode.sql
-    "CreateUserCompany": frozenset({
-        'entities/user_company/sql/dbo.usercompany.sql',
-        'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
     "CreateVendorCreditBillCredit": frozenset({
         'integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql',
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
@@ -100,10 +96,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
-    "DeleteUserCompanyById": frozenset({
-        'entities/user_company/sql/dbo.usercompany.sql',
-        'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
     "DeleteVendorCreditBillCreditByQboVendorCreditId": frozenset({
         'integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql',
         'scripts/migrations/qbo_vendorcredit_reconcile_deletes.sql',
@@ -202,26 +194,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
-    "ReadUserCompanies": frozenset({
-        'entities/user_company/sql/dbo.usercompany.sql',
-        'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
-    "ReadUserCompaniesByUserId": frozenset({
-        'entities/user_company/sql/dbo.usercompany.sql',
-        'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
-    "ReadUserCompanyById": frozenset({
-        'entities/user_company/sql/dbo.usercompany.sql',
-        'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
-    "ReadUserCompanyByPublicId": frozenset({
-        'entities/user_company/sql/dbo.usercompany.sql',
-        'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
-    "ReadUserCompanyByUserId": frozenset({
-        'entities/user_company/sql/dbo.usercompany.sql',
-        'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
     "ReadVendorCreditBillCreditByBillCreditId": frozenset({
         'integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql',
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
@@ -256,10 +228,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
-    "UpdateUserCompanyById": frozenset({
-        'entities/user_company/sql/dbo.usercompany.sql',
-        'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
     "UpsertEmailAttachment": frozenset({
         'entities/email_message/sql/dbo.email_attachment.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',

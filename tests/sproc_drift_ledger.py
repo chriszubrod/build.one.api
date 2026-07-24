@@ -19,10 +19,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/bill_line_item_attachment/sql/dbo.bill_line_item_attachment.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',
     }),  # known-dup, home=entities/bill_line_item_attachment/sql/dbo.bill_line_item_attachment.sql
-    "CreateCompany": frozenset({
-        'entities/company/sql/dbo.company.sql',
-        'entities/company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/company/sql/dbo.company.sql
     "CreateContractLabor": frozenset({
         'entities/contract_labor/sql/dbo.contract_labor.sql',
         'scripts/migrations/gap2_core_threading.sql',
@@ -106,10 +102,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'core/workflow_event/sql/dbo.workflow_event.sql',
         'core/workflow_event/sql/migrations/002_phase4_attribution_sprocs.sql',
     }),  # known-dup, home=core/workflow_event/sql/dbo.workflow_event.sql
-    "DeleteCompanyById": frozenset({
-        'entities/company/sql/dbo.company.sql',
-        'entities/company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/company/sql/dbo.company.sql
     "DeleteQboVendorCreditByQboId": frozenset({
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_reconcile_deletes.sql',
@@ -163,22 +155,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/attachment/sql/dbo.attachment.sql',
         'entities/attachment/sql/update_procedures_with_extraction.sql',
     }),  # known-dup, home=entities/attachment/sql/dbo.attachment.sql, entities/attachment/sql/update_procedures_with_extraction.sql
-    "ReadCompanies": frozenset({
-        'entities/company/sql/dbo.company.sql',
-        'entities/company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/company/sql/dbo.company.sql
-    "ReadCompanyById": frozenset({
-        'entities/company/sql/dbo.company.sql',
-        'entities/company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/company/sql/dbo.company.sql
-    "ReadCompanyByName": frozenset({
-        'entities/company/sql/dbo.company.sql',
-        'entities/company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/company/sql/dbo.company.sql
-    "ReadCompanyByPublicId": frozenset({
-        'entities/company/sql/dbo.company.sql',
-        'entities/company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/company/sql/dbo.company.sql
     "ReadContractLaborByNaturalKey": frozenset({
         'entities/contract_labor/sql/ReadContractLaborByNaturalKey.sql',
         'entities/contract_labor/sql/dbo.contract_labor.sql',
@@ -334,10 +310,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'intelligence/persistence/sql/migrations/001_timeout_long_running_sessions.sql',
         'intelligence/persistence/sql/migrations/002_timeout_max_rows.sql',
     }),  # known-dup, home=intelligence/persistence/sql/dbo.agent_session.sql
-    "UpdateCompanyById": frozenset({
-        'entities/company/sql/dbo.company.sql',
-        'entities/company/sql/migrations/002_phase1_attribution_sprocs.sql',
-    }),  # known-dup, home=entities/company/sql/dbo.company.sql
     "UpdateInvoiceLineItemById": frozenset({
         'entities/invoice_line_item/sql/dbo.invoice_line_item.sql',
         'entities/invoice_line_item/sql/migrations/001_2026_05_27_employee_labor_source.sql',

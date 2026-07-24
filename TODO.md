@@ -2,6 +2,10 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## 🔧 U-139 deferral — unique index on `dbo.Module.Name` (2026-07-24) — SCHEMA HARDENING
+
+`dbo.Module.Name` has no unique constraint, so every module seed hand-rolls `IF NOT EXISTS`-by-Name and a concurrent double-apply could mint duplicate module rows (Codex P1 on U-139, accepted residual — migrations here are one-off manual applies; 006's post-apply cardinality assert fails loudly + rolls back on any committed duplicate). Right-depth fix is its own schema unit, NOT a data migration: dedupe/phantom check first (`entities/module/sql/cleanup_phantom_modules.sql` exists for a reason), then `CREATE UNIQUE INDEX UQ_Module_Name ON dbo.[Module]([Name])` in the module entity base file. RBAC resolves modules by name, so uniqueness is a real invariant the schema should own.
+
 ## 🟢 U-120 — `coi_parser` live-ACORD calibration (2026-07-22) — DONE
 
 **DONE:** `_parse_policies_from_tables` rewritten to parse the DI **coverage-grid table by header-name column mapping** (INSR LTR / TYPE OF INSURANCE / POLICY NUMBER / POLICY EFF / POLICY EXP — indices differ per cert), grouping multi-row coverage blocks, dropping blank sections (no policy#/dates), carrier via INSR-LTR → INSURER A–F table; content-scan kept as fallback when no grid table. Sanitized DI fixtures (`tests/fixtures/acord_{gl_auto,wc}_di.json`, scrubbed from the real certs) + `tests/test_coi_parser_grid.py`; existing content-path tests unchanged. 543 tests green. **LIVE-validated on A&A's real GL+WC DI:** GL #03750825 exp 2025-12-14 + Auto #5575082500 exp 2025-12-14 (no spurious WC) and WC #UB-5W154448-25-42 exp 2026-02-24 (no spurious GL/Auto) — auto-parses exactly what previously needed hand-correction.

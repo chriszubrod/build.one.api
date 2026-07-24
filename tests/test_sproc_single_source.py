@@ -1,4 +1,4 @@
-"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131/U-133 guard: canonical
+"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131/U-133/U-137 guard: canonical
 SQL homes for sprocs, access UDFs, and the shared human-only review predicate.
 
 Three guard shapes:
@@ -11,7 +11,7 @@ Three guard shapes:
   last 12 HOME-LESS sprocs homed by U-126 (inbox_tasks as a whole file; the 10
   landing in partially-converted base files as per-sproc rows — 3 of those,
   the USER_BASE trio, later subsumed by U-131's whole-file guard), user_project
-  (U-129), user (U-131), and user_module (U-133).
+  (U-129), user (U-131), user_module (U-133), and organization (U-137).
   The remaining entities still carry duplicated base sprocs in migrations
   (user_role=9, …); converting them is future work.
   **When you convert one, add its row to
@@ -79,6 +79,7 @@ MS_OUTBOX_BASE = REPO_ROOT / "integrations" / "ms" / "outbox" / "sql" / "ms.outb
 CONTRACT_LABOR_BASE = REPO_ROOT / "entities" / "contract_labor" / "sql" / "dbo.contract_labor.sql"
 USER_BASE = REPO_ROOT / "entities" / "user" / "sql" / "dbo.user.sql"
 USER_MODULE_BASE = REPO_ROOT / "entities" / "user_module" / "sql" / "dbo.usermodule.sql"
+ORGANIZATION_BASE = REPO_ROOT / "entities" / "organization" / "sql" / "dbo.organization.sql"
 USER_ROLE_BASE = REPO_ROOT / "entities" / "user_role" / "sql" / "dbo.userrole.sql"
 AUTH_BASE = REPO_ROOT / "entities" / "auth" / "sql" / "dbo.auth.sql"
 
@@ -147,6 +148,7 @@ GAP2_NEUTRALIZED_SPROCS = frozenset(
 # U-129: dbo.userproject.sql reconciled to the 004 layer and made sole home of the 8 UserProject sprocs — whole-file guard.
 # U-131: dbo.user.sql reconciled to migrations 003 (mutation sprocs) + 005 (read sprocs) and made sole home of all 11 User sprocs — whole-file guard; subsumes U-126's three per-sproc USER_BASE rows (ReadWorkers, SetUserLastCompanyId, UpdateUserWorkerLink).
 # U-133: dbo.usermodule.sql reconciled to migration 002 (nine Phase-1 sprocs) and made sole home of all 10 UserModule sprocs — whole-file guard; U-126's ReadUserModulesByUserIdAndCompanyId per-sproc row is kept as a presence pin.
+# U-137: dbo.organization.sql reconciled to migration 002 (seven Phase-1 sprocs) and made sole home of all 7 Organization sprocs — whole-file guard.
 # "Entity" here reads as entity/package, per the module docstring.
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
@@ -155,6 +157,7 @@ ENTITY_BASE_FILES = [
     ("user_project", USER_PROJECT_BASE),
     ("user", USER_BASE),
     ("user_module", USER_MODULE_BASE),
+    ("organization", ORGANIZATION_BASE),
     ("completion_job", COMPLETION_JOB_BASE),
     ("bill", BILL_BASE),
     ("bill_source_email", BILL_SOURCE_EMAIL_BASE),

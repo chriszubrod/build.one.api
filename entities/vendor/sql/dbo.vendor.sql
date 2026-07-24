@@ -96,9 +96,6 @@ BEGIN
 END
 GO
 
-
-GO
-
 CREATE OR ALTER PROCEDURE CreateVendor
 (
     @Name NVARCHAR(450),
@@ -108,7 +105,10 @@ CREATE OR ALTER PROCEDURE CreateVendor
     @IsDraft BIT = 1,
     @IsContractLabor BIT = 0,
     @Notes NVARCHAR(MAX) = NULL,
-    @CreatedByUserId BIGINT = NULL
+    @CreatedByUserId BIGINT = NULL,
+    @HourlyRate DECIMAL(18,4) = NULL,
+    @Markup DECIMAL(18,4) = NULL,
+    @TrackCompliance BIT = 0
 )
 AS
 BEGIN
@@ -116,7 +116,10 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Vendor] ([CreatedDatetime], [ModifiedDatetime], [Name], [Abbreviation], [VendorTypeId], [TaxpayerId], [IsDraft], [IsDeleted], [IsContractLabor], [Notes], [CreatedByUserId])
+    INSERT INTO dbo.[Vendor]
+        ([CreatedDatetime], [ModifiedDatetime], [Name], [Abbreviation], [VendorTypeId], [TaxpayerId],
+         [IsDraft], [IsDeleted], [IsContractLabor], [Notes], [CreatedByUserId], [HourlyRate], [Markup],
+         [TrackCompliance])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -130,14 +133,15 @@ BEGIN
         INSERTED.[IsDraft],
         INSERTED.[IsDeleted],
         INSERTED.[IsContractLabor],
-        INSERTED.[Notes]
-    VALUES (@Now, @Now, @Name, @Abbreviation, @VendorTypeId, @TaxpayerId, @IsDraft, 0, @IsContractLabor, @Notes, COALESCE(@CreatedByUserId, 17));
+        INSERTED.[Notes],
+        INSERTED.[HourlyRate],
+        INSERTED.[Markup],
+        INSERTED.[TrackCompliance]
+    VALUES (@Now, @Now, @Name, @Abbreviation, @VendorTypeId, @TaxpayerId, @IsDraft, 0, @IsContractLabor, @Notes,
+            COALESCE(@CreatedByUserId, 17), @HourlyRate, @Markup, @TrackCompliance);
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
 
 CREATE OR ALTER PROCEDURE ReadVendors
@@ -156,14 +160,14 @@ BEGIN
         [IsDraft],
         [IsDeleted],
         [IsContractLabor],
-        [Notes]
+        [Notes],
+        [HourlyRate],
+        [Markup],
+        [TrackCompliance]
     FROM dbo.[Vendor]
     WHERE [IsDeleted] = 0
     ORDER BY [Name] ASC;
 END;
-
-
-
 GO
 
 CREATE OR ALTER PROCEDURE ReadVendorById
@@ -185,13 +189,13 @@ BEGIN
         [IsDraft],
         [IsDeleted],
         [IsContractLabor],
-        [Notes]
+        [Notes],
+        [HourlyRate],
+        [Markup],
+        [TrackCompliance]
     FROM dbo.[Vendor]
     WHERE [Id] = @Id AND [IsDeleted] = 0;
 END;
-
-
-
 GO
 
 CREATE OR ALTER PROCEDURE ReadVendorByPublicId
@@ -213,13 +217,13 @@ BEGIN
         [IsDraft],
         [IsDeleted],
         [IsContractLabor],
-        [Notes]
+        [Notes],
+        [HourlyRate],
+        [Markup],
+        [TrackCompliance]
     FROM dbo.[Vendor]
     WHERE [PublicId] = @PublicId AND [IsDeleted] = 0;
 END;
-
-
-
 GO
 
 CREATE OR ALTER PROCEDURE ReadVendorByName
@@ -241,13 +245,13 @@ BEGIN
         [IsDraft],
         [IsDeleted],
         [IsContractLabor],
-        [Notes]
+        [Notes],
+        [HourlyRate],
+        [Markup],
+        [TrackCompliance]
     FROM dbo.[Vendor]
     WHERE [Name] = @Name AND [IsDeleted] = 0;
 END;
-
-
-
 GO
 
 CREATE OR ALTER PROCEDURE UpdateVendorById
@@ -260,13 +264,15 @@ CREATE OR ALTER PROCEDURE UpdateVendorById
     @TaxpayerId BIGINT NULL,
     @IsDraft BIT = NULL,
     @IsContractLabor BIT = NULL,
-    @Notes NVARCHAR(MAX) = NULL
+    @Notes NVARCHAR(MAX) = NULL,
+    @HourlyRate DECIMAL(18,4) = NULL,
+    @Markup DECIMAL(18,4) = NULL,
+    @TrackCompliance BIT = NULL
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
 
-    -- Verify the record exists and is not deleted
     IF NOT EXISTS (SELECT 1 FROM dbo.[Vendor] WHERE [Id] = @Id AND [IsDeleted] = 0)
     BEGIN
         ROLLBACK TRANSACTION;
@@ -274,7 +280,6 @@ BEGIN
         RETURN;
     END
 
-    -- Verify RowVersion matches (optimistic concurrency check)
     IF NOT EXISTS (SELECT 1 FROM dbo.[Vendor] WHERE [Id] = @Id AND [RowVersion] = @RowVersion AND [IsDeleted] = 0)
     BEGIN
         ROLLBACK TRANSACTION;
@@ -284,6 +289,14 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
+    -- HourlyRate / Markup use CASE WHEN preserve-on-NULL — same pattern as
+    -- IsDraft / IsContractLabor so callers can update just the rate without
+    -- having to re-send every field. Pass an explicit Decimal to overwrite;
+    -- pass NULL to preserve the existing value.
+    --
+    -- Note: this means there's no way to set HourlyRate/Markup back to NULL
+    -- via this sproc once they're populated. If that becomes needed, add a
+    -- separate ClearVendorRate sproc.
     UPDATE dbo.[Vendor]
     SET
         [ModifiedDatetime] = @Now,
@@ -293,7 +306,10 @@ BEGIN
         [TaxpayerId] = CASE WHEN @TaxpayerId IS NULL THEN [TaxpayerId] ELSE @TaxpayerId END,
         [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END,
         [IsContractLabor] = CASE WHEN @IsContractLabor IS NULL THEN [IsContractLabor] ELSE @IsContractLabor END,
-        [Notes] = @Notes
+        [Notes] = @Notes,
+        [HourlyRate] = CASE WHEN @HourlyRate IS NULL THEN [HourlyRate] ELSE @HourlyRate END,
+        [Markup]     = CASE WHEN @Markup     IS NULL THEN [Markup]     ELSE @Markup     END,
+        [TrackCompliance] = CASE WHEN @TrackCompliance IS NULL THEN [TrackCompliance] ELSE @TrackCompliance END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -307,14 +323,14 @@ BEGIN
         INSERTED.[IsDraft],
         INSERTED.[IsDeleted],
         INSERTED.[IsContractLabor],
-        INSERTED.[Notes]
+        INSERTED.[Notes],
+        INSERTED.[HourlyRate],
+        INSERTED.[Markup],
+        INSERTED.[TrackCompliance]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
 
 CREATE OR ALTER PROCEDURE SoftDeleteVendorByPublicId
@@ -499,9 +515,8 @@ GO
 -- contract_labor_specialist agent. Binds a worker's email address back
 -- to the Vendor row carrying their IsContractLabor flag.
 --
--- Migration counterpart: entities/vendor/sql/migrations/001_find_contract_labor_vendor_by_email.sql
--- (keep these in sync — re-running the canonical file must match the
--- migration's body).
+-- This base file is the sole canonical home (U-142); migration 001 is a
+-- SUPERSEDED stub — never reintroduce a body there.
 -- ─────────────────────────────────────────────────────────────────────
 
 CREATE OR ALTER PROCEDURE FindContractLaborVendorByEmail
@@ -533,3 +548,4 @@ BEGIN
       AND LOWER(c.[Email])    = LOWER(@SenderEmail)
     ORDER BY v.[Id];
 END;
+GO

@@ -80,12 +80,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_role/sql/dbo.userrole.sql',
         'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
     }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
-    "CreateVendor": frozenset({
-        'entities/vendor/sql/dbo.vendor.sql',
-        'entities/vendor/sql/migrations/002_2026_05_27_rate_columns.sql',
-        'entities/vendor/sql/migrations/003_2026_07_19_track_compliance.sql',
-        'scripts/migrations/gap2_reference_threading.sql',
-    }),  # known-dup, home=entities/vendor/sql/dbo.vendor.sql
     "CreateVendorCreditBillCredit": frozenset({
         'integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql',
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
@@ -131,10 +125,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/contract_labor/sql/dbo.contract_labor.sql',
         'scripts/migrations/2026_05_27_find_contract_labor_for_reviewer_reply.sql',
     }),  # known-dup, home=entities/contract_labor/sql/dbo.contract_labor.sql
-    "FindContractLaborVendorByEmail": frozenset({
-        'entities/vendor/sql/dbo.vendor.sql',
-        'entities/vendor/sql/migrations/001_find_contract_labor_vendor_by_email.sql',
-    }),  # known-dup, home=entities/vendor/sql/dbo.vendor.sql
     "ReadAttachmentByCategory": frozenset({
         'entities/attachment/sql/dbo.attachment.sql',
         'entities/attachment/sql/update_procedures_with_extraction.sql',
@@ -264,21 +254,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_role/sql/dbo.userrole.sql',
         'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
     }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
-    "ReadVendorById": frozenset({
-        'entities/vendor/sql/dbo.vendor.sql',
-        'entities/vendor/sql/migrations/002_2026_05_27_rate_columns.sql',
-        'entities/vendor/sql/migrations/003_2026_07_19_track_compliance.sql',
-    }),  # known-dup, home=entities/vendor/sql/dbo.vendor.sql
-    "ReadVendorByName": frozenset({
-        'entities/vendor/sql/dbo.vendor.sql',
-        'entities/vendor/sql/migrations/002_2026_05_27_rate_columns.sql',
-        'entities/vendor/sql/migrations/003_2026_07_19_track_compliance.sql',
-    }),  # known-dup, home=entities/vendor/sql/dbo.vendor.sql
-    "ReadVendorByPublicId": frozenset({
-        'entities/vendor/sql/dbo.vendor.sql',
-        'entities/vendor/sql/migrations/002_2026_05_27_rate_columns.sql',
-        'entities/vendor/sql/migrations/003_2026_07_19_track_compliance.sql',
-    }),  # known-dup, home=entities/vendor/sql/dbo.vendor.sql
     "ReadVendorCreditBillCreditByBillCreditId": frozenset({
         'integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql',
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
@@ -295,11 +270,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/sql/qbo.vendorcredit_line_item_bill_credit_line_item.sql',
         'scripts/migrations/qbo_vendorcredit_mapping_sprocs_dbo.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/sql/qbo.vendorcredit_line_item_bill_credit_line_item.sql
-    "ReadVendors": frozenset({
-        'entities/vendor/sql/dbo.vendor.sql',
-        'entities/vendor/sql/migrations/002_2026_05_27_rate_columns.sql',
-        'entities/vendor/sql/migrations/003_2026_07_19_track_compliance.sql',
-    }),  # known-dup, home=entities/vendor/sql/dbo.vendor.sql
     "RecoverStuckProcessingEmailMessages": frozenset({
         'entities/email_message/sql/dbo.email_message.sql',
         'entities/email_message/sql/migrations/001_recovery_processing_reset.sql',
@@ -326,11 +296,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_role/sql/dbo.userrole.sql',
         'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
     }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
-    "UpdateVendorById": frozenset({
-        'entities/vendor/sql/dbo.vendor.sql',
-        'entities/vendor/sql/migrations/002_2026_05_27_rate_columns.sql',
-        'entities/vendor/sql/migrations/003_2026_07_19_track_compliance.sql',
-    }),  # known-dup, home=entities/vendor/sql/dbo.vendor.sql
     "UpsertEmailAttachment": frozenset({
         'entities/email_message/sql/dbo.email_attachment.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',

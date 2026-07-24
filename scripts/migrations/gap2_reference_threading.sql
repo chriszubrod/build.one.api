@@ -1,6 +1,6 @@
 -- =====================================================================
 -- Gap 2 Phase Reference — thread CreatedByUserId on the 6 reference-
--- entity Create sprocs.
+-- entity Create sprocs (CreateVendor since superseded — see block 1).
 --
 -- Pattern: add @CreatedByUserId BIGINT = NULL param; INSERT uses
 -- COALESCE(@CreatedByUserId, 17) preserving the DEFAULT-trick fallback
@@ -19,42 +19,15 @@ SET NOCOUNT ON;
 GO
 
 -- ===== 1. CreateVendor =====
-CREATE OR ALTER PROCEDURE CreateVendor
-(
-    @Name NVARCHAR(450),
-    @Abbreviation NVARCHAR(255),
-    @VendorTypeId BIGINT NULL,
-    @TaxpayerId BIGINT NULL,
-    @IsDraft BIT = 1,
-    @IsContractLabor BIT = 0,
-    @Notes NVARCHAR(MAX) = NULL,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[Vendor] ([CreatedDatetime], [ModifiedDatetime], [Name], [Abbreviation], [VendorTypeId], [TaxpayerId], [IsDraft], [IsDeleted], [IsContractLabor], [Notes], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[Name],
-        INSERTED.[Abbreviation],
-        INSERTED.[VendorTypeId],
-        INSERTED.[TaxpayerId],
-        INSERTED.[IsDraft],
-        INSERTED.[IsDeleted],
-        INSERTED.[IsContractLabor],
-        INSERTED.[Notes]
-    VALUES (@Now, @Now, @Name, @Abbreviation, @VendorTypeId, @TaxpayerId, @IsDraft, 0, @IsContractLabor, @Notes, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-142, 2026-07-24) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/vendor/sql/dbo.vendor.sql
+--
+-- Re-running this file is now a no-op for CreateVendor. Do NOT reintroduce a
+-- body here.
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 2. CreateCustomer =====

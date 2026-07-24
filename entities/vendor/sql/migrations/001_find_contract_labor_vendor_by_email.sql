@@ -1,51 +1,21 @@
--- Migration 001 — add FindContractLaborVendorByEmail sproc.
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-142, 2026-07-24) — sproc bodies removed, NOT the intent.
 --
--- Part of the contract_labor_specialist agent build (Phase 1; see
--- TODO.md line 204 / item 5b). When the email_specialist sees a
--- `contract_labor_timesheet` classification, the new agent uses this
--- sproc to bind the sender email back to the worker's Vendor row.
+-- Original intent of this file (preserved for lineage):
+--   Migration 001 — add FindContractLaborVendorByEmail sproc.
 --
--- Lookup pattern (locked 2026-05-26):
---   Vendor INNER JOIN Contact ON Contact.VendorId = Vendor.Id
---   WHERE Vendor.IsContractLabor = 1
---     AND Vendor.IsDeleted     = 0
---     AND LOWER(Contact.Email) = LOWER(@SenderEmail)
+--   Part of the contract_labor_specialist agent build (Phase 1; see
+--   TODO.md line 204 / item 5b). When the email_specialist sees a
+--   `contract_labor_timesheet` classification, the new agent uses this
+--   sproc to bind the sender email back to the worker's Vendor row.
 --
--- Returns a single Vendor row (TOP 1, ORDER BY Vendor.Id) or an empty
--- result set when no match. Projection mirrors ReadVendorByPublicId so
--- VendorRepository._from_db maps cleanly.
+-- The canonical definition of this sproc now lives in exactly ONE place:
+--   entities/vendor/sql/dbo.vendor.sql
 --
--- Idempotent: CREATE OR ALTER. Safe to re-apply.
-GO
-
-
-CREATE OR ALTER PROCEDURE FindContractLaborVendorByEmail
-(
-    @SenderEmail NVARCHAR(320)
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    SELECT TOP 1
-        v.[Id],
-        v.[PublicId],
-        v.[RowVersion],
-        CONVERT(VARCHAR(19), v.[CreatedDatetime], 120)  AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), v.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        v.[Name],
-        v.[Abbreviation],
-        v.[VendorTypeId],
-        v.[TaxpayerId],
-        v.[IsDraft],
-        v.[IsDeleted],
-        v.[IsContractLabor],
-        v.[Notes]
-    FROM dbo.[Vendor] v
-    INNER JOIN dbo.[Contact] c ON c.[VendorId] = v.[Id]
-    WHERE v.[IsContractLabor] = 1
-      AND v.[IsDeleted]       = 0
-      AND LOWER(c.[Email])    = LOWER(@SenderEmail)
-    ORDER BY v.[Id];
-END;
-GO
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.FindContractLaborVendorByEmail
+--
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------

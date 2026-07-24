@@ -1,4 +1,4 @@
-"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131/U-133/U-137/U-140/U-142 guard: canonical
+"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131/U-133/U-137/U-140/U-142/U-144 guard: canonical
 SQL homes for sprocs, access UDFs, and the shared human-only review predicate.
 
 Three guard shapes:
@@ -11,9 +11,9 @@ Three guard shapes:
   last 12 HOME-LESS sprocs homed by U-126 (inbox_tasks as a whole file; the 10
   landing in partially-converted base files as per-sproc rows — 3 of those,
   the USER_BASE trio, later subsumed by U-131's whole-file guard), user_project
-  (U-129), user (U-131), user_module (U-133), organization (U-137), company (U-140), and vendor (U-142).
-  The remaining entities still carry duplicated base sprocs in migrations
-  (user_role=9, …); converting them is future work.
+  (U-129), user (U-131), user_module (U-133), organization (U-137), company (U-140), vendor (U-142),
+  and user_role (U-144). The remaining entities still carry duplicated base
+  sprocs in migrations (user_company=8, …); converting them is future work.
   **When you convert one, add its row to
   ENTITY_BASE_FILES or SINGLE_SOURCE_SPROCS** — coverage is opt-in, so a
   conversion without a row leaves a gap that looks covered.
@@ -101,12 +101,13 @@ SINGLE_SOURCE_SPROCS = [
     # These landed in partially-converted base files, so the whole-file tier was
     # unavailable — per-sproc rows pin each exact canonical home (U-062 shape).
     # (The 3 USER_BASE rows were later subsumed by U-131's whole-file guard —
-    # 6 remain here; ReadUserModulesByUserIdAndCompanyId is deliberately KEPT
-    # as a presence pin alongside U-133's whole-file guard: the whole-file tier
-    # only forbids redefinition of sprocs present in the base — it asserts
-    # nothing if one is DELETED from it. Don't copy this shape for ordinary
-    # sprocs; a generalized expected-set guard per ENTITY_BASE_FILES entry
-    # would subsume this pin — its own unit.)
+    # 6 remain here; ReadUserModulesByUserIdAndCompanyId and
+    # ReadUserRolesByUserIdAndCompanyId are deliberately KEPT as presence pins
+    # alongside U-133's and U-144's whole-file guards: the whole-file tier only
+    # forbids redefinition of sprocs present in the base — it asserts nothing if
+    # one is DELETED from it. Don't copy this shape for ordinary sprocs; a
+    # generalized expected-set guard per ENTITY_BASE_FILES entry would subsume
+    # these pins — its own unit.)
     ("ReadUserModulesByUserIdAndCompanyId", USER_MODULE_BASE),
     ("ReadReviewsByContractLaborId", REVIEW_BASE),
     ("ReadCurrentReviewByContractLaborId", REVIEW_BASE),
@@ -153,6 +154,7 @@ GAP2_NEUTRALIZED_SPROCS = frozenset(
 # U-137: dbo.organization.sql reconciled to migration 002 (seven Phase-1 sprocs) and made sole home of all 7 Organization sprocs — whole-file guard.
 # U-140: dbo.company.sql reconciled to migration 002 (seven Phase-1 sprocs) and made sole home of all 7 Company sprocs — whole-file guard.
 # U-142: dbo.vendor.sql reconciled to migration 003 (the 002 rate + 003 compliance layers) and made sole home of all 9 Vendor sprocs — whole-file guard; also stubs the CreateVendor copy in gap2_reference_threading.sql and the FindContractLaborVendorByEmail copy in vendor migration 001.
+# U-144: dbo.userrole.sql reconciled to migration 002 (nine Phase-1 sprocs) and made sole home of all 10 UserRole sprocs — whole-file guard; U-126's ReadUserRolesByUserIdAndCompanyId per-sproc row is kept as a presence pin.
 # "Entity" here reads as entity/package, per the module docstring.
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
@@ -164,6 +166,7 @@ ENTITY_BASE_FILES = [
     ("organization", ORGANIZATION_BASE),
     ("company", COMPANY_BASE),
     ("vendor", VENDOR_BASE),
+    ("user_role", USER_ROLE_BASE),
     ("completion_job", COMPLETION_JOB_BASE),
     ("bill", BILL_BASE),
     ("bill_source_email", BILL_SOURCE_EMAIL_BASE),

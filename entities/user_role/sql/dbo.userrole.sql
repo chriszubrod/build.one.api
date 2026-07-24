@@ -13,16 +13,13 @@ CREATE TABLE [dbo].[UserRole]
 END
 GO
 
-
-GO
-
-
-GO
-
 CREATE OR ALTER PROCEDURE CreateUserRole
 (
     @UserId BIGINT,
-    @RoleId BIGINT
+    @RoleId BIGINT,
+    @CompanyId BIGINT = NULL,
+    @CreatedByUserId BIGINT = NULL,
+    @ModifiedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -30,7 +27,9 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[UserRole] ([CreatedDatetime], [ModifiedDatetime], [UserId], [RoleId])
+    INSERT INTO dbo.[UserRole]
+        ([CreatedDatetime], [ModifiedDatetime], [UserId], [RoleId],
+         [CompanyId], [CreatedByUserId], [ModifiedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -38,15 +37,18 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[UserId],
-        INSERTED.[RoleId]
-    VALUES (@Now, @Now, @UserId, @RoleId);
+        INSERTED.[RoleId],
+        INSERTED.[CompanyId],
+        INSERTED.[CreatedByUserId],
+        INSERTED.[ModifiedByUserId]
+    VALUES
+        (@Now, @Now, @UserId, @RoleId,
+         @CompanyId, @CreatedByUserId, COALESCE(@ModifiedByUserId, @CreatedByUserId));
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserRoles
 AS
@@ -60,16 +62,17 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [RoleId]
+        [RoleId],
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserRole]
     ORDER BY [UserId] ASC, [RoleId] ASC;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserRoleById
 (
@@ -86,16 +89,17 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [RoleId]
+        [RoleId],
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserRole]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserRoleByPublicId
 (
@@ -112,16 +116,17 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [RoleId]
+        [RoleId],
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserRole]
     WHERE [PublicId] = @PublicId;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserRoleByUserId
 (
@@ -138,16 +143,17 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [RoleId]
+        [RoleId],
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserRole]
     WHERE [UserId] = @UserId;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE ReadUserRoleByRoleId
 (
@@ -164,23 +170,54 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
-        [RoleId]
+        [RoleId],
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
     FROM dbo.[UserRole]
     WHERE [RoleId] = @RoleId;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
+
+CREATE OR ALTER PROCEDURE ReadUserRolesByUserId
+(
+    @UserId BIGINT
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [UserId],
+        [RoleId],
+        [CompanyId],
+        [CreatedByUserId],
+        [ModifiedByUserId]
+    FROM dbo.[UserRole]
+    WHERE [UserId] = @UserId
+    ORDER BY [Id] ASC;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
 
 CREATE OR ALTER PROCEDURE UpdateUserRoleById
 (
     @Id BIGINT,
     @RowVersion BINARY(8),
     @UserId BIGINT,
-    @RoleId BIGINT
+    @RoleId BIGINT,
+    @CompanyId BIGINT = NULL,
+    @ModifiedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -192,7 +229,11 @@ BEGIN
     SET
         [ModifiedDatetime] = @Now,
         [UserId] = @UserId,
-        [RoleId] = @RoleId
+        [RoleId] = @RoleId,
+        -- Preserve existing CompanyId if caller passes NULL (keeps
+        -- pre-Phase-1 update paths working until services catch up).
+        [CompanyId] = CASE WHEN @CompanyId IS NULL THEN [CompanyId] ELSE @CompanyId END,
+        [ModifiedByUserId] = @ModifiedByUserId
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -200,15 +241,16 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[UserId],
-        INSERTED.[RoleId]
+        INSERTED.[RoleId],
+        INSERTED.[CompanyId],
+        INSERTED.[CreatedByUserId],
+        INSERTED.[ModifiedByUserId]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
 END;
-
-
-
 GO
+
 
 CREATE OR ALTER PROCEDURE DeleteUserRoleById
 (
@@ -226,12 +268,15 @@ BEGIN
         CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.[UserId],
-        DELETED.[RoleId]
+        DELETED.[RoleId],
+        DELETED.[CompanyId],
+        DELETED.[CreatedByUserId],
+        DELETED.[ModifiedByUserId]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
 END;
-
+GO
 
 -- FK constraints
 IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_UserRole_User')
@@ -246,42 +291,9 @@ BEGIN
 END
 GO
 
--- Prevent duplicate user-role assignments
-IF NOT EXISTS (SELECT 1 FROM sys.objects WHERE name = 'UQ_UserRole_UserId_RoleId' AND parent_object_id = OBJECT_ID('dbo.UserRole'))
-BEGIN
-    ALTER TABLE [dbo].[UserRole] ADD CONSTRAINT [UQ_UserRole_UserId_RoleId] UNIQUE ([UserId], [RoleId]);
-END
-GO
-
-
--- Plural variant of ReadUserRoleByUserId. Returns ALL UserRole rows for
--- a given user (multi-role users) rather than just the first. iOS uses
--- this to populate CDUserRole so RoleModuleService.currentUserRoleIds
--- knows the full set of roles the user holds.
-CREATE OR ALTER PROCEDURE ReadUserRolesByUserId
-(
-    @UserId BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [UserId],
-        [RoleId]
-    FROM dbo.[UserRole]
-    WHERE [UserId] = @UserId
-    ORDER BY [Id] ASC;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
+-- Uniqueness key is (UserId, CompanyId, RoleId) via UQ_UserRole_UserId_CompanyId_RoleId,
+-- added by scripts/migrations/phase1_not_null_flip.sql — deliberately NOT re-asserted here;
+-- post-001 schema stays in migrations. Never re-add the old 2-col unique.
 
 -- U-126 (2026-07-23): homed from migration 002; body is the LIVE prod definition captured via sys.sql_modules.
 -- New: Phase 2 permission resolver fetches the user's roles scoped to

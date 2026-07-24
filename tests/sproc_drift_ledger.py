@@ -76,10 +76,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_company/sql/dbo.usercompany.sql',
         'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
     }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
-    "CreateUserRole": frozenset({
-        'entities/user_role/sql/dbo.userrole.sql',
-        'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
     "CreateVendorCreditBillCredit": frozenset({
         'integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql',
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
@@ -108,10 +104,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_company/sql/dbo.usercompany.sql',
         'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
     }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
-    "DeleteUserRoleById": frozenset({
-        'entities/user_role/sql/dbo.userrole.sql',
-        'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
     "DeleteVendorCreditBillCreditByQboVendorCreditId": frozenset({
         'integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql',
         'scripts/migrations/qbo_vendorcredit_reconcile_deletes.sql',
@@ -230,30 +222,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_company/sql/dbo.usercompany.sql',
         'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
     }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
-    "ReadUserRoleById": frozenset({
-        'entities/user_role/sql/dbo.userrole.sql',
-        'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
-    "ReadUserRoleByPublicId": frozenset({
-        'entities/user_role/sql/dbo.userrole.sql',
-        'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
-    "ReadUserRoleByRoleId": frozenset({
-        'entities/user_role/sql/dbo.userrole.sql',
-        'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
-    "ReadUserRoleByUserId": frozenset({
-        'entities/user_role/sql/dbo.userrole.sql',
-        'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
-    "ReadUserRoles": frozenset({
-        'entities/user_role/sql/dbo.userrole.sql',
-        'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
-    "ReadUserRolesByUserId": frozenset({
-        'entities/user_role/sql/dbo.userrole.sql',
-        'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
     "ReadVendorCreditBillCreditByBillCreditId": frozenset({
         'integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql',
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
@@ -292,10 +260,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/user_company/sql/dbo.usercompany.sql',
         'entities/user_company/sql/migrations/002_phase1_attribution_sprocs.sql',
     }),  # known-dup, home=entities/user_company/sql/dbo.usercompany.sql
-    "UpdateUserRoleById": frozenset({
-        'entities/user_role/sql/dbo.userrole.sql',
-        'entities/user_role/sql/migrations/002_phase1_company_scoped_sprocs.sql',
-    }),  # known-dup, home=entities/user_role/sql/dbo.userrole.sql
     "UpsertEmailAttachment": frozenset({
         'entities/email_message/sql/dbo.email_attachment.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',

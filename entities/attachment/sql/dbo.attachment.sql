@@ -47,7 +47,8 @@ CREATE OR ALTER PROCEDURE CreateAttachment
     @IsArchived BIT = 0,
     @Status NVARCHAR(20),
     @ExpirationDate DATETIME2(3),
-    @StorageTier NVARCHAR(20) = 'Hot'
+    @StorageTier NVARCHAR(20) = 'Hot',
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -55,7 +56,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Attachment] ([CreatedDatetime], [ModifiedDatetime], [Filename], [OriginalFilename], [FileExtension], [ContentType], [FileSize], [FileHash], [BlobUrl], [Description], [Category], [Tags], [IsArchived], [Status], [ExpirationDate], [StorageTier])
+    INSERT INTO dbo.[Attachment] ([CreatedDatetime], [ModifiedDatetime], [Filename], [OriginalFilename], [FileExtension], [ContentType], [FileSize], [FileHash], [BlobUrl], [Description], [Category], [Tags], [IsArchived], [Status], [ExpirationDate], [StorageTier], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -78,7 +79,7 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[LastDownloadedDatetime], 120) AS [LastDownloadedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ExpirationDate], 120) AS [ExpirationDate],
         INSERTED.[StorageTier]
-    VALUES (@Now, @Now, @Filename, @OriginalFilename, @FileExtension, @ContentType, @FileSize, @FileHash, @BlobUrl, @Description, @Category, @Tags, @IsArchived, @Status, @ExpirationDate, @StorageTier);
+    VALUES (@Now, @Now, @Filename, @OriginalFilename, @FileExtension, @ContentType, @FileSize, @FileHash, @BlobUrl, @Description, @Category, @Tags, @IsArchived, @Status, @ExpirationDate, @StorageTier, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;

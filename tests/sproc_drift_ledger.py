@@ -11,10 +11,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/invoice/sql/dbo.invoice.sql',
         'scripts/migrations/gap1_list_sprocs_scoped.sql',
     }),  # known-dup, home=entities/invoice/sql/dbo.invoice.sql
-    "CreateAttachment": frozenset({
-        'entities/attachment/sql/dbo.attachment.sql',
-        'scripts/migrations/gap2_adjacent_threading.sql',
-    }),  # known-dup, home=entities/attachment/sql/dbo.attachment.sql
     "CreateBillLineItemAttachment": frozenset({
         'entities/bill_line_item_attachment/sql/dbo.bill_line_item_attachment.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',
@@ -109,26 +105,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/contract_labor/sql/dbo.contract_labor.sql',
         'scripts/migrations/2026_05_27_find_contract_labor_for_reviewer_reply.sql',
     }),  # known-dup, home=entities/contract_labor/sql/dbo.contract_labor.sql
-    "ReadAttachmentByCategory": frozenset({
-        'entities/attachment/sql/dbo.attachment.sql',
-        'entities/attachment/sql/update_procedures_with_extraction.sql',
-    }),  # known-dup, home=entities/attachment/sql/dbo.attachment.sql, entities/attachment/sql/update_procedures_with_extraction.sql
-    "ReadAttachmentByHash": frozenset({
-        'entities/attachment/sql/dbo.attachment.sql',
-        'entities/attachment/sql/update_procedures_with_extraction.sql',
-    }),  # known-dup, home=entities/attachment/sql/dbo.attachment.sql, entities/attachment/sql/update_procedures_with_extraction.sql
-    "ReadAttachmentById": frozenset({
-        'entities/attachment/sql/dbo.attachment.sql',
-        'entities/attachment/sql/update_procedures_with_extraction.sql',
-    }),  # known-dup, home=entities/attachment/sql/dbo.attachment.sql, entities/attachment/sql/update_procedures_with_extraction.sql
-    "ReadAttachmentByPublicId": frozenset({
-        'entities/attachment/sql/dbo.attachment.sql',
-        'entities/attachment/sql/update_procedures_with_extraction.sql',
-    }),  # known-dup, home=entities/attachment/sql/dbo.attachment.sql, entities/attachment/sql/update_procedures_with_extraction.sql
-    "ReadAttachments": frozenset({
-        'entities/attachment/sql/dbo.attachment.sql',
-        'entities/attachment/sql/update_procedures_with_extraction.sql',
-    }),  # known-dup, home=entities/attachment/sql/dbo.attachment.sql, entities/attachment/sql/update_procedures_with_extraction.sql
     "ReadContractLaborByNaturalKey": frozenset({
         'entities/contract_labor/sql/ReadContractLaborByNaturalKey.sql',
         'entities/contract_labor/sql/dbo.contract_labor.sql',

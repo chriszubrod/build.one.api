@@ -1,4 +1,4 @@
-"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131/U-133/U-137/U-140/U-142/U-144/U-146 guard: canonical
+"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131/U-133/U-137/U-140/U-142/U-144/U-146/U-148 guard: canonical
 SQL homes for sprocs, access UDFs, and the shared human-only review predicate.
 
 Three guard shapes:
@@ -12,7 +12,7 @@ Three guard shapes:
   landing in partially-converted base files as per-sproc rows — 3 of those,
   the USER_BASE trio, later subsumed by U-131's whole-file guard), user_project
   (U-129), user (U-131), user_module (U-133), organization (U-137), company (U-140), vendor (U-142),
-  user_role (U-144), and user_company (U-146). The remaining entities still carry
+  user_role (U-144), user_company (U-146), and attachment (U-148). The remaining entities still carry
   duplicated base sprocs in migrations (contract_labor=7, email_message=7, …); converting them is future work.
   **When you convert one, add its row to
   ENTITY_BASE_FILES or SINGLE_SOURCE_SPROCS** — coverage is opt-in, so a
@@ -84,6 +84,7 @@ COMPANY_BASE = REPO_ROOT / "entities" / "company" / "sql" / "dbo.company.sql"
 VENDOR_BASE = REPO_ROOT / "entities" / "vendor" / "sql" / "dbo.vendor.sql"
 USER_ROLE_BASE = REPO_ROOT / "entities" / "user_role" / "sql" / "dbo.userrole.sql"
 USER_COMPANY_BASE = REPO_ROOT / "entities" / "user_company" / "sql" / "dbo.usercompany.sql"
+ATTACHMENT_BASE = REPO_ROOT / "entities" / "attachment" / "sql" / "dbo.attachment.sql"
 AUTH_BASE = REPO_ROOT / "entities" / "auth" / "sql" / "dbo.auth.sql"
 
 # U-062/U-087: the three review-notification recipient resolvers homed in the
@@ -157,6 +158,7 @@ GAP2_NEUTRALIZED_SPROCS = frozenset(
 # U-142: dbo.vendor.sql reconciled to migration 003 (the 002 rate + 003 compliance layers) and made sole home of all 9 Vendor sprocs — whole-file guard; also stubs the CreateVendor copy in gap2_reference_threading.sql and the FindContractLaborVendorByEmail copy in vendor migration 001.
 # U-144: dbo.userrole.sql reconciled to migration 002 (nine Phase-1 sprocs) and made sole home of all 10 UserRole sprocs — whole-file guard; U-126's ReadUserRolesByUserIdAndCompanyId per-sproc row is kept as a presence pin.
 # U-146: dbo.usercompany.sql reconciled to migration 002 (eight Phase-1 sprocs) and made sole home of all 8 UserCompany sprocs — whole-file guard.
+# U-148: dbo.attachment.sql reconciled (CreateAttachment <- gap2_adjacent_threading Phase-Adjacent body) and made sole home of all 10 Attachment sprocs — whole-file guard; also stubs the CreateAttachment copy in gap2_adjacent_threading.sql and the five read-sproc copies in update_procedures_with_extraction.sql.
 # "Entity" here reads as entity/package, per the module docstring.
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
@@ -170,6 +172,7 @@ ENTITY_BASE_FILES = [
     ("vendor", VENDOR_BASE),
     ("user_role", USER_ROLE_BASE),
     ("user_company", USER_COMPANY_BASE),
+    ("attachment", ATTACHMENT_BASE),
     ("completion_job", COMPLETION_JOB_BASE),
     ("bill", BILL_BASE),
     ("bill_source_email", BILL_SOURCE_EMAIL_BASE),

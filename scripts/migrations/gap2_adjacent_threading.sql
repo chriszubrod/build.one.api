@@ -1,6 +1,7 @@
 -- =====================================================================
 -- Gap 2 Phase Adjacent — thread CreatedByUserId on 10 attachment /
--- email / review / bill-folder Create + Upsert sprocs.
+-- email / review / bill-folder Create + Upsert sprocs (CreateAttachment
+-- since superseded — see block 1).
 --
 -- Pattern: add @CreatedByUserId BIGINT = NULL param; INSERT uses
 -- COALESCE(@CreatedByUserId, 17) preserving the DEFAULT-trick fallback
@@ -26,57 +27,15 @@ SET NOCOUNT ON;
 GO
 
 -- ===== 1. CreateAttachment =====
-CREATE OR ALTER PROCEDURE CreateAttachment
-(
-    @Filename NVARCHAR(MAX),
-    @OriginalFilename NVARCHAR(MAX),
-    @FileExtension NVARCHAR(10),
-    @ContentType NVARCHAR(255),
-    @FileSize BIGINT,
-    @FileHash NVARCHAR(64),
-    @BlobUrl NVARCHAR(MAX),
-    @Description NVARCHAR(MAX),
-    @Category NVARCHAR(50),
-    @Tags NVARCHAR(MAX),
-    @IsArchived BIT = 0,
-    @Status NVARCHAR(20),
-    @ExpirationDate DATETIME2(3),
-    @StorageTier NVARCHAR(20) = 'Hot',
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[Attachment] ([CreatedDatetime], [ModifiedDatetime], [Filename], [OriginalFilename], [FileExtension], [ContentType], [FileSize], [FileHash], [BlobUrl], [Description], [Category], [Tags], [IsArchived], [Status], [ExpirationDate], [StorageTier], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[Filename],
-        INSERTED.[OriginalFilename],
-        INSERTED.[FileExtension],
-        INSERTED.[ContentType],
-        INSERTED.[FileSize],
-        INSERTED.[FileHash],
-        INSERTED.[BlobUrl],
-        INSERTED.[Description],
-        INSERTED.[Category],
-        INSERTED.[Tags],
-        INSERTED.[IsArchived],
-        INSERTED.[Status],
-        INSERTED.[DownloadCount],
-        CONVERT(VARCHAR(19), INSERTED.[LastDownloadedDatetime], 120) AS [LastDownloadedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ExpirationDate], 120) AS [ExpirationDate],
-        INSERTED.[StorageTier]
-    VALUES (@Now, @Now, @Filename, @OriginalFilename, @FileExtension, @ContentType, @FileSize, @FileHash, @BlobUrl, @Description, @Category, @Tags, @IsArchived, @Status, @ExpirationDate, @StorageTier, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-148, 2026-07-24) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/attachment/sql/dbo.attachment.sql
+--
+-- Re-running this file is now a no-op for CreateAttachment. Do NOT reintroduce a
+-- body here.
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 2. CreateBillLineItemAttachment =====

@@ -1,5 +1,6 @@
 -- =============================================================================
--- 2026-05-27 — Phase 3: Invoice source for EmployeeLabor.
+-- 2026-05-27 — Phase 3: Invoice source for EmployeeLabor.  (historical migration;
+-- sproc bodies superseded — see U-150 banner below. The DDL below is still live.)
 --
 -- Adds InvoiceLineItem.EmployeeLaborLineItemId nullable FK so the polymorphic
 -- source set grows from {Bill, Expense, BillCredit, Manual} to add
@@ -40,195 +41,35 @@ END
 GO
 
 
--- Re-issue sprocs with the new column ------------------------------------------
-CREATE OR ALTER PROCEDURE CreateInvoiceLineItem
-(
-    @InvoiceId BIGINT,
-    @SourceType NVARCHAR(50),
-    @BillLineItemId BIGINT NULL,
-    @ExpenseLineItemId BIGINT NULL,
-    @BillCreditLineItemId BIGINT NULL,
-    @EmployeeLaborLineItemId BIGINT NULL,
-    @SubCostCodeId BIGINT NULL,
-    @Description NVARCHAR(MAX) NULL,
-    @Quantity DECIMAL(18,4) NULL,
-    @Rate DECIMAL(18,4) NULL,
-    @Amount DECIMAL(18,2) NULL,
-    @Markup DECIMAL(18,4) NULL,
-    @Price DECIMAL(18,2) NULL,
-    @IsDraft BIT = 1,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[InvoiceLineItem]
-        ([CreatedDatetime], [ModifiedDatetime], [InvoiceId], [SourceType],
-         [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
-         [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft],
-         [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[InvoiceId], INSERTED.[SourceType],
-        INSERTED.[BillLineItemId], INSERTED.[ExpenseLineItemId], INSERTED.[BillCreditLineItemId],
-        INSERTED.[EmployeeLaborLineItemId],
-        INSERTED.[SubCostCodeId], INSERTED.[Description], INSERTED.[Quantity], INSERTED.[Rate],
-        INSERTED.[Amount], INSERTED.[Markup], INSERTED.[Price], INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @InvoiceId, @SourceType,
-            @BillLineItemId, @ExpenseLineItemId, @BillCreditLineItemId, @EmployeeLaborLineItemId,
-            @SubCostCodeId, @Description, @Quantity, @Rate, @Amount, @Markup, @Price, @IsDraft,
-            COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-CREATE OR ALTER PROCEDURE ReadInvoiceLineItems
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    SELECT
-        [Id], [PublicId], [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [InvoiceId], [SourceType],
-        [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
-        [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft]
-    FROM dbo.[InvoiceLineItem]
-    ORDER BY [CreatedDatetime] DESC;
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-CREATE OR ALTER PROCEDURE ReadInvoiceLineItemById
-(
-    @Id BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    SELECT
-        [Id], [PublicId], [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [InvoiceId], [SourceType],
-        [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
-        [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft]
-    FROM dbo.[InvoiceLineItem]
-    WHERE [Id] = @Id;
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-CREATE OR ALTER PROCEDURE ReadInvoiceLineItemByPublicId
-(
-    @PublicId UNIQUEIDENTIFIER
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    SELECT
-        [Id], [PublicId], [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [InvoiceId], [SourceType],
-        [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
-        [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft]
-    FROM dbo.[InvoiceLineItem]
-    WHERE [PublicId] = @PublicId;
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-CREATE OR ALTER PROCEDURE ReadInvoiceLineItemsByInvoiceId
-(
-    @InvoiceId BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    SELECT
-        [Id], [PublicId], [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [InvoiceId], [SourceType],
-        [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
-        [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft]
-    FROM dbo.[InvoiceLineItem]
-    WHERE [InvoiceId] = @InvoiceId
-    ORDER BY [CreatedDatetime] ASC;
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-CREATE OR ALTER PROCEDURE UpdateInvoiceLineItemById
-(
-    @Id BIGINT,
-    @RowVersion BINARY(8),
-    @InvoiceId BIGINT,
-    @SourceType NVARCHAR(50),
-    @BillLineItemId BIGINT NULL,
-    @ExpenseLineItemId BIGINT NULL,
-    @BillCreditLineItemId BIGINT NULL,
-    @EmployeeLaborLineItemId BIGINT NULL,
-    @SubCostCodeId BIGINT NULL,
-    @Description NVARCHAR(MAX) NULL,
-    @Quantity DECIMAL(18,4) NULL,
-    @Rate DECIMAL(18,4) NULL,
-    @Amount DECIMAL(18,2) NULL,
-    @Markup DECIMAL(18,4) NULL,
-    @Price DECIMAL(18,2) NULL,
-    @IsDraft BIT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    -- Source FKs use CASE WHEN preserve-on-NULL so partial updates don't
-    -- orphan the link to the source line. Same pattern as existing source
-    -- columns.
-    UPDATE dbo.[InvoiceLineItem]
-    SET
-        [ModifiedDatetime] = @Now,
-        [InvoiceId] = @InvoiceId,
-        [SourceType] = @SourceType,
-        [BillLineItemId]          = CASE WHEN @BillLineItemId          IS NULL THEN [BillLineItemId]          ELSE @BillLineItemId          END,
-        [ExpenseLineItemId]       = CASE WHEN @ExpenseLineItemId       IS NULL THEN [ExpenseLineItemId]       ELSE @ExpenseLineItemId       END,
-        [BillCreditLineItemId]    = CASE WHEN @BillCreditLineItemId    IS NULL THEN [BillCreditLineItemId]    ELSE @BillCreditLineItemId    END,
-        [EmployeeLaborLineItemId] = CASE WHEN @EmployeeLaborLineItemId IS NULL THEN [EmployeeLaborLineItemId] ELSE @EmployeeLaborLineItemId END,
-        [SubCostCodeId] = @SubCostCodeId,
-        [Description] = @Description,
-        [Quantity] = @Quantity,
-        [Rate] = @Rate,
-        [Amount] = @Amount,
-        [Markup] = @Markup,
-        [Price] = @Price,
-        [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END
-    OUTPUT
-        INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[InvoiceId], INSERTED.[SourceType],
-        INSERTED.[BillLineItemId], INSERTED.[ExpenseLineItemId], INSERTED.[BillCreditLineItemId],
-        INSERTED.[EmployeeLaborLineItemId],
-        INSERTED.[SubCostCodeId], INSERTED.[Description], INSERTED.[Quantity], INSERTED.[Rate],
-        INSERTED.[Amount], INSERTED.[Markup], INSERTED.[Price], INSERTED.[IsDraft]
-    WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
-
-    COMMIT TRANSACTION;
-END;
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-150, 2026-07-24) — sproc bodies removed, NOT the intent.
+--
+-- Original intent of this file (preserved for lineage):
+--   Phase 3 — EmployeeLabor invoice source
+--   Add InvoiceLineItem.EmployeeLaborLineItemId nullable FK and re-issue
+--   Create/Read/Update sprocs with the new column threaded through.
+--   Idempotent (CREATE OR ALTER).
+--
+-- The canonical definition of these sprocs now lives in exactly ONE place:
+--   entities/invoice_line_item/sql/dbo.invoice_line_item.sql
+--
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.CreateInvoiceLineItem
+--   dbo.ReadInvoiceLineItems
+--   dbo.ReadInvoiceLineItemById
+--   dbo.ReadInvoiceLineItemByPublicId
+--   dbo.ReadInvoiceLineItemsByInvoiceId
+--   dbo.UpdateInvoiceLineItemById
+--
+-- Re-running this file is now a no-op for these sprocs. Do NOT reintroduce a
+-- body here — this migration was NEVER APPLIED to prod: the base file was
+-- made canonical and applied+verified on 2026-07-06 (commit be2a877) after the
+-- WVA-17/WVA-18 incident, and the bodies formerly here were STALE — they
+-- declared @EmployeeLaborLineItemId as a REQUIRED param (BIGINT NULL) where
+-- the live base declares it OPTIONAL (BIGINT = NULL), so re-running this file
+-- would have downgraded prod's Create and Update paths. The DDL section ABOVE
+-- this banner (EmployeeLaborLineItemId column + FK + index) is RETAINED and
+-- still authoritative/idempotent.
+-- ---------------------------------------------------------------------------
 
 PRINT 'InvoiceLineItem EmployeeLabor source migration applied.';

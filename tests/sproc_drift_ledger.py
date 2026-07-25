@@ -39,10 +39,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/invoice/sql/dbo.invoice.sql',
         'scripts/migrations/gap2_core_threading.sql',
     }),  # known-dup, home=entities/invoice/sql/dbo.invoice.sql
-    "CreateInvoiceLineItem": frozenset({
-        'entities/invoice_line_item/sql/dbo.invoice_line_item.sql',
-        'entities/invoice_line_item/sql/migrations/001_2026_05_27_employee_labor_source.sql',
-    }),  # known-dup, home=entities/invoice_line_item/sql/dbo.invoice_line_item.sql
     "CreateInvoiceLineItemAttachment": frozenset({
         'entities/invoice_line_item_attachment/sql/dbo.invoice_line_item_attachment.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',
@@ -138,22 +134,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/email_message/sql/migrations/002_contract_labor_timesheet_vocab.sql',
         'entities/email_message/sql/migrations/003_delegated_to_contract_labor_action_vocab.sql',
     }),  # known-dup, home=entities/email_message/sql/dbo.email_message.sql
-    "ReadInvoiceLineItemById": frozenset({
-        'entities/invoice_line_item/sql/dbo.invoice_line_item.sql',
-        'entities/invoice_line_item/sql/migrations/001_2026_05_27_employee_labor_source.sql',
-    }),  # known-dup, home=entities/invoice_line_item/sql/dbo.invoice_line_item.sql
-    "ReadInvoiceLineItemByPublicId": frozenset({
-        'entities/invoice_line_item/sql/dbo.invoice_line_item.sql',
-        'entities/invoice_line_item/sql/migrations/001_2026_05_27_employee_labor_source.sql',
-    }),  # known-dup, home=entities/invoice_line_item/sql/dbo.invoice_line_item.sql
-    "ReadInvoiceLineItems": frozenset({
-        'entities/invoice_line_item/sql/dbo.invoice_line_item.sql',
-        'entities/invoice_line_item/sql/migrations/001_2026_05_27_employee_labor_source.sql',
-    }),  # known-dup, home=entities/invoice_line_item/sql/dbo.invoice_line_item.sql
-    "ReadInvoiceLineItemsByInvoiceId": frozenset({
-        'entities/invoice_line_item/sql/dbo.invoice_line_item.sql',
-        'entities/invoice_line_item/sql/migrations/001_2026_05_27_employee_labor_source.sql',
-    }),  # known-dup, home=entities/invoice_line_item/sql/dbo.invoice_line_item.sql
     "ReadInvoices": frozenset({
         'entities/invoice/sql/dbo.invoice.sql',
         'scripts/migrations/gap1_list_sprocs_scoped.sql',
@@ -196,10 +176,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'intelligence/persistence/sql/migrations/001_timeout_long_running_sessions.sql',
         'intelligence/persistence/sql/migrations/002_timeout_max_rows.sql',
     }),  # known-dup, home=intelligence/persistence/sql/dbo.agent_session.sql
-    "UpdateInvoiceLineItemById": frozenset({
-        'entities/invoice_line_item/sql/dbo.invoice_line_item.sql',
-        'entities/invoice_line_item/sql/migrations/001_2026_05_27_employee_labor_source.sql',
-    }),  # known-dup, home=entities/invoice_line_item/sql/dbo.invoice_line_item.sql
     "UpdateQboVendorCreditLineById": frozenset({
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',

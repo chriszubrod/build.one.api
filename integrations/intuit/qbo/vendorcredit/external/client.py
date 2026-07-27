@@ -5,6 +5,7 @@ from typing import List, Optional
 
 # Local Imports
 from integrations.intuit.qbo.base.client import QboHttpClient
+from integrations.intuit.qbo.base.paging import page_all_record_ids
 from integrations.intuit.qbo.vendorcredit.external.schemas import (
     QboVendorCredit,
     QboVendorCreditCreate,
@@ -142,6 +143,22 @@ class QboVendorCreditClient:
             start_position += max_results
 
         return all_vendor_credits
+
+    def query_all_vendor_credit_ids(self) -> List[str]:
+        """
+        Page the complete set of live QBO VendorCredit ids for this realm.
+
+        STRICT — raises on any anomaly rather than returning a short list, so a
+        caller diffing local mappings against this set can never flag LIVE
+        records as deleted off a truncated fetch. Do NOT substitute
+        `query_all_vendor_credits` for this: it swallows a missing QueryResponse as an
+        empty page and ends pagination early. See base/paging.py.
+        """
+        return page_all_record_ids(
+            self._http_client,
+            entity="VendorCredit",
+            operation_name="qbo.vendorcredit.query_ids",
+        )
 
     # ------------------------------------------------------------------ #
     # CRUD

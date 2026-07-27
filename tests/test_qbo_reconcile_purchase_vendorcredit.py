@@ -29,10 +29,13 @@ def _fake_issue_service():
 
 
 class _FakePurchaseClient:
-    def __init__(self, *, purchases=None, get_raises=None, query_raises=None):
+    def __init__(self, *, purchases=None, ids=None, get_raises=None, query_raises=None, ids_raises=None):
         self._purchases = purchases or []
+        self._ids = list(ids) if ids is not None else []
         self._get_raises = get_raises
         self._query_raises = query_raises
+        self._ids_raises = ids_raises
+        self.get_calls = []
 
     def __enter__(self):
         return self
@@ -45,7 +48,14 @@ class _FakePurchaseClient:
             raise self._query_raises
         return self._purchases
 
+    def query_all_purchase_ids(self):
+        if self._ids_raises:
+            raise self._ids_raises
+        from integrations.intuit.qbo.base.ids import normalize_qbo_id
+        return [normalize_qbo_id(i) for i in self._ids]
+
     def get_purchase(self, purchase_id):
+        self.get_calls.append(purchase_id)
         if self._get_raises:
             raise self._get_raises
         return SimpleNamespace(id=purchase_id)
@@ -122,10 +132,13 @@ def _patch_purchase_stack(monkeypatch, *, client, qbo_repo, mapping_repo,
 
 
 class _FakeVendorCreditClient:
-    def __init__(self, *, vendor_credits=None, get_raises=None, query_raises=None):
+    def __init__(self, *, vendor_credits=None, ids=None, get_raises=None, query_raises=None, ids_raises=None):
         self._vendor_credits = vendor_credits or []
+        self._ids = list(ids) if ids is not None else []
         self._get_raises = get_raises
         self._query_raises = query_raises
+        self._ids_raises = ids_raises
+        self.get_calls = []
 
     def __enter__(self):
         return self
@@ -138,7 +151,14 @@ class _FakeVendorCreditClient:
             raise self._query_raises
         return self._vendor_credits
 
+    def query_all_vendor_credit_ids(self):
+        if self._ids_raises:
+            raise self._ids_raises
+        from integrations.intuit.qbo.base.ids import normalize_qbo_id
+        return [normalize_qbo_id(i) for i in self._ids]
+
     def get_vendor_credit(self, vendor_credit_id):
+        self.get_calls.append(vendor_credit_id)
         if self._get_raises:
             raise self._get_raises
         return SimpleNamespace(id=vendor_credit_id)
@@ -265,7 +285,7 @@ def test_purchase_voided_flagged(monkeypatch):
     svc, repo = _fake_issue_service()
     local = SimpleNamespace(id=10, qbo_id="P-VOID")
     mapping = SimpleNamespace(expense_id=55)
-    client = _FakePurchaseClient(get_raises=QboNotFoundError("not found"))
+    client = _FakePurchaseClient(ids=[], get_raises=QboNotFoundError("not found"))
     _patch_purchase_stack(
         monkeypatch,
         client=client,
@@ -290,6 +310,7 @@ def test_purchase_detector_failure_isolation(monkeypatch):
     mapping = SimpleNamespace(expense_id=77)
     client = _FakePurchaseClient(
         purchases=[],
+        ids=[],
         query_raises=RuntimeError("query blew up"),
         get_raises=QboNotFoundError("gone"),
     )
@@ -365,7 +386,7 @@ def test_vendor_credit_voided_flagged(monkeypatch):
     svc, repo = _fake_issue_service()
     local = SimpleNamespace(id=20, qbo_id="VC-VOID")
     mapping = SimpleNamespace(bill_credit_id=66)
-    client = _FakeVendorCreditClient(get_raises=QboNotFoundError("not found"))
+    client = _FakeVendorCreditClient(ids=[], get_raises=QboNotFoundError("not found"))
     _patch_vendor_credit_stack(
         monkeypatch,
         client=client,
@@ -390,6 +411,7 @@ def test_vendor_credit_detector_failure_isolation(monkeypatch):
     mapping = SimpleNamespace(bill_credit_id=88)
     client = _FakeVendorCreditClient(
         vendor_credits=[],
+        ids=[],
         query_raises=RuntimeError("query blew up"),
         get_raises=QboNotFoundError("gone"),
     )

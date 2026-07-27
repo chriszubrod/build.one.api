@@ -5,6 +5,7 @@ from typing import List, Optional
 
 # Local Imports
 from integrations.intuit.qbo.base.client import QboHttpClient
+from integrations.intuit.qbo.base.paging import page_all_record_ids
 from integrations.intuit.qbo.purchase.external.schemas import (
     QboPurchase,
     QboPurchaseCreate,
@@ -254,3 +255,19 @@ class QboPurchaseClient:
 
         logger.info(f"Retrieved {len(all_purchases)} purchases from QBO")
         return all_purchases
+
+    def query_all_purchase_ids(self) -> List[str]:
+        """
+        Page the complete set of live QBO Purchase ids for this realm.
+
+        STRICT — raises on any anomaly rather than returning a short list, so a
+        caller diffing local mappings against this set can never flag LIVE
+        records as deleted off a truncated fetch. Do NOT substitute
+        `query_all_purchases` for this: it swallows a missing QueryResponse as an
+        empty page and ends pagination early. See base/paging.py.
+        """
+        return page_all_record_ids(
+            self._http_client,
+            entity="Purchase",
+            operation_name="qbo.purchase.query_ids",
+        )

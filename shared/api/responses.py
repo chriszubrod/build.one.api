@@ -59,6 +59,23 @@ def raise_database_error(error: Exception) -> None:
     'duplicate' / 'unique' / the constraint name. Deliberately NOT 409:
     the client maps 409 to its optimistic-concurrency conflict flow, which
     would bypass the claim logic entirely (round-2 review 2026-06-10).
+
+    Foreign-key violations (SQL 547) also surface as 422, with a schema-free
+    clean message. Also deliberately NOT 409: iOS reaches a 547 through
+    FK_TimeLog_Project on POST /api/v1/time-entries/{id}/logs and PUT
+    /api/v1/time-logs/{id} (TimeLogService never validates project_id, so a
+    stale offline project id lands in the sproc), and its 409 branch DISCARDS
+    the queued local edit — destroying a field worker's clock-out and note.
+    422 keeps it in the terminal-but-non-discarding `.requestFailed` bucket,
+    same as the unique-key branch.
+
+    Detection needs BOTH the 547 number and an FK-specific phrase: 547 also
+    covers CHECK-constraint violations, and matching 'constraint' alone would
+    swallow CHECK and UNIQUE too. SQL Server's own wording separates the two
+    directions — 'REFERENCE constraint' is a blocked DELETE/UPDATE (children
+    still point here), 'FOREIGN KEY constraint' is an INSERT/UPDATE naming a
+    row that doesn't exist.
+
     Anything else re-raises unchanged.
     """
     message = str(error)
@@ -68,4 +85,15 @@ def raise_database_error(error: Exception) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=message,
         )
+    if "547" in message:
+        if "reference constraint" in lower:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="This record is still referenced by other records and cannot be deleted.",
+            )
+        if "foreign key constraint" in lower:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="This record references another record that no longer exists.",
+            )
     raise error

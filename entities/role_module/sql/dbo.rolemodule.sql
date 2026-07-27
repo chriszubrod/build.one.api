@@ -247,6 +247,22 @@ BEGIN
 END;
 GO
 
+-- ── Constraints — canonical declarations ─────────────────────────────────────
+-- These are the schema this table is DECLARED to have; a from-scratch build (see
+-- sql/README.md) creates them from this file. They were absent from prod until
+-- U-053: the missing GO above swallowed the first block into
+-- DeleteRoleModuleById's body (fixed in U-048) and the base was never re-applied.
+-- U-053 applies all three deliberately via
+--   entities/role_module/sql/migrations/001_rbac_join_integrity_constraints.sql
+-- (data-guarded + self-verifying) rather than as an untracked side effect of a
+-- base re-apply. Keep them here — the base is the declared schema, the migration
+-- is the apply vehicle, exactly as sprocs live here and are applied by running
+-- this file.
+--
+-- APPLY STATUS: the migration is committed but the prod apply is a separately
+-- gated action. Until it has run, prod still has NO foreign keys and no unique
+-- constraint on this table. Confirm with the read-back query in TODO.md before
+-- assuming base == live for the constraints (the 8 sprocs are already base == live).
 -- FK constraints
 IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_RoleModule_Role')
 BEGIN

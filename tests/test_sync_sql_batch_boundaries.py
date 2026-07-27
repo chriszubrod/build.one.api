@@ -21,13 +21,24 @@ SYNC_SQL = REPO_ROOT / "integrations" / "sync" / "sql" / "dbo.sync.sql"
 USER_PROJECT_SQL = (
     REPO_ROOT / "entities" / "user_project" / "sql" / "dbo.userproject.sql"
 )
+MODULE_SQL = REPO_ROOT / "entities" / "module" / "sql" / "dbo.module.sql"
+ROLE_MODULE_SQL = (
+    REPO_ROOT / "entities" / "role_module" / "sql" / "dbo.rolemodule.sql"
+)
 
 # Hand-listed, not derived from ENTITY_BASE_FILES: the BEGIN/END depth tracker
 # false-positives on multi-line CASE…END in other base files (e.g. bill's
 # ReadBillsPaginated), and SYNC_SQL is not an entity base file. Generalize to
 # ENTITY_BASE_FILES ∪ {SYNC_SQL} once the tracker skips CASE…END bodies; until
 # then, add your file here when you convert an entity to single-source.
-_BATCH_BOUNDARY_SQL_FILES = (SYNC_SQL, USER_PROJECT_SQL)
+# U-053 added MODULE_SQL (IX_Module_PublicId GO fix) and ROLE_MODULE_SQL
+# (U-048's DeleteRoleModuleById GO fix — now guarded against regression).
+_BATCH_BOUNDARY_SQL_FILES = (
+    SYNC_SQL,
+    USER_PROJECT_SQL,
+    MODULE_SQL,
+    ROLE_MODULE_SQL,
+)
 
 _PROCEDURE_PATTERN = re.compile(
     r"CREATE\s+(?:OR\s+ALTER\s+)?PROCEDURE\s+(?:\[\w+\]|\w+\s*\.\s*)?(?:\[(\w+)\]|(\w+))",

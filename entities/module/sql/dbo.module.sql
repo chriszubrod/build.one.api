@@ -207,6 +207,14 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
+GO
+
+-- NB the GO above is load-bearing (U-053, the third instance of the U-048 batch
+-- trap): a stored-procedure body runs to the end of its BATCH, not to its matching
+-- END, so without it the IF NOT EXISTS block below was silently compiled into
+-- DeleteModuleById's body and IX_Module_PublicId never ran as DDL. Adding the GO
+-- makes this a real index creation on the next apply of this file — that apply is
+-- its own gated decision, see TODO.md.
 
 -- PublicId index
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Module_PublicId' AND object_id = OBJECT_ID('dbo.Module'))
@@ -215,6 +223,19 @@ BEGIN
 END
 GO
 
+-- Module.Name uniqueness. RBAC resolves modules by name (dbo.ReadModuleByName, and
+-- every module seed hand-rolls IF NOT EXISTS ... WHERE [Name] = ...), so
+-- uniqueness is an invariant the schema should own rather than one each seed
+-- re-checks. Guarded on sys.indexes so a pre-existing bare unique index of the
+-- same name is also a clean no-op. The apply vehicle for an existing database is
+--   entities/role_module/sql/migrations/001_rbac_join_integrity_constraints.sql
+-- (U-053) — that prod apply is separately gated, so do not assume this constraint
+-- is live until the read-back in TODO.md confirms it.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [name] = 'UQ_Module_Name' AND object_id = OBJECT_ID('dbo.Module'))
+BEGIN
+    ALTER TABLE [dbo].[Module] ADD CONSTRAINT [UQ_Module_Name] UNIQUE ([Name]);
+END
+GO
 
 -- User-scoped read: returns Module records the user has access to,
 -- transitively via dbo.UserRole -> dbo.Role -> dbo.RoleModule -> dbo.Module.

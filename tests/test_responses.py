@@ -168,13 +168,15 @@ def test_raise_database_error_fk_detail_leaks_no_schema_and_no_duplicate_tokens(
 
 
 def test_raise_database_error_fk_survives_real_map_database_error_wrapping():
-    """End-to-end shape check: map_database_error's 'conflict' keyword matches
-    'conflicted', so a real 547 arrives prefixed 'Concurrency violation: '.
-    The FK branch must still fire through that prefix."""
-    from shared.database import map_database_error
+    """End-to-end shape check: map_database_error now classifies 547 FK violations
+    as DatabaseConstraintError (not the concurrency branch), and raise_database_error
+    still surfaces 422 with the clean reference message."""
+    from shared.database import DatabaseConstraintError, map_database_error
 
     wrapped = map_database_error(Exception(FK_DELETE_SQL))
-    assert "Concurrency violation" in str(wrapped)
+    assert isinstance(wrapped, DatabaseConstraintError)
+    assert str(wrapped) == "This record is still referenced by other records and cannot be deleted."
+    assert "547" in wrapped.original
     with pytest.raises(HTTPException) as exc_info:
         raise_database_error(wrapped)
     assert exc_info.value.status_code == 422

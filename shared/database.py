@@ -10,6 +10,7 @@ from typing import Callable, TypeVar, Any
 
 # Local Imports
 import config
+from shared.db_constraints import ConstraintViolation, classify_constraint_violation
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,18 @@ class DatabaseConcurrencyError(DatabaseError):
 
 class DatabaseTimeoutError(DatabaseError):
     pass
+
+
+class DatabaseConstraintError(DatabaseError):
+    """A SQL constraint violation (FK 547 / unique 2627|2601), classified precisely by error number.
+
+    str() is the CLEAN client-safe message; .original keeps the raw driver text for logs and for
+    handlers that still need to sniff it.
+    """
+    def __init__(self, violation: ConstraintViolation, original: str):
+        super().__init__(violation.message)
+        self.violation = violation
+        self.original = original
 
 
 def _connect():
@@ -111,10 +124,31 @@ def call_procedure(cursor: pyodbc.Cursor, name: str, params: dict):
     return cursor
 
 
+# 'conflict' is retained deliberately: it is the only keyword here covering SQL 3960
+# (snapshot isolation update conflict). SQL 547 can no longer reach this list — the
+# number-first constraint check in map_database_error short-circuits it — which is what
+# stopped every FK violation from surfacing as a 409 concurrency error with raw SQL.
+# Named rather than inlined so tests/test_database_error_mapping.py can derive the list
+# instead of retyping it (a hand-copied duplicate silently stops testing the real one).
+CONCURRENCY_KEYWORDS = (
+    'concurrency', 'version', 'rowversion', 'optimistic', 'conflict',
+    'deadlock', 'lock',
+)
+
+
 def map_database_error(error: Exception) -> DatabaseError:
     if isinstance(error, DatabaseError):
         return error
-    error_message = str(error).lower()
+    error_text = str(error)
+    error_message = error_text.lower()
+
+    # Constraint violations are classified by ERROR NUMBER (two-signal) BEFORE the
+    # substring blocks below. Precise beats fuzzy: SQL 547's text contains
+    # 'conflicted', which the concurrency keyword list's 'conflict' entry matched,
+    # so every FK violation used to surface as a 409 concurrency error with raw SQL.
+    violation = classify_constraint_violation(error_text)
+    if violation is not None:
+        return DatabaseConstraintError(violation, original=error_text)
 
     # Connection-related errors
     if any(keyword in error_message for keyword in [
@@ -130,10 +164,7 @@ def map_database_error(error: Exception) -> DatabaseError:
         return DatabaseTimeoutError(f"Database operation timed out: {error}")
     
     # Concurrency errors
-    if any(keyword in error_message for keyword in [
-        'concurrency', 'version', 'rowversion', 'optimistic', 'conflict',
-        'deadlock', 'lock'
-    ]):
+    if any(keyword in error_message for keyword in CONCURRENCY_KEYWORDS):
         return DatabaseConcurrencyError(f"Concurrency violation: {error}")
     
     # Default to general operation error

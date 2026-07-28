@@ -1,4 +1,4 @@
-"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131/U-133/U-137/U-140/U-142/U-144/U-146/U-148/U-150 guard: canonical
+"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131/U-133/U-137/U-140/U-142/U-144/U-146/U-148/U-150/U-158 guard: canonical
 SQL homes for sprocs, access UDFs, and the shared human-only review predicate.
 
 Three guard shapes:
@@ -12,7 +12,7 @@ Three guard shapes:
   landing in partially-converted base files as per-sproc rows — 3 of those,
   the USER_BASE trio, later subsumed by U-131's whole-file guard), user_project
   (U-129), user (U-131), user_module (U-133), organization (U-137), company (U-140), vendor (U-142),
-  user_role (U-144), user_company (U-146), attachment (U-148), and invoice_line_item (U-150). The remaining entities still carry
+  user_role (U-144), user_company (U-146), attachment (U-148), invoice_line_item (U-150), and invoice (U-158). The remaining entities still carry
   duplicated base sprocs in migrations (contract_labor=7, email_message=7, …); converting them is future work.
   **When you convert one, add its row to
   ENTITY_BASE_FILES or SINGLE_SOURCE_SPROCS** — coverage is opt-in, so a
@@ -86,6 +86,7 @@ USER_ROLE_BASE = REPO_ROOT / "entities" / "user_role" / "sql" / "dbo.userrole.sq
 USER_COMPANY_BASE = REPO_ROOT / "entities" / "user_company" / "sql" / "dbo.usercompany.sql"
 ATTACHMENT_BASE = REPO_ROOT / "entities" / "attachment" / "sql" / "dbo.attachment.sql"
 INVOICE_LINE_ITEM_BASE = REPO_ROOT / "entities" / "invoice_line_item" / "sql" / "dbo.invoice_line_item.sql"
+INVOICE_BASE = REPO_ROOT / "entities" / "invoice" / "sql" / "dbo.invoice.sql"
 AUTH_BASE = REPO_ROOT / "entities" / "auth" / "sql" / "dbo.auth.sql"
 
 # U-062/U-087: the three review-notification recipient resolvers homed in the
@@ -118,6 +119,20 @@ SINGLE_SOURCE_SPROCS = [
     ("UpdateContractLaborAggregates", CONTRACT_LABOR_BASE),
     ("ReadUserRolesByUserIdAndCompanyId", USER_ROLE_BASE),
     ("RevokeAllAuthRefreshTokensByAuthId", AUTH_BASE),
+    # U-158: CreateInvoice is pinned for the same reason as the two rows above,
+    # but on a sharper trigger — it is the one case where a conversion actively
+    # REMOVED detection rather than merely failing to add it. Pre-U-158 its
+    # ledger row ({base, gap2_core_threading}) was ITSELF a presence pin:
+    # _assert_matches_ledger asserts exact both-direction path-set equality, so
+    # deleting the base body flipped the sproc to migration-only and failed the
+    # suite. Post-U-158 the gap2 copy is a stub, so a deleted base body appears
+    # in NO .sql file at all and goes invisible — verified by mutation, the full
+    # suite stays GREEN. The three Invoice list sprocs keep an incidental pin
+    # via test_list_sproc_scoping's "not found" assert; CreateInvoice had none,
+    # and it is the sproc whose @CreatedByUserId drift this unit exists to
+    # freeze. The generalized expected-set guard (its own unit) still subsumes
+    # this; don't copy the shape for ordinary sprocs.
+    ("CreateInvoice", INVOICE_BASE),
 ]
 
 # U-061: the four Create sprocs whose bodies had drifted BEHIND their canonical
@@ -161,6 +176,7 @@ GAP2_NEUTRALIZED_SPROCS = frozenset(
 # U-146: dbo.usercompany.sql reconciled to migration 002 (eight Phase-1 sprocs) and made sole home of all 8 UserCompany sprocs — whole-file guard.
 # U-148: dbo.attachment.sql reconciled (CreateAttachment <- gap2_adjacent_threading Phase-Adjacent body) and made sole home of all 10 Attachment sprocs — whole-file guard; also stubs the CreateAttachment copy in gap2_adjacent_threading.sql and the five read-sproc copies in update_procedures_with_extraction.sql.
 # U-150: dbo.invoice_line_item.sql was already the live layer (applied+verified to prod 2026-07-06, commit be2a877) — NOT a reconcile; the migration copy was the stale side and was stubbed.
+# U-158: dbo.invoice.sql reconciled to the LIVE layer (ReadInvoices / ReadInvoicesPaginated / CountInvoices <- gap1_list_sprocs_scoped.sql, CreateInvoice <- gap2_core_threading.sql — the base was the stale side) and made sole home of all 10 Invoice sprocs — whole-file guard; the four migration copies are stubbed.
 # "Entity" here reads as entity/package, per the module docstring.
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
@@ -176,6 +192,7 @@ ENTITY_BASE_FILES = [
     ("user_company", USER_COMPANY_BASE),
     ("attachment", ATTACHMENT_BASE),
     ("invoice_line_item", INVOICE_LINE_ITEM_BASE),
+    ("invoice", INVOICE_BASE),
     ("completion_job", COMPLETION_JOB_BASE),
     ("bill", BILL_BASE),
     ("bill_source_email", BILL_SOURCE_EMAIL_BASE),

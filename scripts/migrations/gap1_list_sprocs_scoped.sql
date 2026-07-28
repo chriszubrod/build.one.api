@@ -1,20 +1,33 @@
--- Gap 1 — List-path read sprocs scoped by UserProject membership.
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-158, 2026-07-28) — WHOLE FILE. Every sproc body this file once
+-- carried is now a pointer stub; applying it modifies ZERO database objects.
 --
--- Per Q1.1 + Q1.2 + Q1.3: enforces UserProject scoping on the list /
--- paginated / count read sprocs across the 5 transactional entities
--- whose direct lookups (by_id / by_public_id / by_other_keys) are NOT
--- yet scoped — those land in a follow-up tightening pass.
+-- The scoped bodies live in their entity base files:
+--   Bill / Expense / ContractLabor  — U-089, entities/{bill,expense,contract_labor}/sql/
+--   BillCredit                      — U-100, entities/bill_credit/sql/dbo.bill_credit.sql
+--   Invoice                         — U-158, entities/invoice/sql/dbo.invoice.sql
+-- Change the base file and apply it; do NOT reintroduce a body here.
+-- Scoping is guarded by tests/test_list_sproc_scoping.py.
 --
--- Project's full read surface (4 sprocs) is already scoped via
--- entities/project/sql/migrations/001_gap1_scope_by_user_project.sql.
+-- Original intent of this file (preserved for lineage):
+--   Gap 1 — List-path read sprocs scoped by UserProject membership.
 --
--- Filter: each affected sproc gains
---     @ActorUserId BIGINT = NULL,
---     @ActorIsSystemAdmin BIT = NULL
--- and an `AND dbo.UserCanAccess<Entity>(...) = 1` clause. NULL
--- @ActorUserId bypasses (back-compat during deploy).
+--   Per Q1.1 + Q1.2 + Q1.3: enforces UserProject scoping on the list /
+--   paginated / count read sprocs across the 5 transactional entities
+--   whose direct lookups (by_id / by_public_id / by_other_keys) are NOT
+--   yet scoped — those land in a follow-up tightening pass.
 --
--- Idempotent (CREATE OR ALTER). Safe to re-run.
+--   Project's full read surface (4 sprocs) is already scoped via
+--   entities/project/sql/migrations/001_gap1_scope_by_user_project.sql.
+--
+--   Filter: each affected sproc gains
+--       @ActorUserId BIGINT = NULL,
+--       @ActorIsSystemAdmin BIT = NULL
+--   and an `AND dbo.UserCanAccess<Entity>(...) = 1` clause. NULL
+--   @ActorUserId bypasses (back-compat during deploy).
+--
+--   Idempotent (CREATE OR ALTER). Safe to re-run.
+-- ---------------------------------------------------------------------------
 
 SET XACT_ABORT ON;
 SET NOCOUNT ON;
@@ -69,140 +82,13 @@ GO
 -- Invoice — direct ProjectId on parent
 -- =====================================================================
 
-CREATE OR ALTER PROCEDURE ReadInvoices
-(
-    @ActorUserId BIGINT = NULL,
-    @ActorIsSystemAdmin BIT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    SELECT
-        i.[Id],
-        i.[PublicId],
-        i.[RowVersion],
-        CONVERT(VARCHAR(19), i.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), i.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        i.[ProjectId],
-        i.[PaymentTermId],
-        CONVERT(VARCHAR(19), i.[InvoiceDate], 120) AS [InvoiceDate],
-        CONVERT(VARCHAR(19), i.[DueDate], 120) AS [DueDate],
-        i.[InvoiceNumber],
-        i.[TotalAmount],
-        i.[Memo],
-        i.[IsDraft]
-    FROM dbo.[Invoice] i
-    WHERE dbo.UserCanAccessProject(@ActorUserId, @ActorIsSystemAdmin, i.[ProjectId]) = 1
-    ORDER BY i.[InvoiceDate] DESC, i.[InvoiceNumber] ASC;
-    COMMIT TRANSACTION;
-END;
+-- SUPERSEDED (U-158): dbo.ReadInvoices single-sourced in entities/invoice/sql/dbo.invoice.sql.
 GO
 
-CREATE OR ALTER PROCEDURE ReadInvoicesPaginated
-(
-    @PageNumber INT = 1,
-    @PageSize INT = 50,
-    @SearchTerm NVARCHAR(255) = NULL,
-    @ProjectId BIGINT = NULL,
-    @StartDate DATETIME2(3) = NULL,
-    @EndDate DATETIME2(3) = NULL,
-    @IsDraft BIT = NULL,
-    @SortBy NVARCHAR(50) = 'InvoiceDate',
-    @SortDirection NVARCHAR(4) = 'DESC',
-    @ActorUserId BIGINT = NULL,
-    @ActorIsSystemAdmin BIT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    DECLARE @Offset INT = (@PageNumber - 1) * @PageSize;
-    DECLARE @SortColumn NVARCHAR(50) = CASE @SortBy
-        WHEN 'InvoiceNumber' THEN 'InvoiceNumber'
-        WHEN 'InvoiceDate' THEN 'InvoiceDate'
-        WHEN 'DueDate' THEN 'DueDate'
-        WHEN 'TotalAmount' THEN 'TotalAmount'
-        WHEN 'ProjectId' THEN 'ProjectId'
-        ELSE 'InvoiceDate'
-    END;
-    DECLARE @SortDir NVARCHAR(4) = CASE WHEN UPPER(@SortDirection) = 'ASC' THEN 'ASC' ELSE 'DESC' END;
-
-    SELECT
-        i.[Id],
-        i.[PublicId],
-        i.[RowVersion],
-        CONVERT(VARCHAR(19), i.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), i.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        i.[ProjectId],
-        i.[PaymentTermId],
-        CONVERT(VARCHAR(19), i.[InvoiceDate], 120) AS [InvoiceDate],
-        CONVERT(VARCHAR(19), i.[DueDate], 120) AS [DueDate],
-        i.[InvoiceNumber],
-        i.[TotalAmount],
-        i.[Memo],
-        i.[IsDraft]
-    FROM dbo.[Invoice] i
-    LEFT JOIN dbo.[Project] p ON i.[ProjectId] = p.[Id]
-    WHERE
-        (@SearchTerm IS NULL OR
-         i.[InvoiceNumber] LIKE '%' + @SearchTerm + '%' OR
-         i.[Memo] LIKE '%' + @SearchTerm + '%' OR
-         p.[Name] LIKE '%' + @SearchTerm + '%' OR
-         CONVERT(VARCHAR(10), i.[InvoiceDate], 120) LIKE '%' + @SearchTerm + '%' OR
-         CONVERT(VARCHAR(10), i.[DueDate], 120) LIKE '%' + @SearchTerm + '%' OR
-         CONVERT(VARCHAR(50), i.[TotalAmount]) LIKE '%' + @SearchTerm + '%')
-        AND (@ProjectId IS NULL OR i.[ProjectId] = @ProjectId)
-        AND (@StartDate IS NULL OR i.[InvoiceDate] >= @StartDate)
-        AND (@EndDate IS NULL OR i.[InvoiceDate] <= @EndDate)
-        AND (@IsDraft IS NULL OR i.[IsDraft] = @IsDraft)
-        AND dbo.UserCanAccessProject(@ActorUserId, @ActorIsSystemAdmin, i.[ProjectId]) = 1
-    ORDER BY
-        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'InvoiceNumber' THEN i.[InvoiceNumber] END ASC,
-        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'InvoiceNumber' THEN i.[InvoiceNumber] END DESC,
-        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'InvoiceDate' THEN i.[InvoiceDate] END ASC,
-        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'InvoiceDate' THEN i.[InvoiceDate] END DESC,
-        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'DueDate' THEN i.[DueDate] END ASC,
-        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'DueDate' THEN i.[DueDate] END DESC,
-        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'TotalAmount' THEN i.[TotalAmount] END ASC,
-        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'TotalAmount' THEN i.[TotalAmount] END DESC,
-        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'ProjectId' THEN i.[ProjectId] END ASC,
-        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'ProjectId' THEN i.[ProjectId] END DESC
-    OFFSET @Offset ROWS
-    FETCH NEXT @PageSize ROWS ONLY;
-    COMMIT TRANSACTION;
-END;
+-- SUPERSEDED (U-158): dbo.ReadInvoicesPaginated single-sourced in entities/invoice/sql/dbo.invoice.sql.
 GO
 
-CREATE OR ALTER PROCEDURE CountInvoices
-(
-    @SearchTerm NVARCHAR(255) = NULL,
-    @ProjectId BIGINT = NULL,
-    @StartDate DATETIME2(3) = NULL,
-    @EndDate DATETIME2(3) = NULL,
-    @IsDraft BIT = NULL,
-    @ActorUserId BIGINT = NULL,
-    @ActorIsSystemAdmin BIT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    SELECT COUNT(*) AS [TotalCount]
-    FROM dbo.[Invoice] i
-    LEFT JOIN dbo.[Project] p ON i.[ProjectId] = p.[Id]
-    WHERE
-        (@SearchTerm IS NULL OR
-         i.[InvoiceNumber] LIKE '%' + @SearchTerm + '%' OR
-         i.[Memo] LIKE '%' + @SearchTerm + '%' OR
-         p.[Name] LIKE '%' + @SearchTerm + '%' OR
-         CONVERT(VARCHAR(10), i.[InvoiceDate], 120) LIKE '%' + @SearchTerm + '%' OR
-         CONVERT(VARCHAR(10), i.[DueDate], 120) LIKE '%' + @SearchTerm + '%' OR
-         CONVERT(VARCHAR(50), i.[TotalAmount]) LIKE '%' + @SearchTerm + '%')
-        AND (@ProjectId IS NULL OR i.[ProjectId] = @ProjectId)
-        AND (@StartDate IS NULL OR i.[InvoiceDate] >= @StartDate)
-        AND (@EndDate IS NULL OR i.[InvoiceDate] <= @EndDate)
-        AND (@IsDraft IS NULL OR i.[IsDraft] = @IsDraft)
-        AND dbo.UserCanAccessProject(@ActorUserId, @ActorIsSystemAdmin, i.[ProjectId]) = 1;
-    COMMIT TRANSACTION;
-END;
+-- SUPERSEDED (U-158): dbo.CountInvoices single-sourced in entities/invoice/sql/dbo.invoice.sql.
 GO
 
 -- =====================================================================
@@ -218,4 +104,4 @@ GO
 -- SUPERSEDED (U-089): dbo.CountContractLabors single-sourced in entities/contract_labor/sql/dbo.contract_labor.sql.
 GO
 
-PRINT 'Gap 1 list-path scoping applied to Bill / BillCredit / Expense / Invoice / ContractLabor.';
+PRINT 'SUPERSEDED (U-158): no sprocs applied; canonical scoped definitions live in the bill / bill_credit / expense / invoice / contract_labor entity base files.';

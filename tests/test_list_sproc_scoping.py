@@ -1,7 +1,7 @@
-"""Guard: the Bill/Expense/ContractLabor list sprocs stay RBAC-scoped in their base files.
+"""Guard: the Bill/Expense/ContractLabor/Invoice list sprocs stay RBAC-scoped in their base files.
 
 Background (U-089, 2026-07-19): the deployed repo layer passes @ActorUserId /
-@ActorIsSystemAdmin to these 9 list-path sprocs. A base-file re-apply had reverted
+@ActorIsSystemAdmin to these list-path sprocs. A base-file re-apply had reverted
 them to their unscoped form in prod, so `EXEC` failed with SQL 8145 (param not found)
 and `GET /api/v1/get/{bills,expenses,contract-labor}` 500'd — the same single-source
 drift class as the U-037 TimeEntry outage.
@@ -9,6 +9,10 @@ drift class as the U-037 TimeEntry outage.
 The prod sprocs were restored and the base files were reconciled to the scoped form
 (base == prod). This test keeps the base files from being silently un-scoped again:
 each list sproc's body must carry the actor params AND a UserCanAccess* filter.
+
+U-158 (2026-07-28) brought the three Invoice list sprocs into their entity base file
+(they had been left in gap1_list_sprocs_scoped.sql when U-089 reconciled the others)
+so they are guarded here too.
 
 NOTE: this is a SCOPING guard, not a single-source guard. These sprocs are still
 duplicated in several historical migrations (gap1_bill_family_*, 003_read_bill_
@@ -34,6 +38,9 @@ SCOPED_LIST_SPROCS = [
     ("ReadContractLabors", "entities/contract_labor/sql/dbo.contract_labor.sql", "UserCanAccessProject"),
     ("ReadContractLaborsPaginated", "entities/contract_labor/sql/dbo.contract_labor.sql", "UserCanAccessProject"),
     ("CountContractLabors", "entities/contract_labor/sql/dbo.contract_labor.sql", "UserCanAccessProject"),
+    ("ReadInvoices", "entities/invoice/sql/dbo.invoice.sql", "UserCanAccessProject"),
+    ("ReadInvoicesPaginated", "entities/invoice/sql/dbo.invoice.sql", "UserCanAccessProject"),
+    ("CountInvoices", "entities/invoice/sql/dbo.invoice.sql", "UserCanAccessProject"),
 ]
 
 

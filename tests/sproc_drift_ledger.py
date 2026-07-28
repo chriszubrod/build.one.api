@@ -7,10 +7,6 @@ ledgered.
 """
 
 SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
-    "CountInvoices": frozenset({
-        'entities/invoice/sql/dbo.invoice.sql',
-        'scripts/migrations/gap1_list_sprocs_scoped.sql',
-    }),  # known-dup, home=entities/invoice/sql/dbo.invoice.sql
     "CreateBillLineItemAttachment": frozenset({
         'entities/bill_line_item_attachment/sql/dbo.bill_line_item_attachment.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',
@@ -35,10 +31,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/expense_line_item_attachment/sql/dbo.expense_line_item_attachment.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',
     }),  # known-dup, home=entities/expense_line_item_attachment/sql/dbo.expense_line_item_attachment.sql
-    "CreateInvoice": frozenset({
-        'entities/invoice/sql/dbo.invoice.sql',
-        'scripts/migrations/gap2_core_threading.sql',
-    }),  # known-dup, home=entities/invoice/sql/dbo.invoice.sql
     "CreateInvoiceLineItemAttachment": frozenset({
         'entities/invoice_line_item_attachment/sql/dbo.invoice_line_item_attachment.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',
@@ -134,14 +126,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/email_message/sql/migrations/002_contract_labor_timesheet_vocab.sql',
         'entities/email_message/sql/migrations/003_delegated_to_contract_labor_action_vocab.sql',
     }),  # known-dup, home=entities/email_message/sql/dbo.email_message.sql
-    "ReadInvoices": frozenset({
-        'entities/invoice/sql/dbo.invoice.sql',
-        'scripts/migrations/gap1_list_sprocs_scoped.sql',
-    }),  # known-dup, home=entities/invoice/sql/dbo.invoice.sql
-    "ReadInvoicesPaginated": frozenset({
-        'entities/invoice/sql/dbo.invoice.sql',
-        'scripts/migrations/gap1_list_sprocs_scoped.sql',
-    }),  # known-dup, home=entities/invoice/sql/dbo.invoice.sql
     "ReadProjectsByUserId": frozenset({
         'entities/project/sql/dbo.project.sql',
         'entities/project/sql/migrations/003_read_projects_by_user_id_admin_bypass.sql',

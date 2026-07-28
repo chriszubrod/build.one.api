@@ -11,7 +11,8 @@
 -- base sproc files (which would roll back later migrations like Gap 1
 -- list-path filters or Phase 3 actor params on Read sprocs).
 --
--- NEUTRALIZED sections (8 of the 11 below are now base-canonical pointer stubs):
+-- NEUTRALIZED sections (now base-canonical pointer stubs — the per-unit list
+-- below is the record; do not re-add a hand-maintained count here):
 --   U-061 (2026-07-17) — CreateProject, CreateBill, CreateExpense,
 --     CreateInvoiceLineItem: their bodies had drifted BEHIND their entity base
 --     files, so re-running them reverted prod.
@@ -19,7 +20,10 @@
 --   U-102 (2026-07-21) — CreateBillCredit, CreateBillCreditLineItem: the
 --     INVERSE case — the BASE files were the stale copies (no @CreatedByUserId)
 --     and were reconciled to this file's form verbatim.
--- The remaining 3 live bodies (CreateInvoice, CreateContractLabor,
+--   U-158 (2026-07-28) — CreateInvoice: the INVERSE case — the BASE file was
+--     the stale copy (no @CreatedByUserId) and was reconciled to this file's
+--     form verbatim.
+-- The remaining 2 live bodies (CreateContractLabor,
 -- CreateContractLaborLineItem) are the live @CreatedByUserId threading.
 -- =====================================================================
 
@@ -98,43 +102,21 @@ GO
 GO
 
 -- ===== 5. CreateInvoice =====
-CREATE OR ALTER PROCEDURE CreateInvoice
-(
-    @ProjectId BIGINT,
-    @PaymentTermId BIGINT NULL,
-    @InvoiceDate DATETIME2(3),
-    @DueDate DATETIME2(3),
-    @InvoiceNumber NVARCHAR(50),
-    @TotalAmount DECIMAL(18,2) NULL,
-    @Memo NVARCHAR(MAX) NULL,
-    @IsDraft BIT = 1,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[Invoice] ([CreatedDatetime], [ModifiedDatetime], [ProjectId], [PaymentTermId], [InvoiceDate], [DueDate], [InvoiceNumber], [TotalAmount], [Memo], [IsDraft], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[ProjectId],
-        INSERTED.[PaymentTermId],
-        CONVERT(VARCHAR(19), INSERTED.[InvoiceDate], 120) AS [InvoiceDate],
-        CONVERT(VARCHAR(19), INSERTED.[DueDate], 120) AS [DueDate],
-        INSERTED.[InvoiceNumber],
-        INSERTED.[TotalAmount],
-        INSERTED.[Memo],
-        INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @ProjectId, @PaymentTermId, @InvoiceDate, @DueDate, @InvoiceNumber, @TotalAmount, @Memo, @IsDraft, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-158, 2026-07-28) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/invoice/sql/dbo.invoice.sql
+-- That base was STALE (it lacked @CreatedByUserId) and has been reconciled to
+-- this file's live form verbatim.
+--
+-- Drift (INVERTED — here the BASE was the copy that had fallen behind, not this
+-- file): the base omitted @CreatedByUserId, which InvoiceRepository.create sends
+-- unconditionally (entities/invoice/persistence/repo.py), so re-applying the base
+-- file would have reverted prod CreateInvoice to the pre-threading shape and broken
+-- every invoice create with SQL 8145. Re-running this file is now a no-op for
+-- CreateInvoice. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 6. CreateContractLabor =====
@@ -337,5 +319,5 @@ BEGIN
 END;
 GO
 
-PRINT 'Gap 2 Phase Core: 7 live Create sprocs threaded with @CreatedByUserId; 4 neutralized to base-canonical pointer stubs (U-061)';
+PRINT 'Gap 2 Phase Core: CreateContractLabor + CreateContractLaborLineItem threaded with @CreatedByUserId; all other sections are base-canonical pointer stubs (U-061/U-074/U-102/U-158)';
 GO

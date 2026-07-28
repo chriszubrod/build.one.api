@@ -63,7 +63,8 @@ CREATE OR ALTER PROCEDURE CreateInvoice
     @InvoiceNumber NVARCHAR(50),
     @TotalAmount DECIMAL(18,2) NULL,
     @Memo NVARCHAR(MAX) NULL,
-    @IsDraft BIT = 1
+    @IsDraft BIT = 1,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -71,7 +72,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Invoice] ([CreatedDatetime], [ModifiedDatetime], [ProjectId], [PaymentTermId], [InvoiceDate], [DueDate], [InvoiceNumber], [TotalAmount], [Memo], [IsDraft])
+    INSERT INTO dbo.[Invoice] ([CreatedDatetime], [ModifiedDatetime], [ProjectId], [PaymentTermId], [InvoiceDate], [DueDate], [InvoiceNumber], [TotalAmount], [Memo], [IsDraft], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -86,7 +87,7 @@ BEGIN
         INSERTED.[TotalAmount],
         INSERTED.[Memo],
         INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @ProjectId, @PaymentTermId, @InvoiceDate, @DueDate, @InvoiceNumber, @TotalAmount, @Memo, @IsDraft);
+    VALUES (@Now, @Now, @ProjectId, @PaymentTermId, @InvoiceDate, @DueDate, @InvoiceNumber, @TotalAmount, @Memo, @IsDraft, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;
@@ -94,27 +95,30 @@ GO
 
 
 CREATE OR ALTER PROCEDURE ReadInvoices
+(
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
+)
 AS
 BEGIN
     BEGIN TRANSACTION;
-
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [ProjectId],
-        [PaymentTermId],
-        CONVERT(VARCHAR(19), [InvoiceDate], 120) AS [InvoiceDate],
-        CONVERT(VARCHAR(19), [DueDate], 120) AS [DueDate],
-        [InvoiceNumber],
-        [TotalAmount],
-        [Memo],
-        [IsDraft]
-    FROM dbo.[Invoice]
-    ORDER BY [InvoiceDate] DESC, [InvoiceNumber] ASC;
-
+        i.[Id],
+        i.[PublicId],
+        i.[RowVersion],
+        CONVERT(VARCHAR(19), i.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), i.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        i.[ProjectId],
+        i.[PaymentTermId],
+        CONVERT(VARCHAR(19), i.[InvoiceDate], 120) AS [InvoiceDate],
+        CONVERT(VARCHAR(19), i.[DueDate], 120) AS [DueDate],
+        i.[InvoiceNumber],
+        i.[TotalAmount],
+        i.[Memo],
+        i.[IsDraft]
+    FROM dbo.[Invoice] i
+    WHERE dbo.UserCanAccessProject(@ActorUserId, @ActorIsSystemAdmin, i.[ProjectId]) = 1
+    ORDER BY i.[InvoiceDate] DESC, i.[InvoiceNumber] ASC;
     COMMIT TRANSACTION;
 END;
 GO
@@ -332,16 +336,15 @@ CREATE OR ALTER PROCEDURE ReadInvoicesPaginated
     @EndDate DATETIME2(3) = NULL,
     @IsDraft BIT = NULL,
     @SortBy NVARCHAR(50) = 'InvoiceDate',
-    @SortDirection NVARCHAR(4) = 'DESC'
+    @SortDirection NVARCHAR(4) = 'DESC',
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
-
     DECLARE @Offset INT = (@PageNumber - 1) * @PageSize;
-
-    DECLARE @SortColumn NVARCHAR(50);
-    SET @SortColumn = CASE @SortBy
+    DECLARE @SortColumn NVARCHAR(50) = CASE @SortBy
         WHEN 'InvoiceNumber' THEN 'InvoiceNumber'
         WHEN 'InvoiceDate' THEN 'InvoiceDate'
         WHEN 'DueDate' THEN 'DueDate'
@@ -349,9 +352,7 @@ BEGIN
         WHEN 'ProjectId' THEN 'ProjectId'
         ELSE 'InvoiceDate'
     END;
-
-    DECLARE @SortDir NVARCHAR(4);
-    SET @SortDir = CASE WHEN UPPER(@SortDirection) = 'ASC' THEN 'ASC' ELSE 'DESC' END;
+    DECLARE @SortDir NVARCHAR(4) = CASE WHEN UPPER(@SortDirection) = 'ASC' THEN 'ASC' ELSE 'DESC' END;
 
     SELECT
         i.[Id],
@@ -381,6 +382,7 @@ BEGIN
         AND (@StartDate IS NULL OR i.[InvoiceDate] >= @StartDate)
         AND (@EndDate IS NULL OR i.[InvoiceDate] <= @EndDate)
         AND (@IsDraft IS NULL OR i.[IsDraft] = @IsDraft)
+        AND dbo.UserCanAccessProject(@ActorUserId, @ActorIsSystemAdmin, i.[ProjectId]) = 1
     ORDER BY
         CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'InvoiceNumber' THEN i.[InvoiceNumber] END ASC,
         CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'InvoiceNumber' THEN i.[InvoiceNumber] END DESC,
@@ -394,7 +396,6 @@ BEGIN
         CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'ProjectId' THEN i.[ProjectId] END DESC
     OFFSET @Offset ROWS
     FETCH NEXT @PageSize ROWS ONLY;
-
     COMMIT TRANSACTION;
 END;
 GO
@@ -406,12 +407,13 @@ CREATE OR ALTER PROCEDURE CountInvoices
     @ProjectId BIGINT = NULL,
     @StartDate DATETIME2(3) = NULL,
     @EndDate DATETIME2(3) = NULL,
-    @IsDraft BIT = NULL
+    @IsDraft BIT = NULL,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
 )
 AS
 BEGIN
     BEGIN TRANSACTION;
-
     SELECT COUNT(*) AS [TotalCount]
     FROM dbo.[Invoice] i
     LEFT JOIN dbo.[Project] p ON i.[ProjectId] = p.[Id]
@@ -426,8 +428,8 @@ BEGIN
         AND (@ProjectId IS NULL OR i.[ProjectId] = @ProjectId)
         AND (@StartDate IS NULL OR i.[InvoiceDate] >= @StartDate)
         AND (@EndDate IS NULL OR i.[InvoiceDate] <= @EndDate)
-        AND (@IsDraft IS NULL OR i.[IsDraft] = @IsDraft);
-
+        AND (@IsDraft IS NULL OR i.[IsDraft] = @IsDraft)
+        AND dbo.UserCanAccessProject(@ActorUserId, @ActorIsSystemAdmin, i.[ProjectId]) = 1;
     COMMIT TRANSACTION;
 END;
 GO

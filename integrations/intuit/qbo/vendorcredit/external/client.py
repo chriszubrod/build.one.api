@@ -79,7 +79,7 @@ class QboVendorCreditClient:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         start_position: int = 1,
-        max_results: int = 100,
+        max_results: int = 1000,
     ) -> List[QboVendorCredit]:
         """Query VendorCredits with optional date filters."""
         where_clauses: List[str] = []
@@ -125,7 +125,7 @@ class QboVendorCreditClient:
         """Query all VendorCredits, handling pagination."""
         all_vendor_credits: List[QboVendorCredit] = []
         start_position = 1
-        max_results = 100
+        max_results = 1000
 
         while True:
             batch = self.query_vendor_credits(

@@ -39,6 +39,12 @@ SEVERITY_BY_DRIFT = {
     DRIFT_INVOICE_DRAW_MISMATCH: "medium",
 }
 
+# Counter keys rolled up from each detector into a reconcile run summary.
+# flagged_deduped is a SUBSET of flagged: a re-seen void still counts as
+# flagged (it was really detected + 404-confirmed); only its duplicate
+# issue-write is suppressed. Do not add them together.
+RECONCILE_COUNT_KEYS = ("auto_fixed", "flagged", "flagged_deduped", "errors")
+
 
 # Sanity ceiling for the void query-diff. A diff that nominates more than this
 # many records is far more likely to be a bad id-fetch than a real mass deletion,
@@ -78,6 +84,13 @@ class ReconciliationService:
 
     def __init__(self, repo: Optional[ReconciliationIssueRepository] = None):
         self.repo = repo or ReconciliationIssueRepository()
+        # Per-run dedupe cache for qbo_voided keys. Scoped to ONE reconcile run:
+        # ReconciliationService is constructed per-invocation (admin reconcile router,
+        # scheduler _sync_reconcile_bills), so all three void detectors share one
+        # fetch and the cache dies with the run. If this service ever becomes
+        # long-lived or a singleton, invalidate this cache per run — otherwise it
+        # goes stale against issues resolved in SQL mid-life.
+        self._void_key_cache = None
 
     # ------------------------------------------------------------------ #
     # Public reconcile entry points (one per entity type)
@@ -107,14 +120,14 @@ class ReconciliationService:
             },
         )
 
-        counts = {"auto_fixed": 0, "flagged": 0, "errors": 0}
+        counts = dict.fromkeys(RECONCILE_COUNT_KEYS, 0)
 
         # Detector 1: QBO-missing-locally
         try:
             d1 = self._reconcile_bill_qbo_missing_locally(
                 realm_id=realm_id, run_id=run_id
             )
-            for key in ("auto_fixed", "flagged", "errors"):
+            for key in RECONCILE_COUNT_KEYS:
                 counts[key] += d1.get(key, 0)
         except Exception:
             logger.exception("qbo.reconcile.detector.failed",
@@ -127,7 +140,7 @@ class ReconciliationService:
             d2 = self._reconcile_bill_qbo_voided(
                 realm_id=realm_id, run_id=run_id
             )
-            for key in ("auto_fixed", "flagged", "errors"):
+            for key in RECONCILE_COUNT_KEYS:
                 counts[key] += d2.get(key, 0)
         except Exception:
             logger.exception("qbo.reconcile.detector.failed",
@@ -143,9 +156,7 @@ class ReconciliationService:
                 "entity_type": "Bill",
                 "realm_id": realm_id,
                 "reconcile_run_id": run_id,
-                "auto_fixed": counts["auto_fixed"],
-                "flagged": counts["flagged"],
-                "errors": counts["errors"],
+                **counts,
             },
         )
         return {"run_id": run_id, **counts}
@@ -170,13 +181,13 @@ class ReconciliationService:
             },
         )
 
-        counts = {"auto_fixed": 0, "flagged": 0, "errors": 0}
+        counts = dict.fromkeys(RECONCILE_COUNT_KEYS, 0)
 
         try:
             d1 = self._reconcile_purchase_qbo_missing_locally(
                 realm_id=realm_id, run_id=run_id
             )
-            for key in ("auto_fixed", "flagged", "errors"):
+            for key in RECONCILE_COUNT_KEYS:
                 counts[key] += d1.get(key, 0)
         except Exception:
             logger.exception("qbo.reconcile.detector.failed",
@@ -188,7 +199,7 @@ class ReconciliationService:
             d2 = self._reconcile_purchase_qbo_voided(
                 realm_id=realm_id, run_id=run_id
             )
-            for key in ("auto_fixed", "flagged", "errors"):
+            for key in RECONCILE_COUNT_KEYS:
                 counts[key] += d2.get(key, 0)
         except Exception:
             logger.exception("qbo.reconcile.detector.failed",
@@ -204,9 +215,7 @@ class ReconciliationService:
                 "entity_type": "Purchase",
                 "realm_id": realm_id,
                 "reconcile_run_id": run_id,
-                "auto_fixed": counts["auto_fixed"],
-                "flagged": counts["flagged"],
-                "errors": counts["errors"],
+                **counts,
             },
         )
         return {"run_id": run_id, **counts}
@@ -231,13 +240,13 @@ class ReconciliationService:
             },
         )
 
-        counts = {"auto_fixed": 0, "flagged": 0, "errors": 0}
+        counts = dict.fromkeys(RECONCILE_COUNT_KEYS, 0)
 
         try:
             d1 = self._reconcile_vendor_credit_qbo_missing_locally(
                 realm_id=realm_id, run_id=run_id
             )
-            for key in ("auto_fixed", "flagged", "errors"):
+            for key in RECONCILE_COUNT_KEYS:
                 counts[key] += d1.get(key, 0)
         except Exception:
             logger.exception("qbo.reconcile.detector.failed",
@@ -249,7 +258,7 @@ class ReconciliationService:
             d2 = self._reconcile_vendor_credit_qbo_voided(
                 realm_id=realm_id, run_id=run_id
             )
-            for key in ("auto_fixed", "flagged", "errors"):
+            for key in RECONCILE_COUNT_KEYS:
                 counts[key] += d2.get(key, 0)
         except Exception:
             logger.exception("qbo.reconcile.detector.failed",
@@ -265,9 +274,7 @@ class ReconciliationService:
                 "entity_type": "VendorCredit",
                 "realm_id": realm_id,
                 "reconcile_run_id": run_id,
-                "auto_fixed": counts["auto_fixed"],
-                "flagged": counts["flagged"],
-                "errors": counts["errors"],
+                **counts,
             },
         )
         return {"run_id": run_id, **counts}
@@ -535,6 +542,36 @@ class ReconciliationService:
     # Void detection (task #21)
     # ------------------------------------------------------------------ #
 
+    def _unresolved_void_keys(self) -> set:
+        """Open qbo_voided dedupe keys for this reconcile run (see _void_key_cache).
+
+        Returns the live per-run cache object (not a copy); callers may .add() a
+        key they have just durably written, and that key is then visible to the
+        other detectors in the same run — safe because entity_type is part of the key.
+        """
+        if self._void_key_cache is not None:
+            return self._void_key_cache
+        from integrations.intuit.qbo.base.ids import normalize_qbo_id
+        try:
+            rows = self.repo.read_unresolved_issue_keys_by_drift_type(DRIFT_QBO_VOIDED)
+            keys = set()
+            for realm_id, entity_type, qbo_id in rows:
+                normalized = normalize_qbo_id(qbo_id)
+                if not normalized:
+                    continue
+                keys.add((realm_id, entity_type, normalized))
+            self._void_key_cache = keys
+        except Exception:
+            # Fail open: empty key set means every 404 writes its issue — exactly
+            # pre-U-160 behaviour. Suppression must NEVER be the failure mode:
+            # a duplicate row is cheap, a lost flag is not.
+            logger.exception(
+                "qbo.reconcile.void_dedupe.key_fetch_failed",
+                extra={"event_name": "qbo.reconcile.void_dedupe.key_fetch_failed"},
+            )
+            self._void_key_cache = set()
+        return self._void_key_cache
+
     def _reconcile_bill_qbo_voided(self, realm_id: str, run_id: str) -> dict:
         """
         Detect QBO Bills that have been deleted/voided on the QBO side but
@@ -573,9 +610,10 @@ class ReconciliationService:
         # surface an id-fetch failure as errors=1. There is nothing to flag either
         # way, so a no-op run reports clean rather than burning ~20 calls to fail.
         if not all_qbo_bills:
-            return {"auto_fixed": 0, "flagged": 0, "errors": 0}
+            return {"auto_fixed": 0, "flagged": 0, "flagged_deduped": 0, "errors": 0}
 
         flagged = 0
+        flagged_deduped = 0
         errors = 0
 
         with QboBillClient(realm_id=realm_id) as client:
@@ -640,7 +678,7 @@ class ReconciliationService:
                     ),
                     reconcile_run_id=run_id,
                 )
-                return {"auto_fixed": 0, "flagged": 0, "errors": 1}
+                return {"auto_fixed": 0, "flagged": 0, "flagged_deduped": 0, "errors": 1}
 
             # Layer 3 - confirm each candidate with the same GET the old scan used, so every
             # flag is still backed by a real 404 and an id set that was complete-looking but
@@ -650,7 +688,25 @@ class ReconciliationService:
                     client.get_bill(qbo_id)
                 except QboNotFoundError:
                     flagged += 1
-                    self._record_issue(
+                    key = (realm_id, "Bill", qbo_id)
+                    # fetched lazily on the first confirmed 404 — a run with no voids pays no
+                    # query; the instance cache keeps it to one fetch per run.
+                    void_keys = self._unresolved_void_keys()
+                    if key in void_keys:
+                        flagged_deduped += 1
+                        logger.info(
+                            "qbo.reconcile.bill_qbo_voided.void_issue_deduped",
+                            extra={
+                                "event_name": "qbo.reconcile.bill_qbo_voided.void_issue_deduped",
+                                "qbo_id": qbo_id,
+                                "realm_id": realm_id,
+                                "reconcile_run_id": run_id,
+                            },
+                        )
+                        continue
+                    # A failed write must NOT suppress a later retry — suppression is only
+                    # ever justified by a row that really exists.
+                    if self._record_issue(
                         drift_type=DRIFT_QBO_VOIDED,
                         action="flagged",
                         entity_type="Bill",
@@ -665,7 +721,8 @@ class ReconciliationService:
                             f"reference this bill."
                         ),
                         reconcile_run_id=run_id,
-                    )
+                    ):
+                        void_keys.add(key)
                 except Exception:
                     errors += 1
                     logger.exception(
@@ -683,7 +740,7 @@ class ReconciliationService:
                         },
                     )
 
-        return {"auto_fixed": 0, "flagged": flagged, "errors": errors}
+        return {"auto_fixed": 0, "flagged": flagged, "flagged_deduped": flagged_deduped, "errors": errors}
 
     def _reconcile_purchase_qbo_missing_locally(self, realm_id: str, run_id: str) -> dict:
         """
@@ -836,9 +893,10 @@ class ReconciliationService:
         # surface an id-fetch failure as errors=1. There is nothing to flag either
         # way, so a no-op run reports clean rather than burning ~20 calls to fail.
         if not all_qbo_purchases:
-            return {"auto_fixed": 0, "flagged": 0, "errors": 0}
+            return {"auto_fixed": 0, "flagged": 0, "flagged_deduped": 0, "errors": 0}
 
         flagged = 0
+        flagged_deduped = 0
         errors = 0
 
         with QboPurchaseClient(realm_id=realm_id) as client:
@@ -895,14 +953,32 @@ class ReconciliationService:
                     ),
                     reconcile_run_id=run_id,
                 )
-                return {"auto_fixed": 0, "flagged": 0, "errors": 1}
+                return {"auto_fixed": 0, "flagged": 0, "flagged_deduped": 0, "errors": 1}
 
             for local, qbo_id, mapping in candidates:
                 try:
                     client.get_purchase(qbo_id)
                 except QboNotFoundError:
                     flagged += 1
-                    self._record_issue(
+                    key = (realm_id, "Expense", qbo_id)
+                    # fetched lazily on the first confirmed 404 — a run with no voids pays no
+                    # query; the instance cache keeps it to one fetch per run.
+                    void_keys = self._unresolved_void_keys()
+                    if key in void_keys:
+                        flagged_deduped += 1
+                        logger.info(
+                            "qbo.reconcile.purchase_qbo_voided.void_issue_deduped",
+                            extra={
+                                "event_name": "qbo.reconcile.purchase_qbo_voided.void_issue_deduped",
+                                "qbo_id": qbo_id,
+                                "realm_id": realm_id,
+                                "reconcile_run_id": run_id,
+                            },
+                        )
+                        continue
+                    # A failed write must NOT suppress a later retry — suppression is only
+                    # ever justified by a row that really exists.
+                    if self._record_issue(
                         drift_type=DRIFT_QBO_VOIDED,
                         action="flagged",
                         entity_type="Expense",
@@ -917,7 +993,8 @@ class ReconciliationService:
                             f"reference this expense."
                         ),
                         reconcile_run_id=run_id,
-                    )
+                    ):
+                        void_keys.add(key)
                 except Exception:
                     errors += 1
                     logger.exception(
@@ -935,7 +1012,7 @@ class ReconciliationService:
                         },
                     )
 
-        return {"auto_fixed": 0, "flagged": flagged, "errors": errors}
+        return {"auto_fixed": 0, "flagged": flagged, "flagged_deduped": flagged_deduped, "errors": errors}
 
     def _reconcile_vendor_credit_qbo_missing_locally(self, realm_id: str, run_id: str) -> dict:
         """
@@ -1084,9 +1161,10 @@ class ReconciliationService:
         # surface an id-fetch failure as errors=1. There is nothing to flag either
         # way, so a no-op run reports clean rather than burning ~20 calls to fail.
         if not all_qbo_vcs:
-            return {"auto_fixed": 0, "flagged": 0, "errors": 0}
+            return {"auto_fixed": 0, "flagged": 0, "flagged_deduped": 0, "errors": 0}
 
         flagged = 0
+        flagged_deduped = 0
         errors = 0
 
         with QboVendorCreditClient(realm_id=realm_id) as client:
@@ -1143,14 +1221,32 @@ class ReconciliationService:
                     ),
                     reconcile_run_id=run_id,
                 )
-                return {"auto_fixed": 0, "flagged": 0, "errors": 1}
+                return {"auto_fixed": 0, "flagged": 0, "flagged_deduped": 0, "errors": 1}
 
             for local, qbo_id, mapping in candidates:
                 try:
                     client.get_vendor_credit(qbo_id)
                 except QboNotFoundError:
                     flagged += 1
-                    self._record_issue(
+                    key = (realm_id, "BillCredit", qbo_id)
+                    # fetched lazily on the first confirmed 404 — a run with no voids pays no
+                    # query; the instance cache keeps it to one fetch per run.
+                    void_keys = self._unresolved_void_keys()
+                    if key in void_keys:
+                        flagged_deduped += 1
+                        logger.info(
+                            "qbo.reconcile.vendor_credit_qbo_voided.void_issue_deduped",
+                            extra={
+                                "event_name": "qbo.reconcile.vendor_credit_qbo_voided.void_issue_deduped",
+                                "qbo_id": qbo_id,
+                                "realm_id": realm_id,
+                                "reconcile_run_id": run_id,
+                            },
+                        )
+                        continue
+                    # A failed write must NOT suppress a later retry — suppression is only
+                    # ever justified by a row that really exists.
+                    if self._record_issue(
                         drift_type=DRIFT_QBO_VOIDED,
                         action="flagged",
                         entity_type="BillCredit",
@@ -1165,7 +1261,8 @@ class ReconciliationService:
                             f"reference this bill credit."
                         ),
                         reconcile_run_id=run_id,
-                    )
+                    ):
+                        void_keys.add(key)
                 except Exception:
                     errors += 1
                     logger.exception(
@@ -1183,7 +1280,7 @@ class ReconciliationService:
                         },
                     )
 
-        return {"auto_fixed": 0, "flagged": flagged, "errors": errors}
+        return {"auto_fixed": 0, "flagged": flagged, "flagged_deduped": flagged_deduped, "errors": errors}
 
     # ------------------------------------------------------------------ #
     # Issue-recording helper (shared across all detectors)
@@ -1201,7 +1298,13 @@ class ReconciliationService:
         details: Optional[str] = None,
         reconcile_run_id: Optional[str] = None,
         severity_override: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
+        """Write a reconciliation issue row. Best-effort and non-raising.
+
+        Returns True when a durable row was written (create + log succeeded),
+        False on failure. Void detectors use the return to decide whether a
+        dedupe key may be cached; other callers may ignore it.
+        """
         severity = severity_override or SEVERITY_BY_DRIFT.get(drift_type, "medium")
         try:
             self.repo.create(
@@ -1232,6 +1335,7 @@ class ReconciliationService:
                     "reconcile_run_id": reconcile_run_id,
                 },
             )
+            return True
         except Exception:
             # Recording the issue is best-effort; failing to record should
             # not crash the entire reconciliation run.
@@ -1239,3 +1343,4 @@ class ReconciliationService:
                 f"Failed to record reconciliation issue "
                 f"(drift={drift_type}, entity={entity_type}, qbo_id={qbo_id})"
             )
+            return False

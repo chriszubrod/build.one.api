@@ -20,15 +20,54 @@ from integrations.intuit.qbo.reconciliation.business.service import (
 
 
 class _FakeIssueRepo:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        seeded_issues=None,
+        create_raises=False,
+        key_fetch_raises=False,
+    ):
         self.issues = []
+        # Each seed: (realm_id, entity_type, qbo_id, status)
+        self.seeded_issues = list(seeded_issues or [])
+        self.create_raises = create_raises
+        self.key_fetch_raises = key_fetch_raises
+        self.key_fetch_calls = 0
+        self.create_calls = 0
 
     def create(self, **kwargs):
+        self.create_calls += 1
+        if self.create_raises:
+            raise RuntimeError("simulated INSERT failure")
         self.issues.append(kwargs)
 
+    def read_unresolved_issue_keys_by_drift_type(self, drift_type):
+        self.key_fetch_calls += 1
+        if self.key_fetch_raises:
+            raise RuntimeError("simulated key-fetch failure")
+        if drift_type != DRIFT_QBO_VOIDED:
+            return []
+        keys = []
+        for realm_id, entity_type, qbo_id, status in self.seeded_issues:
+            if status == "resolved":
+                continue
+            if qbo_id is None:
+                continue
+            keys.append((realm_id, entity_type, qbo_id))
+        return keys
 
-def _fake_issue_service():
-    repo = _FakeIssueRepo()
+
+def _fake_issue_service(
+    *,
+    seeded_issues=None,
+    create_raises=False,
+    key_fetch_raises=False,
+):
+    repo = _FakeIssueRepo(
+        seeded_issues=seeded_issues,
+        create_raises=create_raises,
+        key_fetch_raises=key_fetch_raises,
+    )
     svc = ReconciliationService(repo=repo)
     return svc, repo
 
@@ -851,3 +890,593 @@ def test_vendor_credit_void_diff_id_fetch_error_flags_nothing(monkeypatch, ids_r
     void_issues = [i for i in repo.issues if i["drift_type"] == DRIFT_QBO_VOIDED]
     assert len(void_issues) == 0
     assert client.get_calls == []
+
+
+# ------------------------------------------------------------------ #
+# U-160: VendorCredit full-record pager + void-issue dedupe
+# ------------------------------------------------------------------ #
+
+
+class _QueryStringRecordingHttpClient:
+    """Records QBO query strings for pagination assertions."""
+
+    def __init__(self, *, pages=None):
+        self._pages = list(pages or [])
+        self.query_strings = []
+        self._call = 0
+
+    def get(self, path, *, params=None, operation_name=None):
+        query = (params or {}).get("query", "")
+        self.query_strings.append(query)
+        idx = self._call
+        self._call += 1
+        if idx < len(self._pages):
+            return self._pages[idx]
+        return {"QueryResponse": {"VendorCredit": []}}
+
+    def close(self):
+        pass
+
+
+def _vendor_credit_row(vc_id):
+    return {"Id": str(vc_id), "SyncToken": "0"}
+
+
+def test_vendor_credit_full_record_pager_pages_at_1000():
+    first_page = [_vendor_credit_row(i) for i in range(1, 1001)]
+    second_page = [_vendor_credit_row(i) for i in range(1001, 1003)]
+    http_client = _QueryStringRecordingHttpClient(
+        pages=[
+            {"QueryResponse": {"VendorCredit": first_page}},
+            {"QueryResponse": {"VendorCredit": second_page}},
+        ],
+    )
+    client = QboVendorCreditClient(realm_id="realm-test", http_client=http_client)
+
+    result = client.query_all_vendor_credits()
+
+    assert len(result) == 1002
+    assert len(http_client.query_strings) == 2
+    assert "MAXRESULTS 1000" in http_client.query_strings[0]
+    assert "STARTPOSITION 1" in http_client.query_strings[0]
+    assert "STARTPOSITION 1001" in http_client.query_strings[1]
+    assert "MAXRESULTS 1000" in http_client.query_strings[1]
+
+
+def test_vendor_credit_full_record_pager_stops_on_short_page():
+    first_page = [_vendor_credit_row(i) for i in range(1, 1001)]
+    short_page = [_vendor_credit_row(1001)]
+    http_client = _QueryStringRecordingHttpClient(
+        pages=[
+            {"QueryResponse": {"VendorCredit": first_page}},
+            {"QueryResponse": {"VendorCredit": short_page}},
+        ],
+    )
+    client = QboVendorCreditClient(realm_id="realm-test", http_client=http_client)
+
+    result = client.query_all_vendor_credits()
+
+    assert len(result) == 1001
+    assert len(http_client.query_strings) == 2
+
+
+_VOID_DETECTOR_CASES = [
+    pytest.param(
+        "bill",
+        "Bill",
+        "reconcile_bills",
+        id="bill",
+    ),
+    pytest.param(
+        "purchase",
+        "Expense",
+        "reconcile_purchases",
+        id="purchase",
+    ),
+    pytest.param(
+        "vendor_credit",
+        "BillCredit",
+        "reconcile_vendor_credits",
+        id="vendor_credit",
+    ),
+]
+
+
+def _void_issues_for_qbo_id(repo, qbo_id):
+    return [
+        i
+        for i in repo.issues
+        if i["drift_type"] == DRIFT_QBO_VOIDED and i.get("qbo_id") == qbo_id
+    ]
+
+
+def _patch_void_detector(monkeypatch, detector, *, client, qbo_repo, mapping_repo):
+    if detector == "bill":
+        _patch_bill_stack(
+            monkeypatch,
+            client=client,
+            qbo_repo=qbo_repo,
+            mapping_repo=mapping_repo,
+        )
+    elif detector == "purchase":
+        _patch_purchase_void_stack(
+            monkeypatch,
+            client=client,
+            qbo_repo=qbo_repo,
+            mapping_repo=mapping_repo,
+        )
+    else:
+        _patch_vendor_credit_void_stack(
+            monkeypatch,
+            client=client,
+            qbo_repo=qbo_repo,
+            mapping_repo=mapping_repo,
+        )
+
+
+def _make_void_client(detector, *, ids=None, get_raises=None, get_raises_by_id=None):
+    if detector == "bill":
+        return _FakeBillClient(
+            ids=ids if ids is not None else [],
+            get_raises=get_raises,
+            get_raises_by_id=get_raises_by_id or {},
+        )
+    if detector == "purchase":
+        return _FakePurchaseVoidClient(
+            ids=ids if ids is not None else [],
+            get_raises=get_raises,
+        )
+    return _FakeVendorCreditVoidClient(
+        ids=ids if ids is not None else [],
+        get_raises=get_raises,
+    )
+
+
+def _make_void_qbo_repo(detector, locals_list):
+    if detector == "bill":
+        return _FakeQboBillRepo(by_realm=locals_list)
+    if detector == "purchase":
+        return _FakeQboPurchaseRepo(by_realm=locals_list)
+    return _FakeQboVendorCreditRepo(by_realm=locals_list)
+
+
+def _make_void_mapping_repo(detector, mappings_by_local_id=None, mapping=None):
+    if detector == "bill":
+        return _FakeBillMappingRepo(
+            mappings_by_local_id=mappings_by_local_id or {},
+            mapping=mapping,
+        )
+    if detector == "purchase":
+        if mappings_by_local_id:
+
+            class _PurchaseMappingById:
+                def read_by_qbo_purchase_id(self, local_id):
+                    return mappings_by_local_id[local_id]
+
+            return _PurchaseMappingById()
+        return _FakePurchaseMappingRepo(mapping=mapping)
+
+    if mappings_by_local_id:
+
+        class _VendorCreditMappingById:
+            def read_by_qbo_vendor_credit_id(self, local_id):
+                return mappings_by_local_id[local_id]
+
+        return _VendorCreditMappingById()
+    return _FakeVendorCreditMappingRepo(mapping=mapping)
+
+
+def _run_void_reconcile(svc, reconcile_fn, realm_id):
+    return getattr(svc, reconcile_fn)(realm_id=realm_id)
+
+
+def _standard_void_locals(detector, qbo_id, *, local_id=1):
+    return [SimpleNamespace(id=local_id, qbo_id=qbo_id)]
+
+
+def _standard_void_mapping(detector, local_id):
+    if detector == "bill":
+        return SimpleNamespace(bill_id=100 + local_id)
+    if detector == "purchase":
+        return SimpleNamespace(expense_id=200 + local_id)
+    return SimpleNamespace(bill_credit_id=300 + local_id)
+
+
+@pytest.mark.parametrize("detector,entity_type,reconcile_fn", _VOID_DETECTOR_CASES)
+def test_void_issue_deduped_when_unresolved_issue_exists(
+    monkeypatch, detector, entity_type, reconcile_fn
+):
+    realm_id = "realm-1"
+    qbo_id = "GONE-404"
+    svc, repo = _fake_issue_service(
+        seeded_issues=[(realm_id, entity_type, qbo_id, "open")],
+    )
+    local = _standard_void_locals(detector, qbo_id)[0]
+    client = _make_void_client(
+        detector,
+        get_raises=QboNotFoundError("gone"),
+    )
+    _patch_void_detector(
+        monkeypatch,
+        detector,
+        client=client,
+        qbo_repo=_make_void_qbo_repo(detector, [local]),
+        mapping_repo=_make_void_mapping_repo(
+            detector,
+            mappings_by_local_id={local.id: _standard_void_mapping(detector, local.id)},
+        ),
+    )
+
+    result = _run_void_reconcile(svc, reconcile_fn, realm_id)
+
+    assert result["flagged"] == 1
+    assert result["flagged_deduped"] == 1
+    assert len(_void_issues_for_qbo_id(repo, qbo_id)) == 0
+    assert client.get_calls == [qbo_id]
+
+
+@pytest.mark.parametrize("detector,entity_type,reconcile_fn", _VOID_DETECTOR_CASES)
+def test_void_issue_written_when_no_existing_issue(
+    monkeypatch, detector, entity_type, reconcile_fn
+):
+    realm_id = "realm-1"
+    qbo_id = "GONE-404"
+    svc, repo = _fake_issue_service()
+    local = _standard_void_locals(detector, qbo_id)[0]
+    client = _make_void_client(
+        detector,
+        get_raises=QboNotFoundError("gone"),
+    )
+    _patch_void_detector(
+        monkeypatch,
+        detector,
+        client=client,
+        qbo_repo=_make_void_qbo_repo(detector, [local]),
+        mapping_repo=_make_void_mapping_repo(
+            detector,
+            mappings_by_local_id={local.id: _standard_void_mapping(detector, local.id)},
+        ),
+    )
+
+    result = _run_void_reconcile(svc, reconcile_fn, realm_id)
+
+    assert result["flagged"] == 1
+    assert result["flagged_deduped"] == 0
+    assert len(_void_issues_for_qbo_id(repo, qbo_id)) == 1
+
+
+@pytest.mark.parametrize("detector,entity_type,reconcile_fn", _VOID_DETECTOR_CASES)
+def test_resolved_issue_does_not_suppress(
+    monkeypatch, detector, entity_type, reconcile_fn
+):
+    realm_id = "realm-1"
+    qbo_id = "GONE-404"
+    svc, repo = _fake_issue_service(
+        seeded_issues=[(realm_id, entity_type, qbo_id, "resolved")],
+    )
+    local = _standard_void_locals(detector, qbo_id)[0]
+    client = _make_void_client(
+        detector,
+        get_raises=QboNotFoundError("gone"),
+    )
+    _patch_void_detector(
+        monkeypatch,
+        detector,
+        client=client,
+        qbo_repo=_make_void_qbo_repo(detector, [local]),
+        mapping_repo=_make_void_mapping_repo(
+            detector,
+            mappings_by_local_id={local.id: _standard_void_mapping(detector, local.id)},
+        ),
+    )
+
+    result = _run_void_reconcile(svc, reconcile_fn, realm_id)
+
+    assert result["flagged"] == 1
+    assert result["flagged_deduped"] == 0
+    assert len(_void_issues_for_qbo_id(repo, qbo_id)) == 1
+
+
+@pytest.mark.parametrize("detector,entity_type,reconcile_fn", _VOID_DETECTOR_CASES)
+def test_acknowledged_issue_does_suppress(
+    monkeypatch, detector, entity_type, reconcile_fn
+):
+    realm_id = "realm-1"
+    qbo_id = "GONE-404"
+    svc, repo = _fake_issue_service(
+        seeded_issues=[(realm_id, entity_type, qbo_id, "acknowledged")],
+    )
+    local = _standard_void_locals(detector, qbo_id)[0]
+    client = _make_void_client(
+        detector,
+        get_raises=QboNotFoundError("gone"),
+    )
+    _patch_void_detector(
+        monkeypatch,
+        detector,
+        client=client,
+        qbo_repo=_make_void_qbo_repo(detector, [local]),
+        mapping_repo=_make_void_mapping_repo(
+            detector,
+            mappings_by_local_id={local.id: _standard_void_mapping(detector, local.id)},
+        ),
+    )
+
+    result = _run_void_reconcile(svc, reconcile_fn, realm_id)
+
+    assert result["flagged"] == 1
+    assert result["flagged_deduped"] == 1
+    assert len(_void_issues_for_qbo_id(repo, qbo_id)) == 0
+
+
+@pytest.mark.parametrize("detector,entity_type,reconcile_fn", _VOID_DETECTOR_CASES)
+def test_dedupe_key_isolates_realm_and_entity_type(
+    monkeypatch, detector, entity_type, reconcile_fn
+):
+    realm_id = "realm-1"
+    qbo_id = "GONE-404"
+    other_entity = {"Bill": "Expense", "Expense": "Bill", "BillCredit": "Bill"}[
+        entity_type
+    ]
+    svc, repo = _fake_issue_service(
+        seeded_issues=[
+            ("other-realm", entity_type, qbo_id, "open"),
+            (realm_id, other_entity, qbo_id, "open"),
+        ],
+    )
+    local = _standard_void_locals(detector, qbo_id)[0]
+    client = _make_void_client(
+        detector,
+        get_raises=QboNotFoundError("gone"),
+    )
+    _patch_void_detector(
+        monkeypatch,
+        detector,
+        client=client,
+        qbo_repo=_make_void_qbo_repo(detector, [local]),
+        mapping_repo=_make_void_mapping_repo(
+            detector,
+            mappings_by_local_id={local.id: _standard_void_mapping(detector, local.id)},
+        ),
+    )
+
+    result = _run_void_reconcile(svc, reconcile_fn, realm_id)
+
+    assert result["flagged"] == 1
+    assert result["flagged_deduped"] == 0
+    assert len(_void_issues_for_qbo_id(repo, qbo_id)) == 1
+
+
+@pytest.mark.parametrize("detector,entity_type,reconcile_fn", _VOID_DETECTOR_CASES)
+def test_dedupe_is_idempotent_within_one_run(
+    monkeypatch, detector, entity_type, reconcile_fn
+):
+    realm_id = "realm-1"
+    qbo_id = "SHARED-404"
+    local_a = SimpleNamespace(id=1, qbo_id=qbo_id)
+    local_b = SimpleNamespace(id=2, qbo_id=qbo_id)
+    mappings = {
+        1: _standard_void_mapping(detector, 1),
+        2: _standard_void_mapping(detector, 2),
+    }
+    svc, repo = _fake_issue_service()
+    client = _make_void_client(
+        detector,
+        get_raises=QboNotFoundError("gone"),
+    )
+    _patch_void_detector(
+        monkeypatch,
+        detector,
+        client=client,
+        qbo_repo=_make_void_qbo_repo(detector, [local_a, local_b]),
+        mapping_repo=_make_void_mapping_repo(detector, mappings_by_local_id=mappings),
+    )
+
+    result = _run_void_reconcile(svc, reconcile_fn, realm_id)
+
+    assert result["flagged"] == 2
+    assert result["flagged_deduped"] == 1
+    assert len(_void_issues_for_qbo_id(repo, qbo_id)) == 1
+
+
+@pytest.mark.parametrize("detector,entity_type,reconcile_fn", _VOID_DETECTOR_CASES)
+def test_key_fetch_failure_fails_open(
+    monkeypatch, detector, entity_type, reconcile_fn
+):
+    """Suppression must NEVER be the failure mode — key-fetch failure writes anyway."""
+    realm_id = "realm-1"
+    qbo_id = "GONE-404"
+    svc, repo = _fake_issue_service(key_fetch_raises=True)
+    local = _standard_void_locals(detector, qbo_id)[0]
+    client = _make_void_client(
+        detector,
+        get_raises=QboNotFoundError("gone"),
+    )
+    _patch_void_detector(
+        monkeypatch,
+        detector,
+        client=client,
+        qbo_repo=_make_void_qbo_repo(detector, [local]),
+        mapping_repo=_make_void_mapping_repo(
+            detector,
+            mappings_by_local_id={local.id: _standard_void_mapping(detector, local.id)},
+        ),
+    )
+
+    result = _run_void_reconcile(svc, reconcile_fn, realm_id)
+
+    assert result["flagged"] == 1
+    assert result["flagged_deduped"] == 0
+    assert len(_void_issues_for_qbo_id(repo, qbo_id)) == 1
+
+
+@pytest.mark.parametrize("detector,entity_type,reconcile_fn", _VOID_DETECTOR_CASES)
+def test_failed_issue_write_is_not_cached_as_deduped(
+    monkeypatch, detector, entity_type, reconcile_fn
+):
+    realm_id = "realm-1"
+    qbo_id = "SHARED-404"
+    local_a = SimpleNamespace(id=1, qbo_id=qbo_id)
+    local_b = SimpleNamespace(id=2, qbo_id=qbo_id)
+    mappings = {
+        1: _standard_void_mapping(detector, 1),
+        2: _standard_void_mapping(detector, 2),
+    }
+    svc, repo = _fake_issue_service(create_raises=True)
+    client = _make_void_client(
+        detector,
+        get_raises=QboNotFoundError("gone"),
+    )
+    _patch_void_detector(
+        monkeypatch,
+        detector,
+        client=client,
+        qbo_repo=_make_void_qbo_repo(detector, [local_a, local_b]),
+        mapping_repo=_make_void_mapping_repo(detector, mappings_by_local_id=mappings),
+    )
+
+    result = _run_void_reconcile(svc, reconcile_fn, realm_id)
+
+    assert repo.create_calls == 2
+    assert result["flagged_deduped"] == 0
+    assert len(_void_issues_for_qbo_id(repo, qbo_id)) == 0
+
+
+def test_ceiling_summary_is_never_deduped(monkeypatch):
+    """The ceiling summary is the mass-deletion alarm — deduping it would silence the alarm."""
+    monkeypatch.setenv("QBO_RECONCILE_VOID_MAX_CANDIDATES", "2")
+    svc, repo = _fake_issue_service()
+    repo.issues.append(
+        {
+            "drift_type": DRIFT_QBO_VOIDED,
+            "action": "flagged",
+            "entity_type": "Bill",
+            "qbo_id": None,
+            "realm_id": "realm-1",
+            "details": "Void detection aborted: prior run ceiling summary",
+        }
+    )
+    mapped = [SimpleNamespace(id=i, qbo_id=f"B-{i}") for i in range(1, 6)]
+    mappings = {i: SimpleNamespace(bill_id=100 + i) for i in range(1, 6)}
+    client = _FakeBillClient(ids=[])
+    _patch_bill_stack(
+        monkeypatch,
+        client=client,
+        qbo_repo=_FakeQboBillRepo(by_realm=mapped),
+        mapping_repo=_FakeBillMappingRepo(mappings_by_local_id=mappings),
+    )
+
+    result = svc.reconcile_bills(realm_id="realm-1")
+
+    ceiling_issues = [
+        i
+        for i in repo.issues
+        if i.get("qbo_id") is None and "ceiling" in (i.get("details") or "").lower()
+    ]
+    assert result["flagged"] == 0
+    assert result["errors"] >= 1
+    assert len(ceiling_issues) == 2
+    assert client.get_calls == []
+
+
+@pytest.mark.parametrize("detector,entity_type,reconcile_fn", _VOID_DETECTOR_CASES)
+def test_key_fetch_is_lazy_when_no_voids(
+    monkeypatch, detector, entity_type, reconcile_fn
+):
+    realm_id = "realm-1"
+    qbo_id = "MAYBE-GONE"
+    local = _standard_void_locals(detector, qbo_id)[0]
+
+    # Candidates exist but every GET returns 200 — no 404, no key fetch.
+    svc_clean, repo_clean = _fake_issue_service()
+    client_ok = _make_void_client(detector)
+    _patch_void_detector(
+        monkeypatch,
+        detector,
+        client=client_ok,
+        qbo_repo=_make_void_qbo_repo(detector, [local]),
+        mapping_repo=_make_void_mapping_repo(
+            detector,
+            mappings_by_local_id={local.id: _standard_void_mapping(detector, local.id)},
+        ),
+    )
+    _run_void_reconcile(svc_clean, reconcile_fn, realm_id)
+    assert repo_clean.key_fetch_calls == 0
+
+    # Zero local candidates — early return, no key fetch.
+    svc_empty, repo_empty = _fake_issue_service()
+    client_empty = _make_void_client(detector)
+    _patch_void_detector(
+        monkeypatch,
+        detector,
+        client=client_empty,
+        qbo_repo=_make_void_qbo_repo(detector, []),
+        mapping_repo=_make_void_mapping_repo(
+            detector,
+            mapping=_standard_void_mapping(detector, 1),
+        ),
+    )
+    _run_void_reconcile(svc_empty, reconcile_fn, realm_id)
+    assert repo_empty.key_fetch_calls == 0
+
+    # Confirmed 404 — key fetch happens exactly once.
+    svc_void, repo_void = _fake_issue_service()
+    client_void = _make_void_client(
+        detector,
+        get_raises=QboNotFoundError("gone"),
+    )
+    _patch_void_detector(
+        monkeypatch,
+        detector,
+        client=client_void,
+        qbo_repo=_make_void_qbo_repo(detector, [local]),
+        mapping_repo=_make_void_mapping_repo(
+            detector,
+            mappings_by_local_id={local.id: _standard_void_mapping(detector, local.id)},
+        ),
+    )
+    _run_void_reconcile(svc_void, reconcile_fn, realm_id)
+    assert repo_void.key_fetch_calls == 1
+
+
+def test_key_fetch_is_once_per_run_across_detectors(monkeypatch):
+    realm_id = "realm-1"
+    svc, repo = _fake_issue_service()
+
+    bill_local = SimpleNamespace(id=1, qbo_id="B-GONE")
+    bill_client = _FakeBillClient(
+        ids=[],
+        get_raises_by_id={"B-GONE": QboNotFoundError("gone")},
+    )
+    _patch_bill_stack(
+        monkeypatch,
+        client=bill_client,
+        qbo_repo=_FakeQboBillRepo(by_realm=[bill_local]),
+        mapping_repo=_FakeBillMappingRepo(
+            mappings_by_local_id={1: SimpleNamespace(bill_id=101)},
+        ),
+    )
+
+    purchase_local = SimpleNamespace(id=2, qbo_id="P-GONE")
+    purchase_client = _FakePurchaseVoidClient(
+        ids=[],
+        get_raises=QboNotFoundError("gone"),
+    )
+
+    class _PurchaseMappingById:
+        def read_by_qbo_purchase_id(self, local_id):
+            return SimpleNamespace(expense_id=200 + local_id)
+
+    _patch_purchase_void_stack(
+        monkeypatch,
+        client=purchase_client,
+        qbo_repo=_FakeQboPurchaseRepo(by_realm=[purchase_local]),
+        mapping_repo=_PurchaseMappingById(),
+    )
+
+    svc.reconcile_bills(realm_id=realm_id)
+    svc.reconcile_purchases(realm_id=realm_id)
+
+    assert repo.key_fetch_calls == 1
+    assert bill_client.get_calls == ["B-GONE"]
+    assert purchase_client.get_calls == ["P-GONE"]

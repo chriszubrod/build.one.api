@@ -109,6 +109,34 @@ class ReconciliationIssueRepository:
             logger.error(f"Error during read reconciliation issues by status: {error}")
             raise map_database_error(error)
 
+    def read_unresolved_issue_keys_by_drift_type(self, drift_type: str) -> List[tuple]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboUnresolvedIssueKeysByDriftType",
+                        params={"DriftType": drift_type},
+                    )
+                    rows = cursor.fetchall()
+                    return [
+                        (
+                            getattr(r, "RealmId", None),
+                            getattr(r, "EntityType", None),
+                            getattr(r, "QboId", None),
+                        )
+                        for r in rows if r
+                    ]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read unresolved issue keys by drift type: {error}")
+            raise map_database_error(error)
+
     def count_by_group(self) -> List[dict]:
         """Return aggregated counts grouped by (drift_type, severity, action, status)."""
         try:

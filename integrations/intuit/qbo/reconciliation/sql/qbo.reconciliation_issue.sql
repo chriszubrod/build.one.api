@@ -1,6 +1,10 @@
 -- ============================================================================
 -- qbo.ReconciliationIssue — record of drift between local DB and QBO.
 --
+-- WARNING: this base file has NOT been verified against prod (sys.sql_modules)
+-- and may be stale — do NOT re-apply it wholesale. The U-160 sproc at the bottom
+-- is wrapped in a BEGIN/END banner so it can be extracted and applied on its own.
+--
 -- Written by the reconciliation job when it detects a mismatch between
 -- what QBO says and what we have locally. Each row represents one finding.
 --
@@ -163,3 +167,25 @@ BEGIN
     ORDER BY [DriftType], [Severity];
 END;
 GO
+
+
+-- ========================= U-160 BEGIN =========================
+-- Dedupe key-source for the qbo_voided void detectors: narrow 3-column projection
+-- deliberately avoiding Details NVARCHAR(MAX). Status <> 'resolved' is the
+-- "unresolved" test (open + acknowledged both suppress; resolved does not).
+CREATE OR ALTER PROCEDURE ReadQboUnresolvedIssueKeysByDriftType
+(
+    @DriftType NVARCHAR(32)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT [RealmId], [EntityType], [QboId]
+    FROM [qbo].[ReconciliationIssue]
+    WHERE [DriftType] = @DriftType
+      AND [Action] = 'flagged'
+      AND [Status] <> 'resolved'
+      AND [QboId] IS NOT NULL;
+END;
+GO
+-- ========================== U-160 END ==========================

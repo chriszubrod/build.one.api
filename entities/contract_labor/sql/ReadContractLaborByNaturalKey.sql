@@ -1,60 +1,20 @@
--- Deploy ReadContractLaborByNaturalKey (duplicate detection on import)
-GO
-
-CREATE OR ALTER PROCEDURE ReadContractLaborByNaturalKey
-(
-    @EmployeeName NVARCHAR(255),
-    @WorkDate DATE,
-    @JobName NVARCHAR(255) NULL,
-    @TimeIn NVARCHAR(20) NULL,
-    @TimeOut NVARCHAR(20) NULL,
-    @Description NVARCHAR(MAX) NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT TOP 1
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [VendorId],
-        [ProjectId],
-        [EmployeeName],
-        [JobName],
-        CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
-        [TimeIn],
-        [TimeOut],
-        [BreakTime],
-        [RegularHours],
-        [OvertimeHours],
-        [TotalHours],
-        [HourlyRate],
-        [Markup],
-        [TotalAmount],
-        [SubCostCodeId],
-        [Description],
-        CONVERT(VARCHAR(10), [BillingPeriodStart], 120) AS [BillingPeriodStart],
-        [Status],
-        [BillLineItemId],
-        [BillVendorId],
-        CONVERT(VARCHAR(10), [BillDate], 120) AS [BillDate],
-        CONVERT(VARCHAR(10), [DueDate], 120) AS [DueDate],
-        [BillNumber],
-        [ImportBatchId],
-        [SourceFile],
-        [SourceRow]
-    FROM dbo.[ContractLabor]
-    WHERE [EmployeeName] = @EmployeeName
-        AND [WorkDate] = @WorkDate
-        AND ((@JobName IS NULL AND [JobName] IS NULL) OR [JobName] = @JobName)
-        AND ((@TimeIn IS NULL AND [TimeIn] IS NULL) OR [TimeIn] = @TimeIn)
-        AND ((@TimeOut IS NULL AND [TimeOut] IS NULL) OR [TimeOut] = @TimeOut)
-        AND ((@Description IS NULL AND [Description] IS NULL) OR [Description] = @Description)
-    ORDER BY [Id] ASC;
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-162, 2026-07-28) — sproc body removed, NOT the intent.
+--
+-- Original intent of this file (preserved for lineage):
+--   Deploy ReadContractLaborByNaturalKey (duplicate detection on import).
+--
+-- The canonical definition of this sproc now lives in exactly ONE place:
+--   entities/contract_labor/sql/dbo.contract_labor.sql
+--
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.ReadContractLaborByNaturalKey
+--
+-- Drift: this standalone was the STALE side (missing [SourceTimeEntryId],
+-- predates the 2026-05-27 SourceTimeEntryId migration); the base was already live.
+--
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------
 GO

@@ -11,14 +11,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/bill_line_item_attachment/sql/dbo.bill_line_item_attachment.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',
     }),  # known-dup, home=entities/bill_line_item_attachment/sql/dbo.bill_line_item_attachment.sql
-    "CreateContractLabor": frozenset({
-        'entities/contract_labor/sql/dbo.contract_labor.sql',
-        'scripts/migrations/gap2_core_threading.sql',
-    }),  # known-dup, home=entities/contract_labor/sql/dbo.contract_labor.sql
-    "CreateContractLaborLineItem": frozenset({
-        'entities/contract_labor/sql/dbo.contract_labor.sql',
-        'scripts/migrations/gap2_core_threading.sql',
-    }),  # known-dup, home=entities/contract_labor/sql/dbo.contract_labor.sql
     "CreateCostCode": frozenset({
         'entities/cost_code/sql/dbo.costcode.sql',
         'scripts/migrations/gap2_reference_threading.sql',
@@ -89,26 +81,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'scripts/migrations/qbo_vendorcredit_mapping_sprocs_dbo.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/sql/qbo.vendorcredit_line_item_bill_credit_line_item.sql
-    "FindContractLaborForReviewerReply": frozenset({
-        'entities/contract_labor/sql/dbo.contract_labor.sql',
-        'scripts/migrations/2026_05_27_find_contract_labor_for_reviewer_reply.sql',
-    }),  # known-dup, home=entities/contract_labor/sql/dbo.contract_labor.sql
-    "ReadContractLaborByNaturalKey": frozenset({
-        'entities/contract_labor/sql/ReadContractLaborByNaturalKey.sql',
-        'entities/contract_labor/sql/dbo.contract_labor.sql',
-    }),  # known-dup, home=entities/contract_labor/sql/ReadContractLaborByNaturalKey.sql, entities/contract_labor/sql/dbo.contract_labor.sql
-    "ReadContractLaborByPublicId": frozenset({
-        'entities/contract_labor/sql/dbo.contract_labor.sql',
-        'entities/contract_labor/sql/migrations/2026_05_28_read_source_time_entry_public_id.sql',
-    }),  # known-dup, home=entities/contract_labor/sql/dbo.contract_labor.sql
-    "ReadContractLaborDailySummary": frozenset({
-        'entities/contract_labor/sql/ReadContractLaborDailySummary.sql',
-        'entities/contract_labor/sql/dbo.contract_labor.sql',
-    }),  # known-dup, home=entities/contract_labor/sql/ReadContractLaborDailySummary.sql, entities/contract_labor/sql/dbo.contract_labor.sql
-    "ReadContractLaborLineItemsByContractLaborId": frozenset({
-        'entities/contract_labor/sql/dbo.contract_labor.sql',
-        'entities/contract_labor/sql/migrations/2026_06_03_line_items_ordered_by_clockin.sql',
-    }),  # known-dup, home=entities/contract_labor/sql/dbo.contract_labor.sql
     "ReadEmailMessageByGraphMessageId": frozenset({
         'entities/email_message/sql/dbo.email_message.sql',
         'entities/email_message/sql/dbo.email_message_recipients.sql',

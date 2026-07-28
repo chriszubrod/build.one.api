@@ -1,4 +1,4 @@
-"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131/U-133/U-137/U-140/U-142/U-144/U-146/U-148/U-150/U-158 guard: canonical
+"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131/U-133/U-137/U-140/U-142/U-144/U-146/U-148/U-150/U-158/U-162 guard: canonical
 SQL homes for sprocs, access UDFs, and the shared human-only review predicate.
 
 Three guard shapes:
@@ -12,8 +12,9 @@ Three guard shapes:
   landing in partially-converted base files as per-sproc rows — 3 of those,
   the USER_BASE trio, later subsumed by U-131's whole-file guard), user_project
   (U-129), user (U-131), user_module (U-133), organization (U-137), company (U-140), vendor (U-142),
-  user_role (U-144), user_company (U-146), attachment (U-148), invoice_line_item (U-150), and invoice (U-158). The remaining entities still carry
-  duplicated base sprocs in migrations (contract_labor=7, email_message=7, …); converting them is future work.
+  user_role (U-144), user_company (U-146), attachment (U-148), invoice_line_item (U-150),
+  invoice (U-158), and contract_labor (U-162). The remaining entities still carry
+  duplicated base sprocs in migrations (email_message=7, …); converting them is future work.
   **When you convert one, add its row to
   ENTITY_BASE_FILES or SINGLE_SOURCE_SPROCS** — coverage is opt-in, so a
   conversion without a row leaves a gap that looks covered.
@@ -105,9 +106,10 @@ SINGLE_SOURCE_SPROCS = [
     # These landed in partially-converted base files, so the whole-file tier was
     # unavailable — per-sproc rows pin each exact canonical home (U-062 shape).
     # (The 3 USER_BASE rows were later subsumed by U-131's whole-file guard —
-    # 6 remain here; ReadUserModulesByUserIdAndCompanyId and
-    # ReadUserRolesByUserIdAndCompanyId are deliberately KEPT as presence pins
-    # alongside U-133's and U-144's whole-file guards: the whole-file tier only
+    # 6 remain here; ReadUserModulesByUserIdAndCompanyId,
+    # ReadUserRolesByUserIdAndCompanyId and UpdateContractLaborAggregates are
+    # deliberately KEPT as presence pins alongside U-133's, U-144's and U-162's
+    # whole-file guards: the whole-file tier only
     # forbids redefinition of sprocs present in the base — it asserts nothing if
     # one is DELETED from it. Don't copy this shape for ordinary sprocs; a
     # generalized expected-set guard per ENTITY_BASE_FILES entry would subsume
@@ -133,6 +135,13 @@ SINGLE_SOURCE_SPROCS = [
     # freeze. The generalized expected-set guard (its own unit) still subsumes
     # this; don't copy the shape for ordinary sprocs.
     ("CreateInvoice", INVOICE_BASE),
+    # U-162: CreateContractLabor is pinned on exactly the U-158 trigger above —
+    # its ledger row was itself the presence pin, and stubbing the gap2 copy
+    # removes that detection. What is specific here: pre-U-162 the gap2 copy was
+    # the LIVE @CreatedByUserId form while the base lacked it, and
+    # ContractLaborRepository.create sends CreatedByUserId unconditionally, so a
+    # base re-apply would have broken every CL create with SQL 8145.
+    ("CreateContractLabor", CONTRACT_LABOR_BASE),
 ]
 
 # U-061: the four Create sprocs whose bodies had drifted BEHIND their canonical
@@ -177,6 +186,7 @@ GAP2_NEUTRALIZED_SPROCS = frozenset(
 # U-148: dbo.attachment.sql reconciled (CreateAttachment <- gap2_adjacent_threading Phase-Adjacent body) and made sole home of all 10 Attachment sprocs — whole-file guard; also stubs the CreateAttachment copy in gap2_adjacent_threading.sql and the five read-sproc copies in update_procedures_with_extraction.sql.
 # U-150: dbo.invoice_line_item.sql was already the live layer (applied+verified to prod 2026-07-06, commit be2a877) — NOT a reconcile; the migration copy was the stale side and was stubbed.
 # U-158: dbo.invoice.sql reconciled to the LIVE layer (ReadInvoices / ReadInvoicesPaginated / CountInvoices <- gap1_list_sprocs_scoped.sql, CreateInvoice <- gap2_core_threading.sql — the base was the stale side) and made sole home of all 10 Invoice sprocs — whole-file guard; the four migration copies are stubbed.
+# U-162: dbo.contract_labor.sql reconciled to the LIVE layer (CreateContractLabor <- gap2_core_threading, ReadContractLaborDailySummary <- LIVE prod body (em Gate-2 sweep: the a84fd4f SET-NOCOUNT-ON fix was NEVER deployed, so prod still runs the pre-fix BEGIN TRANSACTION body; reconciled to live to keep this unit deploy-neutral — applying that fix to prod+base is a separate follow-up unit), ReadContractLaborLineItemsByContractLaborId <- migration 2026_06_03; FindContractLaborForReviewerReply comment-only) and made sole home of all 28 sprocs it declares (contract_labor + ContractLaborLineItem) — whole-file guard; a duplicate ReadContractLaborByPublicId block inside the base was collapsed; 7 copies stubbed across 6 carrier files. NOTE: ReadContractLaborDistinctBillingPeriods is a live CL sproc homed OUTSIDE the base (its own sql/ file) — legal and sole-homed, but it means the base is not the complete CL sproc set; folding it in is a follow-up.
 # "Entity" here reads as entity/package, per the module docstring.
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
@@ -193,6 +203,7 @@ ENTITY_BASE_FILES = [
     ("attachment", ATTACHMENT_BASE),
     ("invoice_line_item", INVOICE_LINE_ITEM_BASE),
     ("invoice", INVOICE_BASE),
+    ("contract_labor", CONTRACT_LABOR_BASE),
     ("completion_job", COMPLETION_JOB_BASE),
     ("bill", BILL_BASE),
     ("bill_source_email", BILL_SOURCE_EMAIL_BASE),

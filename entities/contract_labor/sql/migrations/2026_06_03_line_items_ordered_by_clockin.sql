@@ -27,47 +27,26 @@
 
 GO
 
-CREATE OR ALTER PROCEDURE ReadContractLaborLineItemsByContractLaborId
-(
-    @ContractLaborId BIGINT
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    SELECT
-        li.[Id],
-        li.[PublicId],
-        li.[RowVersion],
-        CONVERT(VARCHAR(19), li.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), li.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        li.[ContractLaborId],
-        CONVERT(VARCHAR(10), li.[LineDate], 120) AS [LineDate],
-        li.[ProjectId],
-        li.[SubCostCodeId],
-        li.[Description],
-        li.[Hours],
-        li.[Rate],
-        li.[Markup],
-        li.[Price],
-        li.[IsBillable],
-        li.[IsOverhead],
-        li.[BillLineItemId]
-    FROM dbo.[ContractLaborLineItem] li
-    OUTER APPLY (
-        SELECT MIN(tl.[ClockIn]) AS MinClockIn
-        FROM dbo.[TimeLog] tl
-        WHERE tl.[TimeEntryId] = li.[SourceTimeEntryId]
-          AND ((li.[ProjectId] IS NULL AND tl.[ProjectId] IS NULL)
-               OR tl.[ProjectId] = li.[ProjectId])
-          AND (tl.[LogType] IS NULL OR tl.[LogType] = 'work')
-    ) ord
-    WHERE li.[ContractLaborId] = @ContractLaborId
-    ORDER BY
-        li.[LineDate] ASC,
-        ord.MinClockIn ASC,   -- NULLs (manual rows / no matching TimeLog) sort first; then Id breaks ties
-        li.[Id] ASC;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-162, 2026-07-28) — sproc body removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   Sort ContractLaborLineItem reads by source TimeLog ClockIn (OUTER APPLY ordering).
+--
+-- The canonical definition of this sproc now lives in exactly ONE place:
+--   entities/contract_labor/sql/dbo.contract_labor.sql
+--
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.ReadContractLaborLineItemsByContractLaborId
+--
+-- Drift: this file was the LIVE side (SET NOCOUNT ON + the OUTER APPLY TimeLog
+-- clock-in ordering) — the base was STALE (BEGIN TRANSACTION, ORDER BY [Id])
+-- and has been reconciled to this file's form verbatim.
+--
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------
 GO
 
-PRINT 'ReadContractLaborLineItemsByContractLaborId re-issued: ORDER BY source TimeLog ClockIn.';
+PRINT 'SUPERSEDED (U-162): ReadContractLaborLineItemsByContractLaborId is canonical in entities/contract_labor/sql/dbo.contract_labor.sql; no sproc applied here.';

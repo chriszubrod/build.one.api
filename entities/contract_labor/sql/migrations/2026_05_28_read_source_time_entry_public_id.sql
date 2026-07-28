@@ -10,61 +10,34 @@
 -- LEFT JOIN to dbo.TimeEntry so Excel-imported rows (NULL SourceTimeEntryId)
 -- return NULL for the new column.
 --
--- Idempotent — CREATE OR ALTER.
+-- Idempotent — CREATE OR ALTER. (SUPERSEDED by U-162: this file no longer
+-- defines the sproc; see the stub below.)
 -- =============================================================================
 
 SET XACT_ABORT ON;
 SET NOCOUNT ON;
 GO
 
-CREATE OR ALTER PROCEDURE ReadContractLaborByPublicId
-(
-    @PublicId UNIQUEIDENTIFIER
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        cl.[Id],
-        cl.[PublicId],
-        cl.[RowVersion],
-        CONVERT(VARCHAR(19), cl.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), cl.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        cl.[VendorId],
-        cl.[ProjectId],
-        cl.[EmployeeName],
-        cl.[JobName],
-        CONVERT(VARCHAR(10), cl.[WorkDate], 120) AS [WorkDate],
-        cl.[TimeIn],
-        cl.[TimeOut],
-        cl.[BreakTime],
-        cl.[RegularHours],
-        cl.[OvertimeHours],
-        cl.[TotalHours],
-        cl.[HourlyRate],
-        cl.[Markup],
-        cl.[TotalAmount],
-        cl.[SubCostCodeId],
-        cl.[Description],
-        CONVERT(VARCHAR(10), cl.[BillingPeriodStart], 120) AS [BillingPeriodStart],
-        cl.[Status],
-        cl.[BillLineItemId],
-        cl.[BillVendorId],
-        CONVERT(VARCHAR(10), cl.[BillDate], 120) AS [BillDate],
-        CONVERT(VARCHAR(10), cl.[DueDate], 120) AS [DueDate],
-        cl.[BillNumber],
-        cl.[ImportBatchId],
-        cl.[SourceFile],
-        cl.[SourceRow],
-        cl.[SourceTimeEntryId],
-        te.[PublicId] AS [SourceTimeEntryPublicId]
-    FROM dbo.[ContractLabor] cl
-    LEFT JOIN dbo.[TimeEntry] te ON te.[Id] = cl.[SourceTimeEntryId]
-    WHERE cl.[PublicId] = @PublicId;
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-162, 2026-07-28) — sproc body removed, NOT the intent.
+--
+-- Original intent of this section (preserved for lineage):
+--   Surface SourceTimeEntryPublicId on the detail read via LEFT JOIN to TimeEntry.
+--
+-- The canonical definition of this sproc now lives in exactly ONE place:
+--   entities/contract_labor/sql/dbo.contract_labor.sql
+--
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.ReadContractLaborByPublicId
+--
+-- Drift: NONE — all three bodies were byte-identical; stubbed for single-source
+-- only. (The base additionally carried a second, byte-identical copy of this
+-- sproc; U-162 collapsed it so the base defines each sproc exactly once.)
+--
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------
 GO
 
-PRINT 'ReadContractLaborByPublicId now returns SourceTimeEntryPublicId.';
+PRINT 'SUPERSEDED (U-162): ReadContractLaborByPublicId is canonical in entities/contract_labor/sql/dbo.contract_labor.sql; no sproc applied here.';

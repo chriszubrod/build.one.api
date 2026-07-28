@@ -1,45 +1,21 @@
-GO
-
-CREATE OR ALTER PROCEDURE ReadContractLaborDailySummary
-(
-    @EmployeeName NVARCHAR(200),
-    @WorkDate DATE,
-    @ExcludeEntryId BIGINT NULL
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    DECLARE @TotalImportedHours DECIMAL(10,2);
-    DECLARE @EntryCount INT;
-
-    SELECT
-        @TotalImportedHours = COALESCE(SUM([TotalHours]), 0),
-        @EntryCount = COUNT(*)
-    FROM dbo.[ContractLabor]
-    WHERE [EmployeeName] = @EmployeeName
-      AND [WorkDate] = @WorkDate;
-
-    DECLARE @AllocatedOtherEntries DECIMAL(10,2);
-
-    SELECT @AllocatedOtherEntries = COALESCE(SUM(li.[Hours]), 0)
-    FROM dbo.[ContractLaborLineItem] li
-    INNER JOIN dbo.[ContractLabor] cl ON li.[ContractLaborId] = cl.[Id]
-    WHERE cl.[EmployeeName] = @EmployeeName
-      AND cl.[WorkDate] = @WorkDate
-      AND (@ExcludeEntryId IS NULL OR cl.[Id] != @ExcludeEntryId);
-
-    DECLARE @AllocatedThisEntry DECIMAL(10,2);
-
-    SELECT @AllocatedThisEntry = COALESCE(SUM(li.[Hours]), 0)
-    FROM dbo.[ContractLaborLineItem] li
-    WHERE li.[ContractLaborId] = @ExcludeEntryId;
-
-    SELECT
-        @TotalImportedHours AS [TotalImportedHours],
-        @EntryCount AS [EntryCount],
-        @AllocatedOtherEntries AS [AllocatedOtherEntries],
-        @AllocatedThisEntry AS [AllocatedThisEntry],
-        (@TotalImportedHours - @AllocatedOtherEntries - @AllocatedThisEntry) AS [RemainingToAllocate];
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-162, 2026-07-28) — sproc body removed, NOT the intent.
+--
+-- Original intent of this file (preserved for lineage):
+--   ReadContractLaborDailySummary with SET NOCOUNT ON (pyodbc fix, commit a84fd4f).
+--
+-- The canonical definition of this sproc now lives in exactly ONE place:
+--   entities/contract_labor/sql/dbo.contract_labor.sql
+--
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.ReadContractLaborDailySummary
+--
+-- Drift: this file was the LIVE side — the base was STALE (it still carried the
+-- pre-fix body with BEGIN TRANSACTION and no SET NOCOUNT ON, broken for pyodbc
+-- since 2026-02-01) and has been reconciled to this file's form verbatim.
+--
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------
 GO

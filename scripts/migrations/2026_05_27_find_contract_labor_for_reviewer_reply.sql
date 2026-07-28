@@ -14,7 +14,9 @@
 --   1. Creates dbo.ContractLaborNotification (one row per outbound
 --      draft enqueued; carries (CL_id, Project_id, OutboundSubject) so
 --      the lookup can JOIN without any subject parsing).
---   2. Creates FindContractLaborForReviewerReply that:
+--   2. Creates FindContractLaborForReviewerReply — SUPERSEDED (U-162);
+--      the body now lives only in entities/contract_labor/sql/
+--      dbo.contract_labor.sql. Described here for lineage:
 --        PRIMARY  - JOIN EmailMessage (by ConversationId, outbound, CL-
 --                   subject prefix) → ContractLaborNotification (by
 --                   exact OutboundSubject) → ContractLabor + Project.
@@ -32,8 +34,9 @@
 -- the same commit to INSERT a join row at enqueue time AND drop the
 -- [REF:] marker from the outbound subject.
 --
--- Idempotent: IF NOT EXISTS table guard; CREATE OR ALTER sproc; the
--- backfill uses IF NOT EXISTS per-row so re-running is safe.
+-- Idempotent: IF NOT EXISTS table guard; the backfill uses IF NOT EXISTS
+-- per-row so re-running is safe. (The CREATE OR ALTER sproc that used to
+-- live here is superseded by U-162 — see the stub below.)
 GO
 
 
@@ -75,99 +78,25 @@ GO
 
 
 -- ─── Sproc: FindContractLaborForReviewerReply ───────────────────────
-CREATE OR ALTER PROCEDURE FindContractLaborForReviewerReply
-(
-    @ConversationId NVARCHAR(255),
-    @WorkerHint NVARCHAR(255) = NULL,
-    @ProjectHint NVARCHAR(255) = NULL,
-    @WorkDateHint NVARCHAR(20) = NULL
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    DECLARE @MatchKind NVARCHAR(20) = NULL;
-    DECLARE @CLId BIGINT = NULL;
-    DECLARE @ProjectId BIGINT = NULL;
-
-    -- ── PRIMARY: JOIN outbound EmailMessage → ContractLaborNotification ─
-    -- Single-result-or-null: COUNT(*)=1 gate via a table variable, same
-    -- shape as BillRepository's mirror at entities/bill/sql/dbo.
-    -- bill_create_source_email.sql (FindBillForReviewerReply).
-    DECLARE @PrimaryHits TABLE (CLId BIGINT, ProjectId BIGINT);
-
-    INSERT INTO @PrimaryHits (CLId, ProjectId)
-    SELECT DISTINCT TOP 2
-        cln.[ContractLaborId],
-        cln.[ProjectId]
-    FROM dbo.[EmailMessage] em
-    INNER JOIN dbo.[ContractLaborNotification] cln
-        ON cln.[OutboundSubject] = em.[Subject]
-    WHERE em.[ConversationId]   = @ConversationId
-      AND em.[ProcessingStatus] = 'outbound'
-      AND em.[Subject] LIKE 'Contract Labor - %';
-
-    IF (SELECT COUNT(*) FROM @PrimaryHits) = 1
-    BEGIN
-        SELECT TOP 1
-            @CLId      = CLId,
-            @ProjectId = ProjectId
-        FROM @PrimaryHits;
-        SET @MatchKind = 'conversation';
-    END
-
-    -- ── FUZZY: caller-supplied hints (non-Outlook conv-id loss) ────
-    -- Triggered only when PRIMARY missed. Requires all three hints.
-    -- Same JOIN-through-line-items shape as the Bill fuzzy fallback.
-    -- TRY_CAST guards @WorkDateHint regardless of session DATEFORMAT.
-    IF @MatchKind IS NULL
-       AND @WorkerHint IS NOT NULL
-       AND @ProjectHint IS NOT NULL
-       AND @WorkDateHint IS NOT NULL
-    BEGIN
-        DECLARE @WorkDate DATE = TRY_CAST(@WorkDateHint AS DATE);
-        IF @WorkDate IS NOT NULL
-        BEGIN
-            DECLARE @FuzzyHits TABLE (CLId BIGINT, ProjectId BIGINT);
-
-            INSERT INTO @FuzzyHits (CLId, ProjectId)
-            SELECT DISTINCT TOP 2 cl.[Id], p.[Id]
-            FROM dbo.[ContractLabor] cl
-            INNER JOIN dbo.[ContractLaborLineItem] cli ON cli.[ContractLaborId] = cl.[Id]
-            INNER JOIN dbo.[Project] p ON p.[Id] = cli.[ProjectId]
-            WHERE cl.[EmployeeName] = @WorkerHint
-              AND cl.[WorkDate]     = @WorkDate
-              AND p.[Abbreviation]  = @ProjectHint;
-
-            IF (SELECT COUNT(*) FROM @FuzzyHits) = 1
-            BEGIN
-                SELECT TOP 1
-                    @CLId      = CLId,
-                    @ProjectId = ProjectId
-                FROM @FuzzyHits;
-                SET @MatchKind = 'fuzzy';
-            END
-        END
-    END
-
-    -- ── Hydrate + return ──────────────────────────────────────────
-    -- Single SELECT joining CL + Project for the final shape. NO Status
-    -- filter (Unit 3's apply path enforces).
-    SELECT
-        cl.[Id]                                         AS ContractLaborId,
-        CAST(cl.[PublicId] AS NVARCHAR(36))             AS ContractLaborPublicId,
-        p.[Id]                                          AS ProjectId,
-        CAST(p.[PublicId] AS NVARCHAR(36))              AS ProjectPublicId,
-        p.[Abbreviation]                                AS ProjectAbbreviation,
-        p.[Name]                                        AS ProjectName,
-        cl.[EmployeeName]                               AS ParsedWorker,
-        CONVERT(VARCHAR(10), cl.[WorkDate], 120)        AS ParsedWorkDate,
-        cl.[Status]                                     AS ContractLaborStatus,
-        @MatchKind                                      AS MatchKind
-    FROM dbo.[ContractLabor] cl
-    INNER JOIN dbo.[Project] p ON p.[Id] = @ProjectId
-    WHERE cl.[Id] = @CLId AND @CLId IS NOT NULL;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-162, 2026-07-28) — body removed, NOT the intent.
+--
+-- The canonical definition of this sproc now lives in exactly ONE place:
+--   entities/contract_labor/sql/dbo.contract_labor.sql
+--
+-- Sprocs formerly defined here (now canonical in the base file):
+--   dbo.FindContractLaborForReviewerReply
+--
+-- Drift: comment-only — the T-SQL was identical on both sides; the base adopted
+-- this copy's explanatory comment blocks so nothing was lost.
+--
+-- NOTE: only the sproc is superseded. The dbo.ContractLaborNotification table
+-- DDL above and the one-time backfill below are still live in this file.
+--
+-- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is what caused the
+-- 2026-07-15 outage (SQL 8144, cross-user payroll exposure risk).
+-- ---------------------------------------------------------------------------
 GO
 
 

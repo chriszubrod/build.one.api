@@ -193,7 +193,8 @@ CREATE OR ALTER PROCEDURE CreateContractLabor
     @BillLineItemId BIGINT NULL,
     @ImportBatchId NVARCHAR(50) NULL,
     @SourceFile NVARCHAR(255) NULL,
-    @SourceRow INT NULL
+    @SourceRow INT NULL,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -205,7 +206,8 @@ BEGIN
         [CreatedDatetime], [ModifiedDatetime], [VendorId], [ProjectId], [EmployeeName], [JobName],
         [WorkDate], [TimeIn], [TimeOut], [BreakTime], [RegularHours], [OvertimeHours],
         [TotalHours], [HourlyRate], [Markup], [TotalAmount], [SubCostCodeId], [Description],
-        [BillingPeriodStart], [Status], [BillLineItemId], [ImportBatchId], [SourceFile], [SourceRow]
+        [BillingPeriodStart], [Status], [BillLineItemId], [ImportBatchId], [SourceFile], [SourceRow],
+        [CreatedByUserId]
     )
     OUTPUT
         INSERTED.[Id],
@@ -243,7 +245,8 @@ BEGIN
         @Now, @Now, @VendorId, @ProjectId, @EmployeeName, @JobName,
         @WorkDate, @TimeIn, @TimeOut, @BreakTime, @RegularHours, @OvertimeHours,
         @TotalHours, @HourlyRate, @Markup, @TotalAmount, @SubCostCodeId, @Description,
-        @BillingPeriodStart, @Status, @BillLineItemId, @ImportBatchId, @SourceFile, @SourceRow
+        @BillingPeriodStart, @Status, @BillLineItemId, @ImportBatchId, @SourceFile, @SourceRow,
+        COALESCE(@CreatedByUserId, 17)
     );
 
     COMMIT TRANSACTION;
@@ -1127,31 +1130,40 @@ CREATE OR ALTER PROCEDURE ReadContractLaborLineItemsByContractLaborId
 )
 AS
 BEGIN
-    BEGIN TRANSACTION;
+    SET NOCOUNT ON;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [ContractLaborId],
-        CONVERT(VARCHAR(10), [LineDate], 120) AS [LineDate],
-        [ProjectId],
-        [SubCostCodeId],
-        [Description],
-        [Hours],
-        [Rate],
-        [Markup],
-        [Price],
-        [IsBillable],
-        [IsOverhead],
-        [BillLineItemId]
-    FROM dbo.[ContractLaborLineItem]
-    WHERE [ContractLaborId] = @ContractLaborId
-    ORDER BY [Id] ASC;
-
-    COMMIT TRANSACTION;
+        li.[Id],
+        li.[PublicId],
+        li.[RowVersion],
+        CONVERT(VARCHAR(19), li.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), li.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        li.[ContractLaborId],
+        CONVERT(VARCHAR(10), li.[LineDate], 120) AS [LineDate],
+        li.[ProjectId],
+        li.[SubCostCodeId],
+        li.[Description],
+        li.[Hours],
+        li.[Rate],
+        li.[Markup],
+        li.[Price],
+        li.[IsBillable],
+        li.[IsOverhead],
+        li.[BillLineItemId]
+    FROM dbo.[ContractLaborLineItem] li
+    OUTER APPLY (
+        SELECT MIN(tl.[ClockIn]) AS MinClockIn
+        FROM dbo.[TimeLog] tl
+        WHERE tl.[TimeEntryId] = li.[SourceTimeEntryId]
+          AND ((li.[ProjectId] IS NULL AND tl.[ProjectId] IS NULL)
+               OR tl.[ProjectId] = li.[ProjectId])
+          AND (tl.[LogType] IS NULL OR tl.[LogType] = 'work')
+    ) ord
+    WHERE li.[ContractLaborId] = @ContractLaborId
+    ORDER BY
+        li.[LineDate] ASC,
+        ord.MinClockIn ASC,   -- NULLs (manual rows / no matching TimeLog) sort first; then Id breaks ties
+        li.[Id] ASC;
 END;
 GO
 
@@ -1420,57 +1432,6 @@ GO
 
 
 
-GO
-
-CREATE OR ALTER PROCEDURE ReadContractLaborByPublicId
-(
-    @PublicId UNIQUEIDENTIFIER
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        cl.[Id],
-        cl.[PublicId],
-        cl.[RowVersion],
-        CONVERT(VARCHAR(19), cl.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), cl.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        cl.[VendorId],
-        cl.[ProjectId],
-        cl.[EmployeeName],
-        cl.[JobName],
-        CONVERT(VARCHAR(10), cl.[WorkDate], 120) AS [WorkDate],
-        cl.[TimeIn],
-        cl.[TimeOut],
-        cl.[BreakTime],
-        cl.[RegularHours],
-        cl.[OvertimeHours],
-        cl.[TotalHours],
-        cl.[HourlyRate],
-        cl.[Markup],
-        cl.[TotalAmount],
-        cl.[SubCostCodeId],
-        cl.[Description],
-        CONVERT(VARCHAR(10), cl.[BillingPeriodStart], 120) AS [BillingPeriodStart],
-        cl.[Status],
-        cl.[BillLineItemId],
-        cl.[BillVendorId],
-        CONVERT(VARCHAR(10), cl.[BillDate], 120) AS [BillDate],
-        CONVERT(VARCHAR(10), cl.[DueDate], 120) AS [DueDate],
-        cl.[BillNumber],
-        cl.[ImportBatchId],
-        cl.[SourceFile],
-        cl.[SourceRow],
-        cl.[SourceTimeEntryId],
-        te.[PublicId] AS [SourceTimeEntryPublicId]
-    FROM dbo.[ContractLabor] cl
-    LEFT JOIN dbo.[TimeEntry] te ON te.[Id] = cl.[SourceTimeEntryId]
-    WHERE cl.[PublicId] = @PublicId;
-
-    COMMIT TRANSACTION;
-END;
-GO
 
 
 GO
@@ -1649,6 +1610,10 @@ BEGIN
     DECLARE @CLId BIGINT = NULL;
     DECLARE @ProjectId BIGINT = NULL;
 
+    -- ── PRIMARY: JOIN outbound EmailMessage → ContractLaborNotification ─
+    -- Single-result-or-null: COUNT(*)=1 gate via a table variable, same
+    -- shape as BillRepository's mirror at entities/bill/sql/dbo.
+    -- bill_create_source_email.sql (FindBillForReviewerReply).
     DECLARE @PrimaryHits TABLE (CLId BIGINT, ProjectId BIGINT);
 
     INSERT INTO @PrimaryHits (CLId, ProjectId)
@@ -1671,6 +1636,10 @@ BEGIN
         SET @MatchKind = 'conversation';
     END
 
+    -- ── FUZZY: caller-supplied hints (non-Outlook conv-id loss) ────
+    -- Triggered only when PRIMARY missed. Requires all three hints.
+    -- Same JOIN-through-line-items shape as the Bill fuzzy fallback.
+    -- TRY_CAST guards @WorkDateHint regardless of session DATEFORMAT.
     IF @MatchKind IS NULL
        AND @WorkerHint IS NOT NULL
        AND @ProjectHint IS NOT NULL
@@ -1701,6 +1670,9 @@ BEGIN
         END
     END
 
+    -- ── Hydrate + return ──────────────────────────────────────────
+    -- Single SELECT joining CL + Project for the final shape. NO Status
+    -- filter (Unit 3's apply path enforces).
     SELECT
         cl.[Id]                                         AS ContractLaborId,
         CAST(cl.[PublicId] AS NVARCHAR(36))             AS ContractLaborPublicId,

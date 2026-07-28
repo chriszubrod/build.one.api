@@ -23,8 +23,11 @@
 --   U-158 (2026-07-28) — CreateInvoice: the INVERSE case — the BASE file was
 --     the stale copy (no @CreatedByUserId) and was reconciled to this file's
 --     form verbatim.
--- The remaining 2 live bodies (CreateContractLabor,
--- CreateContractLaborLineItem) are the live @CreatedByUserId threading.
+--   U-162 (2026-07-28) — CreateContractLabor, CreateContractLaborLineItem:
+--     the INVERSE case for CreateContractLabor (base lacked @CreatedByUserId,
+--     reconciled to this file's form verbatim); CreateContractLaborLineItem
+--     was byte-identical (stubbed for single-source only).
+-- Every section is now a base-canonical pointer stub.
 -- =====================================================================
 
 SET XACT_ABORT ON;
@@ -120,87 +123,22 @@ GO
 GO
 
 -- ===== 6. CreateContractLabor =====
-CREATE OR ALTER PROCEDURE CreateContractLabor
-(
-    @VendorId BIGINT NULL,
-    @ProjectId BIGINT NULL,
-    @EmployeeName NVARCHAR(255),
-    @JobName NVARCHAR(255) NULL,
-    @WorkDate DATE,
-    @TimeIn NVARCHAR(20) NULL,
-    @TimeOut NVARCHAR(20) NULL,
-    @BreakTime NVARCHAR(20) NULL,
-    @RegularHours DECIMAL(6,2) NULL,
-    @OvertimeHours DECIMAL(6,2) NULL,
-    @TotalHours DECIMAL(6,2),
-    @HourlyRate DECIMAL(18,4) NULL,
-    @Markup DECIMAL(18,4) NULL,
-    @TotalAmount DECIMAL(18,2) NULL,
-    @SubCostCodeId BIGINT NULL,
-    @Description NVARCHAR(MAX) NULL,
-    @BillingPeriodStart DATE NULL,
-    @Status NVARCHAR(20) = 'pending_review',
-    @BillLineItemId BIGINT NULL,
-    @ImportBatchId NVARCHAR(50) NULL,
-    @SourceFile NVARCHAR(255) NULL,
-    @SourceRow INT NULL,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[ContractLabor] (
-        [CreatedDatetime], [ModifiedDatetime], [VendorId], [ProjectId], [EmployeeName], [JobName],
-        [WorkDate], [TimeIn], [TimeOut], [BreakTime], [RegularHours], [OvertimeHours],
-        [TotalHours], [HourlyRate], [Markup], [TotalAmount], [SubCostCodeId], [Description],
-        [BillingPeriodStart], [Status], [BillLineItemId], [ImportBatchId], [SourceFile], [SourceRow],
-        [CreatedByUserId]
-    )
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[VendorId],
-        INSERTED.[ProjectId],
-        INSERTED.[EmployeeName],
-        INSERTED.[JobName],
-        CONVERT(VARCHAR(10), INSERTED.[WorkDate], 120) AS [WorkDate],
-        INSERTED.[TimeIn],
-        INSERTED.[TimeOut],
-        INSERTED.[BreakTime],
-        INSERTED.[RegularHours],
-        INSERTED.[OvertimeHours],
-        INSERTED.[TotalHours],
-        INSERTED.[HourlyRate],
-        INSERTED.[Markup],
-        INSERTED.[TotalAmount],
-        INSERTED.[SubCostCodeId],
-        INSERTED.[Description],
-        CONVERT(VARCHAR(10), INSERTED.[BillingPeriodStart], 120) AS [BillingPeriodStart],
-        INSERTED.[Status],
-        INSERTED.[BillLineItemId],
-        INSERTED.[BillVendorId],
-        CONVERT(VARCHAR(10), INSERTED.[BillDate], 120) AS [BillDate],
-        CONVERT(VARCHAR(10), INSERTED.[DueDate], 120) AS [DueDate],
-        INSERTED.[BillNumber],
-        INSERTED.[ImportBatchId],
-        INSERTED.[SourceFile],
-        INSERTED.[SourceRow]
-    VALUES (
-        @Now, @Now, @VendorId, @ProjectId, @EmployeeName, @JobName,
-        @WorkDate, @TimeIn, @TimeOut, @BreakTime, @RegularHours, @OvertimeHours,
-        @TotalHours, @HourlyRate, @Markup, @TotalAmount, @SubCostCodeId, @Description,
-        @BillingPeriodStart, @Status, @BillLineItemId, @ImportBatchId, @SourceFile, @SourceRow,
-        COALESCE(@CreatedByUserId, 17)
-    );
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-162, 2026-07-28) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/contract_labor/sql/dbo.contract_labor.sql
+-- That base was STALE (it lacked @CreatedByUserId) and has been reconciled to
+-- this file's live form verbatim.
+--
+-- Drift (INVERTED — here the BASE was the copy that had fallen behind, not this
+-- file): the base omitted @CreatedByUserId, which ContractLaborRepository.create
+-- sends unconditionally (entities/contract_labor/persistence/repo.py), so
+-- re-applying the base file would have reverted prod CreateContractLabor to the
+-- pre-threading shape and broken every CL create with SQL 8145 — the same
+-- param-drift class as U-102/U-158. Re-running this file is now a no-op for
+-- CreateContractLabor. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 7. CreateBillLineItem =====
@@ -267,57 +205,17 @@ GO
 GO
 
 -- ===== 11. CreateContractLaborLineItem =====
-CREATE OR ALTER PROCEDURE CreateContractLaborLineItem
-(
-    @ContractLaborId BIGINT,
-    @LineDate DATE NULL,
-    @ProjectId BIGINT NULL,
-    @SubCostCodeId BIGINT NULL,
-    @Description NVARCHAR(MAX) NULL,
-    @Hours DECIMAL(6,2) NULL,
-    @Rate DECIMAL(18,4) NULL,
-    @Markup DECIMAL(18,4) NULL,
-    @Price DECIMAL(18,2) NULL,
-    @IsBillable BIT = 1,
-    @IsOverhead BIT = 0,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[ContractLaborLineItem] (
-        [CreatedDatetime], [ModifiedDatetime], [ContractLaborId], [LineDate], [ProjectId], [SubCostCodeId],
-        [Description], [Hours], [Rate], [Markup], [Price], [IsBillable], [IsOverhead], [CreatedByUserId]
-    )
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[ContractLaborId],
-        CONVERT(VARCHAR(10), INSERTED.[LineDate], 120) AS [LineDate],
-        INSERTED.[ProjectId],
-        INSERTED.[SubCostCodeId],
-        INSERTED.[Description],
-        INSERTED.[Hours],
-        INSERTED.[Rate],
-        INSERTED.[Markup],
-        INSERTED.[Price],
-        INSERTED.[IsBillable],
-        INSERTED.[IsOverhead]
-    VALUES (
-        @Now, @Now, @ContractLaborId, @LineDate, @ProjectId, @SubCostCodeId,
-        @Description, @Hours, @Rate, @Markup, @Price, @IsBillable, @IsOverhead,
-        COALESCE(@CreatedByUserId, 17)
-    );
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-162, 2026-07-28) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/contract_labor/sql/dbo.contract_labor.sql
+-- Base and this copy were byte-identical; stubbed for single-source only.
+--
+-- Drift: NONE — re-running this file is now a no-op for CreateContractLaborLineItem.
+-- Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
-PRINT 'Gap 2 Phase Core: CreateContractLabor + CreateContractLaborLineItem threaded with @CreatedByUserId; all other sections are base-canonical pointer stubs (U-061/U-074/U-102/U-158)';
+PRINT 'Gap 2 Phase Core: all sections are base-canonical pointer stubs (U-061/U-074/U-102/U-158/U-162)';
 GO

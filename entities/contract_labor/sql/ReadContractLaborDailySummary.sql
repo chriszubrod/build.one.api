@@ -2,7 +2,9 @@
 -- SUPERSEDED (U-162, 2026-07-28) — sproc body removed, NOT the intent.
 --
 -- Original intent of this file (preserved for lineage):
---   ReadContractLaborDailySummary with SET NOCOUNT ON (pyodbc fix, commit a84fd4f).
+--   ReadContractLaborDailySummary with SET NOCOUNT ON (commit a84fd4f — premise
+--   later refuted: assignment-only SELECT @var = … does NOT break pyodbc on prod;
+--   verified 2026-07-28; real break is DML→row-returning-SELECT + fetchone()).
 --
 -- The canonical definition of this sproc now lives in exactly ONE place:
 --   entities/contract_labor/sql/dbo.contract_labor.sql
@@ -10,9 +12,9 @@
 -- Sprocs formerly defined here (now canonical in the base file):
 --   dbo.ReadContractLaborDailySummary
 --
--- Drift: this file was the LIVE side — the base was STALE (it still carried the
--- pre-fix body with BEGIN TRANSACTION and no SET NOCOUNT ON, broken for pyodbc
--- since 2026-02-01) and has been reconciled to this file's form verbatim.
+-- Drift: U-162 reconciled the base to the LIVE prod body (assignment-only SELECTs,
+-- pointless BEGIN TRANSACTION/COMMIT on a read-only sproc). U-164 added SET NOCOUNT ON
+-- and removed the read-only transaction as hygiene.
 --
 -- Re-running this file is now a no-op for this sproc. Do NOT reintroduce a
 -- body here — a copy that drifts from the base file is what caused the

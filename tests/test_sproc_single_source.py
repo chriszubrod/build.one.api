@@ -186,7 +186,7 @@ GAP2_NEUTRALIZED_SPROCS = frozenset(
 # U-148: dbo.attachment.sql reconciled (CreateAttachment <- gap2_adjacent_threading Phase-Adjacent body) and made sole home of all 10 Attachment sprocs — whole-file guard; also stubs the CreateAttachment copy in gap2_adjacent_threading.sql and the five read-sproc copies in update_procedures_with_extraction.sql.
 # U-150: dbo.invoice_line_item.sql was already the live layer (applied+verified to prod 2026-07-06, commit be2a877) — NOT a reconcile; the migration copy was the stale side and was stubbed.
 # U-158: dbo.invoice.sql reconciled to the LIVE layer (ReadInvoices / ReadInvoicesPaginated / CountInvoices <- gap1_list_sprocs_scoped.sql, CreateInvoice <- gap2_core_threading.sql — the base was the stale side) and made sole home of all 10 Invoice sprocs — whole-file guard; the four migration copies are stubbed.
-# U-162: dbo.contract_labor.sql reconciled to the LIVE layer (CreateContractLabor <- gap2_core_threading, ReadContractLaborDailySummary <- LIVE prod body (em Gate-2 sweep: the a84fd4f SET-NOCOUNT-ON fix was NEVER deployed, so prod still runs the pre-fix BEGIN TRANSACTION body; reconciled to live to keep this unit deploy-neutral — applying that fix to prod+base is a separate follow-up unit), ReadContractLaborLineItemsByContractLaborId <- migration 2026_06_03; FindContractLaborForReviewerReply comment-only) and made sole home of all 28 sprocs it declares (contract_labor + ContractLaborLineItem) — whole-file guard; a duplicate ReadContractLaborByPublicId block inside the base was collapsed; 7 copies stubbed across 6 carrier files. NOTE: ReadContractLaborDistinctBillingPeriods is a live CL sproc homed OUTSIDE the base (its own sql/ file) — legal and sole-homed, but it means the base is not the complete CL sproc set; folding it in is a follow-up.
+# U-162: dbo.contract_labor.sql reconciled to the LIVE layer (CreateContractLabor <- gap2_core_threading, ReadContractLaborDailySummary <- LIVE prod body (verified 2026-07-28: assignment-only SELECT @var = … does NOT break pyodbc on prod; the real break is DML→row-returning-SELECT + fetchone() — see U-164), ReadContractLaborLineItemsByContractLaborId <- migration 2026_06_03; FindContractLaborForReviewerReply comment-only) and made sole home of all 28 sprocs it declares (contract_labor + ContractLaborLineItem) — whole-file guard; a duplicate ReadContractLaborByPublicId block inside the base was collapsed; 7 copies stubbed across 6 carrier files. NOTE: ReadContractLaborDistinctBillingPeriods is a live CL sproc homed OUTSIDE the base (its own sql/ file) — legal and sole-homed, but it means the base is not the complete CL sproc set; folding it in is a follow-up.
 # "Entity" here reads as entity/package, per the module docstring.
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
@@ -300,6 +300,7 @@ _UDF_CALL_PATTERN = re.compile(
 )
 
 _LINE_COMMENT = re.compile(r"--[^\n]*")
+_SET_NOCOUNT_ON = re.compile(r"SET\s+NOCOUNT\s+ON", re.IGNORECASE)
 
 
 def _names_from_text(pattern: re.Pattern, text: str) -> frozenset[str]:
@@ -337,6 +338,17 @@ def _extract_object_body(text: str, pattern: re.Pattern, name_wanted: str, home:
 @lru_cache(maxsize=1)
 def _review_base_text() -> str:
     return REVIEW_BASE.read_text(encoding="utf-8")
+
+
+@lru_cache(maxsize=None)
+def _sproc_body(home_path: Path, sproc_name: str) -> str:
+    """Comment-stripped body of one sproc, scoped to its CREATE OR ALTER block."""
+    return _LINE_COMMENT.sub(
+        "",
+        _extract_object_body(
+            home_path.read_text(encoding="utf-8"), _SPROC_BODY_PATTERN, sproc_name, home_path
+        ),
+    )
 
 
 def _sproc_name_to_paths() -> dict[str, frozenset[str]]:
@@ -441,24 +453,51 @@ _LINE_ITEM_NULL_GUARDS = tuple(
 SPROC_BODY_FORBIDDEN_PATTERNS = [
     ("UpdateBillLineItemById", BILL_LINE_ITEM_BASE, _LINE_ITEM_NULL_GUARDS),
     ("UpdateExpenseLineItemById", EXPENSE_LINE_ITEM_BASE, _LINE_ITEM_NULL_GUARDS),
+    # U-164: read-only BEGIN TRANSACTION was removed from this sproc.
+    (
+        "ReadContractLaborDailySummary",
+        CONTRACT_LABOR_BASE,
+        (re.compile(r"BEGIN\s+TRANSACTION", re.IGNORECASE),),
+    ),
 ]
+
+# U-164: named pin for contract-labor sprocs that exhibit the DML → row-returning
+# SELECT → fetchone() pyodbc break shape (four of them), plus ReadContractLaborDailySummary
+# pinned as hygiene. Deliberately NOT a blanket "all sprocs need SET NOCOUNT ON" rule —
+# 22 of 28 sprocs in this base file legitimately lack it. A repo-wide mechanical detector
+# is a separate follow-up unit.
+NOCOUNT_PINNED_SPROCS = [
+    ("UpdateContractLaborStatusByIds", CONTRACT_LABOR_BASE),
+    ("DeleteContractLaborLineItemsByContractLaborId", CONTRACT_LABOR_BASE),
+    ("FindContractLaborForReviewerReply", CONTRACT_LABOR_BASE),  # repo.py:518 fetchone; route router.py:235
+    ("UpdateContractLaborAggregates", CONTRACT_LABOR_BASE),  # repo.py:624 fetchone; PUT /{public_id}/bill router.py:577
+    ("ReadContractLaborDailySummary", CONTRACT_LABOR_BASE),
+]
+
+
+@pytest.mark.parametrize("sproc_name,home_path", NOCOUNT_PINNED_SPROCS)
+def test_sproc_body_pins_set_nocount_on(sproc_name, home_path):
+    """Pinned sprocs must carry SET NOCOUNT ON — DML followed by a row-returning
+    SELECT with fetchone() is the pyodbc break shape this guard targets."""
+    body = _sproc_body(home_path, sproc_name)
+    assert _SET_NOCOUNT_ON.search(body), (
+        f"dbo.{sproc_name} in {home_path.relative_to(REPO_ROOT)} must carry SET NOCOUNT ON — "
+        "DML followed by a row-returning SELECT with fetchone() emits a blocking "
+        "rows-affected token as the first result and breaks the caller (or is pinned as hygiene)."
+    )
 
 
 @pytest.mark.parametrize("sproc_name,home_path,forbidden", SPROC_BODY_FORBIDDEN_PATTERNS)
 def test_sproc_body_keeps_ratified_form(sproc_name, home_path, forbidden):
-    """U-111 recurrence guard: the named sproc's body (comment-stripped, scoped
-    to its CREATE OR ALTER block) must not re-acquire a forbidden pattern."""
-    body = _LINE_COMMENT.sub(
-        "",
-        _extract_object_body(
-            home_path.read_text(encoding="utf-8"), _SPROC_BODY_PATTERN, sproc_name, home_path
-        ),
-    )
+    """Recurrence guard: the named sproc's body must not re-acquire a forbidden
+    pattern its ratified form excludes."""
+    body = _sproc_body(home_path, sproc_name)
     for pattern in forbidden:
         assert not pattern.search(body), (
-            f"dbo.{sproc_name} in {home_path.relative_to(REPO_ROOT)} reintroduced a "
-            f"NULL-guard matching {pattern.pattern!r} — U-111 ratified the LIVE "
-            "unconditional-SET form; keep None-as-skip in the service layer, not the sproc."
+            f"dbo.{sproc_name} in {home_path.relative_to(REPO_ROOT)} re-acquired a "
+            f"forbidden pattern matching {pattern.pattern!r} — the body must stay in "
+            "its ratified form (U-111 NULL-guard rows: keep None-as-skip in the "
+            "service layer, not the sproc)."
         )
 
 

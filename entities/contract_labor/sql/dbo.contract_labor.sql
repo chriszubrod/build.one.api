@@ -992,6 +992,8 @@ CREATE OR ALTER PROCEDURE UpdateContractLaborStatusByIds
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
@@ -1021,7 +1023,7 @@ CREATE OR ALTER PROCEDURE ReadContractLaborDailySummary
 )
 AS
 BEGIN
-    BEGIN TRANSACTION;
+    SET NOCOUNT ON;
 
     -- Get total imported hours and entry count for this employee/date
     DECLARE @TotalImportedHours DECIMAL(10,2);
@@ -1057,8 +1059,6 @@ BEGIN
         @AllocatedOtherEntries AS [AllocatedOtherEntries],
         @AllocatedThisEntry AS [AllocatedThisEntry],
         (@TotalImportedHours - @AllocatedOtherEntries - @AllocatedThisEntry) AS [RemainingToAllocate];
-
-    COMMIT TRANSACTION;
 END;
 GO
 
@@ -1352,6 +1352,8 @@ CREATE OR ALTER PROCEDURE DeleteContractLaborLineItemsByContractLaborId
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
 
     DELETE FROM dbo.[ContractLaborLineItem]

@@ -15,7 +15,7 @@ U-162 (2026-07-28) **RECONCILED** the base to the live layer. The base was
 | Sproc | What the base was missing | Live source it was reconciled from |
 |---|---|---|
 | `CreateContractLabor` | `@CreatedByUserId`, the `[CreatedByUserId]` INSERT column, `COALESCE(@CreatedByUserId, 17)` | `scripts/migrations/gap2_core_threading.sql` |
-| `ReadContractLaborDailySummary` | `SET NOCOUNT ON` (and wrongly carried `BEGIN TRANSACTION`/`COMMIT`) | `entities/contract_labor/sql/ReadContractLaborDailySummary.sql` |
+| `ReadContractLaborDailySummary` | Live prod body (assignment-only SELECTs; no pyodbc break — verified 2026-07-28) | LIVE prod (U-162 Gate-2 sweep) |
 | `ReadContractLaborLineItemsByContractLaborId` | `SET NOCOUNT ON` + the `OUTER APPLY dbo.TimeLog` clock-in ordering | `entities/contract_labor/sql/migrations/2026_06_03_line_items_ordered_by_clockin.sql` |
 
 `FindContractLaborForReviewerReply` differed only in comments (T-SQL identical);
@@ -34,13 +34,19 @@ Re-applying the **pre-U-162** base file would have **reverted prod** in two ways
    unconditionally (`entities/contract_labor/persistence/repo.py`). Same param-drift
    class as the U-037 / U-089 / U-102 / U-158 incidents. **This is the financial
    hazard**: ContractLabor rows are the input to CL bill generation.
-2. **`GET /contract-labor/{public_id}/daily-summary` broken again** — the base's
-   `ReadContractLaborDailySummary` still had the pre-fix body (no `SET NOCOUNT ON`),
-   which trips pyodbc's first-result `fetchone()` on each `SELECT @var = …`
-   assignment. Fixed in commit `a84fd4f` (2026-05-15) in the standalone file only;
-   the base never received it.
+2. **`ReadContractLaborDailySummary` body drift** — the base had diverged from live
+   prod (carried pointless `BEGIN TRANSACTION`/`COMMIT` on a read-only sproc). Note:
+   assignment-only `SELECT @var = …` does **not** break pyodbc on prod (verified
+   2026-07-28); the real pyodbc failure shape is DML followed by a row-returning
+   SELECT with `fetchone()` (e.g. `UpdateContractLaborStatusByIds`).
 
-Post-U-162, re-applying the base file matches live prod.
+U-164 (2026-07-28) changed three sproc bodies in this file — `SET NOCOUNT ON` on
+`UpdateContractLaborStatusByIds`, `DeleteContractLaborLineItemsByContractLaborId`, and
+`ReadContractLaborDailySummary`, plus removal of the read-only `BEGIN TRANSACTION`/`COMMIT`
+from `ReadContractLaborDailySummary`. Apply surgically — those three `CREATE OR ALTER`
+blocks only, never the whole file. *(Dated note: between the U-164 commit and the U-164 SQL
+apply the base was intentionally ahead of live for those three; after apply, re-applying
+this file matches prod again.)*
 
 ## ⚠️ Not the complete CL sproc set
 

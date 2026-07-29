@@ -265,9 +265,9 @@ async def time_entry_daily_digest_router(work_date: Optional[str] = None):
     """
     Run the daily time-entry digest sweep: email each worker a summary of a
     day's time entries + logs (confirmation + correctness). Default target is
-    yesterday in the business timezone; pass `?work_date=YYYY-MM-DD` to (re)run
-    a specific day manually. Called once a day by the scheduler's
-    `time_entry_daily_digest` timer.
+    two days ago in the business timezone (see `time_entry_digest_lookback_days`);
+    pass `?work_date=YYYY-MM-DD` to (re)run a specific day manually. Called once
+    a day by the scheduler's `time_entry_daily_digest` timer.
 
     The sweep reads across all workers (this endpoint runs as system admin via
     the drain-secret guard), enqueues one MS-outbox `send_mail` row per worker
@@ -283,7 +283,7 @@ async def time_entry_daily_digest_router(work_date: Optional[str] = None):
         svc = TimeEntryDigestService()
         if work_date:
             return svc.run_for_work_date(work_date)
-        return svc.run_for_yesterday()
+        return svc.run_for_default_date()
 
     return await _timed("time_entry.daily_digest", _run)
 

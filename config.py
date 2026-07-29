@@ -101,8 +101,9 @@ class Settings(BaseSettings):
     review_notification_mode: str = "draft"
 
     # Time-Entry Daily Digest
-    # Morning email to each worker summarizing the PRIOR day's time entries +
-    # logs (confirmation + correctness). Drained via the MS outbox like every
+    # Morning email to each worker summarizing a recent day's time entries +
+    # logs (confirmation + correctness — which day is set by
+    # time_entry_digest_lookback_days below). Drained via the MS outbox like every
     # other notification. `mode` controls behaviour AND acts as the kill
     # switch for the daily-digest sweep:
     #   - "off"   : the sweep is a no-op (default — ships dark).
@@ -113,14 +114,24 @@ class Settings(BaseSettings):
     # Still gated by ALLOW_MS_WRITES at the outbox layer.
     time_entry_digest_mode: str = "off"
 
-    # IANA timezone used to compute "yesterday" for the daily-digest sweep
-    # (the scheduler fires in UTC) and to render clock times in worker-facing
+    # IANA timezone used to compute the digest's target day (see
+    # time_entry_digest_lookback_days) for the daily-digest sweep (the
+    # scheduler fires in UTC) and to render clock times in worker-facing
     # emails. Defaults to US Central.
     business_timezone: str = "America/Chicago"
 
     # Optional dedicated BCC/archive address for the time-entry digest. When
     # unset, falls back to invoice_inbox_email; when neither is set, no BCC.
     time_entry_digest_bcc: Optional[str] = None
+
+    # How many days back the daily-digest sweep targets by default (in
+    # business_timezone). 1 = yesterday; 2 = two days ago (the default) — which
+    # gives late ClockOut / Note edits an extra full day to settle before the
+    # worker-facing confirmation email is drafted. A manual
+    # ?work_date=YYYY-MM-DD on the admin endpoint bypasses this entirely.
+    # Switch via env var TIME_ENTRY_DIGEST_LOOKBACK_DAYS — no code redeploy
+    # needed. Values < 1 are floored to the default at read time.
+    time_entry_digest_lookback_days: int = 2
 
     # Deterministic prior-day TimeEntry auto-submit sweep (no LLM). Modes:
     #   - "off"     : no-op kill switch (default).

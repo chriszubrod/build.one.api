@@ -25,7 +25,8 @@ class TimeEntryDigestService:
     Builds + enqueues the per-worker morning "time recorded for you" email.
 
     One email per worker who had any TimeEntry on the target work_date
-    (default: yesterday in the business timezone). The body summarizes each
+    (default: two days ago in the business timezone — see
+    `time_entry_digest_lookback_days`). The body summarizes each
     entry's logs (project, clock in/out, hours), total hours, the worker's
     note, and the entry's current status, so the worker can confirm
     correctness and flag errors to their manager.
@@ -46,9 +47,10 @@ class TimeEntryDigestService:
 
     # ─── entry points ───────────────────────────────────────────────────────
 
-    def run_for_yesterday(self) -> dict:
-        """Run the sweep for yesterday in the configured business timezone."""
-        return self.run_for_work_date(self._yesterday_business_date())
+    def run_for_default_date(self) -> dict:
+        """Run the sweep for the default target day — two days ago by default
+        (per `time_entry_digest_lookback_days`) — in the business timezone."""
+        return self.run_for_work_date(self._default_digest_date())
 
     def run_for_work_date(self, work_date: str) -> dict:
         """
@@ -233,11 +235,24 @@ class TimeEntryDigestService:
 
     # ─── timezone ───────────────────────────────────────────────────────────
 
-    def _yesterday_business_date(self) -> str:
+    def _default_digest_date(self) -> str:
         from config import Settings
 
-        tz = self._business_tz(Settings())
-        return (datetime.now(tz) - timedelta(days=1)).date().isoformat()
+        settings = Settings()
+        tz = self._business_tz(settings)
+        lookback = self._lookback_days(settings)
+        return (datetime.now(tz) - timedelta(days=lookback)).date().isoformat()
+
+    @staticmethod
+    def _lookback_days(settings) -> int:
+        """Days back the default sweep targets (>= 1). Falls back to 2 on a
+        missing/unparseable/out-of-range `time_entry_digest_lookback_days` so a
+        misconfigured 0 or negative can't email same-day/incomplete data."""
+        try:
+            days = int(getattr(settings, "time_entry_digest_lookback_days", 2))
+        except (TypeError, ValueError):
+            return 2
+        return days if days >= 1 else 2
 
     @staticmethod
     def _business_tz(settings) -> ZoneInfo:

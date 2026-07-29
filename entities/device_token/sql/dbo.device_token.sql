@@ -46,6 +46,11 @@ CREATE OR ALTER PROCEDURE RegisterDeviceToken
 )
 AS
 BEGIN
+    -- INSERT-or-UPDATE then a separate row-returning SELECT; the repo caller does
+    -- fetchone() — without SET NOCOUNT ON the DML rows-affected token is the first
+    -- result and pyodbc raises "No results. Previous SQL was not a query."
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();

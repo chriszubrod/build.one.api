@@ -89,6 +89,7 @@ ATTACHMENT_BASE = REPO_ROOT / "entities" / "attachment" / "sql" / "dbo.attachmen
 INVOICE_LINE_ITEM_BASE = REPO_ROOT / "entities" / "invoice_line_item" / "sql" / "dbo.invoice_line_item.sql"
 INVOICE_BASE = REPO_ROOT / "entities" / "invoice" / "sql" / "dbo.invoice.sql"
 AUTH_BASE = REPO_ROOT / "entities" / "auth" / "sql" / "dbo.auth.sql"
+DEVICE_TOKEN_BASE = REPO_ROOT / "entities" / "device_token" / "sql" / "dbo.device_token.sql"
 
 # U-062/U-087: the three review-notification recipient resolvers homed in the
 # review base file (dbo.review.sql), their bodies neutralized to pointer stubs in
@@ -461,17 +462,25 @@ SPROC_BODY_FORBIDDEN_PATTERNS = [
     ),
 ]
 
-# U-164: named pin for contract-labor sprocs that exhibit the DML → row-returning
-# SELECT → fetchone() pyodbc break shape (four of them), plus ReadContractLaborDailySummary
-# pinned as hygiene. Deliberately NOT a blanket "all sprocs need SET NOCOUNT ON" rule —
-# 22 of 28 sprocs in this base file legitimately lack it. A repo-wide mechanical detector
-# is a separate follow-up unit.
+# Three complementary NOCOUNT mechanisms — do not conflate them:
+# 1. U-165 shape detector (tests/test_sproc_nocount_shape_guard.py): mechanical,
+#    repo-wide, shape-REQUIRED — flags any sproc whose body has DML then a separate
+#    row-returning SELECT (the pyodbc fetchone() break shape). Path-insensitive.
+# 2. This pin list: HYGIENE pins for sprocs that should carry SET NOCOUNT ON even
+#    where the detector does not require it (ReadContractLaborDailySummary has no
+#    risky shape), plus PRESENCE pins binding a sproc to its canonical home (the
+#    detector is path-insensitive and cannot enforce home-file placement).
+# 3. NOCOUNT_SHAPE_ALLOWLIST (in the guard module): shape-required-but-excepted —
+#    currently empty; only shrink, never grow without justification.
 NOCOUNT_PINNED_SPROCS = [
     ("UpdateContractLaborStatusByIds", CONTRACT_LABOR_BASE),
     ("DeleteContractLaborLineItemsByContractLaborId", CONTRACT_LABOR_BASE),
     ("FindContractLaborForReviewerReply", CONTRACT_LABOR_BASE),  # repo.py:518 fetchone; route router.py:235
     ("UpdateContractLaborAggregates", CONTRACT_LABOR_BASE),  # repo.py:624 fetchone; PUT /{public_id}/bill router.py:577
     ("ReadContractLaborDailySummary", CONTRACT_LABOR_BASE),
+    # U-165: the one ACTIVE landmine the repo-wide sweep found — INSERT-or-UPDATE then a
+    # separate SELECT, fetchone()'d by a LIVE routed endpoint (prod raised on every call).
+    ("RegisterDeviceToken", DEVICE_TOKEN_BASE),  # repo.py:68 fetchone; POST /api/v1/mobile/device-token/register
 ]
 
 

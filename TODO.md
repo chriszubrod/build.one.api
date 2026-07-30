@@ -2,6 +2,12 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## Bill total_amount + create-shape follow-ups (spawned by web U-173, 2026-07-30)
+
+- [ ] **`entities/bill/api/router.py:346` truthy-vs-`is not None` on total_amount** — `"total_amount": Decimal(str(body.total_amount)) if body.total_amount else None` (bill_update path). `Decimal(0)` is falsy, so a genuine **$0 total lands as NULL** (blank header) instead of `0.00`. Affects BillEdit's 300ms auto-save (persistedLineTotalRef == 0 -> NULL) and web U-173's partial-failure zero-correction. Fix: `if body.total_amount is not None`. Check the CREATE path for the same shape. Add a guard test. Trivial.
+- [ ] **Altitude — accept `line_items[]` on bill create + recompute `total_amount` server-side** (mirrors the contract-labor bill flow). Today the web client computes total_amount, POSTs create/bill with an inline summary line, then POSTs each additional line one-by-one — which spawned U-173's overstated-total finding (a mid-loop line failure leaves the header > the persisted lines) and is an N+1 write. A create-with-line_items endpoint that sums lines server-side in one transaction eliminates the whole class (no client-supplied total, no partial-failure skew, atomic). Bigger unit; coordinate with the QBO/Excel push shape.
+
+
 ## UpdateBillLineItem null-field contract (U-172, spawned by web U-169) — 2026-07-29
 
 - [ ] `UpdateBillLineItemById` (`entities/bill_line_item/sql/dbo.bill_line_item.sql`) sets `[ProjectId] = @ProjectId` **unconditionally** — a null/omitted ProjectId WIPES the project. This is the server-side root cause of the web U-169 project-strip data loss, and it violates the CLAUDE.md rule "use CASE WHEN guards for fields that should preserve existing values when NULL is passed" (contrast `IsDraft` in the same sproc, which IS guarded). Every other column in this UPDATE is unconditionally set too — audit which should preserve-on-null.

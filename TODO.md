@@ -2,6 +2,13 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## UpdateBillLineItem null-field contract (U-172, spawned by web U-169) — 2026-07-29
+
+- [ ] `UpdateBillLineItemById` (`entities/bill_line_item/sql/dbo.bill_line_item.sql`) sets `[ProjectId] = @ProjectId` **unconditionally** — a null/omitted ProjectId WIPES the project. This is the server-side root cause of the web U-169 project-strip data loss, and it violates the CLAUDE.md rule "use CASE WHEN guards for fields that should preserve existing values when NULL is passed" (contrast `IsDraft` in the same sproc, which IS guarded). Every other column in this UPDATE is unconditionally set too — audit which should preserve-on-null.
+- [ ] Decide the contract: (a) CASE-WHEN preserve-on-null + a distinct explicit "clear project" path/sentinel, or (b) keep clear-on-null and pin it with a test + doc. Then **audit all callers** for null intent before changing semantics — `BillEdit.saveAll` (web), `sync_from_qbo_bill_line` (QBO connector), `generate_bills` (contract labor) — a semantics change could break a caller that relies on the current behavior.
+- [ ] Implement + verify base==live. ADDITIVE to U-169 (the web fix ships the user-facing preserve-original-project behavior regardless).
+
+
 ## U-154 follow-ups — DB-error → HTTP mapping (2026-07-27)
 
 U-154 mapped SQL 547 (FK violation) to 422 with a clean message in `shared/api/responses.py::raise_database_error`. Three things it deliberately did NOT do:

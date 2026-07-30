@@ -1115,6 +1115,38 @@ def reconcile_invoice_router(public_id: str, current_user: dict = Depends(requir
     })
 
 
+@router.get("/get/invoice/{public_id}/source-links")
+def propose_invoice_source_links_router(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.INVOICES)),
+):
+    from entities.invoice.business.reconciliation import InvoiceReconciliationService
+
+    try:
+        payload = InvoiceReconciliationService().propose_links(public_id)
+    except ValueError:
+        raise_not_found("Invoice")
+    return item_response(payload)
+
+
+@router.post("/reconcile/invoice/{public_id}/link")
+def apply_invoice_source_links_router(
+    public_id: str,
+    only_line_ids: Optional[list[int]] = Query(default=None),
+    current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_complete")),
+):
+    from entities.invoice.business.reconciliation import InvoiceReconciliationService
+
+    try:
+        payload = InvoiceReconciliationService().apply_links(
+            public_id,
+            only_line_ids=only_line_ids,
+        )
+    except ValueError:
+        raise_not_found("Invoice")
+    return item_response(payload)
+
+
 @router.get("/get/invoice/{public_id}")
 def get_invoice_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     invoice = InvoiceService().read_by_public_id(public_id=public_id)

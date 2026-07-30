@@ -226,3 +226,32 @@ class InvoiceLineItemRepository:
         except Exception as error:
             logger.error(f"Error during delete invoice line item by ID: {error}")
             raise map_database_error(error)
+
+    def link_invoice_line_item_source(
+        self,
+        *,
+        invoice_line_item_id: int,
+        source_type: str,
+        bill_line_item_id: Optional[int] = None,
+        expense_line_item_id: Optional[int] = None,
+        bill_credit_line_item_id: Optional[int] = None,
+    ) -> Optional[InvoiceLineItem]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="LinkInvoiceLineItemSource",
+                    params={
+                        "InvoiceLineItemId": invoice_line_item_id,
+                        "SourceType": source_type,
+                        "BillLineItemId": bill_line_item_id,
+                        "ExpenseLineItemId": expense_line_item_id,
+                        "BillCreditLineItemId": bill_credit_line_item_id,
+                    },
+                )
+                row = cursor.fetchone()
+                return self._from_db(row) if row else None
+        except Exception as error:
+            logger.error(f"Error during LinkInvoiceLineItemSource: {error}")
+            raise map_database_error(error)

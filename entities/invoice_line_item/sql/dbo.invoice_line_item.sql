@@ -299,6 +299,77 @@ END;
 GO
 
 
+CREATE OR ALTER PROCEDURE LinkInvoiceLineItemSource
+(
+    @InvoiceLineItemId BIGINT,
+    @SourceType NVARCHAR(50),
+    @BillLineItemId BIGINT = NULL,
+    @ExpenseLineItemId BIGINT = NULL,
+    @BillCreditLineItemId BIGINT = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @SourceType IS NULL
+        THROW 50000, 'LinkInvoiceLineItemSource: @SourceType is required.', 1;
+
+    DECLARE @FkCount INT =
+        (CASE WHEN @BillLineItemId IS NOT NULL THEN 1 ELSE 0 END)
+        + (CASE WHEN @ExpenseLineItemId IS NOT NULL THEN 1 ELSE 0 END)
+        + (CASE WHEN @BillCreditLineItemId IS NOT NULL THEN 1 ELSE 0 END);
+
+    IF @FkCount <> 1
+        THROW 50000, 'LinkInvoiceLineItemSource: exactly one of @BillLineItemId, @ExpenseLineItemId, @BillCreditLineItemId must be non-NULL.', 1;
+
+    IF @SourceType = N'BillLineItem' AND @BillLineItemId IS NULL
+        THROW 50000, 'LinkInvoiceLineItemSource: @SourceType BillLineItem requires @BillLineItemId.', 1;
+
+    IF @SourceType = N'ExpenseLineItem' AND @ExpenseLineItemId IS NULL
+        THROW 50000, 'LinkInvoiceLineItemSource: @SourceType ExpenseLineItem requires @ExpenseLineItemId.', 1;
+
+    IF @SourceType = N'BillCreditLineItem' AND @BillCreditLineItemId IS NULL
+        THROW 50000, 'LinkInvoiceLineItemSource: @SourceType BillCreditLineItem requires @BillCreditLineItemId.', 1;
+
+    IF @SourceType NOT IN (N'BillLineItem', N'ExpenseLineItem', N'BillCreditLineItem')
+        OR (@SourceType <> N'BillLineItem' AND @BillLineItemId IS NOT NULL)
+        OR (@SourceType <> N'ExpenseLineItem' AND @ExpenseLineItemId IS NOT NULL)
+        OR (@SourceType <> N'BillCreditLineItem' AND @BillCreditLineItemId IS NOT NULL)
+        THROW 50000, 'LinkInvoiceLineItemSource: @SourceType must match the single non-NULL source FK column.', 1;
+
+    UPDATE dbo.[InvoiceLineItem]
+    SET
+        [SourceType] = @SourceType,
+        [BillLineItemId] = @BillLineItemId,
+        [ExpenseLineItemId] = @ExpenseLineItemId,
+        [BillCreditLineItemId] = @BillCreditLineItemId,
+        [EmployeeLaborLineItemId] = NULL,
+        [ModifiedDatetime] = SYSUTCDATETIME()
+    OUTPUT
+        INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[RowVersion],
+        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        INSERTED.[InvoiceId],
+        INSERTED.[SourceType],
+        INSERTED.[BillLineItemId],
+        INSERTED.[ExpenseLineItemId],
+        INSERTED.[BillCreditLineItemId],
+        INSERTED.[EmployeeLaborLineItemId],
+        INSERTED.[SubCostCodeId],
+        INSERTED.[Description],
+        INSERTED.[Quantity],
+        INSERTED.[Rate],
+        INSERTED.[Amount],
+        INSERTED.[Markup],
+        INSERTED.[Price],
+        INSERTED.[IsDraft]
+    WHERE [Id] = @InvoiceLineItemId;
+END;
+GO
+
+
 CREATE OR ALTER PROCEDURE NullifyInvoiceLineItemsByBillLineItemId
 (
     @BillLineItemId BIGINT

@@ -273,3 +273,54 @@ class InvoiceRepository:
         except Exception as error:
             logger.error(f"Error during delete invoice by ID: {error}")
             raise map_database_error(error)
+
+    def read_source_link_lines(self, invoice_id: int) -> list:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadInvoiceSourceLinkLines",
+                    params={"InvoiceId": invoice_id},
+                )
+                return cursor.fetchall()
+        except Exception as error:
+            logger.error(f"Error during ReadInvoiceSourceLinkLines: {error}")
+            raise map_database_error(error)
+
+    def propose_invoice_source_links(self, invoice_id: int) -> list:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ProposeInvoiceSourceLinks",
+                    params={"InvoiceId": invoice_id},
+                )
+                return cursor.fetchall()
+        except Exception as error:
+            logger.error(f"Error during ProposeInvoiceSourceLinks: {error}")
+            raise map_database_error(error)
+
+    def backfill_linked_source_project_id(
+        self,
+        *,
+        source_type: str,
+        source_line_item_id: int,
+        project_id: int,
+    ) -> None:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="BackfillLinkedSourceProjectId",
+                    params={
+                        "SourceType": source_type,
+                        "Id": source_line_item_id,
+                        "ProjectId": project_id,
+                    },
+                )
+        except Exception as error:
+            logger.error(f"Error during BackfillLinkedSourceProjectId: {error}")
+            raise map_database_error(error)

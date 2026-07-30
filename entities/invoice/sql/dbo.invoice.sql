@@ -433,3 +433,215 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+
+CREATE OR ALTER PROCEDURE ReadInvoiceSourceLinkLines
+(
+    @InvoiceId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        ili.[Id] AS [InvoiceLineItemId],
+        qil.[LineNum],
+        ili.[Amount],
+        ili.[Description],
+        qil.[ServiceDate],
+        ili.[SourceType],
+        ili.[BillLineItemId],
+        ili.[ExpenseLineItemId],
+        ili.[BillCreditLineItemId],
+        COALESCE(bli.[ProjectId], eli.[ProjectId], bcli.[ProjectId]) AS [SourceProjectId],
+        qil.[LinkedTxnType],
+        -- Hard-coded 0 until a later unit classifies markup derivatives via LinkedTxnId.
+        CAST(0 AS BIT) AS [ManualDerivative]
+    FROM dbo.[InvoiceLineItem] ili
+    LEFT JOIN qbo.[InvoiceLineItemInvoiceLine] ilil ON ilil.[InvoiceLineItemId] = ili.[Id]
+    LEFT JOIN qbo.[InvoiceLine] qil ON qil.[Id] = ilil.[QboInvoiceLineId]
+    LEFT JOIN dbo.[BillLineItem] bli ON bli.[Id] = ili.[BillLineItemId]
+    LEFT JOIN dbo.[ExpenseLineItem] eli ON eli.[Id] = ili.[ExpenseLineItemId]
+    LEFT JOIN dbo.[BillCreditLineItem] bcli ON bcli.[Id] = ili.[BillCreditLineItemId]
+    WHERE ili.[InvoiceId] = @InvoiceId
+    ORDER BY ili.[Id] ASC;
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE ProposeInvoiceSourceLinks
+(
+    @InvoiceId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @RealmId NVARCHAR(50);
+    DECLARE @CustomerRefValue NVARCHAR(50);
+    DECLARE @ProjectId BIGINT;
+
+    SELECT
+        @ProjectId = i.[ProjectId],
+        @RealmId = qi.[RealmId],
+        @CustomerRefValue = qi.[CustomerRefValue]
+    FROM dbo.[Invoice] i
+    INNER JOIN qbo.[InvoiceInvoice] ii ON ii.[InvoiceId] = i.[Id]
+    INNER JOIN qbo.[Invoice] qi ON qi.[Id] = ii.[QboInvoiceId]
+    WHERE i.[Id] = @InvoiceId;
+
+    ;WITH LineCtx AS (
+        SELECT
+            ili.[Id] AS [InvoiceLineItemId],
+            qil.[LineNum],
+            qil.[Amount] AS [QboAmount],
+            qil.[Description] AS [QboDescription],
+            TRY_CAST(qil.[ServiceDate] AS DATE) AS [ServiceDate]
+        FROM dbo.[InvoiceLineItem] ili
+        INNER JOIN qbo.[InvoiceLineItemInvoiceLine] ilil ON ilil.[InvoiceLineItemId] = ili.[Id]
+        INNER JOIN qbo.[InvoiceLine] qil ON qil.[Id] = ilil.[QboInvoiceLineId]
+        WHERE ili.[InvoiceId] = @InvoiceId
+    )
+    SELECT
+        lc.[InvoiceLineItemId],
+        CAST(1 AS TINYINT) AS [Tier],
+        N'BillLineItem' AS [SourceType],
+        map.[BillLineItemId] AS [SourceLineItemId],
+        dbli.[ProjectId] AS [SourceProjectId],
+        bl.[LineNum] AS [SourceLineNum],
+        CAST(0 AS BIT) AS [DirectDbo]
+    FROM LineCtx lc
+    INNER JOIN qbo.[BillLine] bl
+        ON bl.[CustomerRefValue] = @CustomerRefValue
+        AND ABS(bl.[Amount] - lc.[QboAmount]) < 0.01
+        AND COALESCE(bl.[Description], N'') = COALESCE(lc.[QboDescription], N'')
+    INNER JOIN qbo.[Bill] qb ON qb.[Id] = bl.[QboBillId] AND qb.[RealmId] = @RealmId
+        AND TRY_CAST(qb.[TxnDate] AS DATE) = lc.[ServiceDate]
+    INNER JOIN qbo.[BillLineItemBillLine] map ON map.[QboBillLineId] = bl.[Id]
+    INNER JOIN dbo.[BillLineItem] dbli ON dbli.[Id] = map.[BillLineItemId]
+
+    UNION ALL
+
+    SELECT
+        lc.[InvoiceLineItemId],
+        CAST(2 AS TINYINT) AS [Tier],
+        N'ExpenseLineItem' AS [SourceType],
+        map.[ExpenseLineItemId] AS [SourceLineItemId],
+        deli.[ProjectId] AS [SourceProjectId],
+        pl.[LineNum] AS [SourceLineNum],
+        CAST(0 AS BIT) AS [DirectDbo]
+    FROM LineCtx lc
+    INNER JOIN qbo.[PurchaseLine] pl
+        ON pl.[CustomerRefValue] = @CustomerRefValue
+        AND ABS(pl.[Amount] - lc.[QboAmount]) < 0.01
+        AND COALESCE(pl.[Description], N'') = COALESCE(lc.[QboDescription], N'')
+    INNER JOIN qbo.[Purchase] qp ON qp.[Id] = pl.[QboPurchaseId] AND qp.[RealmId] = @RealmId
+        AND TRY_CAST(qp.[TxnDate] AS DATE) = lc.[ServiceDate]
+    INNER JOIN qbo.[PurchaseLineExpenseLineItem] map ON map.[QboPurchaseLineId] = pl.[Id]
+    INNER JOIN dbo.[ExpenseLineItem] deli ON deli.[Id] = map.[ExpenseLineItemId]
+
+    UNION ALL
+
+    SELECT
+        lc.[InvoiceLineItemId],
+        CAST(3 AS TINYINT) AS [Tier],
+        N'BillCreditLineItem' AS [SourceType],
+        map.[BillCreditLineItemId] AS [SourceLineItemId],
+        dbcli.[ProjectId] AS [SourceProjectId],
+        vcl.[LineNum] AS [SourceLineNum],
+        CAST(0 AS BIT) AS [DirectDbo]
+    FROM LineCtx lc
+    INNER JOIN qbo.[VendorCreditLine] vcl
+        ON vcl.[CustomerRefValue] = @CustomerRefValue
+        AND ABS(ABS(vcl.[Amount]) - ABS(lc.[QboAmount])) < 0.01
+        AND COALESCE(vcl.[Description], N'') = COALESCE(lc.[QboDescription], N'')
+    INNER JOIN qbo.[VendorCredit] qvc ON qvc.[Id] = vcl.[QboVendorCreditId] AND qvc.[RealmId] = @RealmId
+        AND TRY_CAST(qvc.[TxnDate] AS DATE) = lc.[ServiceDate]
+    INNER JOIN qbo.[VendorCreditLineItemBillCreditLineItem] map ON map.[QboVendorCreditLineId] = vcl.[Id]
+    INNER JOIN dbo.[BillCreditLineItem] dbcli ON dbcli.[Id] = map.[BillCreditLineItemId]
+
+    UNION ALL
+
+    SELECT
+        lc.[InvoiceLineItemId],
+        CAST(1 AS TINYINT) AS [Tier],
+        N'BillLineItem' AS [SourceType],
+        bli.[Id] AS [SourceLineItemId],
+        bli.[ProjectId] AS [SourceProjectId],
+        CAST(NULL AS INT) AS [SourceLineNum],
+        CAST(1 AS BIT) AS [DirectDbo]
+    FROM LineCtx lc
+    INNER JOIN dbo.[BillLineItem] bli
+        ON ABS(bli.[Amount] - lc.[QboAmount]) < 0.01
+        AND COALESCE(bli.[Description], N'') = COALESCE(lc.[QboDescription], N'')
+    INNER JOIN dbo.[Bill] b ON b.[Id] = bli.[BillId]
+        AND TRY_CAST(b.[BillDate] AS DATE) = lc.[ServiceDate]
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM qbo.[BillLine] bl
+        INNER JOIN qbo.[Bill] qb ON qb.[Id] = bl.[QboBillId] AND qb.[RealmId] = @RealmId
+        INNER JOIN qbo.[BillLineItemBillLine] map ON map.[QboBillLineId] = bl.[Id]
+        WHERE bl.[CustomerRefValue] = @CustomerRefValue
+            AND ABS(bl.[Amount] - lc.[QboAmount]) < 0.01
+            AND COALESCE(bl.[Description], N'') = COALESCE(lc.[QboDescription], N'')
+            AND TRY_CAST(qb.[TxnDate] AS DATE) = lc.[ServiceDate]
+    )
+    AND NOT EXISTS (
+        SELECT 1
+        FROM qbo.[PurchaseLine] pl
+        INNER JOIN qbo.[Purchase] qp ON qp.[Id] = pl.[QboPurchaseId] AND qp.[RealmId] = @RealmId
+        INNER JOIN qbo.[PurchaseLineExpenseLineItem] map ON map.[QboPurchaseLineId] = pl.[Id]
+        WHERE map.[ExpenseLineItemId] IS NOT NULL
+            AND pl.[CustomerRefValue] = @CustomerRefValue
+            AND ABS(pl.[Amount] - lc.[QboAmount]) < 0.01
+            AND COALESCE(pl.[Description], N'') = COALESCE(lc.[QboDescription], N'')
+            AND TRY_CAST(qp.[TxnDate] AS DATE) = lc.[ServiceDate]
+    )
+    AND NOT EXISTS (
+        SELECT 1
+        FROM qbo.[VendorCreditLine] vcl
+        INNER JOIN qbo.[VendorCredit] qvc ON qvc.[Id] = vcl.[QboVendorCreditId] AND qvc.[RealmId] = @RealmId
+        INNER JOIN qbo.[VendorCreditLineItemBillCreditLineItem] map ON map.[QboVendorCreditLineId] = vcl.[Id]
+        WHERE map.[BillCreditLineItemId] IS NOT NULL
+            AND vcl.[CustomerRefValue] = @CustomerRefValue
+            AND ABS(ABS(vcl.[Amount]) - ABS(lc.[QboAmount])) < 0.01
+            AND COALESCE(vcl.[Description], N'') = COALESCE(lc.[QboDescription], N'')
+            AND TRY_CAST(qvc.[TxnDate] AS DATE) = lc.[ServiceDate]
+    );
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE BackfillLinkedSourceProjectId
+(
+    @SourceType NVARCHAR(50),
+    @Id BIGINT,
+    @ProjectId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @SourceType = N'BillLineItem'
+    BEGIN
+        UPDATE dbo.[BillLineItem]
+        SET [ProjectId] = @ProjectId,
+            [ModifiedDatetime] = SYSUTCDATETIME()
+        WHERE [Id] = @Id AND [ProjectId] IS NULL;
+    END
+    ELSE IF @SourceType = N'ExpenseLineItem'
+    BEGIN
+        UPDATE dbo.[ExpenseLineItem]
+        SET [ProjectId] = @ProjectId,
+            [ModifiedDatetime] = SYSUTCDATETIME()
+        WHERE [Id] = @Id AND [ProjectId] IS NULL;
+    END
+    ELSE IF @SourceType = N'BillCreditLineItem'
+    BEGIN
+        UPDATE dbo.[BillCreditLineItem]
+        SET [ProjectId] = @ProjectId,
+            [ModifiedDatetime] = SYSUTCDATETIME()
+        WHERE [Id] = @Id AND [ProjectId] IS NULL;
+    END
+END;
+GO

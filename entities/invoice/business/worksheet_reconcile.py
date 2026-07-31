@@ -300,6 +300,11 @@ def match_worksheet_rows(
         if in_db and in_ws:
             (matched if abs(db_total - ws_total) < 0.01 else mismatched).append(entry)
         elif in_db:
+            entry["source_public_ids"] = [
+                (li.get("source_line_public_id") or "").lower()
+                for li in in_db
+                if (li.get("source_line_public_id") or "")
+            ]
             db_only.append(entry)
         else:
             ws_only.append(entry)
@@ -342,6 +347,7 @@ def match_worksheet_rows(
     for li in db_exp_unmatched:
         ref_label = li.get("parent_number") or li.get("description") or "—"
         db_price = _db_amt(li)
+        spid = (li.get("source_line_public_id") or "").lower()
         db_only.append(
             {
                 "ref": ref_label,
@@ -353,6 +359,7 @@ def match_worksheet_rows(
                 "db_total": db_price,
                 "ws_total": 0.0,
                 "difference": db_price,
+                "source_public_ids": [spid] if spid else [],
             }
         )
 

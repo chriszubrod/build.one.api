@@ -491,6 +491,119 @@ class InvoiceRepository:
             logger.error(f"Error during read vendor ids for source lines: {error}")
             raise map_database_error(error)
 
+    def read_source_lines_missing_readable_blob(self, invoice_id: int) -> list:
+        """Source-linked ILIs with no attachment carrying a non-NULL BlobUrl (read-only).
+
+        Inline read SQL (no sproc/TVP), same convention as
+        read_source_line_coverage / enrich_line_items — intentional; do not convert.
+        """
+        sql = """
+            SELECT
+                ili.[Id] AS [InvoiceLineItemId],
+                ili.[SourceType],
+                ili.[BillLineItemId],
+                ili.[ExpenseLineItemId],
+                ili.[BillCreditLineItemId]
+            FROM dbo.[InvoiceLineItem] ili
+            WHERE ili.[InvoiceId] = ?
+              AND ili.[SourceType] IN (
+                  N'BillLineItem', N'ExpenseLineItem', N'BillCreditLineItem'
+              )
+              AND (
+                  (
+                      ili.[SourceType] = N'BillLineItem'
+                      AND ili.[BillLineItemId] IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM dbo.[BillLineItemAttachment] blia
+                          INNER JOIN dbo.[Attachment] a ON a.[Id] = blia.[AttachmentId]
+                          WHERE blia.[BillLineItemId] = ili.[BillLineItemId]
+                            AND a.[BlobUrl] IS NOT NULL
+                      )
+                  )
+                  OR (
+                      ili.[SourceType] = N'ExpenseLineItem'
+                      AND ili.[ExpenseLineItemId] IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM dbo.[ExpenseLineItemAttachment] elia
+                          INNER JOIN dbo.[Attachment] a ON a.[Id] = elia.[AttachmentId]
+                          WHERE elia.[ExpenseLineItemId] = ili.[ExpenseLineItemId]
+                            AND a.[BlobUrl] IS NOT NULL
+                      )
+                  )
+                  OR (
+                      ili.[SourceType] = N'BillCreditLineItem'
+                      AND ili.[BillCreditLineItemId] IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM dbo.[BillCreditLineItemAttachment] bclia
+                          INNER JOIN dbo.[Attachment] a ON a.[Id] = bclia.[AttachmentId]
+                          WHERE bclia.[BillCreditLineItemId] = ili.[BillCreditLineItemId]
+                            AND a.[BlobUrl] IS NOT NULL
+                      )
+                  )
+              )
+            ORDER BY ili.[Id] ASC
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(sql, invoice_id)
+                rows = cursor.fetchall()
+                return [
+                    {
+                        "invoice_line_item_id": row.InvoiceLineItemId,
+                        "source_type": row.SourceType,
+                        "bill_line_item_id": getattr(row, "BillLineItemId", None),
+                        "expense_line_item_id": getattr(row, "ExpenseLineItemId", None),
+                        "bill_credit_line_item_id": getattr(
+                            row, "BillCreditLineItemId", None
+                        ),
+                    }
+                    for row in rows
+                ]
+        except Exception as error:
+            logger.error(
+                f"Error during read_source_lines_missing_readable_blob: {error}"
+            )
+            raise map_database_error(error)
+
+    def compute_invoice_draw_matrix(self, invoice_id: int) -> dict:
+        """Aggregate QBO/dbo draw-push invariant counts for one invoice."""
+        empty = {
+            "qbo_line_count": 0,
+            "qbo_total_amt": None,
+            "dbo_line_count": 0,
+            "dbo_line_sum": None,
+            "dbo_total_amount": None,
+            "sourced_line_count": 0,
+            "billed_source_count": 0,
+        }
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ComputeInvoiceDrawMatrix",
+                    params={"InvoiceId": invoice_id},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return empty
+                return {
+                    "qbo_line_count": row.QboLineCount,
+                    "qbo_total_amt": row.QboTotalAmt,
+                    "dbo_line_count": row.DboLineCount,
+                    "dbo_line_sum": row.DboLineSum,
+                    "dbo_total_amount": row.DboTotalAmount,
+                    "sourced_line_count": row.SourcedLineCount,
+                    "billed_source_count": row.BilledSourceCount,
+                }
+        except Exception as error:
+            logger.error(f"Error during ComputeInvoiceDrawMatrix: {error}")
+            raise map_database_error(error)
+
     def backfill_linked_source_project_id(
         self,
         *,

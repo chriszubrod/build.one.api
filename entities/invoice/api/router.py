@@ -1161,6 +1161,21 @@ def apply_invoice_source_links_router(
     return item_response(payload)
 
 
+@router.post("/reconcile/invoice/{public_id}/push-draw")
+def push_draw_invoice_router(
+    public_id: str,
+    force: bool = Query(default=False),
+    current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_complete")),
+):
+    from entities.invoice.business.push import InvoiceDrawPushService
+
+    try:
+        payload = InvoiceDrawPushService().push_draw(public_id, force=force)
+    except ValueError:
+        raise_not_found("Invoice")
+    return item_response(payload)
+
+
 @router.get("/get/invoice/{public_id}")
 def get_invoice_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.INVOICES))):
     invoice = InvoiceService().read_by_public_id(public_id=public_id)

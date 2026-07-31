@@ -645,3 +645,48 @@ BEGIN
     END
 END;
 GO
+
+
+CREATE OR ALTER PROCEDURE ComputeInvoiceDrawMatrix
+(
+    @InvoiceId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @QboInvoiceId BIGINT;
+
+    SELECT @QboInvoiceId = ii.[QboInvoiceId]
+    FROM qbo.[InvoiceInvoice] ii
+    WHERE ii.[InvoiceId] = @InvoiceId;
+
+    SELECT
+        (SELECT COUNT(*)
+         FROM qbo.[InvoiceLine]
+         WHERE [QboInvoiceId] = @QboInvoiceId) AS [QboLineCount],
+        (SELECT [TotalAmt]
+         FROM qbo.[Invoice]
+         WHERE [Id] = @QboInvoiceId) AS [QboTotalAmt],
+        (SELECT COUNT(*)
+         FROM dbo.[InvoiceLineItem]
+         WHERE [InvoiceId] = @InvoiceId) AS [DboLineCount],
+        (SELECT SUM([Amount])
+         FROM dbo.[InvoiceLineItem]
+         WHERE [InvoiceId] = @InvoiceId) AS [DboLineSum],
+        (SELECT [TotalAmount]
+         FROM dbo.[Invoice]
+         WHERE [Id] = @InvoiceId) AS [DboTotalAmount],
+        (SELECT COUNT(*)
+         FROM dbo.[InvoiceLineItem]
+         WHERE [InvoiceId] = @InvoiceId
+           AND [SourceType] <> N'Manual') AS [SourcedLineCount],
+        (SELECT COUNT(*)
+         FROM dbo.[InvoiceLineItem] ili
+         LEFT JOIN dbo.[BillLineItem] b ON b.[Id] = ili.[BillLineItemId]
+         LEFT JOIN dbo.[ExpenseLineItem] e ON e.[Id] = ili.[ExpenseLineItemId]
+         LEFT JOIN dbo.[BillCreditLineItem] c ON c.[Id] = ili.[BillCreditLineItemId]
+         WHERE ili.[InvoiceId] = @InvoiceId
+           AND COALESCE(b.[IsBilled], e.[IsBilled], c.[IsBilled], 0) = 1) AS [BilledSourceCount];
+END;
+GO

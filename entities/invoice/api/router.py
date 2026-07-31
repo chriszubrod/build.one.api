@@ -1129,6 +1129,20 @@ def propose_invoice_source_links_router(
     return item_response(payload)
 
 
+@router.get("/get/invoice/{public_id}/draw-audit")
+def draw_audit_invoice_router(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.INVOICES)),
+):
+    from entities.invoice.business.audit import InvoiceDrawAuditService
+
+    try:
+        payload = InvoiceDrawAuditService().audit(public_id)
+    except ValueError:
+        raise_not_found("Invoice")
+    return item_response(payload)
+
+
 @router.post("/reconcile/invoice/{public_id}/link")
 def apply_invoice_source_links_router(
     public_id: str,

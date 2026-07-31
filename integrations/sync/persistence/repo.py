@@ -1,6 +1,7 @@
 # Python Standard Library Imports
 import base64
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 # Third-party Imports
@@ -15,6 +16,32 @@ from shared.database import (
 )
 
 logger = logging.getLogger(__name__)
+
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _parse_sync_last_sync(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text[:19], fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _sync_row_is_newer(candidate: Sync, incumbent: Sync) -> bool:
+    c_ts = _parse_sync_last_sync(candidate.last_sync_datetime) or _EPOCH
+    i_ts = _parse_sync_last_sync(incumbent.last_sync_datetime) or _EPOCH
+    if c_ts != i_ts:
+        return c_ts > i_ts
+    # Deterministic tie-breaker on equal LastSyncDatetime (e.g. two Env rows for
+    # the same (provider, entity)): prefer the higher Id (most recently inserted).
+    # Immaterial to the freshness verdict — the ages are identical — but keeps the
+    # selection stable regardless of ReadSyncs' Provider-only ordering.
+    return (candidate.id or 0) > (incumbent.id or 0)
 
 
 class SyncRepository:
@@ -148,6 +175,38 @@ class SyncRepository:
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during read sync by provider: {error}")
+            raise map_database_error(error)
+
+    _QBO_PULL_ENTITIES = frozenset({"bill", "invoice", "purchase", "vendorcredit"})
+
+    def read_qbo_pull_watermarks(self) -> list[Sync]:
+        """Read-only: dbo.Sync rows for QBO entity pulls (Step 2a freshness)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadSyncs",
+                    params={},
+                )
+                rows = cursor.fetchall()
+                records = [self._from_db(row) for row in rows if row]
+                filtered = [
+                    r
+                    for r in records
+                    if r
+                    and (r.provider or "").lower() == "qbo"
+                    and (r.entity or "").lower() in self._QBO_PULL_ENTITIES
+                ]
+                by_entity: dict[str, Sync] = {}
+                for rec in filtered:
+                    entity = (rec.entity or "").lower()
+                    prev = by_entity.get(entity)
+                    if prev is None or _sync_row_is_newer(rec, prev):
+                        by_entity[entity] = rec
+                return list(by_entity.values())
+        except Exception as error:
+            logger.error(f"Error during read qbo pull watermarks: {error}")
             raise map_database_error(error)
 
     def update_by_id(self, sync: Sync) -> Optional[Sync]:

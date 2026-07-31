@@ -25,6 +25,15 @@ def _bit(flag):
     return 1 if flag else 0
 
 
+def _partition_bindings_by_source_type(
+    bindings: list[tuple[str, int]],
+) -> tuple[list[int], list[int], list[int]]:
+    bill_ids = [sid for st, sid in bindings if st == "BillLineItem"]
+    expense_ids = [sid for st, sid in bindings if st == "ExpenseLineItem"]
+    credit_ids = [sid for st, sid in bindings if st == "BillCreditLineItem"]
+    return bill_ids, expense_ids, credit_ids
+
+
 class InvoiceRepository:
     """
     Repository for Invoice persistence operations.
@@ -300,6 +309,186 @@ class InvoiceRepository:
                 return cursor.fetchall()
         except Exception as error:
             logger.error(f"Error during ProposeInvoiceSourceLinks: {error}")
+            raise map_database_error(error)
+
+    def read_source_line_coverage(
+        self,
+        bindings: list[tuple[str, int]],
+    ) -> dict[tuple[str, int], dict]:
+        """Attachment count + SubCostCodeId per (SourceType, source_line_item_id) (read-only).
+
+        Inline read SQL with dynamic IN-list (no sproc/TVP), same convention as
+        entities.invoice.business.enrichment.enrich_line_items — intentional; do not convert.
+        """
+        if not bindings:
+            return {}
+        bill_ids, expense_ids, credit_ids = _partition_bindings_by_source_type(bindings)
+        out: dict[tuple[str, int], dict] = {}
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                if bill_ids:
+                    placeholders = ",".join("?" for _ in bill_ids)
+                    cursor.execute(
+                        f"""
+                        SELECT
+                            bli.[Id],
+                            bli.[SubCostCodeId],
+                            (
+                                SELECT COUNT(*)
+                                FROM dbo.[BillLineItemAttachment] blia
+                                WHERE blia.[BillLineItemId] = bli.[Id]
+                            ) AS [AttachmentCount]
+                        FROM dbo.[BillLineItem] bli
+                        WHERE bli.[Id] IN ({placeholders})
+                        """,
+                        *bill_ids,
+                    )
+                    for row in cursor.fetchall():
+                        out[("BillLineItem", row.Id)] = {
+                            "attachment_count": int(row.AttachmentCount or 0),
+                            "sub_cost_code_id": getattr(row, "SubCostCodeId", None),
+                        }
+                if expense_ids:
+                    placeholders = ",".join("?" for _ in expense_ids)
+                    cursor.execute(
+                        f"""
+                        SELECT
+                            eli.[Id],
+                            eli.[SubCostCodeId],
+                            (
+                                SELECT COUNT(*)
+                                FROM dbo.[ExpenseLineItemAttachment] elia
+                                WHERE elia.[ExpenseLineItemId] = eli.[Id]
+                            ) AS [AttachmentCount]
+                        FROM dbo.[ExpenseLineItem] eli
+                        WHERE eli.[Id] IN ({placeholders})
+                        """,
+                        *expense_ids,
+                    )
+                    for row in cursor.fetchall():
+                        out[("ExpenseLineItem", row.Id)] = {
+                            "attachment_count": int(row.AttachmentCount or 0),
+                            "sub_cost_code_id": getattr(row, "SubCostCodeId", None),
+                        }
+                if credit_ids:
+                    placeholders = ",".join("?" for _ in credit_ids)
+                    cursor.execute(
+                        f"""
+                        SELECT
+                            bcli.[Id],
+                            bcli.[SubCostCodeId],
+                            (
+                                SELECT COUNT(*)
+                                FROM dbo.[BillCreditLineItemAttachment] bclia
+                                WHERE bclia.[BillCreditLineItemId] = bcli.[Id]
+                            ) AS [AttachmentCount]
+                        FROM dbo.[BillCreditLineItem] bcli
+                        WHERE bcli.[Id] IN ({placeholders})
+                        """,
+                        *credit_ids,
+                    )
+                    for row in cursor.fetchall():
+                        out[("BillCreditLineItem", row.Id)] = {
+                            "attachment_count": int(row.AttachmentCount or 0),
+                            "sub_cost_code_id": getattr(row, "SubCostCodeId", None),
+                        }
+            return out
+        except Exception as error:
+            logger.error(f"Error during read source line coverage: {error}")
+            raise map_database_error(error)
+
+    def read_duplicate_projects_by_project_id(self, project_id: int) -> list:
+        """Step 1b — other dbo.Project rows with the same Name (read-only).
+
+        Inline read SQL with dynamic IN-list (no sproc/TVP), same convention as
+        entities.invoice.business.enrichment.enrich_line_items — intentional; do not convert.
+        """
+        sql = """
+            SELECT
+                p2.[Id],
+                p2.[Name],
+                p2.[Abbreviation],
+                CONVERT(VARCHAR(19), p2.[CreatedDatetime], 120) AS [CreatedDatetime],
+                (
+                    SELECT COUNT(*)
+                    FROM qbo.[CustomerProject] cp
+                    WHERE cp.[ProjectId] = p2.[Id]
+                ) AS [QboMappings]
+            FROM dbo.[Project] p1
+            INNER JOIN dbo.[Project] p2
+                ON p2.[Name] = p1.[Name]
+                AND p2.[Id] <> p1.[Id]
+            WHERE p1.[Id] = ?
+            ORDER BY p2.[Id] ASC
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(sql, project_id)
+                return cursor.fetchall()
+        except Exception as error:
+            logger.error(f"Error during duplicate project screen: {error}")
+            raise map_database_error(error)
+
+    def read_vendor_ids_for_source_lines(
+        self,
+        bindings: list[tuple[str, int]],
+    ) -> dict[tuple[str, int], int]:
+        """Resolve VendorId for (SourceType, source_line_item_id) pairs (read-only).
+
+        Inline read SQL with dynamic IN-list (no sproc/TVP), same convention as
+        entities.invoice.business.enrichment.enrich_line_items — intentional; do not convert.
+        """
+        if not bindings:
+            return {}
+        bill_ids, expense_ids, credit_ids = _partition_bindings_by_source_type(bindings)
+        out: dict[tuple[str, int], int] = {}
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                if bill_ids:
+                    placeholders = ",".join("?" for _ in bill_ids)
+                    cursor.execute(
+                        f"""
+                        SELECT bli.[Id], b.[VendorId]
+                        FROM dbo.[BillLineItem] bli
+                        INNER JOIN dbo.[Bill] b ON b.[Id] = bli.[BillId]
+                        WHERE bli.[Id] IN ({placeholders})
+                        """,
+                        *bill_ids,
+                    )
+                    for row in cursor.fetchall():
+                        out[("BillLineItem", row.Id)] = row.VendorId
+                if expense_ids:
+                    placeholders = ",".join("?" for _ in expense_ids)
+                    cursor.execute(
+                        f"""
+                        SELECT eli.[Id], e.[VendorId]
+                        FROM dbo.[ExpenseLineItem] eli
+                        INNER JOIN dbo.[Expense] e ON e.[Id] = eli.[ExpenseId]
+                        WHERE eli.[Id] IN ({placeholders})
+                        """,
+                        *expense_ids,
+                    )
+                    for row in cursor.fetchall():
+                        out[("ExpenseLineItem", row.Id)] = row.VendorId
+                if credit_ids:
+                    placeholders = ",".join("?" for _ in credit_ids)
+                    cursor.execute(
+                        f"""
+                        SELECT bcli.[Id], bc.[VendorId]
+                        FROM dbo.[BillCreditLineItem] bcli
+                        INNER JOIN dbo.[BillCredit] bc ON bc.[Id] = bcli.[BillCreditId]
+                        WHERE bcli.[Id] IN ({placeholders})
+                        """,
+                        *credit_ids,
+                    )
+                    for row in cursor.fetchall():
+                        out[("BillCreditLineItem", row.Id)] = row.VendorId
+            return out
+        except Exception as error:
+            logger.error(f"Error during read vendor ids for source lines: {error}")
             raise map_database_error(error)
 
     def backfill_linked_source_project_id(

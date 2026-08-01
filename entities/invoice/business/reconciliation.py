@@ -315,11 +315,9 @@ class InvoiceReconciliationService:
 
             prop = row["proposed"]
             assert prop is not None
-            tier = prop.get("tier")
-            if tier == 0:
-                skipped.append({**row, "apply_action": "tier0_stub"})
-                continue
-
+            # Tier-0 (deterministic LinkedTxn -> staged ReimburseCharge -> source,
+            # U-186) applies through the same link path as the fingerprint tiers;
+            # it is no longer stubbed out.
             source_type = prop["source_type"]
             bli = eli = bcli = None
             if source_type == "BillLineItem":

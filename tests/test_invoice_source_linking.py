@@ -274,6 +274,70 @@ def test_whitespace_description_distinct_sources_never_cross_linked():
             assert row["proposed"]["source_line_item_id"] != other_source
 
 
+def test_tier0_beats_fingerprint_tier1():
+    """U-186: a deterministic Tier-0 candidate wins over a Tier-1 fingerprint hit."""
+    lines = [_line(1)]
+    candidates = [
+        _cand(1, tier=1, source_type="BillLineItem", source_line_item_id=100),
+        _cand(1, tier=0, source_type="BillLineItem", source_line_item_id=7),
+    ]
+    out = resolve_link_proposals(lines, candidates, INVOICE_PROJECT)
+    assert out[0]["status"] == "linkable"
+    assert out[0]["proposed"]["tier"] == 0
+    assert out[0]["proposed"]["source_line_item_id"] == 7
+
+
+def test_tier0_cross_project_still_rejected():
+    """U-186: the KI-37 cross-project guard applies to Tier-0 too."""
+    lines = [_line(1)]
+    candidates = [
+        _cand(1, tier=0, source_type="BillLineItem", source_line_item_id=7, source_project_id=99),
+    ]
+    out = resolve_link_proposals(lines, candidates, INVOICE_PROJECT)
+    assert out[0]["status"] == "cross_project_rejected"
+    assert out[0]["reject_reason"] == "source_project_mismatch"
+    assert out[0]["proposed"] is None
+
+
+def test_apply_links_applies_tier0_linkable():
+    """U-186: Tier-0 'linkable' proposals now apply (previously stubbed as tier0_stub)."""
+    svc = InvoiceReconciliationService(
+        invoice_repo=Mock(),
+        invoice_line_item_repo=Mock(),
+        invoice_service=Mock(),
+    )
+
+    with patch.object(
+        InvoiceReconciliationService,
+        "propose_links",
+        return_value={
+            "project_id": INVOICE_PROJECT,
+            "invoice_public_id": "inv-pid",
+            "lines": [
+                {
+                    "invoice_line_item_id": 10,
+                    "status": "linkable",
+                    "proposed": {
+                        "source_type": "BillLineItem",
+                        "source_line_item_id": 5,
+                        "source_project_id": INVOICE_PROJECT,
+                        "tier": 0,
+                    },
+                }
+            ],
+        },
+    ):
+        result = svc.apply_links("inv-pid")
+
+    assert result["summary"]["applied_count"] == 1
+    assert result["applied"][0]["apply_action"] == "linked"
+    svc.invoice_line_item_repo.link_invoice_line_item_source.assert_called_once()
+    _, kwargs = svc.invoice_line_item_repo.link_invoice_line_item_source.call_args
+    assert kwargs["invoice_line_item_id"] == 10
+    assert kwargs["source_type"] == "BillLineItem"
+    assert kwargs["bill_line_item_id"] == 5
+
+
 def test_same_numeric_id_different_source_types_both_linkable():
     """BillLineItem id=5 and ExpenseLineItem id=5 are distinct source keys."""
     lines = [

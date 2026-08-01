@@ -32,6 +32,7 @@ VALID_QBO_ENTITIES = {
     "account",
     "term",
     "company_info",
+    "reimburse_charge",
 }
 
 
@@ -380,6 +381,9 @@ def _qbo_sync_fn(entity: str):
     if entity == "company_info":
         from scripts.sync_qbo_company_info import sync_qbo_company_info
         return sync_qbo_company_info
+    if entity == "reimburse_charge":
+        from scripts.sync_qbo_reimburse_charge import sync_qbo_reimburse_charge
+        return sync_qbo_reimburse_charge
     raise HTTPException(status_code=400, detail=f"Unknown QBO entity: {entity}")
 
 

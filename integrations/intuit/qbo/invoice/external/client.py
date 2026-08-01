@@ -259,3 +259,96 @@ class QboInvoiceClient:
             records = [records]
         logger.info(f"ReimburseCharge query result ({len(records)} records): {records}")
         return records
+
+    def query_reimburse_charges_page(
+        self,
+        last_updated_time: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        start_position: int = 1,
+        max_results: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """
+        Query one page of realm-wide ReimburseCharge records with optional filters.
+
+        Returns raw QBO RC dicts (the loosely-shaped payload consumed by
+        `parse_reimburse_charge`). Used by the durable RC staging pull (U-186).
+        """
+        where_clauses: List[str] = []
+
+        if last_updated_time:
+            formatted_time = _format_datetime_for_qbo_query(last_updated_time)
+            where_clauses.append(f"Metadata.LastUpdatedTime > '{formatted_time}'")
+            logger.debug(f"Adding WHERE clause: Metadata.LastUpdatedTime > '{formatted_time}'")
+
+        if start_date:
+            where_clauses.append(f"TxnDate >= '{start_date}'")
+            logger.debug(f"Adding WHERE clause: TxnDate >= '{start_date}'")
+
+        if end_date:
+            where_clauses.append(f"TxnDate <= '{end_date}'")
+            logger.debug(f"Adding WHERE clause: TxnDate <= '{end_date}'")
+
+        if where_clauses:
+            where_clause = " AND ".join(where_clauses)
+            query_string = (
+                f"SELECT * FROM ReimburseCharge WHERE {where_clause} "
+                f"STARTPOSITION {start_position} MAXRESULTS {max_results}"
+            )
+        else:
+            query_string = (
+                f"SELECT * FROM ReimburseCharge STARTPOSITION {start_position} MAXRESULTS {max_results}"
+            )
+
+        logger.debug(f"QBO Query: {query_string}")
+        data = self._http_client.get(
+            "query",
+            params={"query": query_string},
+            operation_name="qbo.invoice.reimburse_charge_query_all",
+        )
+
+        query_response = data.get("QueryResponse") if isinstance(data, dict) else None
+        if not query_response:
+            return []
+
+        records = query_response.get("ReimburseCharge", [])
+        if not records:
+            return []
+        if isinstance(records, dict):
+            return [records]
+        return records
+
+    def query_all_reimburse_charges(
+        self,
+        last_updated_time: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Query all realm-wide ReimburseCharge records, handling pagination.
+
+        Mirrors `query_all_invoices`. Returns raw QBO RC dicts for the durable
+        staging pull (U-186) — captured while un-invoiced so the RC's reverse
+        LinkedTxn (dropped once HasBeenInvoiced=true, KI-32) is preserved.
+        """
+        all_records: List[Dict[str, Any]] = []
+        start_position = 1
+        max_results = 1000
+
+        while True:
+            records = self.query_reimburse_charges_page(
+                last_updated_time=last_updated_time,
+                start_date=start_date,
+                end_date=end_date,
+                start_position=start_position,
+                max_results=max_results,
+            )
+            if not records:
+                break
+            all_records.extend(records)
+            if len(records) < max_results:
+                break
+            start_position += max_results
+
+        logger.info(f"Retrieved {len(all_records)} reimburse charges from QBO")
+        return all_records

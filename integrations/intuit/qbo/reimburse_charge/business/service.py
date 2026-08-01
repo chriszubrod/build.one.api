@@ -1,0 +1,182 @@
+# Python Standard Library Imports
+import logging
+import time
+from typing import List, Optional
+
+# Third-party Imports
+
+# Local Imports
+from integrations.intuit.qbo.reimburse_charge.business.model import QboReimburseCharge
+from integrations.intuit.qbo.reimburse_charge.business.parse import (
+    merge_reimburse_charge,
+    parse_reimburse_charge,
+)
+from integrations.intuit.qbo.reimburse_charge.persistence.repo import QboReimburseChargeRepository
+from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
+from shared.database import with_retry
+
+logger = logging.getLogger(__name__)
+
+# Sync configuration
+BATCH_SIZE = 10  # Process reimburse charges in batches
+BATCH_DELAY = 0.5  # Delay between batches (seconds)
+MAX_RETRIES = 3  # Max retries for transient errors
+INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
+
+
+class QboReimburseChargeService:
+    """
+    Service for QboReimburseCharge staging (U-186).
+
+    Upsert-only capture of QBO ReimburseCharges: NO module / Excel / Box / QBO
+    fan-out. Its sole job is to keep qbo.ReimburseCharge current so Tier-0
+    invoice-line linking can resolve deterministically, and to PRESERVE each RC's
+    captured source pointer across the HasBeenInvoiced=true flip (KI-32).
+    """
+
+    def __init__(self, repo: Optional[QboReimburseChargeRepository] = None):
+        """Initialize the QboReimburseChargeService."""
+        self.repo = repo or QboReimburseChargeRepository()
+
+    def sync_from_qbo(
+        self,
+        realm_id: str,
+        last_updated_time: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> dict:
+        """
+        Fetch ReimburseCharges from QBO and upsert into staging.
+
+        Args:
+            realm_id: QBO company realm ID.
+            last_updated_time: Optional ISO datetime; only RCs with
+                Metadata.LastUpdatedTime > this are fetched (incremental).
+            start_date / end_date: Optional TxnDate bounds (YYYY-MM-DD).
+
+        Returns:
+            dict: {
+                "synced": List[QboReimburseCharge],   # upserted records
+                "failed_ids": List[str],              # RCs that failed to persist
+                "fetched_count": int,                 # RCs returned by QBO
+                "skipped_no_id": List[dict],          # malformed RCs (no Id)
+            }
+
+        WATERMARK CONTRACT: `failed_ids` is what makes RC capture safe. Capturing
+        the source pointer pre-invoice is one-shot (QBO drops it on the invoiced
+        flip, KI-32), so the caller MUST NOT advance the dbo.Sync watermark while
+        any RC in the window failed to persist — the upserts are idempotent, so
+        re-pulling the same window next tick is safe.
+        """
+        with QboInvoiceClient(realm_id=realm_id) as client:
+            raw_records = client.query_all_reimburse_charges(
+                last_updated_time=last_updated_time,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+        if not raw_records:
+            logger.info(f"No ReimburseCharges found since {last_updated_time or 'beginning'}")
+            return {"synced": [], "failed_ids": [], "fetched_count": 0, "skipped_no_id": []}
+
+        logger.info(f"Retrieved {len(raw_records)} reimburse charges from QBO")
+
+        synced: List[QboReimburseCharge] = []
+        failed: List[str] = []
+        skipped_no_id: List[dict] = []
+
+        for i, raw in enumerate(raw_records):
+            parsed = parse_reimburse_charge(raw)
+            if not parsed.get("qbo_id"):
+                # Malformed RC (QBO entity with no Id) — can never persist or be
+                # retried, so it does NOT hold the watermark (would stall forever).
+                logger.warning(f"Skipping ReimburseCharge with no Id: {raw}")
+                skipped_no_id.append(raw)
+                continue
+            try:
+                record = with_retry(
+                    self._upsert,
+                    parsed,
+                    realm_id,
+                    max_retries=MAX_RETRIES,
+                    initial_delay=INITIAL_RETRY_DELAY,
+                )
+                synced.append(record)
+                logger.debug(f"Upserted reimburse charge {parsed['qbo_id']} ({i + 1}/{len(raw_records)})")
+            except Exception as e:
+                # Transient persistence failure — MUST hold the watermark so the
+                # window is re-pulled (idempotent) before the RC's pointer is
+                # lost to the invoiced flip.
+                logger.error(f"Failed to upsert reimburse charge {parsed.get('qbo_id')}: {e}")
+                failed.append(parsed["qbo_id"])
+
+            if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(raw_records):
+                logger.debug(f"Processed {i + 1}/{len(raw_records)} reimburse charges, pausing...")
+                time.sleep(BATCH_DELAY)
+
+        if failed:
+            logger.warning(f"Failed to upsert {len(failed)} reimburse charges: {failed}")
+
+        return {
+            "synced": synced,
+            "failed_ids": failed,
+            "fetched_count": len(raw_records),
+            "skipped_no_id": skipped_no_id,
+        }
+
+    def _upsert(self, parsed: dict, realm_id: str) -> QboReimburseCharge:
+        """
+        Create or update one staging record from a parsed RC dict.
+
+        On update, `merge_reimburse_charge` preserves a previously-captured
+        source pointer when the incoming parse carries NULL (invoiced-flip),
+        belt-and-suspenders with the sproc's CASE-WHEN-preserve.
+        """
+        qbo_id = parsed["qbo_id"]
+        existing = self.repo.read_by_qbo_id_and_realm_id(qbo_id=qbo_id, realm_id=realm_id)
+
+        if existing:
+            merged = merge_reimburse_charge(
+                stored={
+                    "source_txn_type": existing.source_txn_type,
+                    "source_txn_id": existing.source_txn_id,
+                    "source_txn_line_id": existing.source_txn_line_id,
+                },
+                incoming=parsed,
+            )
+            logger.debug(f"Updating existing QBO reimburse charge {qbo_id}")
+            return self.repo.update_by_qbo_id(
+                qbo_id=qbo_id,
+                row_version=existing.row_version_bytes,
+                realm_id=realm_id,
+                customer_ref_value=merged["customer_ref_value"],
+                customer_ref_name=merged["customer_ref_name"],
+                txn_date=merged["txn_date"],
+                amount=merged["amount"],
+                has_been_invoiced=merged["has_been_invoiced"],
+                source_txn_type=merged["source_txn_type"],
+                source_txn_id=merged["source_txn_id"],
+                source_txn_line_id=merged["source_txn_line_id"],
+            )
+
+        logger.debug(f"Creating new QBO reimburse charge {qbo_id}")
+        return self.repo.create(
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+            customer_ref_value=parsed["customer_ref_value"],
+            customer_ref_name=parsed["customer_ref_name"],
+            txn_date=parsed["txn_date"],
+            amount=parsed["amount"],
+            has_been_invoiced=parsed["has_been_invoiced"],
+            source_txn_type=parsed["source_txn_type"],
+            source_txn_id=parsed["source_txn_id"],
+            source_txn_line_id=parsed["source_txn_line_id"],
+        )
+
+    def read_by_realm_id(self, realm_id: str) -> List[QboReimburseCharge]:
+        """Read all QboReimburseCharges by realm ID."""
+        return self.repo.read_by_realm_id(realm_id)
+
+    def read_by_qbo_id_and_realm_id(self, qbo_id: str, realm_id: str) -> Optional[QboReimburseCharge]:
+        """Read a QboReimburseCharge by QBO ID and realm ID."""
+        return self.repo.read_by_qbo_id_and_realm_id(qbo_id, realm_id)

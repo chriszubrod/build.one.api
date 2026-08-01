@@ -496,12 +496,114 @@ BEGIN
             qil.[LineNum],
             qil.[Amount] AS [QboAmount],
             qil.[Description] AS [QboDescription],
-            TRY_CAST(qil.[ServiceDate] AS DATE) AS [ServiceDate]
+            TRY_CAST(qil.[ServiceDate] AS DATE) AS [ServiceDate],
+            qil.[LinkedTxnType],
+            qil.[LinkedTxnId]
         FROM dbo.[InvoiceLineItem] ili
         INNER JOIN qbo.[InvoiceLineItemInvoiceLine] ilil ON ilil.[InvoiceLineItemId] = ili.[Id]
         INNER JOIN qbo.[InvoiceLine] qil ON qil.[Id] = ilil.[QboInvoiceLineId]
         WHERE ili.[InvoiceId] = @InvoiceId
     )
+    -- =========================================================================
+    -- Tier 0 — DETERMINISTIC LinkedTxn -> staged ReimburseCharge -> source (U-186).
+    -- Prefer this over the amount/description/date fingerprint tiers below: it is
+    -- an exact QBO-id chain, so resolve_link_proposals (min-tier) picks it first.
+    -- KEYSPACE: joins go QBO-string -> QBO-string (rc.QboId=lc.LinkedTxnId,
+    -- qb.QboId=rc.SourceTxnId); qb.Id / qp.Id (BIGINT) are NEVER aliased as dbo ids
+    -- — the dbo line id comes from the map table (map.BillLineItemId etc.).
+    -- The RC's SourceTxnLineId pins the exact source line; when absent (older
+    -- captures) fall back to amount match within that one source transaction.
+    -- =========================================================================
+
+    -- Tier 0a: InvoiceLine.LinkedTxn = ReimburseCharge, RC source = Bill.
+    SELECT
+        lc.[InvoiceLineItemId],
+        CAST(0 AS TINYINT) AS [Tier],
+        N'BillLineItem' AS [SourceType],
+        map.[BillLineItemId] AS [SourceLineItemId],
+        dbli.[ProjectId] AS [SourceProjectId],
+        bl.[LineNum] AS [SourceLineNum],
+        CAST(0 AS BIT) AS [DirectDbo]
+    FROM LineCtx lc
+    INNER JOIN qbo.[ReimburseCharge] rc
+        ON rc.[QboId] = lc.[LinkedTxnId] AND rc.[RealmId] = @RealmId
+        AND rc.[SourceTxnType] = N'Bill'
+    INNER JOIN qbo.[Bill] qb ON qb.[QboId] = rc.[SourceTxnId] AND qb.[RealmId] = @RealmId
+    -- Pin the exact source line when the RC captured its line id (deterministic);
+    -- fall back to amount ONLY when the line id is null, so same-amount sibling
+    -- lines in one source txn don't emit duplicate Tier-0 candidates.
+    INNER JOIN qbo.[BillLine] bl ON bl.[QboBillId] = qb.[Id]
+        AND ((rc.[SourceTxnLineId] IS NOT NULL AND bl.[QboLineId] = rc.[SourceTxnLineId])
+          OR (rc.[SourceTxnLineId] IS NULL AND ABS(bl.[Amount] - lc.[QboAmount]) < 0.01))
+    INNER JOIN qbo.[BillLineItemBillLine] map ON map.[QboBillLineId] = bl.[Id]
+    INNER JOIN dbo.[BillLineItem] dbli ON dbli.[Id] = map.[BillLineItemId]
+    WHERE lc.[LinkedTxnType] = N'ReimburseCharge'
+
+    UNION ALL
+
+    -- Tier 0b: InvoiceLine.LinkedTxn = ReimburseCharge, RC source = Purchase.
+    SELECT
+        lc.[InvoiceLineItemId],
+        CAST(0 AS TINYINT) AS [Tier],
+        N'ExpenseLineItem' AS [SourceType],
+        map.[ExpenseLineItemId] AS [SourceLineItemId],
+        deli.[ProjectId] AS [SourceProjectId],
+        pl.[LineNum] AS [SourceLineNum],
+        CAST(0 AS BIT) AS [DirectDbo]
+    FROM LineCtx lc
+    INNER JOIN qbo.[ReimburseCharge] rc
+        ON rc.[QboId] = lc.[LinkedTxnId] AND rc.[RealmId] = @RealmId
+        AND rc.[SourceTxnType] = N'Purchase'
+    INNER JOIN qbo.[Purchase] qp ON qp.[QboId] = rc.[SourceTxnId] AND qp.[RealmId] = @RealmId
+    -- Pin the exact source line when the RC captured its line id (deterministic);
+    -- fall back to amount ONLY when the line id is null (see Bill arm above).
+    INNER JOIN qbo.[PurchaseLine] pl ON pl.[QboPurchaseId] = qp.[Id]
+        AND ((rc.[SourceTxnLineId] IS NOT NULL AND pl.[QboLineId] = rc.[SourceTxnLineId])
+          OR (rc.[SourceTxnLineId] IS NULL AND ABS(pl.[Amount] - lc.[QboAmount]) < 0.01))
+    INNER JOIN qbo.[PurchaseLineExpenseLineItem] map ON map.[QboPurchaseLineId] = pl.[Id]
+    INNER JOIN dbo.[ExpenseLineItem] deli ON deli.[Id] = map.[ExpenseLineItemId]
+    WHERE lc.[LinkedTxnType] = N'ReimburseCharge'
+
+    UNION ALL
+
+    -- Tier 0c: InvoiceLine.LinkedTxn points straight at a Bill (no RC intermediary).
+    SELECT
+        lc.[InvoiceLineItemId],
+        CAST(0 AS TINYINT) AS [Tier],
+        N'BillLineItem' AS [SourceType],
+        map.[BillLineItemId] AS [SourceLineItemId],
+        dbli.[ProjectId] AS [SourceProjectId],
+        bl.[LineNum] AS [SourceLineNum],
+        CAST(0 AS BIT) AS [DirectDbo]
+    FROM LineCtx lc
+    INNER JOIN qbo.[Bill] qb ON qb.[QboId] = lc.[LinkedTxnId] AND qb.[RealmId] = @RealmId
+    INNER JOIN qbo.[BillLine] bl ON bl.[QboBillId] = qb.[Id]
+        AND ABS(bl.[Amount] - lc.[QboAmount]) < 0.01
+    INNER JOIN qbo.[BillLineItemBillLine] map ON map.[QboBillLineId] = bl.[Id]
+    INNER JOIN dbo.[BillLineItem] dbli ON dbli.[Id] = map.[BillLineItemId]
+    WHERE lc.[LinkedTxnType] = N'Bill'
+
+    UNION ALL
+
+    -- Tier 0d: InvoiceLine.LinkedTxn points straight at a Purchase (no RC intermediary).
+    SELECT
+        lc.[InvoiceLineItemId],
+        CAST(0 AS TINYINT) AS [Tier],
+        N'ExpenseLineItem' AS [SourceType],
+        map.[ExpenseLineItemId] AS [SourceLineItemId],
+        deli.[ProjectId] AS [SourceProjectId],
+        pl.[LineNum] AS [SourceLineNum],
+        CAST(0 AS BIT) AS [DirectDbo]
+    FROM LineCtx lc
+    INNER JOIN qbo.[Purchase] qp ON qp.[QboId] = lc.[LinkedTxnId] AND qp.[RealmId] = @RealmId
+    INNER JOIN qbo.[PurchaseLine] pl ON pl.[QboPurchaseId] = qp.[Id]
+        AND ABS(pl.[Amount] - lc.[QboAmount]) < 0.01
+    INNER JOIN qbo.[PurchaseLineExpenseLineItem] map ON map.[QboPurchaseLineId] = pl.[Id]
+    INNER JOIN dbo.[ExpenseLineItem] deli ON deli.[Id] = map.[ExpenseLineItemId]
+    WHERE lc.[LinkedTxnType] = N'Purchase'
+
+    UNION ALL
+
     SELECT
         lc.[InvoiceLineItemId],
         CAST(1 AS TINYINT) AS [Tier],

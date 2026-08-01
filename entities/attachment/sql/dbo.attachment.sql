@@ -24,7 +24,14 @@ CREATE TABLE [dbo].[Attachment]
     [DownloadCount] BIGINT NOT NULL DEFAULT 0,
     [LastDownloadedDatetime] DATETIME2(3) NULL,
     [ExpirationDate] DATETIME2(3) NULL,
-    [StorageTier] NVARCHAR(20) NOT NULL DEFAULT 'Hot'
+    [StorageTier] NVARCHAR(20) NOT NULL DEFAULT 'Hot',
+    -- U-187: sync-proof vendor invoice number parsed from the attachment's own
+    -- extracted text. The QBO purchase->Expense connector never writes
+    -- dbo.Attachment, so this column is immune to the KI-42 ReferenceNumber
+    -- clobber. NULL until the extraction sweep populates it. (On prod the column
+    -- is added by scripts/migrations/attachment_vendor_invoice_number.sql — apply
+    -- that BEFORE re-applying this file, same layering as the extraction columns.)
+    [VendorInvoiceNumber] NVARCHAR(100) NULL
 );
 END
 GO
@@ -91,6 +98,8 @@ GO
 CREATE OR ALTER PROCEDURE ReadAttachments
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
 
     SELECT
@@ -124,7 +133,8 @@ BEGIN
         [AICategoryStatus],
         [AICategoryReasoning],
         [AIExtractedFields],
-        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime]
+        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime],
+        [VendorInvoiceNumber]
     FROM dbo.[Attachment]
     ORDER BY [CreatedDatetime] DESC;
 
@@ -141,6 +151,8 @@ CREATE OR ALTER PROCEDURE ReadAttachmentById
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
 
     SELECT
@@ -174,7 +186,8 @@ BEGIN
         [AICategoryStatus],
         [AICategoryReasoning],
         [AIExtractedFields],
-        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime]
+        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime],
+        [VendorInvoiceNumber]
     FROM dbo.[Attachment]
     WHERE [Id] = @Id;
 
@@ -191,6 +204,8 @@ CREATE OR ALTER PROCEDURE ReadAttachmentByPublicId
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
 
     SELECT
@@ -224,7 +239,8 @@ BEGIN
         [AICategoryStatus],
         [AICategoryReasoning],
         [AIExtractedFields],
-        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime]
+        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime],
+        [VendorInvoiceNumber]
     FROM dbo.[Attachment]
     WHERE [PublicId] = @PublicId;
 
@@ -241,6 +257,8 @@ CREATE OR ALTER PROCEDURE ReadAttachmentByCategory
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
 
     SELECT
@@ -274,7 +292,8 @@ BEGIN
         [AICategoryStatus],
         [AICategoryReasoning],
         [AIExtractedFields],
-        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime]
+        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime],
+        [VendorInvoiceNumber]
     FROM dbo.[Attachment]
     WHERE [Category] = @Category
     ORDER BY [CreatedDatetime] DESC;
@@ -292,6 +311,8 @@ CREATE OR ALTER PROCEDURE ReadAttachmentByHash
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
 
     SELECT
@@ -325,7 +346,8 @@ BEGIN
         [AICategoryStatus],
         [AICategoryReasoning],
         [AIExtractedFields],
-        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime]
+        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime],
+        [VendorInvoiceNumber]
     FROM dbo.[Attachment]
     WHERE [FileHash] = @FileHash;
 
@@ -455,6 +477,8 @@ CREATE OR ALTER PROCEDURE ReadAttachmentsByIds
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
 
     SELECT
@@ -488,7 +512,8 @@ BEGIN
         [AICategoryStatus],
         [AICategoryReasoning],
         [AIExtractedFields],
-        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime]
+        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime],
+        [VendorInvoiceNumber]
     FROM dbo.[Attachment]
     WHERE [Id] IN (
         SELECT CAST(LTRIM(RTRIM(value)) AS BIGINT)

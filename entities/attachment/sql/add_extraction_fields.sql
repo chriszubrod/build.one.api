@@ -60,10 +60,18 @@ CREATE OR ALTER PROCEDURE UpdateAttachmentExtraction
     @Id BIGINT,
     @ExtractionStatus NVARCHAR(20),
     @ExtractedTextBlobUrl NVARCHAR(MAX) = NULL,
-    @ExtractionError NVARCHAR(MAX) = NULL
+    @ExtractionError NVARCHAR(MAX) = NULL,
+    -- U-187: NULL preserves the existing VendorInvoiceNumber (so the cheap
+    -- 'pending' re-mark from the QBO-attachable / receipt trigger never wipes a
+    -- value); a non-NULL value overwrites. The Python service routes the incoming
+    -- value through preserve_human_edited_ref first, so an operator-corrected
+    -- number is kept and only empty/placeholder values are replaced.
+    @VendorInvoiceNumber NVARCHAR(100) = NULL
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
@@ -74,7 +82,8 @@ BEGIN
         [ExtractionStatus] = @ExtractionStatus,
         [ExtractedTextBlobUrl] = @ExtractedTextBlobUrl,
         [ExtractionError] = @ExtractionError,
-        [ExtractedDatetime] = CASE WHEN @ExtractionStatus = 'completed' THEN @Now ELSE [ExtractedDatetime] END
+        [ExtractedDatetime] = CASE WHEN @ExtractionStatus = 'completed' THEN @Now ELSE [ExtractedDatetime] END,
+        [VendorInvoiceNumber] = CASE WHEN @VendorInvoiceNumber IS NULL THEN [VendorInvoiceNumber] ELSE @VendorInvoiceNumber END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -100,7 +109,8 @@ BEGIN
         INSERTED.[ExtractionStatus],
         INSERTED.[ExtractedTextBlobUrl],
         INSERTED.[ExtractionError],
-        CONVERT(VARCHAR(19), INSERTED.[ExtractedDatetime], 120) AS [ExtractedDatetime]
+        CONVERT(VARCHAR(19), INSERTED.[ExtractedDatetime], 120) AS [ExtractedDatetime],
+        INSERTED.[VendorInvoiceNumber]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
@@ -113,6 +123,8 @@ GO
 CREATE OR ALTER PROCEDURE ReadAttachmentsPendingExtraction
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
 
     SELECT
@@ -140,7 +152,8 @@ BEGIN
         [ExtractionStatus],
         [ExtractedTextBlobUrl],
         [ExtractionError],
-        CONVERT(VARCHAR(19), [ExtractedDatetime], 120) AS [ExtractedDatetime]
+        CONVERT(VARCHAR(19), [ExtractedDatetime], 120) AS [ExtractedDatetime],
+        [VendorInvoiceNumber]
     FROM dbo.[Attachment]
     WHERE [ExtractionStatus] = 'pending' OR [ExtractionStatus] IS NULL
     ORDER BY [CreatedDatetime] ASC;

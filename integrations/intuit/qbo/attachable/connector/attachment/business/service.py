@@ -111,6 +111,9 @@ class AttachableAttachmentConnector:
                         file_extension=file_extension,
                     )
                     logger.info(f"Re-uploaded blob for Attachment {attachment.id} → {blob_url}")
+                    # Fresh bytes landed — queue text extraction (U-187). Deferred
+                    # to the sweep; DI never runs inline in the realm pull.
+                    self._mark_pending_extraction(attachment.id)
                     # Re-read to get updated record
                     return self.attachment_service.read_by_id(attachment.id)
                 else:
@@ -180,6 +183,8 @@ class AttachableAttachmentConnector:
                     file_extension=file_extension,
                 )
                 existing_by_hash = self.attachment_service.read_by_id(existing_by_hash.id)
+                # Re-uploaded fresh bytes for a healed blob — queue extraction (U-187).
+                self._mark_pending_extraction(existing_by_hash.id)
             # Create mapping to existing attachment
             self._create_mapping(attachment_id=existing_by_hash.id, qbo_attachable_id=qbo_attachable.id)
             return existing_by_hash
@@ -213,8 +218,26 @@ class AttachableAttachmentConnector:
         # Create mapping
         self._create_mapping(attachment_id=attachment.id, qbo_attachable_id=qbo_attachable.id)
         logger.info(f"Created mapping: Attachment {attachment.id} <-> QboAttachable {qbo_attachable.id}")
-        
+
+        # New source document — queue text extraction (U-187). Marked 'pending'
+        # only; DI is deferred to the /admin/attachment/extract/tick sweep so this
+        # ~6-min realm pull never blocks on Document Intelligence.
+        self._mark_pending_extraction(attachment.id)
+
         return attachment
+
+    def _mark_pending_extraction(self, attachment_id: int) -> None:
+        """Flag a synced Attachment for text extraction (U-187). Failure-isolated:
+        a marking hiccup must never break the attachable sync (attachments are
+        best-effort and the parent entity still projects)."""
+        try:
+            if attachment_id:
+                self.attachment_service.mark_pending_extraction(attachment_id)
+        except Exception as e:
+            logger.warning(
+                "attachable.mark_pending_extraction_failed attachment_id=%s: %s",
+                attachment_id, e,
+            )
 
     def _download_from_qbo(
         self,

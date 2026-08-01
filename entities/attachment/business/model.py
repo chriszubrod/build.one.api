@@ -43,6 +43,9 @@ class Attachment:
     ai_category_reasoning: Optional[str] = None
     ai_extracted_fields: Optional[str] = None  # JSON string
     categorized_datetime: Optional[str] = None
+    # U-187: vendor invoice number parsed from this attachment's own extracted
+    # text. Sync-proof — the QBO connector never writes dbo.Attachment (KI-42).
+    vendor_invoice_number: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

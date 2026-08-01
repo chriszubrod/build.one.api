@@ -107,6 +107,7 @@ SYNCHRONOUS_TASKS = [
     # Other
     "integration",
     "contract_labor",
+    "contract",
 
     # Employee labor (internal — feeds Invoice directly, no Bill).
     "employee_labor",

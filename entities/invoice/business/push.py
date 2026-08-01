@@ -358,6 +358,7 @@ class InvoiceDrawPushService:
         audit_service: Optional[InvoiceDrawAuditService] = None,
         generate_packet_fn: Optional[Callable[[str], dict]] = None,
         worksheet_reconcile_service: Optional[Any] = None,
+        excel_connector: Optional[Any] = None,
     ):
         self.invoice_service = invoice_service or InvoiceService()
         self.invoice_repo = invoice_repo or InvoiceRepository()
@@ -373,12 +374,24 @@ class InvoiceDrawPushService:
         )
         self._generate_packet_fn = generate_packet_fn
         self._worksheet_reconcile_service = worksheet_reconcile_service
+        self._excel_connector = excel_connector
+
+    def _get_excel_connector(self):
+        if self._excel_connector is None:
+            from integrations.ms.sharepoint.driveitem.connector.project_excel.business.service import (
+                DriveItemProjectExcelConnector,
+            )
+
+            self._excel_connector = DriveItemProjectExcelConnector()
+        return self._excel_connector
 
     def push_draw(self, invoice_public_id: str, *, force: bool = False) -> dict:
         steps: list[dict] = []
         audit_verdict: Optional[str] = None
         packet_data: dict[str, Any] = {}
         already_tagged: list[dict] = []
+        local_only = False
+        skipped_external: list[str] = []
 
         def _halt(reason: str, **extra: Any) -> dict:
             body: dict[str, Any] = {
@@ -388,10 +401,29 @@ class InvoiceDrawPushService:
                 "matrix": extra.get("matrix"),
                 "audit_verdict": audit_verdict,
                 "already_tagged": already_tagged,
+                "local_only": local_only,
+                "skipped_external": list(skipped_external),
                 "note": _PUSH_NOTE,
             }
             body.update({k: v for k, v in extra.items() if k != "matrix"})
             return body
+
+        def _record_box_line_pdfs_step(box_line_result: dict) -> None:
+            if not box_line_result.get("success"):
+                steps.append({"step": "box_line_pdfs", "status": "halt", "result": box_line_result})
+                return
+            enqueued = int(box_line_result.get("enqueued") or 0)
+            box_line_step = {
+                "step": "box_line_pdfs",
+                "enqueued": enqueued,
+                "skipped": int(box_line_result.get("skipped") or 0),
+                "reason": box_line_result.get("reason"),
+            }
+            if enqueued > 0:
+                box_line_step["status"] = "ok"
+            else:
+                box_line_step["status"] = "skipped"
+            steps.append(box_line_step)
 
         # a. Read invoice
         invoice = self.invoice_service.read_by_public_id(public_id=invoice_public_id)
@@ -501,6 +533,21 @@ class InvoiceDrawPushService:
 
         # g. DETAILS completeness (U-182) then col-H DRAW stamp (MS sync + Box enqueue)
         if project_id:
+            linked = self._get_excel_connector().get_excel_for_project(project_id=project_id)
+            if not linked:
+                local_only = True
+                skipped_external.extend(
+                    ["sharepoint_details_stamp", "sharepoint_upload"],
+                )
+                steps.append(
+                    {
+                        "step": "local_only",
+                        "status": "ok",
+                        "reason": "no_sharepoint_excel_mapping",
+                    }
+                )
+
+        if project_id and not local_only:
             from entities.invoice.business.enrichment import enrich_line_items
 
             reconcile_svc = self._worksheet_reconcile_service
@@ -660,40 +707,35 @@ class InvoiceDrawPushService:
             except Exception as exc:
                 steps.append({"step": "box_excel_stamp_enqueue", "status": "halt", "error": str(exc)})
                 return _halt("box_excel_stamp_failed")
-        else:
+        elif not project_id:
             steps.append({"step": "excel_draw_stamp", "status": "skipped", "reason": "no_project_id"})
 
-        # h. uploads
-        sp_result = self.invoice_service._upload_to_sharepoint(invoice=invoice, line_items=line_items)
-        if not sp_result.get("success") or sp_result.get("errors"):
-            steps.append({"step": "sharepoint_upload", "status": "halt", "result": sp_result})
-            return _halt("sharepoint_upload_failed")
-        steps.append(
-            {
-                "step": "sharepoint_upload",
-                "status": "ok",
-                "synced_count": sp_result.get("synced_count"),
-            }
-        )
+        # h. uploads (SharePoint skipped in local-only draw mode)
+        if not local_only:
+            sp_result = self.invoice_service._upload_to_sharepoint(
+                invoice=invoice, line_items=line_items
+            )
+            if not sp_result.get("success") or sp_result.get("errors"):
+                steps.append({"step": "sharepoint_upload", "status": "halt", "result": sp_result})
+                return _halt("sharepoint_upload_failed")
+            steps.append(
+                {
+                    "step": "sharepoint_upload",
+                    "status": "ok",
+                    "synced_count": sp_result.get("synced_count"),
+                }
+            )
 
         box_line_result = self.invoice_service._enqueue_box_line_pdfs(
             invoice=invoice, line_items=line_items
         )
         if not box_line_result.get("success"):
-            steps.append({"step": "box_line_pdfs", "status": "halt", "result": box_line_result})
+            _record_box_line_pdfs_step(box_line_result)
             return _halt("box_line_pdfs_failed")
-        enqueued = int(box_line_result.get("enqueued") or 0)
-        box_line_step = {
-            "step": "box_line_pdfs",
-            "enqueued": enqueued,
-            "skipped": int(box_line_result.get("skipped") or 0),
-            "reason": box_line_result.get("reason"),
-        }
-        if enqueued > 0:
-            box_line_step["status"] = "ok"
-        else:
-            box_line_step["status"] = "skipped"
-        steps.append(box_line_step)
+        _record_box_line_pdfs_step(box_line_result)
+        if local_only and int(box_line_result.get("enqueued") or 0) == 0:
+            if box_line_result.get("reason") == "unmapped_project":
+                skipped_external.append("box")
 
         # i. DB-side invariant matrix
         matrix = assemble_draw_matrix(draw_counts, packet_data)
@@ -708,5 +750,7 @@ class InvoiceDrawPushService:
             "matrix": matrix,
             "audit_verdict": audit_verdict,
             "already_tagged": already_tagged,
+            "local_only": local_only,
+            "skipped_external": list(skipped_external),
             "note": _PUSH_NOTE,
         }

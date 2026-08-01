@@ -2,98 +2,6 @@
 
 from unittest.mock import Mock, patch
 
-
-
-def _u182_push_draw_halt_fixture(
-    monkeypatch,
-    push_mod,
-    *,
-    db_only,
-    plan_lines,
-    invoice_project_id=7,
-    mock_parent_enqueue=True,
-    insert_plan_result=None,
-):
-    """Drive push_draw through worksheet reconcile to details_source_inserts halts."""
-    from types import SimpleNamespace
-
-    invoice = SimpleNamespace(id=1, project_id=invoice_project_id, public_id="inv-pid")
-    sync_calls = {"invoice_sync": 0, "stamp": 0}
-
-    class FakeInvoiceService:
-        def read_by_id(self, *, id):
-            return invoice
-
-        def sync_to_excel_workbook(self, *args, **kwargs):
-            sync_calls["invoice_sync"] += 1
-            return {"ok": True}
-
-    monkeypatch.setattr(
-        push_mod,
-        "InvoiceService",
-        FakeInvoiceService,
-    )
-
-    def _fake_reconcile(*_a, **_k):
-        return {
-            "db_only": db_only,
-            "matched": [],
-            "mismatched": [],
-            "ws_only": [],
-        }
-
-    monkeypatch.setattr(push_mod, "reconcile_worksheet_for_draw", _fake_reconcile)
-    monkeypatch.setattr(
-        push_mod,
-        "enrich_invoice_line_items_for_draw",
-        lambda *_a, **_k: plan_lines,
-    )
-    monkeypatch.setattr(
-        push_mod,
-        "build_details_insert_plan",
-        lambda lines, keys: []
-        if insert_plan_result is None
-        else insert_plan_result,
-    )
-
-    stamp_attr = "_stamp_col_h_after_details"
-    if not hasattr(push_mod, stamp_attr):
-        for alt in ("_stamp_invoice_draw_col_h", "_stamp_draw_col_h_on_invoice"):
-            if hasattr(push_mod, alt):
-                stamp_attr = alt
-                break
-
-    if hasattr(push_mod, stamp_attr):
-        def _no_stamp(*_a, **_k):
-            sync_calls["stamp"] += 1
-
-        monkeypatch.setattr(push_mod, stamp_attr, _no_stamp)
-
-    for attr, ret in (
-        ("assert_draw_push_gates", None),
-        ("run_qbo_disabled_audit_for_draw", None),
-        ("sync_invoice_header_to_workbook_for_draw", None),
-    ):
-        if hasattr(push_mod, attr):
-            monkeypatch.setattr(push_mod, attr, lambda *_a, **_k: ret)
-
-    for attr in (
-        "assert_draw_gates",
-        "run_qbo_disabled_audit",
-        "sync_invoice_header_to_workbook",
-    ):
-        if hasattr(push_mod, attr):
-            monkeypatch.setattr(push_mod, attr, lambda *_a, **_k: None)
-
-    if mock_parent_enqueue:
-        monkeypatch.setattr(
-            push_mod,
-            "_enqueue_parent_details_sync",
-            lambda *_a, **_k: {"ok": True},
-        )
-
-    result = push_mod.push_draw(invoice_id=1, project_id=invoice_project_id, actor_user_id=1)
-    return result, sync_calls
 from entities.invoice.business.push import (
     InvoiceDrawPushService,
     assemble_draw_matrix,
@@ -189,6 +97,8 @@ def _push_service_with_mocks(**kwargs):
     invoice_repo = Mock()
     invoice_repo.read_source_lines_missing_readable_blob.return_value = []
     invoice_repo.compute_invoice_draw_matrix.return_value = _counts()
+    excel_connector = Mock()
+    excel_connector.get_excel_for_project.return_value = {"drive_item_id": 99}
     defaults = {
         "invoice_service": invoice_service,
         "invoice_repo": invoice_repo,
@@ -196,6 +106,7 @@ def _push_service_with_mocks(**kwargs):
         "reconciliation_service": Mock(),
         "audit_service": Mock(),
         "worksheet_reconcile_service": Mock(),
+        "excel_connector": excel_connector,
     }
     defaults.update(kwargs)
     return InvoiceDrawPushService(**defaults), invoice_service, defaults
@@ -506,6 +417,80 @@ def test_push_draw_empty_db_only_proceeds_to_invoice_stamp(monkeypatch):
     assert result["status"] == "pushed"
     invoice_service.sync_to_excel_workbook.assert_called_once()
     invoice_service._upload_to_sharepoint.assert_called_once()
+
+
+def test_push_draw_local_only_skips_sharepoint_details_and_upload(monkeypatch):
+    """No ms.DriveItemProjectExcel mapping -> local-only pushed payload."""
+    _gates_open(monkeypatch)
+    excel_connector = Mock()
+    excel_connector.get_excel_for_project.return_value = None
+    svc, invoice_service, collabs = _push_service_with_mocks(
+        generate_packet_fn=lambda _pid: {"data": {"skipped": 0, "page_count": 2}},
+        excel_connector=excel_connector,
+    )
+    _audit_clear(collabs)
+    invoice_service._enqueue_box_line_pdfs.return_value = {
+        "success": True,
+        "enqueued": 0,
+        "skipped": 0,
+        "reason": "unmapped_project",
+    }
+
+    result = svc.push_draw("inv-pub-id")
+
+    assert result["status"] == "pushed"
+    assert result["local_only"] is True
+    assert "sharepoint_details_stamp" in result["skipped_external"]
+    assert "sharepoint_upload" in result["skipped_external"]
+    assert "box" in result["skipped_external"]
+    collabs["worksheet_reconcile_service"].reconcile.assert_not_called()
+    invoice_service.sync_to_excel_workbook.assert_not_called()
+    invoice_service._upload_to_sharepoint.assert_not_called()
+    invoice_service._enqueue_box_line_pdfs.assert_called_once()
+    collabs["invoice_repo"].compute_invoice_draw_matrix.assert_called()
+    assert result["matrix"]["all_pass"] is True
+    local_step = next(s for s in result["steps"] if s.get("step") == "local_only")
+    assert local_step["reason"] == "no_sharepoint_excel_mapping"
+
+
+def test_push_draw_mapped_excel_runs_worksheet_reconcile(monkeypatch):
+    _gates_open(monkeypatch)
+    excel_connector = Mock()
+    excel_connector.get_excel_for_project.return_value = {"drive_item_id": 1}
+    svc, invoice_service, collabs = _push_service_with_mocks(
+        generate_packet_fn=lambda _pid: {"data": {"skipped": 0, "page_count": 2}},
+        excel_connector=excel_connector,
+    )
+    _audit_clear(collabs)
+    _reconcile_empty(collabs)
+    invoice_service.sync_to_excel_workbook.return_value = {
+        "success": True,
+        "synced_count": 1,
+        "message": "ok",
+        "errors": [],
+    }
+    invoice_service._upload_to_sharepoint.return_value = {
+        "success": True,
+        "errors": [],
+        "synced_count": 1,
+    }
+    invoice_service._enqueue_box_line_pdfs.return_value = {
+        "success": True,
+        "enqueued": 0,
+        "skipped": 0,
+    }
+
+    with patch(
+        "entities.invoice.business.enrichment.enrich_line_items",
+        return_value=[],
+    ):
+        result = svc.push_draw("inv-pub-id")
+
+    assert result["status"] == "pushed"
+    assert result.get("local_only") is False
+    assert result.get("skipped_external") == []
+    collabs["worksheet_reconcile_service"].reconcile.assert_called_once()
+    excel_connector.get_excel_for_project.assert_called_with(project_id=7)
 
 def test_u182_billcredit_manual_insert_halt():
     from entities.invoice.business.push import (

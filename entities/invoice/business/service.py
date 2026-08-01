@@ -19,6 +19,29 @@ from shared.storage import AzureBlobStorage, AzureBlobStorageError
 logger = logging.getLogger(__name__)
 
 
+def _col_letter_to_index(letters: str) -> int:
+    """0-based column index: A=0, B=1, ..., Z=25, AA=26. Shared by the Excel
+    DRAW REQUEST stamp (sync_to_excel_workbook) and un-tag (unstamp_draw_from_excel)."""
+    result = 0
+    for ch in letters:
+        result = result * 26 + (ord(ch) - ord("A") + 1)
+    return result - 1
+
+
+def _contiguous_runs(rows: list) -> list:
+    """Split a list of ints into runs of consecutive values so a batch of adjacent
+    worksheet rows collapses to one Graph range call instead of one call per row."""
+    runs, run = [], []
+    for r in rows:
+        if run and r != run[-1] + 1:
+            runs.append(run)
+            run = []
+        run.append(r)
+    if run:
+        runs.append(run)
+    return runs
+
+
 class InvoiceService:
     """
     Service for Invoice entity business operations.
@@ -523,18 +546,11 @@ class InvoiceService:
             start_col_letter = addr_match.group(1) if addr_match else "A"
             start_row_num = int(addr_match.group(2)) if addr_match else 1
 
-            def col_letter_to_index(letters: str) -> int:
-                """0-based index: A=0, B=1, ..., Z=25"""
-                result = 0
-                for ch in letters:
-                    result = result * 26 + (ord(ch) - ord("A") + 1)
-                return result - 1
-
-            start_col_index = col_letter_to_index(start_col_letter)
+            start_col_index = _col_letter_to_index(start_col_letter)
             # Column Z = index 25 absolute; relative to range start:
-            z_col_relative = col_letter_to_index("Z") - start_col_index
+            z_col_relative = _col_letter_to_index("Z") - start_col_index
             # Column H = index 7 absolute; relative to range start:
-            h_col_relative = col_letter_to_index("H") - start_col_index
+            h_col_relative = _col_letter_to_index("H") - start_col_index
 
             if z_col_relative < 0 or z_col_relative >= len(worksheet_values[0]):
                 return {"success": False, "message": "Column Z (reconciliation key) is outside the used range", "synced_count": 0, "errors": []}
@@ -593,17 +609,6 @@ class InvoiceService:
             # the Bill/Expense sync cluster inside cost-code blocks, so a large
             # invoice typically collapses to a handful of calls (previously one
             # call per line ≈ 3-4 minutes on a 45-line invoice).
-            def _contiguous_runs(rows: list) -> list:
-                runs, run = [], []
-                for r in rows:
-                    if run and r != run[-1] + 1:
-                        runs.append(run)
-                        run = []
-                    run.append(r)
-                if run:
-                    runs.append(run)
-                return runs
-
             for run in _contiguous_runs(sorted(row_targets)):
                 range_address = f"H{run[0]}" if len(run) == 1 else f"H{run[0]}:H{run[-1]}"
                 run_values = [[invoice_number] for _ in run]
@@ -663,6 +668,162 @@ class InvoiceService:
             return {"success": False, "message": f"Error syncing to Excel: {str(e)}", "synced_count": 0, "errors": [{"error": str(e)}]}
         finally:
             if session_id:
+                close_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id, session_id=session_id)
+
+    def unstamp_draw_from_excel(self, project_id: int, source_public_ids: list) -> dict:
+        """
+        Blank the DRAW REQUEST column (H) in the project's SharePoint workbook for
+        the DETAILS rows whose column-Z reconciliation key is in
+        `source_public_ids` — the inverse of sync_to_excel_workbook, used by the
+        U7 delta path when a source line is unlinked from a pushed draw.
+
+        Keyed strictly by col-Z (never by a caller-supplied row index): re-reads the
+        worksheet and rebuilds the same key→row lookup sync_to_excel_workbook uses,
+        so it targets exactly the rows the stamp wrote regardless of used-range
+        offset. Rows whose key isn't found are skipped (already cleared / absent).
+        Returns {success, cleared_count, errors}.
+        """
+        from integrations.ms.sharepoint.external.client import (
+            get_excel_used_range_values,
+            update_excel_range,
+            create_workbook_session,
+            close_workbook_session,
+        )
+        from integrations.ms.sharepoint.driveitem.persistence.repo import MsDriveItemRepository
+
+        keys = {str(p).strip().lower() for p in (source_public_ids or []) if p and str(p).strip()}
+        if not keys:
+            return {"success": True, "message": "No keys to clear", "cleared_count": 0, "errors": []}
+
+        session_id = None
+        drive = None
+        driveitem = None
+        try:
+            excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
+            if not excel_mapping:
+                return {"success": False, "message": f"Excel workbook not linked for project {project_id}", "cleared_count": 0, "errors": []}
+
+            worksheet_name = excel_mapping.get("worksheet_name")
+            if not worksheet_name:
+                return {"success": False, "message": "Worksheet name not found in Excel mapping", "cleared_count": 0, "errors": []}
+
+            driveitem = next(
+                (item for item in MsDriveItemRepository().read_all() if item.id == excel_mapping.get("id")),
+                None,
+            )
+            if not driveitem:
+                return {"success": False, "message": "DriveItem not found for Excel workbook", "cleared_count": 0, "errors": []}
+
+            drive = self.drive_repo.read_by_id(driveitem.ms_drive_id)
+            if not drive:
+                return {"success": False, "message": "Drive not found for Excel workbook", "cleared_count": 0, "errors": []}
+
+            session_id = create_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id)
+
+            worksheet_result = get_excel_used_range_values(
+                drive_id=drive.drive_id,
+                item_id=driveitem.item_id,
+                worksheet_name=worksheet_name,
+                session_id=session_id,
+            )
+            if worksheet_result.get("status_code") != 200:
+                return {"success": False, "message": f"Could not read worksheet: {worksheet_result.get('message')}", "cleared_count": 0, "errors": []}
+
+            range_data = worksheet_result.get("range", {})
+            worksheet_values = range_data.get("values", [])
+            range_address = range_data.get("address", "")
+            if not worksheet_values:
+                return {"success": True, "message": "Worksheet is empty, nothing to clear", "cleared_count": 0, "errors": []}
+
+            # Same used-range-relative column resolution as sync_to_excel_workbook
+            # (parse the true start row/col from the address — do NOT assume A1).
+            addr = range_address.split("!")[-1] if "!" in range_address else range_address
+            addr_match = re.match(r"([A-Z]+)(\d+)", addr)
+            start_col_letter = addr_match.group(1) if addr_match else "A"
+            start_row_num = int(addr_match.group(2)) if addr_match else 1
+
+            start_col_index = _col_letter_to_index(start_col_letter)
+            z_col_relative = _col_letter_to_index("Z") - start_col_index
+            if z_col_relative < 0 or z_col_relative >= len(worksheet_values[0]):
+                return {"success": False, "message": "Column Z (reconciliation key) is outside the used range", "cleared_count": 0, "errors": []}
+
+            # Resolve col-Z key → 1-based absolute row, LAST-WINS — exactly like the
+            # stamp in sync_to_excel_workbook (and the Box stamp_columns_by_key). The
+            # stamp tags ONE row per key; the clear un-tags that SAME row, so the
+            # SharePoint and Box surfaces stay symmetric even on an anomalous
+            # duplicate-col-Z row (col-Z is a unique idempotency key that the insert
+            # path dedups, so duplicates are an out-of-band data anomaly, not ours).
+            key_to_row = {}
+            for row_idx, row in enumerate(worksheet_values):
+                if len(row) > z_col_relative:
+                    cell_val = row[z_col_relative]
+                    if cell_val and isinstance(cell_val, str):
+                        norm = cell_val.strip().lower()
+                        if norm in keys:
+                            key_to_row[norm] = start_row_num + row_idx
+            target_rows = list(key_to_row.values())
+
+            if not target_rows:
+                return {"success": True, "message": "No matching DETAILS rows to clear", "cleared_count": 0, "errors": []}
+
+            errors = []
+            cleared_count = 0
+            for run in _contiguous_runs(sorted(set(target_rows))):
+                range_address = f"H{run[0]}" if len(run) == 1 else f"H{run[0]}:H{run[-1]}"
+                run_values = [[""] for _ in run]
+                try:
+                    update_result = update_excel_range(
+                        drive_id=drive.drive_id,
+                        item_id=driveitem.item_id,
+                        worksheet_name=worksheet_name,
+                        range_address=range_address,
+                        values=run_values,
+                        session_id=session_id,
+                    )
+                except Exception as e:
+                    update_result = {"status_code": None, "message": str(e)}
+
+                if update_result.get("status_code") == 200:
+                    cleared_count += len(run)
+                    logger.info(f"Cleared DRAW REQUEST {range_address} ({len(run)} row(s))")
+                    continue
+
+                logger.warning(
+                    f"Batch clear {range_address} failed ({update_result.get('message')}); "
+                    f"falling back to per-row clears"
+                )
+                for ws_row in run:
+                    try:
+                        single_result = update_excel_range(
+                            drive_id=drive.drive_id,
+                            item_id=driveitem.item_id,
+                            worksheet_name=worksheet_name,
+                            range_address=f"H{ws_row}",
+                            values=[[""]],
+                            session_id=session_id,
+                        )
+                        if single_result.get("status_code") == 200:
+                            cleared_count += 1
+                        else:
+                            err = f"Failed to clear H{ws_row}: {single_result.get('message')}"
+                            logger.error(err)
+                            errors.append({"row": ws_row, "error": err})
+                    except Exception as e:
+                        logger.error(f"Error clearing H{ws_row}: {e}")
+                        errors.append({"row": ws_row, "error": str(e)})
+
+            return {
+                "success": not errors,
+                "message": f"Cleared {cleared_count} DRAW REQUEST row(s) in Excel workbook",
+                "cleared_count": cleared_count,
+                "errors": errors,
+            }
+
+        except Exception as e:
+            logger.exception(f"Error clearing draw tags in Excel workbook for project {project_id}")
+            return {"success": False, "message": f"Error clearing Excel draw tags: {str(e)}", "cleared_count": 0, "errors": [{"error": str(e)}]}
+        finally:
+            if session_id and drive and driveitem:
                 close_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id, session_id=session_id)
 
     def _collect_line_attachment_rows(self, invoice, line_items: list) -> list:
@@ -1001,6 +1162,46 @@ class InvoiceService:
             )
         except Exception as e:
             logger.warning(f"box.excel.enqueue.failed invoice={invoice.public_id} project_id={project_id}: {e}")
+
+    def _enqueue_box_excel_clear(self, invoice, project_id: int, source_public_ids: list) -> dict:
+        """
+        Enqueue a Box DETAILS-tab column-H CLEAR (U7 delta un-tag) for the given
+        col-Z source public_ids — the Box mirror of unstamp_draw_from_excel above.
+
+        Unlike _enqueue_box_excel (a passive completion side-effect that swallows
+        everything), the delta path must know whether Box was actually enqueued so
+        it never clears SharePoint while leaving Box silently un-cleared. Returns a
+        structured outcome instead of raising:
+          {"enqueued": bool, "reason": "ok"|"gate_off"|"empty"|"unmapped"|"refused"|"error"}
+        `reason=="error"` signals the caller to halt BEFORE touching SharePoint.
+        """
+        import os as _os
+        if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
+            return {"enqueued": False, "reason": "gate_off"}
+        keys = [str(p).strip() for p in (source_public_ids or []) if p and str(p).strip()]
+        if not keys:
+            return {"enqueued": False, "reason": "empty"}
+        try:
+            from integrations.box.excel.business.mapping_service import (
+                BoxProjectWorkbookService,
+            )
+            from integrations.box.outbox.business.service import BoxOutboxService
+
+            mapping = BoxProjectWorkbookService().read_by_project_id(project_id)
+            if not mapping:
+                logger.info(f"box.excel.clear.skipped_unmapped_project project_id={project_id}")
+                return {"enqueued": False, "reason": "unmapped"}
+            row = BoxOutboxService().enqueue_box_excel_clear_draw_request(
+                invoice_public_id=str(invoice.public_id),
+                project_id=project_id,
+                box_file_id=mapping["box_file_id"],
+                worksheet_name=mapping["worksheet_name"],
+                source_public_ids=keys,
+            )
+            return {"enqueued": row is not None, "reason": "ok" if row is not None else "refused"}
+        except Exception as e:
+            logger.warning(f"box.excel.clear.enqueue.failed invoice={invoice.public_id} project_id={project_id}: {e}")
+            return {"enqueued": False, "reason": "error", "error": str(e)}
 
     def get_billable_items_for_project(self, project_public_id: str, invoice_public_id: str = None) -> dict:
         """

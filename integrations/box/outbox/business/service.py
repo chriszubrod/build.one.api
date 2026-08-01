@@ -28,6 +28,7 @@ KIND_UPDATE_EXCEL = "update_box_excel"  # Phase 2: constant only — no handler 
 # worker side (integrations/box/excel/business/service.py:OP_*). Lazy import
 # to avoid pulling in openpyxl/excel-package surface at outbox load time.
 from integrations.box.excel.business.service import (  # noqa: E402
+    OP_CLEAR_DRAW_REQUEST,
     OP_STAMP_DRAW_REQUEST,
 )
 
@@ -427,6 +428,98 @@ class BoxOutboxService:
                 "box_file_id": box_file_id,
                 "worksheet_name": worksheet_name,
                 "project_id": project_id,
+                "request_id": request_id,
+                "ready_after": ready_after.isoformat(),
+            },
+        )
+        return created
+
+    def enqueue_box_excel_clear_draw_request(
+        self,
+        *,
+        invoice_public_id: str,
+        project_id: int,
+        box_file_id: str,
+        worksheet_name: str,
+        source_public_ids: list,
+    ) -> Optional[BoxOutbox]:
+        """
+        Enqueue a Box DETAILS-tab column-H CLEAR (U7 delta un-tag) — blank the
+        DRAW REQUEST cell on the rows whose col-Z public_id is in
+        `source_public_ids` (source lines unlinked from a pushed draw).
+
+        The inverse of enqueue_box_excel_draw_stamp: the worker treats it as a
+        stamp-like op (col-H write on rows matched by col-Z, never inserts), but
+        writes "" instead of the draw number, and only for the explicit key list.
+        The MS / SharePoint side runs InvoiceService.unstamp_draw_from_excel for
+        the same purpose against the SP-hosted workbook; this is the Box mirror.
+
+        Payload JSON:
+          {"operation":"clear_draw_request","box_file_id","worksheet_name",
+           "entity_type":"invoice","entity_public_id":<invoice_public_id>,
+           "project_id","source_public_ids":[...]}
+
+        Gated on ALLOW_BOX_WRITES like its siblings. Returns the row, or None if
+        refused or the key list is empty (nothing to clear).
+        """
+        correlation_id = get_correlation_id()
+
+        keys = [str(p).strip() for p in (source_public_ids or []) if p and str(p).strip()]
+        if not keys:
+            return None
+
+        if not _writes_allowed():
+            logger.warning(
+                "box.outbox.row.refused",
+                extra={
+                    "event_name": "box.outbox.row.refused",
+                    "correlation_id": correlation_id,
+                    "operation_name": KIND_UPDATE_EXCEL,
+                    "entity_type": "invoice",
+                    "entity_public_id": invoice_public_id,
+                    "operation": OP_CLEAR_DRAW_REQUEST,
+                    "reason": "ALLOW_BOX_WRITES_not_true",
+                },
+            )
+            return None
+
+        now = datetime.now(timezone.utc)
+        ready_after = now + timedelta(seconds=DEFAULT_READY_AFTER_SECONDS)
+        payload = {
+            "operation": OP_CLEAR_DRAW_REQUEST,
+            "box_file_id": box_file_id,
+            "worksheet_name": worksheet_name,
+            "entity_type": "invoice",
+            "entity_public_id": invoice_public_id,
+            "project_id": project_id,
+            "source_public_ids": keys,
+        }
+
+        request_id = str(uuid.uuid4())
+        created = self.repo.create(
+            kind=KIND_UPDATE_EXCEL,
+            entity_type="invoice",
+            entity_public_id=invoice_public_id,
+            request_id=request_id,
+            payload=json.dumps(payload),
+            ready_after=ready_after,
+            correlation_id=correlation_id,
+            created_by_user_id=current_user_id.get(),
+        )
+        logger.info(
+            "box.outbox.row.enqueued",
+            extra={
+                "event_name": "box.outbox.row.enqueued",
+                "correlation_id": correlation_id,
+                "operation_name": KIND_UPDATE_EXCEL,
+                "operation": OP_CLEAR_DRAW_REQUEST,
+                "outbox_public_id": created.public_id,
+                "entity_type": "invoice",
+                "entity_public_id": invoice_public_id,
+                "box_file_id": box_file_id,
+                "worksheet_name": worksheet_name,
+                "project_id": project_id,
+                "cleared_key_count": len(keys),
                 "request_id": request_id,
                 "ready_after": ready_after.isoformat(),
             },

@@ -242,6 +242,11 @@ def match_worksheet_rows(
             already_tagged.append(
                 {
                     "row": r["row"],
+                    # col-Z source-line public_id (may be '' / None for legacy
+                    # rows). Surfaced so the U7 delta path can split confident
+                    # (col-Z-keyed) removals from ambiguous ones and clear the
+                    # MS/Box tag by key rather than by fragile row index.
+                    "z": r["z"],
                     "ref": r["invoice_num"] or r["description"] or "—",
                     "source": r["source"],
                     "date": r.get("date", ""),

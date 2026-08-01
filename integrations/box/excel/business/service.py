@@ -33,7 +33,15 @@ BOX_LOCK_TTL_SECONDS = 300  # 5 minutes
 # silently falling through to "insert".
 OP_INSERT = "insert"
 OP_STAMP_DRAW_REQUEST = "stamp_draw_request"
-KNOWN_OPERATIONS = (OP_INSERT, OP_STAMP_DRAW_REQUEST)
+# U7 delta path: blank column H (DRAW REQUEST) on rows whose col-Z public_id is in
+# the payload's `source_public_ids` — the inverse of stamp_draw_request, used when a
+# source line is unlinked from a pushed draw. Stamp-like (col-H write by col-Z match,
+# never inserts), so it shares stamp's no-op + NULL-ownership handling below.
+OP_CLEAR_DRAW_REQUEST = "clear_draw_request"
+# Stamp-like ops: passive column-H writes on existing rows, single-entity, never
+# claim workbook ownership in the registry (see push_entity_* below).
+STAMP_LIKE_OPERATIONS = (OP_STAMP_DRAW_REQUEST, OP_CLEAR_DRAW_REQUEST)
+KNOWN_OPERATIONS = (OP_INSERT, OP_STAMP_DRAW_REQUEST, OP_CLEAR_DRAW_REQUEST)
 
 
 class BoxExcelUpdateService:
@@ -83,8 +91,11 @@ class BoxExcelUpdateService:
         entities = payload.get("entities")
         # Operation discriminator. Absent → "insert" (bill/expense/bill_credit
         # path, builds new DETAILS rows). "stamp_draw_request" → invoice path,
-        # only updates column H on existing rows by col-Z match.
+        # only updates column H on existing rows by col-Z match. "clear_draw_request"
+        # → blank column H on the payload's `source_public_ids` (U7 delta un-tag).
         operation = (payload.get("operation") or "insert").strip().lower()
+        # col-Z public_ids to clear (clear_draw_request only).
+        source_public_ids = payload.get("source_public_ids")
 
         # KNOWN_OPERATIONS is the closed set we recognize; anything else gets
         # dead-lettered HERE rather than silently running the insert branch,
@@ -102,12 +113,12 @@ class BoxExcelUpdateService:
         if entities is not None:
             if not isinstance(entities, list) or not entities:
                 raise ValueError("update_box_excel batch payload has empty/invalid entities")
-            if operation == OP_STAMP_DRAW_REQUEST:
-                # stamp_draw_request is single-entity; reject batch payloads
-                # HERE so we don't waste a Box file lock acquire before
+            if operation in STAMP_LIKE_OPERATIONS:
+                # stamp/clear_draw_request are single-entity; reject batch
+                # payloads HERE so we don't waste a Box file lock acquire before
                 # discovering the misconfiguration inside _run_locked.
                 raise ValueError(
-                    "update_box_excel: operation='stamp_draw_request' is not "
+                    f"update_box_excel: operation={operation!r} is not "
                     "compatible with a batch 'entities' payload — use one row "
                     "per invoice"
                 )
@@ -139,6 +150,7 @@ class BoxExcelUpdateService:
                     project_id=project_id,
                     entities=entities,
                     operation=operation,
+                    source_public_ids=source_public_ids,
                 )
 
     # ------------------------------------------------------------------ #
@@ -157,6 +169,7 @@ class BoxExcelUpdateService:
         project_id: Optional[int],
         entities: Optional[list] = None,
         operation: str = "insert",
+        source_public_ids: Optional[list] = None,
     ) -> None:
         # Step 3: read meta (etag + lock + name).
         meta = client.get(
@@ -223,10 +236,27 @@ class BoxExcelUpdateService:
                 stamp_columns_by_key,
             )
 
-            if operation == OP_STAMP_DRAW_REQUEST:
+            if operation in STAMP_LIKE_OPERATIONS:
                 # Invoice path. Batch payloads are rejected upstream in handle().
-                pairs = build_invoice_draw_stamp_pairs(entity_public_id)
-                if not pairs:
+                # stamp → write the draw number onto this invoice's current source
+                # rows; clear → blank column H on the payload's explicit col-Z keys
+                # (rows whose source line was unlinked from the draw).
+                if operation == OP_CLEAR_DRAW_REQUEST:
+                    clear_keys = [
+                        str(pid).strip()
+                        for pid in (source_public_ids or [])
+                        if pid and str(pid).strip()
+                    ]
+                    updates = [
+                        (pid, {DRAW_REQUEST_COL_INDEX: ""}) for pid in clear_keys
+                    ]
+                else:
+                    pairs = build_invoice_draw_stamp_pairs(entity_public_id)
+                    updates = [
+                        (source_pid, {DRAW_REQUEST_COL_INDEX: draw_value})
+                        for source_pid, draw_value in pairs
+                    ]
+                if not updates:
                     logger.info(
                         "box.outbox.excel.no_rows",
                         extra={
@@ -238,10 +268,6 @@ class BoxExcelUpdateService:
                         },
                     )
                     return
-                updates = [
-                    (source_pid, {DRAW_REQUEST_COL_INDEX: draw_value})
-                    for source_pid, draw_value in pairs
-                ]
                 data = client.download_file(
                     box_file_id, operation_name="box.excel.download"
                 )
@@ -289,7 +315,7 @@ class BoxExcelUpdateService:
             # future invoice completions will retry.
             if result.get("bytes") is None:
                 stamp_lost = (
-                    operation == OP_STAMP_DRAW_REQUEST
+                    operation in STAMP_LIKE_OPERATIONS
                     and result.get("matched", 0) == 0
                     and result.get("skipped", 0) > 0
                 )
@@ -328,8 +354,8 @@ class BoxExcelUpdateService:
             # the workbook first). A stamp is a passive update to column H —
             # it shouldn't claim the workbook in the registry. PushLog still
             # records the new sha1/version (review finding F11).
-            push_entity_type = None if operation == OP_STAMP_DRAW_REQUEST else entity_type
-            push_entity_public_id = None if operation == OP_STAMP_DRAW_REQUEST else entity_public_id
+            push_entity_type = None if operation in STAMP_LIKE_OPERATIONS else entity_type
+            push_entity_public_id = None if operation in STAMP_LIKE_OPERATIONS else entity_public_id
             self._record_push(
                 row=row,
                 upload_result=up,

@@ -11,6 +11,7 @@ from decimal import Decimal
 
 # Local Imports
 from entities.invoice.api.schemas import InvoiceCreate, InvoiceUpdate
+from entities.invoice.business.cover import _signed_line_amount
 from entities.invoice.business.service import InvoiceService
 from shared.api.responses import list_response, item_response, raise_not_found
 from shared.pdf_utils import fit_page_to_letter
@@ -26,42 +27,16 @@ router = APIRouter(prefix="/api/v1", tags=["api", "invoice"])
 
 def _toc_signed_amount(row: dict) -> Optional[float]:
     """
-    Return the row's display amount as a float, with the correct sign for credits.
-
-    Prefer `billed_price` — the SOURCE line's marked-up, client-billed price
-    (BillLineItem.Price / ExpenseLineItem.Price = Amount + Markup). It is what
-    the customer is actually charged and what the Bill's own detail page shows.
-    We can't read markup off the InvoiceLineItem itself: the QBO invoice splits
-    each line's markup into a separate Manual line (excluded from the TOC), so
-    `dbo.InvoiceLineItem.Price`/`Amount` carry only the un-marked-up base.
-
-    Fall back to the ILI's own `price` then `amount` for sources with no
-    marked-up Price column (BillCreditLineItem, EmployeeLaborLineItem). The
-    InvoiceInvoiceConnector stores `Price` as a positive magnitude even for
-    credit-sourced lines while `Amount` keeps the negative QBO sign, so we
-    negate below for credit shapes to reflect the customer-facing reduction:
-      - BillCreditLineItem source (VendorCredit / credit memo)
-      - ExpenseLineItem whose parent `Expense.IsCredit = True` (expense refund;
-        Expense table doubles as the ExpenseRefund concept)
+    Float view of the row's signed display amount, for the TOC (which renders and
+    sums in float). Delegates to the pure Decimal `_signed_line_amount` in
+    `entities.invoice.business.cover` so the TOC and the cover page share ONE
+    source of truth for the billed_price→price→amount fallback and the credit
+    sign rules — the packet's cover-vs-TOC subtotal reconciliation cannot drift
+    because both surfaces are computed by the same code. See that function for the
+    full billed_price / credit-negation rationale. Cast to float at the boundary.
     """
-    p = row.get("billed_price")
-    if p is None:  # only a MISSING price falls back; a legitimate $0 stays $0
-        p = row.get("price")
-    if p is None:
-        p = row.get("amount")
-    if p is None:
-        return None
-    try:
-        v = float(p)
-    except (TypeError, ValueError):
-        return None
-    if v > 0:
-        st = row.get("source_type")
-        if st == "BillCreditLineItem":
-            v = -v
-        elif st == "ExpenseLineItem" and row.get("is_credit"):
-            v = -v
-    return v
+    v = _signed_line_amount(row)
+    return float(v) if v is not None else None
 
 
 def _toc_format_money(value: Optional[float]) -> str:
@@ -84,6 +59,31 @@ def _toc_source_label(source_type: str) -> str:
         "ExpenseLineItem": "Expense",
         "EmployeeLaborLineItem": "EmpLabor",
     }.get(source_type, "")
+
+
+def _resolve_builders_fee_rate(project_id: Optional[int]) -> Optional[Decimal]:
+    """Builder's-fee rate for the cover page: the most-recent Contract on the
+    project that carries a non-null BuildersFeeRate (highest Id wins). Returns
+    None when the project has no contract or none sets a rate — the cover then
+    omits the fee row (Total == Subtotal).
+
+    NOTE: 'most-recent non-null' is a documented simplification pending the formal
+    Contract design — the minimal Contract entity (U-188) allows multiple rows per
+    project with no designated-active flag yet. Failure-isolated: any lookup error
+    degrades to no-fee rather than failing the packet.
+    """
+    if not project_id:
+        return None
+    try:
+        from entities.contract.business.service import ContractService
+        contracts = ContractService().read_by_project_id(project_id)
+    except Exception:
+        logger.warning(f"Cover fee-rate lookup failed for project {project_id}", exc_info=True)
+        return None
+    rated = [c for c in contracts if c.builders_fee_rate is not None]
+    if not rated:
+        return None
+    return max(rated, key=lambda c: c.id or 0).builders_fee_rate
 
 
 def _consolidate_basic_toc_rows(rows: list[dict]) -> list[dict]:
@@ -512,6 +512,30 @@ def _generate_invoice_packet(public_id: str):
     expanded_toc_rows = sorted(toc_items, key=_expanded_sort_key)
     expanded_toc_bytes = _build_toc_expanded_pdf(expanded_toc_rows)
 
+    # Cover page (U-191): a cost-code rollup carrying the Builder's Fee line, page 1
+    # of the packet. Built from the SAME `toc_items` the expanded TOC totals, with
+    # the identical sign rules, so its subtotal reconciles to the expanded TOC by
+    # construction. Fully failure-isolated — any cover error logs and the packet
+    # still generates with just the two TOC pages.
+    cover_bytes = None
+    try:
+        from entities.invoice.business.cover import build_cover_pdf, build_cover_rollup
+        from entities.project.business.service import ProjectService
+
+        cover_model = build_cover_rollup(toc_items, _resolve_builders_fee_rate(invoice.project_id))
+        project = ProjectService().read_by_id(invoice.project_id) if invoice.project_id else None
+        cover_bytes = build_cover_pdf(
+            {
+                "title": "Draw Summary",
+                "project_name": project.name if project else "",
+                "invoice_number": invoice.invoice_number or "",
+                "invoice_date": invoice.invoice_date or "",
+            },
+            cover_model,
+        )
+    except Exception:
+        logger.exception(f"Packet [{public_id}]: cover page generation failed — continuing without it")
+
     # Attachment pages follow the basic TOC's row order exactly: walk the
     # already-sorted TOC rows and take each line's attachment (first-seen wins —
     # many lines, e.g. contract-labor, share one document). Deriving the order
@@ -542,8 +566,9 @@ def _generate_invoice_packet(public_id: str):
     storage = AzureBlobStorage()
     writer = PdfWriter()
 
-    # Prepend both TOC pages before the attachment images
-    for toc_bytes in [basic_toc_bytes, expanded_toc_bytes]:
+    # Prepend the cover (page 1, when built) then both TOC pages before the images
+    prepend_pdfs = ([cover_bytes] if cover_bytes else []) + [basic_toc_bytes, expanded_toc_bytes]
+    for toc_bytes in prepend_pdfs:
         toc_reader = PdfReader(io.BytesIO(toc_bytes))
         for page in toc_reader.pages:
             writer.add_page(page)

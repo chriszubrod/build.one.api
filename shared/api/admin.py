@@ -601,6 +601,28 @@ async def email_extract_router(attachment_public_id: str = Path(...)):
     return await _timed("email.extract", _run)
 
 
+# U-187: Attachment text-extraction drain. Mirrors /email/extract's shape
+# (_require_drain_secret + _timed). Text-layer-first; DI only for image-only
+# scans, scoped to source-doc categories. Additive + localized — kept self-
+# contained so it doesn't collide with sibling admin.py edits.
+@router.post("/attachment/extract/tick", dependencies=[Depends(_require_drain_secret)])
+async def attachment_extract_tick_router(limit: int = Query(20, ge=1, le=200)):
+    """Drain a bounded batch of Attachments marked for text extraction (U-187).
+
+    Persists extracted text/KVP to blob + the dbo.Attachment extraction fields and
+    parses a sync-proof VendorInvoiceNumber. Text-layer (pypdf) first; Document
+    Intelligence only for image-only scans. Idempotent per attachment.
+    """
+    def _run() -> dict[str, Any]:
+        from entities.attachment.business.extraction_service import (
+            AttachmentExtractionService,
+        )
+
+        return AttachmentExtractionService().extract_pending(limit=limit)
+
+    return await _timed("attachment.extract.tick", _run)
+
+
 @router.post("/email/process_one", dependencies=[Depends(_require_drain_secret)])
 async def email_process_one_router():
     """

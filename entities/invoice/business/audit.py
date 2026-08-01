@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Optional
@@ -20,6 +23,9 @@ from integrations.intuit.qbo.customer.connector.project.persistence.repo import 
 )
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.sync.persistence.repo import SyncRepository, _parse_sync_last_sync
+
+logger = logging.getLogger(__name__)
+
 _OK_LINK_STATUSES = frozenset({"linkable", "already_linked"})
 _QBO_PULL_ENTITIES = ("bill", "invoice", "purchase", "vendorcredit")
 _STALE_AFTER = timedelta(minutes=30)
@@ -131,6 +137,81 @@ def detect_double_bill_pairs(lines: list[dict]) -> list[dict]:
     return pairs
 
 
+def detect_double_bill_by_invoice_number(lines: list[dict]) -> list[dict]:
+    """HARD KI-41 screen: two DIFFERENT source lines whose attachment-extracted
+    vendor invoice numbers are normalized-equal → the same vendor invoice booked
+    twice (e.g. a WillScot/Mobile Mini duplicate-vendor split, or two scans of the
+    same invoice under different vendor records). This is the strong signal the
+    cheap `detect_double_bill_pairs` amount/date screen can't see.
+
+    Blank numbers and `QBO-<id>` placeholders are ignored — they carry no vendor
+    identity and would false-pair every un-numbered card charge. Pure; no I/O.
+    """
+    norm_rows: list[tuple] = []
+    for row in lines:
+        norm = _normalize_invoice_number(row.get("vendor_invoice_number"))
+        if not norm or _is_placeholder_invoice_number(norm):
+            continue
+        norm_rows.append((_source_identity(row), norm, row))
+
+    pairs: list[dict] = []
+    for i, (id_a, num_a, row_a) in enumerate(norm_rows):
+        for id_b, num_b, row_b in norm_rows[i + 1:]:
+            # Same underlying source line listed twice is not a double-bill.
+            if id_a is not None and id_a == id_b:
+                continue
+            if num_a != num_b:
+                continue
+            pairs.append(
+                {
+                    "line_a": _double_bill_number_side(row_a),
+                    "line_b": _double_bill_number_side(row_b),
+                    "vendor_invoice_number": row_a.get("vendor_invoice_number"),
+                }
+            )
+    return pairs
+
+
+def find_foreign_project_markers(
+    attachment_text: Optional[str],
+    own_project_tokens: list[str],
+    foreign_project_tokens: list[str],
+    pages_count: Optional[int],
+) -> list[dict]:
+    """KI-40 screen: a MULTI-PAGE attachment whose text names a project that is not
+    this invoice's — the leak surface where a combined vendor scan drags another
+    project's invoice page into this customer's packet.
+
+    Gated on `pages_count > 1` (a single-page attachment can't bundle a foreign
+    invoice). A token that is also one of THIS invoice project's tokens never
+    counts. Pure; no I/O.
+    """
+    if not pages_count or int(pages_count) <= 1:
+        return []
+    text = (attachment_text or "").lower()
+    if not text:
+        return []
+    # Own project tokens as normalized strings (spaces/hyphens kept) for the
+    # substring-suppression test below.
+    own = [t for t in (_norm_marker_token(x) for x in (own_project_tokens or [])) if t]
+    hits: list[dict] = []
+    seen: set[str] = set()
+    for raw in foreign_project_tokens or []:
+        tok = _norm_marker_token(raw)
+        if not tok or tok in seen:
+            continue
+        # Suppress a foreign token that is a substring of any OWN project token —
+        # e.g. foreign abbreviation 'MAIN' inside own 'Main Street' / 'BR-MAIN'.
+        if any(tok in own_tok for own_tok in own):
+            continue
+        # Word/token-boundary match (not raw substring) so 'TB3' never fires
+        # inside 'TB300' and 'MAIN' never fires inside a longer alphanumeric run.
+        if re.search(r"(?<![a-z0-9])" + re.escape(tok) + r"(?![a-z0-9])", text):
+            seen.add(tok)
+            hits.append({"token": raw})
+    return hits
+
+
 def assemble_audit_report(sections: dict) -> dict:
     """Collapse section flags into verdict + gap list (Phase 1 halt-once report)."""
     gaps: list[dict] = []
@@ -202,6 +283,31 @@ def assemble_audit_report(sections: dict) -> dict:
             }
         )
 
+    for pair in sections.get("double_bill_invoice_number_pairs") or []:
+        gaps.append(
+            {
+                "class": "double_bill_invoice_number",
+                "severity": "halt",
+                "line_a": pair.get("line_a"),
+                "line_b": pair.get("line_b"),
+                "vendor_invoice_number": pair.get("vendor_invoice_number"),
+            }
+        )
+
+    for hit in sections.get("foreign_project_markers") or []:
+        gaps.append(
+            {
+                "class": "foreign_project_page_leak",
+                "severity": "halt",
+                "invoice_line_item_id": hit.get("invoice_line_item_id"),
+                "source_type": hit.get("source_type"),
+                "source_line_item_id": hit.get("source_line_item_id"),
+                "attachment_id": hit.get("attachment_id"),
+                "pages_count": hit.get("pages_count"),
+                "markers": hit.get("markers"),
+            }
+        )
+
     verdict = "halt" if gaps else "clear"
     return {
         "verdict": verdict,
@@ -265,6 +371,12 @@ class InvoiceDrawAuditService:
             link_payload["lines"], resolved_bindings
         )
         double_bill_pairs = detect_double_bill_pairs(double_bill_lines)
+        double_bill_invoice_number_pairs = detect_double_bill_by_invoice_number(
+            double_bill_lines
+        )
+        foreign_project_markers = self._scan_foreign_project_markers(
+            project, resolved_bindings
+        )
 
         lines_detail = _merge_line_details(link_payload["lines"], coverage_rows)
 
@@ -275,6 +387,8 @@ class InvoiceDrawAuditService:
             "link_lines": link_payload["lines"],
             "coverage_gaps": coverage_gaps,
             "double_bill_pairs": double_bill_pairs,
+            "double_bill_invoice_number_pairs": double_bill_invoice_number_pairs,
+            "foreign_project_markers": foreign_project_markers,
             "lines_detail": lines_detail,
         }
         summary = assemble_audit_report(sections)
@@ -295,6 +409,8 @@ class InvoiceDrawAuditService:
             },
             "coverage": coverage_rows,
             "double_bill_pairs": double_bill_pairs,
+            "double_bill_invoice_number_pairs": double_bill_invoice_number_pairs,
+            "foreign_project_markers": foreign_project_markers,
             "worksheet_reconcile": dict(_WORKSHEET_RECONCILE_STUB),
         }
 
@@ -395,6 +511,11 @@ class InvoiceDrawAuditService:
         ]
         by_ili = {row["invoice_line_item_id"]: row for row in link_lines}
         vendor_map = self.invoice_repo.read_vendor_ids_for_source_lines(bindings)
+        # U-187: hop source line → *LineItemAttachment → dbo.Attachment for the
+        # sync-proof vendor invoice number (the KI-41 hard cross-compare signal).
+        invoice_number_map = self.invoice_repo.read_vendor_invoice_numbers_for_source_lines(
+            bindings
+        )
         draft: list[dict] = []
         for b in resolved_bindings:
             link_row = by_ili.get(b["invoice_line_item_id"], {})
@@ -407,9 +528,82 @@ class InvoiceDrawAuditService:
                     "source_type": b["source_type"],
                     "source_line_item_id": b["source_line_item_id"],
                     "vendor_id": vendor_map.get(key),
+                    "vendor_invoice_number": invoice_number_map.get(key),
                 }
             )
         return draft
+
+    def _scan_foreign_project_markers(
+        self,
+        project: Any,
+        resolved_bindings: list[dict],
+    ) -> list[dict]:
+        """KI-40 — download each linked source line's extracted attachment text and
+        flag any MULTI-PAGE attachment naming another project.
+
+        Best-effort + fully failure-isolated: any error (no extraction yet, blob
+        read failure, DI-less environment) returns []. Only source lines whose
+        attachment carries a COMPLETED extraction blob are inspected, so before the
+        extraction pipeline has populated blobs this is a clean no-op. Foreign
+        tokens are OTHER projects' abbreviations (short, distinctive codes); own
+        tokens are this project's name + abbreviation.
+        """
+        try:
+            if project is None or not resolved_bindings:
+                return []
+            bindings = [
+                (b["source_type"], b["source_line_item_id"]) for b in resolved_bindings
+            ]
+            refs = self.invoice_repo.read_extraction_refs_for_source_lines(bindings)
+            if not refs:
+                return []
+            foreign_tokens = self.invoice_repo.read_other_project_tokens(project.id)
+            if not foreign_tokens:
+                return []
+            own_tokens = _project_own_tokens(project)
+
+            from shared.storage import AzureBlobStorage
+
+            storage: Optional[AzureBlobStorage] = None
+            out: list[dict] = []
+            for b in resolved_bindings:
+                key = (b["source_type"], b["source_line_item_id"])
+                ref = refs.get(key)
+                if not ref:
+                    continue
+                if (ref.get("extraction_status") or "").lower() != "completed":
+                    continue
+                blob_url = ref.get("extracted_text_blob_url")
+                if not blob_url:
+                    continue
+                try:
+                    if storage is None:
+                        storage = AzureBlobStorage()
+                    content, _ = storage.download_file(blob_url)
+                    payload = json.loads(content)
+                except Exception:
+                    continue
+                markers = find_foreign_project_markers(
+                    payload.get("content") or "",
+                    own_tokens,
+                    foreign_tokens,
+                    payload.get("pages_count") or 0,
+                )
+                if markers:
+                    out.append(
+                        {
+                            "invoice_line_item_id": b["invoice_line_item_id"],
+                            "source_type": b["source_type"],
+                            "source_line_item_id": b["source_line_item_id"],
+                            "attachment_id": ref.get("attachment_id"),
+                            "pages_count": payload.get("pages_count") or 0,
+                            "markers": markers,
+                        }
+                    )
+            return out
+        except Exception as e:  # failure isolation — never break the audit
+            logger.warning("draw_audit.foreign_marker_scan_failed: %s", e)
+            return []
 
 
 def _coverage_rows_from_bindings(
@@ -511,4 +705,57 @@ def _parse_service_date(value: Optional[str]) -> Optional[datetime]:
         return datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError:
         return None
+
+
+# --- U-187: invoice-number double-bill (KI-41) + foreign-project leak (KI-40) --- #
+
+
+def _normalize_invoice_number(value: Optional[str]) -> Optional[str]:
+    """Canonicalize a vendor invoice number for equality: uppercase, keep only
+    alphanumerics (so ``INV-1234`` == ``inv 1234`` == ``INV1234``)."""
+    if value is None:
+        return None
+    stripped = re.sub(r"[^A-Za-z0-9]", "", str(value)).upper()
+    return stripped or None
+
+
+def _is_placeholder_invoice_number(normalized: Optional[str]) -> bool:
+    """True for a ``QBO-<id>`` placeholder (normalized to ``QBO<id>``) — a
+    card-charge stand-in that carries no real vendor identity, so it must never
+    pair two lines."""
+    return bool(normalized) and normalized.startswith("QBO")
+
+
+def _source_identity(row: dict) -> Optional[tuple]:
+    st = row.get("source_type")
+    sid = row.get("source_line_item_id")
+    if st is not None and sid is not None:
+        return (st, sid)
+    return None
+
+
+def _double_bill_number_side(row: dict) -> dict:
+    return {
+        "invoice_line_item_id": row.get("invoice_line_item_id"),
+        "source_type": row.get("source_type"),
+        "source_line_item_id": row.get("source_line_item_id"),
+        "vendor_id": row.get("vendor_id"),
+        "vendor_invoice_number": row.get("vendor_invoice_number"),
+    }
+
+
+def _norm_marker_token(token: Optional[str]) -> str:
+    """Lowercase/trim a project token; drop tokens shorter than 3 chars (too noisy
+    to substring-match against document text)."""
+    t = (token or "").strip().lower()
+    return t if len(t) >= 3 else ""
+
+
+def _project_own_tokens(project: Any) -> list[str]:
+    tokens: list[str] = []
+    for attr in ("name", "abbreviation"):
+        val = getattr(project, attr, None)
+        if val:
+            tokens.append(str(val))
+    return tokens
 

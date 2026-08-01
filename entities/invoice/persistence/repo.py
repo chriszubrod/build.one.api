@@ -491,6 +491,142 @@ class InvoiceRepository:
             logger.error(f"Error during read vendor ids for source lines: {error}")
             raise map_database_error(error)
 
+    # (SourceType, line_table, link_table, link_column) for the three linkable
+    # source-line families — the hop from a source line to its dbo.Attachment(s).
+    _SOURCE_ATTACHMENT_SPECS = (
+        ("BillLineItem", "BillLineItem", "BillLineItemAttachment", "BillLineItemId"),
+        ("ExpenseLineItem", "ExpenseLineItem", "ExpenseLineItemAttachment", "ExpenseLineItemId"),
+        ("BillCreditLineItem", "BillCreditLineItem", "BillCreditLineItemAttachment", "BillCreditLineItemId"),
+    )
+
+    def read_vendor_invoice_numbers_for_source_lines(
+        self,
+        bindings: list[tuple[str, int]],
+    ) -> dict[tuple[str, int], str]:
+        """U-187 — resolve the sync-proof VendorInvoiceNumber per
+        (SourceType, source_line_item_id), hopping source line → *LineItemAttachment
+        → dbo.Attachment (read-only). One number per line (MAX over its attachments,
+        NULLs/blank ignored) — the KI-41 hard double-bill cross-compare signal.
+
+        Inline read SQL with dynamic IN-list (no sproc/TVP), same convention as
+        read_vendor_ids_for_source_lines / enrich_line_items — intentional; do not convert.
+        (Table/column names below are fixed literals from _SOURCE_ATTACHMENT_SPECS,
+        never caller input — no injection surface.)
+        """
+        if not bindings:
+            return {}
+        by_type = {
+            "BillLineItem": _partition_bindings_by_source_type(bindings)[0],
+            "ExpenseLineItem": _partition_bindings_by_source_type(bindings)[1],
+            "BillCreditLineItem": _partition_bindings_by_source_type(bindings)[2],
+        }
+        out: dict[tuple[str, int], str] = {}
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                for source_type, line_table, link_table, link_col in self._SOURCE_ATTACHMENT_SPECS:
+                    ids = by_type.get(source_type) or []
+                    if not ids:
+                        continue
+                    placeholders = ",".join("?" for _ in ids)
+                    cursor.execute(
+                        f"""
+                        SELECT li.[Id] AS [LineId],
+                               MAX(a.[VendorInvoiceNumber]) AS [VendorInvoiceNumber]
+                        FROM dbo.[{line_table}] li
+                        INNER JOIN dbo.[{link_table}] lnk ON lnk.[{link_col}] = li.[Id]
+                        INNER JOIN dbo.[Attachment] a ON a.[Id] = lnk.[AttachmentId]
+                        WHERE li.[Id] IN ({placeholders})
+                          -- Completed extractions only: a 'pending'/'failed' row is a
+                          -- requeued/changed doc whose stored number may be stale, and
+                          -- this reader feeds the HARD KI-41 double-bill halt (U-187 P1).
+                          AND a.[ExtractionStatus] = 'completed'
+                          AND a.[VendorInvoiceNumber] IS NOT NULL
+                          AND LTRIM(RTRIM(a.[VendorInvoiceNumber])) <> ''
+                        GROUP BY li.[Id]
+                        """,
+                        *ids,
+                    )
+                    for row in cursor.fetchall():
+                        if row.VendorInvoiceNumber:
+                            out[(source_type, row.LineId)] = row.VendorInvoiceNumber
+            return out
+        except Exception as error:
+            logger.error(f"Error during read vendor invoice numbers for source lines: {error}")
+            raise map_database_error(error)
+
+    def read_extraction_refs_for_source_lines(
+        self,
+        bindings: list[tuple[str, int]],
+    ) -> dict[tuple[str, int], dict]:
+        """U-187 (KI-40) — per (SourceType, source_line_item_id), the linked
+        dbo.Attachment carrying a completed text extraction: its id, ExtractionStatus,
+        and ExtractedTextBlobUrl (read-only). Only attachments with a non-NULL
+        ExtractedTextBlobUrl are considered; the highest attachment Id wins per line.
+
+        Inline read SQL, same convention as read_source_line_coverage — intentional.
+        """
+        if not bindings:
+            return {}
+        by_type = {
+            "BillLineItem": _partition_bindings_by_source_type(bindings)[0],
+            "ExpenseLineItem": _partition_bindings_by_source_type(bindings)[1],
+            "BillCreditLineItem": _partition_bindings_by_source_type(bindings)[2],
+        }
+        out: dict[tuple[str, int], dict] = {}
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                for source_type, line_table, link_table, link_col in self._SOURCE_ATTACHMENT_SPECS:
+                    ids = by_type.get(source_type) or []
+                    if not ids:
+                        continue
+                    placeholders = ",".join("?" for _ in ids)
+                    cursor.execute(
+                        f"""
+                        SELECT lnk.[{link_col}] AS [LineId],
+                               a.[Id] AS [AttachmentId],
+                               a.[ExtractionStatus] AS [ExtractionStatus],
+                               a.[ExtractedTextBlobUrl] AS [ExtractedTextBlobUrl]
+                        FROM dbo.[{link_table}] lnk
+                        INNER JOIN dbo.[Attachment] a ON a.[Id] = lnk.[AttachmentId]
+                        WHERE lnk.[{link_col}] IN ({placeholders})
+                          AND a.[ExtractedTextBlobUrl] IS NOT NULL
+                        ORDER BY lnk.[{link_col}] ASC, a.[Id] ASC
+                        """,
+                        *ids,
+                    )
+                    for row in cursor.fetchall():
+                        # ORDER BY a.[Id] ASC → last write per line keeps the highest id.
+                        out[(source_type, row.LineId)] = {
+                            "attachment_id": row.AttachmentId,
+                            "extraction_status": row.ExtractionStatus,
+                            "extracted_text_blob_url": row.ExtractedTextBlobUrl,
+                        }
+            return out
+        except Exception as error:
+            logger.error(f"Error during read extraction refs for source lines: {error}")
+            raise map_database_error(error)
+
+    def read_other_project_tokens(self, project_id: int) -> list[str]:
+        """U-187 (KI-40) — distinct abbreviations of every OTHER project, the
+        foreign-project token set for the multi-page attachment leak scan (read-only)."""
+        sql = """
+            SELECT DISTINCT [Abbreviation]
+            FROM dbo.[Project]
+            WHERE [Id] <> ?
+              AND [Abbreviation] IS NOT NULL
+              AND LTRIM(RTRIM([Abbreviation])) <> ''
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(sql, project_id)
+                return [row.Abbreviation for row in cursor.fetchall() if row.Abbreviation]
+        except Exception as error:
+            logger.error(f"Error during read other project tokens: {error}")
+            raise map_database_error(error)
+
     def read_source_lines_missing_readable_blob(self, invoice_id: int) -> list:
         """Source-linked ILIs with no attachment carrying a non-NULL BlobUrl (read-only).
 

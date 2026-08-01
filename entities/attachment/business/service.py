@@ -122,6 +122,20 @@ class AttachmentService:
             created_by_user_id=current_user_id.get(),
         )
 
+    def mark_pending_extraction(self, attachment_id: int) -> Optional[Attachment]:
+        """U-187 — flag an attachment for text extraction on the next sweep.
+
+        Cheap DB-only write (no DI, no blob read). Callers are the QBO-attachable
+        connector (at each dbo.Attachment create/re-upload) and the receipt upload
+        path; the actual extraction runs later on the /admin/attachment/extract/tick
+        drain so the ~6-min realm pull never blocks on Document Intelligence.
+        Passing no VendorInvoiceNumber preserves any existing parsed value.
+        """
+        return self.repo.update_extraction(
+            id=attachment_id,
+            extraction_status="pending",
+        )
+
     def read_all(self) -> list[Attachment]:
         """
         Read all attachments.

@@ -46,6 +46,9 @@ class AttachmentRepository:
             ai_category_reasoning = getattr(row, 'AICategoryReasoning', None)
             ai_extracted_fields = getattr(row, 'AIExtractedFields', None)
             categorized_datetime = getattr(row, 'CategorizedDatetime', None)
+            # U-187: sync-proof vendor invoice number (may be absent on rows read
+            # by mutation-sproc OUTPUTs that don't SELECT it — getattr default).
+            vendor_invoice_number = getattr(row, 'VendorInvoiceNumber', None)
 
             return Attachment(
                 id=row.Id,
@@ -79,6 +82,7 @@ class AttachmentRepository:
                 ai_category_reasoning=ai_category_reasoning,
                 ai_extracted_fields=ai_extracted_fields,
                 categorized_datetime=categorized_datetime,
+                vendor_invoice_number=vendor_invoice_number,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during attachment mapping: {error}")
@@ -362,6 +366,7 @@ class AttachmentRepository:
         extraction_status: str,
         extracted_text_blob_url: Optional[str] = None,
         extraction_error: Optional[str] = None,
+        vendor_invoice_number: Optional[str] = None,
     ) -> Optional[Attachment]:
         """
         Update extraction status and results for an attachment.
@@ -371,6 +376,10 @@ class AttachmentRepository:
             extraction_status: 'pending', 'processing', 'completed', or 'failed'
             extracted_text_blob_url: URL to JSON extraction results in blob storage
             extraction_error: Error message (for failed status)
+            vendor_invoice_number: U-187 — parsed vendor invoice number. NULL
+                preserves the existing value in the sproc (CASE-WHEN guard), so the
+                cheap 'pending' re-mark never wipes a previously parsed/corrected
+                number; a non-NULL value overwrites.
 
         Returns:
             Updated Attachment or None if not found
@@ -384,6 +393,7 @@ class AttachmentRepository:
                         "ExtractionStatus": extraction_status,
                         "ExtractedTextBlobUrl": extracted_text_blob_url,
                         "ExtractionError": extraction_error,
+                        "VendorInvoiceNumber": vendor_invoice_number,
                     }
                     call_procedure(
                         cursor=cursor,

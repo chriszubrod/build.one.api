@@ -26,6 +26,24 @@ router = APIRouter(prefix="/api/v1", tags=["api", "attachment"])
 service = AttachmentService()
 
 
+def _is_extractable_content_type(content_type: Optional[str]) -> bool:
+    """PDFs and images are the source-document shapes worth extracting (U-187)."""
+    ct = (content_type or "").strip().lower()
+    return ct == "application/pdf" or ct.startswith("image/")
+
+
+def _mark_attachment_pending_extraction(attachment_id: int) -> None:
+    """Background task: flag a freshly uploaded attachment for text extraction.
+    The actual extraction runs on the /admin/attachment/extract/tick sweep.
+    Failure-isolated — a marking hiccup must never surface on the upload."""
+    try:
+        AttachmentService().mark_pending_extraction(attachment_id)
+    except Exception as e:
+        logger.warning(
+            "upload.mark_pending_extraction_failed id=%s: %s", attachment_id, e
+        )
+
+
 @router.post("/create/attachment")
 def create_attachment_router(body: AttachmentCreate, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_create"))):
     """
@@ -334,6 +352,11 @@ async def upload_attachment_router(
             storage_tier="Hot",
         )
 
+        # U-187 — receipt intake: queue text extraction for pdf + image uploads.
+        # Deferred to the extraction sweep; the request returns immediately.
+        if attachment and attachment.id and _is_extractable_content_type(content_type):
+            background_tasks.add_task(_mark_attachment_pending_extraction, attachment.id)
+
         return item_response(attachment.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -406,6 +429,12 @@ async def upload_bill_line_item_attachment_router(
             expiration_date=None,
             storage_tier="Hot",
         )
+
+        # U-187 — these are category='bill_line_item' source documents; queue text
+        # extraction for pdf + image so they enter the sweep (the drain skips
+        # NULL-status rows, so an unmarked create would never extract).
+        if attachment and attachment.id and _is_extractable_content_type(content_type):
+            background_tasks.add_task(_mark_attachment_pending_extraction, attachment.id)
 
         return item_response(attachment.to_dict())
 

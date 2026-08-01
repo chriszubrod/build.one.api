@@ -1,4 +1,4 @@
-"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131/U-133/U-137/U-140/U-142/U-144/U-146/U-148/U-150/U-158/U-162 guard: canonical
+"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131/U-133/U-137/U-140/U-142/U-144/U-146/U-148/U-150/U-158/U-162/U-188 guard: canonical
 SQL homes for sprocs, access UDFs, and the shared human-only review predicate.
 
 Three guard shapes:
@@ -78,6 +78,7 @@ REVIEW_BASE = REPO_ROOT / "entities" / "review" / "sql" / "dbo.review.sql"
 INBOX_TASKS_BASE = REPO_ROOT / "entities" / "review" / "sql" / "dbo.inbox_tasks.sql"
 MS_OUTBOX_BASE = REPO_ROOT / "integrations" / "ms" / "outbox" / "sql" / "ms.outbox.sql"
 CONTRACT_LABOR_BASE = REPO_ROOT / "entities" / "contract_labor" / "sql" / "dbo.contract_labor.sql"
+CONTRACT_BASE = REPO_ROOT / "entities" / "contract" / "sql" / "dbo.contract.sql"
 USER_BASE = REPO_ROOT / "entities" / "user" / "sql" / "dbo.user.sql"
 USER_MODULE_BASE = REPO_ROOT / "entities" / "user_module" / "sql" / "dbo.usermodule.sql"
 ORGANIZATION_BASE = REPO_ROOT / "entities" / "organization" / "sql" / "dbo.organization.sql"
@@ -188,6 +189,10 @@ GAP2_NEUTRALIZED_SPROCS = frozenset(
 # U-150: dbo.invoice_line_item.sql was already the live layer (applied+verified to prod 2026-07-06, commit be2a877) — NOT a reconcile; the migration copy was the stale side and was stubbed.
 # U-158: dbo.invoice.sql reconciled to the LIVE layer (ReadInvoices / ReadInvoicesPaginated / CountInvoices <- gap1_list_sprocs_scoped.sql, CreateInvoice <- gap2_core_threading.sql — the base was the stale side) and made sole home of all 10 Invoice sprocs — whole-file guard; the four migration copies are stubbed.
 # U-162: dbo.contract_labor.sql reconciled to the LIVE layer (CreateContractLabor <- gap2_core_threading, ReadContractLaborDailySummary <- LIVE prod body (verified 2026-07-28: assignment-only SELECT @var = … does NOT break pyodbc on prod; the real break is DML→row-returning-SELECT + fetchone() — see U-164), ReadContractLaborLineItemsByContractLaborId <- migration 2026_06_03; FindContractLaborForReviewerReply comment-only) and made sole home of all 28 sprocs it declares (contract_labor + ContractLaborLineItem) — whole-file guard; a duplicate ReadContractLaborByPublicId block inside the base was collapsed; 7 copies stubbed across 6 carrier files. NOTE: ReadContractLaborDistinctBillingPeriods is a live CL sproc homed OUTSIDE the base (its own sql/ file) — legal and sole-homed, but it means the base is not the complete CL sproc set; folding it in is a follow-up.
+# U-188: dbo.contract.sql is the BORN-single-source home of all 4 Contract sprocs
+# (CreateContract, ReadContractByPublicId, ReadContractsByProjectId,
+# UpdateContractByPublicId) — they live in no migration, so this whole-file guard
+# just keeps them from ever being redefined elsewhere.
 # "Entity" here reads as entity/package, per the module docstring.
 ENTITY_BASE_FILES = [
     ("time_entry", TIME_ENTRY_BASE),
@@ -205,6 +210,7 @@ ENTITY_BASE_FILES = [
     ("invoice_line_item", INVOICE_LINE_ITEM_BASE),
     ("invoice", INVOICE_BASE),
     ("contract_labor", CONTRACT_LABOR_BASE),
+    ("contract", CONTRACT_BASE),
     ("completion_job", COMPLETION_JOB_BASE),
     ("bill", BILL_BASE),
     ("bill_source_email", BILL_SOURCE_EMAIL_BASE),

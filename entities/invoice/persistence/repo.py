@@ -515,10 +515,11 @@ class InvoiceRepository:
         """
         if not bindings:
             return {}
+        bill_ids, expense_ids, credit_ids = _partition_bindings_by_source_type(bindings)
         by_type = {
-            "BillLineItem": _partition_bindings_by_source_type(bindings)[0],
-            "ExpenseLineItem": _partition_bindings_by_source_type(bindings)[1],
-            "BillCreditLineItem": _partition_bindings_by_source_type(bindings)[2],
+            "BillLineItem": bill_ids,
+            "ExpenseLineItem": expense_ids,
+            "BillCreditLineItem": credit_ids,
         }
         out: dict[tuple[str, int], str] = {}
         try:
@@ -568,10 +569,11 @@ class InvoiceRepository:
         """
         if not bindings:
             return {}
+        bill_ids, expense_ids, credit_ids = _partition_bindings_by_source_type(bindings)
         by_type = {
-            "BillLineItem": _partition_bindings_by_source_type(bindings)[0],
-            "ExpenseLineItem": _partition_bindings_by_source_type(bindings)[1],
-            "BillCreditLineItem": _partition_bindings_by_source_type(bindings)[2],
+            "BillLineItem": bill_ids,
+            "ExpenseLineItem": expense_ids,
+            "BillCreditLineItem": credit_ids,
         }
         out: dict[tuple[str, int], dict] = {}
         try:

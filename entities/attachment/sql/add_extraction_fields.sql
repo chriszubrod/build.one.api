@@ -63,9 +63,10 @@ CREATE OR ALTER PROCEDURE UpdateAttachmentExtraction
     @ExtractionError NVARCHAR(MAX) = NULL,
     -- U-187: NULL preserves the existing VendorInvoiceNumber (so the cheap
     -- 'pending' re-mark from the QBO-attachable / receipt trigger never wipes a
-    -- value); a non-NULL value overwrites. The Python service routes the incoming
-    -- value through preserve_human_edited_ref first, so an operator-corrected
-    -- number is kept and only empty/placeholder values are replaced.
+    -- value); a non-NULL value overwrites. The Python service sets the
+    -- freshly-parsed number directly -- it deliberately does NOT route through
+    -- preserve_human_edited_ref (that helper is QBO-ref-specific). This CASE-WHEN
+    -- preserve-on-NULL is the only guard, so a parse miss keeps the prior number.
     @VendorInvoiceNumber NVARCHAR(100) = NULL
 )
 AS

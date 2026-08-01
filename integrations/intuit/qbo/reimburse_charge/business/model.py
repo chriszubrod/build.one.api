@@ -1,5 +1,5 @@
 # Python Standard Library Imports
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Optional
 from decimal import Decimal
 
@@ -42,19 +42,3 @@ class QboReimburseCharge:
         if self.row_version:
             return base64.b64decode(self.row_version)
         return None
-
-    @property
-    def row_version_hex(self) -> Optional[str]:
-        if self.row_version_bytes:
-            return self.row_version_bytes.hex()
-        return None
-
-    def to_dict(self) -> dict:
-        """
-        Convert the QboReimburseCharge dataclass to a dictionary.
-        """
-        data = asdict(self)
-        # Convert Decimal to float for JSON serialization
-        if data.get("amount") is not None:
-            data["amount"] = float(data["amount"])
-        return data

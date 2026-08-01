@@ -583,11 +583,12 @@ class InvoiceDrawAuditService:
                     payload = json.loads(content)
                 except Exception:
                     continue
+                pages_count = payload.get("pages_count") or 0
                 markers = find_foreign_project_markers(
                     payload.get("content") or "",
                     own_tokens,
                     foreign_tokens,
-                    payload.get("pages_count") or 0,
+                    pages_count,
                 )
                 if markers:
                     out.append(
@@ -596,7 +597,7 @@ class InvoiceDrawAuditService:
                             "source_type": b["source_type"],
                             "source_line_item_id": b["source_line_item_id"],
                             "attachment_id": ref.get("attachment_id"),
-                            "pages_count": payload.get("pages_count") or 0,
+                            "pages_count": pages_count,
                             "markers": markers,
                         }
                     )

@@ -18,9 +18,12 @@ Design goals:
 - **Idempotent.** A row already 'completed' against the same file hash is skipped
   (no re-download, no DI). Content changes always transit a fresh 'pending'
   re-mark from the trigger, so a completed row reflects current content.
-- **Sync-proof number.** The parsed vendor invoice number is written through
-  `preserve_human_edited_ref`, so an operator correction survives a re-extraction
-  and only empty/placeholder values are replaced.
+- **Sync-proof number.** The freshly-parsed vendor invoice number is set directly;
+  the UPDATE sproc's CASE-WHEN keeps the existing value only when the incoming value
+  is NULL (a parse miss never wipes a good number). This deliberately does NOT route
+  through `preserve_human_edited_ref` (that helper is QBO-ref-specific). FOLLOW-UP:
+  protecting a genuine operator correction across re-extractions needs a
+  human-confirmed flag gating the write — not the QBO placeholder helper.
 
 The extraction trigger (mark 'pending') lives in the QBO-attachable connector and
 the receipt upload path; this service is the drain that turns pending rows into
@@ -95,17 +98,16 @@ class AttachmentExtractionService:
         self,
         *,
         limit: int = 20,
-        categories: Optional[frozenset] = SOURCE_DOC_CATEGORIES,
     ) -> dict:
         """Drain up to ``limit`` attachments explicitly marked 'pending'.
 
-        Scoped to ``categories`` (source-doc categories by default). NULL-status
+        Scoped to the source-doc categories (``SOURCE_DOC_CATEGORIES``). NULL-status
         legacy rows returned by ReadAttachmentsPendingExtraction are deliberately
         skipped — only rows a trigger set to 'pending' are processed, which is the
         real cost bound.
         """
         rows = self.repo.read_pending_extraction()
-        pending = [a for a in rows if self._is_pending_in_scope(a, categories)]
+        pending = [a for a in rows if self._is_pending_in_scope(a)]
         limit = max(0, int(limit))
         results: list[dict] = []
         for att in pending[:limit]:
@@ -305,13 +307,11 @@ class AttachmentExtractionService:
             )
 
     @staticmethod
-    def _is_pending_in_scope(attachment: Attachment, categories: Optional[frozenset]) -> bool:
+    def _is_pending_in_scope(attachment: Attachment) -> bool:
         if (attachment.extraction_status or "").lower() != "pending":
             return False
-        if not categories:
-            return True
         cat = (attachment.category or "").lower()
-        return (not cat) or (cat in categories)
+        return (not cat) or (cat in SOURCE_DOC_CATEGORIES)
 
 
 # --------------------------------------------------------------------------- #

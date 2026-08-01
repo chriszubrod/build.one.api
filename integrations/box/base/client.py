@@ -294,6 +294,28 @@ class BoxHttpClient:
             operation_name=operation_name or "box.folder.create",
         )
 
+    def get_folder_info(
+        self,
+        folder_id: Union[str, int],
+        *,
+        timeout_tier: str = "A",
+        operation_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Return ``id``, ``name``, and ``type`` for a Box folder (HP2-11 live-name guard).
+        """
+        result = self.get(
+            f"folders/{folder_id}",
+            params={"fields": "id,name,type"},
+            timeout_tier=timeout_tier,
+            operation_name=operation_name or "box.folder.get_info",
+        )
+        return {
+            "id": result.get("id"),
+            "name": result.get("name"),
+            "type": result.get("type"),
+        }
+
     def find_folder_child_by_name(
         self,
         parent_folder_id: Union[str, int],

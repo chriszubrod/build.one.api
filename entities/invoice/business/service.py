@@ -868,7 +868,26 @@ class InvoiceService:
 
             subfolder_name = invoice.invoice_number or str(invoice.public_id)
             try:
+                from entities.invoice.business.box_verify import is_draw_requests_folder
+
                 with BoxHttpClient() as client:
+                    try:
+                        folder_info = client.get_folder_info(mapping["box_folder_id"])
+                        live_name = folder_info.get("name") or ""
+                        if not is_draw_requests_folder(live_name):
+                            logger.warning(
+                                f"box.line_pdfs.draw_folder_name_drift invoice={invoice.public_id} "
+                                f"folder_id={mapping['box_folder_id']} live_name={live_name!r}"
+                            )
+                            summary["success"] = False
+                            summary["reason"] = "draw_folder_name_drift"
+                            return summary
+                    except Exception as guard_err:
+                        logger.info(
+                            f"box.line_pdfs.draw_folder_guard_skipped invoice={invoice.public_id} "
+                            f"folder_id={mapping['box_folder_id']}: {guard_err}"
+                        )
+
                     subfolder = folder_service.read_or_create_child_folder(
                         client=client,
                         parent_box_folder_id=mapping["box_folder_id"],

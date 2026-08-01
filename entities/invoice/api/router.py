@@ -771,6 +771,21 @@ def draw_audit_invoice_router(
     return item_response(payload)
 
 
+@router.get("/get/invoice/{public_id}/box-draw-verify")
+def box_draw_verify_invoice_router(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.INVOICES)),
+):
+    """KI-46: READ-ONLY Box vs SharePoint DETAILS col-N draw total compare."""
+    from entities.invoice.business.box_verify import BoxDrawVerifyService
+
+    try:
+        payload = BoxDrawVerifyService().verify(public_id)
+    except ValueError:
+        raise_not_found("Invoice")
+    return item_response(payload)
+
+
 @router.post("/reconcile/invoice/{public_id}/link")
 def apply_invoice_source_links_router(
     public_id: str,

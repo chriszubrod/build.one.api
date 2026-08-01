@@ -85,6 +85,7 @@ from entities.taxpayer_attachment.api.router import router as taxpayer_attachmen
 from entities.business_license_attachment.api.router import router as business_license_attachment_api_router
 from entities.contractors_license_attachment.api.router import router as contractors_license_attachment_api_router
 from entities.payment_term.api.router import router as payment_term_api_router
+from entities.contract.api.router import router as contract_api_router
 from entities.contract_labor.api.router import router as contract_labor_api_router
 from entities.time_entry.api.router import router as time_entry_api_router
 from entities.time_entry.api.router import time_log_router as time_log_api_router
@@ -270,6 +271,7 @@ app.include_router(taxpayer_attachment_api_router)
 app.include_router(business_license_attachment_api_router)
 app.include_router(contractors_license_attachment_api_router)
 app.include_router(payment_term_api_router)
+app.include_router(contract_api_router)
 app.include_router(contract_labor_api_router)
 app.include_router(time_entry_api_router)
 app.include_router(time_log_api_router)

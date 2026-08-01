@@ -121,6 +121,7 @@ PROCESS_REGISTRY: Dict[str, str] = {
     # Other
     "integration": "entities.integration.business.service.IntegrationService",
     "contract_labor": "entities.contract_labor.business.service.ContractLaborService",
+    "contract": "entities.contract.business.service.ContractService",
 
     # Employee labor (internal — feeds Invoice directly, no Bill).
     "employee_labor": "entities.employee_labor.business.service.EmployeeLaborService",

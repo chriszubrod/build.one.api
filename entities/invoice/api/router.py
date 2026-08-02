@@ -13,6 +13,7 @@ from decimal import Decimal
 from entities.invoice.api.schemas import InvoiceCreate, InvoiceUpdate
 from entities.invoice.business.cover import _signed_line_amount
 from entities.invoice.business.service import InvoiceService
+from shared.api.money import to_decimal_or_none
 from shared.api.responses import list_response, item_response, raise_not_found
 from shared.pdf_utils import fit_page_to_letter
 from shared.rbac import require_module_api
@@ -376,7 +377,7 @@ def create_invoice_router(body: InvoiceCreate, current_user: dict = Depends(requ
             invoice_date=body.invoice_date,
             due_date=body.due_date,
             invoice_number=body.invoice_number,
-            total_amount=Decimal(str(body.total_amount)) if body.total_amount is not None else None,
+            total_amount=to_decimal_or_none(body.total_amount),
             memo=body.memo,
             is_draft=body.is_draft if body.is_draft is not None else True,
         )
@@ -902,7 +903,7 @@ def update_invoice_by_public_id_router(public_id: str, body: InvoiceUpdate, curr
             invoice_date=body.invoice_date,
             due_date=body.due_date,
             invoice_number=body.invoice_number,
-            total_amount=float(body.total_amount) if body.total_amount else None,
+            total_amount=to_decimal_or_none(body.total_amount),
             memo=body.memo,
             is_draft=body.is_draft,
         )

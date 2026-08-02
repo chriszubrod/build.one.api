@@ -8,7 +8,6 @@ import time
 from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
-from decimal import Decimal
 
 # Local Imports
 from entities.bill.api.schemas import BillCreate, BillUpdate
@@ -19,6 +18,7 @@ from entities.bill.persistence.folder_run_repo import (
 )
 from entities.bill.persistence.repo import BillRepository
 from shared.api.auth_user import resolve_user_id
+from shared.api.money import to_decimal_or_none
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
 from shared.database import get_connection
 from shared.rbac import require_module_api
@@ -67,7 +67,7 @@ async def create_bill_router(
             "bill_date": body.bill_date,
             "due_date": body.due_date,
             "bill_number": body.bill_number,
-            "total_amount": Decimal(str(body.total_amount)) if body.total_amount is not None else None,
+            "total_amount": to_decimal_or_none(body.total_amount),
             "memo": body.memo,
             "is_draft": is_draft,
             "user_id": user_id,
@@ -80,10 +80,10 @@ async def create_bill_router(
             # with these values so agent flows don't need a follow-up update.
             "line_description": body.line_description,
             "line_quantity": body.line_quantity,
-            "line_rate": Decimal(str(body.line_rate)) if body.line_rate is not None else None,
-            "line_amount": Decimal(str(body.line_amount)) if body.line_amount is not None else None,
-            "line_markup": Decimal(str(body.line_markup)) if body.line_markup is not None else None,
-            "line_price": Decimal(str(body.line_price)) if body.line_price is not None else None,
+            "line_rate": to_decimal_or_none(body.line_rate),
+            "line_amount": to_decimal_or_none(body.line_amount),
+            "line_markup": to_decimal_or_none(body.line_markup),
+            "line_price": to_decimal_or_none(body.line_price),
             "line_is_billable": body.line_is_billable,
             "line_sub_cost_code_id": body.line_sub_cost_code_id,
             "line_project_public_id": body.line_project_public_id,
@@ -343,7 +343,7 @@ async def update_bill_by_public_id_router(
             "bill_date": body.bill_date,
             "due_date": body.due_date,
             "bill_number": body.bill_number,
-            "total_amount": Decimal(str(body.total_amount)) if body.total_amount is not None else None,
+            "total_amount": to_decimal_or_none(body.total_amount),
             "memo": body.memo,
             "is_draft": body.is_draft,
         },

@@ -3,10 +3,10 @@ from typing import Optional
 
 # Third-party Imports
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from decimal import Decimal
 
 # Local Imports
 from entities.bill_credit.api.schemas import BillCreditCreate, BillCreditUpdate
+from shared.api.money import to_decimal_or_none
 from entities.bill_credit.business.service import BillCreditService
 from entities.bill_credit.business.complete_service import BillCreditCompleteService
 from shared.rbac import require_module_api
@@ -33,7 +33,7 @@ def create_bill_credit_router(body: BillCreditCreate, current_user: dict = Depen
             "vendor_public_id": body.vendor_public_id,
             "credit_date": body.credit_date,
             "credit_number": body.credit_number,
-            "total_amount": Decimal(str(body.total_amount)) if body.total_amount is not None else None,
+            "total_amount": to_decimal_or_none(body.total_amount),
             "memo": body.memo,
             "is_draft": body.is_draft if body.is_draft is not None else True,
         },
@@ -127,7 +127,7 @@ def update_bill_credit_by_public_id_router(public_id: str, body: BillCreditUpdat
             "vendor_public_id": body.vendor_public_id,
             "credit_date": body.credit_date,
             "credit_number": body.credit_number,
-            "total_amount": float(body.total_amount) if body.total_amount else None,
+            "total_amount": to_decimal_or_none(body.total_amount),
             "memo": body.memo,
             "is_draft": body.is_draft,
         },

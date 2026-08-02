@@ -2,10 +2,10 @@
 
 # Third-party Imports
 from fastapi import APIRouter, Depends, HTTPException, status
-from decimal import Decimal
 
 # Local Imports
 from entities.bill_credit_line_item.api.schemas import BillCreditLineItemCreate, BillCreditLineItemUpdate
+from shared.api.money import to_decimal_or_none
 from entities.bill_credit_line_item.business.service import BillCreditLineItemService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
@@ -32,12 +32,12 @@ def create_bill_credit_line_item_router(body: BillCreditLineItemCreate, current_
             "sub_cost_code_id": body.sub_cost_code_id,
             "project_public_id": body.project_public_id,
             "description": body.description,
-            "quantity": float(body.quantity) if body.quantity is not None else None,
-            "unit_price": float(body.unit_price) if body.unit_price is not None else None,
-            "amount": float(body.amount) if body.amount is not None else None,
+            "quantity": to_decimal_or_none(body.quantity),
+            "unit_price": to_decimal_or_none(body.unit_price),
+            "amount": to_decimal_or_none(body.amount),
             "is_billable": body.is_billable,
             "is_billed": body.is_billed,
-            "billable_amount": float(body.billable_amount) if body.billable_amount is not None else None,
+            "billable_amount": to_decimal_or_none(body.billable_amount),
             "is_draft": body.is_draft if body.is_draft is not None else True,
         },
         workflow_type="bill_credit_line_item_create",
@@ -105,12 +105,12 @@ def update_bill_credit_line_item_by_public_id_router(public_id: str, body: BillC
             "sub_cost_code_id": body.sub_cost_code_id,
             "project_public_id": body.project_public_id,
             "description": body.description,
-            "quantity": float(body.quantity) if body.quantity is not None else None,
-            "unit_price": float(body.unit_price) if body.unit_price is not None else None,
-            "amount": float(body.amount) if body.amount is not None else None,
+            "quantity": to_decimal_or_none(body.quantity),
+            "unit_price": to_decimal_or_none(body.unit_price),
+            "amount": to_decimal_or_none(body.amount),
             "is_billable": body.is_billable,
             "is_billed": body.is_billed,
-            "billable_amount": float(body.billable_amount) if body.billable_amount is not None else None,
+            "billable_amount": to_decimal_or_none(body.billable_amount),
             "is_draft": body.is_draft,
         },
         workflow_type="bill_credit_line_item_update",

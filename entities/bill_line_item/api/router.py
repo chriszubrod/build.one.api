@@ -2,10 +2,10 @@
 
 # Third-party Imports
 from fastapi import APIRouter, Depends, HTTPException, status
-from decimal import Decimal
 
 # Local Imports
 from entities.bill_line_item.api.schemas import BillLineItemCreate, BillLineItemUpdate
+from shared.api.money import to_decimal_or_none
 from entities.bill_line_item.business.service import BillLineItemService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
@@ -33,12 +33,12 @@ def create_bill_line_item_router(body: BillLineItemCreate, current_user: dict = 
             "project_public_id": body.project_public_id,
             "description": body.description,
             "quantity": body.quantity,
-            "rate": Decimal(str(body.rate)) if body.rate is not None else None,
-            "amount": Decimal(str(body.amount)) if body.amount is not None else None,
+            "rate": to_decimal_or_none(body.rate),
+            "amount": to_decimal_or_none(body.amount),
             "is_billable": body.is_billable,
             "is_billed": body.is_billed,
-            "markup": Decimal(str(body.markup)) if body.markup is not None else None,
-            "price": Decimal(str(body.price)) if body.price is not None else None,
+            "markup": to_decimal_or_none(body.markup),
+            "price": to_decimal_or_none(body.price),
             "is_draft": body.is_draft if body.is_draft is not None else True,
         },
         workflow_type="bill_line_item_create",
@@ -123,12 +123,12 @@ def update_bill_line_item_by_public_id_router(public_id: str, body: BillLineItem
             "project_public_id": body.project_public_id,
             "description": body.description,
             "quantity": body.quantity,
-            "rate": Decimal(str(body.rate)) if body.rate else None,
-            "amount": Decimal(str(body.amount)) if body.amount else None,
+            "rate": to_decimal_or_none(body.rate),
+            "amount": to_decimal_or_none(body.amount),
             "is_billable": body.is_billable,
             "is_billed": body.is_billed,
-            "markup": Decimal(str(body.markup)) if body.markup else None,
-            "price": Decimal(str(body.price)) if body.price else None,
+            "markup": to_decimal_or_none(body.markup),
+            "price": to_decimal_or_none(body.price),
             "is_draft": body.is_draft,
         },
         workflow_type="bill_line_item_update",

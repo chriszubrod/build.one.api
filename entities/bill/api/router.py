@@ -343,7 +343,7 @@ async def update_bill_by_public_id_router(
             "bill_date": body.bill_date,
             "due_date": body.due_date,
             "bill_number": body.bill_number,
-            "total_amount": Decimal(str(body.total_amount)) if body.total_amount else None,
+            "total_amount": Decimal(str(body.total_amount)) if body.total_amount is not None else None,
             "memo": body.memo,
             "is_draft": body.is_draft,
         },

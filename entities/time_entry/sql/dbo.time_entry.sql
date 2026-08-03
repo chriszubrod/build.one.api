@@ -1320,6 +1320,9 @@ BEGIN
     DECLARE @ParentRate      DECIMAL(18,4);
     DECLARE @ParentMarkup    DECIMAL(18,4);
     DECLARE @ParentAmount    DECIMAL(18,2);
+    -- DECIMAL(25,2) not (18,2) target: large cost * negative markup must not overflow
+    -- before markup shrinks it; *(1+markup) stays DECIMAL(38,6), still exact.
+    DECLARE @ParentCostAmount DECIMAL(25,2);
     DECLARE @ParentRateSrc   NVARCHAR(20);
     DECLARE @ParentDesc      NVARCHAR(MAX) = NULL;
     DECLARE @ParentNote      NVARCHAR(500) = NULL;
@@ -1360,7 +1363,10 @@ BEGIN
 
         IF @ParentRate IS NOT NULL
         BEGIN
-            SET @ParentAmount = @ParentTotalHrs * @ParentRate * (1 + ISNULL(@ParentMarkup, 0));
+            -- Two-shot cent rounding matches web shared/money roundMoney (half away from
+            -- zero). Single-shot rounds once at DECIMAL(38,6) and can differ by 1 cent.
+            SET @ParentCostAmount = ROUND(@ParentTotalHrs * @ParentRate, 2);
+            SET @ParentAmount     = ROUND(@ParentCostAmount * (1 + ISNULL(@ParentMarkup, 0)), 2);
         END
         ELSE
         BEGIN
@@ -1495,6 +1501,9 @@ BEGIN
         DECLARE @Markup         DECIMAL(18,4) = NULL;
         DECLARE @RateSource     NVARCHAR(20)  = 'none';
         DECLARE @TotalAmount    DECIMAL(18,2) = NULL;
+        -- DECIMAL(25,2) not (18,2) target: large cost * negative markup must not overflow
+        -- before markup shrinks it; *(1+markup) stays DECIMAL(38,6), still exact.
+        DECLARE @CostAmount     DECIMAL(25,2) = NULL;
         DECLARE @LineItemRowId  BIGINT        = NULL;
         DECLARE @LineNote       NVARCHAR(500) = NULL;
 
@@ -1517,7 +1526,10 @@ BEGIN
 
         IF @HourlyRate IS NOT NULL
         BEGIN
-            SET @TotalAmount = @TotalHours * @HourlyRate * (1 + ISNULL(@Markup, 0));
+            -- Two-shot cent rounding matches web shared/money roundMoney (half away from
+            -- zero). Single-shot rounds once at DECIMAL(38,6) and can differ by 1 cent.
+            SET @CostAmount  = ROUND(@TotalHours * @HourlyRate, 2);
+            SET @TotalAmount = ROUND(@CostAmount * (1 + ISNULL(@Markup, 0)), 2);
         END
         ELSE
         BEGIN

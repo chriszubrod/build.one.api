@@ -6,7 +6,8 @@ from typing import Any, Optional
 def to_decimal_or_none(value: Any) -> Optional[Decimal]:
     """Coerce API money fields to ``Decimal`` without dropping zero.
 
-    This is the single money-coercion seam for entity API routers. It is
+    This is the single money-coercion seam for entity API routers (U-196) and
+    for the business-layer completion/finalize paths (U-199). It is
     None-preserving and must never be replaced by a truthy guard (``if value``):
     ``Decimal(0)`` is falsy in Python, so a truthy guard drops a genuine $0.00
     or 0% markup to ``None``. Downstream services preserve-on-``None``, so the

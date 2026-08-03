@@ -31,6 +31,7 @@ from integrations.ms.sharepoint.external.client import (
 )
 from entities.bill.business.service import find_insertion_row_for_subcostcode
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
+from shared.api.money import to_decimal_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ class BillCreditCompleteService:
                     vendor_public_id=vendor.public_id,
                     credit_date=bill_credit.credit_date,
                     credit_number=bill_credit.credit_number,
-                    total_amount=Decimal(str(bill_credit.total_amount)) if bill_credit.total_amount else None,
+                    total_amount=to_decimal_or_none(bill_credit.total_amount),
                     memo=bill_credit.memo,
                     is_draft=False
                 )

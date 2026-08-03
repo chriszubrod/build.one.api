@@ -15,6 +15,7 @@ from entities.payment_term.business.service import PaymentTermService
 from entities.project.business.service import ProjectService
 from entities.module.business.service import ModuleService
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
+from shared.api.money import to_decimal_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -343,7 +344,7 @@ class InvoiceService:
                 invoice_date=invoice.invoice_date,
                 due_date=invoice.due_date,
                 invoice_number=invoice.invoice_number,
-                total_amount=float(invoice.total_amount) if invoice.total_amount else None,
+                total_amount=to_decimal_or_none(invoice.total_amount),
                 memo=invoice.memo,
                 is_draft=False,
             )
@@ -376,9 +377,9 @@ class InvoiceService:
                         invoice_public_id=public_id,
                         source_type=line_item.source_type,
                         description=line_item.description,
-                        amount=float(line_item.amount) if line_item.amount else None,
-                        markup=float(line_item.markup) if line_item.markup else None,
-                        price=float(line_item.price) if line_item.price else None,
+                        amount=to_decimal_or_none(line_item.amount),
+                        markup=to_decimal_or_none(line_item.markup),
+                        price=to_decimal_or_none(line_item.price),
                         is_draft=False,
                     )
                 except Exception as e:

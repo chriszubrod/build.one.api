@@ -7,6 +7,7 @@ import base64
 # Third-party Imports
 
 # Local Imports
+from shared.api.money import labor_price_two_shot
 
 
 @dataclass
@@ -39,7 +40,7 @@ class ContractLabor:
     # Rates & amounts (entered during review)
     hourly_rate: Optional[Decimal]     # Rate per hour
     markup: Optional[Decimal]          # Markup percentage (e.g., 0.10 for 10%)
-    total_amount: Optional[Decimal]    # Calculated: hours * rate * (1 + markup)
+    total_amount: Optional[Decimal]    # Calculated: two-shot round(hours*rate) then round(cost*(1+markup))
     
     # Assignment (manual entry during review)
     sub_cost_code_id: Optional[int]    # Assigned during review
@@ -99,17 +100,9 @@ class ContractLabor:
     def calculate_total_amount(self) -> Optional[Decimal]:
         """
         Calculate total amount based on hours, rate, and markup.
-        Formula: total_hours * hourly_rate * (1 + markup)
+        Formula: round2(total_hours * hourly_rate) then round2(cost * (1 + markup)).
         """
-        if self.total_hours is None or self.hourly_rate is None:
-            return None
-        
-        base_amount = self.total_hours * self.hourly_rate
-        
-        if self.markup is not None:
-            return base_amount * (Decimal("1") + self.markup)
-        
-        return base_amount
+        return labor_price_two_shot(self.total_hours, self.hourly_rate, self.markup)
 
     @staticmethod
     def calculate_billing_period_start(work_date: str) -> Optional[str]:
@@ -182,7 +175,7 @@ class ContractLaborLineItem:
     hours: Optional[Decimal]           # Hours allocated to this line
     rate: Optional[Decimal]            # Hourly rate
     markup: Optional[Decimal]          # Markup percentage (e.g., 0.05 for 5%)
-    price: Optional[Decimal]           # Calculated: (Hours / 8 * Rate) * (1 + Markup)
+    price: Optional[Decimal]           # Calculated: two-shot on (Hours/8)*Rate basis, then *(1+Markup)
     is_billable: Optional[bool]        # Whether this line is billable
     is_overhead: Optional[bool]        # True = bill to company overhead (no project)
 
@@ -207,19 +200,13 @@ class ContractLaborLineItem:
     def calculate_price(self) -> Optional[Decimal]:
         """
         Calculate price based on hours, rate, and markup.
-        Formula: (Hours / 8 * Rate) * (1 + Markup)
-        
+        Formula: round2((Hours/8)*Rate) then round2(cost * (1 + Markup)).
+
         This represents a percentage of an 8-hour day.
         Example: 6.75 hours at $230/day with 5% markup
-                 = (6.75 / 8 * 230) * 1.05 = $203.77
+                 = round2(6.75/8*230)=194.06, round2(194.06*1.05)=203.76
         """
         if self.hours is None or self.rate is None:
             return None
-        
-        # Calculate as percentage of 8-hour day
-        base_amount = (self.hours / Decimal("8")) * self.rate
-        
-        if self.markup is not None:
-            return base_amount * (Decimal("1") + self.markup)
-        
-        return base_amount
+
+        return labor_price_two_shot(self.hours / Decimal("8"), self.rate, self.markup)

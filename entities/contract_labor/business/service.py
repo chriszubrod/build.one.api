@@ -15,6 +15,7 @@ from shared.access import (
     EntityNotAccessibleError,
     assert_can_access_project,
 )
+from shared.api.money import labor_price_two_shot
 from shared.authz import current_user_id, current_is_system_admin
 
 logger = logging.getLogger(__name__)
@@ -82,15 +83,8 @@ class ContractLaborService:
         # Calculate billing period
         billing_period_start = ContractLabor.calculate_billing_period_start(work_date)
         
-        # Calculate total amount if rate is provided
-        total_amount = None
-        if hourly_rate is not None:
-            base_amount = total_hours * hourly_rate
-            if markup is not None:
-                total_amount = base_amount * (Decimal("1") + markup)
-            else:
-                total_amount = base_amount
-        
+        total_amount = labor_price_two_shot(total_hours, hourly_rate, markup)
+
         return self.repo.create(
             vendor_id=vendor_id,
             project_id=project_id,
@@ -341,14 +335,13 @@ class ContractLaborService:
         if status is not None:
             existing.status = status
         
-        # Recalculate total amount
         if existing.hourly_rate is not None and existing.total_hours is not None:
-            base_amount = existing.total_hours * existing.hourly_rate
-            if existing.markup is not None:
-                existing.total_amount = base_amount * (Decimal("1") + existing.markup)
-            else:
-                existing.total_amount = base_amount
-        
+            existing.total_amount = labor_price_two_shot(
+                existing.total_hours,
+                existing.hourly_rate,
+                existing.markup,
+            )
+
         return self.repo.update_by_id(existing)
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[ContractLabor]:

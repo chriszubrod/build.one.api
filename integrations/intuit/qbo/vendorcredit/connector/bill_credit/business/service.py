@@ -1,11 +1,11 @@
 # Python Standard Library Imports
 import logging
 from typing import List, Optional
-from decimal import Decimal
 
 # Third-party Imports
 
 # Local Imports
+from shared.api.money import to_decimal_or_none
 from integrations.intuit.qbo.vendorcredit.business.model import QboVendorCredit, QboVendorCreditLine
 from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
     VendorCreditBillCreditMappingRepository,
@@ -143,7 +143,7 @@ class VendorCreditBillCreditConnector:
                     vendor_public_id=vendor_public_id,
                     credit_date=qbo_vc.txn_date,
                     credit_number=effective_credit_number,
-                    total_amount=Decimal(str(qbo_vc.total_amt)) if qbo_vc.total_amt else None,
+                    total_amount=to_decimal_or_none(qbo_vc.total_amt),
                     memo=qbo_vc.private_note,
                 )
                 if updated:
@@ -156,7 +156,7 @@ class VendorCreditBillCreditConnector:
                 vendor_public_id=vendor_public_id,
                 credit_date=qbo_vc.txn_date,
                 credit_number=credit_number,
-                total_amount=Decimal(str(qbo_vc.total_amt)) if qbo_vc.total_amt else None,
+                total_amount=to_decimal_or_none(qbo_vc.total_amt),
                 memo=qbo_vc.private_note,
                 is_draft=False,
             )

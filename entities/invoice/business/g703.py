@@ -151,9 +151,9 @@ def build_g703_pdf(header: dict, rows: list[dict], grand: dict) -> bytes:
     from reportlab.platypus import LongTable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     BLUE = colors.HexColor("#1F3864")
-    FONT_SIZE = 6
+    FONT_SIZE = 5  # tight enough to fit the full schedule of values in two pages
     HDR_LEADING = FONT_SIZE + 1
-    BODY_LEADING = FONT_SIZE + 2
+    BODY_LEADING = FONT_SIZE + 1
 
     def P(text: str, style: ParagraphStyle) -> Paragraph:
         return Paragraph(_html.escape(text) if text else "", style)
@@ -385,8 +385,8 @@ def build_g703_pdf(header: dict, rows: list[dict], grand: dict) -> bytes:
         ("LINEBELOW", (0, 1), (-1, 1), 0.75, BLUE),
         ("FONTNAME", (0, 2), (-1, n_rows - 2), "Helvetica"),
         ("FONTSIZE", (0, 2), (-1, n_rows - 2), FONT_SIZE),
-        ("TOPPADDING", (0, 2), (-1, n_rows - 1), 2),
-        ("BOTTOMPADDING", (0, 2), (-1, n_rows - 1), 2),
+        ("TOPPADDING", (0, 2), (-1, n_rows - 1), 1),
+        ("BOTTOMPADDING", (0, 2), (-1, n_rows - 1), 1),
         ("LINEBELOW", (0, 2), (-1, n_rows - 2), 0.25, colors.HexColor("#CCCCCC")),
         ("ALIGN", (first_money_col, 0), (last_col, -1), "RIGHT"),
         ("LEFTPADDING", (0, 0), (-1, -1), 2),

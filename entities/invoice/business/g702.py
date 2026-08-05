@@ -63,12 +63,13 @@ def build_g702_lines(grand: dict, retainage_rate: Any = Decimal("0"),
 
 
 def build_g702_pdf(header: dict, lines: dict) -> bytes:
-    """Portrait letter G702: header band + contractor application ledger + certification."""
+    """Landscape letter G702 (single page): header band + contractor application
+    ledger + certification."""
     import html as _html
 
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_LEFT, TA_RIGHT
-    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.pagesizes import landscape, letter
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
@@ -185,7 +186,7 @@ def build_g702_pdf(header: dict, lines: dict) -> bytes:
     co_net = co_add - co_ded
 
     margin = 0.5 * inch
-    page_w = letter[0]
+    page_w = landscape(letter)[0]
     usable_w = page_w - 2 * margin
 
     def _labeled_block(label: str, text_lines: list[str]) -> str:
@@ -351,7 +352,7 @@ def build_g702_pdf(header: dict, lines: dict) -> bytes:
     )
     sig_line = "________________________    Date: __________"
 
-    cert_w = usable_w - ledger_w - 0.08 * inch
+    cert_w = usable_w - ledger_w
     right_text = "<br/>".join([
         contractor_cert,
         "<br/><b>CONTRACTOR:</b><br/>By: " + sig_line,
@@ -378,8 +379,11 @@ def build_g702_pdf(header: dict, lines: dict) -> bytes:
     body.setStyle(
         TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("LEFTPADDING", (0, 0), (0, 0), 0),
             ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            # Gutter between the ledger amounts and the certification column so the
+            # right-aligned money never butts against the certification text.
+            ("LEFTPADDING", (1, 0), (1, 0), 18),
         ])
     )
 
@@ -391,7 +395,7 @@ def build_g702_pdf(header: dict, lines: dict) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf,
-        pagesize=letter,
+        pagesize=landscape(letter),
         leftMargin=margin,
         rightMargin=margin,
         topMargin=0.45 * inch,

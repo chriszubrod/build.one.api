@@ -61,11 +61,13 @@ def test_draw_request_pdf_includes_builders_fee_when_rate_set():
     # fee_rate 0.14 (14%): the fee ROW is schedule-of-values item 90.000 — a
     # CONSTANT cost-code number, NOT the rate. Distinct values so a regression
     # that renders the rate as the item number (0.14 -> "14.000") fails loudly.
+    from entities.invoice.business.draw_request import FEE_ITEM_NUMBER
+    assert FEE_ITEM_NUMBER == "90"   # matches the cost-code number style, not "90.000"
     model = build_cover_rollup([_line(billed_price=100.0)], fee_rate=Decimal("0.14"))
     pdf = build_draw_request_pdf(_header(), model)
     text = _pdf_text(pdf)
     assert "Builder's Fee" in text
-    assert "90.000" in text        # fee line item number (constant)
+    assert "90.000" not in text    # fee item number is now "90", not "90.000"
     assert "14.000" not in text    # NOT the rate
     assert "$14.00" in text         # fee = 100 * 0.14
     assert "$114.00" in text        # total = 100 + 14

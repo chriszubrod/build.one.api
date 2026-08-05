@@ -8,9 +8,9 @@ from decimal import Decimal
 from entities.invoice.business.cover import CoverRollup, _format_money
 
 # The Builder's Fee is schedule-of-values item 90 — it renders as a normal
-# category row (Category "90.000" · "Builder's Fee" · amount), NOT as a fee-rate
-# label. Constant, not derived from the rate.
-FEE_ITEM_NUMBER = "90.000"
+# category row (Category "90" · "Builder's Fee" · amount), matching the cost-code
+# number formatting of the other line items. Constant, not derived from the rate.
+FEE_ITEM_NUMBER = "90"
 
 
 def build_draw_request_pdf(header: dict, cover_model: CoverRollup) -> bytes:
@@ -135,9 +135,8 @@ def build_draw_request_pdf(header: dict, cover_model: CoverRollup) -> bytes:
             _format_money(cat.amount),
         ])
 
-    table_data.append(["", "", ""])
-    spacer_idx = len(table_data) - 1
-
+    # Subtotal sits directly below the line items (no blank spacer row) — its rule
+    # above + a little top padding provide the separation.
     table_data.append([
         "",
         Paragraph("Subtotal", bold_right),
@@ -188,11 +187,6 @@ def build_draw_request_pdf(header: dict, cover_model: CoverRollup) -> bytes:
         ("FONTNAME", (0, subtotal_idx), (-1, subtotal_idx), "Helvetica-Bold"),
         ("LINEABOVE", (0, subtotal_idx), (-1, subtotal_idx), 0.5, colors.HexColor("#888888")),
         ("TOPPADDING", (0, subtotal_idx), (-1, subtotal_idx), 4),
-    ])
-    style_cmds.extend([
-        ("TOPPADDING", (0, spacer_idx), (-1, spacer_idx), 2),
-        ("BOTTOMPADDING", (0, spacer_idx), (-1, spacer_idx), 2),
-        ("LINEBELOW", (0, spacer_idx), (-1, spacer_idx), 0, colors.white),
     ])
 
     table = Table(table_data, colWidths=col_widths)

@@ -677,15 +677,20 @@ def _generate_invoice_packet(public_id: str):
     # G703 Continuation Sheet (U-207): AIA schedule of values — live Budget (col C) x
     # prior/current coded draws (cols D/E) + synthetic fee line 90. Prepended ahead of
     # the Draw Request (G702 slots in front of it later). Failure-isolated.
+    # G702 (Application for Payment) is derived from the SAME G703 grand totals, so
+    # the two AIA pages reconcile by construction; it's prepended ahead of the G703.
     g703_bytes = None
-    # Only build the G703 when the invoice being packeted is itself a coded draw —
-    # otherwise its "This Period" (col E) would silently render all-$0.
+    g702_bytes = None
+    # Only build G702/G703 when the invoice being packeted is itself a coded draw —
+    # otherwise the G703 "This Period" (col E) would silently render all-$0.
     current_is_coded_draw = any(d.get("label") == invoice.invoice_number for d in draws)
     if draws and not current_is_coded_draw:
-        logger.info(f"Packet [{public_id}]: current invoice not a coded draw — skipping G703")
+        logger.info(f"Packet [{public_id}]: current invoice not a coded draw — skipping G702/G703")
     if draws and current_is_coded_draw:
         try:
             from entities.invoice.business.g703 import build_g703_pdf, build_g703_rows
+            from entities.invoice.business.g702 import build_g702_lines, build_g702_pdf
+            from entities.project.business.service import ProjectService
 
             sov = _budget_sov_for_project(invoice.project_id)
             if sov:
@@ -701,8 +706,24 @@ def _generate_invoice_packet(public_id: str):
                     rows,
                     grand,
                 )
+                project = ProjectService().read_by_id(invoice.project_id) if invoice.project_id else None
+                g702_bytes = build_g702_pdf(
+                    {
+                        # TO OWNER = the project's Customer; Architect + Contract Date
+                        # are left blank until the minimal Contract fields are stored.
+                        "owner_lines": ([to_name] if to_name else []) + list(to_lines),
+                        "project": project.name if project else "",
+                        "application_no": invoice.invoice_number or "",
+                        "period_to": date_str,
+                        "contractor_lines": _CONTRACTOR_BLOCK,
+                        "architect_lines": [],
+                        "contract_for": "",
+                        "contract_date": "",
+                    },
+                    build_g702_lines(grand),
+                )
         except Exception:
-            logger.exception(f"Packet [{public_id}]: G703 generation failed — continuing without it")
+            logger.exception(f"Packet [{public_id}]: G702/G703 generation failed — continuing without it")
 
     # Trend page (U-206): per-cost-code x per-draw matrix across the coded draws,
     # following the Draw Request in the packet. Failure-isolated.
@@ -753,10 +774,11 @@ def _generate_invoice_packet(public_id: str):
     storage = AzureBlobStorage()
     writer = PdfWriter()
 
-    # Packet page order: G703 -> Draw Request -> Trend -> TOC pages -> attachment
-    # images (G702 slots ahead of G703 in a later unit).
+    # Packet page order: G702 -> G703 -> Draw Request -> Trend -> TOC pages ->
+    # attachment images.
     prepend_pdfs = (
-        ([g703_bytes] if g703_bytes else [])
+        ([g702_bytes] if g702_bytes else [])
+        + ([g703_bytes] if g703_bytes else [])
         + ([draw_request_bytes] if draw_request_bytes else [])
         + ([trend_bytes] if trend_bytes else [])
         + [basic_toc_bytes, expanded_toc_bytes]

@@ -7,7 +7,7 @@ from typing import Optional
 
 # Third-party Imports
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 # Local Imports
 from entities.invoice.api.schemas import InvoiceCreate, InvoiceUpdate
@@ -85,6 +85,94 @@ def _resolve_builders_fee_rate(project_id: Optional[int]) -> Optional[Decimal]:
     if not rated:
         return None
     return max(rated, key=lambda c: c.id or 0).builders_fee_rate
+
+
+# The contractor ("From") block on the Draw Request page. Render-time constant —
+# single-tenant (Rogers Build); becomes a Company extension only if we go multi-org.
+_CONTRACTOR_BLOCK = [
+    "Rogers Build, Inc.",
+    "PO Box 594",
+    "Brentwood, TN 37024",
+    "615.906.8413",
+    "austin@rogersbuild.com",
+]
+
+
+def _format_invoice_date(value) -> str:
+    """Format an invoice date as M/D/YYYY for the Draw Request header. Accepts a
+    date/datetime or an ISO 'YYYY-MM-DD' string; falls back to str(value)."""
+    if value is None:
+        return ""
+    from datetime import date, datetime
+    if isinstance(value, date):  # datetime is a subclass of date
+        return f"{value.month}/{value.day}/{value.year}"
+    try:
+        d = datetime.strptime(str(value)[:10], "%Y-%m-%d")
+        return f"{d.month}/{d.day}/{d.year}"
+    except (ValueError, TypeError):
+        return str(value)
+
+
+def _resolve_draw_request_recipient(project_id: Optional[int]) -> tuple:
+    """(to_name, to_lines) for the Draw Request 'To' block — the project's Customer
+    name + the project's property address, best-effort. Each lookup is isolated so a
+    missing address degrades to name-only (or ("", []) ), never failing the packet."""
+    if not project_id:
+        return "", []
+    to_name, to_lines = "", []
+    try:
+        from entities.project.business.service import ProjectService
+        from entities.customer.business.service import CustomerService
+        project = ProjectService().read_by_id(project_id)
+        if project and getattr(project, "customer_id", None):
+            customer = CustomerService().read_by_id(project.customer_id)
+            if customer:
+                to_name = customer.name or ""
+    except Exception:
+        logger.warning(f"Draw-request recipient name lookup failed for project {project_id}", exc_info=True)
+    try:
+        from entities.project_address.business.service import ProjectAddressService
+        from entities.address.business.service import AddressService
+        pas = ProjectAddressService().read_by_project_id(project_id)
+        if pas and pas[0].address_id:
+            addr = AddressService().read_by_id(str(pas[0].address_id))
+            if addr:
+                if addr.street_one:
+                    to_lines.append(addr.street_one)
+                if addr.street_two:
+                    to_lines.append(addr.street_two)
+                loc = " ".join(x for x in [addr.state, addr.zip] if x)
+                city_line = ", ".join(p for p in [addr.city, loc] if p)
+                if city_line:
+                    to_lines.append(city_line)
+    except Exception:
+        logger.warning(f"Draw-request recipient address lookup failed for project {project_id}", exc_info=True)
+    return to_name, to_lines
+
+
+def _draw_fee_from_invoice(cover_model, invoice_total):
+    """Source the Builder's Fee from the PERSISTED invoice: the fee is a Manual line
+    the cost-code rollup excludes, so fee = invoice.total - source subtotal. This
+    makes the Draw Request total reconcile to the invoice total by construction and
+    works without a Contract fee-rate. Falls back to the rollup's own (Contract-rate)
+    fee when the invoice has no total greater than the subtotal.
+
+    NOTE: this folds any non-source-line Manual amount into the fee line. For a
+    standard draw — the fee is the only Manual line, and $0-net offsets cancel —
+    that is exactly the fee; the shared draw-financials layer refines attribution
+    later.
+    """
+    if invoice_total is None:
+        return cover_model
+    try:
+        total_dec = Decimal(str(invoice_total))  # idempotent for a Decimal input
+    except (InvalidOperation, TypeError, ValueError):
+        return cover_model
+    fee = total_dec - cover_model.subtotal
+    if fee <= 0:
+        return cover_model
+    from dataclasses import replace
+    return replace(cover_model, builders_fee=fee, total=total_dec)
 
 
 def _consolidate_basic_toc_rows(rows: list[dict]) -> list[dict]:
@@ -513,29 +601,34 @@ def _generate_invoice_packet(public_id: str):
     expanded_toc_rows = sorted(toc_items, key=_expanded_sort_key)
     expanded_toc_bytes = _build_toc_expanded_pdf(expanded_toc_rows)
 
-    # Cover page (U-191): a cost-code rollup carrying the Builder's Fee line, page 1
-    # of the packet. Built from the SAME `toc_items` the expanded TOC totals, with
-    # the identical sign rules, so its subtotal reconciles to the expanded TOC by
-    # construction. Fully failure-isolated — any cover error logs and the packet
-    # still generates with just the two TOC pages.
-    cover_bytes = None
+    # Draw Request page (U-204): the client-facing per-cost-code rollup of THIS
+    # draw carrying the Builder's Fee line — replaces the U-191 cover. Built from
+    # the SAME `toc_items` the expanded TOC totals, so its subtotal reconciles to
+    # the expanded TOC (and the invoice total) by construction. It is page 1 of the
+    # packet today; later units prepend G702/G703 ahead of it and Trend after it.
+    # Failure-isolated — a render error logs and the packet still generates.
+    draw_request_bytes = None
     try:
-        from entities.invoice.business.cover import build_cover_pdf, build_cover_rollup
-        from entities.project.business.service import ProjectService
+        from entities.invoice.business.cover import build_cover_rollup
+        from entities.invoice.business.draw_request import build_draw_request_pdf
 
         cover_model = build_cover_rollup(toc_items, _resolve_builders_fee_rate(invoice.project_id))
-        project = ProjectService().read_by_id(invoice.project_id) if invoice.project_id else None
-        cover_bytes = build_cover_pdf(
+        # Fee + total from the persisted invoice (the fee is a Manual line the
+        # rollup excludes) so the Draw Request total == the invoice total.
+        cover_model = _draw_fee_from_invoice(cover_model, invoice.total_amount)
+        to_name, to_lines = _resolve_draw_request_recipient(invoice.project_id)
+        draw_request_bytes = build_draw_request_pdf(
             {
-                "title": "Draw Summary",
-                "project_name": project.name if project else "",
-                "invoice_number": invoice.invoice_number or "",
-                "invoice_date": invoice.invoice_date or "",
+                "from_lines": _CONTRACTOR_BLOCK,
+                "to_name": to_name,
+                "to_lines": to_lines,
+                "draw_number": invoice.invoice_number or "",
+                "date": _format_invoice_date(invoice.invoice_date),
             },
             cover_model,
         )
     except Exception:
-        logger.exception(f"Packet [{public_id}]: cover page generation failed — continuing without it")
+        logger.exception(f"Packet [{public_id}]: draw request page generation failed — continuing without it")
 
     # Attachment pages follow the basic TOC's row order exactly: walk the
     # already-sorted TOC rows and take each line's attachment (first-seen wins —
@@ -567,8 +660,10 @@ def _generate_invoice_packet(public_id: str):
     storage = AzureBlobStorage()
     writer = PdfWriter()
 
-    # Prepend the cover (page 1, when built) then both TOC pages before the images
-    prepend_pdfs = ([cover_bytes] if cover_bytes else []) + [basic_toc_bytes, expanded_toc_bytes]
+    # Prepend the Draw Request page (page 1, when built) then both TOC pages before
+    # the images. G702/G703 will slot ahead of the Draw Request, Trend after, in
+    # later units.
+    prepend_pdfs = ([draw_request_bytes] if draw_request_bytes else []) + [basic_toc_bytes, expanded_toc_bytes]
     for toc_bytes in prepend_pdfs:
         toc_reader = PdfReader(io.BytesIO(toc_bytes))
         for page in toc_reader.pages:

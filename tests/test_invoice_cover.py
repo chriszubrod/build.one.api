@@ -1,11 +1,9 @@
-"""U-191 — invoice cover rollup + PDF (pure)."""
+"""U-191 — invoice cover rollup (pure). The cover PDF renderer was retired in
+U-204 (replaced by the Draw Request page); only the rollup remains here."""
 
-import io
 from decimal import Decimal
 
-from pypdf import PdfReader
-
-from entities.invoice.business.cover import build_cover_pdf, build_cover_rollup
+from entities.invoice.business.cover import build_cover_rollup
 
 
 def _line(
@@ -101,25 +99,6 @@ def test_rollup_skips_manual_lines():
     assert model.subtotal == Decimal("100")
 
 
-def test_cover_pdf_no_fee_row_when_fee_rate_none():
-    model = build_cover_rollup([_line(billed_price=100.0)], fee_rate=None)
-    pdf = build_cover_pdf({"title": "Draw Cover", "invoice_number": "DR-1"}, model)
-    assert pdf[:4] == b"%PDF"
-    text = _pdf_text(pdf)
-    assert "Subtotal" in text
-    assert "Total" in text
-    assert "Builder" not in text
-
-
-def test_cover_pdf_includes_builders_fee_when_rate_set():
-    model = build_cover_rollup([_line(billed_price=100.0)], fee_rate=Decimal("0.15"))
-    pdf = build_cover_pdf({}, model)
-    text = _pdf_text(pdf)
-    assert "Builder's Fee" in text
-    assert "$15.00" in text
-    assert "$115.00" in text
-
-
 def test_rollup_groups_by_cost_code_number_only():
     """Two lines share a cost-code number but carry different names (one blank) —
     they must land in ONE category (matching the expanded TOC's number-only
@@ -166,8 +145,3 @@ def test_rollup_keeps_none_source_line_like_the_toc():
     ]
     model = build_cover_rollup(lines, fee_rate=None)
     assert model.subtotal == Decimal("125")
-
-
-def _pdf_text(pdf_bytes: bytes) -> str:
-    reader = PdfReader(io.BytesIO(pdf_bytes))
-    return "".join(page.extract_text() or "" for page in reader.pages)

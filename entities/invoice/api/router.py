@@ -601,22 +601,25 @@ def _generate_invoice_packet(public_id: str):
     expanded_toc_rows = sorted(toc_items, key=_expanded_sort_key)
     expanded_toc_bytes = _build_toc_expanded_pdf(expanded_toc_rows)
 
+    # Recipient (To block) + fee rate — shared by the Draw Request and Trend pages.
+    fee_rate = _resolve_builders_fee_rate(invoice.project_id)
+    to_name, to_lines = _resolve_draw_request_recipient(invoice.project_id)
+
     # Draw Request page (U-204): the client-facing per-cost-code rollup of THIS
     # draw carrying the Builder's Fee line — replaces the U-191 cover. Built from
     # the SAME `toc_items` the expanded TOC totals, so its subtotal reconciles to
-    # the expanded TOC (and the invoice total) by construction. It is page 1 of the
-    # packet today; later units prepend G702/G703 ahead of it and Trend after it.
+    # the expanded TOC (and the invoice total) by construction. Followed by the
+    # Trend page; later units prepend G702/G703 ahead of the Draw Request.
     # Failure-isolated — a render error logs and the packet still generates.
     draw_request_bytes = None
     try:
         from entities.invoice.business.cover import build_cover_rollup
         from entities.invoice.business.draw_request import build_draw_request_pdf
 
-        cover_model = build_cover_rollup(toc_items, _resolve_builders_fee_rate(invoice.project_id))
+        cover_model = build_cover_rollup(toc_items, fee_rate)
         # Fee + total from the persisted invoice (the fee is a Manual line the
         # rollup excludes) so the Draw Request total == the invoice total.
         cover_model = _draw_fee_from_invoice(cover_model, invoice.total_amount)
-        to_name, to_lines = _resolve_draw_request_recipient(invoice.project_id)
         draw_request_bytes = build_draw_request_pdf(
             {
                 "from_lines": _CONTRACTOR_BLOCK,
@@ -629,6 +632,28 @@ def _generate_invoice_packet(public_id: str):
         )
     except Exception:
         logger.exception(f"Packet [{public_id}]: draw request page generation failed — continuing without it")
+
+    # Trend page (U-206): per-cost-code x per-draw matrix across the project's CODED
+    # draws (fee = subtotal x the Contract rate), following the Draw Request in the
+    # packet. Failure-isolated — a render error logs and the packet still generates.
+    trend_bytes = None
+    try:
+        from entities.invoice.business.draw_financials import DrawFinancialsService
+        from entities.invoice.business.trend import build_trend_pdf
+
+        draws = DrawFinancialsService().coded_draws_for_project(invoice.project_id, fee_rate)
+        if draws:
+            trend_bytes = build_trend_pdf(
+                {
+                    "from_lines": _CONTRACTOR_BLOCK,
+                    "to_name": to_name,
+                    "to_lines": to_lines,
+                    "date": _format_invoice_date(invoice.invoice_date),
+                },
+                draws,
+            )
+    except Exception:
+        logger.exception(f"Packet [{public_id}]: trend page generation failed — continuing without it")
 
     # Attachment pages follow the basic TOC's row order exactly: walk the
     # already-sorted TOC rows and take each line's attachment (first-seen wins —
@@ -660,10 +685,13 @@ def _generate_invoice_packet(public_id: str):
     storage = AzureBlobStorage()
     writer = PdfWriter()
 
-    # Prepend the Draw Request page (page 1, when built) then both TOC pages before
-    # the images. G702/G703 will slot ahead of the Draw Request, Trend after, in
-    # later units.
-    prepend_pdfs = ([draw_request_bytes] if draw_request_bytes else []) + [basic_toc_bytes, expanded_toc_bytes]
+    # Prepend the Draw Request page, then the Trend page, then both TOC pages before
+    # the images. G702/G703 will slot ahead of the Draw Request in later units.
+    prepend_pdfs = (
+        ([draw_request_bytes] if draw_request_bytes else [])
+        + ([trend_bytes] if trend_bytes else [])
+        + [basic_toc_bytes, expanded_toc_bytes]
+    )
     for toc_bytes in prepend_pdfs:
         toc_reader = PdfReader(io.BytesIO(toc_bytes))
         for page in toc_reader.pages:

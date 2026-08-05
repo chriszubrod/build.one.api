@@ -175,6 +175,38 @@ def _draw_fee_from_invoice(cover_model, invoice_total):
     return replace(cover_model, builders_fee=fee, total=total_dec)
 
 
+def _budget_sov_for_project(project_id: Optional[int]) -> list:
+    """The project's schedule of values (G703 col C) from the LIVE Budget: one
+    entry per cost code {cost_code_number, cost_code_name, scheduled_value}. Returns
+    [] when the project has no budget or the lookup fails (failure-isolated — the
+    packet still generates without the G703 page)."""
+    if not project_id:
+        return []
+    try:
+        from entities.project.business.service import ProjectService
+        from entities.budget.business.service import BudgetService
+
+        project = ProjectService().read_by_id(project_id)
+        if not project:
+            return []
+        budget = BudgetService().read_by_project_public_id(project.public_id)
+        if not budget:
+            return []
+        variance = BudgetService().variance_by_public_id(budget.public_id)
+        return [
+            {
+                "cost_code_number": cc.get("cost_code_number"),
+                "cost_code_name": cc.get("cost_code_name"),
+                "scheduled_value": Decimal(cc.get("budget_price") or "0"),
+            }
+            for cc in (variance.get("cost_codes") or [])
+            if cc.get("cost_code_number")
+        ]
+    except Exception:
+        logger.warning(f"Budget SoV lookup failed for project {project_id}", exc_info=True)
+        return []
+
+
 def _consolidate_basic_toc_rows(rows: list[dict]) -> list[dict]:
     """
     Consolidate line items from the same source bill/expense into one row.
@@ -633,16 +665,52 @@ def _generate_invoice_packet(public_id: str):
     except Exception:
         logger.exception(f"Packet [{public_id}]: draw request page generation failed — continuing without it")
 
-    # Trend page (U-206): per-cost-code x per-draw matrix across the project's CODED
-    # draws (fee = subtotal x the Contract rate), following the Draw Request in the
-    # packet. Failure-isolated — a render error logs and the packet still generates.
-    trend_bytes = None
+    # The project's CODED draws (fee = subtotal x the Contract rate) — computed once
+    # and shared by the multi-draw pages (Trend + G703). Failure-isolated.
+    draws = []
     try:
         from entities.invoice.business.draw_financials import DrawFinancialsService
-        from entities.invoice.business.trend import build_trend_pdf
-
         draws = DrawFinancialsService().coded_draws_for_project(invoice.project_id, fee_rate)
-        if draws:
+    except Exception:
+        logger.exception(f"Packet [{public_id}]: coded-draws lookup failed — Trend/G703 skipped")
+
+    # G703 Continuation Sheet (U-207): AIA schedule of values — live Budget (col C) x
+    # prior/current coded draws (cols D/E) + synthetic fee line 90. Prepended ahead of
+    # the Draw Request (G702 slots in front of it later). Failure-isolated.
+    g703_bytes = None
+    # Only build the G703 when the invoice being packeted is itself a coded draw —
+    # otherwise its "This Period" (col E) would silently render all-$0.
+    current_is_coded_draw = any(d.get("label") == invoice.invoice_number for d in draws)
+    if draws and not current_is_coded_draw:
+        logger.info(f"Packet [{public_id}]: current invoice not a coded draw — skipping G703")
+    if draws and current_is_coded_draw:
+        try:
+            from entities.invoice.business.g703 import build_g703_pdf, build_g703_rows
+
+            sov = _budget_sov_for_project(invoice.project_id)
+            if sov:
+                rows, grand = build_g703_rows(sov, draws, invoice.invoice_number or "")
+                date_str = _format_invoice_date(invoice.invoice_date)
+                g703_bytes = build_g703_pdf(
+                    {
+                        "application_no": invoice.invoice_number or "",
+                        "application_date": date_str,
+                        "period_to": date_str,
+                        "architect_project_no": "N/A",
+                    },
+                    rows,
+                    grand,
+                )
+        except Exception:
+            logger.exception(f"Packet [{public_id}]: G703 generation failed — continuing without it")
+
+    # Trend page (U-206): per-cost-code x per-draw matrix across the coded draws,
+    # following the Draw Request in the packet. Failure-isolated.
+    trend_bytes = None
+    if draws:
+        try:
+            from entities.invoice.business.trend import build_trend_pdf
+
             trend_bytes = build_trend_pdf(
                 {
                     "from_lines": _CONTRACTOR_BLOCK,
@@ -652,8 +720,8 @@ def _generate_invoice_packet(public_id: str):
                 },
                 draws,
             )
-    except Exception:
-        logger.exception(f"Packet [{public_id}]: trend page generation failed — continuing without it")
+        except Exception:
+            logger.exception(f"Packet [{public_id}]: trend page generation failed — continuing without it")
 
     # Attachment pages follow the basic TOC's row order exactly: walk the
     # already-sorted TOC rows and take each line's attachment (first-seen wins —
@@ -685,10 +753,11 @@ def _generate_invoice_packet(public_id: str):
     storage = AzureBlobStorage()
     writer = PdfWriter()
 
-    # Prepend the Draw Request page, then the Trend page, then both TOC pages before
-    # the images. G702/G703 will slot ahead of the Draw Request in later units.
+    # Packet page order: G703 -> Draw Request -> Trend -> TOC pages -> attachment
+    # images (G702 slots ahead of G703 in a later unit).
     prepend_pdfs = (
-        ([draw_request_bytes] if draw_request_bytes else [])
+        ([g703_bytes] if g703_bytes else [])
+        + ([draw_request_bytes] if draw_request_bytes else [])
         + ([trend_bytes] if trend_bytes else [])
         + [basic_toc_bytes, expanded_toc_bytes]
     )
